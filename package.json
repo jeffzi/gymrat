@@ -1,0 +1,49 @@
+{
+  "name": "gymrat",
+  "version": "0.0.0",
+  "private": true,
+  "description": "",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check:actions": "actionlint && zizmor .github/workflows",
+    "check:fmt": "oxfmt --check",
+    "check:lint": "oxlint",
+    "check:md": "markdownlint-cli2 \"**/*.md\"",
+    "check:package": "npx -y publint && npx -y @arethetypeswrong/cli --pack .",
+    "check:quality": "fallow --fail-on-issues --quiet",
+    "check:security": "fallow security",
+    "check:spelling": "cspell --no-progress \"**/*.{ts,tsx,mts,cts,md}\"",
+    "check:type": "tsc -p tsconfig.json --noEmit",
+    "check:typelint": "oxlint --type-aware",
+    "check": "npm run check:lint && npm run check:md && npm run check:fmt && npm run check:actions && npm run check:typelint && npm run check:quality && npm run check:spelling && npm run check:type",
+    "fix:fmt": "oxfmt",
+    "fix:lint": "oxlint --fix",
+    "fix:md": "markdownlint-cli2 --fix \"**/*.md\"",
+    "fix:quality": "fallow fix --yes --no-create-config",
+    "fix": "npm run fix:lint && npm run fix:md && npm run fix:fmt",
+    "prepare": "test -d .git && lefthook install || true",
+    "test": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.0",
+    "@commitlint/config-conventional": "^21.2.0",
+    "@types/node": "^26.1.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "cspell": "^10.0.0",
+    "esbuild": "^0.28.0",
+    "fallow": "^3.6.0",
+    "lefthook": "^2.1.0",
+    "markdownlint-cli2": "^0.23.0",
+    "oxfmt": "^0.59.0",
+    "oxlint": "^1.74.0",
+    "oxlint-tsgolint": "^0.25.0",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.0",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
