@@ -37,6 +37,7 @@ jobs:
         run: npm ci
 
       - name: Install workflow linters
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@latest
@@ -44,7 +45,12 @@ jobs:
           pipx install zizmor
 
       - name: Check
-        run: npm run check
+        if: runner.os == 'Linux'
+        run: npm run check:static
 
       - name: Test
         run: npm test
+
+      - name: Quality
+        if: runner.os == 'Linux'
+        run: npm run check:quality
