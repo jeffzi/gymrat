@@ -2,10 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    globals: true,
     coverage: {
-      // Without include, untested src files never enter the report and can't
-      // drag the thresholds down — the gate would only measure touched files.
-      include: ["src/**"],
+      include: ["src/**/*.ts"],
       thresholds: {
         lines: 95,
         functions: 95,

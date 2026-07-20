@@ -4,6 +4,7 @@
     "target": "ES2024",
     "module": "nodenext",
     "lib": ["ES2024"],
+    "types": ["node", "vitest/globals"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
