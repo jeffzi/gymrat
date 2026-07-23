@@ -27,6 +27,10 @@
     "prepare": "test -d .git && lefthook install || true",
     "test": "vitest run --coverage"
   },
+  "dependencies": {
+    "@jeffzi/epaulettes": "^0.1.0",
+    "commander": "^15.0.0"
+  },
   "devDependencies": {
     "@commitlint/cli": "^21.2.0",
     "@commitlint/config-conventional": "^21.2.0",
@@ -37,6 +41,7 @@
     "fallow": "^3.7.0",
     "lefthook": "^2.1.0",
     "markdownlint-cli2": "^0.23.0",
+    "mitata": "^1.0.34",
     "npm-run-all2": "^9.0.0",
     "oxfmt": "^0.59.0",
     "oxlint": "^1.74.0",

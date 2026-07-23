@@ -14,8 +14,15 @@
       }
     },
     {
+      "files": ["src/adapters/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
       "files": ["tests/**", "**/*.test.ts", "**/*.spec.ts"],
       "rules": {
+        "no-console": "off",
         "no-control-regex": "off",
         "unicorn/consistent-function-scoping": "off"
       }

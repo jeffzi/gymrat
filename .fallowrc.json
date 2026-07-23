@@ -3,13 +3,18 @@
   "entry": ["src/index.ts"],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
+    "@jeffzi/epaulettes",
+    "commander",
     "cspell",
+    "esbuild",
     "fallow",
     "lefthook",
     "markdownlint-cli2",
+    "mitata",
     "oxfmt",
     "oxlint",
-    "oxlint-tsgolint"
+    "oxlint-tsgolint",
+    "tsx"
   ],
   "duplicates": { "ignore": ["tests/**"] },
   "rules": { "duplicate-exports": "off" }
