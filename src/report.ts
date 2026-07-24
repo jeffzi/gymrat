@@ -100,16 +100,19 @@ function getGlyph(verdict: MetricVerdict["verdict"]): string {
 function formatAnnotation(verdict: MetricVerdict): string {
   switch (verdict.method) {
     case "signed-rank": {
+      /* v8 ignore next -- p is always defined for signed-rank verdicts */
       const p = verdict.p ?? 0;
       return `(${formatPValue(p)} n=${verdict.n})`;
     }
     case "band": {
+      /* v8 ignore next -- band is always defined for band verdicts */
       const band = verdict.band ?? 0;
       return `(band ±${band.toFixed(1)}%, n=${verdict.n})`;
     }
     case "exact":
       return "(exact)";
     default:
+      /* v8 ignore next -- exhaustive switch guard; all known methods have cases above */
       throw new Error("Unknown verdict method");
   }
 }

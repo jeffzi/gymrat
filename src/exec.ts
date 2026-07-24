@@ -93,6 +93,7 @@ export async function exec(
         : {
             stdout,
             stderr,
+            /* v8 ignore next -- exitCode is always defined on normal exit */
             exitCode: exitCode ?? 1,
           };
 
