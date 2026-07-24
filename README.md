@@ -10,16 +10,19 @@ no config required to start.
 
 ## Install
 
-Run it without installing:
+gymrat is not yet published to npm. For now, install from source:
 
 ```sh
-npx gymrat compare main my-branch --bench "npm run bench"
+git clone https://github.com/jeffzi/gymrat.git
+cd gymrat
+npm install
+npm run build
+npm link
 ```
 
-Or install globally:
+`npm link` puts `gymrat` on your `PATH`. Then, from inside the project you want to benchmark:
 
 ```sh
-npm install -g gymrat
 gymrat compare main my-branch --bench "npm run bench"
 ```
 
@@ -32,10 +35,10 @@ project.
 gymrat compare [label=]<target> [label=]<target> [options]
 ```
 
-The first positional is the baseline; deltas read "vs first". Each target is either a git ref
-(resolved with `git rev-parse` and checked out into a temporary detached worktree) or a path to an
-existing directory (used in place, never removed). An optional `label=` prefix sets the display
-name; the default label is the target string itself.
+The first positional is the baseline; deltas are measured against it (the report's `vs old`
+column). Each target is either a git ref (resolved with `git rev-parse` and checked out into a
+temporary detached worktree) or a path to an existing directory (used in place, never removed). An
+optional `label=` prefix sets the display name; the default label is the target string itself.
 
 ```sh
 # Compare two git refs
@@ -53,14 +56,14 @@ gymrat compare main my-branch \
 
 ### Options
 
-| Option             | Default         | Description                                        |
-| ------------------ | --------------- | -------------------------------------------------- |
-| `--bench <cmd>`    | — (required\*)  | Bench command run in each target directory         |
-| `--prepare <cmd>`  | none            | Per-target setup, e.g. `"npm ci && npm run build"` |
-| `--adapter <name>` | `metric-lines`  | Output parser: `metric-lines` or `mitata`          |
-| `--samples <n>`    | `10`            | Paired samples per target                          |
-| `--timeout <secs>` | `1800`          | Timeout per bench invocation                       |
-| `--config <path>`  | `./gymrat.json` | Config file (loaded automatically when present)    |
+| Option               | Default         | Description                                        |
+| -------------------- | --------------- | -------------------------------------------------- |
+| `--bench <cmd>`      | — (required\*)  | Bench command run in each target directory         |
+| `--prepare <script>` | none            | Per-target setup, e.g. `"npm ci && npm run build"` |
+| `--adapter <type>`   | `metric-lines`  | Output parser: `metric-lines` or `mitata`          |
+| `--samples <number>` | `10`            | Paired samples per target                          |
+| `--timeout <number>` | `1800`          | Timeout in seconds per bench invocation            |
+| `--config <file>`    | `./gymrat.json` | Config file (loaded automatically when present)    |
 
 \*`--bench` is required either on the command line or in the config file.
 
@@ -76,7 +79,8 @@ the target's directory.
   went wrong.
 
 Temporary worktrees created for git-ref targets are removed on success, on error, and on
-`SIGINT`/`SIGTERM`; the report footer states how many were removed and how many were left behind.
+`SIGINT`/`SIGTERM`; the report footer confirms they were removed and reports how many (if any) were
+left behind.
 
 ## Reading the report
 
@@ -150,9 +154,10 @@ Example bench script:
 
 ```sh
 #!/bin/sh
-# Each run prints its metrics; gymrat takes the median across runs.
-node -e 'console.log("METRIC decode/time=" + measureDecode())'
-node -e 'console.log("METRIC encode/time=" + measureEncode())'
+# Print one `METRIC name=value` line per metric; replace the values with your
+# real measurements. gymrat takes the median across runs.
+echo "METRIC decode/time=1.42"
+echo "METRIC encode/time=0.91"
 ```
 
 The `mitata` adapter parses the JSON that [mitata](https://github.com/evanwashere/mitata) prints in
