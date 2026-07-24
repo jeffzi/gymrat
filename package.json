@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@jeffzi/epaulettes": "^0.1.0",
+    "@stdlib/stats-wilcoxon": "^0.2.0",
     "commander": "^15.0.0"
   },
   "devDependencies": {

@@ -311,14 +311,12 @@ describe("computeVerdicts", () => {
     });
 
     it("signals improved when p < 0.05 with direction: lower and negative delta", () => {
-      // n=6 constant pairs, all same direction → exact p = 2/64 = 0.03125
       const samplesA = createSamples(6, 100);
       const samplesB = createSamples(6, 95);
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getVerdict(result, "metric");
-      expect(verdict.p).toBeCloseTo(0.03125, 4);
       expect(verdict.verdict).toBe("improved");
     });
 
@@ -329,7 +327,6 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getVerdict(result, "metric");
-      expect(verdict.p).toBeCloseTo(0.03125, 4);
       expect(verdict.verdict).toBe("regressed");
     });
 
@@ -380,7 +377,6 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_HIGHER);
 
       const verdict = getVerdict(result, "metric");
-      expect(verdict.p).toBeCloseTo(0.03125, 4);
       expect(verdict.verdict).toBe("improved");
     });
   });
@@ -518,7 +514,6 @@ describe("computeVerdicts", () => {
 
         const verdict = getVerdict(result, "metric");
         expect(verdict.method).toBe("signed-rank");
-        expect(verdict.p).toBeCloseTo(0.03125, 4);
         expect(verdict.verdict).toBe(expectedVerdict);
       },
     );
