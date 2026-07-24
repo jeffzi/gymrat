@@ -2,16 +2,46 @@
   "name": "gymrat",
   "version": "0.0.0",
   "private": true,
-  "description": "",
+  "description": "Standalone A/B benchmark runner with paired sampling and benchstat-style reports",
+  "keywords": [
+    "benchmark",
+    "benchmarking",
+    "benchstat",
+    "cli",
+    "compare",
+    "mitata",
+    "performance",
+    "wilcoxon"
+  ],
+  "homepage": "https://github.com/jeffzi/gymrat#readme",
+  "bugs": "https://github.com/jeffzi/gymrat/issues",
   "license": "MIT",
+  "author": "jeffzi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeffzi/gymrat.git"
+  },
+  "bin": {
+    "gymrat": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "check:actions": "actionlint && zizmor .github/workflows",
     "check:fmt": "oxfmt --check",
     "check:lint": "oxlint",
     "check:md": "markdownlint-cli2 \"**/*.md\"",
-    "check:package": "npx -y publint && npx -y @arethetypeswrong/cli --pack .",
+    "check:package": "npx -y publint && npx -y @arethetypeswrong/cli --pack . --profile esm-only",
     "check:quality": "fallow --fail-on-issues --quiet",
     "check:security": "fallow security",
     "check:spelling": "cspell --no-progress \"**/*.{ts,tsx,mts,cts,md}\"",

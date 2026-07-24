@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
 import { createHelpConfig } from "@jeffzi/epaulettes";
 import { Command } from "commander";
 
@@ -41,10 +44,10 @@ export function createProgram(): Command {
   program
     .command("compare <old> <new>")
     .description("Compare performance between two revisions")
-    .option("--bench <name>", "benchmark name")
+    .option("--bench <cmd>", "bench command")
     .option("--prepare <script>", "preparation script to run before each revision")
     .option("--adapter <type>", "adapter type for parsing benchmark output")
-    .option("--samples <number>", "number of samples per iteration", (v) => parseInt(v, 10))
+    .option("--samples <number>", "paired samples per target", (v) => parseInt(v, 10))
     .option("--timeout <number>", "timeout in seconds", (v) => parseInt(v, 10))
     .option("--config <file>", "configuration file path")
     .configureHelp(createHelpConfig())
@@ -87,7 +90,7 @@ export function createProgram(): Command {
 }
 
 /* v8 ignore next 16 -- entry point: only run if this is the main module (not imported for testing) */
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(realpathSync(process.argv[1]!)).href) {
   try {
     const program = createProgram();
     await program.parseAsync(process.argv);

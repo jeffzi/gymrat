@@ -1,5 +1,11 @@
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
+
 import { Command } from "commander";
-import { afterEach, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createProgram } from "../src/cli.js";
 import type { ResolvedConfig } from "../src/config.js";
@@ -376,6 +382,36 @@ describe("createProgram", () => {
           program.parseAsync(["node", "cli.js", "compare", "main", "branch"]),
         ).rejects.toThrow();
       });
+    });
+  });
+
+  describe("entry point", () => {
+    it("executes CLI when invoked through symlink", async () => {
+      // Arrange
+      const tmpDir = mkdtempSync(join(tmpdir(), "gymrat-cli-test-"));
+      const cliPath = resolve("src/cli.ts");
+      const symlinkPath = join(tmpDir, "cli-symlink.ts");
+
+      try {
+        // Create a symlink to the CLI entry point
+        symlinkSync(cliPath, symlinkPath);
+
+        // Act
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          ["--import", "tsx", symlinkPath, "compare", "--help"],
+          {
+            timeout: 10000,
+          },
+        );
+
+        // Assert
+        expect(stdout).toContain("Usage: gymrat compare");
+      } finally {
+        // Clean up
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });
