@@ -2,7 +2,20 @@
   "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
   "version": "0.2",
   "language": "en",
-  "words": ["Abramowitz", "geomean", "mitata", "scipy", "Stegun", "unparseable", "Wilcoxon"],
+  "words": [
+    "Abramowitz",
+    "geomean",
+    "gpgsign",
+    "gymrat",
+    "mitata",
+    "oxlint",
+    "scipy",
+    "Stegun",
+    "unparseable",
+    "Wilcoxon",
+    "worktree",
+    "worktrees"
+  ],
   "files": ["**/*.{ts,tsx,mts,cts,md}"],
   "ignorePaths": [
     ".planning",
