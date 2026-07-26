@@ -16,6 +16,7 @@ export interface ExecTimeoutError {
 export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 /**
@@ -25,8 +26,13 @@ export interface ExecOptions {
  * on timeout. On POSIX systems, sends SIGKILL to the negative PID to terminate the
  * entire process group.
  *
+ * Aborting `options.signal` kills that same process group. Unlike a timeout, an abort
+ * resolves with an ExecResult holding the output captured so far, so callers can tell a
+ * caller-initiated cancellation apart from a timeout.
+ *
  * @param command - The shell command to execute
- * @param options - Execution options (working directory and optional timeout in ms)
+ * @param options - Execution options (working directory, optional timeout in ms, optional
+ *                  AbortSignal for cancellation)
  * @returns A promise resolving to either an ExecResult with the command output and exit code,
  *          or an ExecTimeoutError if the timeout is exceeded
  *
@@ -83,6 +89,7 @@ export async function exec(
       if (resolved) return;
       resolved = true;
       clearTimeout(timeoutHandle);
+      options.signal?.removeEventListener("abort", cleanup);
 
       const result: ExecResult | ExecTimeoutError = timedOut
         ? {
@@ -94,7 +101,7 @@ export async function exec(
         : {
             stdout,
             stderr,
-            /* v8 ignore next -- exitCode is always defined on normal exit */
+            // null when the child was killed by a signal, which is how an abort ends.
             exitCode: exitCode ?? 1,
           };
 
@@ -110,6 +117,8 @@ export async function exec(
         cleanup();
       }, options.timeoutMs);
     }
+
+    options.signal?.addEventListener("abort", cleanup, { once: true });
 
     child.on("exit", (code) => {
       handleCompletion(code);

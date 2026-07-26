@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 import { compare } from "../src/compare.js";
 import type { CompareOptions } from "../src/compare.js";
@@ -73,22 +73,32 @@ function parseLeftBehindDirs(text: string): string[] {
 }
 
 /**
+ * The worktree directories the repo still lists, main repo dir excluded.
+ *
+ * git prints resolved paths, so the main dir is matched through `realpath` — on
+ * macOS the scratch repo lives under `/var/...` and git reports `/private/var/...`.
+ */
+function listWorktreeDirs(repo: ReturnType<typeof createScratchRepo>): string[] {
+  const worktreeList = execSync("git worktree list", {
+    cwd: repo.dir,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  const mainDir = fs.realpathSync(repo.dir);
+  return worktreeList
+    .split("\n")
+    .flatMap((line) => /^(\S+)\s/.exec(line)?.[1] ?? [])
+    .filter((dir) => dir !== mainDir);
+}
+
+/**
  * Delete every worktree directory the repo still lists, main repo dir excluded.
  *
  * Keeps a run that stranded a worktree from leaking it into the system temp dir,
  * whatever the assertions did or did not manage to read.
  */
 function removeStrandedWorktrees(repo: ReturnType<typeof createScratchRepo>) {
-  const worktreeList = execSync("git worktree list", {
-    cwd: repo.dir,
-    stdio: "pipe",
-    encoding: "utf-8",
-  });
-  const dirs = worktreeList
-    .split("\n")
-    .flatMap((line) => /^(\S+)\s/.exec(line)?.[1] ?? [])
-    .filter((dir) => dir !== repo.dir);
-  for (const dir of dirs) {
+  for (const dir of listWorktreeDirs(repo)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -97,16 +107,161 @@ function removeStrandedWorktrees(repo: ReturnType<typeof createScratchRepo>) {
  * Verify all worktrees except the main repo dir have been cleaned up.
  */
 function assertWorktreesCleanedUp(repo: ReturnType<typeof createScratchRepo>) {
-  const worktreeList = execSync("git worktree list", {
-    cwd: repo.dir,
-    stdio: "pipe",
-    encoding: "utf-8",
+  expect(listWorktreeDirs(repo)).toStrictEqual([]);
+}
+
+type SignalName = "SIGINT" | "SIGTERM";
+
+const TERMINATION_SIGNALS: readonly SignalName[] = ["SIGINT", "SIGTERM"];
+
+/** Thrown by the stubbed `process.exit` so a handler unwinds where it really would. */
+class ProcessExited extends Error {
+  constructor(readonly code: number | string | null | undefined) {
+    super(`process.exit(${String(code)})`);
+    this.name = "ProcessExited";
+  }
+}
+
+function isSignalListener(value: unknown): value is (signal: SignalName) => void {
+  return typeof value === "function";
+}
+
+function signalListenerCounts(): Record<SignalName, number> {
+  return {
+    SIGINT: process.listeners("SIGINT").length,
+    SIGTERM: process.listeners("SIGTERM").length,
+  };
+}
+
+/**
+ * Run the handlers compare() installed for `signal` and report the code it exits with.
+ *
+ * Emitting the signal for real would also trip vitest's own handling and tear the
+ * test run down, so only the listeners added since `before` are invoked. With
+ * `process.exit` stubbed to throw, a handler unwinds exactly where the real one
+ * would stop.
+ */
+function raiseSignal(
+  signal: SignalName,
+  before: readonly unknown[],
+): number | string | null | undefined {
+  const installed = process.listeners(signal).filter((listener) => !before.includes(listener));
+  if (installed.length === 0) {
+    throw new Error(`compare() installed no ${signal} handler`);
+  }
+
+  try {
+    for (const listener of installed) {
+      if (isSignalListener(listener)) {
+        listener(signal);
+      }
+    }
+  } catch (error) {
+    if (error instanceof ProcessExited) {
+      return error.code;
+    }
+    throw error;
+  }
+  throw new Error(`the ${signal} handler returned instead of exiting`);
+}
+
+/** True while a process with `pid` exists. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Reads a pid written by `echo $! > file`; NaN while the write is absent or incomplete. */
+function readPid(pidPath: string): number {
+  const raw = fs.readFileSync(pidPath, "utf8");
+  return raw.endsWith("\n") ? Number.parseInt(raw, 10) : Number.NaN;
+}
+
+async function waitForPid(pidPath: string): Promise<number> {
+  let pid = Number.NaN;
+  await vi.waitFor(
+    () => {
+      pid = readPid(pidPath);
+      expect(pid).toBeGreaterThan(0);
+    },
+    { timeout: 10_000, interval: 25 },
+  );
+  return pid;
+}
+
+interface InFlightRun {
+  /** Settles when compare() gives up; never rejects, so the test picks when to wait. */
+  settled: Promise<void>;
+  /** A process the bench spawned outside gymrat's own child, still running. */
+  benchGrandchildPid: number;
+  /** The worktrees git listed once the bench was running. */
+  worktreeDirs: string[];
+}
+
+/**
+ * Start a compare() run whose old-target bench blocks until something kills it.
+ *
+ * Resolves once that bench is up and has spawned a grandchild of its own, so a
+ * signal raised afterwards lands on a run with real work in flight.
+ */
+async function startInFlightRun(repo: ReturnType<typeof createScratchRepo>): Promise<InFlightRun> {
+  // Written into the main repo dir so it outlives the worktree the bench runs in.
+  const pidFile = path.join(repo.dir, "bench-grandchild.pid");
+
+  createBranch(repo, {
+    name: "old-signal",
+    benchScript: `#!/bin/sh\nsleep 30 &\necho $! > "${pidFile}"\nwait`,
   });
-  const worktreeLines = worktreeList
-    .split("\n")
-    .filter((line: string) => line.trim())
-    .filter((line: string) => !line.includes(repo.dir));
-  expect(worktreeLines.length).toBe(0);
+  createBranch(repo, {
+    name: "new-signal",
+    benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+  });
+
+  const options: CompareOptions = {
+    oldTarget: "old-signal",
+    newTarget: "new-signal",
+    bench: "./bench.sh",
+    adapter: "metric-lines",
+    samples: 3,
+    timeoutSeconds: 20,
+  };
+
+  // Swallowed: once a signal has torn the run down, whether compare() reports the
+  // killed bench or its vanished worktree is beside the point being tested.
+  const settled = compare(options).then(
+    () => undefined,
+    () => undefined,
+  );
+  const benchGrandchildPid = await waitForPid(pidFile);
+
+  return { settled, benchGrandchildPid, worktreeDirs: listWorktreeDirs(repo) };
+}
+
+/**
+ * Kill any grandchild the run's bench spawned, wait for compare() to settle,
+ * then clean up worktrees and the repo.
+ *
+ * Safety net: a run interrupted before the signal handler killed it must not
+ * leak a sleeping process into the rest of the suite.
+ */
+async function cleanupInFlightRun(
+  repo: ReturnType<typeof createScratchRepo>,
+  run: InFlightRun | undefined,
+): Promise<void> {
+  if (run) {
+    try {
+      process.kill(run.benchGrandchildPid, "SIGKILL");
+    } catch {
+      // Already gone — the handler got it.
+    }
+    await run.settled;
+  }
+  removeStrandedWorktrees(repo);
+  repo.cleanup();
 }
 
 describe("compare – integration", () => {
@@ -596,5 +751,159 @@ describe("compare – integration", () => {
         repo.cleanup();
       }
     });
+  });
+
+  describe("when a termination signal arrives mid-run", () => {
+    let listenersBefore: Record<SignalName, readonly unknown[]>;
+
+    beforeEach(() => {
+      listenersBefore = {
+        SIGINT: process.listeners("SIGINT"),
+        SIGTERM: process.listeners("SIGTERM"),
+      };
+      vi.spyOn(process, "exit").mockImplementation((code) => {
+        throw new ProcessExited(code);
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+
+      // On every passing path `compare()` has already uninstalled its own
+      // handlers by the time the test's `finally` awaits the run's settlement,
+      // so this normally finds nothing. It fires only when setup threw before
+      // the run could settle — and it asserts rather than scrubbing silently,
+      // because a handler surviving a settled run is the exact regression the
+      // sibling listener-count test exists to catch.
+      const leaked: SignalName[] = [];
+      for (const signal of TERMINATION_SIGNALS) {
+        for (const listener of process.listeners(signal)) {
+          if (!listenersBefore[signal].includes(listener) && isSignalListener(listener)) {
+            process.removeListener(signal, listener);
+            leaked.push(signal);
+          }
+        }
+      }
+
+      if (leaked.length > 0) {
+        throw new Error(`compare() left ${leaked.join(", ")} handler(s) installed after settling`);
+      }
+    });
+
+    it.each<{ signal: SignalName; expectedCode: number }>([
+      { signal: "SIGINT", expectedCode: 130 },
+      { signal: "SIGTERM", expectedCode: 143 },
+    ])(
+      "exits with $expectedCode on $signal",
+      async ({ signal, expectedCode }) => {
+        const repo = createScratchRepo();
+        let run: InFlightRun | undefined;
+
+        try {
+          process.chdir(repo.dir);
+          run = await startInFlightRun(repo);
+
+          const exitCode = raiseSignal(signal, listenersBefore[signal]);
+
+          expect(exitCode).toBe(expectedCode);
+        } finally {
+          await cleanupInFlightRun(repo, run);
+        }
+      },
+      60_000,
+    );
+
+    it("removes the worktrees it created", async () => {
+      const repo = createScratchRepo();
+      let run: InFlightRun | undefined;
+
+      try {
+        process.chdir(repo.dir);
+        run = await startInFlightRun(repo);
+
+        raiseSignal("SIGINT", listenersBefore.SIGINT);
+
+        expect(run.worktreeDirs.length).toBeGreaterThan(0);
+        expect(run.worktreeDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual([]);
+        assertWorktreesCleanedUp(repo);
+      } finally {
+        await cleanupInFlightRun(repo, run);
+      }
+    }, 60_000);
+
+    it("kills the bench process group, leaving nothing running in the removed worktree", async () => {
+      const repo = createScratchRepo();
+      let run: InFlightRun | undefined;
+
+      try {
+        process.chdir(repo.dir);
+        run = await startInFlightRun(repo);
+        // Without this, the assertion below would also pass for a pid that was
+        // never alive — `waitForPid` only proves a number reached the file.
+        expect(isAlive(run.benchGrandchildPid)).toBe(true);
+
+        raiseSignal("SIGINT", listenersBefore.SIGINT);
+
+        const grandchildPid = run.benchGrandchildPid;
+        await vi.waitFor(
+          () => {
+            expect(isAlive(grandchildPid)).toBe(false);
+          },
+          { timeout: 5000, interval: 25 },
+        );
+      } finally {
+        await cleanupInFlightRun(repo, run);
+      }
+    }, 60_000);
+  });
+
+  describe("when a run finishes on its own", () => {
+    it.each<{ outcome: "resolved" | "rejected"; benchScript: string }>([
+      { outcome: "resolved", benchScript: '#!/bin/sh\necho "METRIC latency=100"' },
+      { outcome: "rejected", benchScript: "#!/bin/sh\nexit 1" },
+    ])(
+      "holds one handler per signal only until the run has $outcome",
+      async ({ outcome, benchScript }) => {
+        const repo = createScratchRepo();
+
+        try {
+          process.chdir(repo.dir);
+
+          createBranch(repo, { name: "old-settled", benchScript });
+          createBranch(repo, {
+            name: "new-settled",
+            benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+          });
+
+          const options: CompareOptions = {
+            oldTarget: "old-settled",
+            newTarget: "new-settled",
+            bench: "./bench.sh",
+            adapter: "metric-lines",
+            samples: 3,
+            timeoutSeconds: 20,
+          };
+          const before = signalListenerCounts();
+
+          const running = compare(options);
+          const duringRun = signalListenerCounts();
+          const settled = await running.then(
+            () => "resolved",
+            () => "rejected",
+          );
+
+          expect(settled).toBe(outcome);
+          expect(duringRun).toStrictEqual({
+            SIGINT: before.SIGINT + 1,
+            SIGTERM: before.SIGTERM + 1,
+          });
+          expect(signalListenerCounts()).toStrictEqual(before);
+        } finally {
+          removeStrandedWorktrees(repo);
+          repo.cleanup();
+        }
+      },
+      60_000,
+    );
   });
 });

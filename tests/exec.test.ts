@@ -1,10 +1,15 @@
+import { getEventListeners } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-import type { ExecResult, ExecTimeoutError } from "../src/exec.js";
+import type { ExecOptions, ExecResult, ExecTimeoutError } from "../src/exec.js";
 import { exec } from "../src/exec.js";
+
+const PENDING = Symbol("pending");
 
 function assertIsExecResult(result: ExecResult | ExecTimeoutError): asserts result is ExecResult {
   if ("kind" in result) {
@@ -20,8 +25,39 @@ function assertIsTimeoutError(
   }
 }
 
+async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | typeof PENDING> {
+  return await Promise.race([promise, delay(ms, PENDING, { ref: false })]);
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Reads a pid written by `echo $$ > file`; NaN while the write is absent or incomplete. */
+function readPid(pidPath: string): number {
+  const raw = fs.readFileSync(pidPath, "utf8");
+  return raw.endsWith("\n") ? Number.parseInt(raw, 10) : Number.NaN;
+}
+
+async function waitForPid(pidPath: string): Promise<number> {
+  let pid = Number.NaN;
+  await vi.waitFor(
+    () => {
+      pid = readPid(pidPath);
+      expect(pid).toBeGreaterThan(0);
+    },
+    { timeout: 3000, interval: 25 },
+  );
+  return pid;
+}
+
 describe("exec", () => {
-  const runInTmpdir = (command: string, options: { timeoutMs?: number } = {}) =>
+  const runInTmpdir = (command: string, options: Omit<ExecOptions, "cwd"> = {}) =>
     exec(command, { cwd: os.tmpdir(), ...options });
 
   describe("when the command runs to completion", () => {
@@ -90,6 +126,80 @@ describe("exec", () => {
       expect(result.stderr).toBe("");
       expect(result.timeoutMs).toBe(1500);
       expect(result.stdout).toContain("line 1");
+    });
+  });
+
+  describe("when aborted while the command is running", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-exec-"));
+    });
+
+    afterEach(() => {
+      // Safety net: a test that fails before the abort lands must not leak a process group.
+      let leader = Number.NaN;
+      try {
+        leader = readPid(path.join(tmpDir, "shell.pid"));
+      } catch {
+        leader = Number.NaN;
+      }
+      if (leader > 0) {
+        try {
+          process.kill(-leader, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("kills the whole process group, leaving no grandchild running", async () => {
+      const controller = new AbortController();
+      const running = exec("sleep 30 & echo $! > grandchild.pid; echo $$ > shell.pid; wait", {
+        cwd: tmpDir,
+        signal: controller.signal,
+      });
+      const grandchildPid = await waitForPid(path.join(tmpDir, "grandchild.pid"));
+
+      controller.abort();
+
+      await vi.waitFor(
+        () => {
+          expect(isAlive(grandchildPid)).toBe(false);
+        },
+        { timeout: 3000, interval: 25 },
+      );
+      await running;
+    }, 20_000);
+
+    it("settles the promise with a result that is not a timeout", async () => {
+      const controller = new AbortController();
+      const running = exec("echo $$ > shell.pid; sleep 30", {
+        cwd: tmpDir,
+        signal: controller.signal,
+      });
+      await waitForPid(path.join(tmpDir, "shell.pid"));
+
+      controller.abort();
+
+      const settled = await settleWithin(running, 3000);
+      if (settled === PENDING) {
+        throw new Error("exec() stayed pending after abort");
+      }
+      // Fully determined: the command redirects its only output to a file, and a
+      // SIGKILLed child reports a null code that exec maps to 1. An exact match
+      // also rules out the timeout shape, which carries `kind` and `timeoutMs`.
+      expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
+    }, 20_000);
+  });
+
+  describe("when aborted after the command completed", () => {
+    it("leaves no abort listener on the caller's signal", async () => {
+      const controller = new AbortController();
+      await runInTmpdir("echo done", { signal: controller.signal });
+
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
     });
   });
 });

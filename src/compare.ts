@@ -6,6 +6,7 @@ import { resolveMetricMeta } from "./config.js";
 import { exec } from "./exec.js";
 import { formatCleanupFailures, renderReport } from "./report.js";
 import type { ComparisonResult } from "./report.js";
+import { installTerminationCleanup } from "./signals.js";
 import { resolveTarget, createWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
@@ -64,14 +65,18 @@ function computeSpread(values: readonly number[]): number {
 
 /**
  * Run a shell command and throw on timeout or non-zero exit.
+ *
+ * Aborting `signal` kills the command's whole process group; bench commands are
+ * spawned detached, so a Ctrl-C delivered to gymrat never reaches them by itself.
  */
 async function runCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
   label: string,
+  signal: AbortSignal,
 ): Promise<string> {
-  const result = await exec(command, { cwd, timeoutMs });
+  const result = await exec(command, { cwd, timeoutMs, signal });
 
   if ("kind" in result) {
     throw new Error(`${label} timed out after ${result.timeoutMs}ms:\n${result.stderr}`);
@@ -94,12 +99,13 @@ async function collectSamples(
   oldDir: string,
   newDir: string,
   options: Pick<CompareOptions, "bench" | "prepare" | "samples" | "timeoutSeconds">,
+  signal: AbortSignal,
 ): Promise<{ samplesA: Record<string, number>[]; samplesB: Record<string, number>[] }> {
   const timeoutMs = options.timeoutSeconds * 1000;
 
   if (options.prepare) {
     for (const dir of [oldDir, newDir]) {
-      await runCommand(options.prepare, dir, timeoutMs, "Prepare command");
+      await runCommand(options.prepare, dir, timeoutMs, "Prepare command", signal);
     }
   }
 
@@ -112,6 +118,7 @@ async function collectSamples(
       oldDir,
       timeoutMs,
       "Bench command on old target",
+      signal,
     );
     samplesA.push(adapter.parse(oldStdout));
 
@@ -120,6 +127,7 @@ async function collectSamples(
       newDir,
       timeoutMs,
       "Bench command on new target",
+      signal,
     );
     samplesB.push(adapter.parse(newStdout));
   }
@@ -272,65 +280,93 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
  * while building or rendering the report, is not carried that way: cleanup has
  * already run by then and its outcome is dropped. That path is defensive-only
  * today, so it is left uncovered rather than guarded.
+ *
+ * SIGINT and SIGTERM take a third path: the in-flight command is killed,
+ * cleanup is attempted, and the process exits with `128 + signum` without a
+ * report. Nothing is printed, so a worktree cleanup could not remove on this
+ * path is left unreported — the exit code is the whole contract. The handlers
+ * are installed before the first worktree exists and uninstalled once the run
+ * settles, either way it settled.
  */
 export async function compare(options: CompareOptions): Promise<string> {
   const repoDir = process.cwd();
   const worktrees: WorktreeInfo[] = [];
+  const run = new AbortController();
 
-  let measurement: Measurement;
+  const uninstallTerminationCleanup = installTerminationCleanup(() => {
+    // Kill first: the bench group is detached, so gymrat's own Ctrl-C never
+    // reaches it and it would outlive the process. SIGKILL delivery is not
+    // awaited — removal may well race a still-dying process — but unlinking a
+    // directory out from under a live cwd is legal on POSIX, so the sweep
+    // succeeds either way.
+    run.abort();
+    cleanupWorktrees(worktrees, repoDir);
+  });
 
-  try {
-    const adapter = getAdapter(options.adapter);
+  const runComparison = async (): Promise<string> => {
+    let measurement: Measurement;
 
-    const oldResolved = resolveTarget(options.oldTarget, repoDir);
-    const newResolved = resolveTarget(options.newTarget, repoDir);
+    try {
+      const adapter = getAdapter(options.adapter);
 
-    const oldDir = resolveDir(oldResolved, repoDir, worktrees);
-    const newDir = resolveDir(newResolved, repoDir, worktrees);
+      const oldResolved = resolveTarget(options.oldTarget, repoDir);
+      const newResolved = resolveTarget(options.newTarget, repoDir);
 
-    const oldLabel = resolveLabel(options.oldLabel, oldResolved);
-    const newLabel = resolveLabel(options.newLabel, newResolved);
+      const oldDir = resolveDir(oldResolved, repoDir, worktrees);
+      const newDir = resolveDir(newResolved, repoDir, worktrees);
 
-    const { samplesA, samplesB } = await collectSamples(adapter, oldDir, newDir, options);
+      const oldLabel = resolveLabel(options.oldLabel, oldResolved);
+      const newLabel = resolveLabel(options.newLabel, newResolved);
 
-    const metricNames = collectMetricNames(samplesA, samplesB);
+      const { samplesA, samplesB } = await collectSamples(
+        adapter,
+        oldDir,
+        newDir,
+        options,
+        run.signal,
+      );
 
-    /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
-    if (metricNames.size === 0) {
-      throw new Error("No metrics found in benchmark output");
+      const metricNames = collectMetricNames(samplesA, samplesB);
+
+      /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
+      if (metricNames.size === 0) {
+        throw new Error("No metrics found in benchmark output");
+      }
+
+      const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
+      const verdicts = computeVerdicts(samplesA, samplesB, metricMeta);
+      const geomean = computeGeomean(verdicts, metricMeta);
+
+      measurement = {
+        samplesA,
+        samplesB,
+        metricNames,
+        metricMeta,
+        verdicts,
+        geomean,
+        labels: [oldLabel, newLabel],
+      };
+    } catch (error) {
+      const cleanup = cleanupWorktrees(worktrees, repoDir);
+      throw withCleanupFailures(error, cleanup);
     }
 
-    const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
-    const verdicts = computeVerdicts(samplesA, samplesB, metricMeta);
-    const geomean = computeGeomean(verdicts, metricMeta);
-
-    measurement = {
-      samplesA,
-      samplesB,
-      metricNames,
-      metricMeta,
-      verdicts,
-      geomean,
-      labels: [oldLabel, newLabel],
-    };
-  } catch (error) {
     const cleanup = cleanupWorktrees(worktrees, repoDir);
-    throw withCleanupFailures(error, cleanup);
-  }
 
-  const cleanup = cleanupWorktrees(worktrees, repoDir);
+    const result = buildComparisonResult(
+      measurement.samplesA,
+      measurement.samplesB,
+      measurement.metricNames,
+      measurement.metricMeta,
+      measurement.verdicts,
+      measurement.geomean,
+      measurement.labels,
+      options,
+      cleanup,
+    );
 
-  const result = buildComparisonResult(
-    measurement.samplesA,
-    measurement.samplesB,
-    measurement.metricNames,
-    measurement.metricMeta,
-    measurement.verdicts,
-    measurement.geomean,
-    measurement.labels,
-    options,
-    cleanup,
-  );
+    return renderReport(result);
+  };
 
-  return renderReport(result);
+  return runComparison().finally(uninstallTerminationCleanup);
 }
