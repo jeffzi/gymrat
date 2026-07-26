@@ -24,37 +24,37 @@ describe("exec", () => {
   const runInTmpdir = (command: string, options: { timeoutMs?: number } = {}) =>
     exec(command, { cwd: os.tmpdir(), ...options });
 
-  describe("when running a simple echo command", () => {
-    it("captures stdout as a string", async () => {
-      const result = await runInTmpdir("echo hello");
+  describe("when the command runs to completion", () => {
+    it.each([
+      {
+        description: "captures stdout",
+        command: "echo hello",
+        expected: { stdout: "hello\n", stderr: "", exitCode: 0 },
+      },
+      {
+        description: "separates stdout from stderr",
+        command: "echo stdout && echo stderr >&2",
+        expected: { stdout: "stdout\n", stderr: "stderr\n", exitCode: 0 },
+      },
+      {
+        description: "reports a non-zero exit code",
+        command: "exit 42",
+        expected: { stdout: "", stderr: "", exitCode: 42 },
+      },
+      {
+        description: "captures every line of multi-line output",
+        command: 'echo "line1" && echo "line2" && echo "line3"',
+        expected: { stdout: "line1\nline2\nline3\n", stderr: "", exitCode: 0 },
+      },
+      {
+        description: "waits for a slow command with no timeout set",
+        command: "sleep 0.1 && echo done",
+        expected: { stdout: "done\n", stderr: "", exitCode: 0 },
+      },
+    ])("$description", async ({ command, expected }) => {
+      const result = await runInTmpdir(command);
 
-      expect(result).toStrictEqual({
-        stdout: "hello\n",
-        stderr: "",
-        exitCode: 0,
-      });
-    });
-
-    it("separates stdout from stderr", async () => {
-      const result = await runInTmpdir("echo stdout && echo stderr >&2");
-
-      expect(result).toStrictEqual({
-        stdout: "stdout\n",
-        stderr: "stderr\n",
-        exitCode: 0,
-      });
-    });
-  });
-
-  describe("when running a command with non-zero exit code", () => {
-    it("returns the exit code without timeout error", async () => {
-      const result = await runInTmpdir("exit 42");
-
-      expect(result).toStrictEqual({
-        stdout: "",
-        stderr: "",
-        exitCode: 42,
-      });
+      expect(result).toStrictEqual(expected);
     });
   });
 
@@ -90,30 +90,6 @@ describe("exec", () => {
       expect(result.stderr).toBe("");
       expect(result.timeoutMs).toBe(1500);
       expect(result.stdout).toContain("line 1");
-    });
-  });
-
-  describe("when no timeout is specified", () => {
-    it("waits indefinitely for command completion", async () => {
-      const result = await runInTmpdir("sleep 0.1 && echo done");
-
-      expect(result).toStrictEqual({
-        stdout: "done\n",
-        stderr: "",
-        exitCode: 0,
-      });
-    });
-  });
-
-  describe("when command produces multi-line output", () => {
-    it("captures all lines of stdout", async () => {
-      const result = await runInTmpdir('echo "line1" && echo "line2" && echo "line3"');
-
-      expect(result).toStrictEqual({
-        stdout: "line1\nline2\nline3\n",
-        stderr: "",
-        exitCode: 0,
-      });
     });
   });
 });

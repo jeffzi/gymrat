@@ -63,14 +63,15 @@ export async function exec(
     });
 
     const cleanup = () => {
-      /* v8 ignore next 3 -- pid is always set when stdio is "pipe" */
+      /* v8 ignore if -- pid is always set when stdio is "pipe" */
       if (!child.pid) {
         return;
       }
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {
-        /* v8 ignore next -- race: process may exit between check and kill */
+        // Swallowed deliberately: the process may exit between the pid check and
+        // the kill, and a cleanup that throws would mask the real result.
       }
     };
 
@@ -78,7 +79,7 @@ export async function exec(
     let resolved = false;
 
     const handleCompletion = (exitCode: number | null) => {
-      /* v8 ignore next -- double-fire guard; see comment on child.on("exit") */
+      /* v8 ignore if -- double-fire guard; see comment on child.on("exit") */
       if (resolved) return;
       resolved = true;
       clearTimeout(timeoutHandle);
@@ -113,8 +114,8 @@ export async function exec(
     child.on("exit", (code) => {
       handleCompletion(code);
     });
-    /* v8 ignore next 3 -- only fires when the shell binary itself can't be spawned */
     child.on("error", () => {
+      /* v8 ignore next -- only fires when the shell binary itself can't be spawned */
       handleCompletion(1);
     });
   });
