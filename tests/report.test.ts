@@ -15,9 +15,23 @@ function createComparisonResult(overrides: Partial<ComparisonResult> = {}): Comp
       excluded: [],
     },
     worktreesRemoved: 0,
-    worktreesLeftBehind: 0,
+    worktreesLeftBehind: [],
+    worktreePruneError: undefined,
     ...overrides,
   };
+}
+
+/**
+ * Character offsets of every column separator in a rendered table line.
+ *
+ * Two lines whose separators sit at the same offsets have aligned columns.
+ */
+function separatorOffsets(line: string): number[] {
+  const offsets: number[] = [];
+  for (let i = line.indexOf("│"); i !== -1; i = line.indexOf("│", i + 1)) {
+    offsets.push(i);
+  }
+  return offsets;
 }
 
 describe("renderReport", () => {
@@ -112,11 +126,14 @@ describe("renderReport", () => {
           },
         });
 
-        const output = renderReport(result);
+        const lines = renderReport(result).split("\n");
 
-        expect(output).toContain(metricName);
+        // Assert on the metric's own row: the footer legend also contains "~",
+        // so a whole-output toContain would pass regardless of the glyph rendered.
+        const metricRow = lines.find((line) => line.startsWith(metricName));
+        expect(metricRow).toBeDefined();
         for (const s of expected) {
-          expect(output).toContain(s);
+          expect(metricRow!).toContain(s);
         }
       },
     );
@@ -152,40 +169,10 @@ describe("renderReport", () => {
       expect(output).toContain("band ±2.5%");
       expect(output).toContain("n=4");
     });
-
-    it("includes band method footer when band method is used", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "response-time": {
-            medianA: 100,
-            medianB: 95,
-            spreadA: 5,
-            spreadB: 4,
-            verdict: {
-              verdict: "improved",
-              method: "band",
-              delta: -5.0,
-              n: 4,
-              band: 2.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain("noise band ±(half-range × K)");
-      expect(output).toContain("below signed-rank floor (6 pairs)");
-    });
   });
 
   describe("when rendering with exact method", () => {
-    it("shows exact annotation and no spread", () => {
+    it("shows the exact annotation in place of a p-value or band", () => {
       const result = createComparisonResult({
         metrics: {
           "decode heap_bytes": {
@@ -211,9 +198,7 @@ describe("renderReport", () => {
 
       const output = renderReport(result);
 
-      expect(output).toContain("exact");
-      expect(output).toContain("48.0k");
-      expect(output).toContain("44.2k");
+      expect(output).toContain("(exact)");
     });
 
     it("omits spread when method is exact", () => {
@@ -246,56 +231,38 @@ describe("renderReport", () => {
   });
 
   describe("when rendering one-sided metrics", () => {
-    it("shows value for present side and blank for absent side", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "new-metric": {
-            medianA: undefined,
-            medianB: 42,
-            spreadA: undefined,
-            spreadB: undefined,
-            verdict: undefined,
-            meta: {
-              direction: "higher",
-              gating: false,
-              exact: true,
+    it.each([
+      { side: "new", medianA: undefined, medianB: 42, expectedValue: "42" },
+      { side: "old", medianA: 100, medianB: undefined, expectedValue: "100" },
+    ])(
+      "shows the $side value and renders no verdict glyph",
+      ({ side, medianA, medianB, expectedValue }) => {
+        const result = createComparisonResult({
+          metrics: {
+            [`${side}-only-metric`]: {
+              medianA,
+              medianB,
+              spreadA: undefined,
+              spreadB: undefined,
+              verdict: undefined,
+              meta: {
+                direction: "lower",
+                gating: false,
+                exact: true,
+              },
             },
           },
-        },
-      });
+        });
 
-      const output = renderReport(result);
+        const output = renderReport(result);
 
-      expect(output).toContain("new-metric");
-      expect(output).not.toContain("│ ✓");
-      expect(output).not.toContain("│ ✗");
-      expect(output).not.toContain("│ ~");
-    });
-
-    it("does not include verdict glyph for one-sided metrics", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "removed-metric": {
-            medianA: 100,
-            medianB: undefined,
-            spreadA: 1,
-            spreadB: undefined,
-            verdict: undefined,
-            meta: {
-              direction: "lower",
-              gating: false,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).not.toContain("✓");
-      expect(output).not.toContain("✗");
-      expect(output).not.toContain("~");
-    });
+        expect(output).toContain(`${side}-only-metric`);
+        expect(output).toContain(expectedValue);
+        expect(output).not.toContain("✓");
+        expect(output).not.toContain("✗");
+        expect(output).not.toContain("~");
+      },
+    );
   });
 
   describe("when rendering with ns units", () => {
@@ -435,34 +402,36 @@ describe("renderReport", () => {
     });
   });
 
-  it("renders raw values without units with appropriate precision", () => {
-    const result = createComparisonResult({
-      metrics: {
-        throughput: {
-          medianA: 1100000,
-          medianB: 1070000,
-          spreadA: 1,
-          spreadB: 2,
-          verdict: {
-            verdict: "regressed",
-            method: "signed-rank",
-            delta: -2.7,
-            n: 10,
-            p: 0.019,
-          },
-          meta: {
-            direction: "higher",
-            gating: true,
-            exact: false,
+  describe("when a metric has no unit", () => {
+    it("renders the raw value rounded to an integer", () => {
+      const result = createComparisonResult({
+        metrics: {
+          throughput: {
+            medianA: 1100000,
+            medianB: 1070000,
+            spreadA: 1,
+            spreadB: 2,
+            verdict: {
+              verdict: "regressed",
+              method: "signed-rank",
+              delta: -2.7,
+              n: 10,
+              p: 0.019,
+            },
+            meta: {
+              direction: "higher",
+              gating: true,
+              exact: false,
+            },
           },
         },
-      },
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("1100000");
+      expect(output).toContain("1070000");
     });
-
-    const output = renderReport(result);
-
-    expect(output).toContain("1100000");
-    expect(output).toContain("1070000");
   });
 
   describe("when rendering geomean row", () => {
@@ -581,32 +550,107 @@ describe("renderReport", () => {
   });
 
   describe("when rendering worktree footer", () => {
-    it("shows worktrees removed and left behind", () => {
+    it.each([
+      { removed: 0, leftBehind: [], expected: "0 worktrees removed · 0 left behind" },
+      { removed: 1, leftBehind: [], expected: "1 worktree removed · 0 left behind" },
+      {
+        removed: 2,
+        leftBehind: [
+          { dir: "/tmp/gymrat-a", error: "locked" },
+          { dir: "/tmp/gymrat-b", error: "locked" },
+          { dir: "/tmp/gymrat-c", error: "locked" },
+        ],
+        expected: "2 worktrees removed · 3 left behind",
+      },
+    ])("reports both counts as '$expected'", ({ removed, leftBehind, expected }) => {
       const result = createComparisonResult({
-        worktreesRemoved: 1,
-        worktreesLeftBehind: 0,
+        worktreesRemoved: removed,
+        worktreesLeftBehind: leftBehind,
       });
 
       const output = renderReport(result);
 
-      expect(output).toContain("worktrees removed");
-      expect(output).toContain("0 left behind");
+      expect(output).toContain(expected);
     });
 
-    it("shows correct count when worktrees are left behind", () => {
+    it("names each left-behind worktree directory with git's reason", () => {
       const result = createComparisonResult({
-        worktreesRemoved: 2,
-        worktreesLeftBehind: 3,
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [
+          { dir: "/tmp/gymrat-abc", error: "contains modified or untracked files" },
+          { dir: "/tmp/gymrat-def", error: "is locked" },
+        ],
       });
 
       const output = renderReport(result);
 
-      expect(output).toContain("3 left behind");
+      expect(output).toContain(
+        "left behind: /tmp/gymrat-abc (contains modified or untracked files)",
+      );
+      expect(output).toContain("left behind: /tmp/gymrat-def (is locked)");
+    });
+
+    it("reports the prune failure with git's reason", () => {
+      const result = createComparisonResult({
+        worktreePruneError: "fatal: not a git repository",
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("worktree prune failed: fatal: not a git repository");
+    });
+
+    it("keeps a left-behind entry on one line when git's reason spans several lines", () => {
+      const result = createComparisonResult({
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [
+          {
+            dir: "/tmp/gymrat-abc",
+            error: "warning: could not open directory\n  fatal: '/tmp/gymrat-abc' is locked",
+          },
+        ],
+      });
+
+      const detailLines = renderReport(result)
+        .split("\n")
+        .filter((line) => line.includes("/tmp/gymrat-abc"));
+
+      expect(detailLines).toStrictEqual([
+        "  left behind: /tmp/gymrat-abc (warning: could not open directory fatal: '/tmp/gymrat-abc' is locked)",
+      ]);
+    });
+
+    it("keeps the prune failure on one line when git's reason spans several lines", () => {
+      const result = createComparisonResult({
+        worktreePruneError: "warning: unable to unlink\n  fatal: not a git repository",
+      });
+
+      const pruneLines = renderReport(result)
+        .split("\n")
+        .filter((line) => line.includes("prune failed"));
+
+      expect(pruneLines).toStrictEqual([
+        "  worktree prune failed: warning: unable to unlink fatal: not a git repository",
+      ]);
+    });
+
+    it("reports left-behind worktrees and the prune failure together", () => {
+      const result = createComparisonResult({
+        worktreesRemoved: 0,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
+        worktreePruneError: "fatal: not a git repository",
+      });
+
+      const lines = renderReport(result).split("\n");
+
+      expect(lines.at(-3)).toContain("0 worktrees removed · 1 left behind");
+      expect(lines.at(-2)).toBe("  left behind: /tmp/gymrat-abc (is locked)");
+      expect(lines.at(-1)).toBe("  worktree prune failed: fatal: not a git repository");
     });
   });
 
   describe("when rendering full report", () => {
-    it("renders complete report with all sections", () => {
+    it("emits sections in order: header, table, geomean, method footer, worktree footer", () => {
       const result = createComparisonResult({
         labels: ["main", "faster"],
         samples: 10,
@@ -655,62 +699,22 @@ describe("renderReport", () => {
           excluded: [],
         },
         worktreesRemoved: 0,
-        worktreesLeftBehind: 0,
+        worktreesLeftBehind: [],
       });
 
-      const output = renderReport(result);
+      const lines = renderReport(result).split("\n");
 
-      // Header
-      expect(output).toContain("main ↔ faster");
-      expect(output).toContain("10 paired samples");
-
-      // Column headers
-      expect(output).toContain("old (main)");
-      expect(output).toContain("new (faster)");
-
-      // Metric rows
-      expect(output).toContain("metric1");
-      expect(output).toContain("metric2");
-      expect(output).toContain("✓");
-      expect(output).toContain("~");
-
-      // Geomean
-      expect(output).toContain("geomean");
-
-      // Footer
-      expect(output).toContain("verdicts:");
-      expect(output).toContain("worktrees removed");
-    });
-  });
-
-  describe("when spread is undefined for some metrics", () => {
-    it("does not show spread when undefined", () => {
-      const result = createComparisonResult({
-        metrics: {
-          metric: {
-            medianA: 100,
-            medianB: 95,
-            spreadA: undefined,
-            spreadB: undefined,
-            verdict: {
-              verdict: "improved",
-              method: "exact",
-              delta: -5.0,
-              n: 10,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: true,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).not.toContain("± undefined");
-      expect(output).toContain("exact");
+      // Each section's content is asserted by its own test; this pins the order.
+      expect(lines[0]).toContain("gymrat compare · main ↔ faster");
+      expect(lines[1]).toContain("old (main)");
+      expect(lines[2]).toMatch(/^─+┼/);
+      expect(lines[3]).toContain("metric1");
+      expect(lines[4]).toContain("metric2");
+      expect(lines[5]).toMatch(/^─+┼/);
+      expect(lines[6]).toContain("geomean");
+      expect(lines[7]).toContain("Wilcoxon signed-rank");
+      expect(lines[8]).toContain("worktrees removed");
+      expect(lines).toHaveLength(9);
     });
   });
 
@@ -718,7 +722,7 @@ describe("renderReport", () => {
     it("shows zero delta when delta is 0", () => {
       const result = createComparisonResult({
         metrics: {
-          metric: {
+          latency: {
             medianA: 100,
             medianB: 100,
             spreadA: 1,
@@ -739,10 +743,13 @@ describe("renderReport", () => {
         },
       });
 
-      const output = renderReport(result);
+      const lines = renderReport(result).split("\n");
 
-      expect(output).toContain("~");
-      expect(output).toContain("0.0%");
+      // The footer legend also contains "~", so the glyph is asserted on the row itself.
+      const metricRow = lines.find((line) => line.startsWith("latency"));
+      expect(metricRow).toBeDefined();
+      expect(metricRow!).toContain("~");
+      expect(metricRow!).toContain("0.0%");
     });
 
     it("shows delta when meaningful even with no-signal verdict", () => {
@@ -775,59 +782,58 @@ describe("renderReport", () => {
     });
   });
 
-  it("pads values to align columns vertically", () => {
-    const result = createComparisonResult({
-      metrics: {
-        short: {
-          medianA: 1,
-          medianB: 2,
-          spreadA: 1,
-          spreadB: 1,
-          verdict: {
-            verdict: "improved",
-            method: "signed-rank",
-            delta: -50.0,
-            n: 10,
-            p: 0.01,
+  describe("when metric names have different lengths", () => {
+    it("pads cells so the column separators line up", () => {
+      const result = createComparisonResult({
+        metrics: {
+          short: {
+            medianA: 1,
+            medianB: 2,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -50.0,
+              n: 10,
+              p: 0.01,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: false,
+            },
           },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: false,
+          "very-long-metric-name": {
+            medianA: 100000,
+            medianB: 90000,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -10.0,
+              n: 10,
+              p: 0.01,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: false,
+            },
           },
         },
-        "very-long-metric-name": {
-          medianA: 100000,
-          medianB: 90000,
-          spreadA: 1,
-          spreadB: 1,
-          verdict: {
-            verdict: "improved",
-            method: "signed-rank",
-            delta: -10.0,
-            n: 10,
-            p: 0.01,
-          },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: false,
-          },
-        },
-      },
+      });
+
+      const output = renderReport(result);
+      const lines = output.split("\n");
+      const headerLine = lines.find((line) => line.includes("old (main)"))!;
+      const shortLine = lines.find((line) => line.startsWith("short"))!;
+      const longLine = lines.find((line) => line.startsWith("very-long-metric-name"))!;
+
+      expect(separatorOffsets(shortLine)).toStrictEqual(separatorOffsets(headerLine));
+      expect(separatorOffsets(longLine)).toStrictEqual(separatorOffsets(headerLine));
     });
-
-    const output = renderReport(result);
-    const lines = output.split("\n");
-
-    // Find lines with metrics (should have | separators)
-    const metricLines = lines.filter(
-      (line) => line.includes("short") || line.includes("very-long-metric-name"),
-    );
-
-    // Each line should have | separators in consistent positions
-    expect(metricLines.length).toBeGreaterThan(0);
-    expect(output).toContain("│");
   });
 
   describe("when rendering with mixed methods", () => {
@@ -980,53 +986,55 @@ describe("renderReport", () => {
     );
   });
 
-  it("renders different spreads correctly", () => {
-    const result = createComparisonResult({
-      metrics: {
-        "low-spread": {
-          medianA: 100,
-          medianB: 95,
-          spreadA: 0,
-          spreadB: 1,
-          verdict: {
-            verdict: "improved",
-            method: "signed-rank",
-            delta: -5.0,
-            n: 10,
-            p: 0.01,
+  describe("when metrics carry different spreads", () => {
+    it("renders each spread as its own percentage", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "low-spread": {
+            medianA: 100,
+            medianB: 95,
+            spreadA: 0,
+            spreadB: 1,
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -5.0,
+              n: 10,
+              p: 0.01,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: false,
+            },
           },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: false,
+          "high-spread": {
+            medianA: 1000,
+            medianB: 900,
+            spreadA: 25,
+            spreadB: 30,
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -10.0,
+              n: 10,
+              p: 0.001,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: false,
+            },
           },
         },
-        "high-spread": {
-          medianA: 1000,
-          medianB: 900,
-          spreadA: 25,
-          spreadB: 30,
-          verdict: {
-            verdict: "improved",
-            method: "signed-rank",
-            delta: -10.0,
-            n: 10,
-            p: 0.001,
-          },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: false,
-          },
-        },
-      },
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("± 0%");
+      expect(output).toContain("± 25%");
+      expect(output).toContain("± 30%");
     });
-
-    const output = renderReport(result);
-
-    expect(output).toContain("± 0%");
-    expect(output).toContain("± 25%");
-    expect(output).toContain("± 30%");
   });
 
   describe("when rendering with very small p-values", () => {
@@ -1108,141 +1116,151 @@ describe("renderReport", () => {
     });
   });
 
-  it("does not show signed-rank or band footer when only exact methods are used", () => {
-    const result = createComparisonResult({
-      metrics: {
-        metric1: {
-          medianA: 100,
-          medianB: 95,
-          spreadA: undefined,
-          spreadB: undefined,
-          verdict: {
-            verdict: "improved",
-            method: "exact",
-            delta: -5.0,
-            n: 10,
+  describe("when only exact methods are used", () => {
+    it("omits both the signed-rank and band footers", () => {
+      const result = createComparisonResult({
+        metrics: {
+          metric1: {
+            medianA: 100,
+            medianB: 95,
+            spreadA: undefined,
+            spreadB: undefined,
+            verdict: {
+              verdict: "improved",
+              method: "exact",
+              delta: -5.0,
+              n: 10,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: true,
+            },
           },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: true,
+          metric2: {
+            medianA: 200,
+            medianB: 180,
+            spreadA: undefined,
+            spreadB: undefined,
+            verdict: {
+              verdict: "improved",
+              method: "exact",
+              delta: -10.0,
+              n: 10,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: true,
+            },
           },
         },
-        metric2: {
-          medianA: 200,
-          medianB: 180,
-          spreadA: undefined,
-          spreadB: undefined,
-          verdict: {
-            verdict: "improved",
-            method: "exact",
-            delta: -10.0,
-            n: 10,
-          },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: true,
-          },
-        },
-      },
+      });
+
+      const output = renderReport(result);
+
+      expect(output).not.toContain("Wilcoxon");
+      expect(output).not.toContain("noise band");
+      expect(output).toContain("worktrees removed");
     });
-
-    const output = renderReport(result);
-
-    expect(output).not.toContain("Wilcoxon");
-    expect(output).not.toContain("noise band");
-    expect(output).toContain("worktrees removed");
   });
 
-  it("renders header, geomean, and footers even with no metrics", () => {
-    const result = createComparisonResult({
-      metrics: {},
+  describe("when there are no metrics", () => {
+    it("still renders the header, geomean row and footers", () => {
+      const result = createComparisonResult({
+        metrics: {},
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("gymrat compare");
+      expect(output).toContain("metric");
+      expect(output).toContain("geomean");
+      expect(output).toContain("worktrees removed");
     });
-
-    const output = renderReport(result);
-
-    expect(output).toContain("gymrat compare");
-    expect(output).toContain("metric");
-    expect(output).toContain("geomean");
-    expect(output).toContain("worktrees removed");
   });
 
-  it("renders metrics without verdict glyph or delta", () => {
-    const result = createComparisonResult({
-      metrics: {
-        "one-sided": {
-          medianA: 100,
-          medianB: undefined,
-          spreadA: 1,
-          spreadB: undefined,
-          verdict: undefined,
-          meta: {
-            direction: "lower",
-            gating: false,
-            exact: false,
+  describe("when the table mixes one-sided and two-sided metrics", () => {
+    it("renders a row for each", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "one-sided": {
+            medianA: 100,
+            medianB: undefined,
+            spreadA: 1,
+            spreadB: undefined,
+            verdict: undefined,
+            meta: {
+              direction: "lower",
+              gating: false,
+              exact: false,
+            },
+          },
+          "two-sided": {
+            medianA: 200,
+            medianB: 180,
+            spreadA: 2,
+            spreadB: 3,
+            verdict: {
+              verdict: "improved",
+              method: "exact",
+              delta: -10.0,
+              n: 10,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: true,
+            },
           },
         },
-        "two-sided": {
-          medianA: 200,
-          medianB: 180,
-          spreadA: 2,
-          spreadB: 3,
-          verdict: {
-            verdict: "improved",
-            method: "exact",
-            delta: -10.0,
-            n: 10,
-          },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: true,
-          },
-        },
-      },
+      });
+
+      const lines = renderReport(result).split("\n");
+      const oneSidedRow = lines.find((line) => line.startsWith("one-sided"))!;
+      const twoSidedRow = lines.find((line) => line.startsWith("two-sided"))!;
+
+      // A trailing separator means the delta cell was empty and got trimmed away.
+      expect(oneSidedRow).toContain("100 ± 1%");
+      expect(oneSidedRow.endsWith("│")).toBe(true);
+      expect(twoSidedRow).toContain("(exact)");
     });
-
-    const output = renderReport(result);
-
-    expect(output).toContain("one-sided");
-    expect(output).toContain("two-sided");
-    expect(output).toContain("100");
-    expect(output).toContain("exact");
   });
 
-  it("shows glyph but no delta percentage when delta is NaN", () => {
-    const result = createComparisonResult({
-      metrics: {
-        "nan-delta": {
-          medianA: 0,
-          medianB: 100,
-          spreadA: 1,
-          spreadB: 1,
-          verdict: {
-            verdict: "no-signal",
-            method: "exact",
-            delta: Number.NaN,
-            n: 10,
-          },
-          meta: {
-            direction: "lower",
-            gating: true,
-            exact: true,
+  describe("when delta is NaN", () => {
+    it("renders the glyph and annotation without a delta percentage", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "nan-delta": {
+            medianA: 0,
+            medianB: 100,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: {
+              verdict: "no-signal",
+              method: "exact",
+              delta: Number.NaN,
+              n: 10,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: true,
+            },
           },
         },
-      },
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("nan-delta");
+      expect(output).toContain("~");
+      expect(output).toContain("(exact)");
+      // The line should have the glyph and annotation but no delta value like "-50%"
+      const lines = output.split("\n");
+      const nanDeltaLine = lines.find((line) => line.includes("nan-delta"));
+      expect(nanDeltaLine).toBeDefined();
+      expect(nanDeltaLine!).toMatch(/~\s+\(exact\)/);
     });
-
-    const output = renderReport(result);
-
-    expect(output).toContain("nan-delta");
-    expect(output).toContain("~");
-    expect(output).toContain("(exact)");
-    // The line should have the glyph and annotation but no delta value like "-50%"
-    const lines = output.split("\n");
-    const nanDeltaLine = lines.find((line) => line.includes("nan-delta"));
-    expect(nanDeltaLine).toBeDefined();
-    expect(nanDeltaLine!).toMatch(/~\s+\(exact\)/);
   });
 });

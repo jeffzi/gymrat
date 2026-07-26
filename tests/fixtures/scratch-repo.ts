@@ -12,7 +12,9 @@ export function createScratchRepo(): ScratchRepo {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-test-"));
 
   try {
-    execSync("git init", { cwd: dir, stdio: "pipe" });
+    // -b main pins the initial branch: without it the name comes from the
+    // developer's init.defaultBranch, and tests that check out from "main" break.
+    execSync("git init -b main", { cwd: dir, stdio: "pipe" });
 
     // Configure user and settings for commits
     const configs = [

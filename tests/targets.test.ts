@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { describe, it, expect, afterEach } from "vitest";
 
-import type { InPlaceTarget, RefTarget, WorktreeInfo } from "../src/targets.js";
+import type { CleanupResult, InPlaceTarget, RefTarget, WorktreeInfo } from "../src/targets.js";
 import { resolveTarget, createWorktree, cleanupWorktrees } from "../src/targets.js";
 import { createScratchRepo } from "./fixtures/scratch-repo.js";
 
@@ -24,6 +24,31 @@ function getHeadSha(repoDir: string): string {
  */
 function createRefTarget(ref: string, resolvedSha: string): RefTarget {
   return { kind: "ref", ref, resolvedSha };
+}
+
+/**
+ * Create a worktree checked out at the repo's current HEAD.
+ */
+function createHeadWorktree(repoDir: string): WorktreeInfo {
+  const sha = getHeadSha(repoDir);
+  return createWorktree(createRefTarget(sha, sha), repoDir);
+}
+
+/**
+ * Directories git still lists as worktrees of the repo, main worktree included.
+ *
+ * `git worktree remove` clears a worktree's registry entry itself, so this only
+ * says something about pruning when the directory vanished behind git's back —
+ * that is the one case where a stale entry survives until `prune` runs.
+ */
+function listWorktreeDirs(repoDir: string): string[] {
+  return execSync("git worktree list --porcelain", {
+    cwd: repoDir,
+    encoding: "utf-8",
+  })
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length));
 }
 
 describe("resolveTarget", () => {
@@ -131,42 +156,7 @@ describe("createWorktree", () => {
   });
 
   describe("when given a RefTarget", () => {
-    it("creates a detached worktree under os.tmpdir()", () => {
-      repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget("HEAD", sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
-      createdWorktrees.push(worktree);
-
-      expect(worktree.dir).toContain(os.tmpdir());
-    });
-
-    it("creates a directory that exists and is accessible", () => {
-      repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget(sha, sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
-      createdWorktrees.push(worktree);
-
-      expect(fs.existsSync(worktree.dir)).toBe(true);
-    });
-
-    it("creates a worktree containing repo files from the checked-out ref", () => {
-      repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget(sha, sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
-      createdWorktrees.push(worktree);
-
-      const readmeFile = path.join(worktree.dir, "README.md");
-      expect(fs.existsSync(readmeFile)).toBe(true);
-      expect(fs.readFileSync(readmeFile, "utf-8")).toBe("# Test Repo\n");
-    });
-
-    it("returns a WorktreeInfo with the original ref", () => {
+    it("returns a WorktreeInfo naming an absolute directory under os.tmpdir()", () => {
       repo = createScratchRepo();
       const sha = getHeadSha(repo.dir);
       const refTarget = createRefTarget("my-tag", sha);
@@ -175,17 +165,19 @@ describe("createWorktree", () => {
       createdWorktrees.push(worktree);
 
       expect(worktree.ref).toBe("my-tag");
+      expect(path.isAbsolute(worktree.dir)).toBe(true);
+      expect(worktree.dir).toContain(os.tmpdir());
     });
 
-    it("returns a WorktreeInfo with an absolute directory path", () => {
+    it("checks out the ref's files into the worktree directory", () => {
       repo = createScratchRepo();
       const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget("my-tag", sha);
+      const refTarget = createRefTarget(sha, sha);
 
       const worktree = createWorktree(refTarget, repo.dir);
       createdWorktrees.push(worktree);
 
-      expect(path.isAbsolute(worktree.dir)).toBe(true);
+      expect(fs.readFileSync(path.join(worktree.dir, "README.md"), "utf-8")).toBe("# Test Repo\n");
     });
   });
 });
@@ -200,37 +192,145 @@ describe("cleanupWorktrees", () => {
   describe("when given non-empty worktree list", () => {
     it("removes worktree directories", () => {
       repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget(sha, sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
-      expect(fs.existsSync(worktree.dir)).toBe(true);
+      const worktree = createHeadWorktree(repo.dir);
 
       cleanupWorktrees([worktree], repo.dir);
 
       expect(fs.existsSync(worktree.dir)).toBe(false);
     });
 
-    it("runs git worktree prune after removing worktrees", () => {
+    it("reports every worktree as removed with no failures", () => {
       repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget(sha, sha);
+      const worktree = createHeadWorktree(repo.dir);
 
-      const worktree = createWorktree(refTarget, repo.dir);
+      const result = cleanupWorktrees([worktree], repo.dir);
 
-      expect(() => {
-        cleanupWorktrees([worktree], repo!.dir);
-      }).not.toThrow();
+      expect(result).toStrictEqual({
+        removed: 1,
+        failures: [],
+        pruneError: undefined,
+      } satisfies CleanupResult);
     });
   });
 
   describe("when given empty worktree list", () => {
-    it("handles empty array without error", () => {
+    it("leaves the git registry untouched", () => {
       repo = createScratchRepo();
 
-      expect(() => {
-        cleanupWorktrees([], repo!.dir);
-      }).not.toThrow();
+      cleanupWorktrees([], repo.dir);
+
+      expect(listWorktreeDirs(repo.dir)).toHaveLength(1);
+    });
+  });
+
+  describe("when given empty worktree list outside a git repository", () => {
+    let nonRepoDir: string | undefined;
+
+    afterEach(() => {
+      if (nonRepoDir !== undefined) {
+        fs.rmSync(nonRepoDir, { recursive: true, force: true });
+        nonRepoDir = undefined;
+      }
+    });
+
+    it("skips the prune sweep and reports no error", () => {
+      nonRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-not-a-repo-"));
+
+      const result = cleanupWorktrees([], nonRepoDir);
+
+      expect(result).toStrictEqual({
+        removed: 0,
+        failures: [],
+        pruneError: undefined,
+      } satisfies CleanupResult);
+    });
+  });
+
+  describe("when a worktree directory no longer exists", () => {
+    it("counts it as neither removed nor left behind", () => {
+      repo = createScratchRepo();
+      const worktree = createHeadWorktree(repo.dir);
+      cleanupWorktrees([worktree], repo.dir);
+
+      const result = cleanupWorktrees([worktree], repo.dir);
+
+      expect(result).toStrictEqual({
+        removed: 0,
+        failures: [],
+        pruneError: undefined,
+      } satisfies CleanupResult);
+    });
+
+    it("prunes the registry entry git still lists for it", () => {
+      repo = createScratchRepo();
+      const worktree = createHeadWorktree(repo.dir);
+      fs.rmSync(worktree.dir, { recursive: true, force: true });
+
+      cleanupWorktrees([worktree], repo.dir);
+
+      expect(listWorktreeDirs(repo.dir)).toStrictEqual([fs.realpathSync(repo.dir)]);
+    });
+  });
+
+  describe("when git cannot remove a worktree", () => {
+    let strayDir: string | undefined;
+
+    afterEach(() => {
+      if (strayDir !== undefined) {
+        fs.rmSync(strayDir, { recursive: true, force: true });
+        strayDir = undefined;
+      }
+    });
+
+    function createStrayWorktree(): WorktreeInfo {
+      strayDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-stray-"));
+      return { dir: strayDir, ref: "stray" };
+    }
+
+    it("reports the failing directory with git's own error text", () => {
+      repo = createScratchRepo();
+      const stray = createStrayWorktree();
+
+      const result = cleanupWorktrees([stray], repo.dir);
+
+      expect(result.failures.map((failure) => failure.dir)).toStrictEqual([stray.dir]);
+      expect(result.failures[0]?.error).toContain("is not a working tree");
+      expect(result.failures[0]?.error).not.toContain("Command failed");
+    });
+
+    it("still removes the worktrees listed after the failing one", () => {
+      repo = createScratchRepo();
+      const stray = createStrayWorktree();
+      const worktree = createHeadWorktree(repo.dir);
+
+      const result = cleanupWorktrees([stray, worktree], repo.dir);
+
+      expect(result.removed).toBe(1);
+      expect(fs.existsSync(worktree.dir)).toBe(false);
+    });
+  });
+
+  describe("when the pruning sweep fails", () => {
+    let nonRepoDir: string | undefined;
+
+    afterEach(() => {
+      if (nonRepoDir !== undefined) {
+        fs.rmSync(nonRepoDir, { recursive: true, force: true });
+        nonRepoDir = undefined;
+      }
+    });
+
+    it("reports the prune error instead of throwing", () => {
+      nonRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-not-a-repo-"));
+      // A vanished directory is skipped before removal, so the sweep is the only
+      // git call this list reaches — and it runs against a non-repo.
+      const vanished: WorktreeInfo = { dir: path.join(nonRepoDir, "gone"), ref: "gone" };
+
+      const result = cleanupWorktrees([vanished], nonRepoDir);
+
+      expect(result.removed).toBe(0);
+      expect(result.failures).toStrictEqual([]);
+      expect(result.pruneError).toContain("not a git repository");
     });
   });
 
@@ -243,11 +343,11 @@ describe("cleanupWorktrees", () => {
       const worktree = createWorktree(refTarget, repo.dir);
 
       cleanupWorktrees([worktree], repo.dir);
-      expect(fs.existsSync(worktree.dir)).toBe(false);
 
-      expect(() => {
-        cleanupWorktrees([worktree], repo!.dir);
-      }).not.toThrow();
+      cleanupWorktrees([worktree], repo.dir);
+
+      expect(fs.existsSync(worktree.dir)).toBe(false);
+      expect(listWorktreeDirs(repo.dir)).toHaveLength(1);
     });
   });
 });

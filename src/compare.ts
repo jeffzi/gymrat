@@ -4,10 +4,10 @@ import { getAdapter } from "./adapters/index.js";
 import type { Adapter } from "./adapters/types.js";
 import { resolveMetricMeta } from "./config.js";
 import { exec } from "./exec.js";
-import { renderReport } from "./report.js";
+import { formatCleanupFailures, renderReport } from "./report.js";
 import type { ComparisonResult } from "./report.js";
 import { resolveTarget, createWorktree, cleanupWorktrees } from "./targets.js";
-import type { Target, WorktreeInfo } from "./targets.js";
+import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
 
 export interface CompareOptions {
@@ -30,7 +30,7 @@ export interface CompareOptions {
  * Compute the median of a numeric array.
  */
 function computeMedian(values: readonly number[]): number {
-  /* v8 ignore next 3 -- defensive check; never called with empty array */
+  /* v8 ignore if -- defensive check; never called with empty array */
   if (values.length === 0) {
     throw new Error("Cannot compute median of empty array");
   }
@@ -45,7 +45,7 @@ function computeMedian(values: readonly number[]): number {
  * Compute spread as percentage: (max - min) / (2 * median) * 100
  */
 function computeSpread(values: readonly number[]): number {
-  /* v8 ignore next 3 -- defensive check; never called with empty array */
+  /* v8 ignore if -- defensive check; never called with empty array */
   if (values.length === 0) {
     return 0;
   }
@@ -55,7 +55,6 @@ function computeSpread(values: readonly number[]): number {
   const max = sorted[sorted.length - 1]!;
   const median = computeMedian(sorted);
 
-  /* v8 ignore next 3 -- edge case; median is typically non-zero for benchmarks */
   if (median === 0) {
     return 0;
   }
@@ -74,7 +73,6 @@ async function runCommand(
 ): Promise<string> {
   const result = await exec(command, { cwd, timeoutMs });
 
-  /* v8 ignore next 5 -- timeout; integration tests can't trigger without slow commands */
   if ("kind" in result) {
     throw new Error(`${label} timed out after ${result.timeoutMs}ms:\n${result.stderr}`);
   }
@@ -99,7 +97,6 @@ async function collectSamples(
 ): Promise<{ samplesA: Record<string, number>[]; samplesB: Record<string, number>[] }> {
   const timeoutMs = options.timeoutSeconds * 1000;
 
-  /* v8 ignore next 5 -- prepare; structurally identical to bench path */
   if (options.prepare) {
     for (const dir of [oldDir, newDir]) {
       await runCommand(options.prepare, dir, timeoutMs, "Prepare command");
@@ -164,7 +161,7 @@ function buildComparisonResult(
   geomean: ReturnType<typeof computeGeomean>,
   labels: [string, string],
   options: Pick<CompareOptions, "samples" | "adapter">,
-  worktreeCount: number,
+  cleanup: CleanupResult,
 ): ComparisonResult {
   const result: ComparisonResult = {
     labels,
@@ -172,8 +169,9 @@ function buildComparisonResult(
     adapter: options.adapter,
     metrics: {},
     geomean,
-    worktreesRemoved: worktreeCount,
-    worktreesLeftBehind: 0,
+    worktreesRemoved: cleanup.removed,
+    worktreesLeftBehind: cleanup.failures,
+    worktreePruneError: cleanup.pruneError,
   };
 
   for (const metricName of metricNames) {
@@ -210,18 +208,76 @@ function collectMetricNames(
 }
 
 /**
+ * Everything the measurement phase produces that the report is built from.
+ *
+ * Bundling these lets the whole set outlive the `try` block that computes them,
+ * so the report can be rendered after worktree cleanup has already run.
+ */
+interface Measurement {
+  samplesA: Record<string, number>[];
+  samplesB: Record<string, number>[];
+  metricNames: Set<string>;
+  metricMeta: ReturnType<typeof resolveMetricMeta>;
+  verdicts: ReturnType<typeof computeVerdicts>;
+  geomean: ReturnType<typeof computeGeomean>;
+  labels: [string, string];
+}
+
+/**
+ * Restate a failed run's error so it also names what cleanup left on disk.
+ *
+ * `cleanupWorktrees` reports rather than throws, so on the failure path the
+ * original exception would otherwise carry the run's error and nothing else —
+ * the caller prints that, and the user never learns which directories survived.
+ * When cleanup was clean there is nothing to add and the original error is
+ * returned untouched. The original always becomes the `cause`, keeping its
+ * stack reachable.
+ */
+function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
+  const details = formatCleanupFailures(cleanup.failures, cleanup.pruneError);
+
+  if (details.length === 0) {
+    return error;
+  }
+
+  // The parameter stays `unknown` because that is what a catch clause binds, but
+  // everything the measurement phase throws is an Error, so the String() arm never
+  // runs. Left unsuppressed: a `v8 ignore` hint only binds to a ternary arm when it
+  // sits flush against it with no whitespace, which oxfmt will not keep — and a
+  // line-level hint would hide the covered arm along with this one.
+  const message = error instanceof Error ? error.message : String(error);
+
+  return new Error([message, "", "cleanup did not finish:", ...details].join("\n"), {
+    cause: error,
+  });
+}
+
+/**
  * Compare performance between two revisions.
  *
  * Orchestrates the comparison workflow:
  * 1. Resolves target directories/refs and creates worktrees as needed
  * 2. Runs bench command multiple times per target, parsing output with the configured adapter
  * 3. Computes verdicts using statistical tests (signed-rank or band method)
- * 4. Renders a formatted report
- * 5. Cleans up worktrees in a finally block
+ * 4. Cleans up worktrees on both the success and the failure path
+ * 5. Renders a formatted report carrying that cleanup's outcome
+ *
+ * Rendering happens after the try/catch so the report states the cleanup that
+ * actually ran, and cleanup is attempted exactly once per path — a second sweep
+ * could succeed on a worktree the first one recorded as left behind, handing the
+ * user a report the disk contradicts.
+ *
+ * When the measurement phase fails, no report is rendered and the cleanup
+ * outcome rides out on the propagating error instead. A failure raised later,
+ * while building or rendering the report, is not carried that way: cleanup has
+ * already run by then and its outcome is dropped. That path is defensive-only
+ * today, so it is left uncovered rather than guarded.
  */
 export async function compare(options: CompareOptions): Promise<string> {
   const repoDir = process.cwd();
   const worktrees: WorktreeInfo[] = [];
+
+  let measurement: Measurement;
 
   try {
     const adapter = getAdapter(options.adapter);
@@ -239,7 +295,7 @@ export async function compare(options: CompareOptions): Promise<string> {
 
     const metricNames = collectMetricNames(samplesA, samplesB);
 
-    /* v8 ignore next 3 -- defensive check; adapters throw AdapterError for no metrics */
+    /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
     if (metricNames.size === 0) {
       throw new Error("No metrics found in benchmark output");
     }
@@ -248,20 +304,33 @@ export async function compare(options: CompareOptions): Promise<string> {
     const verdicts = computeVerdicts(samplesA, samplesB, metricMeta);
     const geomean = computeGeomean(verdicts, metricMeta);
 
-    const result = buildComparisonResult(
+    measurement = {
       samplesA,
       samplesB,
       metricNames,
       metricMeta,
       verdicts,
       geomean,
-      [oldLabel, newLabel],
-      options,
-      worktrees.length,
-    );
-
-    return renderReport(result);
-  } finally {
-    cleanupWorktrees(worktrees, repoDir);
+      labels: [oldLabel, newLabel],
+    };
+  } catch (error) {
+    const cleanup = cleanupWorktrees(worktrees, repoDir);
+    throw withCleanupFailures(error, cleanup);
   }
+
+  const cleanup = cleanupWorktrees(worktrees, repoDir);
+
+  const result = buildComparisonResult(
+    measurement.samplesA,
+    measurement.samplesB,
+    measurement.metricNames,
+    measurement.metricMeta,
+    measurement.verdicts,
+    measurement.geomean,
+    measurement.labels,
+    options,
+    cleanup,
+  );
+
+  return renderReport(result);
 }
