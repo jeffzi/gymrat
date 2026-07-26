@@ -1,4 +1,9 @@
 import metricLinesAdapter from "../../src/adapters/metric-lines.js";
+import { AdapterError } from "../../src/adapters/types.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("metric-lines adapter", () => {
   describe("parse()", () => {
@@ -63,27 +68,18 @@ describe("metric-lines adapter", () => {
 
     describe("malformed METRIC warning", () => {
       it.each([
-        ["without value", "METRIC foo\nMETRIC valid=1", /METRIC/],
-        ["with only =", "METRIC =5\nMETRIC valid=1", /METRIC/],
-        ["with non-numeric value", "METRIC foo=bar\nMETRIC valid=1", /METRIC/],
-        ["NaN value", "METRIC foo=NaN\nMETRIC valid=1", /METRIC/],
-        ["Infinity value", "METRIC foo=Infinity\nMETRIC valid=1", /METRIC/],
-        ["negative Infinity value", "METRIC foo=-Infinity\nMETRIC valid=1", /METRIC/],
-      ])("emits warning for METRIC %s", (_, stdout, pattern) => {
+        { description: "without value", offending: "METRIC foo" },
+        { description: "with only =", offending: "METRIC =5" },
+        { description: "with non-numeric value", offending: "METRIC foo=bar" },
+        { description: "NaN value", offending: "METRIC foo=NaN" },
+        { description: "Infinity value", offending: "METRIC foo=Infinity" },
+        { description: "negative Infinity value", offending: "METRIC foo=-Infinity" },
+      ])("warning names the offending line for METRIC $description", ({ offending }) => {
         const stderr = captureStderr(() => {
-          metricLinesAdapter.parse(stdout);
+          metricLinesAdapter.parse(`${offending}\nMETRIC valid=1`);
         });
-        expect(stderr).toMatch(pattern);
-      });
 
-      it.each([
-        ["without value", "METRIC foo\nMETRIC valid=1", /foo/],
-        ["with non-numeric value", "METRIC foo=bar\nMETRIC valid=1", /foo=bar/],
-      ])("warning for METRIC %s includes the problematic input", (_, stdout, pattern) => {
-        const stderr = captureStderr(() => {
-          metricLinesAdapter.parse(stdout);
-        });
-        expect(stderr).toMatch(pattern);
+        expect(stderr).toContain(`Failed to parse METRIC line: ${offending}`);
       });
 
       it("continues parsing after malformed line", () => {
@@ -131,16 +127,22 @@ describe("metric-lines adapter", () => {
     describe("zero metrics → AdapterError", () => {
       it("throws AdapterError when no valid METRIC lines found", () => {
         const stdout = "some output\nwith no metrics";
-        expect(() => metricLinesAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => metricLinesAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No valid METRIC lines found$/);
       });
 
       it("throws AdapterError for empty string", () => {
-        expect(() => metricLinesAdapter.parse("")).toThrow("AdapterError");
+        const parse = () => metricLinesAdapter.parse("");
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No valid METRIC lines found$/);
       });
 
       it("throws AdapterError when only malformed METRIC lines present", () => {
         const stdout = "METRIC foo\nMETRIC bar=baz";
-        expect(() => metricLinesAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => metricLinesAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No valid METRIC lines found$/);
       });
     });
   });
@@ -157,20 +159,16 @@ describe("metric-lines adapter", () => {
   });
 });
 
-// Helper to capture stderr
+/**
+ * Run `fn` with console.warn spied out and return everything it warned.
+ *
+ * The spy is restored by the suite-level `afterEach`, so an early return or
+ * throw inside `fn` cannot leak the patched console into the next test.
+ */
 function captureStderr(fn: () => void): string {
-  const originalWarn = console.warn;
-  let capturedOutput = "";
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-  console.warn = (...args: unknown[]) => {
-    capturedOutput += args.join(" ");
-  };
+  fn();
 
-  try {
-    fn();
-  } finally {
-    console.warn = originalWarn;
-  }
-
-  return capturedOutput;
+  return warnSpy.mock.calls.map((args) => args.join(" ")).join("");
 }

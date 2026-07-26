@@ -1,8 +1,9 @@
+import { AdapterError, getAdapter } from "../../src/adapters/index.js";
+
 describe("getAdapter registry", () => {
   const testAdapters = [
     {
       name: "metric-lines",
-      validName: "metric-lines",
       parseInput: "METRIC foo=42",
       parseExpected: { foo: 42 },
       defaultsInput: "test_metric",
@@ -10,7 +11,6 @@ describe("getAdapter registry", () => {
     },
     {
       name: "mitata",
-      validName: "mitata",
       parseInput: JSON.stringify({
         benchmarks: [
           {
@@ -31,32 +31,16 @@ describe("getAdapter registry", () => {
     },
   ];
 
-  it.each(testAdapters)(
-    "getAdapter('$validName') returns adapter with name $name",
-    async (spec) => {
-      const { getAdapter } = await import("../../src/adapters/index.js");
-      const adapter = getAdapter(spec.validName);
-      expect(adapter.name).toBe(spec.name);
-    },
-  );
+  it.each(testAdapters)("getAdapter('$name') returns a working adapter", (spec) => {
+    const adapter = getAdapter(spec.name);
 
-  it.each(testAdapters)("getAdapter('$validName') adapter.parse() works", async (spec) => {
-    const { getAdapter } = await import("../../src/adapters/index.js");
-    const adapter = getAdapter(spec.validName);
-    const result = adapter.parse(spec.parseInput);
-    expect(result).toStrictEqual(spec.parseExpected);
-  });
-
-  it.each(testAdapters)("getAdapter('$validName') adapter.defaults() works", async (spec) => {
-    const { getAdapter } = await import("../../src/adapters/index.js");
-    const adapter = getAdapter(spec.validName);
-    const result = adapter.defaults(spec.defaultsInput);
-    expect(result).toStrictEqual(spec.defaultsExpected);
+    expect(adapter.name).toBe(spec.name);
+    expect(adapter.parse(spec.parseInput)).toStrictEqual(spec.parseExpected);
+    expect(adapter.defaults(spec.defaultsInput)).toStrictEqual(spec.defaultsExpected);
   });
 
   describe("getAdapter('unknown')", () => {
-    it("throws Error (not AdapterError) with valid names listed", async () => {
-      const { getAdapter, AdapterError } = await import("../../src/adapters/index.js");
+    it("throws Error (not AdapterError) with valid names listed", () => {
       expect(() => getAdapter("unknown")).toThrow(/metric-lines/);
       expect(() => getAdapter("unknown")).toThrow(/mitata/);
       expect(() => getAdapter("unknown")).not.toThrow(AdapterError);

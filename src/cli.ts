@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 
+import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions } from "./compare.js";
 import { resolveConfig } from "./config.js";
@@ -33,13 +34,82 @@ function parsePositional(positional: string): { label: string | undefined; ref: 
 }
 
 /**
+ * Coerce a numeric flag value to a positive integer, rejecting anything else.
+ *
+ * `parseInt` is too permissive for flag values: it returns `NaN` for
+ * non-numeric input and silently truncates trailing garbage (`"10abc"` → `10`).
+ * `NaN` is not nullish, so it survives the `??` default chain in
+ * `resolveConfig` and only surfaces much later as a confusing benchmark error.
+ *
+ * Throwing `InvalidArgumentError` lets Commander render a usage error naming
+ * the offending flag and value.
+ */
+function parsePositiveInteger(value: string): number {
+  const parsed = Number(value);
+  if (!/^\d+$/.test(value) || parsed <= 0) {
+    throw new InvalidArgumentError("must be a positive integer.");
+  }
+  return parsed;
+}
+
+/**
+ * Render an error for stderr, labelling adapter failures with their class name.
+ *
+ * An adapter message states what could not be parsed ("No valid METRIC lines
+ * found") without saying which layer produced it, so the class name is what
+ * tells the user the bench script's output — rather than gymrat's git or config
+ * handling — is at fault. Errors raised elsewhere already name their own
+ * subsystem, so prefixing them would only add noise.
+ */
+export function formatCliError(error: unknown): string {
+  if (error instanceof AdapterError) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read the package version from the manifest next to the compiled entry point.
+ *
+ * `import ... with { type: "json" }` would be tidier, but package.json sits
+ * outside `rootDir`, so importing it would pull an extra directory level into
+ * `dist/` and break the `dist/cli.js` bin path. Reading at runtime keeps the
+ * emitted layout flat and keeps the reported version in lockstep with the
+ * manifest instead of a literal that has to be bumped by hand.
+ *
+ * The relative path resolves to the package root from both `src/cli.ts` (tests)
+ * and `dist/cli.js` (published), and npm always ships package.json regardless
+ * of the `files` allowlist.
+ */
+function readPackageVersion(): string {
+  const manifest: unknown = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    !("version" in manifest) ||
+    typeof manifest.version !== "string"
+  ) {
+    throw new Error("package.json has no string version field");
+  }
+
+  return manifest.version;
+}
+
+/**
  * Create and configure the CLI program.
  * Returns a Commander Command instance that can be tested with exitOverride().
  */
 export function createProgram(): Command {
   const program = new Command();
 
-  program.name("gymrat").description("Performance comparison tool for benchmarks").version("0.0.0");
+  program
+    .name("gymrat")
+    .description("Performance comparison tool for benchmarks")
+    .version(readPackageVersion());
 
   program
     .command("compare <old> <new>")
@@ -47,16 +117,14 @@ export function createProgram(): Command {
     .option("--bench <cmd>", "bench command")
     .option("--prepare <script>", "preparation script to run before each revision")
     .option("--adapter <type>", "adapter type for parsing benchmark output")
-    .option("--samples <number>", "paired samples per target", (v) => parseInt(v, 10))
-    .option("--timeout <number>", "timeout in seconds", (v) => parseInt(v, 10))
+    .option("--samples <number>", "paired samples per target", parsePositiveInteger)
+    .option("--timeout <number>", "timeout in seconds", parsePositiveInteger)
     .option("--config <file>", "configuration file path")
     .configureHelp(createHelpConfig())
     .action(async (oldRef: string, newRef: string, options: CompareCommandOptions) => {
-      // Parse positional arguments to extract labels and refs
       const oldParsed = parsePositional(oldRef);
       const newParsed = parsePositional(newRef);
 
-      // Resolve configuration from CLI flags
       const config = resolveConfig({
         bench: options.bench,
         prepare: options.prepare,
@@ -66,7 +134,6 @@ export function createProgram(): Command {
         config: options.config,
       });
 
-      // Build compare options
       const compareOptions: CompareOptions = {
         oldTarget: oldParsed.ref,
         newTarget: newParsed.ref,
@@ -77,26 +144,26 @@ export function createProgram(): Command {
         adapter: config.adapter,
         samples: config.samples,
         timeoutSeconds: config.timeoutSeconds,
+        configMetrics: config.metrics,
       };
 
-      // Run comparison
       const report = await compare(compareOptions);
-
-      // Write report to stdout
       process.stdout.write(report + "\n");
     });
 
   return program;
 }
 
-/* v8 ignore next 16 -- entry point: only run if this is the main module (not imported for testing) */
+/* v8 ignore next 16 -- entry point. The "executes CLI when invoked through symlink"
+   test in tests/cli.test.ts does run this block, but it spawns a child process, and
+   in-process v8 coverage cannot attribute execution that happens outside the worker. */
 if (import.meta.url === pathToFileURL(realpathSync(process.argv[1]!)).href) {
   try {
     const program = createProgram();
     await program.parseAsync(process.argv);
     process.exit(0);
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${formatCliError(error)}\n`);
     process.exit(1);
   }
 }

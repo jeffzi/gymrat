@@ -10,7 +10,7 @@ function extractJson(stdout: string): Record<string, unknown> {
   const endIdx = stdout.lastIndexOf("}");
 
   if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
-    throw new AdapterError("AdapterError: No JSON object found in stdout");
+    throw new AdapterError("No JSON object found in stdout");
   }
 
   let parsed: unknown;
@@ -18,12 +18,12 @@ function extractJson(stdout: string): Record<string, unknown> {
     parsed = JSON.parse(stdout.slice(startIdx, endIdx + 1)) as unknown;
   } catch (err) {
     throw new AdapterError(
-      `AdapterError: Failed to parse JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to parse JSON: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
   if (!isRecord(parsed)) {
-    throw new AdapterError("AdapterError: JSON must be an object");
+    throw new AdapterError("JSON must be an object");
   }
 
   return parsed;
@@ -32,10 +32,10 @@ function extractJson(stdout: string): Record<string, unknown> {
 function parseBenchmarks(json: Record<string, unknown>): unknown[] {
   const benchmarks = json.benchmarks;
   if (!Array.isArray(benchmarks)) {
-    throw new AdapterError("AdapterError: JSON missing benchmarks array");
+    throw new AdapterError("JSON missing benchmarks array");
   }
   if (benchmarks.length === 0) {
-    throw new AdapterError("AdapterError: benchmarks array is empty");
+    throw new AdapterError("benchmarks array is empty");
   }
 
   return benchmarks;
@@ -71,6 +71,23 @@ function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): st
   return result;
 }
 
+/**
+ * Reads mitata's JSON output — the shape `mitata --json` writes, with a
+ * `benchmarks` array whose entries carry an `alias` and a list of `runs`.
+ *
+ * The JSON is located by slicing between the first `{` and the last `}` so that
+ * banner text mitata prints around it does not have to be stripped by the user.
+ *
+ * Each run yields `<alias>/time` from `stats.p50` and, when mitata measured it,
+ * `<alias>/heap` from `stats.heap.avg`. For parameterized benchmarks the `$name`
+ * placeholders in the alias are substituted with `name=value`, so one mitata
+ * benchmark becomes one metric per argument combination rather than collapsing
+ * them all onto the same name.
+ *
+ * Runs that errored are skipped rather than failing the parse — a single bad
+ * argument combination should not discard the rest of the run — but a parse that
+ * finds no usable run at all raises {@link AdapterError}.
+ */
 const mitataAdapter: Adapter = {
   name: "mitata",
 
@@ -95,7 +112,7 @@ const mitataAdapter: Adapter = {
     }
 
     if (metricsFound === 0) {
-      throw new AdapterError("AdapterError: No valid benchmark runs found");
+      throw new AdapterError("No valid benchmark runs found");
     }
 
     return metrics;

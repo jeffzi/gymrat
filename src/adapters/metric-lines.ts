@@ -1,8 +1,11 @@
 import type { Adapter, MetricDefaults } from "./types.js";
 import { AdapterError } from "./types.js";
 
-// Parses METRIC name=value lines; for repeated metrics returns median.
-// Splits at LAST = since metric names may contain =. Rejects non-finite values.
+/**
+ * Parses METRIC name=value lines; for repeated metrics returns median.
+ *
+ * Splits at LAST = since metric names may contain =. Rejects non-finite values.
+ */
 const metricLinesAdapter: Adapter = {
   name: "metric-lines",
 
@@ -41,7 +44,7 @@ const metricLinesAdapter: Adapter = {
     }
 
     if (metrics.size === 0) {
-      throw new AdapterError("AdapterError: No valid METRIC lines found");
+      throw new AdapterError("No valid METRIC lines found");
     }
 
     const result: Record<string, number> = {};

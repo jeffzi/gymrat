@@ -1,4 +1,5 @@
 import mitataAdapter from "../../src/adapters/mitata.js";
+import { AdapterError } from "../../src/adapters/types.js";
 
 describe("mitata adapter", () => {
   describe("parse()", () => {
@@ -89,7 +90,10 @@ describe("mitata adapter", () => {
     });
 
     describe("p50 value extraction", () => {
-      it("uses stats.p50 as the metric value", () => {
+      it.each([
+        { description: "uses stats.p50 as the metric value", p50: 123.456 },
+        { description: "preserves decimal precision", p50: 0.0791015625 },
+      ])("$description", ({ p50 }) => {
         const stdout = JSON.stringify({
           benchmarks: [
             {
@@ -98,33 +102,14 @@ describe("mitata adapter", () => {
                 {
                   name: "test",
                   args: {},
-                  stats: { p50: 123.456 },
+                  stats: { p50 },
                 },
               ],
             },
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 123.456 });
-      });
-
-      it("preserves decimal precision in p50", () => {
-        const stdout = JSON.stringify({
-          benchmarks: [
-            {
-              alias: "test",
-              runs: [
-                {
-                  name: "test",
-                  args: {},
-                  stats: { p50: 0.0791015625 },
-                },
-              ],
-            },
-          ],
-        });
-        const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 0.0791015625 });
+        expect(result).toStrictEqual({ "test/time": p50 });
       });
     });
 
@@ -192,25 +177,6 @@ describe("mitata adapter", () => {
                     p50: 42,
                     heap: { total: 1024 },
                   },
-                },
-              ],
-            },
-          ],
-        });
-        const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 42 });
-      });
-
-      it("skips heap metric when heap is missing entirely", () => {
-        const stdout = JSON.stringify({
-          benchmarks: [
-            {
-              alias: "test",
-              runs: [
-                {
-                  name: "test",
-                  args: {},
-                  stats: { p50: 42 },
                 },
               ],
             },
@@ -316,22 +282,30 @@ describe("mitata adapter", () => {
     describe("error handling", () => {
       it("throws AdapterError when no JSON object found", () => {
         const stdout = "not valid json at all";
-        expect(() => mitataAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No JSON object found in stdout$/);
       });
 
       it("throws AdapterError when JSON between braces is malformed", () => {
         const stdout = "preamble { invalid json } trailer";
-        expect(() => mitataAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^Failed to parse JSON: /);
       });
 
       it("throws AdapterError when benchmarks array is missing", () => {
         const stdout = JSON.stringify({ something: "else" });
-        expect(() => mitataAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^JSON missing benchmarks array$/);
       });
 
       it("throws AdapterError when benchmarks array is empty", () => {
         const stdout = JSON.stringify({ benchmarks: [] });
-        expect(() => mitataAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^benchmarks array is empty$/);
       });
 
       it("throws AdapterError when no runs have valid stats", () => {
@@ -349,7 +323,9 @@ describe("mitata adapter", () => {
             },
           ],
         });
-        expect(() => mitataAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No valid benchmark runs found$/);
       });
 
       it("skips non-object benchmarks entries", () => {
@@ -456,7 +432,9 @@ describe("mitata adapter", () => {
             },
           ],
         });
-        expect(() => mitataAdapter.parse(stdout)).toThrow("AdapterError");
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No valid benchmark runs found$/);
       });
 
       it("skips null error field", () => {
@@ -489,20 +467,14 @@ describe("mitata adapter", () => {
         const fixtureJson = fixtureModule.default;
         const result = mitataAdapter.parse(JSON.stringify(fixtureJson));
 
-        // From the fixture: two benchmarks
-        // 1. decode/$text with two runs: digits and words
-        // 2. encode with one run
-        expect(result).toHaveProperty("decode/text=digits/time");
-        expect(result).toHaveProperty("decode/text=digits/heap");
-        expect(result).toHaveProperty("decode/text=words/time");
-        expect(result).toHaveProperty("decode/text=words/heap");
-        expect(result).toHaveProperty("encode/time");
-        expect(result).toHaveProperty("encode/heap");
-
-        // Values from fixture
-        expect(result["decode/text=digits/time"]).toStrictEqual(4.0791015625);
-        expect(result["decode/text=words/time"]).toStrictEqual(7.8125);
-        expect(result["encode/time"]).toStrictEqual(42.66357421875);
+        expect(result).toStrictEqual({
+          "decode/text=digits/time": 4.0791015625,
+          "decode/text=digits/heap": 0.13420623129857714,
+          "decode/text=words/time": 7.8125,
+          "decode/text=words/heap": 0.14746411878141288,
+          "encode/time": 42.66357421875,
+          "encode/heap": 80.1967411655276,
+        });
       });
     });
   });

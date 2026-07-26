@@ -10,6 +10,16 @@ const adapters: ReadonlyMap<string, Adapter> = new Map([
   ["mitata", mitataAdapter],
 ]);
 
+/**
+ * Look up a built-in adapter by the name used in config and `--adapter`.
+ *
+ * The registry is closed: adapters are not discovered or registered at runtime,
+ * so an unknown name is a user typo rather than a missing plugin. The thrown
+ * message lists the valid names sorted, since it doubles as the CLI's only
+ * inventory of what is available.
+ *
+ * @throws when no adapter is registered under `name`.
+ */
 export function getAdapter(name: string): Adapter {
   const adapter = adapters.get(name);
   if (!adapter) {
