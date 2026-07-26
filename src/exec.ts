@@ -118,7 +118,14 @@ export async function exec(
       }, options.timeoutMs);
     }
 
-    options.signal?.addEventListener("abort", cleanup, { once: true });
+    // A signal aborted before this call never dispatches to a listener added after
+    // the fact, so an already-aborted signal must clean up directly instead of
+    // relying on the "abort" event.
+    if (options.signal?.aborted) {
+      cleanup();
+    } else {
+      options.signal?.addEventListener("abort", cleanup, { once: true });
+    }
 
     child.on("exit", (code) => {
       handleCompletion(code);

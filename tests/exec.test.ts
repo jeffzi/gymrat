@@ -129,7 +129,7 @@ describe("exec", () => {
     });
   });
 
-  describe("when aborted while the command is running", () => {
+  describe("when aborted", () => {
     let tmpDir: string;
 
     beforeEach(() => {
@@ -154,44 +154,72 @@ describe("exec", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("kills the whole process group, leaving no grandchild running", async () => {
-      const controller = new AbortController();
-      const running = exec("sleep 30 & echo $! > grandchild.pid; echo $$ > shell.pid; wait", {
-        cwd: tmpDir,
-        signal: controller.signal,
-      });
-      const grandchildPid = await waitForPid(path.join(tmpDir, "grandchild.pid"));
+    describe("while the command is running", () => {
+      it("kills the whole process group, leaving no grandchild running", async () => {
+        const controller = new AbortController();
+        const running = exec("sleep 30 & echo $! > grandchild.pid; echo $$ > shell.pid; wait", {
+          cwd: tmpDir,
+          signal: controller.signal,
+        });
+        const grandchildPid = await waitForPid(path.join(tmpDir, "grandchild.pid"));
 
-      controller.abort();
+        controller.abort();
 
-      await vi.waitFor(
-        () => {
-          expect(isAlive(grandchildPid)).toBe(false);
-        },
-        { timeout: 3000, interval: 25 },
-      );
-      await running;
-    }, 20_000);
+        await vi.waitFor(
+          () => {
+            expect(isAlive(grandchildPid)).toBe(false);
+          },
+          { timeout: 3000, interval: 25 },
+        );
+        await running;
+      }, 20_000);
 
-    it("settles the promise with a result that is not a timeout", async () => {
-      const controller = new AbortController();
-      const running = exec("echo $$ > shell.pid; sleep 30", {
-        cwd: tmpDir,
-        signal: controller.signal,
-      });
-      await waitForPid(path.join(tmpDir, "shell.pid"));
+      it("settles the promise with a result that is not a timeout", async () => {
+        const controller = new AbortController();
+        const running = exec("echo $$ > shell.pid; sleep 30", {
+          cwd: tmpDir,
+          signal: controller.signal,
+        });
+        await waitForPid(path.join(tmpDir, "shell.pid"));
 
-      controller.abort();
+        controller.abort();
 
-      const settled = await settleWithin(running, 3000);
-      if (settled === PENDING) {
-        throw new Error("exec() stayed pending after abort");
-      }
-      // Fully determined: the command redirects its only output to a file, and a
-      // SIGKILLed child reports a null code that exec maps to 1. An exact match
-      // also rules out the timeout shape, which carries `kind` and `timeoutMs`.
-      expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
-    }, 20_000);
+        const settled = await settleWithin(running, 3000);
+        if (settled === PENDING) {
+          throw new Error("exec() stayed pending after abort");
+        }
+        // Fully determined: the command redirects its only output to a file, and a
+        // SIGKILLed child reports a null code that exec maps to 1. An exact match
+        // also rules out the timeout shape, which carries `kind` and `timeoutMs`.
+        expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
+      }, 20_000);
+    });
+
+    describe("before the call", () => {
+      it("kills the command instead of running it, settling as a cancelled run", async () => {
+        const controller = new AbortController();
+        controller.abort();
+
+        const settled = await settleWithin(
+          exec("echo $$ > shell.pid; sleep 30; echo done > completed.marker", {
+            cwd: tmpDir,
+            signal: controller.signal,
+          }),
+          3000,
+        );
+
+        if (settled === PENDING) {
+          throw new Error("exec() stayed pending for an already-aborted signal");
+        }
+        // A `sleep 30` that settles inside three seconds can only have been
+        // signalled, so this doubles as the proof the command was killed rather
+        // than left running. Same shape as a mid-run abort: no output, and a
+        // SIGKILLed child reports a null code that exec maps to 1. An exact match
+        // also rules out the timeout shape, which carries `kind` and `timeoutMs`.
+        expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
+        expect(fs.existsSync(path.join(tmpDir, "completed.marker"))).toBe(false);
+      }, 20_000);
+    });
   });
 
   describe("when aborted after the command completed", () => {
