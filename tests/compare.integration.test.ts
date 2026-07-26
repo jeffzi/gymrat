@@ -705,6 +705,10 @@ describe("compare – integration", () => {
   describe("when the bench fails and git cannot remove a worktree", () => {
     it("throws an error naming the stranded worktree alongside the original failure", async () => {
       const repo = createScratchRepo();
+      // Hoisted so `finally` can delete these: the run's own cleanup prunes the
+      // registry entry before this test regains control, so `removeStrandedWorktrees`
+      // enumerates nothing and the directory would outlive the suite.
+      const leftBehindDirs: string[] = [];
 
       try {
         process.chdir(repo.dir);
@@ -732,12 +736,15 @@ describe("compare – integration", () => {
 
         const failure = await captureRejection(compare(options));
 
-        const leftBehindDirs = parseLeftBehindDirs(failure.message);
+        leftBehindDirs.push(...parseLeftBehindDirs(failure.message));
         expect(failure.message).toMatch(/stderr output/);
         expect(leftBehindDirs).toHaveLength(1);
         expect(leftBehindDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual(leftBehindDirs);
         expect(failure.cause).toBeInstanceOf(Error);
       } finally {
+        for (const dir of leftBehindDirs) {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
         removeStrandedWorktrees(repo);
         repo.cleanup();
       }
