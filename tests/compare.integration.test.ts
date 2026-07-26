@@ -1,12 +1,13 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 import { compare } from "../src/compare.js";
 import type { CompareOptions } from "../src/compare.js";
-import { createScratchRepo } from "./fixtures/scratch-repo.js";
+import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
 
 interface BranchSetup {
   name: string;
@@ -108,6 +109,20 @@ function removeStrandedWorktrees(repo: ReturnType<typeof createScratchRepo>) {
  */
 function assertWorktreesCleanedUp(repo: ReturnType<typeof createScratchRepo>) {
   expect(listWorktreeDirs(repo)).toStrictEqual([]);
+}
+
+/**
+ * The gymrat worktree directories currently sitting in the system temp dir.
+ *
+ * Read straight off the filesystem rather than from `git worktree list`: a
+ * directory git has already deregistered — pruned, or removed from under it —
+ * is exactly the one that leaks, and the registry can no longer see it.
+ */
+function listTempWorktreeDirs(): string[] {
+  return fs
+    .readdirSync(os.tmpdir())
+    .filter((entry) => entry.startsWith("gymrat-wt-"))
+    .toSorted();
 }
 
 type SignalName = "SIGINT" | "SIGTERM";
@@ -634,6 +649,54 @@ describe("compare – integration", () => {
         for (const dir of leftBehindDirs) {
           fs.rmSync(dir, { recursive: true, force: true });
         }
+        repo.cleanup();
+      }
+    });
+  });
+
+  describe("when git worktree add is killed after creating the worktree", () => {
+    it("sweeps the directory it left behind instead of stranding it", async () => {
+      const repo = createScratchRepo();
+      const strandedBefore = listTempWorktreeDirs();
+
+      try {
+        process.chdir(repo.dir);
+
+        createBranch(repo, {
+          name: "old-interrupted",
+          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+        });
+
+        createBranch(repo, {
+          name: "new-interrupted",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+        });
+
+        // Installed last so the branch checkouts above survive it.
+        killGitDuringWorktreeAdd(repo.dir);
+
+        const options: CompareOptions = {
+          oldTarget: "old-interrupted",
+          newTarget: "new-interrupted",
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 3,
+          timeoutSeconds: 10,
+        };
+
+        const failure = await captureRejection(compare(options));
+
+        // The run fails because `git worktree add` did, not because cleanup left
+        // anything behind — `withCleanupFailures` appends "left behind" only when
+        // cleanup actually stranded something.
+        expect(failure.message).toContain("worktree add");
+        expect(failure.message).not.toContain("left behind");
+        // The registry going empty says git removed its entry; only the temp dir
+        // itself says the directory is gone, and that is the leak under test.
+        expect(listTempWorktreeDirs()).toStrictEqual(strandedBefore);
+        assertWorktreesCleanedUp(repo);
+      } finally {
+        removeStrandedWorktrees(repo);
         repo.cleanup();
       }
     });

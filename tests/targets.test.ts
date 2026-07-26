@@ -6,8 +6,16 @@ import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 
 import type { CleanupResult, InPlaceTarget, RefTarget, WorktreeInfo } from "../src/targets.js";
-import { resolveTarget, createWorktree, cleanupWorktrees } from "../src/targets.js";
-import { createScratchRepo } from "./fixtures/scratch-repo.js";
+import {
+  resolveTarget,
+  planWorktree,
+  materializeWorktree,
+  cleanupWorktrees,
+} from "../src/targets.js";
+import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
+
+/** A sha no repository holds, so `git worktree add` rejects it outright. */
+const UNKNOWN_SHA = "0".repeat(40);
 
 /**
  * Get the commit SHA of the working tree HEAD.
@@ -31,7 +39,61 @@ function createRefTarget(ref: string, resolvedSha: string): RefTarget {
  */
 function createHeadWorktree(repoDir: string): WorktreeInfo {
   const sha = getHeadSha(repoDir);
-  return createWorktree(createRefTarget(sha, sha), repoDir);
+  const worktree = planWorktree(createRefTarget(sha, sha));
+  materializeWorktree(worktree, repoDir);
+  return worktree;
+}
+
+/**
+ * Plan a worktree for `target` and attempt to materialize it, reporting whether
+ * `git worktree add` failed instead of throwing.
+ */
+function planAndAttemptMaterialize(
+  target: RefTarget,
+  repoDir: string,
+): { worktree: WorktreeInfo; failed: boolean } {
+  const worktree = planWorktree(target);
+  try {
+    materializeWorktree(worktree, repoDir);
+    return { worktree, failed: false };
+  } catch {
+    return { worktree, failed: true };
+  }
+}
+
+/**
+ * Leave behind the worktree a killed `git worktree add` never returned success for.
+ *
+ * Throws rather than returning a half-arranged fixture, so a git version that
+ * cleaned up despite the kill fails the test that asked for this state instead
+ * of quietly asserting nothing. The directory is removed on that path so a
+ * failed arrangement cannot strand one in the system temp dir.
+ */
+function leaveInterruptedWorktree(repoDir: string): WorktreeInfo {
+  killGitDuringWorktreeAdd(repoDir);
+  const sha = getHeadSha(repoDir);
+  const { worktree, failed } = planAndAttemptMaterialize(createRefTarget(sha, sha), repoDir);
+
+  if (failed && fs.existsSync(worktree.dir)) {
+    return worktree;
+  }
+  fs.rmSync(worktree.dir, { recursive: true, force: true });
+  throw new Error(`expected an interrupted worktree left at ${worktree.dir}`);
+}
+
+/**
+ * Plan a worktree whose `git worktree add` fails before creating anything.
+ */
+function planRejectedWorktree(repoDir: string): WorktreeInfo {
+  const { worktree, failed } = planAndAttemptMaterialize(
+    createRefTarget("missing", UNKNOWN_SHA),
+    repoDir,
+  );
+
+  if (failed && !fs.existsSync(worktree.dir)) {
+    return worktree;
+  }
+  throw new Error(`expected 'git worktree add' to create nothing at ${worktree.dir}`);
 }
 
 /**
@@ -143,7 +205,22 @@ describe("resolveTarget", () => {
   });
 });
 
-describe("createWorktree", () => {
+describe("planWorktree", () => {
+  describe("when given a RefTarget", () => {
+    it("names an absolute directory under os.tmpdir() without creating it", () => {
+      const refTarget = createRefTarget("my-tag", UNKNOWN_SHA);
+
+      const worktree = planWorktree(refTarget);
+
+      expect(worktree.ref).toBe("my-tag");
+      expect(worktree.sha).toBe(UNKNOWN_SHA);
+      expect(path.dirname(worktree.dir)).toBe(os.tmpdir());
+      expect(fs.existsSync(worktree.dir)).toBe(false);
+    });
+  });
+});
+
+describe("materializeWorktree", () => {
   let repo: ReturnType<typeof createScratchRepo> | undefined;
   const createdWorktrees: WorktreeInfo[] = [];
 
@@ -155,27 +232,14 @@ describe("createWorktree", () => {
     repo?.cleanup();
   });
 
-  describe("when given a RefTarget", () => {
-    it("returns a WorktreeInfo naming an absolute directory under os.tmpdir()", () => {
+  describe("when given a planned worktree", () => {
+    it("checks out the ref's files into the planned directory", () => {
       repo = createScratchRepo();
       const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget("my-tag", sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
+      const worktree = planWorktree(createRefTarget(sha, sha));
       createdWorktrees.push(worktree);
 
-      expect(worktree.ref).toBe("my-tag");
-      expect(path.isAbsolute(worktree.dir)).toBe(true);
-      expect(worktree.dir).toContain(os.tmpdir());
-    });
-
-    it("checks out the ref's files into the worktree directory", () => {
-      repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget(sha, sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
-      createdWorktrees.push(worktree);
+      materializeWorktree(worktree, repo.dir);
 
       expect(fs.readFileSync(path.join(worktree.dir, "README.md"), "utf-8")).toBe("# Test Repo\n");
     });
@@ -190,16 +254,7 @@ describe("cleanupWorktrees", () => {
   });
 
   describe("when given non-empty worktree list", () => {
-    it("removes worktree directories", () => {
-      repo = createScratchRepo();
-      const worktree = createHeadWorktree(repo.dir);
-
-      cleanupWorktrees([worktree], repo.dir);
-
-      expect(fs.existsSync(worktree.dir)).toBe(false);
-    });
-
-    it("reports every worktree as removed with no failures", () => {
+    it("removes each directory and reports it as removed", () => {
       repo = createScratchRepo();
       const worktree = createHeadWorktree(repo.dir);
 
@@ -210,6 +265,7 @@ describe("cleanupWorktrees", () => {
         failures: [],
         pruneError: undefined,
       } satisfies CleanupResult);
+      expect(fs.existsSync(worktree.dir)).toBe(false);
     });
   });
 
@@ -246,11 +302,22 @@ describe("cleanupWorktrees", () => {
     });
   });
 
-  describe("when a worktree directory no longer exists", () => {
-    it("counts it as neither removed nor left behind", () => {
+  describe("when git worktree add was killed after creating the worktree", () => {
+    it("removes it like a worktree whose add returned normally", () => {
       repo = createScratchRepo();
-      const worktree = createHeadWorktree(repo.dir);
-      cleanupWorktrees([worktree], repo.dir);
+      const worktree = leaveInterruptedWorktree(repo.dir);
+
+      const result = cleanupWorktrees([worktree], repo.dir);
+
+      expect(result.removed).toBe(1);
+      expect(fs.existsSync(worktree.dir)).toBe(false);
+    });
+  });
+
+  describe("when git worktree add left nothing on disk", () => {
+    it("counts the planned worktree as neither removed nor left behind", () => {
+      repo = createScratchRepo();
+      const worktree = planRejectedWorktree(repo.dir);
 
       const result = cleanupWorktrees([worktree], repo.dir);
 
@@ -260,7 +327,9 @@ describe("cleanupWorktrees", () => {
         pruneError: undefined,
       } satisfies CleanupResult);
     });
+  });
 
+  describe("when a worktree directory no longer exists", () => {
     it("prunes the registry entry git still lists for it", () => {
       repo = createScratchRepo();
       const worktree = createHeadWorktree(repo.dir);
@@ -284,7 +353,7 @@ describe("cleanupWorktrees", () => {
 
     function createStrayWorktree(): WorktreeInfo {
       strayDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-stray-"));
-      return { dir: strayDir, ref: "stray" };
+      return { dir: strayDir, ref: "stray", sha: UNKNOWN_SHA };
     }
 
     it("reports the failing directory with git's own error text", () => {
@@ -324,7 +393,11 @@ describe("cleanupWorktrees", () => {
       nonRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-not-a-repo-"));
       // A vanished directory is skipped before removal, so the sweep is the only
       // git call this list reaches — and it runs against a non-repo.
-      const vanished: WorktreeInfo = { dir: path.join(nonRepoDir, "gone"), ref: "gone" };
+      const vanished: WorktreeInfo = {
+        dir: path.join(nonRepoDir, "gone"),
+        ref: "gone",
+        sha: UNKNOWN_SHA,
+      };
 
       const result = cleanupWorktrees([vanished], nonRepoDir);
 
@@ -337,10 +410,7 @@ describe("cleanupWorktrees", () => {
   describe("idempotency", () => {
     it("is safe to call multiple times on the same worktrees", () => {
       repo = createScratchRepo();
-      const sha = getHeadSha(repo.dir);
-      const refTarget = createRefTarget(sha, sha);
-
-      const worktree = createWorktree(refTarget, repo.dir);
+      const worktree = createHeadWorktree(repo.dir);
 
       cleanupWorktrees([worktree], repo.dir);
 

@@ -42,3 +42,27 @@ export function createScratchRepo(): ScratchRepo {
     },
   };
 }
+
+/**
+ * Make every later `git worktree add` in `repoDir` die once the worktree is on disk.
+ *
+ * Reproduces the one state a run can strand: a worktree on disk whose
+ * `git worktree add` never returned success, so a caller that waits for the
+ * command before recording the path is left with nothing to clean up.
+ *
+ * `post-checkout` fires after git has laid the worktree down and registered it,
+ * so what survives the kill is a *complete* worktree — `.git` file present, admin
+ * entry unlocked, `git worktree remove --force` able to take it — not a
+ * half-written one. Git removes its own junk on every failure it survives, so a
+ * genuinely partial worktree is not observable from the outside; an interrupted
+ * one is.
+ *
+ * Branch checkouts fire the hook too — install it after the repo's branches exist.
+ */
+export function killGitDuringWorktreeAdd(repoDir: string): void {
+  const hookPath = path.join(repoDir, ".git", "hooks", "post-checkout");
+  fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+  // The redirect keeps the hook from holding git's stdio open past the kill.
+  fs.writeFileSync(hookPath, '#!/bin/sh\nexec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n');
+  fs.chmodSync(hookPath, 0o755);
+}

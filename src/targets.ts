@@ -20,10 +20,17 @@ export interface RefTarget {
 /** One side of a comparison, discriminated on `kind`. */
 export type Target = InPlaceTarget | RefTarget;
 
-/** A worktree this process created, carrying the ref it was made for. */
+/**
+ * A worktree directory this process claimed for a ref, pinned to a SHA.
+ *
+ * The directory need not exist: `planWorktree` reserves the path before any git
+ * runs, and `materializeWorktree` can fail after creating it. Cleanup treats an
+ * absent directory as nothing to do rather than as an error.
+ */
 export interface WorktreeInfo {
   dir: string;
   ref: string;
+  sha: string;
 }
 
 /**
@@ -108,17 +115,29 @@ export function resolveTarget(input: string, repoDir: string): Target {
 }
 
 /**
- * Create a detached worktree for a ref target under os.tmpdir().
+ * Choose where a ref target's worktree will live, without touching disk.
+ *
+ * Deciding the path up front is what lets a caller register the directory for
+ * cleanup before git can create it: `git worktree add` can be killed once the
+ * worktree is on disk but before it returns, and cleanup only sweeps paths
+ * something already names.
  */
-export function createWorktree(ref: RefTarget, repoDir: string): WorktreeInfo {
-  const worktreePath = path.join(os.tmpdir(), `gymrat-wt-${crypto.randomUUID()}`);
-
-  runGitCommand(["worktree", "add", "--detach", worktreePath, ref.resolvedSha], repoDir);
-
+export function planWorktree(ref: RefTarget): WorktreeInfo {
   return {
-    dir: worktreePath,
+    dir: path.join(os.tmpdir(), `gymrat-wt-${crypto.randomUUID()}`),
     ref: ref.ref,
+    sha: ref.resolvedSha,
   };
+}
+
+/**
+ * Check a planned worktree out into its directory, detached at its pinned SHA.
+ *
+ * @throws when `git worktree add` fails — the planned directory may exist anyway,
+ * so callers must hand it to `cleanupWorktrees` regardless of the outcome.
+ */
+export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): void {
+  runGitCommand(["worktree", "add", "--detach", worktree.dir, worktree.sha], repoDir);
 }
 
 /**
@@ -154,14 +173,17 @@ function tryGitCommand(args: readonly string[], repoDir: string): string | undef
 }
 
 /**
- * Remove created worktrees and prune. Safe to call multiple times.
+ * Remove any of `worktrees` that reached disk, then prune. Safe to call repeatedly.
  *
  * Never throws: `compare()` calls this while already handling a failed run, so a
  * throw here would replace the error the user actually needs to see. Everything
  * that went wrong lands in the returned result instead, letting callers report
  * it on their own terms.
  */
-export function cleanupWorktrees(worktrees: WorktreeInfo[], repoDir: string): CleanupResult {
+export function cleanupWorktrees(
+  worktrees: readonly WorktreeInfo[],
+  repoDir: string,
+): CleanupResult {
   const failures: WorktreeRemovalFailure[] = [];
   let removed = 0;
 
@@ -181,10 +203,12 @@ export function cleanupWorktrees(worktrees: WorktreeInfo[], repoDir: string): Cl
     }
   }
 
-  // An empty list means no worktree was ever created, so there is nothing to
+  // An empty list means no ref target was ever attempted, so there is nothing to
   // prune — and no reason to assume `repoDir` is a git repository at all. Both
   // targets can be plain directories, in which case sweeping would fail with
-  // "not a git repository" and report cleanup trouble for work never done.
+  // "not a git repository" and report cleanup trouble for work never done. A
+  // planned worktree counts even when `git worktree add` never produced one:
+  // that is exactly the run whose $GIT_DIR/worktrees/ metadata needs sweeping.
   const pruneError =
     worktrees.length > 0 ? tryGitCommand(["worktree", "prune"], repoDir) : undefined;
 

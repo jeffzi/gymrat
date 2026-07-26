@@ -7,7 +7,7 @@ import { exec } from "./exec.js";
 import { formatCleanupFailures, renderReport } from "./report.js";
 import type { ComparisonResult } from "./report.js";
 import { installTerminationCleanup } from "./signals.js";
-import { resolveTarget, createWorktree, cleanupWorktrees } from "./targets.js";
+import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
 
@@ -137,12 +137,18 @@ async function collectSamples(
 
 /**
  * Resolve the working directory for a target, creating a worktree for ref targets.
+ *
+ * The worktree is registered before `git worktree add` runs, not after: git can
+ * be killed once the directory is on disk but before the command returns, and
+ * every cleanup path — the failure path and the termination handler alike —
+ * sweeps only what `worktrees` already names.
  */
 function resolveDir(resolved: Target, repoDir: string, worktrees: WorktreeInfo[]): string {
   if (resolved.kind === "ref") {
-    const wt = createWorktree(resolved, repoDir);
-    worktrees.push(wt);
-    return wt.dir;
+    const worktree = planWorktree(resolved);
+    worktrees.push(worktree);
+    materializeWorktree(worktree, repoDir);
+    return worktree.dir;
   }
   return resolved.dir;
 }
