@@ -41,6 +41,28 @@ describe("loadConfigFile", () => {
     });
   });
 
+  describe("when the config file does not exist and the caller requires it", () => {
+    it("throws an error naming the missing path", () => {
+      const nonexistentPath = path.join(os.tmpdir(), `nonexistent-${Date.now()}.json`);
+
+      expect(() => loadConfigFile(nonexistentPath, { required: true })).toThrow(nonexistentPath);
+    });
+  });
+
+  describe("when the config path is not a readable file", () => {
+    it("propagates the filesystem error instead of returning an empty config", () => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+
+      expect(() => loadConfigFile(tmpdir)).toThrow(/EISDIR/);
+    });
+
+    it("propagates the filesystem error even when the caller requires the file", () => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+
+      expect(() => loadConfigFile(tmpdir, { required: true })).toThrow(/EISDIR/);
+    });
+  });
+
   describe("when the config file contains valid JSON with known keys", () => {
     it("returns the parsed config with bench key", () => {
       tmpdir = createConfigFile({ bench: "custom-bench" });
@@ -97,6 +119,26 @@ describe("loadConfigFile", () => {
     });
   });
 
+  describe("when the config file JSON root is not an object", () => {
+    it.each([
+      { description: "an array", json: "[]" },
+      { description: "a string", json: '"bench"' },
+      { description: "a number", json: "3" },
+      { description: "a boolean", json: "true" },
+      { description: "null", json: "null" },
+    ])("throws naming the file and the expected JSON object for $description", ({ json }) => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      const configPath = path.join(tmpdir, "gymrat.json");
+      fs.writeFileSync(configPath, json);
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect(act).toThrow(configPath);
+      expect(act).toThrow(/JSON object/);
+    });
+  });
+
   describe("when the config file contains unknown top-level keys", () => {
     it("throws an error that names the unknown key", () => {
       tmpdir = createConfigFile({ unknownKey: "value" });
@@ -123,6 +165,102 @@ describe("loadConfigFile", () => {
       expect(result).toStrictEqual({});
     });
   });
+
+  describe("when a string-typed key holds a non-string value", () => {
+    it.each([
+      { key: "bench", description: "a number", value: 42 },
+      { key: "bench", description: "an array", value: ["a"] },
+      { key: "prepare", description: "a boolean", value: true },
+      { key: "prepare", description: "an object", value: { cmd: "x" } },
+      { key: "adapter", description: "null", value: null },
+    ])("throws naming $key when it is $description", ({ key, value }) => {
+      tmpdir = createConfigFile({ [key]: value });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(new RegExp(`${key}.*string`));
+    });
+  });
+
+  describe("when a positive-integer key holds an invalid value", () => {
+    it.each([
+      { key: "samples", description: "a string", value: "ten" },
+      { key: "samples", description: "a non-integer", value: 1.5 },
+      { key: "samples", description: "zero", value: 0 },
+      { key: "timeoutSeconds", description: "a negative number", value: -1 },
+      { key: "timeoutSeconds", description: "a boolean", value: true },
+      { key: "timeoutSeconds", description: "null", value: null },
+    ])("throws naming $key when it is $description", ({ key, value }) => {
+      tmpdir = createConfigFile({ [key]: value });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(new RegExp(`${key}.*positive integer`));
+    });
+  });
+
+  describe("when metrics is not an object", () => {
+    it.each([
+      { description: "an array", value: [] },
+      { description: "a string", value: "latency" },
+      { description: "a number", value: 3 },
+      { description: "null", value: null },
+    ])("throws naming metrics when it is $description", ({ value }) => {
+      tmpdir = createConfigFile({ metrics: value });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/metrics.*object/);
+    });
+  });
+
+  describe("when a metrics entry is not an object", () => {
+    it("throws naming the offending metric", () => {
+      tmpdir = createConfigFile({ metrics: { latency: "lower" } });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency.*object/);
+    });
+  });
+
+  describe("when a metrics entry has an invalid direction", () => {
+    it.each([
+      { description: "an unknown string", value: "sideways" },
+      { description: "wrongly capitalized", value: "Lower" },
+      { description: "a boolean", value: true },
+      { description: "null", value: null },
+    ])("throws naming metrics.latency.direction when it is $description", ({ value }) => {
+      tmpdir = createConfigFile({ metrics: { latency: { direction: value } } });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(
+        /metrics\.latency\.direction.*"lower".*"higher"/,
+      );
+    });
+  });
+
+  describe("when a metrics entry has a non-boolean flag", () => {
+    it.each([
+      { field: "gating", description: "a string", value: "yes" },
+      { field: "gating", description: "null", value: null },
+      { field: "exact", description: "a number", value: 1 },
+    ])("throws naming metrics.latency.$field when it is $description", ({ field, value }) => {
+      tmpdir = createConfigFile({ metrics: { latency: { [field]: value } } });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(
+        new RegExp(`metrics\\.latency\\.${field}.*boolean`),
+      );
+    });
+  });
+
+  describe("when a metrics entry contains an unknown key", () => {
+    it("throws an error that names the offending key", () => {
+      tmpdir = createConfigFile({
+        metrics: { latency: { direction: "lower", threshold: "higher" } },
+      });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency\.threshold/);
+    });
+  });
 });
 
 describe("resolveConfig", () => {
@@ -138,6 +276,10 @@ describe("resolveConfig", () => {
 
   describe("when flags and config are empty", () => {
     it("returns defaults for adapter, samples, timeoutSeconds", () => {
+      // resolveConfig falls back to ./gymrat.json, so run from a dir that has none
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      process.chdir(tmpdir);
+
       const result = resolveConfig({ bench: "my-bench" });
 
       expect(result).toStrictEqual({
@@ -146,19 +288,6 @@ describe("resolveConfig", () => {
         samples: 10,
         timeoutSeconds: 1800,
       });
-    });
-
-    it.each([
-      { pattern: /--bench/, description: "mentions --bench" },
-      { pattern: /config file/, description: "mentions config file" },
-    ])("throws error when bench is missing that $description", ({ pattern }) => {
-      expect(() => resolveConfig({})).toThrow(pattern);
-    });
-
-    it("resolves prepare as undefined when not provided", () => {
-      const result = resolveConfig({ bench: "my-bench" });
-
-      expect(result.prepare).toBeUndefined();
     });
   });
 
@@ -223,23 +352,6 @@ describe("resolveConfig", () => {
     });
   });
 
-  describe("when bench is provided", () => {
-    it("includes bench in resolved config from flags", () => {
-      const result = resolveConfig({ bench: "my-bench" });
-
-      expect(result.bench).toBe("my-bench");
-    });
-
-    it("includes bench in resolved config from config file", () => {
-      tmpdir = createConfigFile({ bench: "config-bench" });
-      process.chdir(tmpdir);
-
-      const result = resolveConfig({});
-
-      expect(result.bench).toBe("config-bench");
-    });
-  });
-
   describe("when bench is missing from both flags and config", () => {
     it.each([
       { pattern: /--bench/, description: "mentions --bench" },
@@ -254,6 +366,9 @@ describe("resolveConfig", () => {
 
   describe("when prepare is provided", () => {
     it("includes prepare in resolved config", () => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      process.chdir(tmpdir);
+
       const result = resolveConfig({
         bench: "my-bench",
         prepare: "prepare-cmd",
@@ -275,27 +390,49 @@ describe("resolveConfig", () => {
     });
   });
 
-  describe("when config file path is not specified", () => {
-    it("loads from ./gymrat.json in current working directory", () => {
-      tmpdir = createConfigFile({ bench: "default-bench" });
+  describe("when the specified config file path does not exist", () => {
+    it("throws an error naming the missing path instead of falling back to defaults", () => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      const missingConfigPath = path.join(tmpdir, "typo.json");
+
+      expect(() => resolveConfig({ bench: "my-bench", config: missingConfigPath })).toThrow(
+        missingConfigPath,
+      );
+    });
+  });
+
+  describe("when the config file has a metrics section", () => {
+    it("propagates the per-metric overrides to the resolved config", () => {
+      const metrics = {
+        "decode/time": { direction: "higher" as const, gating: false, exact: true },
+      };
+      tmpdir = createConfigFile({ bench: "config-bench", metrics });
       process.chdir(tmpdir);
 
       const result = resolveConfig({});
 
-      expect(result.bench).toBe("default-bench");
+      expect(result).toStrictEqual({
+        bench: "config-bench",
+        adapter: "metric-lines",
+        samples: 10,
+        timeoutSeconds: 1800,
+        metrics,
+      });
+    });
+  });
+
+  describe("when the config file has no metrics section", () => {
+    it("omits metrics from the resolved config", () => {
+      tmpdir = createConfigFile({ bench: "config-bench" });
+      process.chdir(tmpdir);
+
+      const result = resolveConfig({});
+
+      expect(result).not.toHaveProperty("metrics");
     });
   });
 
   describe("when timeout flag is provided", () => {
-    it("maps timeout flag to timeoutSeconds in resolved config", () => {
-      const result = resolveConfig({
-        bench: "my-bench",
-        timeout: 900,
-      });
-
-      expect(result.timeoutSeconds).toBe(900);
-    });
-
     it("uses timeout from flags over config file value", () => {
       tmpdir = createConfigFile({ timeoutSeconds: 3600 });
       process.chdir(tmpdir);
