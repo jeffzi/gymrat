@@ -7,6 +7,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 import { compare } from "../src/compare.js";
 import type { CompareOptions } from "../src/compare.js";
+import { isAlive, waitForPid } from "./fixtures/process-probe.js";
 import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
 
 interface BranchSetup {
@@ -180,33 +181,8 @@ function raiseSignal(
   throw new Error(`the ${signal} handler returned instead of exiting`);
 }
 
-/** True while a process with `pid` exists. */
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Reads a pid written by `echo $! > file`; NaN while the write is absent or incomplete. */
-function readPid(pidPath: string): number {
-  const raw = fs.readFileSync(pidPath, "utf8");
-  return raw.endsWith("\n") ? Number.parseInt(raw, 10) : Number.NaN;
-}
-
-async function waitForPid(pidPath: string): Promise<number> {
-  let pid = Number.NaN;
-  await vi.waitFor(
-    () => {
-      pid = readPid(pidPath);
-      expect(pid).toBeGreaterThan(0);
-    },
-    { timeout: 10_000, interval: 25 },
-  );
-  return pid;
-}
+/** This pid appears only once a whole comparison run is under way, so it waits far longer. */
+const PID_WAIT_MS = 10_000;
 
 interface InFlightRun {
   /** Settles when compare() gives up; never rejects, so the test picks when to wait. */
@@ -251,7 +227,7 @@ async function startInFlightRun(repo: ReturnType<typeof createScratchRepo>): Pro
     () => undefined,
     () => undefined,
   );
-  const benchGrandchildPid = await waitForPid(pidFile);
+  const benchGrandchildPid = await waitForPid(pidFile, PID_WAIT_MS);
 
   return { settled, benchGrandchildPid, worktreeDirs: listWorktreeDirs(repo) };
 }

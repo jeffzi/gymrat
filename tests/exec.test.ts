@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import type { ExecOptions, ExecResult, ExecTimeoutError } from "../src/exec.js";
 import { exec } from "../src/exec.js";
+import { isAlive, readPid, waitForPid } from "./fixtures/process-probe.js";
 
 const PENDING = Symbol("pending");
 
@@ -29,32 +30,8 @@ async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | typ
   return await Promise.race([promise, delay(ms, PENDING, { ref: false })]);
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Reads a pid written by `echo $$ > file`; NaN while the write is absent or incomplete. */
-function readPid(pidPath: string): number {
-  const raw = fs.readFileSync(pidPath, "utf8");
-  return raw.endsWith("\n") ? Number.parseInt(raw, 10) : Number.NaN;
-}
-
-async function waitForPid(pidPath: string): Promise<number> {
-  let pid = Number.NaN;
-  await vi.waitFor(
-    () => {
-      pid = readPid(pidPath);
-      expect(pid).toBeGreaterThan(0);
-    },
-    { timeout: 3000, interval: 25 },
-  );
-  return pid;
-}
+/** A bare shell writes its pid promptly; this only has to outlast process startup. */
+const PID_WAIT_MS = 3000;
 
 describe("exec", () => {
   const runInTmpdir = (command: string, options: Omit<ExecOptions, "cwd"> = {}) =>
@@ -144,11 +121,15 @@ describe("exec", () => {
       } catch {
         leader = Number.NaN;
       }
-      if (leader > 0) {
+      // Signal only a group whose leader is still alive. On the passing path the
+      // group is already dead and the kill would exist purely to raise ESRCH into
+      // an empty catch — but if the OS has recycled that pid, it would instead
+      // signal a group this test does not own.
+      if (leader > 0 && isAlive(leader)) {
         try {
           process.kill(-leader, "SIGKILL");
         } catch {
-          // Already gone.
+          // Raced: the group exited between the liveness check and the kill.
         }
       }
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -161,7 +142,7 @@ describe("exec", () => {
           cwd: tmpDir,
           signal: controller.signal,
         });
-        const grandchildPid = await waitForPid(path.join(tmpDir, "grandchild.pid"));
+        const grandchildPid = await waitForPid(path.join(tmpDir, "grandchild.pid"), PID_WAIT_MS);
 
         controller.abort();
 
@@ -180,7 +161,7 @@ describe("exec", () => {
           cwd: tmpDir,
           signal: controller.signal,
         });
-        await waitForPid(path.join(tmpDir, "shell.pid"));
+        await waitForPid(path.join(tmpDir, "shell.pid"), PID_WAIT_MS);
 
         controller.abort();
 
