@@ -16,25 +16,36 @@ const P_VALUE_THRESHOLD = 0.05;
 const MIN_WILCOXON_N = 6;
 
 /**
- * Statistical method used to compute the verdict.
+ * Fields every verdict carries, whichever method produced it.
  */
-export type Method = "signed-rank" | "band" | "exact";
+type VerdictBase = {
+  verdict: Verdict;
+  delta: number;
+  n: number;
+};
+
+/** A verdict from the Wilcoxon signed-rank test, which always yields a p-value. */
+export type SignedRankVerdict = VerdictBase & { method: "signed-rank"; p: number };
+
+/** A verdict from the noise-band method, which always yields a band width. */
+export type BandVerdict = VerdictBase & { method: "band"; band: number };
+
+/** A verdict from the exact path, where any difference at all is signal. */
+export type ExactVerdict = VerdictBase & { method: "exact" };
 
 /**
  * Result of verdict analysis for a single metric.
  *
- * Always includes verdict, method, delta, and n.
- * p is only present when method is "signed-rank".
- * band is only present when method is "band".
+ * Discriminated on `method` so the method-specific statistic is required
+ * exactly where it exists: reading `p` off a band verdict, or `band` off an
+ * exact one, is a compile error rather than a runtime `undefined`.
  */
-export type MetricVerdict = {
-  verdict: Verdict;
-  method: Method;
-  delta: number;
-  n: number;
-  p?: number;
-  band?: number;
-};
+export type MetricVerdict = SignedRankVerdict | BandVerdict | ExactVerdict;
+
+/**
+ * Statistical method used to compute the verdict.
+ */
+export type Method = MetricVerdict["method"];
 
 /**
  * Metadata describing how to analyze a metric.
@@ -109,11 +120,9 @@ export function computeVerdicts(
 ): Record<string, MetricVerdict> {
   const result: Record<string, MetricVerdict> = {};
 
-  // Collect all metric names
   const allMetrics = new Set(Object.keys(metricMeta));
 
   for (const metric of allMetrics) {
-    // Pair samples by index, collecting values where both exist
     const pairedA: number[] = [];
     const pairedB: number[] = [];
 
@@ -121,7 +130,6 @@ export function computeVerdicts(
       const valA = samplesA[i]?.[metric];
       const valB = samplesB[i]?.[metric];
 
-      // Include only if both values exist for this window
       if (valA !== undefined && valB !== undefined) {
         pairedA.push(valA);
         pairedB.push(valB);
@@ -135,7 +143,6 @@ export function computeVerdicts(
 
     const meta = metricMeta[metric]!;
 
-    // Compute medians
     const medianA = computeMedian(pairedA);
     const medianB = computeMedian(pairedB);
 
@@ -166,7 +173,6 @@ export function computeVerdicts(
     } else {
       // Non-exact path: try signed-rank, fall back to band
       if (pairedA.length >= MIN_WILCOXON_N) {
-        // Try signed-rank method with paired differences
         const pairs: Array<readonly [number, number]> = [];
         for (let i = 0; i < pairedA.length; i++) {
           const a = pairedA[i]!;
@@ -178,14 +184,12 @@ export function computeVerdicts(
 
         // If effective n < threshold after dropping zeros, fall back to band
         if (wilcoxonResult.n < MIN_WILCOXON_N) {
-          // Fall back to band method
           const bandVerdict = computeBandMethod(pairedA, pairedB, delta, meta.direction);
           result[metric] = {
             ...bandVerdict,
             n: pairedA.length,
           };
         } else {
-          // Signed-rank method
           let verdict: Verdict;
           if (wilcoxonResult.p < P_VALUE_THRESHOLD) {
             verdict = determineVerdict(delta, meta.direction);
@@ -269,7 +273,7 @@ function computeBandMethod(
   pairedB: readonly number[],
   delta: number,
   direction: "lower" | "higher",
-): Omit<MetricVerdict, "n"> {
+): Omit<BandVerdict, "n"> {
   const K = 1.5;
   const FLOOR = 0.5;
 
@@ -283,10 +287,8 @@ function computeBandMethod(
   const spreadB = medianB === 0 ? 0 : halfRangeB / medianB;
   const maxSpread = Math.max(spreadA, spreadB);
 
-  // band% = max(K × 100 × maxSpread, floor%)
   const band = Math.max(K * 100 * maxSpread, FLOOR);
 
-  // Signal when |delta%| > band%
   const absDelta = Math.abs(delta);
   let verdict: Verdict;
 
@@ -336,14 +338,11 @@ export function computeGeomean(
   const included: number[] = [];
   const excluded: string[] = [];
 
-  // Iterate over metric metadata to identify gating metrics
   for (const [metric, meta] of Object.entries(metricMeta)) {
-    // Skip non-gating metrics
     if (!meta.gating) {
       continue;
     }
 
-    // Gating metric must have a verdict
     const verdict = verdicts[metric];
     if (!verdict) {
       continue;
@@ -351,33 +350,28 @@ export function computeGeomean(
 
     const delta = verdict.delta;
 
-    // Exclude metrics with NaN delta
     if (Number.isNaN(delta)) {
       excluded.push(metric);
       continue;
     }
 
-    // Compute direction-normalized ratio ρ
+    // Direction-normalized ratio ρ: below 1 always means improvement, whichever
+    // direction the metric favors.
     let rho: number;
     if (meta.direction === "lower") {
-      // For lower-is-better: ρ = 1 + delta/100
       rho = 1 + delta / 100;
     } else {
-      // For higher-is-better: ρ = 1 / (1 + delta/100)
       rho = 1 / (1 + delta / 100);
     }
 
-    // Exclude metrics where ρ ≤ 0
     if (rho <= 0) {
       excluded.push(metric);
       continue;
     }
 
-    // Include valid metric
     included.push(rho);
   }
 
-  // Handle edge cases: no included metrics
   if (included.length === 0) {
     return {
       value: 0,
@@ -386,8 +380,8 @@ export function computeGeomean(
     };
   }
 
-  // Compute geometric mean: (ρ₁ × ρ₂ × ... × ρₙ)^(1/n)
-  // Using logarithms to avoid overflow: exp(mean(ln(ρᵢ)))
+  // Geometric mean (ρ₁ × ρ₂ × … × ρₙ)^(1/n) computed in log space —
+  // exp(mean(ln(ρᵢ))) — so a long metric list cannot overflow the product.
   let sumLnRho = 0;
   for (let i = 0; i < included.length; i++) {
     sumLnRho += Math.log(included[i]!);
@@ -395,7 +389,6 @@ export function computeGeomean(
   const meanLnRho = sumLnRho / included.length;
   const geomean = Math.exp(meanLnRho);
 
-  // Return value as percentage change: (geomean - 1) × 100
   return {
     value: (geomean - 1) * 100,
     n: included.length,

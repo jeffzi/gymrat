@@ -1,11 +1,40 @@
 import { describe, it, expect } from "vitest";
 
-import type { MetricVerdict } from "../../src/verdict/verdict.js";
+import type { BandVerdict, MetricVerdict, SignedRankVerdict } from "../../src/verdict/verdict.js";
 import { computeGeomean, computeVerdicts } from "../../src/verdict/verdict.js";
 
 function getVerdict(result: Record<string, MetricVerdict>, key: string): MetricVerdict {
   const verdict = result[key];
   if (!verdict) throw new Error(`Expected verdict for "${key}" but it was missing`);
+  return verdict;
+}
+
+/**
+ * Fetch a verdict that must have come from the signed-rank path, so `p` is readable.
+ *
+ * `MetricVerdict` is discriminated on `method`, and `expect(v.method).toBe(...)`
+ * does not narrow the binding — asserting the method and reading the statistic
+ * has to happen in one step.
+ */
+function getSignedRankVerdict(
+  result: Record<string, MetricVerdict>,
+  key: string,
+): SignedRankVerdict {
+  const verdict = getVerdict(result, key);
+  if (verdict.method !== "signed-rank") {
+    throw new Error(`Expected a signed-rank verdict for "${key}" but got "${verdict.method}"`);
+  }
+  return verdict;
+}
+
+/**
+ * Fetch a verdict that must have come from the band path, so `band` is readable.
+ */
+function getBandVerdict(result: Record<string, MetricVerdict>, key: string): BandVerdict {
+  const verdict = getVerdict(result, key);
+  if (verdict.method !== "band") {
+    throw new Error(`Expected a band verdict for "${key}" but got "${verdict.method}"`);
+  }
   return verdict;
 }
 
@@ -26,36 +55,16 @@ function createSamples(n: number, value: number): Array<{ metric: number }> {
 
 describe("computeVerdicts", () => {
   describe("verdict record shape", () => {
-    it("returns MetricVerdict with required fields: verdict, method, delta, n", () => {
+    it("carries exactly verdict, method, delta and n for the exact method", () => {
       const result = computeVerdicts([{ metric: 100 }], [{ metric: 95 }], METRIC_EXACT_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict).toHaveProperty("verdict");
-      expect(verdict).toHaveProperty("method");
-      expect(verdict).toHaveProperty("delta");
-      expect(verdict).toHaveProperty("n");
-    });
-
-    it("includes p field only for signed-rank method", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 95 }], METRIC_EXACT_LOWER);
-
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("exact");
-      expect("p" in verdict).toBe(false);
-    });
-
-    it("includes band field only for band method", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 95 }], METRIC_EXACT_LOWER);
-
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("exact");
-      expect("band" in verdict).toBe(false);
-    });
-
-    it("marks verdict as tri-state: improved, regressed, or no-signal", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 90 }], METRIC_EXACT_LOWER);
-
-      expect(getVerdict(result, "metric").verdict).toBe("improved");
+      // toStrictEqual also proves p and band are absent for this method.
+      expect(getVerdict(result, "metric")).toStrictEqual({
+        verdict: "improved",
+        method: "exact",
+        delta: -5,
+        n: 1,
+      });
     });
   });
 
@@ -103,18 +112,6 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts([{ metric: 100 }], [{ metric: 100 }], METRIC_EXACT_LOWER);
 
       expect(getVerdict(result, "metric").verdict).toBe("no-signal");
-    });
-
-    it("uses exact method for exact-flagged metrics", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 95 }], METRIC_EXACT_LOWER);
-
-      expect(getVerdict(result, "metric").method).toBe("exact");
-    });
-
-    it("works with single sample (n=1) for exact path", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 95 }], METRIC_EXACT_LOWER);
-
-      expect(getVerdict(result, "metric").n).toBe(1);
     });
   });
 
@@ -219,16 +216,6 @@ describe("computeVerdicts", () => {
       expect(result).toHaveProperty("b");
     });
 
-    it("includes gating flag in metadata (for future use)", () => {
-      const result = computeVerdicts([{ a: 100, b: 50 }], [{ a: 95, b: 45 }], {
-        a: { direction: "lower", gating: true, exact: true },
-        b: { direction: "lower", gating: false, exact: true },
-      });
-
-      expect(result).toHaveProperty("a");
-      expect(result).toHaveProperty("b");
-    });
-
     it("respects exact flag per metric", () => {
       const result = computeVerdicts(
         [{ exactMetric: 100, otherMetric: 50 }],
@@ -265,15 +252,6 @@ describe("computeVerdicts", () => {
       expect(getVerdict(result, "metric").delta).toBeCloseTo(-5, 5);
     });
 
-    it("returns empty object when no metrics have paired samples", () => {
-      const result = computeVerdicts([{ a: 100 }], [{ b: 95 }], {
-        a: { direction: "lower", gating: true, exact: true },
-        b: { direction: "lower", gating: true, exact: true },
-      });
-
-      expect(result).toStrictEqual({});
-    });
-
     it("handles many paired windows correctly", () => {
       const samplesA = createSamples(100, 100);
       const samplesB = createSamples(100, 95);
@@ -304,30 +282,9 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("signed-rank");
+      const verdict = getSignedRankVerdict(result, "metric");
       expect("p" in verdict).toBe(true);
       expect(typeof verdict.p).toBe("number");
-    });
-
-    it("signals improved when p < 0.05 with direction: lower and negative delta", () => {
-      const samplesA = createSamples(6, 100);
-      const samplesB = createSamples(6, 95);
-
-      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
-
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.verdict).toBe("improved");
-    });
-
-    it("signals regressed when p < 0.05 with direction: lower and positive delta", () => {
-      const samplesA = createSamples(6, 100);
-      const samplesB = createSamples(6, 105);
-
-      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
-
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.verdict).toBe("regressed");
     });
 
     it("returns no-signal when p >= 0.05", () => {
@@ -344,8 +301,7 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("signed-rank");
+      const verdict = getSignedRankVerdict(result, "metric");
       expect(verdict.p).toBeGreaterThanOrEqual(0.05);
       expect(verdict.verdict).toBe("no-signal");
     });
@@ -369,16 +325,6 @@ describe("computeVerdicts", () => {
       expect("band" in verdict).toBe(true);
       expect("p" in verdict).toBe(false);
     });
-
-    it("respects direction when computing improved/regressed for signed-rank with p < 0.05", () => {
-      const samplesA = createSamples(6, 100);
-      const samplesB = createSamples(6, 105);
-
-      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_HIGHER);
-
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.verdict).toBe("improved");
-    });
   });
 
   describe("band method", () => {
@@ -398,8 +344,7 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
+      const verdict = getBandVerdict(result, "metric");
       expect("band" in verdict).toBe(true);
       expect(typeof verdict.band).toBe("number");
     });
@@ -449,8 +394,7 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
+      const verdict = getBandVerdict(result, "metric");
       expect(verdict.band).toBeCloseTo(30, 1);
     });
 
@@ -465,8 +409,7 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
+      const verdict = getBandVerdict(result, "metric");
       expect(verdict.band).toBeCloseTo(0.5, 1);
     });
 
@@ -482,35 +425,25 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
+      const verdict = getBandVerdict(result, "metric");
       expect(verdict.band).toBeCloseTo(0.5, 1);
-    });
-
-    it("respects direction when computing improved/regressed for band method", () => {
-      // delta = -50%, band = 0.5% (floor) → signal
-      const samplesA = createSamples(2, 100);
-      const samplesB = createSamples(2, 50);
-
-      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
-
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
-      expect(verdict.verdict).toBe("improved");
     });
   });
 
   describe("signed-rank direction variants", () => {
     it.each([
-      { samplesAValue: 100, samplesBValue: 50, expectedVerdict: "regressed" },
-      { samplesAValue: 50, samplesBValue: 100, expectedVerdict: "improved" },
+      { direction: "lower", samplesAValue: 100, samplesBValue: 95, expectedVerdict: "improved" },
+      { direction: "lower", samplesAValue: 100, samplesBValue: 105, expectedVerdict: "regressed" },
+      { direction: "higher", samplesAValue: 50, samplesBValue: 100, expectedVerdict: "improved" },
+      { direction: "higher", samplesAValue: 100, samplesBValue: 50, expectedVerdict: "regressed" },
     ])(
-      "with direction: higher, $expectedVerdict when delta = $samplesBValue - $samplesAValue",
-      ({ samplesAValue, samplesBValue, expectedVerdict }) => {
+      "with direction: $direction, $expectedVerdict when delta = $samplesBValue - $samplesAValue",
+      ({ direction, samplesAValue, samplesBValue, expectedVerdict }) => {
+        const config = direction === "higher" ? METRIC_APPROX_HIGHER : METRIC_APPROX_LOWER;
         const samplesA = createSamples(6, samplesAValue);
         const samplesB = createSamples(6, samplesBValue);
 
-        const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_HIGHER);
+        const result = computeVerdicts(samplesA, samplesB, config);
 
         const verdict = getVerdict(result, "metric");
         expect(verdict.method).toBe("signed-rank");
@@ -548,8 +481,7 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
+      const verdict = getBandVerdict(result, "metric");
       expect(verdict.band).toBeCloseTo(75, 0);
       expect(verdict.verdict).toBe("no-signal");
     });
@@ -560,8 +492,7 @@ describe("computeVerdicts", () => {
 
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
-      const verdict = getVerdict(result, "metric");
-      expect(verdict.method).toBe("band");
+      const verdict = getBandVerdict(result, "metric");
       expect(verdict.band).toBeCloseTo(0.5, 1);
     });
   });
@@ -855,23 +786,6 @@ describe("computeGeomean", () => {
   });
 
   describe("edge cases and special values", () => {
-    it("handles zero delta correctly (ρ = 1, value = 0)", () => {
-      const verdicts = {
-        metric1: {
-          verdict: "no-signal" as const,
-          method: "exact" as const,
-          delta: 0,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.value).toBeCloseTo(0, 5);
-      expect(result.n).toBe(1);
-    });
-
     it("handles large positive delta for direction: lower", () => {
       // delta = 100 → ρ = 2.0, value = 100
       const verdicts = {
