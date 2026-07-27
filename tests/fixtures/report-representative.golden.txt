@@ -1,0 +1,11 @@
+gymrat compare · main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
+metric                    │old (main)    │new (perf/faster-decode)  │vs old
+──────────────────────────┼──────────────┼──────────────────────────┼──────────────────────────
+decode/text=digits/time   │1.735µ ± 1%   │1.425µ ± 1%               │✓ -17.9%  (p=0.002 n=10)
+decode/text=words/time    │3.065µ ± 1%   │3.093µ ± 3%               │~ +0.9%  (p=0.49 n=10)
+encode/time               │914n ± 1%     │934n ± 1%                 │✗ +2.2%  (p=0.002 n=10)
+encode/heap               │49.2k ± 0%    │45.3k ± 0%                │✓ -7.9%  (exact)
+──────────────────────────┼──────────────┼──────────────────────────┼──────────────────────────
+geomean (gating metrics)  │              │                          │-6.0%
+verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
+0 worktrees removed · 0 left behind

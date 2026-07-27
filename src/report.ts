@@ -2,6 +2,10 @@ import type { ResolvedMetricMeta } from "./config.js";
 import type { WorktreeRemovalFailure } from "./targets.js";
 import type { Method, MetricVerdict } from "./verdict/verdict.js";
 
+function assertNever(x: never): never {
+  throw new Error(`Unexpected: ${JSON.stringify(x)}`);
+}
+
 /**
  * Everything `renderReport` needs to draw a comparison — the rendering input contract.
  */
@@ -68,26 +72,17 @@ function formatValue(value: number, unit?: "ns" | "bytes"): string {
   return `${stripTrailingZeros((value / 1e9).toFixed(1))}G`;
 }
 
-/**
- * Format spread as percentage.
- */
 function formatSpread(spread?: number): string {
   if (spread === undefined) return "";
   return ` ± ${spread.toFixed(0)}%`;
 }
 
-/**
- * Format delta percentage with sign.
- */
 function formatDelta(delta: number): string {
   if (Number.isNaN(delta)) return "";
   const sign = delta > 0 ? "+" : "";
   return `${sign}${delta.toFixed(1)}%`;
 }
 
-/**
- * Format p-value with appropriate precision.
- */
 function formatPValue(p: number): string {
   if (p < 0.001) return "p<0.001";
   if (p < 0.01) return `p=${p.toFixed(3)}`;
@@ -114,23 +109,17 @@ function formatAnnotation(verdict: MetricVerdict): string {
       return `(band ±${verdict.band.toFixed(1)}%, n=${verdict.n})`;
     case "exact":
       return "(exact)";
-    /* v8 ignore next -- exhaustive switch guard; all known methods have cases above */
+    /* v8 ignore next -- exhaustive switch; compile-time guard via assertNever */
     default:
-      throw new Error("Unknown verdict method");
+      return assertNever(verdict);
   }
 }
 
-/**
- * Format a metric value cell with optional spread.
- */
 function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
   if (median === undefined) return "";
   return `${formatValue(median, unit)}${formatSpread(spread)}`;
 }
 
-/**
- * Compute column width: max of content lengths plus padding, constrained by minimum.
- */
 function computeColumnWidth(
   headerLength: number,
   contentLengths: number[],
@@ -140,17 +129,11 @@ function computeColumnWidth(
   return Math.max(maxContent + 2, minWidth);
 }
 
-/**
- * Format a single line of the table with padded cells.
- */
-function formatTableLine(cells: string[], widths: number[]): string {
+function formatTableLine(cells: readonly string[], widths: readonly number[]): string {
   const padded = cells.map((cell, i) => cell.padEnd(widths[i]!)); // widths guaranteed same length as cells by caller
   return padded.join("│").trim();
 }
 
-/**
- * Format the delta cell with glyph and annotation.
- */
 function formatDeltaCell(verdict?: MetricVerdict): string {
   if (!verdict) return "";
 
@@ -213,7 +196,12 @@ export function renderReport(result: ComparisonResult): string {
     `gymrat compare · ${result.labels[0]} ↔ ${result.labels[1]} · ${result.samples} paired samples · adapter: ${result.adapter}`,
   );
 
-  const headers = ["metric", `old (${result.labels[0]})`, `new (${result.labels[1]})`, "vs old"];
+  const headers: [string, string, string, string] = [
+    "metric",
+    `old (${result.labels[0]})`,
+    `new (${result.labels[1]})`,
+    "vs old",
+  ];
 
   // Collect all metric rows with formatted values for column width calculation
   const metricEntries = Object.entries(result.metrics);
@@ -237,23 +225,24 @@ export function renderReport(result: ComparisonResult): string {
     });
   }
 
+  const geomeanLabel = "geomean (gating metrics)";
   const metricColWidth = computeColumnWidth(
-    headers[0]!.length, // headers is literal 4-element array
-    metricRows.map((r) => r.name.length),
+    headers[0].length,
+    [...metricRows.map((r) => r.name.length), geomeanLabel.length],
     16,
   );
   const oldColWidth = computeColumnWidth(
-    headers[1]!.length, // headers is literal 4-element array
+    headers[1].length,
     metricRows.map((r) => r.oldValue.length),
     14,
   );
   const newColWidth = computeColumnWidth(
-    headers[2]!.length, // headers is literal 4-element array
+    headers[2].length,
     metricRows.map((r) => r.newValue.length),
     16,
   );
   const deltaColWidth = computeColumnWidth(
-    headers[3]!.length, // headers is literal 4-element array
+    headers[3].length,
     metricRows.map((r) => r.deltaCell.length),
     16,
   );
@@ -277,7 +266,7 @@ export function renderReport(result: ComparisonResult): string {
 
   lines.push(separator);
   const geomeanDelta = formatDelta(result.geomean.value);
-  const geomeanLine = formatTableLine(["geomean (gating metrics)", "", "", geomeanDelta], widths);
+  const geomeanLine = formatTableLine([geomeanLabel, "", "", geomeanDelta], widths);
   lines.push(geomeanLine);
 
   const methods = new Set(

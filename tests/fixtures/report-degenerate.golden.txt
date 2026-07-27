@@ -1,0 +1,13 @@
+gymrat compare · main ↔ perf/faster-decode · 4 paired samples · adapter: metric-lines
+metric                    │old (main)    │new (perf/faster-decode)  │vs old
+──────────────────────────┼──────────────┼──────────────────────────┼─────────────────────────────
+zero-median/time          │0n ± 0%       │0n ± 0%                   │~ 0.0%  (exact)
+nan-delta/count           │0             │120                       │~   (exact)
+old-side-only/time        │2.048µ ± 2%   │                          │
+throughput/ops            │1200 ± 5%     │1560 ± 4%                 │✓ +30.0%  (band ±2.5%, n=4)
+──────────────────────────┼──────────────┼──────────────────────────┼─────────────────────────────
+geomean (gating metrics)  │              │                          │0.0%
+noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)
+1 worktree removed · 1 left behind
+  left behind: /tmp/gymrat-abc123 (contains modified files)
+  worktree prune failed: could not lock config file

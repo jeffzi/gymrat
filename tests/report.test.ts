@@ -834,6 +834,30 @@ describe("renderReport", () => {
       expect(separatorOffsets(shortLine)).toStrictEqual(separatorOffsets(headerLine));
       expect(separatorOffsets(longLine)).toStrictEqual(separatorOffsets(headerLine));
     });
+
+    it("aligns the geomean row separators with the table when metric names are short", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "a/time": {
+            medianA: 100,
+            medianB: 95,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: { verdict: "improved", method: "signed-rank", delta: -5, n: 10, p: 0.01 },
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+        geomean: { value: -5, n: 1, excluded: [] },
+      });
+
+      const lines = renderReport(result).split("\n");
+
+      const headerLine = lines.find((line) => line.includes("old (main)"));
+      const geomeanLine = lines.find((line) => line.includes("geomean"));
+      expect(headerLine).toBeDefined();
+      expect(geomeanLine).toBeDefined();
+      expect(separatorOffsets(geomeanLine!)).toStrictEqual(separatorOffsets(headerLine!));
+    });
   });
 
   describe("when rendering with mixed methods", () => {
@@ -1261,6 +1285,109 @@ describe("renderReport", () => {
       const nanDeltaLine = lines.find((line) => line.includes("nan-delta"));
       expect(nanDeltaLine).toBeDefined();
       expect(nanDeltaLine!).toMatch(/~\s+\(exact\)/);
+    });
+  });
+
+  /**
+   * Byte-level pins on the whole rendered report.
+   *
+   * Every other assertion in this file checks a substring or a separator offset,
+   * which leaves column widths and inter-cell spacing free to drift while the
+   * suite stays green. The report is the product's interface, so that drift is a
+   * user-visible output change — these two snapshots are what makes it fail a run
+   * instead of shipping.
+   *
+   * A diff here is never cosmetic. Re-record only when changing the report is the
+   * intended change; a refactor that moves these bytes has changed behavior,
+   * whatever its intent.
+   */
+  describe("when rendering a whole report", () => {
+    it("matches the recorded bytes for a representative run", async () => {
+      const result = createComparisonResult({
+        metrics: {
+          "decode/text=digits/time": {
+            medianA: 1735,
+            medianB: 1425,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: { verdict: "improved", method: "signed-rank", delta: -17.9, n: 10, p: 0.002 },
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "decode/text=words/time": {
+            medianA: 3065,
+            medianB: 3093,
+            spreadA: 1,
+            spreadB: 3,
+            verdict: { verdict: "no-signal", method: "signed-rank", delta: 0.9, n: 10, p: 0.49 },
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "encode/time": {
+            medianA: 914,
+            medianB: 934,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: { verdict: "regressed", method: "signed-rank", delta: 2.2, n: 10, p: 0.002 },
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "encode/heap": {
+            medianA: 49152,
+            medianB: 45261,
+            spreadA: 0,
+            spreadB: 0,
+            verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
+            meta: { direction: "lower", gating: true, exact: true, unit: "bytes" },
+          },
+        },
+        geomean: { value: -6, n: 4, excluded: [] },
+      });
+
+      await expect(renderReport(result)).toMatchFileSnapshot(
+        "./fixtures/report-representative.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for degenerate inputs and a dirty cleanup", async () => {
+      const result = createComparisonResult({
+        samples: 4,
+        adapter: "metric-lines",
+        metrics: {
+          "zero-median/time": {
+            medianA: 0,
+            medianB: 0,
+            spreadA: 0,
+            spreadB: 0,
+            verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
+            meta: { direction: "lower", gating: true, exact: true, unit: "ns" },
+          },
+          "nan-delta/count": {
+            medianA: 0,
+            medianB: 120,
+            verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
+            meta: { direction: "lower", gating: true, exact: true },
+          },
+          "old-side-only/time": {
+            medianA: 2048,
+            spreadA: 2,
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "throughput/ops": {
+            medianA: 1200,
+            medianB: 1560,
+            spreadA: 5,
+            spreadB: 4,
+            verdict: { verdict: "improved", method: "band", delta: 30, n: 4, band: 2.5 },
+            meta: { direction: "higher", gating: false, exact: false },
+          },
+        },
+        geomean: { value: 0, n: 1, excluded: ["nan-delta/count"] },
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc123", error: "contains modified files" }],
+        worktreePruneError: "could not lock config file",
+      });
+
+      await expect(renderReport(result)).toMatchFileSnapshot(
+        "./fixtures/report-degenerate.golden.txt",
+      );
     });
   });
 });
