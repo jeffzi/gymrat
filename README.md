@@ -3,12 +3,14 @@
 Standalone A/B benchmark runner with paired sampling and benchstat-style reports.
 
 `gymrat compare` runs a benchmark command against two revisions, alternates samples between them so
-both see the same machine noise, and prints a report that tells you — per metric — whether the
-change is a real improvement, a real regression, or noise. Verdicts come from a two-sided Wilcoxon
+both see the same machine noise, and prints a report that tells you, per metric, whether the change
+is a real improvement, a real regression, or noise. Verdicts come from a two-sided Wilcoxon
 signed-rank test once there are enough samples, and from a noise band below that. No session state,
 no config required to start.
 
 ## Install
+
+Requires Node ≥ 22 and `git` on your `PATH`.
 
 gymrat is not yet published to npm. For now, install from source:
 
@@ -26,8 +28,7 @@ npm link
 gymrat compare main my-branch --bench "npm run bench"
 ```
 
-Requires Node ≥ 22. gymrat resolves git refs in the current repository, so run it from inside your
-project.
+gymrat resolves git refs in the current repository, so run it from inside your project.
 
 ## Usage
 
@@ -36,9 +37,15 @@ gymrat compare [label=]<target> [label=]<target> [options]
 ```
 
 The first positional is the baseline; deltas are measured against it (the report's `vs old`
-column). Each target is either a git ref (resolved with `git rev-parse` and checked out into a
-temporary detached worktree) or a path to an existing directory (used in place, never removed). An
-optional `label=` prefix sets the display name; the default label is the target string itself.
+column). Each target is either a path to an existing directory (used in place, never removed) or a
+git ref that gymrat resolves with `git rev-parse` and checks out into a temporary detached worktree.
+An existing directory wins over a git ref of the same name, so prefix the ref with `refs/heads/` to
+disambiguate.
+
+An optional `label=` prefix sets the display name. Without it, a git target is labelled with its
+ref and a path target with the directory's base name, resolved through symlinks. Pass `label=`
+when two paths share a base name. The prefix splits at the first `=`, so a target whose own name
+contains `=` cannot be passed.
 
 ```sh
 # Compare two git refs
@@ -62,44 +69,52 @@ gymrat compare main my-branch \
 | `--prepare <script>` | none            | Per-target setup, e.g. `"npm ci && npm run build"` |
 | `--adapter <type>`   | `metric-lines`  | Output parser: `metric-lines` or `mitata`          |
 | `--samples <number>` | `10`            | Paired samples per target                          |
-| `--timeout <number>` | `1800`          | Timeout in seconds per bench invocation            |
+| `--timeout <number>` | `1800`          | Timeout in seconds per `prepare` and per bench run |
 | `--config <file>`    | `./gymrat.json` | Config file (loaded automatically when present)    |
 
 \*`--bench` is required either on the command line or in the config file.
 
-Sampling is strictly sequential: for each of N windows, gymrat runs the bench command in target 1,
+`gymrat --version` prints the installed version; `gymrat compare --help` prints these options from
+the binary.
+
+Sampling is strictly sequential: for each of N windows gymrat runs the bench command in target 1,
 then in target 2. Both `bench` and `prepare` run through the shell with the working directory set to
 the target's directory.
 
 ### Exit codes
 
-- `0` — a report was produced. Verdicts never affect the exit code.
-- `1` — an operational error: an unresolvable target, a nonzero bench/prepare exit, a timeout, zero
-  metrics parsed, or a config error. The captured command output is surfaced so you can see what
-  went wrong.
+- `0`: a report was produced. Verdicts never affect the exit code.
+- `1`: an operational error (unresolvable target, nonzero bench/prepare exit, timeout, zero metrics
+  parsed, or config error). gymrat surfaces the captured command output so you can see what went
+  wrong.
+- `130` / `143`: interrupted by `SIGINT` or `SIGTERM`. No report is produced.
 
-Temporary worktrees created for git-ref targets are removed on success, on error, and on
-`SIGINT`/`SIGTERM`; the report footer confirms they were removed and reports how many (if any) were
-left behind.
+gymrat removes temporary worktrees created for git-ref targets on success, on error, and on
+`SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left behind,
+naming each leftover directory with the reason git gave. On the signal path there is no report to
+carry that footer, so nothing is printed: gymrat kills the running bench command, sweeps the
+worktrees, and exits.
 
 ## Reading the report
 
+```sh
+gymrat compare main perf/faster-decode --bench "node bench.js" --adapter mitata --samples 10
+```
+
+With a `gymrat.json` marking `encode/heap` as an exact metric, that prints:
+
 ```text
-$ gymrat compare old=main new=perf/faster-decode --samples 10
-
 gymrat compare · main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
-
-metric                        │ old (main)   │ new (faster-decode) │ vs old
-──────────────────────────────┼──────────────┼─────────────────────┼─────────────────────────
-decode/text=digits time       │ 1.726µ ± 1%  │ 1.423µ ± 2%         │ ✓ -17.5%  (p=0.002 n=10)
-decode/text=words  time       │ 3.070µ ± 2%  │ 3.081µ ± 3%         │ ~         (p=0.62  n=10)
-encode             time       │  912n  ± 1%  │  934n  ± 1%         │ ✗  +2.4%  (p=0.014 n=10)
-decode             heap_bytes │ 48.0k        │ 44.2k               │ ✓  -7.9%  (exact)
-──────────────────────────────┼──────────────┼─────────────────────┼─────────────────────────
-geomean (gating metrics)      │              │                     │   -5.8%
-
+metric                   │old (main)    │new (perf/faster-decode)  │vs old
+─────────────────────────┼──────────────┼──────────────────────────┼──────────────────────────
+decode/text=digits/time  │1.735µ ± 1%   │1.425µ ± 1%               │✓ -17.9%  (p=0.002 n=10)
+decode/text=words/time   │3.065µ ± 1%   │3.093µ ± 3%               │~ +0.9%  (p=0.49 n=10)
+encode/time              │914n ± 1%     │934n ± 1%                 │✗ +2.2%  (p=0.002 n=10)
+encode/heap              │48.0k ± 0%    │44.2k ± 0%                │✓ -7.9%  (exact)
+─────────────────────────┼──────────────┼──────────────────────────┼──────────────────────────
+geomean (gating metrics) │              │                          │-6.0%
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
-worktrees removed · 0 left behind
+2 worktrees removed · 0 left behind
 ```
 
 - The **delta is always shown**, even under `~`, so "-1.9% but no signal" is visible rather than
@@ -107,62 +122,73 @@ worktrees removed · 0 left behind
 - The **glyph is direction-aware**: `✓` improved, `✗` regressed, `~` no signal. You never do
   better-is-higher math yourself.
 - The **± spread** cell is the cross-run half-range of the per-run values as a percentage of the
-  median — the same dispersion the noise band uses.
+  median, the same dispersion the noise band uses.
 - Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
-  `metric-lines` values render raw.
-- The **geomean** row aggregates gating metrics only.
-- A metric present on only one side renders one-sided — its value in the present column, a blank
-  cell on the other, and no verdict.
+  `metric-lines` values carry no unit and are rounded to the nearest integer.
+- The **geomean** (geometric mean) row aggregates gating metrics only. All metrics are gating by
+  default; disable per metric in the config file.
+- A metric present on only one side renders one-sided: its value in the present column, a blank cell
+  on the other, and no verdict.
 
 ### How verdicts are decided
 
 Per metric, sample window _i_ pairs target-A run _i_ with target-B run _i_. `delta%` is computed
 from the per-side medians.
 
-- **Signed-rank** (≥ 6 nonzero pairs): a two-sided Wilcoxon signed-rank test. Signal when
-  `p < 0.05`. Below the 6-pair floor gymrat falls back to the band method.
-- **Noise band** (< 6 pairs): `band% = max(1.5 × 100 × max(halfRange/median over both sides),
-0.5%)`. Signal when `|delta%|` exceeds the band. Rendered as e.g. `~ -1.9% (band ±3.0%, n=4)`.
+- **Signed-rank** (≥ 6 nonzero differences): a two-sided Wilcoxon signed-rank test. Signal when
+  `p < 0.05`.
+- **Noise band** (fewer than 6 nonzero differences): the band is
+  `max(150 × max(halfRange/median over both sides), 0.5%)`, and `|delta%|` must exceed it to
+  count as signal. Rendered as e.g. `~ -1.9% (band ±3.0%, n=4)`. Runs of 6 or more samples land here
+  too when ties leave fewer than 6 nonzero differences.
 - **Exact metrics** (config-flagged, e.g. binary size): any difference between medians is a signal;
   a single sample suffices.
 
 ## The `metric-lines` format
 
-The default adapter, `metric-lines`, is the universal "just printf your numbers" path — no
+The default adapter, `metric-lines`, is the universal "just printf your numbers" path. No
 benchmark library required. gymrat scans bench **stdout** (never stderr) for lines matching:
 
 ```text
 METRIC <name>=<value>
 ```
 
-- Optional leading/trailing whitespace; the literal `METRIC`, then whitespace, then `name=value`.
-- The **last** `=` splits name from value, so metric names may themselves contain `=` (e.g.
-  `decode/text=digits`). Names are non-empty and contain no whitespace; any other character is
-  allowed. Values are finite decimal numbers — optional sign, fraction, and exponent (`-12`,
-  `3.14`, `1e-9`).
+- gymrat trims each line and keeps the ones starting with `METRIC`. Everything after that prefix is
+  trimmed and split at its **last** `=`, so metric names may themselves contain `=` (e.g.
+  `decode/text=digits`).
+- The left side becomes the metric name verbatim, whitespace included. Nothing separates the prefix
+  from the name, so a typo like `METRICS foo=1` silently parses as a metric named `S foo`.
+  Similarly, `METRIC decode time=1.4` yields a metric named `decode time`. Check the report's metric
+  column when a name looks wrong.
+- The right side goes through JavaScript's `Number()`, which accepts more than decimal notation
+  (`0x1f` parses as 31); only non-finite results are rejected.
 - Every non-matching line is **ignored**, so gymrat tolerates arbitrary surrounding output. A line
-  that starts with `METRIC` but fails to parse emits a warning on gymrat's stderr (to catch typos)
-  without failing the run.
-- A **repeated name within one run** is treated as within-run samples: the run's value is the median
-  of the occurrences.
-- A run in which **zero** metrics are found is an operational error — gymrat aborts and surfaces the
+  starting with `METRIC` whose remainder has no `=`, has an empty name, or has a non-finite value
+  emits a warning on gymrat's stderr without failing the run.
+- A **repeated name within one run** produces within-run samples: gymrat takes the median of the
+  occurrences as the run's value.
+- A run in which **zero** metrics are found is an operational error. gymrat aborts and surfaces the
   captured bench output.
-- Every metric defaults to **lower-is-better** and renders raw (no units). Override direction per
-  metric in the config file.
+- Every metric defaults to **lower-is-better** and is rounded to the nearest integer, with no unit
+  scaling. Emit nanoseconds or microseconds rather than fractional seconds, or every value collapses
+  to `0` or `1`. Override direction per metric in the config file.
 
-Example bench script:
+Example bench command:
 
 ```sh
 #!/bin/sh
 # Print one `METRIC name=value` line per metric; replace the values with your
-# real measurements. gymrat takes the median across runs.
-echo "METRIC decode/time=1.42"
-echo "METRIC encode/time=0.91"
+# real measurements. Values here are nanoseconds, since gymrat rounds
+# `metric-lines` values to whole numbers. gymrat takes the median across runs.
+echo "METRIC decode/time=1420"
+echo "METRIC encode/time=910"
 ```
 
 The `mitata` adapter parses the JSON that [mitata](https://github.com/evanwashere/mitata) prints in
-its JSON mode, flattening each benchmark to `alias[/arg=value]*/measure` names with `time` (p50) and
-`heap_bytes` metrics.
+its JSON mode, flattening each benchmark to `<alias>/time` (from `stats.p50`) and `<alias>/heap`
+(from `stats.heap.avg`, when mitata measured it). For parameterized benchmarks, `$name` placeholders
+in the alias are replaced with `name=value`, so an alias of `decode/$text` becomes
+`decode/text=digits/time`.
 
 ## Configuration
 
@@ -185,9 +211,12 @@ an error, to catch typos.
 
 - `bench`, `prepare`, `adapter`, `samples`, `timeoutSeconds` mirror the command-line options.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
-  - `direction` — `"lower"` or `"higher"` (which way is better).
-  - `gating` — whether the metric counts toward the geomean. Defaults to `true`.
-  - `exact` — when `true`, any median difference is a signal and a single sample suffices.
+  - `direction`: `"lower"` or `"higher"` (which way is better).
+  - `gating`: whether the metric counts toward the geomean. Defaults to `true`.
+  - `exact`: when `true`, any median difference is a signal and a single sample suffices.
+- A `metrics` key that matches no metric the run produced is ignored without a warning, unlike an
+  unknown top-level key. When an override seems to do nothing, check the spelling against the
+  report's metric column.
 
 ## License
 
