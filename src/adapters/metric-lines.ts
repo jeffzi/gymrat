@@ -1,5 +1,8 @@
+import { computeMedian } from "../math.js";
 import type { Adapter, MetricDefaults } from "./types.js";
 import { AdapterError } from "./types.js";
+
+const METRIC_PREFIX = "METRIC";
 
 /**
  * Parses METRIC name=value lines; for repeated metrics returns median.
@@ -16,11 +19,11 @@ const metricLinesAdapter: Adapter = {
     for (const line of lines) {
       const trimmed = line.trim();
 
-      if (!trimmed.startsWith("METRIC")) {
+      if (!trimmed.startsWith(METRIC_PREFIX)) {
         continue;
       }
 
-      const afterMetric = trimmed.slice(6).trim();
+      const afterMetric = trimmed.slice(METRIC_PREFIX.length).trim();
       const lastEqIndex = afterMetric.lastIndexOf("=");
 
       if (lastEqIndex === -1 || lastEqIndex === 0) {
@@ -59,11 +62,5 @@ const metricLinesAdapter: Adapter = {
     return { direction: "lower" };
   },
 };
-
-function computeMedian(values: number[]): number {
-  const sorted = values.toSorted((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
-}
 
 export default metricLinesAdapter;

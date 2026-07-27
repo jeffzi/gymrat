@@ -54,7 +54,6 @@ function stripTrailingZeros(str: string): string {
  */
 function formatValue(value: number, unit?: "ns" | "bytes"): string {
   if (!unit) {
-    // No unit specified: return as integer
     return Math.round(value).toString();
   }
 

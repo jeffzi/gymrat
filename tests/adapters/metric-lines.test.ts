@@ -125,21 +125,11 @@ describe("metric-lines adapter", () => {
     });
 
     describe("zero metrics → AdapterError", () => {
-      it("throws AdapterError when no valid METRIC lines found", () => {
-        const stdout = "some output\nwith no metrics";
-        const parse = () => metricLinesAdapter.parse(stdout);
-        expect(parse).toThrow(AdapterError);
-        expect(parse).toThrow(/^No valid METRIC lines found$/);
-      });
-
-      it("throws AdapterError for empty string", () => {
-        const parse = () => metricLinesAdapter.parse("");
-        expect(parse).toThrow(AdapterError);
-        expect(parse).toThrow(/^No valid METRIC lines found$/);
-      });
-
-      it("throws AdapterError when only malformed METRIC lines present", () => {
-        const stdout = "METRIC foo\nMETRIC bar=baz";
+      it.each([
+        ["no valid METRIC lines found", "some output\nwith no metrics"],
+        ["empty string", ""],
+        ["only malformed METRIC lines present", "METRIC foo\nMETRIC bar=baz"],
+      ])("throws AdapterError when %s", (_description, stdout) => {
         const parse = () => metricLinesAdapter.parse(stdout);
         expect(parse).toThrow(AdapterError);
         expect(parse).toThrow(/^No valid METRIC lines found$/);

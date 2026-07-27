@@ -2,16 +2,11 @@
  * Verdict engine core: pairing, delta computation, and verdict determination.
  */
 
+import { computeMedian } from "../math.js";
 import { wilcoxonSignedRank } from "./wilcoxon.js";
 
-/**
- * Tri-state verdict on a metric based on statistical analysis.
- */
 export type Verdict = "improved" | "regressed" | "no-signal";
 
-/**
- * Statistical thresholds and parameters.
- */
 const P_VALUE_THRESHOLD = 0.05;
 const MIN_WILCOXON_N = 6;
 
@@ -42,14 +37,8 @@ export type ExactVerdict = VerdictBase & { method: "exact" };
  */
 export type MetricVerdict = SignedRankVerdict | BandVerdict | ExactVerdict;
 
-/**
- * Statistical method used to compute the verdict.
- */
 export type Method = MetricVerdict["method"];
 
-/**
- * Metadata describing how to analyze a metric.
- */
 export type MetricMetadata = {
   /** "lower" = smaller values are better; "higher" = larger values are better */
   direction: "lower" | "higher";
@@ -171,48 +160,7 @@ export function computeVerdicts(
         n: pairedA.length,
       };
     } else {
-      // Non-exact path: try signed-rank, fall back to band
-      if (pairedA.length >= MIN_WILCOXON_N) {
-        const pairs: Array<readonly [number, number]> = [];
-        for (let i = 0; i < pairedA.length; i++) {
-          const a = pairedA[i]!;
-          const b = pairedB[i]!;
-          pairs.push([a, b]);
-        }
-
-        const wilcoxonResult = wilcoxonSignedRank(pairs);
-
-        // If effective n < threshold after dropping zeros, fall back to band
-        if (wilcoxonResult.n < MIN_WILCOXON_N) {
-          const bandVerdict = computeBandMethod(pairedA, pairedB, delta, meta.direction);
-          result[metric] = {
-            ...bandVerdict,
-            n: pairedA.length,
-          };
-        } else {
-          let verdict: Verdict;
-          if (wilcoxonResult.p < P_VALUE_THRESHOLD) {
-            verdict = determineVerdict(delta, meta.direction);
-          } else {
-            verdict = "no-signal";
-          }
-
-          result[metric] = {
-            verdict,
-            method: "signed-rank",
-            delta,
-            n: pairedA.length,
-            p: wilcoxonResult.p,
-          };
-        }
-      } else {
-        // n < 6: use band method
-        const bandVerdict = computeBandMethod(pairedA, pairedB, delta, meta.direction);
-        result[metric] = {
-          ...bandVerdict,
-          n: pairedA.length,
-        };
-      }
+      result[metric] = computeApproximateVerdict(pairedA, pairedB, delta, meta.direction);
     }
   }
 
@@ -220,19 +168,60 @@ export function computeVerdicts(
 }
 
 /**
- * Compute the median of a numeric array.
+ * Compute a verdict for the non-exact path: signed-rank when there are enough
+ * pairs, falling back to the noise-band method otherwise.
  *
- * @param values Non-empty array of numbers
- * @returns Median value
+ * @param pairedA Array of values from sample A
+ * @param pairedB Array of values from sample B
+ * @param delta Delta percentage already computed
+ * @param direction "lower" or "higher"
+ * @returns Verdict from either the signed-rank or band method
  */
-function computeMedian(values: readonly number[]): number {
-  const sorted = values.toSorted((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
+function computeApproximateVerdict(
+  pairedA: readonly number[],
+  pairedB: readonly number[],
+  delta: number,
+  direction: "lower" | "higher",
+): MetricVerdict {
+  if (pairedA.length >= MIN_WILCOXON_N) {
+    const pairs: Array<readonly [number, number]> = [];
+    for (let i = 0; i < pairedA.length; i++) {
+      const a = pairedA[i]!;
+      const b = pairedB[i]!;
+      pairs.push([a, b]);
+    }
 
-  if (sorted.length % 2 === 1) {
-    return sorted[mid]!;
+    const wilcoxonResult = wilcoxonSignedRank(pairs);
+
+    // If effective n < threshold after dropping zeros, fall back to band
+    if (wilcoxonResult.n < MIN_WILCOXON_N) {
+      return {
+        ...computeBandMethod(pairedA, pairedB, delta, direction),
+        n: pairedA.length,
+      };
+    }
+
+    let verdict: Verdict;
+    if (wilcoxonResult.p < P_VALUE_THRESHOLD) {
+      verdict = determineVerdict(delta, direction);
+    } else {
+      verdict = "no-signal";
+    }
+
+    return {
+      verdict,
+      method: "signed-rank",
+      delta,
+      n: pairedA.length,
+      p: wilcoxonResult.p,
+    };
   }
-  return (sorted[mid - 1]! + sorted[mid]!) / 2;
+
+  // n < 6: use band method
+  return {
+    ...computeBandMethod(pairedA, pairedB, delta, direction),
+    n: pairedA.length,
+  };
 }
 
 /**
@@ -364,7 +353,7 @@ export function computeGeomean(
       rho = 1 / (1 + delta / 100);
     }
 
-    if (rho <= 0) {
+    if (rho <= 0 || !Number.isFinite(rho)) {
       excluded.push(metric);
       continue;
     }

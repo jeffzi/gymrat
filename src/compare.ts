@@ -4,6 +4,7 @@ import { getAdapter } from "./adapters/index.js";
 import type { Adapter } from "./adapters/types.js";
 import { resolveMetricMeta } from "./config.js";
 import { exec } from "./exec.js";
+import { computeMedian } from "./math.js";
 import { formatCleanupFailures, renderReport } from "./report.js";
 import type { ComparisonResult } from "./report.js";
 import { installTerminationCleanup } from "./signals.js";
@@ -25,21 +26,6 @@ export interface CompareOptions {
     string,
     { direction?: "lower" | "higher"; gating?: boolean; exact?: boolean }
   >;
-}
-
-/**
- * Compute the median of a numeric array.
- */
-function computeMedian(values: readonly number[]): number {
-  /* v8 ignore if -- defensive check; never called with empty array */
-  if (values.length === 0) {
-    throw new Error("Cannot compute median of empty array");
-  }
-
-  const sorted = [...values].toSorted((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-
-  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
 /**
@@ -153,9 +139,6 @@ function resolveDir(resolved: Target, repoDir: string, worktrees: WorktreeInfo[]
   return resolved.dir;
 }
 
-/**
- * Resolve the display label for a target.
- */
 function resolveLabel(explicit: string | undefined, resolved: Target): string {
   if (explicit !== undefined) {
     return explicit;
@@ -167,16 +150,12 @@ function resolveLabel(explicit: string | undefined, resolved: Target): string {
  * Build the ComparisonResult from collected samples and computed verdicts.
  */
 function buildComparisonResult(
-  samplesA: Record<string, number>[],
-  samplesB: Record<string, number>[],
-  metricNames: Set<string>,
-  metricMeta: ReturnType<typeof resolveMetricMeta>,
-  verdicts: ReturnType<typeof computeVerdicts>,
-  geomean: ReturnType<typeof computeGeomean>,
-  labels: [string, string],
+  measurement: Measurement,
   options: Pick<CompareOptions, "samples" | "adapter">,
   cleanup: CleanupResult,
 ): ComparisonResult {
+  const { samplesA, samplesB, metricNames, metricMeta, verdicts, geomean, labels } = measurement;
+
   const result: ComparisonResult = {
     labels,
     samples: options.samples,
@@ -205,9 +184,6 @@ function buildComparisonResult(
   return result;
 }
 
-/**
- * Collect all metric names from sample sets.
- */
 function collectMetricNames(
   samplesA: Record<string, number>[],
   samplesB: Record<string, number>[],
@@ -359,17 +335,7 @@ export async function compare(options: CompareOptions): Promise<string> {
 
     const cleanup = cleanupWorktrees(worktrees, repoDir);
 
-    const result = buildComparisonResult(
-      measurement.samplesA,
-      measurement.samplesB,
-      measurement.metricNames,
-      measurement.metricMeta,
-      measurement.verdicts,
-      measurement.geomean,
-      measurement.labels,
-      options,
-      cleanup,
-    );
+    const result = buildComparisonResult(measurement, options, cleanup);
 
     return renderReport(result);
   };
