@@ -250,22 +250,15 @@ describe("createProgram", () => {
     });
 
     describe("when insufficient positionals", () => {
-      it("throws CommanderError when only one positional provided", async () => {
+      it.each([
+        { description: "only one positional", args: ["main"] },
+        { description: "no positionals", args: [] },
+      ])("throws CommanderError when $description provided", async ({ args }) => {
         // Arrange
         const program = createProgramWithSubcommandOverrides();
 
         // Act & Assert
-        await expect(program.parseAsync(["node", "cli.js", "compare", "main"])).rejects.toThrow(
-          /missing required argument/,
-        );
-      });
-
-      it("throws CommanderError when no positionals provided", async () => {
-        // Arrange
-        const program = createProgramWithSubcommandOverrides();
-
-        // Act & Assert
-        await expect(program.parseAsync(["node", "cli.js", "compare"])).rejects.toThrow(
+        await expect(program.parseAsync(["node", "cli.js", "compare", ...args])).rejects.toThrow(
           /missing required argument/,
         );
       });

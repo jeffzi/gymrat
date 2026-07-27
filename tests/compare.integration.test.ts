@@ -550,7 +550,7 @@ describe("compare – integration", () => {
   });
 
   describe("when the bench command exceeds the timeout", () => {
-    it("throws naming the target and the elapsed timeout, and still cleans up", async () => {
+    it("throws naming the target and the elapsed timeout", async () => {
       const repo = createScratchRepo();
 
       try {
@@ -576,6 +576,36 @@ describe("compare – integration", () => {
         const failure = await captureRejection(compare(options));
 
         expect(failure.message).toMatch(/Bench command on old target timed out after 500ms/);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it("still cleans up the worktrees", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        createBranch(repo, { name: "old-slow", benchScript: "#!/bin/sh\nsleep 10" });
+        createBranch(repo, {
+          name: "new-slow",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+        });
+
+        const options: CompareOptions = {
+          oldTarget: "old-slow",
+          newTarget: "new-slow",
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 3,
+          // Fractional seconds keep the test near half a second; the sleep is
+          // killed with its process group, so nothing outlives the run.
+          timeoutSeconds: 0.5,
+        };
+
+        const failure = await captureRejection(compare(options));
+
         expect(failure.message).not.toContain("left behind");
         assertWorktreesCleanedUp(repo);
       } finally {
