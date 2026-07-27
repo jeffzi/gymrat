@@ -109,8 +109,13 @@ export function resolveTarget(input: string, repoDir: string): Target {
       ref: input,
       resolvedSha,
     };
-  } catch {
-    throw new Error(`Cannot resolve target '${input}': not an existing directory or valid git ref`);
+  } catch (error) {
+    throw new Error(
+      `Cannot resolve target '${input}': not an existing directory or valid git ref`,
+      {
+        cause: error,
+      },
+    );
   }
 }
 
