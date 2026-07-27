@@ -75,9 +75,15 @@ export async function exec(
       }
       try {
         process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // Swallowed deliberately: the process may exit between the pid check and
-        // the kill, and a cleanup that throws would mask the real result.
+      } catch (err) {
+        // ESRCH is expected: the process may exit between the pid check and
+        // the kill. Anything else (e.g. EPERM) is unexpected. cleanup runs from
+        // setTimeout and AbortSignal listener contexts where a throw becomes an
+        // uncaught exception rather than a rejection, so surface via a process
+        // warning instead of throwing.
+        if (!(err instanceof Error && "code" in err && err.code === "ESRCH")) {
+          process.emitWarning(err instanceof Error ? err : String(err));
+        }
       }
     };
 
