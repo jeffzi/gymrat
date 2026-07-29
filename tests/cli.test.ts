@@ -8,20 +8,24 @@ import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AdapterError } from "../src/adapters/index.js";
-import { createProgram, formatCliError } from "../src/cli.js";
+import { createProgram, formatCliError, isHintedError } from "../src/cli.js";
+import type { CommandErrorContext, ExitFailure } from "../src/compare.js";
+import { CommandError } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
 
-// Mock the compare module
-vi.mock("../src/compare.js", () => ({
-  compare: vi.fn(),
-}));
+// Mock the compare module — pass through CommandError so tests can construct instances
+vi.mock("../src/compare.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/compare.js")>();
+  return {
+    ...actual,
+    compare: vi.fn(),
+  };
+});
 
-// Mock the config module - we'll set up specific return values per test
 vi.mock("../src/config.js", () => ({
   resolveConfig: vi.fn(),
 }));
 
-// Helper to get properly typed mocks and configure them
 async function setupMocks(
   compareMockReturn?: string | Error,
   resolveConfigMockReturn: Partial<ResolvedConfig> = {},
@@ -88,6 +92,28 @@ function createProgramWithSubcommandOverrides(): Command {
     command.exitOverride();
   }
   return program;
+}
+
+/**
+ * Build a CommandError with minimal context for testing formatCliError.
+ *
+ * Only `target.kind` matters for hint assignment — ref targets get the hint,
+ * in-place targets do not.
+ */
+function createCommandError(targetKind: "ref" | "in-place"): CommandError {
+  const context: CommandErrorContext = {
+    phase: "bench",
+    position: "old",
+    label: "baseline",
+    command: "bench.sh",
+    target:
+      targetKind === "ref"
+        ? { kind: "ref", ref: "main", resolvedSha: "abc123" }
+        : { kind: "in-place", dir: "/tmp/test" },
+    dir: "/tmp/test",
+  };
+  const failure: ExitFailure = { exitCode: 1, stderr: "failed", stdout: "" };
+  return new CommandError(context, failure);
 }
 
 afterEach(() => {
@@ -317,62 +343,143 @@ describe("createProgram", () => {
       });
     });
   });
+});
 
-  describe("formatCliError", () => {
-    it("labels an adapter failure with its error class", () => {
-      // Arrange - adapter messages name the parse failure but not the layer it came from
-      const error = new AdapterError("No valid METRIC lines found");
+describe("isHintedError", () => {
+  it("returns true for an error with a hint property", () => {
+    // Arrange
+    const error = createCommandError("ref");
 
-      // Act
-      const rendered = formatCliError(error);
+    // Act
+    const result = isHintedError(error);
 
-      // Assert
-      expect(rendered).toBe("AdapterError: No valid METRIC lines found");
-    });
-
-    it.each([
-      {
-        description: "a plain Error",
-        error: new Error("git rev-parse failed"),
-        expected: "git rev-parse failed",
-      },
-      { description: "a non-Error throwable", error: "boom", expected: "boom" },
-    ])("renders $description unlabelled", ({ error, expected }) => {
-      // Act
-      const rendered = formatCliError(error);
-
-      // Assert
-      expect(rendered).toBe(expected);
-    });
+    // Assert
+    expect(result).toBe(true);
   });
 
-  describe("entry point", () => {
-    it("executes CLI when invoked through symlink", async () => {
-      // Arrange
-      const tmpDir = mkdtempSync(join(tmpdir(), "gymrat-cli-test-"));
-      const cliPath = resolve("src/cli.ts");
-      const symlinkPath = join(tmpDir, "cli-symlink.ts");
+  it.each([
+    { description: "a plain Error", value: new Error("plain") },
+    { description: "a non-Error value", value: "boom" },
+    { description: "null", value: null },
+  ])("returns false for $description", ({ value }) => {
+    // Act
+    const result = isHintedError(value);
 
-      try {
-        // Create a symlink to the CLI entry point
-        symlinkSync(cliPath, symlinkPath);
+    // Assert
+    expect(result).toBe(false);
+  });
+});
 
-        // Act
-        const execFileAsync = promisify(execFile);
-        const { stdout } = await execFileAsync(
-          process.execPath,
-          ["--import", "tsx", symlinkPath, "compare", "--help"],
-          {
-            timeout: 10000,
-          },
-        );
+describe("formatCliError", () => {
+  it("labels an adapter failure with its error class", () => {
+    // Arrange - adapter messages name the parse failure but not the layer it came from
+    const error = new AdapterError("No valid METRIC lines found");
 
-        // Assert
-        expect(stdout).toContain("Usage: gymrat compare");
-      } finally {
-        // Clean up
-        rmSync(tmpDir, { recursive: true, force: true });
-      }
-    });
+    // Act
+    const rendered = formatCliError(error);
+
+    // Assert
+    expect(rendered).toBe("AdapterError: No valid METRIC lines found");
+  });
+
+  it.each([
+    {
+      description: "a plain Error",
+      error: new Error("git rev-parse failed"),
+      expected: "git rev-parse failed",
+    },
+    { description: "a non-Error throwable", error: "boom", expected: "boom" },
+  ])("renders $description unlabelled", ({ error, expected }) => {
+    // Act
+    const rendered = formatCliError(error);
+
+    // Assert
+    expect(rendered).toBe(expected);
+  });
+
+  it("appends a hint line when the error carries a hint", () => {
+    // Arrange - ref targets produce a hint about worktree file visibility
+    const error = createCommandError("ref");
+
+    // Act
+    const rendered = formatCliError(error);
+
+    // Assert
+    expect(rendered).toContain("\nHint: ");
+  });
+
+  it("does not append a hint line when CommandError has undefined hint", () => {
+    // Arrange - in-place targets have no hint
+    const error = createCommandError("in-place");
+
+    // Act
+    const rendered = formatCliError(error);
+
+    // Assert
+    expect(rendered).not.toContain("Hint:");
+  });
+
+  it("does not append a hint line for a plain Error without hint field", () => {
+    // Arrange
+    const error = new Error("git rev-parse failed");
+
+    // Act
+    const rendered = formatCliError(error);
+
+    // Assert
+    expect(rendered).not.toContain("Hint:");
+  });
+
+  it("styles the Hint: label with ANSI yellow+underline when useColor is true", () => {
+    // Arrange
+    const error = createCommandError("ref");
+
+    // Act
+    const rendered = formatCliError(error, true);
+
+    // Assert - \x1b[33m = yellow, \x1b[4m = underline
+    expect(rendered).toContain("\x1b[33m");
+    expect(rendered).toContain("\x1b[4m");
+    expect(rendered).toContain("Hint:");
+  });
+
+  it("renders Hint: as plain text when useColor is false", () => {
+    // Arrange
+    const error = createCommandError("ref");
+
+    // Act
+    const rendered = formatCliError(error, false);
+
+    // Assert
+    expect(rendered).toContain("\nHint: ");
+    expect(rendered).not.toContain("\x1b[");
+  });
+});
+
+describe("entry point", () => {
+  it("executes CLI when invoked through symlink", async () => {
+    // Arrange
+    const tmpDir = mkdtempSync(join(tmpdir(), "gymrat-cli-test-"));
+    const cliPath = resolve("src/cli.ts");
+    const symlinkPath = join(tmpDir, "cli-symlink.ts");
+
+    try {
+      symlinkSync(cliPath, symlinkPath);
+
+      // Act
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ["--import", "tsx", symlinkPath, "compare", "--help"],
+        {
+          timeout: 10000,
+        },
+      );
+
+      // Assert
+      expect(stdout).toContain("Usage: gymrat compare");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

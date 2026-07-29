@@ -12,6 +12,124 @@ import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } fr
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
 
+/** Fields that identify which command failed and where, for structured error reporting. */
+export interface CommandErrorContext {
+  phase: "prepare" | "bench";
+  position: "old" | "new";
+  label: string;
+  command: string;
+  target: Target;
+  dir: string;
+  sample?: number;
+}
+
+interface CommandOutput {
+  stderr: string;
+  stdout: string;
+}
+
+/** A command that terminated with a non-zero exit code. */
+export interface ExitFailure extends CommandOutput {
+  exitCode: number;
+}
+
+/** A command that was killed after exceeding its timeout. */
+export interface TimeoutFailure extends CommandOutput {
+  timeoutMs: number;
+}
+
+function isTimeoutFailure(failure: ExitFailure | TimeoutFailure): failure is TimeoutFailure {
+  return "timeoutMs" in failure;
+}
+
+function formatCommandError(
+  context: CommandErrorContext,
+  failure: ExitFailure | TimeoutFailure,
+): string {
+  const isTimeout = isTimeoutFailure(failure);
+  const verb = isTimeout ? "timed out" : "failed";
+
+  const samplePart = context.sample !== undefined ? `, sample ${context.sample}` : "";
+  const header = `${context.phase} command ${verb} (${context.position}, "${context.label}"${samplePart})`;
+
+  const lines: string[] = [header];
+
+  if (context.target.kind === "ref") {
+    lines.push(`  ref:       ${context.target.ref}`);
+    lines.push(`  worktree:  ${context.dir}`);
+  } else {
+    lines.push(`  dir:       ${context.dir}`);
+  }
+
+  lines.push(`  command:   ${context.command}`);
+
+  if (isTimeout) {
+    lines.push(`  timeout:   ${failure.timeoutMs}ms`);
+  } else {
+    lines.push(`  exit code: ${failure.exitCode}`);
+  }
+
+  const hasStderr = failure.stderr.length > 0;
+  const hasStdout = failure.stdout.length > 0;
+
+  if (hasStderr && hasStdout) {
+    lines.push("--- stderr ---", failure.stderr, "--- stdout ---", failure.stdout);
+  } else if (hasStderr) {
+    lines.push(failure.stderr);
+  } else if (hasStdout) {
+    lines.push(failure.stdout);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Structured error for a command that failed during a benchmark or prepare phase.
+ *
+ * Carries the full context — phase, position, target, exit/timeout details — both
+ * in the formatted message and as typed fields for programmatic access. Ref-target
+ * failures append a hint about the ref possibly lacking the files the command needs.
+ */
+export class CommandError extends Error {
+  readonly phase: "prepare" | "bench";
+  readonly position: "old" | "new";
+  readonly label: string;
+  readonly command: string;
+  readonly target: Target;
+  readonly dir: string;
+  readonly sample: number | undefined;
+  readonly exitCode: number | undefined;
+  readonly timeoutMs: number | undefined;
+  readonly hint: string | undefined;
+
+  constructor(context: CommandErrorContext, failure: ExitFailure | TimeoutFailure) {
+    super(formatCommandError(context, failure));
+    this.name = "CommandError";
+    Object.setPrototypeOf(this, CommandError.prototype);
+
+    this.phase = context.phase;
+    this.position = context.position;
+    this.label = context.label;
+    this.command = context.command;
+    this.target = context.target;
+    this.dir = context.dir;
+    this.sample = context.sample;
+    const isTimeout = isTimeoutFailure(failure);
+    this.exitCode = isTimeout ? undefined : failure.exitCode;
+    this.timeoutMs = isTimeout ? failure.timeoutMs : undefined;
+    this.hint =
+      context.target.kind === "ref"
+        ? "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent"
+        : undefined;
+  }
+}
+
+/**
+ * Caller-facing configuration for a single comparison run.
+ *
+ * `oldTarget` / `newTarget` are either git refs (resolved to worktrees) or
+ * filesystem directory paths (benched in place).
+ */
 export interface CompareOptions {
   oldTarget: string; // git ref or directory path
   newTarget: string; // git ref or directory path
@@ -46,6 +164,13 @@ function computeSpread(values: readonly number[]): number {
   return ((max - min) / (2 * median)) * 100;
 }
 
+interface TargetContext {
+  target: Target;
+  dir: string;
+  label: string;
+  position: "old" | "new";
+}
+
 /**
  * Run a shell command and throw on timeout or non-zero exit.
  *
@@ -53,22 +178,39 @@ function computeSpread(values: readonly number[]): number {
  * spawned detached, so a Ctrl-C delivered to gymrat never reaches them by itself.
  */
 async function runCommand(
+  phase: "prepare" | "bench",
+  ctx: TargetContext,
   command: string,
-  cwd: string,
   timeoutMs: number,
-  label: string,
   signal: AbortSignal,
+  sample?: number,
 ): Promise<string> {
-  const result = await exec(command, { cwd, timeoutMs, signal });
+  const context: CommandErrorContext = {
+    phase,
+    position: ctx.position,
+    label: ctx.label,
+    command,
+    target: ctx.target,
+    dir: ctx.dir,
+    sample,
+  };
+
+  const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
 
   if ("kind" in result) {
-    throw new Error(`${label} timed out after ${result.timeoutMs}ms:\n${result.stderr}`);
+    throw new CommandError(context, {
+      timeoutMs: result.timeoutMs,
+      stderr: result.stderr,
+      stdout: result.stdout,
+    });
   }
 
   if (result.exitCode !== 0) {
-    throw new Error(
-      `${label} failed with exit code ${result.exitCode}:\n${[result.stderr, result.stdout].filter(Boolean).join("\n")}`,
-    );
+    throw new CommandError(context, {
+      exitCode: result.exitCode,
+      stderr: result.stderr,
+      stdout: result.stdout,
+    });
   }
 
   return result.stdout;
@@ -79,16 +221,16 @@ async function runCommand(
  */
 async function collectSamples(
   adapter: Adapter,
-  oldDir: string,
-  newDir: string,
+  oldCtx: TargetContext,
+  newCtx: TargetContext,
   options: Pick<CompareOptions, "bench" | "prepare" | "samples" | "timeoutSeconds">,
   signal: AbortSignal,
 ): Promise<{ samplesA: Record<string, number>[]; samplesB: Record<string, number>[] }> {
   const timeoutMs = options.timeoutSeconds * 1000;
 
   if (options.prepare) {
-    for (const dir of [oldDir, newDir]) {
-      await runCommand(options.prepare, dir, timeoutMs, "Prepare command", signal);
+    for (const ctx of [oldCtx, newCtx]) {
+      await runCommand("prepare", ctx, options.prepare, timeoutMs, signal);
     }
   }
 
@@ -96,22 +238,10 @@ async function collectSamples(
   const samplesB: Record<string, number>[] = [];
 
   for (let i = 0; i < options.samples; i++) {
-    const oldStdout = await runCommand(
-      options.bench,
-      oldDir,
-      timeoutMs,
-      "Bench command on old target",
-      signal,
-    );
+    const oldStdout = await runCommand("bench", oldCtx, options.bench, timeoutMs, signal, i + 1);
     samplesA.push(adapter.parse(oldStdout));
 
-    const newStdout = await runCommand(
-      options.bench,
-      newDir,
-      timeoutMs,
-      "Bench command on new target",
-      signal,
-    );
+    const newStdout = await runCommand("bench", newCtx, options.bench, timeoutMs, signal, i + 1);
     samplesB.push(adapter.parse(newStdout));
   }
 
@@ -143,9 +273,6 @@ function resolveLabel(explicit: string | undefined, resolved: Target): string {
   return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
 }
 
-/**
- * Build the ComparisonResult from collected samples and computed verdicts.
- */
 function buildComparisonResult(
   measurement: Measurement,
   options: Pick<CompareOptions, "samples" | "adapter">,
@@ -234,9 +361,15 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
   // line-level hint would hide the covered arm along with this one.
   const message = error instanceof Error ? error.message : String(error);
 
-  return new Error([message, "", "cleanup did not finish:", ...details].join("\n"), {
+  const wrapper = new Error([message, "", "cleanup did not finish:", ...details].join("\n"), {
     cause: error,
   });
+
+  if (error instanceof CommandError && error.hint !== undefined) {
+    Object.assign(wrapper, { hint: error.hint });
+  }
+
+  return wrapper;
 }
 
 /**
@@ -297,10 +430,23 @@ export async function compare(options: CompareOptions): Promise<string> {
       const oldLabel = resolveLabel(options.oldLabel, oldResolved);
       const newLabel = resolveLabel(options.newLabel, newResolved);
 
+      const oldCtx: TargetContext = {
+        target: oldResolved,
+        dir: oldDir,
+        label: oldLabel,
+        position: "old",
+      };
+      const newCtx: TargetContext = {
+        target: newResolved,
+        dir: newDir,
+        label: newLabel,
+        position: "new",
+      };
+
       const { samplesA, samplesB } = await collectSamples(
         adapter,
-        oldDir,
-        newDir,
+        oldCtx,
+        newCtx,
         options,
         run.signal,
       );

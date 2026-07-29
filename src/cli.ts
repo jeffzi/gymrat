@@ -2,6 +2,7 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { styleText } from "node:util";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
 import { Command, InvalidArgumentError } from "commander";
@@ -43,21 +44,57 @@ function parsePositiveInteger(value: string): number {
   return parsed;
 }
 
+/** Narrow to errors that carry an optional hint for the user. */
+export function isHintedError(err: unknown): err is Error & { hint: string | undefined } {
+  return err instanceof Error && "hint" in err;
+}
+
 /**
- * Render an error for stderr, labelling adapter failures with their class name.
+ * Format a label with optional ANSI styling.
+ *
+ * When `useColor` is true the label is wrapped in the requested ANSI escape
+ * sequences via `styleText`; otherwise it is returned as-is.
+ *
+ * `validateStream: false` tells `styleText` to skip its own TTY check — the
+ * caller already decided whether color is appropriate via the `useColor` flag.
+ */
+function formatLabel(
+  label: string,
+  style: Parameters<typeof styleText>[0],
+  useColor: boolean,
+): string {
+  return useColor ? styleText(style, label, { validateStream: false }) : label;
+}
+
+/**
+ * Render an error for stderr, labelling adapter failures with their class name
+ * and appending a styled hint line when the error carries one.
  *
  * An adapter message states what could not be parsed ("No valid METRIC lines
  * found") without saying which layer produced it, so the class name is what
  * tells the user the bench script's output — rather than gymrat's git or config
  * handling — is at fault. Errors raised elsewhere already name their own
  * subsystem, so prefixing them would only add noise.
+ *
+ * `useColor` defaults to auto-detection: true when stderr is a TTY and
+ * `NO_COLOR` is not set.
  */
-export function formatCliError(error: unknown): string {
+export function formatCliError(
+  error: unknown,
+  useColor: boolean = process.stderr.isTTY && process.env.NO_COLOR === undefined,
+): string {
   if (error instanceof AdapterError) {
     return `${error.name}: ${error.message}`;
   }
 
-  return error instanceof Error ? error.message : String(error);
+  let output = error instanceof Error ? error.message : String(error);
+
+  if (isHintedError(error) && error.hint !== undefined) {
+    const hintLabel = formatLabel("Hint:", ["yellow", "underline"], useColor);
+    output += `\n${hintLabel} ${error.hint}`;
+  }
+
+  return output;
 }
 
 /**
@@ -90,10 +127,7 @@ function readPackageVersion(): string {
   return manifest.version;
 }
 
-/**
- * Create and configure the CLI program.
- * Returns a Commander Command instance that can be tested with exitOverride().
- */
+/** Returns a Commander Command instance that can be tested with exitOverride(). */
 export function createProgram(): Command {
   const program = new Command();
 
