@@ -870,5 +870,24 @@ describe("computeGeomean", () => {
       expect(result.n).toBe(0);
       expect(result.excluded).toContain("metric1");
     });
+
+    it("excludes metric when ρ is Infinity (delta=-100, direction: higher)", () => {
+      // delta = -100 → ρ = 1 / (1 + (-100/100)) = 1/0 = Infinity → excluded
+      const verdicts = {
+        metric1: {
+          verdict: "regressed" as const,
+          method: "exact" as const,
+          delta: -100,
+          n: 1,
+        },
+      };
+      const metricMeta = {
+        metric1: { direction: "higher" as const, gating: true, exact: true },
+      };
+      const result = computeGeomean(verdicts, metricMeta);
+      expect(result.value).toBe(0);
+      expect(result.n).toBe(0);
+      expect(result.excluded).toContain("metric1");
+    });
   });
 });
