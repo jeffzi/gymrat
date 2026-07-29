@@ -165,7 +165,7 @@ describe("CommandError", () => {
     });
   });
 
-  describe("structured fields", () => {
+  describe("when accessed via property getters", () => {
     it("exposes context and exit failure fields for programmatic access", () => {
       const target = createRefTarget("v1.0", "sha-abc");
       const ctx = createContext({ target, dir: "/tmp/worktree", sample: 2 });
