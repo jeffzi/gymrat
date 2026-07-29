@@ -9,16 +9,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions } from "./compare.js";
-import { resolveConfig } from "./config.js";
-
-interface CompareCommandOptions {
-  bench?: string;
-  prepare?: string;
-  adapter?: string;
-  samples?: number;
-  timeout?: number;
-  config?: string;
-}
+import { resolveConfig, type CliFlags } from "./config.js";
 
 /**
  * Parse label=ref syntax from a positional argument.
@@ -121,7 +112,7 @@ export function createProgram(): Command {
     .option("--timeout <number>", "timeout in seconds", parsePositiveInteger)
     .option("--config <file>", "configuration file path")
     .configureHelp(createHelpConfig())
-    .action(async (oldRef: string, newRef: string, options: CompareCommandOptions) => {
+    .action(async (oldRef: string, newRef: string, options: CliFlags) => {
       const oldParsed = parsePositional(oldRef);
       const newParsed = parsePositional(newRef);
 

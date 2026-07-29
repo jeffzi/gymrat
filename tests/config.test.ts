@@ -153,6 +153,17 @@ describe("loadConfigFile", () => {
 
       expect(() => loadConfigFile(configPath)).toThrow(/badKey/);
     });
+
+    it("reports an unknown key rather than a non-object root for an empty-string key", () => {
+      tmpdir = createConfigFile({ "": 1 });
+      const configPath = path.join(tmpdir, "gymrat.json");
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect(act).toThrow(/Unknown config key/);
+      expect(act).not.toThrow(/JSON object/);
+    });
   });
 
   describe("when the config file contains an empty object", () => {

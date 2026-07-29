@@ -1,24 +1,54 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { Type } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox";
+
 import type { Adapter } from "./adapters/types.js";
+import { compile, expected, parse, type SchemaIssue } from "./schema.js";
+
+/** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
+const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
+
+const metricEntrySchema = Type.Object(
+  {
+    direction: Type.Optional(
+      Type.Union([Type.Literal("lower"), Type.Literal("higher")], expected(`"lower" or "higher"`)),
+    ),
+    gating: Type.Optional(Type.Boolean(expected("a boolean"))),
+    exact: Type.Optional(Type.Boolean(expected("a boolean"))),
+  },
+  strictObjectOptions,
+);
+
+/**
+ * Metric names are unconstrained, so any string key is accepted.
+ *
+ * This compiles to `patternProperties` with `^(.*)$`, and `.` does not match a newline —
+ * a metric name containing one slips through without its entry being checked. Harmless in
+ * practice, since such a name cannot come out of a bench command's metric lines.
+ */
+const metricsSchema = Type.Record(Type.String(), metricEntrySchema, expected("an object"));
 
 /** The `gymrat.json` schema — every field optional, since flags can supply any of them. */
-export interface ConfigFile {
-  bench?: string;
-  prepare?: string;
-  adapter?: string;
-  samples?: number;
-  timeoutSeconds?: number;
-  metrics?: Record<
-    string,
-    {
-      direction?: "lower" | "higher";
-      gating?: boolean;
-      exact?: boolean;
-    }
-  >;
-}
+const configFileSchema = Type.Object(
+  {
+    bench: Type.Optional(Type.String(expected("a string"))),
+    prepare: Type.Optional(Type.String(expected("a string"))),
+    adapter: Type.Optional(Type.String(expected("a string"))),
+    samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
+    timeoutSeconds: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
+    metrics: Type.Optional(metricsSchema),
+  },
+  strictObjectOptions,
+);
+
+const configFileValidator = compile(configFileSchema);
+
+/** The shape of `gymrat.json` after schema validation — every field optional, since CLI flags can supply any of them. */
+export type ConfigFile = Static<typeof configFileSchema>;
+/** A string-keyed record of per-metric overrides (direction, gating, exact), derived from the config file's `metrics` section. */
+export type ConfigMetrics = Static<typeof metricsSchema>;
 
 /** Command-line overrides, named after the flags rather than the config keys. */
 export interface CliFlags {
@@ -48,76 +78,25 @@ export type ResolvedMetricMeta = {
   unit?: "ns" | "bytes";
 };
 
-function isRecord(val: unknown): val is Record<string, unknown> {
-  return val !== null && typeof val === "object" && !Array.isArray(val);
-}
-
-type ConfigMetrics = NonNullable<ConfigFile["metrics"]>;
-type ConfigMetricEntry = ConfigMetrics[string];
-
-function invalidValue(key: string, expected: string, value: unknown): Error {
-  return new Error(
-    `Invalid config value for ${key}: expected ${expected}, got ${JSON.stringify(value)}`,
-  );
-}
-
-function requireString(key: string, value: unknown): string {
-  if (typeof value !== "string") {
-    throw invalidValue(key, "a string", value);
+/**
+ * Word a schema failure as a config error.
+ *
+ * A root-level failure means the whole file is the wrong shape, so it names the file
+ * rather than a key; everything else names the dotted path the reader wrote in JSON.
+ * Unknown keys must be caught before the last branch: no sub-schema exists for a key the
+ * schema never declared, so the phrase they carry is the containing object's `an object`.
+ *
+ * Root is detected on the raw JSON Pointer rather than {@link SchemaIssue.path}, whose
+ * dotted form renders both the root and a top-level `""` key as the empty string.
+ */
+function configMessage(configPath: string, issue: SchemaIssue): string {
+  if (issue.error.path === "") {
+    return `Invalid config file at ${configPath}: expected a JSON object, got ${JSON.stringify(issue.value)}`;
   }
-  return value;
-}
-
-function requirePositiveInteger(key: string, value: unknown): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw invalidValue(key, "a positive integer", value);
+  if (issue.kind === "unknown-key") {
+    return `Unknown config key: ${issue.path}`;
   }
-  return value;
-}
-
-function requireBoolean(key: string, value: unknown): boolean {
-  if (typeof value !== "boolean") {
-    throw invalidValue(key, "a boolean", value);
-  }
-  return value;
-}
-
-function requireDirection(key: string, value: unknown): "lower" | "higher" {
-  if (value === "lower" || value === "higher") {
-    return value;
-  }
-  throw invalidValue(key, `"lower" or "higher"`, value);
-}
-
-function requireMetrics(value: unknown): ConfigMetrics {
-  if (!isRecord(value)) {
-    throw invalidValue("metrics", "an object", value);
-  }
-
-  const metrics: ConfigMetrics = {};
-  for (const [name, rawEntry] of Object.entries(value)) {
-    const entryKey = `metrics.${name}`;
-    if (!isRecord(rawEntry)) {
-      throw invalidValue(entryKey, "an object", rawEntry);
-    }
-
-    const entry: ConfigMetricEntry = {};
-    for (const [field, fieldValue] of Object.entries(rawEntry)) {
-      switch (field) {
-        case "direction":
-          entry.direction = requireDirection(`${entryKey}.direction`, fieldValue);
-          break;
-        case "gating":
-        case "exact":
-          entry[field] = requireBoolean(`${entryKey}.${field}`, fieldValue);
-          break;
-        default:
-          throw new Error(`Unknown config key: ${entryKey}.${field}`);
-      }
-    }
-    metrics[name] = entry;
-  }
-  return metrics;
+  return `Invalid config value for ${issue.path}: expected ${issue.expected}, got ${JSON.stringify(issue.value)}`;
 }
 
 const DEFAULTS = {
@@ -161,32 +140,7 @@ export function loadConfigFile(
     );
   }
 
-  if (!isRecord(parsed)) {
-    throw new Error(
-      `Invalid config file at ${configPath}: expected a JSON object, got ${JSON.stringify(parsed)}`,
-    );
-  }
-
-  const config: ConfigFile = {};
-  for (const [key, value] of Object.entries(parsed)) {
-    switch (key) {
-      case "bench":
-      case "prepare":
-      case "adapter":
-        config[key] = requireString(key, value);
-        break;
-      case "samples":
-      case "timeoutSeconds":
-        config[key] = requirePositiveInteger(key, value);
-        break;
-      case "metrics":
-        config.metrics = requireMetrics(value);
-        break;
-      default:
-        throw new Error(`Unknown config key: ${key}`);
-    }
-  }
-  return config;
+  return parse(configFileValidator, parsed, (issue) => configMessage(configPath, issue));
 }
 
 /**

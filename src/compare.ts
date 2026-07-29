@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { getAdapter } from "./adapters/index.js";
 import type { Adapter } from "./adapters/types.js";
-import { resolveMetricMeta } from "./config.js";
+import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
 import { exec } from "./exec.js";
 import { computeMedian } from "./math.js";
 import { formatCleanupFailures, renderReport } from "./report.js";
@@ -22,10 +22,7 @@ export interface CompareOptions {
   adapter: string; // "metric-lines" or "mitata"
   samples: number; // number of paired sample windows
   timeoutSeconds: number;
-  configMetrics?: Record<
-    string,
-    { direction?: "lower" | "higher"; gating?: boolean; exact?: boolean }
-  >;
+  configMetrics?: ConfigMetrics;
 }
 
 /**

@@ -15,6 +15,7 @@
     "oxlint",
     "scipy",
     "Stegun",
+    "typebox",
     "unparseable",
     "Wilcoxon",
     "worktree",
