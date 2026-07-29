@@ -18,10 +18,6 @@ export interface WilcoxonResult {
 export function wilcoxonSignedRank(
   pairs: ReadonlyArray<readonly [number, number]>,
 ): WilcoxonResult {
-  if (pairs.length === 0) {
-    return { p: 1, n: 0 };
-  }
-
   const x: number[] = [];
   const y: number[] = [];
   let n = 0;
@@ -32,11 +28,7 @@ export function wilcoxonSignedRank(
     if (b - a !== 0) n++;
   }
 
-  if (n === 0) {
-    return { p: 1, n: 0 };
-  }
-
-  if (pairs.length < 2) {
+  if (n === 0 || pairs.length < 2) {
     return { p: 1, n };
   }
 

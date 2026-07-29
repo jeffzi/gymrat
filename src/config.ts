@@ -105,6 +105,35 @@ const DEFAULTS = {
   timeoutSeconds: 1800,
 } as const;
 
+function isFileNotFoundError(err: unknown): boolean {
+  return err instanceof Error && "code" in err && err.code === "ENOENT";
+}
+
+function readConfigContent(configPath: string, required: boolean): string | undefined {
+  try {
+    return fs.readFileSync(configPath, "utf-8");
+  } catch (err) {
+    if (isFileNotFoundError(err)) {
+      if (required) {
+        throw new Error(`Config file not found at ${configPath}`, { cause: err });
+      }
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+function parseJsonContent(content: string, configPath: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    throw new Error(
+      `Failed to parse config file at ${configPath}: ${err instanceof Error ? err.message : "unknown error"}`,
+      { cause: err },
+    );
+  }
+}
+
 /**
  * Read and validate a config file.
  *
@@ -116,54 +145,46 @@ export function loadConfigFile(
   configPath: string,
   options: { required?: boolean } = {},
 ): ConfigFile {
-  let content: string;
-
-  try {
-    content = fs.readFileSync(configPath, "utf-8");
-  } catch (err) {
-    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-      if (options.required === true) {
-        throw new Error(`Config file not found at ${configPath}`, { cause: err });
-      }
-      return {};
-    }
-    throw err;
+  const content = readConfigContent(configPath, options.required === true);
+  if (content === undefined) {
+    return {};
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch (err) {
-    throw new Error(
-      `Failed to parse config file at ${configPath}: ${err instanceof Error ? err.message : "unknown error"}`,
-      { cause: err },
-    );
-  }
-
+  const parsed = parseJsonContent(content, configPath);
   return parse(configFileValidator, parsed, (issue) => configMessage(configPath, issue));
+}
+
+function pickDefined<T>(a: T | undefined, b: T): T;
+function pickDefined<T>(a: T | undefined, b: T | undefined): T | undefined;
+function pickDefined<T>(a: T | undefined, b: T | undefined, c: T): T;
+function pickDefined<T>(...values: (T | undefined)[]): T | undefined;
+function pickDefined<T>(...values: (T | undefined)[]): T | undefined {
+  return values.find((v) => v !== undefined);
 }
 
 /**
  * Settle a run configuration from flags, config file, and built-in defaults.
  *
- * Precedence runs flags → config file → `DEFAULTS`, so a flag always wins over
- * the same key in the file. With no `--config`, `./gymrat.json` is looked up
- * implicitly and its absence is not an error; an explicit path is loaded with
- * `required: true` so a typo throws instead of silently running on defaults.
+ * A flag always wins over the same key in the file. With no `--config`,
+ * `./gymrat.json` is looked up implicitly and its absence is not an error; an
+ * explicit path is loaded with `required: true` so a typo throws instead of
+ * silently running on defaults.
  *
  * `bench` has no default and must come from one of the two sources — a run
  * without it throws.
  */
 export function resolveConfig(flags: CliFlags): ResolvedConfig {
-  const explicitPath = flags.config;
-  const configPath = explicitPath ?? path.join(process.cwd(), "gymrat.json");
-  const configFile = loadConfigFile(configPath, { required: explicitPath !== undefined });
+  const configPath = pickDefined(flags.config, path.join(process.cwd(), "gymrat.json"));
+  const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
 
-  const bench = flags.bench ?? configFile.bench;
-  const prepare = flags.prepare ?? configFile.prepare;
-  const adapter = flags.adapter ?? configFile.adapter ?? DEFAULTS.adapter;
-  const samples = flags.samples ?? configFile.samples ?? DEFAULTS.samples;
-  const timeoutSeconds = flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds;
+  const bench = pickDefined(flags.bench, configFile.bench);
+  const prepare = pickDefined(flags.prepare, configFile.prepare);
+  const adapter = pickDefined(flags.adapter, configFile.adapter, DEFAULTS.adapter);
+  const samples = pickDefined(flags.samples, configFile.samples, DEFAULTS.samples);
+  const timeoutSeconds = pickDefined(
+    flags.timeout,
+    configFile.timeoutSeconds,
+    DEFAULTS.timeoutSeconds,
+  );
   const metrics = configFile.metrics;
 
   if (!bench) {
@@ -180,6 +201,22 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
   };
 }
 
+function resolveOneMetric(
+  metricName: string,
+  configMetrics: ConfigFile["metrics"],
+  adapter: Adapter,
+): ResolvedMetricMeta {
+  const adapterDefaults = adapter.defaults(metricName);
+  const configEntry = configMetrics?.[metricName];
+
+  return {
+    direction: configEntry?.direction ?? adapterDefaults.direction,
+    gating: configEntry?.gating ?? true,
+    exact: configEntry?.exact ?? false,
+    ...(adapterDefaults.unit !== undefined && { unit: adapterDefaults.unit }),
+  };
+}
+
 /**
  * Resolve per-metric metadata by merging adapter defaults with config overrides.
  * Config entries for metrics not in metricNames are silently ignored.
@@ -189,24 +226,7 @@ export function resolveMetricMeta(
   configMetrics: ConfigFile["metrics"],
   adapter: Adapter,
 ): Record<string, ResolvedMetricMeta> {
-  const result: Record<string, ResolvedMetricMeta> = {};
-
-  for (const metricName of metricNames) {
-    const adapterDefaults = adapter.defaults(metricName);
-    const configEntry = configMetrics?.[metricName];
-
-    const resolved: ResolvedMetricMeta = {
-      direction: configEntry?.direction ?? adapterDefaults.direction,
-      gating: configEntry?.gating ?? true,
-      exact: configEntry?.exact ?? false,
-    };
-
-    if (adapterDefaults.unit !== undefined) {
-      resolved.unit = adapterDefaults.unit;
-    }
-
-    result[metricName] = resolved;
-  }
-
-  return result;
+  return Object.fromEntries(
+    metricNames.map((name) => [name, resolveOneMetric(name, configMetrics, adapter)]),
+  );
 }

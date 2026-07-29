@@ -44,9 +44,19 @@ function parsePositiveInteger(value: string): number {
   return parsed;
 }
 
-/** Narrow to errors that carry an optional hint for the user. */
+/**
+ * Narrow to errors carrying a user-facing remediation hint.
+ *
+ * `CommandError` attaches a `hint` when the failing target is a git ref (e.g.
+ * "did you mean branch X?"). `formatCliError` consumes the narrowed hint to
+ * append it below the error output.
+ */
 export function isHintedError(err: unknown): err is Error & { hint: string | undefined } {
-  return err instanceof Error && "hint" in err;
+  return (
+    err instanceof Error &&
+    "hint" in err &&
+    (typeof err.hint === "string" || err.hint === undefined)
+  );
 }
 
 /**

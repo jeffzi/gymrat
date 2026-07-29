@@ -9,7 +9,7 @@ function extractJson(stdout: string): Record<string, unknown> {
   const startIdx = stdout.indexOf("{");
   const endIdx = stdout.lastIndexOf("}");
 
-  if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
+  if (startIdx < 0 || startIdx >= endIdx) {
     throw new AdapterError("No JSON object found in stdout");
   }
 
@@ -41,23 +41,35 @@ function parseBenchmarks(json: Record<string, unknown>): unknown[] {
   return benchmarks;
 }
 
-function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, number>): boolean {
-  if (!isRecord(run)) return false;
-  if ("error" in run && run.error !== null) return false;
+function parseMitataStats(
+  run: unknown,
+): { args: Record<string, unknown>; p50: number; heapAvg?: number } | undefined {
+  if (!isRecord(run)) return undefined;
+  if ("error" in run && run.error !== null) return undefined;
 
   const args = run.args;
   const stats = run.stats;
-  if (!isRecord(args) || !isRecord(stats)) return false;
+  if (!isRecord(args) || !isRecord(stats)) return undefined;
 
   const p50 = stats.p50;
-  if (typeof p50 !== "number") return false;
-
-  const prefix = buildMetricNamePrefix(alias, args);
-  metrics[`${prefix}/time`] = p50;
+  if (typeof p50 !== "number") return undefined;
 
   const heap = stats.heap;
   if (isRecord(heap) && typeof heap.avg === "number") {
-    metrics[`${prefix}/heap`] = heap.avg;
+    return { args, p50, heapAvg: heap.avg };
+  }
+  return { args, p50 };
+}
+
+function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, number>): boolean {
+  const parsed = parseMitataStats(run);
+  if (parsed === undefined) return false;
+
+  const prefix = buildMetricNamePrefix(alias, parsed.args);
+  metrics[`${prefix}/time`] = parsed.p50;
+
+  if (parsed.heapAvg !== undefined) {
+    metrics[`${prefix}/heap`] = parsed.heapAvg;
   }
 
   return true;
@@ -69,6 +81,22 @@ function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): st
     result = result.replaceAll(`$${key}`, `${key}=${String(value)}`);
   }
   return result;
+}
+
+function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): number {
+  if (!isRecord(benchmark)) return 0;
+
+  const alias = benchmark.alias;
+  const runs = benchmark.runs;
+  if (typeof alias !== "string" || !Array.isArray(runs)) return 0;
+
+  let count = 0;
+  for (const run of runs) {
+    if (extractRunMetrics(run, alias, metrics)) {
+      count++;
+    }
+  }
+  return count;
 }
 
 /**
@@ -98,17 +126,7 @@ const mitataAdapter: Adapter = {
     let metricsFound = 0;
 
     for (const benchmark of benchmarks) {
-      if (!isRecord(benchmark)) continue;
-
-      const alias = benchmark.alias;
-      const runs = benchmark.runs;
-      if (typeof alias !== "string" || !Array.isArray(runs)) continue;
-
-      for (const run of runs) {
-        if (extractRunMetrics(run, alias, metrics)) {
-          metricsFound++;
-        }
-      }
+      metricsFound += extractBenchmarkMetrics(benchmark, metrics);
     }
 
     if (metricsFound === 0) {

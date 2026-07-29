@@ -4,58 +4,52 @@ import { AdapterError } from "./types.js";
 
 const METRIC_PREFIX = "METRIC";
 
+function parseMetricLine(line: string): { name: string; value: number } | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith(METRIC_PREFIX)) return null;
+
+  const afterMetric = trimmed.slice(METRIC_PREFIX.length).trim();
+  const lastEqIndex = afterMetric.lastIndexOf("=");
+
+  const name = lastEqIndex > 0 ? afterMetric.slice(0, lastEqIndex) : "";
+  const value = lastEqIndex > 0 ? Number(afterMetric.slice(lastEqIndex + 1)) : Number.NaN;
+
+  if (lastEqIndex <= 0 || !Number.isFinite(value)) {
+    console.warn(`Failed to parse METRIC line: ${trimmed}`);
+    return null;
+  }
+
+  return { name, value };
+}
+
 /**
- * Parses METRIC name=value lines; for repeated metrics returns median.
+ * Adapter for bench scripts that print `METRIC name=value` lines to stdout.
  *
- * Splits at LAST = since metric names may contain =. Rejects non-finite values.
+ * When a metric name appears more than once, the median of all its values is
+ * returned.
  */
 const metricLinesAdapter: Adapter = {
   name: "metric-lines",
 
   parse(stdout: string): Record<string, number> {
-    const lines = stdout.split("\n");
-    const metrics = new Map<string, number[]>();
+    const parsed = stdout
+      .split("\n")
+      .map(parseMetricLine)
+      .filter((r): r is { name: string; value: number } => r !== null);
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      if (!trimmed.startsWith(METRIC_PREFIX)) {
-        continue;
-      }
-
-      const afterMetric = trimmed.slice(METRIC_PREFIX.length).trim();
-      const lastEqIndex = afterMetric.lastIndexOf("=");
-
-      if (lastEqIndex === -1 || lastEqIndex === 0) {
-        console.warn(`Failed to parse METRIC line: ${trimmed}`);
-        continue;
-      }
-
-      const name = afterMetric.slice(0, lastEqIndex);
-      const valueStr = afterMetric.slice(lastEqIndex + 1);
-      const value = Number(valueStr);
-
-      if (!Number.isFinite(value)) {
-        console.warn(`Failed to parse METRIC line: ${trimmed}`);
-        continue;
-      }
-
-      if (!metrics.has(name)) {
-        metrics.set(name, []);
-      }
-      metrics.get(name)!.push(value);
-    }
-
-    if (metrics.size === 0) {
+    if (parsed.length === 0) {
       throw new AdapterError("No valid METRIC lines found");
     }
 
-    const result: Record<string, number> = {};
-    for (const [name, values] of metrics.entries()) {
-      result[name] = computeMedian(values);
+    const metrics = new Map<string, number[]>();
+    for (const { name, value } of parsed) {
+      if (!metrics.has(name)) metrics.set(name, []);
+      metrics.get(name)!.push(value);
     }
 
-    return result;
+    return Object.fromEntries(
+      [...metrics.entries()].map(([name, values]) => [name, computeMedian(values)]),
+    );
   },
 
   defaults(_metricName: string): MetricDefaults {

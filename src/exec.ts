@@ -44,6 +44,26 @@ export interface ExecOptions {
  *   console.log('Output:', result.stdout);
  * }
  */
+/* v8 ignore next 3 -- only reachable from killProcessGroup's catch; requires
+   process.kill to throw, which needs a race between pid check and kill */
+function isEsrch(err: unknown): boolean {
+  return err instanceof Error && "code" in err && err.code === "ESRCH";
+}
+
+function killProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+    /* v8 ignore start -- ESRCH race and EPERM require conditions the test harness cannot reproduce */
+  } catch (err) {
+    // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
+    // where a throw becomes an uncaught exception.
+    if (!isEsrch(err)) {
+      process.emitWarning(err instanceof Error ? err : String(err));
+    }
+  }
+  /* v8 ignore stop */
+}
+
 export async function exec(
   command: string,
   options: ExecOptions,
@@ -73,18 +93,7 @@ export async function exec(
       if (!child.pid) {
         return;
       }
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch (err) {
-        // ESRCH is expected: the process may exit between the pid check and
-        // the kill. Anything else (e.g. EPERM) is unexpected. cleanup runs from
-        // setTimeout and AbortSignal listener contexts where a throw becomes an
-        // uncaught exception rather than a rejection, so surface via a process
-        // warning instead of throwing.
-        if (!(err instanceof Error && "code" in err && err.code === "ESRCH")) {
-          process.emitWarning(err instanceof Error ? err : String(err));
-        }
-      }
+      killProcessGroup(child.pid);
     };
 
     let timeoutHandle: NodeJS.Timeout | undefined;

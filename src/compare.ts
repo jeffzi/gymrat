@@ -273,6 +273,24 @@ function resolveLabel(explicit: string | undefined, resolved: Target): string {
   return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
 }
 
+function computeMetricStats(
+  samplesA: readonly Record<string, number>[],
+  samplesB: readonly Record<string, number>[],
+  metricName: string,
+): { medianA?: number; medianB?: number; spreadA?: number; spreadB?: number } {
+  const aValues = samplesA.map((s) => s[metricName]).filter((v) => v !== undefined);
+  const bValues = samplesB.map((s) => s[metricName]).filter((v) => v !== undefined);
+  const hasA = aValues.length > 0;
+  const hasB = bValues.length > 0;
+
+  return {
+    medianA: hasA ? computeMedian(aValues) : undefined,
+    medianB: hasB ? computeMedian(bValues) : undefined,
+    spreadA: hasA ? computeSpread(aValues) : undefined,
+    spreadB: hasB ? computeSpread(bValues) : undefined,
+  };
+}
+
 function buildComparisonResult(
   measurement: Measurement,
   options: Pick<CompareOptions, "samples" | "adapter">,
@@ -292,14 +310,8 @@ function buildComparisonResult(
   };
 
   for (const metricName of metricNames) {
-    const aValues = samplesA.map((s) => s[metricName]).filter((v) => v !== undefined);
-    const bValues = samplesB.map((s) => s[metricName]).filter((v) => v !== undefined);
-
     result.metrics[metricName] = {
-      medianA: aValues.length > 0 ? computeMedian(aValues) : undefined,
-      medianB: bValues.length > 0 ? computeMedian(bValues) : undefined,
-      spreadA: aValues.length > 0 ? computeSpread(aValues) : undefined,
-      spreadB: bValues.length > 0 ? computeSpread(bValues) : undefined,
+      ...computeMetricStats(samplesA, samplesB, metricName),
       verdict: verdicts[metricName],
       meta: metricMeta[metricName]!,
     };
@@ -347,6 +359,10 @@ interface Measurement {
  * returned untouched. The original always becomes the `cause`, keeping its
  * stack reachable.
  */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
   const details = formatCleanupFailures(cleanup.failures, cleanup.pruneError);
 
@@ -354,16 +370,10 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
     return error;
   }
 
-  // The parameter stays `unknown` because that is what a catch clause binds, but
-  // everything the measurement phase throws is an Error, so the String() arm never
-  // runs. Left unsuppressed: a `v8 ignore` hint only binds to a ternary arm when it
-  // sits flush against it with no whitespace, which oxfmt will not keep — and a
-  // line-level hint would hide the covered arm along with this one.
-  const message = error instanceof Error ? error.message : String(error);
-
-  const wrapper = new Error([message, "", "cleanup did not finish:", ...details].join("\n"), {
-    cause: error,
-  });
+  const wrapper = new Error(
+    [errorMessage(error), "", "cleanup did not finish:", ...details].join("\n"),
+    { cause: error },
+  );
 
   if (error instanceof CommandError && error.hint !== undefined) {
     Object.assign(wrapper, { hint: error.hint });

@@ -70,6 +70,26 @@ function runGitCommand(args: readonly string[], repoDir: string): string {
   });
 }
 
+/** Attempt directory resolution; returns `undefined` to fall through to ref resolution. */
+function tryResolveDirectory(absolutePath: string): InPlaceTarget | undefined {
+  try {
+    const stats = fs.statSync(absolutePath);
+    if (stats.isDirectory()) {
+      return {
+        kind: "in-place",
+        dir: fs.realpathSync(absolutePath),
+      };
+    }
+  } catch (error) {
+    const isFsError = error instanceof Error && "code" in error;
+    /* v8 ignore if -- non-fs errors from statSync are not reproducible in tests */
+    if (!isFsError) {
+      throw error;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Interpret a user-supplied target as either a directory or a git ref.
  *
@@ -81,29 +101,13 @@ function runGitCommand(args: readonly string[], repoDir: string): string {
  * @throws when the input is neither an existing directory nor a ref git can verify.
  */
 export function resolveTarget(input: string, repoDir: string): Target {
-  // Try to resolve as an existing directory first
-  const absolutePath = path.resolve(input);
-  try {
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return {
-        kind: "in-place",
-        dir: fs.realpathSync(absolutePath),
-      };
-    }
-  } catch (error) {
-    // Only catch fs errors (like ENOENT); rethrow other errors
-    const isFsError = error instanceof Error && "code" in error;
-    /* v8 ignore if -- non-fs errors from statSync are not reproducible in tests */
-    if (!isFsError) {
-      throw error;
-    }
+  const directory = tryResolveDirectory(path.resolve(input));
+  if (directory !== undefined) {
+    return directory;
   }
 
-  // Try to resolve as a git ref
   try {
     const resolvedSha = runGitCommand(["rev-parse", "--verify", input], repoDir).trim();
-
     return {
       kind: "ref",
       ref: input,
@@ -112,9 +116,7 @@ export function resolveTarget(input: string, repoDir: string): Target {
   } catch (error) {
     throw new Error(
       `Cannot resolve target '${input}': not an existing directory or valid git ref`,
-      {
-        cause: error,
-      },
+      { cause: error },
     );
   }
 }
@@ -152,8 +154,12 @@ export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): vo
  * separate from `message`, which it prefixes with `Command failed: git ...`
  * noise. Reporting stderr matches how `compare.ts` builds user-facing text.
  */
+function hasStderr(error: unknown): error is Error & { stderr: string } {
+  return error instanceof Error && "stderr" in error && typeof error.stderr === "string";
+}
+
 function gitErrorText(error: unknown): string {
-  if (error instanceof Error && "stderr" in error && typeof error.stderr === "string") {
+  if (hasStderr(error)) {
     return error.stderr.trim();
   }
 
@@ -177,6 +183,28 @@ function tryGitCommand(args: readonly string[], repoDir: string): string | undef
   }
 }
 
+/** Remove a single worktree if it exists on disk; returns the outcome or a failure record. */
+function removeWorktreeIfExists(
+  worktree: WorktreeInfo,
+  repoDir: string,
+): "removed" | "absent" | WorktreeRemovalFailure {
+  if (!fs.existsSync(worktree.dir)) {
+    return "absent";
+  }
+
+  const error = tryGitCommand(["worktree", "remove", "--force", worktree.dir], repoDir);
+  if (error === undefined) {
+    return "removed";
+  }
+  return { dir: worktree.dir, error };
+}
+
+// No ref targets → no git worktrees → no reason to prune (repoDir may not even be a git repo).
+function pruneIfNeeded(worktreeCount: number, repoDir: string): string | undefined {
+  if (worktreeCount === 0) return undefined;
+  return tryGitCommand(["worktree", "prune"], repoDir);
+}
+
 /**
  * Remove any of `worktrees` that reached disk, then prune. Safe to call repeatedly.
  *
@@ -193,29 +221,13 @@ export function cleanupWorktrees(
   let removed = 0;
 
   for (const worktree of worktrees) {
-    // An already-gone directory was cleaned up by an earlier pass: it is
-    // neither a removal this call performed nor a leftover to report.
-    if (!fs.existsSync(worktree.dir)) {
-      continue;
-    }
-
-    // Keep going — one stuck worktree must not strand the rest.
-    const error = tryGitCommand(["worktree", "remove", "--force", worktree.dir], repoDir);
-    if (error === undefined) {
+    const outcome = removeWorktreeIfExists(worktree, repoDir);
+    if (outcome === "removed") {
       removed += 1;
-    } else {
-      failures.push({ dir: worktree.dir, error });
+    } else if (typeof outcome === "object") {
+      failures.push(outcome);
     }
   }
 
-  // An empty list means no ref target was ever attempted, so there is nothing to
-  // prune — and no reason to assume `repoDir` is a git repository at all. Both
-  // targets can be plain directories, in which case sweeping would fail with
-  // "not a git repository" and report cleanup trouble for work never done. A
-  // planned worktree counts even when `git worktree add` never produced one:
-  // that is exactly the run whose $GIT_DIR/worktrees/ metadata needs sweeping.
-  const pruneError =
-    worktrees.length > 0 ? tryGitCommand(["worktree", "prune"], repoDir) : undefined;
-
-  return { removed, failures, pruneError };
+  return { removed, failures, pruneError: pruneIfNeeded(worktrees.length, repoDir) };
 }

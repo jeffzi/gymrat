@@ -183,44 +183,26 @@ function computeApproximateVerdict(
   delta: number,
   direction: "lower" | "higher",
 ): MetricVerdict {
-  if (pairedA.length >= MIN_WILCOXON_N) {
-    const pairs: Array<readonly [number, number]> = [];
-    for (let i = 0; i < pairedA.length; i++) {
-      const a = pairedA[i]!;
-      const b = pairedB[i]!;
-      pairs.push([a, b]);
-    }
-
-    const wilcoxonResult = wilcoxonSignedRank(pairs);
-
-    // If effective n < threshold after dropping zeros, fall back to band
-    if (wilcoxonResult.n < MIN_WILCOXON_N) {
-      return {
-        ...computeBandMethod(pairedA, pairedB, delta, direction),
-        n: pairedA.length,
-      };
-    }
-
-    let verdict: Verdict;
-    if (wilcoxonResult.p < P_VALUE_THRESHOLD) {
-      verdict = determineVerdict(delta, direction);
-    } else {
-      verdict = "no-signal";
-    }
-
-    return {
-      verdict,
-      method: "signed-rank",
-      delta,
-      n: pairedA.length,
-      p: wilcoxonResult.p,
-    };
+  if (pairedA.length < MIN_WILCOXON_N) {
+    return bandFallback(pairedA, pairedB, delta, direction);
   }
 
-  // n < 6: use band method
+  const pairs = pairedA.map((a, i): readonly [number, number] => [a, pairedB[i]!]);
+  const wilcoxonResult = wilcoxonSignedRank(pairs);
+
+  if (wilcoxonResult.n < MIN_WILCOXON_N) {
+    return bandFallback(pairedA, pairedB, delta, direction);
+  }
+
+  const verdict: Verdict =
+    wilcoxonResult.p < P_VALUE_THRESHOLD ? determineVerdict(delta, direction) : "no-signal";
+
   return {
-    ...computeBandMethod(pairedA, pairedB, delta, direction),
+    verdict,
+    method: "signed-rank",
+    delta,
     n: pairedA.length,
+    p: wilcoxonResult.p,
   };
 }
 
@@ -232,14 +214,7 @@ function computeApproximateVerdict(
  */
 function computeHalfRange(values: readonly number[]): number {
   if (values.length === 0) return 0;
-  let min = values[0]!;
-  let max = values[0]!;
-  for (let i = 1; i < values.length; i++) {
-    const val = values[i]!;
-    if (val < min) min = val;
-    if (val > max) max = val;
-  }
-  return (max - min) / 2;
+  return (Math.max(...values) - Math.min(...values)) / 2;
 }
 
 /**
@@ -295,6 +270,51 @@ function computeBandMethod(
   };
 }
 
+function bandFallback(
+  pairedA: readonly number[],
+  pairedB: readonly number[],
+  delta: number,
+  direction: "lower" | "higher",
+): MetricVerdict {
+  return {
+    ...computeBandMethod(pairedA, pairedB, delta, direction),
+    n: pairedA.length,
+  };
+}
+
+function computeNormalizedRho(delta: number, direction: "lower" | "higher"): number | null {
+  if (Number.isNaN(delta)) return null;
+
+  const rho = direction === "lower" ? 1 + delta / 100 : 1 / (1 + delta / 100);
+
+  if (rho <= 0 || !Number.isFinite(rho)) return null;
+  return rho;
+}
+
+function collectNormalizedRhos(
+  verdicts: Record<string, MetricVerdict>,
+  metricMeta: Record<string, MetricMetadata>,
+): { included: number[]; excluded: string[] } {
+  const included: number[] = [];
+  const excluded: string[] = [];
+
+  for (const [metric, meta] of Object.entries(metricMeta)) {
+    if (!meta.gating) continue;
+
+    const verdict = verdicts[metric];
+    if (!verdict) continue;
+
+    const rho = computeNormalizedRho(verdict.delta, meta.direction);
+    if (rho === null) {
+      excluded.push(metric);
+    } else {
+      included.push(rho);
+    }
+  }
+
+  return { included, excluded };
+}
+
 /**
  * Compute geometric mean of direction-normalized ratios across gating metrics.
  *
@@ -324,59 +344,17 @@ export function computeGeomean(
   verdicts: Record<string, MetricVerdict>,
   metricMeta: Record<string, MetricMetadata>,
 ): GeomeanResult {
-  const included: number[] = [];
-  const excluded: string[] = [];
-
-  for (const [metric, meta] of Object.entries(metricMeta)) {
-    if (!meta.gating) {
-      continue;
-    }
-
-    const verdict = verdicts[metric];
-    if (!verdict) {
-      continue;
-    }
-
-    const delta = verdict.delta;
-
-    if (Number.isNaN(delta)) {
-      excluded.push(metric);
-      continue;
-    }
-
-    // Direction-normalized ratio ρ: below 1 always means improvement, whichever
-    // direction the metric favors.
-    let rho: number;
-    if (meta.direction === "lower") {
-      rho = 1 + delta / 100;
-    } else {
-      rho = 1 / (1 + delta / 100);
-    }
-
-    if (rho <= 0 || !Number.isFinite(rho)) {
-      excluded.push(metric);
-      continue;
-    }
-
-    included.push(rho);
-  }
+  const { included, excluded } = collectNormalizedRhos(verdicts, metricMeta);
 
   if (included.length === 0) {
-    return {
-      value: 0,
-      n: 0,
-      excluded,
-    };
+    return { value: 0, n: 0, excluded };
   }
 
-  // Geometric mean (ρ₁ × ρ₂ × … × ρₙ)^(1/n) computed in log space —
-  // exp(mean(ln(ρᵢ))) — so a long metric list cannot overflow the product.
   let sumLnRho = 0;
   for (let i = 0; i < included.length; i++) {
     sumLnRho += Math.log(included[i]!);
   }
-  const meanLnRho = sumLnRho / included.length;
-  const geomean = Math.exp(meanLnRho);
+  const geomean = Math.exp(sumLnRho / included.length);
 
   return {
     value: (geomean - 1) * 100,

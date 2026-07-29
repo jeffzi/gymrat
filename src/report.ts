@@ -46,29 +46,39 @@ function stripTrailingZeros(str: string): string {
   return str.replace(/0+$/, "").replace(/\.$/, ".0");
 }
 
-/**
- * Format a number with unit scaling.
- * For ns: n, µ, m, s.
- * For bytes: raw, k, M, G.
- * For no unit: raw value.
- */
+type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
+
+const NS_TIERS: readonly Tier[] = [
+  [1000, 1, "n", 0],
+  [1e6, 1000, "µ", 3],
+  [1e9, 1e6, "m", 1],
+  [Infinity, 1e9, "s", 1],
+];
+
+const BYTE_TIERS: readonly Tier[] = [
+  [1000, 1, "", 0],
+  [1e6, 1000, "k", 1],
+  [1e9, 1e6, "M", 1],
+  [Infinity, 1e9, "G", 1],
+];
+
+const TIER_MAP: Record<"ns" | "bytes", readonly Tier[]> = {
+  ns: NS_TIERS,
+  bytes: BYTE_TIERS,
+};
+
+function scaleTier(value: number, tiers: readonly Tier[]): string {
+  const tier = tiers.find(([threshold]) => value < threshold)!;
+  const [, divisor, suffix, decimals] = tier;
+  const scaled = (value / divisor).toFixed(decimals);
+  return `${decimals > 0 ? stripTrailingZeros(scaled) : scaled}${suffix}`;
+}
+
 function formatValue(value: number, unit?: "ns" | "bytes"): string {
   if (!unit) {
     return Math.round(value).toString();
   }
-
-  if (unit === "ns") {
-    if (value < 1000) return `${value.toFixed(0)}n`;
-    if (value < 1e6) return `${stripTrailingZeros((value / 1000).toFixed(3))}µ`;
-    if (value < 1e9) return `${stripTrailingZeros((value / 1e6).toFixed(1))}m`;
-    return `${stripTrailingZeros((value / 1e9).toFixed(1))}s`;
-  }
-
-  // bytes
-  if (value < 1000) return value.toFixed(0);
-  if (value < 1e6) return `${stripTrailingZeros((value / 1000).toFixed(1))}k`;
-  if (value < 1e9) return `${stripTrailingZeros((value / 1e6).toFixed(1))}M`;
-  return `${stripTrailingZeros((value / 1e9).toFixed(1))}G`;
+  return scaleTier(value, TIER_MAP[unit]);
 }
 
 function formatSpread(spread?: number): string {
@@ -178,6 +188,16 @@ export function formatCleanupFailures(
   return lines;
 }
 
+function renderMethodFooter(methods: Set<Method>, samples: number): string[] {
+  if (methods.has("signed-rank")) {
+    return [`verdicts: Wilcoxon signed-rank on pairs (n=${samples} ≥ 6) · ~ = no signal at α=0.05`];
+  }
+  if (methods.has("band")) {
+    return [`noise band ±(half-range × K) — n=${samples} below signed-rank floor (6 pairs)`];
+  }
+  return [];
+}
+
 /**
  * Render a comparison as the plain-text report the CLI prints.
  *
@@ -274,15 +294,7 @@ export function renderReport(result: ComparisonResult): string {
       .filter((method): method is Method => method !== undefined),
   );
 
-  if (methods.has("signed-rank")) {
-    lines.push(
-      `verdicts: Wilcoxon signed-rank on pairs (n=${result.samples} ≥ 6) · ~ = no signal at α=0.05`,
-    );
-  } else if (methods.has("band")) {
-    lines.push(
-      `noise band ±(half-range × K) — n=${result.samples} below signed-rank floor (6 pairs)`,
-    );
-  }
+  lines.push(...renderMethodFooter(methods, result.samples));
 
   const removedNoun = result.worktreesRemoved === 1 ? "worktree" : "worktrees";
   lines.push(

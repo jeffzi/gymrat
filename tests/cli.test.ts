@@ -402,7 +402,7 @@ describe("formatCliError", () => {
     const error = createCommandError("ref");
 
     // Act
-    const rendered = formatCliError(error);
+    const rendered = formatCliError(error, false);
 
     // Assert
     expect(rendered).toContain("\nHint: ");
@@ -413,7 +413,7 @@ describe("formatCliError", () => {
     const error = createCommandError("in-place");
 
     // Act
-    const rendered = formatCliError(error);
+    const rendered = formatCliError(error, false);
 
     // Assert
     expect(rendered).not.toContain("Hint:");
@@ -424,7 +424,7 @@ describe("formatCliError", () => {
     const error = new Error("git rev-parse failed");
 
     // Act
-    const rendered = formatCliError(error);
+    const rendered = formatCliError(error, false);
 
     // Assert
     expect(rendered).not.toContain("Hint:");
