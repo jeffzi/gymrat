@@ -1,13 +1,21 @@
 gymrat compare · main ↔ perf/faster-decode · 4 paired samples · adapter: metric-lines
-metric                    │old (main)    │new (perf/faster-decode)  │vs old
-──────────────────────────┼──────────────┼──────────────────────────┼─────────────────────────────
-zero-median/time          │0n ± 0%       │0n ± 0%                   │~ 0.0%  (exact)
-nan-delta/count           │0             │120                       │~   (exact)
-old-side-only/time        │2.048µ ± 2%   │                          │
-throughput/ops            │1200 ± 5%     │1560 ± 4%                 │✓ +30.0%  (band ±2.5%, n=4)
-──────────────────────────┼──────────────┼──────────────────────────┼─────────────────────────────
-geomean (gating metrics)  │              │                          │0.0%
+metric                    │       main │ perf/faster-decode │ vs main
+──────────────────────────┼────────────┼────────────────────┼──────────────────
+zero-median/time          │   0ns ± 0% │           0ns ± 0% │ ~  0.0%
+nan-delta/count           │          0 │                120 │ ~
+old-side-only/time        │ 2.0µs ± 2% │                    │
+throughput/ops            │  1200 ± 5% │          1560 ± 4% │ ✓  +30.0%  ±2.5%
+──────────────────────────┼────────────┼────────────────────┼──────────────────
+geomean (gating metrics)  │       main │ perf/faster-decode │ 0.0%  1 stable metric · 1 excluded: undefined-ratio
+
+✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   ~ 2 within noise
+
+highlights
+  ✓ throughput/ops  +30.0%  band ±2.5%
+
+legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
 noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)
+Hint: re-run with --samples 6 or more for statistical verdicts
 1 worktree removed · 1 left behind
   left behind: /tmp/gymrat-abc123 (contains modified files)
   worktree prune failed: could not lock config file

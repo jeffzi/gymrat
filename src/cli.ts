@@ -11,13 +11,14 @@ import { compare } from "./compare.js";
 import type { CompareOptions } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { GymratError } from "./errors.js";
-import { formatLabel } from "./report/format.js";
+import { formatHintLabel } from "./report/format.js";
 import { renderReport } from "./report/text.js";
 
 /**
  * Parse label=ref syntax from a positional argument.
- * If no '=' is present, uses the whole string as the ref with undefined label.
- * Otherwise, splits on first '=' into label and ref.
+ *
+ * Only the first `=` splits, so a ref containing its own `=` survives intact —
+ * `a=b=c` parses to label `a`, ref `b=c`.
  */
 function parsePositional(positional: string): { label: string | undefined; ref: string } {
   const eqIndex = positional.indexOf("=");
@@ -47,8 +48,10 @@ function parsePositiveInteger(value: string): number {
 }
 
 /**
- * Render an error for stderr, labelling adapter failures with their class name
- * and appending a styled hint line when the error carries one.
+ * Render an error for stderr: either an adapter failure labelled with its
+ * class name, or any other error with a styled hint line appended when it
+ * carries one. The two are mutually exclusive — the adapter branch returns
+ * before the hint block runs, so an adapter error never gets a hint.
  *
  * An adapter message states what could not be parsed ("No valid METRIC lines
  * found") without saying which layer produced it, so the class name is what
@@ -70,11 +73,34 @@ export function formatCliError(
   let output = error instanceof Error ? error.message : String(error);
 
   if (error instanceof GymratError && error.hint !== undefined) {
-    const hintLabel = formatLabel("Hint:", ["yellow", "underline"], useColor);
+    const hintLabel = formatHintLabel(useColor);
     output += `\n${hintLabel} ${error.hint}`;
   }
 
   return output;
+}
+
+/** The compare command's flags: everything `resolveConfig` reads, plus how to print. */
+interface CompareFlags extends CliFlags {
+  /** Commander's `--no-color` counterpart: true unless the flag was passed. */
+  color: boolean;
+}
+
+/**
+ * Whether the report may carry ANSI styles.
+ *
+ * The report is written to stdout, so it is stdout that has to be a terminal —
+ * a report piped into a file stays plain even when stderr is still attached to
+ * one. `NO_COLOR` (https://no-color.org) and `--no-color` each veto color on
+ * their own.
+ */
+function shouldColorReport(flags: CompareFlags): boolean {
+  // `@types/node` declares `isTTY` as boolean, but node leaves it `undefined` when
+  // stdout is not a TTY. Naming the real type keeps this function's declared
+  // `boolean` return honest instead of quietly handing back `undefined`.
+  const stdoutIsTty = process.stdout.isTTY as boolean | undefined;
+
+  return stdoutIsTty === true && process.env.NO_COLOR === undefined && flags.color;
 }
 
 /**
@@ -107,7 +133,13 @@ function readPackageVersion(): string {
   return manifest.version;
 }
 
-/** Returns a Commander Command instance that can be tested with exitOverride(). */
+/**
+ * Build the `gymrat` program: fully wired but inert until the caller invokes
+ * `parseAsync` on it.
+ *
+ * `readPackageVersion()` runs during construction, so building a program reads
+ * `package.json` off disk even before any command executes.
+ */
 export function createProgram(): Command {
   const program = new Command();
 
@@ -125,8 +157,9 @@ export function createProgram(): Command {
     .option("--samples <number>", "paired samples per target", parsePositiveInteger)
     .option("--timeout <number>", "timeout in seconds", parsePositiveInteger)
     .option("--config <file>", "configuration file path")
+    .option("--no-color", "print the report without ANSI styles")
     .configureHelp(createHelpConfig())
-    .action(async (oldRef: string, newRef: string, options: CliFlags) => {
+    .action(async (oldRef: string, newRef: string, options: CompareFlags) => {
       const oldParsed = parsePositional(oldRef);
       const newParsed = parsePositional(newRef);
 
@@ -154,7 +187,7 @@ export function createProgram(): Command {
       };
 
       const result = await compare(compareOptions);
-      process.stdout.write(renderReport(result) + "\n");
+      process.stdout.write(renderReport(result, shouldColorReport(options)) + "\n");
     });
 
   return program;

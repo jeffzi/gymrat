@@ -348,6 +348,84 @@ describe("createProgram", () => {
       });
     });
 
+    describe("when deciding whether to color the report", () => {
+      const originalIsTTY = process.stdout.isTTY;
+
+      afterEach(() => {
+        process.stdout.isTTY = originalIsTTY;
+        vi.unstubAllEnvs();
+      });
+
+      it.each([
+        {
+          desc: "stdout is a terminal and nothing forbids it",
+          isTTY: true,
+          noColor: undefined,
+          args: [],
+          expected: "colored",
+          useColor: true,
+        },
+        {
+          desc: "--no-color was passed",
+          isTTY: true,
+          noColor: undefined,
+          args: ["--no-color"],
+          expected: "plain",
+          useColor: false,
+        },
+        {
+          desc: "NO_COLOR is set",
+          isTTY: true,
+          noColor: "1",
+          args: [],
+          expected: "plain",
+          useColor: false,
+        },
+        {
+          desc: "stdout is redirected",
+          isTTY: false,
+          noColor: undefined,
+          args: [],
+          expected: "plain",
+          useColor: false,
+        },
+      ])("writes a $expected report when $desc", async ({ isTTY, noColor, args, useColor }) => {
+        // Arrange
+        const program = createProgram();
+        program.exitOverride();
+        const result = createComparisonResult({
+          labels: ["main", "branch"],
+          metrics: {
+            "decode/time": {
+              medianA: 100,
+              medianB: 82.5,
+              spreadA: 1,
+              spreadB: 1,
+              verdict: {
+                verdict: "improved",
+                method: "signed-rank",
+                delta: -17.5,
+                n: 10,
+                p: 0.002,
+                noisePct: 2.5,
+              },
+              meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            },
+          },
+        });
+        await setupMocks(result);
+        process.stdout.isTTY = isTTY;
+        vi.stubEnv("NO_COLOR", noColor);
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(["node", "cli.js", "compare", "main", "branch", ...args]);
+
+        // Assert
+        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result, useColor)}\n`);
+      });
+    });
+
     describe("on compare error", () => {
       it("rejects when compare fails", async () => {
         // Arrange

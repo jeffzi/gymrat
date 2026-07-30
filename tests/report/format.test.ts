@@ -2,24 +2,60 @@ import { describe, it, expect } from "vitest";
 
 import {
   computeColumnWidth,
+  countVerdicts,
   formatDelta,
   formatLabel,
+  formatNoiseBand,
   formatPValue,
   formatSpread,
   formatTableLine,
   formatValue,
   getGlyph,
+  selectHighlights,
 } from "../../src/report/format.js";
+import type { ComparisonResult } from "../../src/report/types.js";
+import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
+
+type Metrics = ComparisonResult["metrics"];
+type MetricEntry = Metrics[string];
+
+/** A two-sided metric whose verdict came from the signed-rank method. */
+function approximateMetric(options: {
+  verdict: ApproximateVerdictValue;
+  delta: number;
+  noisePct?: number;
+  direction?: "lower" | "higher";
+}): MetricEntry {
+  const { verdict, delta, noisePct = 2.5, direction = "lower" } = options;
+  return {
+    medianA: 100,
+    medianB: 100 + delta,
+    spreadA: 1,
+    spreadB: 1,
+    verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct },
+    meta: { direction, gating: true, exact: false },
+  };
+}
+
+/** A metric present on one side only, so no verdict could be computed. */
+function oneSidedMetric(): MetricEntry {
+  return {
+    medianA: 100,
+    spreadA: 1,
+    meta: { direction: "lower", gating: false, exact: false },
+  };
+}
 
 describe("formatValue", () => {
   describe("when the metric is measured in nanoseconds", () => {
     it.each([
-      { tier: "n", value: 0, expected: "0n" },
-      { tier: "n", value: 914, expected: "914n" },
-      { tier: "n", value: 999, expected: "999n" },
-      { tier: "µ", value: 1000, expected: "1.0µ" },
-      { tier: "µ", value: 1735, expected: "1.735µ" },
-      { tier: "m", value: 1_000_000, expected: "1.0m" },
+      { tier: "ns", value: 0, expected: "0ns" },
+      { tier: "ns", value: 914, expected: "914ns" },
+      { tier: "ns", value: 999, expected: "999ns" },
+      { tier: "µs", value: 1000, expected: "1.0µs" },
+      { tier: "µs", value: 1735, expected: "1.7µs" },
+      { tier: "µs", value: 26825, expected: "26.8µs" },
+      { tier: "ms", value: 1_000_000, expected: "1.0ms" },
       { tier: "s", value: 2_000_000_000, expected: "2.0s" },
     ])("scales $value to the $tier tier as $expected", ({ value, expected }) => {
       expect(formatValue(value, "ns")).toBe(expected);
@@ -28,12 +64,13 @@ describe("formatValue", () => {
 
   describe("when the metric is measured in bytes", () => {
     it.each([
-      { tier: "raw", value: 512, expected: "512" },
-      { tier: "raw", value: 999, expected: "999" },
-      { tier: "k", value: 1000, expected: "1.0k" },
-      { tier: "k", value: 49152, expected: "49.2k" },
-      { tier: "M", value: 1_000_000, expected: "1.0M" },
-      { tier: "G", value: 2_000_000_000, expected: "2.0G" },
+      { tier: "B", value: 512, expected: "512B" },
+      { tier: "B", value: 999, expected: "999B" },
+      { tier: "KB", value: 1000, expected: "1.0KB" },
+      { tier: "KB", value: 3600, expected: "3.6KB" },
+      { tier: "KB", value: 49152, expected: "49.2KB" },
+      { tier: "MB", value: 1_000_000, expected: "1.0MB" },
+      { tier: "GB", value: 2_000_000_000, expected: "2.0GB" },
     ])("scales $value to the $tier tier as $expected", ({ value, expected }) => {
       expect(formatValue(value, "bytes")).toBe(expected);
     });
@@ -70,6 +107,18 @@ describe("formatDelta", () => {
     { desc: "signs an improvement", delta: -17.9, expected: "-17.9%" },
     { desc: "leaves an exact zero unsigned", delta: 0, expected: "0.0%" },
     { desc: "rounds to one decimal", delta: 30, expected: "+30.0%" },
+    {
+      desc: "drops the sign of a positive delta that rounds to zero",
+      delta: 0.04,
+      expected: "0.0%",
+    },
+    {
+      desc: "drops the sign of a negative delta that rounds to zero",
+      delta: -0.04,
+      expected: "0.0%",
+    },
+    { desc: "keeps the sign just above the rounding floor", delta: 0.06, expected: "+0.1%" },
+    { desc: "keeps the sign just below the rounding floor", delta: -0.06, expected: "-0.1%" },
   ])("$desc: $delta", ({ delta, expected }) => {
     expect(formatDelta(delta)).toBe(expected);
   });
@@ -95,8 +144,104 @@ describe("getGlyph", () => {
     { verdict: "improved" as const, expected: "✓" },
     { verdict: "regressed" as const, expected: "✗" },
     { verdict: "no-signal" as const, expected: "~" },
+    { verdict: "unstable" as const, expected: "≈" },
   ])("marks $verdict with $expected", ({ verdict, expected }) => {
     expect(getGlyph(verdict)).toBe(expected);
+  });
+});
+
+describe("formatNoiseBand", () => {
+  it.each([
+    { noisePct: 2.5, expected: "±2.5%" },
+    { noisePct: 2, expected: "±2.0%" },
+    { noisePct: 0.5, expected: "±0.5%" },
+    { noisePct: 213.47, expected: "±213.5%" },
+  ])("renders a noise band of $noisePct as $expected", ({ noisePct, expected }) => {
+    expect(formatNoiseBand(noisePct)).toBe(expected);
+  });
+});
+
+describe("countVerdicts", () => {
+  it("counts every verdict class and ignores metrics that have no verdict", () => {
+    const metrics: Metrics = {
+      "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      "also-faster/time": approximateMetric({ verdict: "improved", delta: -5 }),
+      "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
+      "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
+      "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
+      "one-sided/time": oneSidedMetric(),
+    };
+
+    const counts = countVerdicts(metrics);
+
+    expect(counts).toStrictEqual({ improved: 2, regressed: 1, unstable: 1, noSignal: 1 });
+  });
+
+  it("reports zeros when there are no metrics", () => {
+    const counts = countVerdicts({});
+
+    expect(counts).toStrictEqual({ improved: 0, regressed: 0, unstable: 0, noSignal: 0 });
+  });
+});
+
+describe("selectHighlights", () => {
+  it("orders regressions by magnitude, then improvements by magnitude, then unstable by noise", () => {
+    const metrics: Metrics = {
+      "small-improvement/time": approximateMetric({ verdict: "improved", delta: -4 }),
+      "quiet-unstable/time": approximateMetric({ verdict: "unstable", delta: 6, noisePct: 210 }),
+      "small-regression/time": approximateMetric({ verdict: "regressed", delta: 3 }),
+      // Higher is better here, so the negative delta is the larger regression.
+      "big-regression/ops": approximateMetric({
+        verdict: "regressed",
+        delta: -12,
+        direction: "higher",
+      }),
+      "within-noise/time": approximateMetric({ verdict: "no-signal", delta: 0.4 }),
+      "big-improvement/time": approximateMetric({ verdict: "improved", delta: -20 }),
+      "one-sided/time": oneSidedMetric(),
+      "loud-unstable/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
+    };
+
+    const highlights = selectHighlights(metrics);
+
+    expect(highlights.map((highlight) => highlight.name)).toStrictEqual([
+      "big-regression/ops",
+      "small-regression/time",
+      "big-improvement/time",
+      "small-improvement/time",
+      "loud-unstable/time",
+      "quiet-unstable/time",
+    ]);
+  });
+
+  it("keeps declaration order for metrics of equal magnitude", () => {
+    const metrics: Metrics = {
+      "second-listed/ops": approximateMetric({
+        verdict: "regressed",
+        delta: -5,
+        direction: "higher",
+      }),
+      "third-listed/time": approximateMetric({ verdict: "regressed", delta: 5 }),
+      "first-listed/time": approximateMetric({ verdict: "regressed", delta: 9 }),
+    };
+
+    const highlights = selectHighlights(metrics);
+
+    expect(highlights.map((highlight) => highlight.name)).toStrictEqual([
+      "first-listed/time",
+      "second-listed/ops",
+      "third-listed/time",
+    ]);
+  });
+
+  it("carries each metric alongside its name so callers can render its values", () => {
+    const metrics: Metrics = {
+      "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
+    };
+
+    const highlights = selectHighlights(metrics);
+
+    expect(highlights).toStrictEqual([{ name: "slower/time", metric: metrics["slower/time"] }]);
   });
 });
 
@@ -119,22 +264,27 @@ describe("computeColumnWidth", () => {
 });
 
 describe("formatTableLine", () => {
-  it("pads every cell to its column width and separates them with a bar", () => {
-    const line = formatTableLine(["metric", "old", "new"], [10, 6, 6]);
-
-    expect(line).toBe("metric    │old   │new");
-  });
-
-  it("pads interior cells that are empty so later columns stay aligned", () => {
-    const line = formatTableLine(["geomean", "", "", "-6.0%"], [10, 6, 6, 8]);
-
-    expect(line).toBe("geomean   │      │      │-6.0%");
-  });
-
-  it("trims the padding after a trailing empty cell", () => {
-    const line = formatTableLine(["one-sided", "2.048µ ± 2%", ""], [12, 14, 10]);
-
-    expect(line).toBe("one-sided   │2.048µ ± 2%   │");
+  it.each([
+    {
+      desc: "pads every cell to its column width and separates them with a bar",
+      cells: ["metric", "old", "new"],
+      widths: [10, 6, 6],
+      expected: "metric    │old   │new",
+    },
+    {
+      desc: "pads interior cells that are empty so later columns stay aligned",
+      cells: ["geomean", "", "", "-6.0%"],
+      widths: [10, 6, 6, 8],
+      expected: "geomean   │      │      │-6.0%",
+    },
+    {
+      desc: "trims the padding after a trailing empty cell",
+      cells: ["one-sided", "2.048µ ± 2%", ""],
+      widths: [12, 14, 10],
+      expected: "one-sided   │2.048µ ± 2%   │",
+    },
+  ])("$desc", ({ cells, widths, expected }) => {
+    expect(formatTableLine(cells, widths)).toBe(expected);
   });
 });
 

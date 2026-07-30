@@ -411,12 +411,13 @@ describe("compare – integration", () => {
 
         const report = renderReport(await compare(options));
 
-        expect(report).toContain("old (old-dir)");
-        expect(report).toContain("new (new-dir)");
-        // No worktree was created, so cleanup reports zero of both rather than
-        // a failure — the prune sweep is skipped, and sweeping anyway would
-        // fail on targets that need not be git repositories at all.
-        expect(report).toContain("0 worktrees removed · 0 left behind");
+        const headerRow = findLine(report, (line) => line.startsWith("metric"));
+        expect.soft(headerRow).toContain("old-dir");
+        expect.soft(headerRow).toContain("new-dir");
+        // No worktree was created, so cleanup has nothing to report and stays
+        // silent — the prune sweep is skipped, and sweeping anyway would fail
+        // on targets that need not be git repositories at all.
+        expect(report).not.toContain("worktrees removed");
       } finally {
         repo.cleanup();
       }
@@ -493,9 +494,10 @@ describe("compare – integration", () => {
 
         const report = renderReport(await compare(options));
 
-        expect(report).toContain("old (baseline)");
-        expect(report).toContain("new (candidate)");
-        expect(report).not.toContain("old-labelled");
+        const headerRow = findLine(report, (line) => line.startsWith("metric"));
+        expect.soft(headerRow).toContain("baseline");
+        expect.soft(headerRow).toContain("candidate");
+        expect.soft(report).not.toContain("old-labelled");
         expect(report).not.toContain("new-labelled");
       } finally {
         repo.cleanup();
@@ -541,7 +543,50 @@ describe("compare – integration", () => {
   });
 
   describe("when using mitata adapter with fixture replay", () => {
-    it("parses mitata JSON fixture and generates report", async () => {
+    it("parses the mitata JSON fixture into metrics keyed by benchmark and stat", async () => {
+      const repo = createScratchRepo();
+      const fixturePath = path.resolve(originalCwd, "tests/fixtures/mitata.json");
+
+      try {
+        process.chdir(repo.dir);
+
+        const mitataBenchScript = `#!/bin/sh\ncat "${fixturePath}"`;
+        createBranch(repo, {
+          name: "mitata-branch",
+          benchScript: mitataBenchScript,
+        });
+
+        createBranch(repo, {
+          name: "mitata-branch-2",
+          benchScript: mitataBenchScript,
+        });
+
+        const options: CompareOptions = {
+          oldTarget: "mitata-branch",
+          newTarget: "mitata-branch-2",
+          bench: "./bench.sh",
+          adapter: "mitata",
+          samples: 3,
+          timeoutSeconds: 10,
+        };
+
+        const result = await compare(options);
+
+        // Both branches replay the same fixture, so baseline and candidate
+        // medians must match exactly — a swapped side or a wrong median would
+        // make them differ.
+        expect.soft(result.metrics["decode/text=digits/time"]?.medianA).toBe(4.0791015625);
+        expect.soft(result.metrics["decode/text=digits/time"]?.medianB).toBe(4.0791015625);
+        expect.soft(result.metrics["decode/text=words/time"]?.medianA).toBe(7.8125);
+        expect.soft(result.metrics["decode/text=words/time"]?.medianB).toBe(7.8125);
+        expect.soft(result.metrics["encode/time"]?.medianA).toBe(42.66357421875);
+        expect(result.metrics["encode/time"]?.medianB).toBe(42.66357421875);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it("renders the parsed benchmarks in the report", async () => {
       const repo = createScratchRepo();
       const fixturePath = path.resolve(originalCwd, "tests/fixtures/mitata.json");
 
@@ -570,8 +615,8 @@ describe("compare – integration", () => {
 
         const report = renderReport(await compare(options));
 
-        expect(report).toContain("decode");
-        expect(report).toContain("encode");
+        expect.soft(report).toContain("decode");
+        expect.soft(report).toContain("encode");
         expect(report).toContain("time");
       } finally {
         repo.cleanup();
@@ -638,11 +683,15 @@ describe("compare – integration", () => {
       ].join("\n");
 
     it.each([
-      { unstableNoisePct: 20, expectedGlyph: "~", expectedGeomean: "0.0%" },
-      { unstableNoisePct: 40, expectedGlyph: "✓", expectedGeomean: "-50.0%" },
+      {
+        unstableNoisePct: 20,
+        expectedVerdict: "≈  unstable",
+        expectedGeomean: "no stable gating metrics",
+      },
+      { unstableNoisePct: 40, expectedVerdict: "✓  -50.0%", expectedGeomean: "-50.0%" },
     ])(
-      "renders $expectedGlyph for a metric with 30% noise when unstableNoisePct is $unstableNoisePct",
-      async ({ unstableNoisePct, expectedGlyph, expectedGeomean }) => {
+      "renders '$expectedVerdict' for a metric with 30% noise when unstableNoisePct is $unstableNoisePct",
+      async ({ unstableNoisePct, expectedVerdict, expectedGeomean }) => {
         const repo = createScratchRepo();
 
         try {
@@ -671,9 +720,9 @@ describe("compare – integration", () => {
           const report = renderReport(await compare(options));
 
           const latencyRow = findLine(report, (line) => line.startsWith("latency"));
-          expect.soft(latencyRow).toContain(`${expectedGlyph} -50.0%`);
-          // An unstable metric drops out of the geomean, so the aggregate falls to 0.0%;
-          // a stable one keeps its ρ and the geomean tracks the -50% delta.
+          expect.soft(latencyRow).toContain(expectedVerdict);
+          // The run's only gating metric is the unstable one, so excluding it leaves the
+          // geomean with nothing to average; a stable one keeps its ρ and tracks the -50%.
           expect(findLine(report, (line) => line.includes("geomean"))).toContain(expectedGeomean);
         } finally {
           repo.cleanup();
@@ -1069,9 +1118,8 @@ describe("compare – integration", () => {
 
         // Zero medians must render as a zero spread and a zero delta rather than
         // NaN or a division blow-up, so assert the row itself, not just the name.
-        const latencyRow = report.split("\n").find((line) => line.startsWith("latency"));
-        expect(latencyRow).toBeDefined();
-        expect(latencyRow!).toMatch(/^latency\s*│\s*0 ± 0%\s*│\s*0 ± 0%\s*│\s*~ 0\.0%/);
+        const latencyRow = findLine(report, (line) => line.startsWith("latency"));
+        expect(latencyRow).toMatch(/^latency\s*│\s*0 ± 0%\s*│\s*0 ± 0%\s*│\s*~\s+0\.0%/);
       } finally {
         repo.cleanup();
       }
