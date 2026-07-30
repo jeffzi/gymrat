@@ -1,25 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import type { ComparisonResult } from "../src/report.js";
-import { renderReport } from "../src/report.js";
-
-function createComparisonResult(overrides: Partial<ComparisonResult> = {}): ComparisonResult {
-  return {
-    labels: ["main", "perf/faster-decode"],
-    samples: 10,
-    adapter: "mitata",
-    metrics: {},
-    geomean: {
-      value: -5.8,
-      n: 10,
-      excluded: [],
-    },
-    worktreesRemoved: 0,
-    worktreesLeftBehind: [],
-    worktreePruneError: undefined,
-    ...overrides,
-  };
-}
+import { renderReport } from "../../src/report/text.js";
+import { createComparisonResult } from "../fixtures/comparison-result.js";
 
 /**
  * Character offsets of every column separator in a rendered table line.
@@ -171,6 +153,36 @@ describe("renderReport", () => {
       expect(output).toContain("band ±2.5%");
       expect(output).toContain("n=4");
     });
+
+    it("renders a sub-percent band at its own precision", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "band-metric": {
+            medianA: 1000,
+            medianB: 950,
+            spreadA: 1,
+            spreadB: 1,
+            verdict: {
+              verdict: "improved",
+              method: "band",
+              delta: -5.0,
+              n: 4,
+              band: 0.5,
+              noisePct: 0.5,
+            },
+            meta: {
+              direction: "lower",
+              gating: true,
+              exact: false,
+            },
+          },
+        },
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("band ±0.5%");
+    });
   });
 
   describe("when rendering with exact method", () => {
@@ -265,178 +277,6 @@ describe("renderReport", () => {
         expect(output).not.toContain("~");
       },
     );
-  });
-
-  describe("when rendering with ns units", () => {
-    it.each([
-      {
-        name: "µs (< 1e6)",
-        medianA: 1726,
-        medianB: 1423,
-        expectedA: "1.726µ",
-        expectedB: "1.423µ",
-      },
-      {
-        name: "n (< 1000)",
-        medianA: 123,
-        medianB: 456,
-        expectedA: "123n",
-        expectedB: "456n",
-      },
-      {
-        name: "m (< 1e9)",
-        medianA: 1000000,
-        medianB: 2000000,
-        expectedA: "1.0m",
-        expectedB: "2.0m",
-      },
-      {
-        name: "s (>= 1e9)",
-        medianA: 1000000000,
-        medianB: 2000000000,
-        expectedA: "1.0s",
-        expectedB: "2.0s",
-      },
-    ])("scales nanoseconds to $name", ({ medianA, medianB, expectedA, expectedB }) => {
-      const result = createComparisonResult({
-        metrics: {
-          "time-metric": {
-            medianA,
-            medianB,
-            spreadA: 1,
-            spreadB: 2,
-            verdict: {
-              verdict: medianA > medianB ? "improved" : "regressed",
-              method: "signed-rank",
-              delta: ((medianB - medianA) / medianA) * 100,
-              n: 10,
-              p: 0.001,
-              noisePct: 2.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-              unit: "ns",
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain(expectedA);
-      expect(output).toContain(expectedB);
-    });
-  });
-
-  describe("when rendering with bytes units", () => {
-    it.each([
-      {
-        name: "k (< 1e6)",
-        medianA: 48000,
-        medianB: 44200,
-        expectedA: "48.0k",
-        expectedB: "44.2k",
-        exact: true,
-      },
-      {
-        name: "raw (< 1000)",
-        medianA: 512,
-        medianB: 256,
-        expectedA: "512",
-        expectedB: "256",
-        exact: false,
-      },
-      {
-        name: "M (< 1e9)",
-        medianA: 1000000,
-        medianB: 2000000,
-        expectedA: "1.0M",
-        expectedB: "2.0M",
-        exact: false,
-      },
-      {
-        name: "G (>= 1e9)",
-        medianA: 1000000000,
-        medianB: 2000000000,
-        expectedA: "1.0G",
-        expectedB: "2.0G",
-        exact: false,
-      },
-    ])("scales bytes to $name", ({ medianA, medianB, expectedA, expectedB, exact }) => {
-      const verdict = exact
-        ? {
-            verdict: "improved" as const,
-            method: "exact" as const,
-            delta: ((medianB - medianA) / medianA) * 100,
-            n: 10,
-          }
-        : {
-            verdict: medianA > medianB ? ("improved" as const) : ("regressed" as const),
-            method: "signed-rank" as const,
-            delta: ((medianB - medianA) / medianA) * 100,
-            n: 10,
-            p: 0.001,
-            noisePct: 2.5,
-          };
-
-      const result = createComparisonResult({
-        metrics: {
-          "memory-metric": {
-            medianA,
-            medianB,
-            spreadA: exact ? undefined : 1,
-            spreadB: exact ? undefined : 2,
-            verdict,
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact,
-              unit: "bytes",
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain(expectedA);
-      expect(output).toContain(expectedB);
-    });
-  });
-
-  describe("when a metric has no unit", () => {
-    it("renders the raw value rounded to an integer", () => {
-      const result = createComparisonResult({
-        metrics: {
-          throughput: {
-            medianA: 1100000,
-            medianB: 1070000,
-            spreadA: 1,
-            spreadB: 2,
-            verdict: {
-              verdict: "regressed",
-              method: "signed-rank",
-              delta: -2.7,
-              n: 10,
-              p: 0.019,
-              noisePct: 2.5,
-            },
-            meta: {
-              direction: "higher",
-              gating: true,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain("1100000");
-      expect(output).toContain("1070000");
-    });
   });
 
   describe("when rendering geomean row", () => {
@@ -728,8 +568,8 @@ describe("renderReport", () => {
     });
   });
 
-  describe("when delta is zero or NaN", () => {
-    it("shows zero delta when delta is 0", () => {
+  describe("when delta is zero", () => {
+    it("still renders a delta cell rather than leaving it blank", () => {
       const result = createComparisonResult({
         metrics: {
           latency: {
@@ -761,36 +601,6 @@ describe("renderReport", () => {
       expect(metricRow).toBeDefined();
       expect(metricRow!).toContain("~");
       expect(metricRow!).toContain("0.0%");
-    });
-
-    it("shows delta when meaningful even with no-signal verdict", () => {
-      const result = createComparisonResult({
-        metrics: {
-          metric: {
-            medianA: 1000,
-            medianB: 1005,
-            spreadA: 2,
-            spreadB: 2,
-            verdict: {
-              verdict: "no-signal",
-              method: "signed-rank",
-              delta: 0.5,
-              n: 10,
-              p: 0.75,
-              noisePct: 2.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain("+0.5%");
     });
   });
 
@@ -979,194 +789,6 @@ describe("renderReport", () => {
 
       expect(output).toContain("noise band ±(half-range × K)");
       expect(output).not.toContain("Wilcoxon");
-    });
-  });
-
-  describe("when values are at exact boundaries", () => {
-    it.each([
-      {
-        unit: "ns" as const,
-        threshold: 1000,
-        belowVal: 999,
-        aboveVal: 1000,
-        belowFmt: "999n",
-        aboveFmt: "1.0µ",
-      },
-      {
-        unit: "bytes" as const,
-        threshold: 1000,
-        belowVal: 999,
-        aboveVal: 1000,
-        belowFmt: "999",
-        aboveFmt: "1.0k",
-      },
-    ])(
-      "formats $unit correctly at boundary $threshold",
-      ({ unit, belowVal, aboveVal, belowFmt, aboveFmt }) => {
-        const result = createComparisonResult({
-          metrics: {
-            boundary: {
-              medianA: aboveVal,
-              medianB: belowVal,
-              spreadA: 1,
-              spreadB: 1,
-              verdict: {
-                verdict: "improved",
-                method: "signed-rank",
-                delta: ((belowVal - aboveVal) / aboveVal) * 100,
-                n: 10,
-                p: 0.01,
-                noisePct: 2.5,
-              },
-              meta: {
-                direction: "lower",
-                gating: true,
-                exact: false,
-                unit,
-              },
-            },
-          },
-        });
-
-        const output = renderReport(result);
-
-        expect(output).toContain(aboveFmt);
-        expect(output).toContain(belowFmt);
-      },
-    );
-  });
-
-  describe("when metrics carry different spreads", () => {
-    it("renders each spread as its own percentage", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "low-spread": {
-            medianA: 100,
-            medianB: 95,
-            spreadA: 0,
-            spreadB: 1,
-            verdict: {
-              verdict: "improved",
-              method: "signed-rank",
-              delta: -5.0,
-              n: 10,
-              p: 0.01,
-              noisePct: 2.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-            },
-          },
-          "high-spread": {
-            medianA: 1000,
-            medianB: 900,
-            spreadA: 25,
-            spreadB: 30,
-            verdict: {
-              verdict: "improved",
-              method: "signed-rank",
-              delta: -10.0,
-              n: 10,
-              p: 0.001,
-              noisePct: 2.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain("± 0%");
-      expect(output).toContain("± 25%");
-      expect(output).toContain("± 30%");
-    });
-  });
-
-  describe("when rendering with very small p-values", () => {
-    it.each([
-      {
-        desc: "p < 0.001 as p<0.001",
-        pVal: 0.0001,
-        expected: "p<0.001",
-        method: "signed-rank" as const,
-      },
-      {
-        desc: "p < 0.01 with three decimals",
-        pVal: 0.005,
-        expected: "p=0.005",
-        method: "signed-rank" as const,
-      },
-      {
-        desc: "p >= 0.01 with two decimals",
-        pVal: 0.08,
-        expected: "p=0.08",
-        method: "signed-rank" as const,
-      },
-      { desc: "zero p-value", pVal: 0, expected: "p<0.001", method: "signed-rank" as const },
-    ])("formats $desc", ({ pVal, expected, method }) => {
-      const result = createComparisonResult({
-        metrics: {
-          metric: {
-            medianA: 1000,
-            medianB: pVal < 0.01 ? 500 : 950,
-            spreadA: 1,
-            spreadB: 1,
-            verdict: {
-              verdict: "improved",
-              method,
-              delta: pVal < 0.01 ? -50.0 : -5.0,
-              n: 10,
-              p: pVal,
-              noisePct: 2.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-      expect(output).toContain(expected);
-    });
-
-    it("handles band verdict with zero band value", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "band-metric": {
-            medianA: 1000,
-            medianB: 950,
-            spreadA: 1,
-            spreadB: 1,
-            verdict: {
-              verdict: "improved",
-              method: "band",
-              delta: -5.0,
-              n: 4,
-              band: 0.5,
-              noisePct: 0.5,
-            },
-            meta: {
-              direction: "lower",
-              gating: true,
-              exact: false,
-            },
-          },
-        },
-      });
-
-      const output = renderReport(result);
-
-      expect(output).toContain("band ±0.5%");
     });
   });
 
@@ -1393,7 +1015,7 @@ describe("renderReport", () => {
       });
 
       await expect(renderReport(result)).toMatchFileSnapshot(
-        "./fixtures/report-representative.golden.txt",
+        "../fixtures/report-representative.golden.txt",
       );
     });
 
@@ -1448,7 +1070,7 @@ describe("renderReport", () => {
       });
 
       await expect(renderReport(result)).toMatchFileSnapshot(
-        "./fixtures/report-degenerate.golden.txt",
+        "../fixtures/report-degenerate.golden.txt",
       );
     });
   });

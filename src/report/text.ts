@@ -1,104 +1,16 @@
-import type { ResolvedMetricMeta } from "./config.js";
-import { assertNever } from "./errors.js";
-import type { WorktreeRemovalFailure } from "./targets.js";
-import type { GeomeanResult, Method, MetricVerdict } from "./verdict/verdict.js";
-
-/**
- * Everything `renderReport` needs to draw a comparison — the rendering input contract.
- */
-export interface ComparisonResult {
-  labels: [string, string];
-  samples: number;
-  adapter: string;
-  metrics: Record<
-    string,
-    {
-      medianA?: number;
-      medianB?: number;
-      spreadA?: number;
-      spreadB?: number;
-      verdict?: MetricVerdict;
-      meta: ResolvedMetricMeta;
-    }
-  >;
-  geomean: GeomeanResult;
-  worktreesRemoved: number;
-
-  /** Worktrees cleanup could not remove, each with the reason git gave. */
-  worktreesLeftBehind: readonly WorktreeRemovalFailure[];
-
-  /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
-  worktreePruneError: string | undefined;
-}
-
-/**
- * Strip trailing zeros but keep at least one decimal place if there's a decimal point.
- * Assumes input from toFixed() which always includes a decimal point.
- */
-function stripTrailingZeros(str: string): string {
-  return str.replace(/0+$/, "").replace(/\.$/, ".0");
-}
-
-type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
-
-const NS_TIERS: readonly Tier[] = [
-  [1000, 1, "n", 0],
-  [1e6, 1000, "µ", 3],
-  [1e9, 1e6, "m", 1],
-  [Infinity, 1e9, "s", 1],
-];
-
-const BYTE_TIERS: readonly Tier[] = [
-  [1000, 1, "", 0],
-  [1e6, 1000, "k", 1],
-  [1e9, 1e6, "M", 1],
-  [Infinity, 1e9, "G", 1],
-];
-
-const TIER_MAP: Record<"ns" | "bytes", readonly Tier[]> = {
-  ns: NS_TIERS,
-  bytes: BYTE_TIERS,
-};
-
-function scaleTier(value: number, tiers: readonly Tier[]): string {
-  const tier = tiers.find(([threshold]) => value < threshold)!;
-  const [, divisor, suffix, decimals] = tier;
-  const scaled = (value / divisor).toFixed(decimals);
-  return `${decimals > 0 ? stripTrailingZeros(scaled) : scaled}${suffix}`;
-}
-
-function formatValue(value: number, unit?: "ns" | "bytes"): string {
-  if (!unit) {
-    return Math.round(value).toString();
-  }
-  return scaleTier(value, TIER_MAP[unit]);
-}
-
-function formatSpread(spread?: number): string {
-  if (spread === undefined) return "";
-  return ` ± ${spread.toFixed(0)}%`;
-}
-
-function formatDelta(delta: number): string {
-  if (Number.isNaN(delta)) return "";
-  const sign = delta > 0 ? "+" : "";
-  return `${sign}${delta.toFixed(1)}%`;
-}
-
-function formatPValue(p: number): string {
-  if (p < 0.001) return "p<0.001";
-  if (p < 0.01) return `p=${p.toFixed(3)}`;
-  return `p=${p.toFixed(2)}`;
-}
-
-/**
- * ✓ improved, ✗ regressed, ~ no signal — the glyphs the report footer legend explains.
- */
-function getGlyph(verdict: MetricVerdict["verdict"]): string {
-  if (verdict === "improved") return "✓";
-  if (verdict === "regressed") return "✗";
-  return "~";
-}
+import { assertNever } from "../errors.js";
+import type { WorktreeRemovalFailure } from "../targets.js";
+import type { Method, MetricVerdict } from "../verdict/verdict.js";
+import {
+  computeColumnWidth,
+  formatDelta,
+  formatPValue,
+  formatSpread,
+  formatTableLine,
+  formatValue,
+  getGlyph,
+} from "./format.js";
+import type { ComparisonResult } from "./types.js";
 
 /**
  * Format the annotation for a verdict (p-value, band, or exact). Only called with non-undefined verdicts.
@@ -120,20 +32,6 @@ function formatAnnotation(verdict: MetricVerdict): string {
 function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
   if (median === undefined) return "";
   return `${formatValue(median, unit)}${formatSpread(spread)}`;
-}
-
-function computeColumnWidth(
-  headerLength: number,
-  contentLengths: number[],
-  minWidth: number,
-): number {
-  const maxContent = Math.max(headerLength, ...contentLengths);
-  return Math.max(maxContent + 2, minWidth);
-}
-
-function formatTableLine(cells: readonly string[], widths: readonly number[]): string {
-  const padded = cells.map((cell, i) => cell.padEnd(widths[i]!)); // widths guaranteed same length as cells by caller
-  return padded.join("│").trim();
 }
 
 function formatDeltaCell(verdict?: MetricVerdict): string {

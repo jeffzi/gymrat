@@ -6,8 +6,8 @@ import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import { computeMedian } from "./math.js";
-import { formatCleanupFailures, renderReport } from "./report.js";
-import type { ComparisonResult } from "./report.js";
+import { formatCleanupFailures } from "./report/text.js";
+import type { ComparisonResult } from "./report/types.js";
 import { installTerminationCleanup } from "./signals.js";
 import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
@@ -387,27 +387,29 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
  * 2. Runs bench command multiple times per target, parsing output with the configured adapter
  * 3. Computes verdicts using statistical tests (signed-rank or band method)
  * 4. Cleans up worktrees on both the success and the failure path
- * 5. Renders a formatted report carrying that cleanup's outcome
+ * 5. Returns the comparison data carrying that cleanup's outcome
  *
- * Rendering happens after the try/catch so the report states the cleanup that
- * actually ran, and cleanup is attempted exactly once per path — a second sweep
- * could succeed on a worktree the first one recorded as left behind, handing the
- * user a report the disk contradicts.
+ * Rendering is the caller's job — the CLI passes the result to `renderReport`.
  *
- * When the measurement phase fails, no report is rendered and the cleanup
+ * The result is built after the try/catch so it states the cleanup that actually
+ * ran, and cleanup is attempted exactly once per path — a second sweep could
+ * succeed on a worktree the first one recorded as left behind, handing the user
+ * a report the disk contradicts.
+ *
+ * When the measurement phase fails, no result is returned and the cleanup
  * outcome rides out on the propagating error instead. A failure raised later,
- * while building or rendering the report, is not carried that way: cleanup has
- * already run by then and its outcome is dropped. That path is defensive-only
- * today, so it is left uncovered rather than guarded.
+ * while building the result, is not carried that way: cleanup has already run by
+ * then and its outcome is dropped. That path is defensive-only today, so it is
+ * left uncovered rather than guarded.
  *
  * SIGINT and SIGTERM take a third path: the in-flight command is killed,
  * cleanup is attempted, and the process exits with `128 + signum` without a
- * report. Nothing is printed, so a worktree cleanup could not remove on this
+ * result. Nothing is returned, so a worktree cleanup could not remove on this
  * path is left unreported — the exit code is the whole contract. The handlers
  * are installed before the first worktree exists and uninstalled once the run
  * settles, either way it settled.
  */
-export async function compare(options: CompareOptions): Promise<string> {
+export async function compare(options: CompareOptions): Promise<ComparisonResult> {
   const repoDir = process.cwd();
   const worktrees: WorktreeInfo[] = [];
   const run = new AbortController();
@@ -422,7 +424,7 @@ export async function compare(options: CompareOptions): Promise<string> {
     cleanupWorktrees(worktrees, repoDir);
   });
 
-  const runComparison = async (): Promise<string> => {
+  const runComparison = async (): Promise<ComparisonResult> => {
     let measurement: Measurement;
 
     try {
@@ -485,9 +487,7 @@ export async function compare(options: CompareOptions): Promise<string> {
 
     const cleanup = cleanupWorktrees(worktrees, repoDir);
 
-    const result = buildComparisonResult(measurement, options, cleanup);
-
-    return renderReport(result);
+    return buildComparisonResult(measurement, options, cleanup);
   };
 
   return runComparison().finally(uninstallTerminationCleanup);

@@ -2,7 +2,6 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { styleText } from "node:util";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
 import { Command, InvalidArgumentError } from "commander";
@@ -12,6 +11,8 @@ import { compare } from "./compare.js";
 import type { CompareOptions } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { GymratError } from "./errors.js";
+import { formatLabel } from "./report/format.js";
+import { renderReport } from "./report/text.js";
 
 /**
  * Parse label=ref syntax from a positional argument.
@@ -43,18 +44,6 @@ function parsePositiveInteger(value: string): number {
     throw new InvalidArgumentError("must be a positive integer.");
   }
   return parsed;
-}
-
-/**
- * `validateStream: false` tells `styleText` to skip its own TTY check — the
- * caller already decided whether color is appropriate via the `useColor` flag.
- */
-function formatLabel(
-  label: string,
-  style: Parameters<typeof styleText>[0],
-  useColor: boolean,
-): string {
-  return useColor ? styleText(style, label, { validateStream: false }) : label;
 }
 
 /**
@@ -164,8 +153,8 @@ export function createProgram(): Command {
         configMetrics: config.metrics,
       };
 
-      const report = await compare(compareOptions);
-      process.stdout.write(report + "\n");
+      const result = await compare(compareOptions);
+      process.stdout.write(renderReport(result) + "\n");
     });
 
   return program;

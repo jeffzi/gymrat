@@ -12,6 +12,9 @@ import { createProgram, formatCliError } from "../src/cli.js";
 import type { CommandErrorContext, ExitFailure } from "../src/compare.js";
 import { CommandError } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
+import { renderReport } from "../src/report/text.js";
+import type { ComparisonResult } from "../src/report/types.js";
+import { createComparisonResult } from "./fixtures/comparison-result.js";
 
 // Mock the compare module — pass through CommandError so tests can construct instances
 vi.mock("../src/compare.js", async (importOriginal) => {
@@ -27,7 +30,7 @@ vi.mock("../src/config.js", () => ({
 }));
 
 async function setupMocks(
-  compareMockReturn?: string | Error,
+  compareMockReturn?: ComparisonResult | Error,
   resolveConfigMockReturn: Partial<ResolvedConfig> = {},
 ) {
   const { compare: compareMock } = await import("../src/compare.js");
@@ -49,7 +52,7 @@ async function setupMocks(
   if (compareMockReturn instanceof Error) {
     typedCompareMock.mockRejectedValue(compareMockReturn);
   } else {
-    typedCompareMock.mockResolvedValue(compareMockReturn ?? "OK");
+    typedCompareMock.mockResolvedValue(compareMockReturn ?? createComparisonResult());
   }
 
   return { compareMock, resolveConfigMock };
@@ -171,7 +174,7 @@ describe("createProgram", () => {
           // Arrange
           const program = createProgram();
           program.exitOverride();
-          const { compareMock } = await setupMocks("report text");
+          const { compareMock } = await setupMocks();
 
           // Act
           await program.parseAsync(["node", "cli.js", "compare", ...positionals]);
@@ -228,7 +231,7 @@ describe("createProgram", () => {
         // Arrange
         const program = createProgram();
         program.exitOverride();
-        const { compareMock } = await setupMocks("report text", resolved);
+        const { compareMock } = await setupMocks(undefined, resolved);
 
         // Act
         await program.parseAsync(["node", "cli.js", "compare", "main", "branch"]);
@@ -329,18 +332,19 @@ describe("createProgram", () => {
     });
 
     describe("on successful compare", () => {
-      it("writes the rendered report to stdout", async () => {
+      it("renders the comparison data compare returned and writes it to stdout", async () => {
         // Arrange
         const program = createProgram();
         program.exitOverride();
-        await setupMocks("report text");
+        const result = createComparisonResult({ labels: ["main", "branch"] });
+        await setupMocks(result);
         const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
         await program.parseAsync(["node", "cli.js", "compare", "main", "branch"]);
 
         // Assert
-        expect(writeSpy).toHaveBeenCalledWith("report text\n");
+        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
       });
     });
 

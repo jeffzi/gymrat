@@ -8,6 +8,7 @@ import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } 
 import { compare, CommandError } from "../src/compare.js";
 import type { CompareOptions } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
+import { renderReport } from "../src/report/text.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
 import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
@@ -408,7 +409,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        const report = await compare(options);
+        const report = renderReport(await compare(options));
 
         expect(report).toContain("old (old-dir)");
         expect(report).toContain("new (new-dir)");
@@ -416,6 +417,46 @@ describe("compare – integration", () => {
         // a failure — the prune sweep is skipped, and sweeping anyway would
         // fail on targets that need not be git repositories at all.
         expect(report).toContain("0 worktrees removed · 0 left behind");
+      } finally {
+        repo.cleanup();
+      }
+    });
+  });
+
+  describe("when a run completes", () => {
+    it("returns the comparison data rather than the rendered report", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        for (const [name, latency] of [
+          ["old-data", 100],
+          ["new-data", 90],
+        ] as const) {
+          fs.mkdirSync(path.join(repo.dir, name));
+          const script = path.join(repo.dir, name, "bench.sh");
+          fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
+          fs.chmodSync(script, 0o755);
+        }
+
+        const options: CompareOptions = {
+          oldTarget: "old-data",
+          newTarget: "new-data",
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 3,
+          timeoutSeconds: 10,
+        };
+
+        const result = await compare(options);
+
+        expect.soft(result.labels).toStrictEqual(["old-data", "new-data"]);
+        expect.soft(result.samples).toBe(3);
+        expect.soft(result.adapter).toBe("metric-lines");
+        expect.soft(result.metrics["latency"]?.medianA).toBe(100);
+        expect.soft(result.metrics["latency"]?.medianB).toBe(90);
+        expect(result.worktreesRemoved).toBe(0);
       } finally {
         repo.cleanup();
       }
@@ -450,7 +491,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        const report = await compare(options);
+        const report = renderReport(await compare(options));
 
         expect(report).toContain("old (baseline)");
         expect(report).toContain("new (candidate)");
@@ -488,7 +529,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        const report = await compare(options);
+        const report = renderReport(await compare(options));
 
         expect(report).toContain("latency");
         expect(report).toContain("throughput");
@@ -527,7 +568,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        const report = await compare(options);
+        const report = renderReport(await compare(options));
 
         expect(report).toContain("decode");
         expect(report).toContain("encode");
@@ -569,7 +610,7 @@ describe("compare – integration", () => {
             timeoutSeconds: 10,
           };
 
-          const report = await compare(options);
+          const report = renderReport(await compare(options));
 
           expect(report).toContain(expectedFooter);
         } finally {
@@ -627,7 +668,7 @@ describe("compare – integration", () => {
             unstableNoisePct,
           };
 
-          const report = await compare(options);
+          const report = renderReport(await compare(options));
 
           const latencyRow = findLine(report, (line) => line.startsWith("latency"));
           expect.soft(latencyRow).toContain(`${expectedGlyph} -50.0%`);
@@ -880,7 +921,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        const report = await compare(options);
+        const report = renderReport(await compare(options));
 
         leftBehindDirs.push(
           ...report.split("\n").flatMap((line) => /^ {2}left behind: (\S+) /.exec(line)?.[1] ?? []),
@@ -1024,7 +1065,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        const report = await compare(options);
+        const report = renderReport(await compare(options));
 
         // Zero medians must render as a zero spread and a zero delta rather than
         // NaN or a division blow-up, so assert the row itself, not just the name.
