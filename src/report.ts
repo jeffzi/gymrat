@@ -1,7 +1,7 @@
 import type { ResolvedMetricMeta } from "./config.js";
 import { assertNever } from "./errors.js";
 import type { WorktreeRemovalFailure } from "./targets.js";
-import type { Method, MetricVerdict } from "./verdict/verdict.js";
+import type { GeomeanResult, Method, MetricVerdict } from "./verdict/verdict.js";
 
 /**
  * Everything `renderReport` needs to draw a comparison — the rendering input contract.
@@ -21,11 +21,7 @@ export interface ComparisonResult {
       meta: ResolvedMetricMeta;
     }
   >;
-  geomean: {
-    value: number;
-    n: number;
-    excluded: string[];
-  };
+  geomean: GeomeanResult;
   worktreesRemoved: number;
 
   /** Worktrees cleanup could not remove, each with the reason git gave. */

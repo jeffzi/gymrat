@@ -138,6 +138,12 @@ export interface CompareOptions {
   adapter: string; // "metric-lines" or "mitata"
   samples: number; // number of paired sample windows
   timeoutSeconds: number;
+  /**
+   * Noise band width, in percent, above which a metric is reported "unstable".
+   * Omitted, the verdict engine's own default applies — the CLI always supplies
+   * the resolved config value, so only direct callers see the fallback.
+   */
+  unstableNoisePct?: number;
   configMetrics?: ConfigMetrics;
 }
 
@@ -460,7 +466,7 @@ export async function compare(options: CompareOptions): Promise<string> {
       }
 
       const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
-      const verdicts = computeVerdicts(samplesA, samplesB, metricMeta);
+      const verdicts = computeVerdicts(samplesA, samplesB, metricMeta, options.unstableNoisePct);
       const geomean = computeGeomean(verdicts, metricMeta);
 
       measurement = {

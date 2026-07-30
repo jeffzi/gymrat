@@ -72,6 +72,17 @@ async function captureRejection(promise: Promise<unknown>): Promise<Error> {
 }
 
 /**
+ * The single report line matching `predicate`, or a failure naming the whole report.
+ */
+function findLine(report: string, predicate: (line: string) => boolean): string {
+  const line = report.split("\n").find(predicate);
+  if (line === undefined) {
+    throw new Error(`no matching line in report:\n${report}`);
+  }
+  return line;
+}
+
+/**
  * Extract the directories named by `left behind: <dir> <reason>` entries.
  *
  * Requires a non-empty reason on the same line, so a multi-line git diagnostic
@@ -561,6 +572,68 @@ describe("compare – integration", () => {
           const report = await compare(options);
 
           expect(report).toContain(expectedFooter);
+        } finally {
+          repo.cleanup();
+        }
+      },
+    );
+  });
+
+  describe("when an unstable noise threshold is configured", () => {
+    /**
+     * A bench whose successive runs emit 40, 50 then 60 for `latency`.
+     *
+     * The counter file lives in the main repo dir so it survives the throwaway
+     * worktree each run happens in. Paired against a flat 100 on the other side,
+     * the spread works out to a noise band of 30%: median 50, half-range 10,
+     * 1.5 × 100 × (10 / 50).
+     */
+    const noisyBenchScript = (counterFile: string) =>
+      [
+        "#!/bin/sh",
+        `echo x >> "${counterFile}"`,
+        `n=$(wc -l < "${counterFile}" | tr -d ' ')`,
+        'echo "METRIC latency=$((30 + 10 * n))"',
+      ].join("\n");
+
+    it.each([
+      { unstableNoisePct: 20, expectedGlyph: "~", expectedGeomean: "0.0%" },
+      { unstableNoisePct: 40, expectedGlyph: "✓", expectedGeomean: "-50.0%" },
+    ])(
+      "renders $expectedGlyph for a metric with 30% noise when unstableNoisePct is $unstableNoisePct",
+      async ({ unstableNoisePct, expectedGlyph, expectedGeomean }) => {
+        const repo = createScratchRepo();
+
+        try {
+          process.chdir(repo.dir);
+
+          createBranch(repo, {
+            name: `old-noisy-${unstableNoisePct}`,
+            benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+          });
+
+          createBranch(repo, {
+            name: `new-noisy-${unstableNoisePct}`,
+            benchScript: noisyBenchScript(path.join(repo.dir, "noisy-runs.txt")),
+          });
+
+          const options: CompareOptions = {
+            oldTarget: `old-noisy-${unstableNoisePct}`,
+            newTarget: `new-noisy-${unstableNoisePct}`,
+            bench: "./bench.sh",
+            adapter: "metric-lines",
+            samples: 3,
+            timeoutSeconds: 10,
+            unstableNoisePct,
+          };
+
+          const report = await compare(options);
+
+          const latencyRow = findLine(report, (line) => line.startsWith("latency"));
+          expect.soft(latencyRow).toContain(`${expectedGlyph} -50.0%`);
+          // An unstable metric drops out of the geomean, so the aggregate falls to 0.0%;
+          // a stable one keeps its ρ and the geomean tracks the -50% delta.
+          expect(findLine(report, (line) => line.includes("geomean"))).toContain(expectedGeomean);
         } finally {
           repo.cleanup();
         }

@@ -115,6 +115,7 @@ describe("renderReport", () => {
                 delta: deltaVal,
                 n: 10,
                 p: pVal,
+                noisePct: 2.5,
               },
               meta: {
                 direction: "lower",
@@ -154,6 +155,7 @@ describe("renderReport", () => {
               delta: -5.0,
               n: 4,
               band: 2.5,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -309,6 +311,7 @@ describe("renderReport", () => {
               delta: ((medianB - medianA) / medianA) * 100,
               n: 10,
               p: 0.001,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -375,6 +378,7 @@ describe("renderReport", () => {
             delta: ((medianB - medianA) / medianA) * 100,
             n: 10,
             p: 0.001,
+            noisePct: 2.5,
           };
 
       const result = createComparisonResult({
@@ -417,6 +421,7 @@ describe("renderReport", () => {
               delta: -2.7,
               n: 10,
               p: 0.019,
+              noisePct: 2.5,
             },
             meta: {
               direction: "higher",
@@ -449,6 +454,7 @@ describe("renderReport", () => {
               delta: -6.0,
               n: 10,
               p: 0.01,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -500,6 +506,7 @@ describe("renderReport", () => {
               delta: -10.0,
               n: 10,
               p: 0.001,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -531,6 +538,7 @@ describe("renderReport", () => {
               delta: -5.0,
               n: 4,
               band: 2.5,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -667,6 +675,7 @@ describe("renderReport", () => {
               delta: -10.0,
               n: 10,
               p: 0.005,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -685,6 +694,7 @@ describe("renderReport", () => {
               delta: 2.0,
               n: 10,
               p: 0.5,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -733,6 +743,7 @@ describe("renderReport", () => {
               delta: 0,
               n: 10,
               p: 1.0,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -766,6 +777,7 @@ describe("renderReport", () => {
               delta: 0.5,
               n: 10,
               p: 0.75,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -797,6 +809,7 @@ describe("renderReport", () => {
               delta: -50.0,
               n: 10,
               p: 0.01,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -815,6 +828,7 @@ describe("renderReport", () => {
               delta: -10.0,
               n: 10,
               p: 0.01,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -843,7 +857,14 @@ describe("renderReport", () => {
             medianB: 95,
             spreadA: 1,
             spreadB: 1,
-            verdict: { verdict: "improved", method: "signed-rank", delta: -5, n: 10, p: 0.01 },
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -5,
+              n: 10,
+              p: 0.01,
+              noisePct: 2.5,
+            },
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
         },
@@ -875,6 +896,7 @@ describe("renderReport", () => {
               delta: -10.0,
               n: 10,
               p: 0.001,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -893,6 +915,7 @@ describe("renderReport", () => {
               delta: -5.0,
               n: 4,
               band: 2.5,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -922,6 +945,7 @@ describe("renderReport", () => {
               delta: -5.0,
               n: 4,
               band: 2.5,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -940,6 +964,7 @@ describe("renderReport", () => {
               delta: -4.0,
               n: 5,
               band: 1.8,
+              noisePct: 1.8,
             },
             meta: {
               direction: "lower",
@@ -991,6 +1016,7 @@ describe("renderReport", () => {
                 delta: ((belowVal - aboveVal) / aboveVal) * 100,
                 n: 10,
                 p: 0.01,
+                noisePct: 2.5,
               },
               meta: {
                 direction: "lower",
@@ -1025,6 +1051,7 @@ describe("renderReport", () => {
               delta: -5.0,
               n: 10,
               p: 0.01,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -1043,6 +1070,7 @@ describe("renderReport", () => {
               delta: -10.0,
               n: 10,
               p: 0.001,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -1096,6 +1124,7 @@ describe("renderReport", () => {
               delta: pVal < 0.01 ? -50.0 : -5.0,
               n: 10,
               p: pVal,
+              noisePct: 2.5,
             },
             meta: {
               direction: "lower",
@@ -1124,6 +1153,7 @@ describe("renderReport", () => {
               delta: -5.0,
               n: 4,
               band: 0.5,
+              noisePct: 0.5,
             },
             meta: {
               direction: "lower",
@@ -1310,7 +1340,14 @@ describe("renderReport", () => {
             medianB: 1425,
             spreadA: 1,
             spreadB: 1,
-            verdict: { verdict: "improved", method: "signed-rank", delta: -17.9, n: 10, p: 0.002 },
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -17.9,
+              n: 10,
+              p: 0.002,
+              noisePct: 2.5,
+            },
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "decode/text=words/time": {
@@ -1318,7 +1355,14 @@ describe("renderReport", () => {
             medianB: 3093,
             spreadA: 1,
             spreadB: 3,
-            verdict: { verdict: "no-signal", method: "signed-rank", delta: 0.9, n: 10, p: 0.49 },
+            verdict: {
+              verdict: "no-signal",
+              method: "signed-rank",
+              delta: 0.9,
+              n: 10,
+              p: 0.49,
+              noisePct: 2.5,
+            },
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "encode/time": {
@@ -1326,7 +1370,14 @@ describe("renderReport", () => {
             medianB: 934,
             spreadA: 1,
             spreadB: 1,
-            verdict: { verdict: "regressed", method: "signed-rank", delta: 2.2, n: 10, p: 0.002 },
+            verdict: {
+              verdict: "regressed",
+              method: "signed-rank",
+              delta: 2.2,
+              n: 10,
+              p: 0.002,
+              noisePct: 2.5,
+            },
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "encode/heap": {
@@ -1375,11 +1426,22 @@ describe("renderReport", () => {
             medianB: 1560,
             spreadA: 5,
             spreadB: 4,
-            verdict: { verdict: "improved", method: "band", delta: 30, n: 4, band: 2.5 },
+            verdict: {
+              verdict: "improved",
+              method: "band",
+              delta: 30,
+              n: 4,
+              band: 2.5,
+              noisePct: 2.5,
+            },
             meta: { direction: "higher", gating: false, exact: false },
           },
         },
-        geomean: { value: 0, n: 1, excluded: ["nan-delta/count"] },
+        geomean: {
+          value: 0,
+          n: 1,
+          excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
+        },
         worktreesRemoved: 1,
         worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc123", error: "contains modified files" }],
         worktreePruneError: "could not lock config file",

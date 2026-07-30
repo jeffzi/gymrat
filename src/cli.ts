@@ -160,6 +160,7 @@ export function createProgram(): Command {
         adapter: config.adapter,
         samples: config.samples,
         timeoutSeconds: config.timeoutSeconds,
+        unstableNoisePct: config.unstableNoisePct,
         configMetrics: config.metrics,
       };
 

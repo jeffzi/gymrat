@@ -6,6 +6,7 @@ import type { Static } from "@sinclair/typebox";
 
 import type { Adapter } from "./adapters/types.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
+import { DEFAULT_UNSTABLE_NOISE_PCT } from "./verdict/verdict.js";
 
 /** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
 const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
@@ -38,6 +39,10 @@ const configFileSchema = Type.Object(
     adapter: Type.Optional(Type.String(expected("a string"))),
     samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
     timeoutSeconds: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
+    // A noise threshold is a percentage, not a count, so fractional values are allowed.
+    unstableNoisePct: Type.Optional(
+      Type.Number({ ...expected("a positive number"), exclusiveMinimum: 0 }),
+    ),
     metrics: Type.Optional(metricsSchema),
   },
   strictObjectOptions,
@@ -67,6 +72,7 @@ export interface ResolvedConfig {
   adapter: string;
   samples: number;
   timeoutSeconds: number;
+  unstableNoisePct: number;
   metrics?: ConfigMetrics;
 }
 
@@ -103,6 +109,7 @@ const DEFAULTS = {
   adapter: "metric-lines",
   samples: 10,
   timeoutSeconds: 1800,
+  unstableNoisePct: DEFAULT_UNSTABLE_NOISE_PCT,
 } as const;
 
 function isFileNotFoundError(err: unknown): boolean {
@@ -185,6 +192,8 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
     configFile.timeoutSeconds,
     DEFAULTS.timeoutSeconds,
   );
+  // No flag counterpart: the noise threshold comes from the file or the default.
+  const unstableNoisePct = pickDefined(configFile.unstableNoisePct, DEFAULTS.unstableNoisePct);
   const metrics = configFile.metrics;
 
   if (!bench) {
@@ -196,6 +205,7 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
     adapter,
     samples,
     timeoutSeconds,
+    unstableNoisePct,
     ...(prepare !== undefined && { prepare }),
     ...(metrics !== undefined && { metrics }),
   };

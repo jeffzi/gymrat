@@ -80,6 +80,8 @@ describe("loadConfigFile", () => {
         adapter: "adapter-name",
         samples: 10,
         timeoutSeconds: 30,
+        // Fractional: unlike samples, the noise threshold need not be an integer.
+        unstableNoisePct: 150.5,
         metrics: {
           metric1: { direction: "lower" as const, gating: true, exact: false },
           metric2: { direction: "higher" as const },
@@ -208,6 +210,21 @@ describe("loadConfigFile", () => {
     });
   });
 
+  describe("when unstableNoisePct holds an invalid value", () => {
+    it.each([
+      { description: "a string", value: "loud" },
+      { description: "zero", value: 0 },
+      { description: "a negative number", value: -5 },
+      { description: "a boolean", value: true },
+      { description: "null", value: null },
+    ])("throws naming unstableNoisePct when it is $description", ({ value }) => {
+      tmpdir = createConfigFile({ unstableNoisePct: value });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/unstableNoisePct.*positive number/);
+    });
+  });
+
   describe("when metrics is not an object", () => {
     it.each([
       { description: "an array", value: [] },
@@ -286,7 +303,7 @@ describe("resolveConfig", () => {
   });
 
   describe("when flags and config are empty", () => {
-    it("returns defaults for adapter, samples, timeoutSeconds", () => {
+    it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct", () => {
       // resolveConfig falls back to ./gymrat.json, so run from a dir that has none
       tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
       process.chdir(tmpdir);
@@ -298,6 +315,7 @@ describe("resolveConfig", () => {
         adapter: "metric-lines",
         samples: 10,
         timeoutSeconds: 1800,
+        unstableNoisePct: 200,
       });
     });
   });
@@ -309,6 +327,7 @@ describe("resolveConfig", () => {
         adapter: "custom-adapter",
         samples: 20,
         timeoutSeconds: 3600,
+        unstableNoisePct: 150.5,
       };
       tmpdir = createConfigFile(config);
       process.chdir(tmpdir);
@@ -338,6 +357,7 @@ describe("resolveConfig", () => {
         adapter: "flag-adapter",
         samples: 20,
         timeoutSeconds: 1800,
+        unstableNoisePct: 200,
       });
     });
   });
@@ -359,6 +379,7 @@ describe("resolveConfig", () => {
         adapter: "flag-adapter",
         samples: 25,
         timeoutSeconds: 900,
+        unstableNoisePct: 200,
       });
     });
   });
@@ -427,6 +448,7 @@ describe("resolveConfig", () => {
         adapter: "metric-lines",
         samples: 10,
         timeoutSeconds: 1800,
+        unstableNoisePct: 200,
         metrics,
       });
     });

@@ -203,6 +203,7 @@ an error, to catch typos.
   "adapter": "mitata",
   "samples": 10,
   "timeoutSeconds": 1800,
+  "unstableNoisePct": 200,
   "metrics": {
     "decode/time": { "direction": "lower", "gating": true, "exact": false }
   }
@@ -210,6 +211,9 @@ an error, to catch typos.
 ```
 
 - `bench`, `prepare`, `adapter`, `samples`, `timeoutSeconds` mirror the command-line options.
+- `unstableNoisePct` (default `200`, any positive number) is the noise band width, in percent, above
+  which a metric is too noisy to judge: its verdict becomes no-signal and it drops out of the
+  geomean. It has no flag — set it in the config file or leave the default.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
   - `direction`: `"lower"` or `"higher"` (which way is better).
   - `gating`: whether the metric counts toward the geomean. Defaults to `true`.

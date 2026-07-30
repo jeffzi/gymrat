@@ -41,6 +41,7 @@ async function setupMocks(
     adapter: "metric-lines",
     samples: 1,
     timeoutSeconds: 300,
+    unstableNoisePct: 200,
     ...resolveConfigMockReturn,
   };
 
@@ -203,23 +204,37 @@ describe("createProgram", () => {
       });
     });
 
-    describe("when the resolved config carries per-metric overrides", () => {
-      it("passes them to compare so the overrides reach the report", async () => {
+    describe("when the resolved config carries settings compare needs", () => {
+      it.each([
+        {
+          desc: "per-metric overrides",
+          resolved: {
+            metrics: {
+              "decode/time": { direction: "higher" as const, gating: false, exact: true },
+            },
+          },
+          expected: {
+            configMetrics: {
+              "decode/time": { direction: "higher" as const, gating: false, exact: true },
+            },
+          },
+        },
+        {
+          desc: "an unstable noise threshold",
+          resolved: { unstableNoisePct: 150.5 },
+          expected: { unstableNoisePct: 150.5 },
+        },
+      ])("passes $desc through to compare", async ({ resolved, expected }) => {
         // Arrange
         const program = createProgram();
         program.exitOverride();
-        const metrics = {
-          "decode/time": { direction: "higher" as const, gating: false, exact: true },
-        };
-        const { compareMock } = await setupMocks("report text", { metrics });
+        const { compareMock } = await setupMocks("report text", resolved);
 
         // Act
         await program.parseAsync(["node", "cli.js", "compare", "main", "branch"]);
 
         // Assert
-        expect(compareMock).toHaveBeenCalledWith(
-          expect.objectContaining({ configMetrics: metrics }),
-        );
+        expect(compareMock).toHaveBeenCalledWith(expect.objectContaining(expected));
       });
     });
 
