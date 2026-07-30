@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AdapterError } from "../src/adapters/index.js";
-import { createProgram, formatCliError, isHintedError } from "../src/cli.js";
+import { createProgram, formatCliError } from "../src/cli.js";
 import type { CommandErrorContext, ExitFailure } from "../src/compare.js";
 import { CommandError } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
@@ -342,31 +342,6 @@ describe("createProgram", () => {
         ).rejects.toThrow("Compare failed");
       });
     });
-  });
-});
-
-describe("isHintedError", () => {
-  it("returns true for an error with a hint property", () => {
-    // Arrange
-    const error = createCommandError("ref");
-
-    // Act
-    const result = isHintedError(error);
-
-    // Assert
-    expect(result).toBe(true);
-  });
-
-  it.each([
-    { description: "a plain Error", value: new Error("plain") },
-    { description: "a non-Error value", value: "boom" },
-    { description: "null", value: null },
-  ])("returns false for $description", ({ value }) => {
-    // Act
-    const result = isHintedError(value);
-
-    // Assert
-    expect(result).toBe(false);
   });
 });
 

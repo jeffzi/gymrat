@@ -460,7 +460,6 @@ describe("mitata adapter", () => {
 
     describe("real fixture", () => {
       it("parses the fixture file correctly", async () => {
-        // Using dynamic import to load JSON from fixture
         const fixtureModule = await import("../../tests/fixtures/mitata.json", {
           with: { type: "json" },
         });

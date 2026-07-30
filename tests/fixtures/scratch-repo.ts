@@ -3,11 +3,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Throwaway git repository in the system temp dir. Call `cleanup` to remove it. */
 export interface ScratchRepo {
   dir: string;
   cleanup: () => void;
 }
 
+/**
+ * Create a temporary git repository on `main` with one committed file,
+ * user identity configured, and GPG signing disabled.
+ *
+ * The caller must invoke `.cleanup()` when done.
+ */
 export function createScratchRepo(): ScratchRepo {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-test-"));
 
@@ -16,7 +23,6 @@ export function createScratchRepo(): ScratchRepo {
     // developer's init.defaultBranch, and tests that check out from "main" break.
     execSync("git init -b main", { cwd: dir, stdio: "pipe" });
 
-    // Configure user and settings for commits
     const configs = [
       ["user.name", "Test User"],
       ["user.email", "test@example.com"],
@@ -26,7 +32,6 @@ export function createScratchRepo(): ScratchRepo {
       execSync(`git config ${key} '${value}'`, { cwd: dir, stdio: "pipe" });
     }
 
-    // Create initial commit
     fs.writeFileSync(path.join(dir, "README.md"), "# Test Repo\n");
     execSync("git add README.md", { cwd: dir, stdio: "pipe" });
     execSync("git commit -m 'Initial commit'", { cwd: dir, stdio: "pipe" });

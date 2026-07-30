@@ -1,10 +1,7 @@
 import type { ResolvedMetricMeta } from "./config.js";
+import { assertNever } from "./errors.js";
 import type { WorktreeRemovalFailure } from "./targets.js";
 import type { Method, MetricVerdict } from "./verdict/verdict.js";
-
-function assertNever(x: never): never {
-  throw new Error(`Unexpected: ${JSON.stringify(x)}`);
-}
 
 /**
  * Everything `renderReport` needs to draw a comparison — the rendering input contract.

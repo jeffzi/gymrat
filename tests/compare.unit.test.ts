@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { CommandError } from "../src/compare.js";
 import type { CommandErrorContext, ExitFailure, TimeoutFailure } from "../src/compare.js";
 import type { InPlaceTarget, RefTarget } from "../src/targets.js";
+import { REF_TARGET_HINT } from "./fixtures/constants.js";
 
 function createRefTarget(ref = "abc123", resolvedSha = "def456"): RefTarget {
   return { kind: "ref", ref, resolvedSha };
@@ -42,9 +43,6 @@ function createTimeoutFailure(overrides: Partial<TimeoutFailure> = {}): TimeoutF
   };
 }
 
-const REF_TARGET_HINT =
-  "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent";
-
 describe("CommandError", () => {
   describe("when exit code is non-zero", () => {
     it("includes phase, position, label, ref, worktree dir, command, exit code, and stderr for a ref target", () => {
@@ -56,13 +54,13 @@ describe("CommandError", () => {
 
       const error = new CommandError(ctx, failure);
 
-      expect(error.message).toContain("bench");
-      expect(error.message).toContain("old");
-      expect(error.message).toContain("baseline");
-      expect(error.message).toContain("main");
-      expect(error.message).toContain("/tmp/worktree-abc");
-      expect(error.message).toContain("npm run bench");
-      expect(error.message).toContain("exit code: 2");
+      expect.soft(error.message).toContain("bench");
+      expect.soft(error.message).toContain("old");
+      expect.soft(error.message).toContain("baseline");
+      expect.soft(error.message).toContain("main");
+      expect.soft(error.message).toContain("/tmp/worktree-abc");
+      expect.soft(error.message).toContain("npm run bench");
+      expect.soft(error.message).toContain("exit code: 2");
       expect(error.message).toContain("segfault in runner");
     });
 
@@ -80,12 +78,12 @@ describe("CommandError", () => {
 
       const error = new CommandError(ctx, failure);
 
-      expect(error.message).toContain("bench");
-      expect(error.message).toContain("new");
-      expect(error.message).toContain("candidate");
-      expect(error.message).toContain("/projects/my-app");
-      expect(error.message).toContain("npm run bench");
-      expect(error.message).toContain("exit code: 3");
+      expect.soft(error.message).toContain("bench");
+      expect.soft(error.message).toContain("new");
+      expect.soft(error.message).toContain("candidate");
+      expect.soft(error.message).toContain("/projects/my-app");
+      expect.soft(error.message).toContain("npm run bench");
+      expect.soft(error.message).toContain("exit code: 3");
       expect(error.message).toContain("module not found");
     });
   });
@@ -105,13 +103,13 @@ describe("CommandError", () => {
 
       const error = new CommandError(ctx, failure);
 
-      expect(error.message).toContain("prepare");
-      expect(error.message).toContain("old");
-      expect(error.message).toContain("baseline");
-      expect(error.message).toContain("feature-branch");
-      expect(error.message).toContain("/tmp/worktree-feature");
-      expect(error.message).toContain("npm install");
-      expect(error.message).toContain("60000");
+      expect.soft(error.message).toContain("prepare");
+      expect.soft(error.message).toContain("old");
+      expect.soft(error.message).toContain("baseline");
+      expect.soft(error.message).toContain("feature-branch");
+      expect.soft(error.message).toContain("/tmp/worktree-feature");
+      expect.soft(error.message).toContain("npm install");
+      expect.soft(error.message).toContain("60000");
       expect(error.message).toContain("still installing...");
       expect(error.message).not.toContain("exit code");
     });
@@ -132,12 +130,12 @@ describe("CommandError", () => {
 
       const error = new CommandError(ctx, failure);
 
-      expect(error.message).toContain("prepare");
-      expect(error.message).toContain("new");
-      expect(error.message).toContain("candidate");
-      expect(error.message).toContain("/projects/other");
-      expect(error.message).toContain("npm install");
-      expect(error.message).toContain("45000");
+      expect.soft(error.message).toContain("prepare");
+      expect.soft(error.message).toContain("new");
+      expect.soft(error.message).toContain("candidate");
+      expect.soft(error.message).toContain("/projects/other");
+      expect.soft(error.message).toContain("npm install");
+      expect.soft(error.message).toContain("45000");
       expect(error.message).toContain("hanging on postinstall");
     });
   });
@@ -208,9 +206,9 @@ describe("CommandError", () => {
 
       const error = new CommandError(ctx, failure);
 
-      expect(error.message).toContain("--- stderr ---");
-      expect(error.message).toContain("error output here");
-      expect(error.message).toContain("--- stdout ---");
+      expect.soft(error.message).toContain("--- stderr ---");
+      expect.soft(error.message).toContain("error output here");
+      expect.soft(error.message).toContain("--- stdout ---");
       expect(error.message).toContain("normal output here");
     });
   });

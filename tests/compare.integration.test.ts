@@ -5,21 +5,19 @@ import path from "node:path";
 
 import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 
-import { isHintedError } from "../src/cli.js";
 import { compare, CommandError } from "../src/compare.js";
 import type { CompareOptions } from "../src/compare.js";
+import { GymratError } from "../src/errors.js";
+import { REF_TARGET_HINT } from "./fixtures/constants.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
 import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
-
-const REF_TARGET_HINT =
-  "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent";
 
 function assertCommandError(error: Error): asserts error is CommandError {
   expect(error).toBeInstanceOf(CommandError);
 }
 
-function assertHintedError(error: Error): asserts error is Error & { hint: string | undefined } {
-  expect(isHintedError(error)).toBe(true);
+function assertGymratError(error: Error): asserts error is GymratError {
+  expect(error).toBeInstanceOf(GymratError);
 }
 
 interface BranchSetup {
@@ -188,6 +186,57 @@ function raiseSignal(
     throw error;
   }
   throw new Error(`the ${signal} handler returned instead of exiting`);
+}
+
+interface ErrorPathCase {
+  oldBranch: BranchSetup;
+  newBranch: BranchSetup;
+  options: Omit<CompareOptions, "oldTarget" | "newTarget">;
+}
+
+/**
+ * Run a compare() setup expected to reject with a CommandError, once for the whole
+ * describe block, and hand back accessors for the repo and the captured error.
+ *
+ * Centralizes the save-cwd/create-repo/chdir/create-branches/capture-rejection/
+ * restore-cwd/cleanup scaffolding shared by every error-path describe block below.
+ */
+function useErrorPathCase(setup: ErrorPathCase): {
+  repo: () => ReturnType<typeof createScratchRepo>;
+  error: () => CommandError;
+} {
+  let repo: ReturnType<typeof createScratchRepo>;
+  let error: CommandError;
+  let savedCwd: string;
+
+  beforeAll(async () => {
+    savedCwd = process.cwd();
+    repo = createScratchRepo();
+    process.chdir(repo.dir);
+
+    createBranch(repo, setup.oldBranch);
+    createBranch(repo, setup.newBranch);
+
+    const options: CompareOptions = {
+      oldTarget: setup.oldBranch.name,
+      newTarget: setup.newBranch.name,
+      ...setup.options,
+    };
+
+    const failure = await captureRejection(compare(options));
+    assertCommandError(failure);
+    error = failure;
+  });
+
+  afterAll(() => {
+    process.chdir(savedCwd);
+    repo.cleanup();
+  });
+
+  return {
+    repo: () => repo,
+    error: () => error,
+  };
 }
 
 /** This pid appears only once a whole comparison run is under way, so it waits far longer. */
@@ -527,240 +576,155 @@ describe("compare – integration", () => {
       { side: "old" as const, oldBench: failingBench, newBench: passingBench },
       { side: "new" as const, oldBench: passingBench, newBench: failingBench },
     ])("from the $side target", ({ side, oldBench, newBench }) => {
-      let repo: ReturnType<typeof createScratchRepo>;
-      let error: CommandError;
-      let savedCwd: string;
-
-      beforeAll(async () => {
-        savedCwd = process.cwd();
-        repo = createScratchRepo();
-        process.chdir(repo.dir);
-
-        createBranch(repo, { name: `old-fail-${side}`, benchScript: oldBench });
-        createBranch(repo, { name: `new-fail-${side}`, benchScript: newBench });
-
-        const options: CompareOptions = {
-          oldTarget: `old-fail-${side}`,
-          newTarget: `new-fail-${side}`,
+      const { repo, error } = useErrorPathCase({
+        oldBranch: { name: `old-fail-${side}`, benchScript: oldBench },
+        newBranch: { name: `new-fail-${side}`, benchScript: newBench },
+        options: {
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
-        };
-
-        const failure = await captureRejection(compare(options));
-        assertCommandError(failure);
-        error = failure;
-      });
-
-      afterAll(() => {
-        process.chdir(savedCwd);
-        repo.cleanup();
+        },
       });
 
       it("throws a CommandError with structured context", () => {
-        expect.soft(error.phase).toBe("bench");
-        expect.soft(error.position).toBe(side);
-        expect.soft(error.label).toBe(`${side}-fail-${side}`);
-        expect.soft(error.command).toBe("./bench.sh");
-        expect.soft(error.exitCode).toBe(1);
-        expect.soft(error.sample).toBe(1);
-        expect(error.target).toStrictEqual(
+        expect.soft(error().phase).toBe("bench");
+        expect.soft(error().position).toBe(side);
+        expect.soft(error().label).toBe(`${side}-fail-${side}`);
+        expect.soft(error().command).toBe("./bench.sh");
+        expect.soft(error().exitCode).toBe(1);
+        expect.soft(error().sample).toBe(1);
+        expect(error().target).toStrictEqual(
           expect.objectContaining({ kind: "ref", ref: `${side}-fail-${side}` }),
         );
 
-        expect(error.message).toContain("stderr output");
-        expect(error.message).toMatch(/worktree:\s+\S/);
-        expect(error.message).not.toContain("hint:");
-        expect(error.hint).toBe(REF_TARGET_HINT);
-        expect(error.message).not.toContain("left behind");
+        expect(error().message).toContain("stderr output");
+        expect(error().message).toMatch(/worktree:\s+\S/);
+        expect(error().message).not.toContain("hint:");
+        expect(error().hint).toBe(REF_TARGET_HINT);
+        expect(error().message).not.toContain("left behind");
       });
 
       it("cleans up all worktrees", () => {
-        assertWorktreesCleanedUp(repo);
+        assertWorktreesCleanedUp(repo());
       });
     });
   });
 
   describe("when the bench command exceeds the timeout", () => {
-    let repo: ReturnType<typeof createScratchRepo>;
-    let error: CommandError;
-    let savedCwd: string;
-
-    beforeAll(async () => {
-      savedCwd = process.cwd();
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-
-      createBranch(repo, { name: "old-slow", benchScript: "#!/bin/sh\nsleep 10" });
-      createBranch(repo, {
-        name: "new-slow",
-        benchScript: '#!/bin/sh\necho "METRIC latency=90"',
-      });
-
-      const options: CompareOptions = {
-        oldTarget: "old-slow",
-        newTarget: "new-slow",
+    const { repo, error } = useErrorPathCase({
+      oldBranch: { name: "old-slow", benchScript: "#!/bin/sh\nsleep 10" },
+      newBranch: { name: "new-slow", benchScript: '#!/bin/sh\necho "METRIC latency=90"' },
+      options: {
         bench: "./bench.sh",
         adapter: "metric-lines",
         samples: 3,
         // Fractional seconds keep the test near half a second; the sleep is
         // killed with its process group, so nothing outlives the run.
         timeoutSeconds: 0.5,
-      };
-
-      const failure = await captureRejection(compare(options));
-      assertCommandError(failure);
-      error = failure;
-    });
-
-    afterAll(() => {
-      process.chdir(savedCwd);
-      repo.cleanup();
+      },
     });
 
     it("throws a CommandError with timeout context", () => {
-      expect.soft(error.phase).toBe("bench");
-      expect.soft(error.position).toBe("old");
-      expect.soft(error.label).toBe("old-slow");
-      expect.soft(error.command).toBe("./bench.sh");
-      expect.soft(error.timeoutMs).toBe(500);
-      expect.soft(error.exitCode).toBeUndefined();
+      expect.soft(error().phase).toBe("bench");
+      expect.soft(error().position).toBe("old");
+      expect.soft(error().label).toBe("old-slow");
+      expect.soft(error().command).toBe("./bench.sh");
+      expect.soft(error().timeoutMs).toBe(500);
+      expect.soft(error().exitCode).toBeUndefined();
       expect
-        .soft(error.target)
+        .soft(error().target)
         .toStrictEqual(expect.objectContaining({ kind: "ref", ref: "old-slow" }));
-      expect(error.message).toMatch(/timed out/);
-      expect(error.message).not.toContain("left behind");
+      expect(error().message).toMatch(/timed out/);
+      expect(error().message).not.toContain("left behind");
     });
 
     it("cleans up all worktrees", () => {
-      assertWorktreesCleanedUp(repo);
+      assertWorktreesCleanedUp(repo());
     });
   });
 
   describe("when prepare command fails", () => {
-    let repo: ReturnType<typeof createScratchRepo>;
-    let error: CommandError;
-    let savedCwd: string;
-
-    beforeAll(async () => {
-      savedCwd = process.cwd();
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-
-      createBranch(repo, {
+    const { repo, error } = useErrorPathCase({
+      oldBranch: {
         name: "old-prep-fail",
         benchScript: '#!/bin/sh\necho "METRIC latency=100"',
         prepareScript: '#!/bin/sh\necho "prep failed" >&2\nexit 1',
-      });
-
-      createBranch(repo, {
+      },
+      newBranch: {
         name: "new-prep-fail",
         benchScript: '#!/bin/sh\necho "METRIC latency=90"',
         prepareScript: "#!/bin/sh\nexit 0",
-      });
-
-      const options: CompareOptions = {
-        oldTarget: "old-prep-fail",
-        newTarget: "new-prep-fail",
+      },
+      options: {
         bench: "./bench.sh",
         prepare: "./prepare.sh",
         adapter: "metric-lines",
         samples: 3,
         timeoutSeconds: 10,
-      };
-
-      const failure = await captureRejection(compare(options));
-      assertCommandError(failure);
-      error = failure;
-    });
-
-    afterAll(() => {
-      process.chdir(savedCwd);
-      repo.cleanup();
+      },
     });
 
     it("throws a CommandError with prepare context", () => {
-      expect.soft(error.phase).toBe("prepare");
-      expect.soft(error.position).toBe("old");
-      expect.soft(error.label).toBe("old-prep-fail");
-      expect.soft(error.command).toBe("./prepare.sh");
-      expect.soft(error.exitCode).toBe(1);
-      expect.soft(error.sample).toBeUndefined();
-      expect(error.target).toStrictEqual(
+      expect.soft(error().phase).toBe("prepare");
+      expect.soft(error().position).toBe("old");
+      expect.soft(error().label).toBe("old-prep-fail");
+      expect.soft(error().command).toBe("./prepare.sh");
+      expect.soft(error().exitCode).toBe(1);
+      expect.soft(error().sample).toBeUndefined();
+      expect(error().target).toStrictEqual(
         expect.objectContaining({ kind: "ref", ref: "old-prep-fail" }),
       );
 
-      expect(error.message).toContain("prep failed");
-      expect(error.message).toMatch(/worktree:\s+\S/);
-      expect(error.message).not.toContain("hint:");
-      expect(error.hint).toBe(REF_TARGET_HINT);
-      expect(error.message).not.toContain("left behind");
+      expect(error().message).toContain("prep failed");
+      expect(error().message).toMatch(/worktree:\s+\S/);
+      expect(error().message).not.toContain("hint:");
+      expect(error().hint).toBe(REF_TARGET_HINT);
+      expect(error().message).not.toContain("left behind");
     });
 
     it("cleans up all worktrees", () => {
-      assertWorktreesCleanedUp(repo);
+      assertWorktreesCleanedUp(repo());
     });
   });
 
   describe("when prepare command times out", () => {
-    let repo: ReturnType<typeof createScratchRepo>;
-    let error: CommandError;
-    let savedCwd: string;
-
-    beforeAll(async () => {
-      savedCwd = process.cwd();
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-
-      createBranch(repo, {
+    const { repo, error } = useErrorPathCase({
+      oldBranch: {
         name: "old-prep-slow",
         benchScript: '#!/bin/sh\necho "METRIC latency=100"',
         prepareScript: "#!/bin/sh\nsleep 10",
-      });
-
-      createBranch(repo, {
+      },
+      newBranch: {
         name: "new-prep-slow",
         benchScript: '#!/bin/sh\necho "METRIC latency=90"',
         prepareScript: "#!/bin/sh\nexit 0",
-      });
-
-      const options: CompareOptions = {
-        oldTarget: "old-prep-slow",
-        newTarget: "new-prep-slow",
+      },
+      options: {
         bench: "./bench.sh",
         prepare: "./prepare.sh",
         adapter: "metric-lines",
         samples: 3,
         timeoutSeconds: 0.5,
-      };
-
-      const failure = await captureRejection(compare(options));
-      assertCommandError(failure);
-      error = failure;
-    });
-
-    afterAll(() => {
-      process.chdir(savedCwd);
-      repo.cleanup();
+      },
     });
 
     it("throws a CommandError with prepare timeout context", () => {
-      expect.soft(error.phase).toBe("prepare");
-      expect.soft(error.position).toBe("old");
-      expect.soft(error.label).toBe("old-prep-slow");
-      expect.soft(error.command).toBe("./prepare.sh");
-      expect.soft(error.timeoutMs).toBe(500);
-      expect.soft(error.exitCode).toBeUndefined();
+      expect.soft(error().phase).toBe("prepare");
+      expect.soft(error().position).toBe("old");
+      expect.soft(error().label).toBe("old-prep-slow");
+      expect.soft(error().command).toBe("./prepare.sh");
+      expect.soft(error().timeoutMs).toBe(500);
+      expect.soft(error().exitCode).toBeUndefined();
       expect
-        .soft(error.target)
+        .soft(error().target)
         .toStrictEqual(expect.objectContaining({ kind: "ref", ref: "old-prep-slow" }));
-      expect(error.message).toMatch(/timed out/);
-      expect(error.message).not.toContain("left behind");
+      expect(error().message).toMatch(/timed out/);
+      expect(error().message).not.toContain("left behind");
     });
 
     it("cleans up all worktrees", () => {
-      assertWorktreesCleanedUp(repo);
+      assertWorktreesCleanedUp(repo());
     });
   });
 
@@ -949,7 +913,7 @@ describe("compare – integration", () => {
         expect(failure.cause).toBeInstanceOf(Error);
         // withCleanupFailures wraps the original CommandError in a plain Error;
         // the hint must be forwarded so formatCliError can surface it later.
-        assertHintedError(failure);
+        assertGymratError(failure);
         expect(failure.hint).toBe(REF_TARGET_HINT);
       } finally {
         for (const dir of leftBehindDirs) {

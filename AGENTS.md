@@ -9,3 +9,7 @@
 - `npm run fix:quality` — remove unused exports, dependencies, and enum members (`fallow fix`). Deletes code — review the diff before committing.
 - `npm run check:security` — surface security candidates (`fallow security`). Candidates need verification; they are not confirmed vulnerabilities. Not part of `check`.
 - `npm run check:package` — publish hygiene (`publint` + `@arethetypeswrong/cli`) for packages that ship to npm. Not part of `check`.
+
+## Conventions
+
+- **Errors:** all custom errors extend `GymratError` from `src/errors.ts` — never extend bare `Error`.

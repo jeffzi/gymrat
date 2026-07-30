@@ -38,17 +38,14 @@ function getBandVerdict(result: Record<string, MetricVerdict>, key: string): Ban
   return verdict;
 }
 
-// Common metric configs for exact method
 const METRIC_EXACT_LOWER = { metric: { direction: "lower" as const, gating: true, exact: true } };
 const METRIC_EXACT_HIGHER = { metric: { direction: "higher" as const, gating: true, exact: true } };
 
-// Common metric configs for approximate method
 const METRIC_APPROX_LOWER = { metric: { direction: "lower" as const, gating: true, exact: false } };
 const METRIC_APPROX_HIGHER = {
   metric: { direction: "higher" as const, gating: true, exact: false },
 };
 
-// Helper to create n identical samples
 function createSamples(n: number, value: number): Array<{ metric: number }> {
   return Array.from({ length: n }, () => ({ metric: value }));
 }

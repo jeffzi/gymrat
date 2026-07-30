@@ -17,9 +17,6 @@ import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-
 /** A sha no repository holds, so `git worktree add` rejects it outright. */
 const UNKNOWN_SHA = "0".repeat(40);
 
-/**
- * Get the commit SHA of the working tree HEAD.
- */
 function getHeadSha(repoDir: string): string {
   return execSync("git rev-parse HEAD", {
     cwd: repoDir,
@@ -27,16 +24,10 @@ function getHeadSha(repoDir: string): string {
   }).trim();
 }
 
-/**
- * Create a RefTarget with the given ref and resolved SHA.
- */
 function createRefTarget(ref: string, resolvedSha: string): RefTarget {
   return { kind: "ref", ref, resolvedSha };
 }
 
-/**
- * Create a worktree checked out at the repo's current HEAD.
- */
 function createHeadWorktree(repoDir: string): WorktreeInfo {
   const sha = getHeadSha(repoDir);
   const worktree = planWorktree(createRefTarget(sha, sha));

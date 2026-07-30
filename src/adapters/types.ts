@@ -1,3 +1,5 @@
+import { GymratError } from "../errors.js";
+
 /**
  * Turns one benchmark harness's stdout into the metric map the rest of gymrat works with.
  *
@@ -32,14 +34,5 @@ export interface MetricDefaults {
  * message with the class name, which is what tells the user the fault is in
  * their bench script's output rather than in gymrat's git or config handling.
  * Adapters should raise this and nothing else for unparseable output.
- *
- * The explicit `setPrototypeOf` call keeps `instanceof` working when the class
- * is transpiled to a target that does not natively subclass `Error`.
  */
-export class AdapterError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AdapterError";
-    Object.setPrototypeOf(this, AdapterError.prototype);
-  }
-}
+export class AdapterError extends GymratError {}

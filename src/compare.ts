@@ -3,6 +3,7 @@ import path from "node:path";
 import { getAdapter } from "./adapters/index.js";
 import type { Adapter } from "./adapters/types.js";
 import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
+import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import { computeMedian } from "./math.js";
 import { formatCleanupFailures, renderReport } from "./report.js";
@@ -90,7 +91,7 @@ function formatCommandError(
  * in the formatted message and as typed fields for programmatic access. Ref-target
  * failures append a hint about the ref possibly lacking the files the command needs.
  */
-export class CommandError extends Error {
+export class CommandError extends GymratError {
   readonly phase: "prepare" | "bench";
   readonly position: "old" | "new";
   readonly label: string;
@@ -100,12 +101,13 @@ export class CommandError extends Error {
   readonly sample: number | undefined;
   readonly exitCode: number | undefined;
   readonly timeoutMs: number | undefined;
-  readonly hint: string | undefined;
 
   constructor(context: CommandErrorContext, failure: ExitFailure | TimeoutFailure) {
-    super(formatCommandError(context, failure));
-    this.name = "CommandError";
-    Object.setPrototypeOf(this, CommandError.prototype);
+    const hint =
+      context.target.kind === "ref"
+        ? "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent"
+        : undefined;
+    super(formatCommandError(context, failure), hint);
 
     this.phase = context.phase;
     this.position = context.position;
@@ -117,10 +119,6 @@ export class CommandError extends Error {
     const isTimeout = isTimeoutFailure(failure);
     this.exitCode = isTimeout ? undefined : failure.exitCode;
     this.timeoutMs = isTimeout ? failure.timeoutMs : undefined;
-    this.hint =
-      context.target.kind === "ref"
-        ? "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent"
-        : undefined;
   }
 }
 
@@ -359,10 +357,6 @@ interface Measurement {
  * returned untouched. The original always becomes the `cause`, keeping its
  * stack reachable.
  */
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
   const details = formatCleanupFailures(cleanup.failures, cleanup.pruneError);
 
@@ -370,16 +364,13 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
     return error;
   }
 
-  const wrapper = new Error(
-    [errorMessage(error), "", "cleanup did not finish:", ...details].join("\n"),
-    { cause: error },
-  );
+  const combinedMessage = [messageOf(error), "", "cleanup did not finish:", ...details].join("\n");
 
   if (error instanceof CommandError && error.hint !== undefined) {
-    Object.assign(wrapper, { hint: error.hint });
+    return new GymratError(combinedMessage, error.hint, { cause: error });
   }
 
-  return wrapper;
+  return new Error(combinedMessage, { cause: error });
 }
 
 /**

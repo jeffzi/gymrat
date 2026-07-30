@@ -11,6 +11,7 @@ import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
+import { GymratError } from "./errors.js";
 
 /**
  * Parse label=ref syntax from a positional argument.
@@ -45,26 +46,6 @@ function parsePositiveInteger(value: string): number {
 }
 
 /**
- * Narrow to errors carrying a user-facing remediation hint.
- *
- * `CommandError` attaches a `hint` when the failing target is a git ref (e.g.
- * "did you mean branch X?"). `formatCliError` consumes the narrowed hint to
- * append it below the error output.
- */
-export function isHintedError(err: unknown): err is Error & { hint: string | undefined } {
-  return (
-    err instanceof Error &&
-    "hint" in err &&
-    (typeof err.hint === "string" || err.hint === undefined)
-  );
-}
-
-/**
- * Format a label with optional ANSI styling.
- *
- * When `useColor` is true the label is wrapped in the requested ANSI escape
- * sequences via `styleText`; otherwise it is returned as-is.
- *
  * `validateStream: false` tells `styleText` to skip its own TTY check — the
  * caller already decided whether color is appropriate via the `useColor` flag.
  */
@@ -99,7 +80,7 @@ export function formatCliError(
 
   let output = error instanceof Error ? error.message : String(error);
 
-  if (isHintedError(error) && error.hint !== undefined) {
+  if (error instanceof GymratError && error.hint !== undefined) {
     const hintLabel = formatLabel("Hint:", ["yellow", "underline"], useColor);
     output += `\n${hintLabel} ${error.hint}`;
   }
