@@ -25,7 +25,8 @@
     "unparseable",
     "Wilcoxon",
     "worktree",
-    "worktrees"
+    "worktrees",
+    "yocto"
   ],
   "files": ["**/*.{ts,tsx,mts,cts,md}"],
   "ignorePaths": [

@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
 import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
+import yoctoSpinner from "yocto-spinner";
 
 import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
@@ -164,7 +165,7 @@ function formatProgressLine(step: ProgressStep): string {
     case "prepare":
       return `prepare · ${step.label}`;
     case "sample":
-      return `sample ${step.index}/${step.total} · ${step.label} · bench`;
+      return `sample ${step.index}/${step.total} · ${step.label}`;
     default:
       return assertNever(step);
   }
@@ -282,6 +283,41 @@ export function createProgram(): Command {
     .configureHelp(createHelpConfig())
     .action(async (baselineArg: string, candidateArgs: string[], options: CompareFlags) => {
       let result: ComparisonResult;
+
+      const stderrTty = isTerminal(process.stderr);
+      const progressColorAllowed = stderrTty && process.env.NO_COLOR === undefined && options.color;
+
+      /*
+       * TTY + color allowed: use yocto-spinner (yellow glyph on stderr).
+       * TTY + color vetoed: fall back to \r\x1b[K overwrite with plain text —
+       *   yocto-spinner's frame color cannot be disabled through its API.
+       * Non-TTY: one newline-terminated line per step, no ANSI.
+       */
+      const spinner = progressColorAllowed
+        ? yoctoSpinner({ color: "yellow", stream: process.stderr })
+        : undefined;
+
+      function emitProgress(step: ProgressStep): void {
+        const line = formatProgressLine(step);
+        if (spinner) {
+          spinner.text = line;
+          if (!spinner.isSpinning) {
+            spinner.start();
+          }
+        } else {
+          writeProgress(line, stderrTty);
+        }
+      }
+
+      /** Stop the spinner or erase the in-place line so the next output starts clean. */
+      function stopProgress(): void {
+        if (spinner) {
+          spinner.stop();
+        } else {
+          clearProgress(stderrTty);
+        }
+      }
+
       try {
         const config = resolveConfig({
           bench: options.bench,
@@ -291,8 +327,6 @@ export function createProgram(): Command {
           timeout: options.timeout,
           config: options.config,
         });
-
-        const stderrTty = isTerminal(process.stderr);
 
         const compareOptions: CompareOptions = {
           baseline: parsePositional(baselineArg),
@@ -304,14 +338,13 @@ export function createProgram(): Command {
           timeoutSeconds: config.timeoutSeconds,
           unstableNoisePct: config.unstableNoisePct,
           configMetrics: config.metrics,
-          onProgress: (step: ProgressStep) => {
-            writeProgress(formatProgressLine(step), stderrTty);
-          },
+          onProgress: emitProgress,
         };
 
         result = await compare(compareOptions);
-        clearProgress(stderrTty);
+        stopProgress();
       } catch (error) {
+        stopProgress();
         exitWithError(error);
       }
 

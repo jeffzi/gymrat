@@ -50,6 +50,34 @@ vi.mock("../src/report/json.js", () => ({
   renderJson: vi.fn().mockReturnValue('{"report": true}'),
 }));
 
+const { mockSpinnerInstance, mockYoctoSpinner } = vi.hoisted(() => {
+  const instance = {
+    start: vi.fn(),
+    stop: vi.fn(),
+    clear: vi.fn(),
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+    text: "",
+    color: "cyan" as const,
+    isSpinning: false,
+  };
+  // Self-referencing returns for chaining
+  instance.start.mockReturnValue(instance);
+  instance.stop.mockReturnValue(instance);
+  instance.clear.mockReturnValue(instance);
+
+  return {
+    mockSpinnerInstance: instance,
+    mockYoctoSpinner: vi.fn().mockReturnValue(instance),
+  };
+});
+
+vi.mock("yocto-spinner", () => ({
+  default: mockYoctoSpinner,
+}));
+
 async function setupMocks(
   compareMockReturn?: ComparisonResult | Error,
   resolveConfigMockReturn: Partial<ResolvedConfig> = {},
@@ -584,6 +612,7 @@ describe("createProgram", () => {
 
       afterEach(() => {
         process.stderr.isTTY = originalStderrIsTTY;
+        vi.unstubAllEnvs();
       });
 
       const PREPARE_BASELINE_STEP: ProgressStep = { kind: "prepare", label: "baseline" };
@@ -595,15 +624,26 @@ describe("createProgram", () => {
 
       async function setupProgressMocks(
         steps: ProgressStep[],
+        mockReturn?: ComparisonResult | Error,
       ): Promise<{ stderrSpy: ReturnType<typeof vi.spyOn> }> {
-        const { compareMock } = await setupMocks();
+        const { compareMock } = await setupMocks(mockReturn);
 
-        vi.mocked(compareMock).mockImplementation((opts: CompareOptions) => {
-          for (const step of steps) {
-            opts.onProgress?.(step);
-          }
-          return Promise.resolve(createComparisonResult());
-        });
+        if (mockReturn instanceof Error) {
+          // For error tests, fire progress steps before rejecting
+          vi.mocked(compareMock).mockImplementation((opts: CompareOptions) => {
+            for (const step of steps) {
+              opts.onProgress?.(step);
+            }
+            return Promise.reject(mockReturn);
+          });
+        } else {
+          vi.mocked(compareMock).mockImplementation((opts: CompareOptions) => {
+            for (const step of steps) {
+              opts.onProgress?.(step);
+            }
+            return Promise.resolve(mockReturn ?? createComparisonResult());
+          });
+        }
 
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
         // Suppress stdout report output so tests focus on stderr
@@ -612,85 +652,332 @@ describe("createProgram", () => {
         return { stderrSpy };
       }
 
-      it("writes prepare progress lines to stderr", async () => {
-        // Arrange
-        const program = createRunnableProgram();
-        process.stderr.isTTY = false;
-        const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+      describe("progress text format", () => {
+        it("formats prepare steps as 'prepare · <label>' without trailing '· bench'", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
 
-        // Assert
-        expect(stderrWrites(stderrSpy)).toContainEqual(
-          expect.stringContaining(PREPARE_BASELINE_LINE),
-        );
+          // Assert
+          const writes = stderrWrites(stderrSpy);
+          expect(writes).toContainEqual(expect.stringContaining(PREPARE_BASELINE_LINE));
+          expect(writes).not.toContainEqual(expect.stringContaining("· bench"));
+        });
+
+        it("formats sample steps as 'sample <i>/<n> · <label>' without trailing '· bench'", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          const { stderrSpy } = await setupProgressMocks([
+            { kind: "sample", index: 1, total: 10, label: "baseline" },
+          ]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert
+          const writes = stderrWrites(stderrSpy);
+          expect(writes).toContainEqual(expect.stringContaining("sample 1/10 · baseline"));
+          expect(writes).not.toContainEqual(expect.stringContaining("· bench"));
+        });
       });
 
-      it("writes sample progress lines to stderr with index/total and label", async () => {
-        // Arrange
-        const program = createRunnableProgram();
-        process.stderr.isTTY = false;
-        const { stderrSpy } = await setupProgressMocks([
-          { kind: "sample", index: 1, total: 10, label: "baseline" },
-        ]);
+      describe("when stderr is a TTY and color is allowed", () => {
+        it("constructs a yocto-spinner with yellow color and stderr stream", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
 
-        // Assert
-        expect(stderrWrites(stderrSpy)).toContainEqual(
-          expect.stringContaining("sample 1/10 · baseline · bench"),
-        );
+          // Assert
+          expect(mockYoctoSpinner).toHaveBeenCalledWith({
+            color: "yellow",
+            stream: process.stderr,
+          });
+        });
+
+        it("starts the spinner and updates its text on each progress callback", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          const steps: ProgressStep[] = [
+            { kind: "prepare", label: "baseline" },
+            { kind: "sample", index: 1, total: 5, label: "baseline" },
+            { kind: "sample", index: 2, total: 5, label: "baseline" },
+          ];
+          await setupProgressMocks(steps);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert
+          expect(mockSpinnerInstance.start).toHaveBeenCalled();
+        });
+
+        it("stops the spinner before the report prints to stdout", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks([{ kind: "sample", index: 1, total: 1, label: "baseline" }]);
+          const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert - spinner stopped before stdout report write
+          expect(mockSpinnerInstance.stop).toHaveBeenCalled();
+          const stopOrder = mockSpinnerInstance.stop.mock.invocationCallOrder[0]!;
+          const reportOrder = stdoutSpy.mock.invocationCallOrder[0]!;
+          expect(stopOrder).toBeLessThan(reportOrder);
+        });
       });
 
-      it("uses carriage-return and clear-to-EOL prefix in TTY mode", async () => {
-        // Arrange
-        const program = createRunnableProgram();
-        process.stderr.isTTY = true;
-        const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+      describe("when stderr is a TTY but color is vetoed", () => {
+        it("does not construct a spinner when NO_COLOR is set", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", "1");
+          await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
 
-        // Assert - TTY lines start with \r\x1b[K to overwrite the previous line
-        const progressWrite = findStderrWrite(stderrSpy, PREPARE_BASELINE_LINE);
-        expect(progressWrite).toBeDefined();
-        expect(progressWrite).toMatch(/^\r\x1b\[K/);
+          // Assert
+          expect(mockYoctoSpinner).not.toHaveBeenCalled();
+        });
+
+        it("does not construct a spinner when --no-color is passed", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks([PREPARE_BASELINE_STEP]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch", "--no-color"));
+
+          // Assert
+          expect(mockYoctoSpinner).not.toHaveBeenCalled();
+        });
+
+        it("falls back to \\r\\x1b[K overwrite with unstyled text", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", "1");
+          const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert - TTY fallback uses \r\x1b[K prefix with plain text
+          const progressWrite = findStderrWrite(stderrSpy, PREPARE_BASELINE_LINE);
+          expect(progressWrite).toBeDefined();
+          expect(progressWrite).toMatch(/^\r\x1b\[K/);
+        });
+
+        it("clears the last progress line with \\r\\x1b[K before the report", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", "1");
+          const { stderrSpy } = await setupProgressMocks([
+            { kind: "sample", index: 1, total: 1, label: "baseline" },
+          ]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert - final stderr write clears the line
+          const lastWrite = stderrWrites(stderrSpy)
+            .map((w) => String(w))
+            .at(-1);
+          expect(lastWrite).toBe("\r\x1b[K");
+        });
       });
 
-      it("uses newline-terminated lines without ANSI escapes in non-TTY mode", async () => {
-        // Arrange
-        const program = createRunnableProgram();
-        process.stderr.isTTY = false;
-        const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+      describe("when stderr is not a TTY", () => {
+        it("does not construct a spinner", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
 
-        // Assert - non-TTY lines end with \n and contain no ANSI escapes
-        const progressWrite = findStderrWrite(stderrSpy, PREPARE_BASELINE_LINE);
-        expect(progressWrite).toBeDefined();
-        expect(progressWrite).not.toContain("\x1b[");
-        expect(progressWrite).toMatch(/\n$/);
+          // Assert
+          expect(mockYoctoSpinner).not.toHaveBeenCalled();
+        });
+
+        it("writes newline-terminated lines without ANSI escapes", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert - non-TTY lines end with \n and contain no ANSI escapes
+          const progressWrite = findStderrWrite(stderrSpy, PREPARE_BASELINE_LINE);
+          expect(progressWrite).toBeDefined();
+          expect(progressWrite).not.toContain("\x1b[");
+          expect(progressWrite).toMatch(/\n$/);
+        });
       });
 
-      it("clears the last progress line before the report in TTY mode", async () => {
-        // Arrange
-        const program = createRunnableProgram();
-        process.stderr.isTTY = true;
-        const { stderrSpy } = await setupProgressMocks([
-          { kind: "sample", index: 1, total: 1, label: "baseline" },
-        ]);
+      describe("spinner cleared before output", () => {
+        it("stops the spinner before the report prints to stdout", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks([PREPARE_BASELINE_STEP]);
+          const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
 
-        // Assert - after progress lines, a final \r\x1b[K clears the line before report
-        const lastWrite = stderrWrites(stderrSpy)
-          .map((w) => String(w))
-          .at(-1);
-        expect(lastWrite).toBe("\r\x1b[K");
+          // Assert
+          expect(mockSpinnerInstance.stop).toHaveBeenCalled();
+          const stopOrder = mockSpinnerInstance.stop.mock.invocationCallOrder[0]!;
+          const reportOrder = stdoutSpy.mock.invocationCallOrder[0]!;
+          expect(stopOrder).toBeLessThan(reportOrder);
+        });
+
+        it("stops the spinner before a formatted error prints to stderr", async () => {
+          // Arrange
+          const program = createProgramWithSubcommandOverrides();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          const { stderrSpy } = await setupProgressMocks(
+            [PREPARE_BASELINE_STEP],
+            new Error("benchmark crashed"),
+          );
+          mockProcessExit();
+
+          // Act
+          await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+            "exitCode",
+            2,
+          );
+
+          // Assert - spinner stopped before error message written
+          expect(mockSpinnerInstance.stop).toHaveBeenCalled();
+          const stopOrder = mockSpinnerInstance.stop.mock.invocationCallOrder[0]!;
+          const errorWrite = stderrSpy.mock.invocationCallOrder.find((order: number, i: number) => {
+            const arg = stderrSpy.mock.calls[i]?.[0];
+            return typeof arg === "string" && arg.includes("benchmark crashed") ? order : false;
+          });
+          expect(errorWrite).toBeDefined();
+          expect(stopOrder).toBeLessThan(errorWrite as number);
+        });
+
+        it("stops the spinner before the --fail-on gate-failure exit", async () => {
+          // Arrange
+          const program = createProgramWithSubcommandOverrides();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+
+          const regressedResult = createComparisonResult({
+            candidates: [createCandidate()],
+            metrics: {
+              "decode/time": {
+                baselineMedian: 100,
+                baselineSpread: 1,
+                candidates: [
+                  {
+                    median: 108,
+                    spread: 1,
+                    verdict: {
+                      verdict: "regressed",
+                      method: "signed-rank",
+                      delta: 8,
+                      n: 10,
+                      p: 0.01,
+                      noisePct: 2.5,
+                    },
+                  },
+                ],
+                meta: { direction: "lower", gating: true, exact: false },
+              },
+            },
+          });
+          await setupProgressMocks(
+            [{ kind: "sample", index: 1, total: 1, label: "baseline" }],
+            regressedResult,
+          );
+          mockProcessExit();
+
+          // Act
+          await expect(
+            program.parseAsync(compareArgv("main", "branch", "--fail-on", "regressed")),
+          ).rejects.toHaveProperty("exitCode", 1);
+
+          // Assert
+          expect(mockSpinnerInstance.stop).toHaveBeenCalled();
+        });
+      });
+
+      describe("error path clearing fix", () => {
+        it("clears progress before error text when compare throws (spinner path)", async () => {
+          // Arrange
+          const program = createProgramWithSubcommandOverrides();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks(
+            [{ kind: "sample", index: 1, total: 5, label: "baseline" }],
+            new Error("adapter parse failed"),
+          );
+          mockProcessExit();
+
+          // Act
+          await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+            "exitCode",
+            2,
+          );
+
+          // Assert - spinner must be stopped (clearing the progress display)
+          expect(mockSpinnerInstance.stop).toHaveBeenCalled();
+        });
+
+        it("clears progress before error text when compare throws (color-vetoed TTY path)", async () => {
+          // Arrange
+          const program = createProgramWithSubcommandOverrides();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", "1");
+          const { stderrSpy } = await setupProgressMocks(
+            [{ kind: "sample", index: 1, total: 5, label: "baseline" }],
+            new Error("adapter parse failed"),
+          );
+          mockProcessExit();
+
+          // Act
+          await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+            "exitCode",
+            2,
+          );
+
+          // Assert - \r\x1b[K must appear before the error message in stderr writes
+          const writes = stderrWrites(stderrSpy).map((w) => String(w));
+          const clearIndex = writes.findIndex((w) => w === "\r\x1b[K");
+          const errorIndex = writes.findIndex((w) => w.includes("adapter parse failed"));
+          expect(clearIndex).toBeGreaterThanOrEqual(0);
+          expect(errorIndex).toBeGreaterThanOrEqual(0);
+          expect(clearIndex).toBeLessThan(errorIndex);
+        });
       });
     });
 

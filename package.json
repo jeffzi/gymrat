@@ -61,7 +61,8 @@
     "@jeffzi/epaulettes": "^0.1.0",
     "@sinclair/typebox": "^0.34.52",
     "@stdlib/stats-wilcoxon": "^0.2.0",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "yocto-spinner": "^1.2.2"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.0",
