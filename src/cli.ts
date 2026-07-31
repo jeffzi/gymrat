@@ -55,8 +55,6 @@ function parsePositiveInteger(value: string): number {
 type FailOnCondition = { kind: "regressed" } | { kind: "geomean"; pct: number };
 
 /**
- * Parse a single `--fail-on` value into a structured condition.
- *
  * Accepts `regressed` or `geomean:<number>`. Throws `InvalidArgumentError`
  * for anything else so Commander renders the allowed grammar in the usage error.
  */
@@ -86,11 +84,7 @@ function gatingMetrics(metrics: MetricComparisons): MetricComparisons {
   return Object.fromEntries(Object.entries(metrics).filter(([, metric]) => metric.meta.gating));
 }
 
-/**
- * Returns `true` when any condition trips — meaning the process should exit 1.
- * Uses `countVerdicts` from the report module for regression counting and
- * the raw geomean value from each candidate for threshold comparison.
- */
+/** Returns `true` when any condition trips — meaning the process should exit 1. */
 function shouldFailGate(conditions: readonly FailOnCondition[], result: ComparisonResult): boolean {
   if (conditions.length === 0) return false;
 
@@ -117,6 +111,11 @@ function isTerminal(stream: NodeJS.WriteStream): boolean {
   return (stream.isTTY as boolean | undefined) === true;
 }
 
+/** See the NO_COLOR spec: https://no-color.org */
+function isColorAllowed(stream: NodeJS.WriteStream, colorFlag: boolean): boolean {
+  return isTerminal(stream) && process.env.NO_COLOR === undefined && colorFlag;
+}
+
 /**
  * Render an error for stderr: either an adapter failure labelled with its
  * class name, or any other error with a styled hint line appended when it
@@ -134,7 +133,7 @@ function isTerminal(stream: NodeJS.WriteStream): boolean {
  */
 export function formatCliError(
   error: unknown,
-  useColor: boolean = isTerminal(process.stderr) && process.env.NO_COLOR === undefined,
+  useColor: boolean = isColorAllowed(process.stderr, true),
 ): string {
   if (error instanceof AdapterError) {
     return `${error.name}: ${error.message}`;
@@ -157,8 +156,8 @@ function exitWithError(error: unknown): never {
 }
 
 /**
- * Prepare steps show the label; sample steps show position within the total
- * and the bench label so the user can tell which target is running.
+ * Each line names the target so the user can tell which one is running;
+ * samples also show their position in the total.
  */
 function formatProgressLine(step: ProgressStep): string {
   switch (step.kind) {
@@ -194,6 +193,46 @@ function clearProgress(tty: boolean): void {
   }
 }
 
+/** Reports each benchmark step as it starts, then stops cleanly once the run is over. */
+interface ProgressReporter {
+  emit(step: ProgressStep): void;
+  /** Stop the spinner or erase the in-place line so the next output starts clean. */
+  stop(): void;
+}
+
+/**
+ * TTY + color allowed: use yocto-spinner (yellow glyph on stderr).
+ * TTY + color vetoed: fall back to \r\x1b[K overwrite with plain text —
+ *   yocto-spinner's frame color cannot be disabled through its API.
+ * Non-TTY: one newline-terminated line per step, no ANSI.
+ */
+function createProgressReporter(colorAllowed: boolean, tty: boolean): ProgressReporter {
+  const spinner = colorAllowed
+    ? yoctoSpinner({ color: "yellow", stream: process.stderr })
+    : undefined;
+
+  return {
+    emit(step: ProgressStep): void {
+      const line = formatProgressLine(step);
+      if (spinner) {
+        spinner.text = line;
+        if (!spinner.isSpinning) {
+          spinner.start();
+        }
+      } else {
+        writeProgress(line, tty);
+      }
+    },
+    stop(): void {
+      if (spinner) {
+        spinner.stop();
+      } else {
+        clearProgress(tty);
+      }
+    },
+  };
+}
+
 /** The compare command's flags: everything `resolveConfig` reads, plus how to print. */
 interface CompareFlags extends CliFlags {
   /** Commander's `--no-color` counterpart: true unless the flag was passed. */
@@ -207,11 +246,10 @@ interface CompareFlags extends CliFlags {
 /**
  * The report is written to stdout, so it is stdout that has to be a terminal —
  * a report piped into a file stays plain even when stderr is still attached to
- * one. `NO_COLOR` (https://no-color.org) and `--no-color` each veto color on
- * their own.
+ * one.
  */
 function shouldColorReport(flags: CompareFlags): boolean {
-  return isTerminal(process.stdout) && process.env.NO_COLOR === undefined && flags.color;
+  return isColorAllowed(process.stdout, flags.color);
 }
 
 /**
@@ -284,39 +322,10 @@ export function createProgram(): Command {
     .action(async (baselineArg: string, candidateArgs: string[], options: CompareFlags) => {
       let result: ComparisonResult;
 
-      const stderrTty = isTerminal(process.stderr);
-      const progressColorAllowed = stderrTty && process.env.NO_COLOR === undefined && options.color;
-
-      /*
-       * TTY + color allowed: use yocto-spinner (yellow glyph on stderr).
-       * TTY + color vetoed: fall back to \r\x1b[K overwrite with plain text —
-       *   yocto-spinner's frame color cannot be disabled through its API.
-       * Non-TTY: one newline-terminated line per step, no ANSI.
-       */
-      const spinner = progressColorAllowed
-        ? yoctoSpinner({ color: "yellow", stream: process.stderr })
-        : undefined;
-
-      function emitProgress(step: ProgressStep): void {
-        const line = formatProgressLine(step);
-        if (spinner) {
-          spinner.text = line;
-          if (!spinner.isSpinning) {
-            spinner.start();
-          }
-        } else {
-          writeProgress(line, stderrTty);
-        }
-      }
-
-      /** Stop the spinner or erase the in-place line so the next output starts clean. */
-      function stopProgress(): void {
-        if (spinner) {
-          spinner.stop();
-        } else {
-          clearProgress(stderrTty);
-        }
-      }
+      const progress = createProgressReporter(
+        isColorAllowed(process.stderr, options.color),
+        isTerminal(process.stderr),
+      );
 
       try {
         const config = resolveConfig({
@@ -338,13 +347,15 @@ export function createProgram(): Command {
           timeoutSeconds: config.timeoutSeconds,
           unstableNoisePct: config.unstableNoisePct,
           configMetrics: config.metrics,
-          onProgress: emitProgress,
+          onProgress: (step) => {
+            progress.emit(step);
+          },
         };
 
         result = await compare(compareOptions);
-        stopProgress();
+        progress.stop();
       } catch (error) {
-        stopProgress();
+        progress.stop();
         exitWithError(error);
       }
 
