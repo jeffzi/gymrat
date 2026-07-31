@@ -1,7 +1,7 @@
 {
   "name": "gymrat",
   "version": "0.1.0",
-  "description": "Standalone A/B benchmark runner with paired sampling and benchstat-style reports",
+  "description": "Benchmark candidate revisions against a baseline and get a clear per-metric verdict: improved, regressed, or noise",
   "keywords": [
     "benchmark",
     "benchmarking",
