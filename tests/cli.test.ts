@@ -550,28 +550,32 @@ describe("createProgram", () => {
         );
       });
 
-      it.each([
-        { format: "markdown", renderer: "renderMarkdown" },
-        { format: "json", renderer: "renderJson" },
-      ])("does not apply ANSI color when --format $format is used", async ({ format }) => {
-        // Arrange
-        const program = createRunnableProgram();
-        const result = createColorSensitiveResult();
-        await setupMocks(result);
+      describe("when checking ANSI color in non-text formats", () => {
         const originalIsTTY = process.stdout.isTTY;
-        process.stdout.isTTY = true;
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch", "--format", format));
+        afterEach(() => {
+          process.stdout.isTTY = originalIsTTY;
+        });
 
-        // Assert - non-text formats must not contain ANSI escape sequences
-        const output = writeSpy.mock.calls[0]?.[0];
-        expect(typeof output).toBe("string");
-        expect(output).not.toContain("\x1b[");
+        it.each([
+          { format: "markdown", renderer: "renderMarkdown" },
+          { format: "json", renderer: "renderJson" },
+        ])("does not apply ANSI color when --format $format is used", async ({ format }) => {
+          // Arrange
+          const program = createRunnableProgram();
+          const result = createColorSensitiveResult();
+          await setupMocks(result);
+          process.stdout.isTTY = true;
+          const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
-        // Cleanup
-        process.stdout.isTTY = originalIsTTY;
+          // Act
+          await program.parseAsync(compareArgv("main", "branch", "--format", format));
+
+          // Assert - non-text formats must not contain ANSI escape sequences
+          const output = writeSpy.mock.calls[0]?.[0];
+          expect(typeof output).toBe("string");
+          expect(output).not.toContain("\x1b[");
+        });
       });
     });
 
@@ -687,23 +691,6 @@ describe("createProgram", () => {
           .map((w) => String(w))
           .at(-1);
         expect(lastWrite).toBe("\r\x1b[K");
-      });
-
-      it("passes an onProgress callback to compare", async () => {
-        // Arrange
-        const program = createRunnableProgram();
-        const { compareMock } = await setupMocks();
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-
-        // Act
-        await program.parseAsync(compareArgv("main", "branch"));
-
-        // Assert - compare was called with an onProgress function
-        expect(compareMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            onProgress: expect.any(Function),
-          }),
-        );
       });
     });
 

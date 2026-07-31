@@ -1,7 +1,12 @@
 import wilcoxon from "@stdlib/stats-wilcoxon";
 
+/**
+ * Result of a Wilcoxon signed-rank test.
+ */
 export interface WilcoxonResult {
+  /** p-value from the signed-rank test. */
   p: number;
+  /** Effective sample size after dropping zero-difference pairs. */
   n: number;
 }
 

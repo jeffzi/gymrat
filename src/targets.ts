@@ -41,6 +41,10 @@ export interface WorktreeRemovalFailure {
   error: string;
 }
 
+/**
+ * Outcome of a worktree cleanup sweep: what was removed, what survived, and
+ * whether the repo-wide prune step failed.
+ */
 export interface CleanupResult {
   /** Worktrees this call handed to `git worktree remove` successfully. */
   removed: number;

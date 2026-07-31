@@ -1,5 +1,8 @@
 /**
- * Compute the median of a numeric array.
+ * Returns the middle element for an odd-length array, or the average of the
+ * two middle elements for an even-length array. Does not mutate `values`.
+ *
+ * @throws {Error} If `values` is empty.
  */
 export function computeMedian(values: readonly number[]): number {
   /* v8 ignore if -- defensive check; never called with empty array */

@@ -326,6 +326,8 @@ export function createProgram(): Command {
         case "text":
           output = renderReport(result, shouldColorReport(options));
           break;
+        default:
+          assertNever(options.format);
       }
 
       process.stdout.write(output + "\n");

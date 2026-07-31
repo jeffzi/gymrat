@@ -221,9 +221,14 @@ export function computeVerdicts(
     const medianA = computeMedian(pairedA);
     const medianB = computeMedian(pairedB);
 
-    // When medianA is 0: if medianB is also 0, delta is 0 (no change); else undefined
-    const delta =
-      medianA === 0 ? (medianB === 0 ? 0 : Number.NaN) : ((medianB - medianA) / medianA) * 100;
+    let delta: number;
+    if (medianA === 0 && medianB === 0) {
+      delta = 0;
+    } else if (medianA === 0) {
+      delta = Number.NaN;
+    } else {
+      delta = ((medianB - medianA) / medianA) * 100;
+    }
 
     // Exact path: any difference is a signal
     if (meta.exact) {

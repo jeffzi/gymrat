@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 
+/** Shape returned when the command runs to completion, whether it exits cleanly or is aborted. */
 export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
 }
 
+/** Shape returned when the command is killed for exceeding `ExecOptions.timeoutMs`. */
 export interface ExecTimeoutError {
   kind: "timeout";
   stdout: string;
@@ -13,10 +15,31 @@ export interface ExecTimeoutError {
   timeoutMs: number;
 }
 
+/** Options controlling where a command runs and how it can be stopped early. */
 export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+}
+
+/* v8 ignore next 3 -- only reachable from killProcessGroup's catch; requires
+   process.kill to throw, which needs a race between pid check and kill */
+function isEsrch(err: unknown): boolean {
+  return err instanceof Error && "code" in err && err.code === "ESRCH";
+}
+
+function killProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+    /* v8 ignore start -- ESRCH race and EPERM require conditions the test harness cannot reproduce */
+  } catch (err) {
+    // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
+    // where a throw becomes an uncaught exception.
+    if (!isEsrch(err)) {
+      process.emitWarning(err instanceof Error ? err : String(err));
+    }
+  }
+  /* v8 ignore stop */
 }
 
 /**
@@ -44,26 +67,6 @@ export interface ExecOptions {
  *   console.log('Output:', result.stdout);
  * }
  */
-/* v8 ignore next 3 -- only reachable from killProcessGroup's catch; requires
-   process.kill to throw, which needs a race between pid check and kill */
-function isEsrch(err: unknown): boolean {
-  return err instanceof Error && "code" in err && err.code === "ESRCH";
-}
-
-function killProcessGroup(pid: number): void {
-  try {
-    process.kill(-pid, "SIGKILL");
-    /* v8 ignore start -- ESRCH race and EPERM require conditions the test harness cannot reproduce */
-  } catch (err) {
-    // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
-    // where a throw becomes an uncaught exception.
-    if (!isEsrch(err)) {
-      process.emitWarning(err instanceof Error ? err : String(err));
-    }
-  }
-  /* v8 ignore stop */
-}
-
 export async function exec(
   command: string,
   options: ExecOptions,

@@ -15,6 +15,12 @@ export class GymratError extends Error {
   }
 }
 
+/**
+ * Extract a human-readable message from an unknown thrown value.
+ *
+ * Returns `error.message` when the value is an `Error`, otherwise falls back
+ * to `String(error)`.
+ */
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

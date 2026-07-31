@@ -37,8 +37,8 @@ describe("getAdapter registry", () => {
       const adapter = getAdapter(spec.name);
 
       expect(adapter.name).toBe(spec.name);
-      expect(typeof adapter.parse).toBe("function");
-      expect(typeof adapter.defaults).toBe("function");
+      expect(adapter.parse(spec.parseInput)).toStrictEqual(spec.parseExpected);
+      expect(adapter.defaults(spec.defaultsInput)).toStrictEqual(spec.defaultsExpected);
     },
   );
 
