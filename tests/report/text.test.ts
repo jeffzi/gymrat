@@ -2,11 +2,14 @@ import { describe, it, expect } from "vitest";
 
 import { renderReport } from "../../src/report/text.js";
 import type { ComparisonResult } from "../../src/report/types.js";
-import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
-import { createCandidate, createComparisonResult } from "../fixtures/comparison-result.js";
-
-type Metrics = ComparisonResult["metrics"];
-type MetricEntry = Metrics[string];
+import {
+  createCandidate,
+  createComparisonResult,
+  signedRankMetric,
+  bandMetric,
+  exactMetric,
+  nWayMetric,
+} from "../fixtures/comparison-result.js";
 
 /**
  * Character offsets of every column separator in a rendered table line.
@@ -79,109 +82,6 @@ function highlightLines(report: string): string[] {
   const rest = lines.slice(start + 1);
   const end = rest.indexOf("");
   return end === -1 ? rest : rest.slice(0, end);
-}
-
-/** A two-sided metric whose verdict came from the signed-rank method. */
-function signedRankMetric(options: {
-  verdict: ApproximateVerdictValue;
-  delta: number;
-  baselineMedian?: number;
-  candidateMedian?: number;
-  p?: number;
-  noisePct?: number;
-  unit?: "ns" | "bytes";
-  gating?: boolean;
-  n?: number;
-}): MetricEntry {
-  const {
-    verdict,
-    delta,
-    baselineMedian = 100,
-    candidateMedian = baselineMedian * (1 + delta / 100),
-    p = 0.01,
-    noisePct = 2.5,
-    unit,
-    gating = true,
-    n = 10,
-  } = options;
-  return {
-    baselineMedian,
-    baselineSpread: 1,
-    candidates: [
-      {
-        median: candidateMedian,
-        spread: 1,
-        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct },
-      },
-    ],
-    meta: { direction: "lower", gating, exact: false, unit },
-  };
-}
-
-/** A two-sided metric whose verdict fell back to the noise band. */
-function bandMetric(options: {
-  verdict: ApproximateVerdictValue;
-  delta: number;
-  noisePct?: number;
-  n?: number;
-}): MetricEntry {
-  const { verdict, delta, noisePct = 2.5, n = 4 } = options;
-  return {
-    baselineMedian: 100,
-    baselineSpread: 5,
-    candidates: [
-      {
-        median: 100 + delta,
-        spread: 4,
-        verdict: { verdict, method: "band", delta, n, band: noisePct, noisePct },
-      },
-    ],
-    meta: { direction: "lower", gating: true, exact: false },
-  };
-}
-
-/** One metric judged for several candidates against a single shared baseline. */
-function nWayMetric(
-  candidates: readonly { verdict: ApproximateVerdictValue; delta: number; median: number }[],
-): MetricEntry {
-  const entries: MetricEntry["candidates"] = candidates.map(({ verdict, delta, median }) => ({
-    median,
-    spread: 1,
-    verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct: 2.5 },
-  }));
-  return {
-    baselineMedian: 100,
-    baselineSpread: 1,
-    candidates: entries,
-    meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
-  };
-}
-
-/** A counted metric, compared exactly rather than statistically. */
-function exactMetric(options: {
-  delta: number;
-  baselineMedian?: number;
-  candidateMedian?: number;
-  n?: number;
-  unit?: "ns" | "bytes";
-}): MetricEntry {
-  const {
-    delta,
-    baselineMedian = 1000,
-    candidateMedian = 1000 * (1 + delta / 100),
-    n = 10,
-    unit = "bytes",
-  } = options;
-  return {
-    baselineMedian,
-    candidates: [
-      {
-        median: candidateMedian,
-        verdict: { verdict: delta < 0 ? "improved" : "regressed", method: "exact", delta, n },
-      },
-    ],
-    meta: { direction: "lower", gating: true, exact: true, unit },
-  };
 }
 
 describe("renderReport", () => {

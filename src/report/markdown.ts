@@ -1,15 +1,14 @@
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
-  formatDelta,
   formatEvidence,
-  formatExclusions,
   formatMetricCell,
   formatVerdictDelta,
   GEOMEAN_LABEL,
+  geomeanParts,
   getGlyph,
+  isQuietRow,
   legendGlosses,
   methodFooterLines,
-  QUIET_VERDICTS,
   selectHighlights,
   verdictSummaryParts,
 } from "./format.js";
@@ -52,23 +51,9 @@ function formatVerdictPart(verdict: MetricVerdict | undefined): string {
  * and how many were excluded), or a dash when nothing survived.
  */
 function formatGeomeanCell(geomean: GeomeanResult): string {
-  if (geomean.n === 0) return "—";
-  const delta = formatDelta(geomean.value);
-  const stable = `${geomean.n} stable metric${geomean.n === 1 ? "" : "s"}`;
-  const exclusions = formatExclusions(geomean.excluded);
-  const provenance = exclusions === "" ? stable : `${stable} · ${exclusions}`;
-  return `${delta}  ${provenance}`;
-}
-
-/**
- * Whether every candidate on a metric row is quiet (no-signal or unstable).
- *
- * Used to decide whether the row belongs inside the `<details>` block.
- * A metric with at least one improved or regressed candidate stays outside.
- */
-function isQuietRow(verdicts: ReadonlyArray<MetricVerdict | undefined>): boolean {
-  const outcomes = verdicts.flatMap((v) => (v === undefined ? [] : [v.verdict]));
-  return outcomes.length > 0 && outcomes.every((outcome) => QUIET_VERDICTS.has(outcome));
+  const parts = geomeanParts(geomean);
+  if (parts === null) return "—";
+  return `${parts.delta}  ${parts.provenance}`;
 }
 
 /**
@@ -146,7 +131,7 @@ function renderSingleCandidateTable(
     const verdictCell = formatVerdictPart(side?.verdict);
     const row = gfmRow([name, baselineCell, candidateCell, verdictCell]);
 
-    if (isQuietRow([side?.verdict])) {
+    if (isQuietRow([side?.verdict?.verdict])) {
       quietRows.push(row);
       if (side?.verdict?.verdict === "unstable") unstableCount++;
     } else {
@@ -207,7 +192,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
     const row = gfmRow([name, baselineCell, ...candidateCells]);
     const verdicts = result.candidates.map((_, index) => metric.candidates[index]?.verdict);
 
-    if (isQuietRow(verdicts)) {
+    if (isQuietRow(verdicts.map((v) => v?.verdict))) {
       quietRows.push(row);
       if (verdicts.some((v) => v?.verdict === "unstable")) unstableCount++;
     } else {

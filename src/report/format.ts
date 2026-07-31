@@ -1,7 +1,7 @@
 import { styleText } from "node:util";
 
 import { assertNever } from "../errors.js";
-import type { GeomeanExclusion, Method, MetricVerdict } from "../verdict/verdict.js";
+import type { GeomeanExclusion, GeomeanResult, Method, MetricVerdict } from "../verdict/verdict.js";
 import type { CandidateMetric, MetricComparison, MetricComparisons } from "./types.js";
 
 type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
@@ -353,6 +353,40 @@ export function formatExclusions(excluded: readonly GeomeanExclusion[]): string 
   if (excluded.length === 0) return "";
   const reasons = [...new Set(excluded.map((exclusion) => exclusion.reason))];
   return `${excluded.length} excluded: ${reasons.join(", ")}`;
+}
+
+/** The geomean's delta and the provenance describing what stands behind it. */
+export interface GeomeanParts {
+  readonly delta: string;
+  readonly provenance: string;
+}
+
+/**
+ * The geomean's delta plus provenance (how many metrics stand behind it and
+ * how many were excluded), or `null` when nothing survived to aggregate.
+ *
+ * Shared by every renderer: each wraps the parts into its own cell shape
+ * (text splits `figure`/`text`, markdown joins them into one string).
+ */
+export function geomeanParts(geomean: GeomeanResult): GeomeanParts | null {
+  if (geomean.n === 0) return null;
+  const stable = `${geomean.n} stable metric${geomean.n === 1 ? "" : "s"}`;
+  const exclusions = formatExclusions(geomean.excluded);
+  const provenance = exclusions === "" ? stable : `${stable} · ${exclusions}`;
+  return { delta: formatDelta(geomean.value), provenance };
+}
+
+/**
+ * Whether every defined verdict outcome in a row belongs to
+ * {@link QUIET_VERDICTS}.
+ *
+ * Shared by every renderer to decide whether a row carries no news worth
+ * keeping above the fold. A row with no verdicts at all is left alone rather
+ * than counted as quiet.
+ */
+export function isQuietRow(outcomes: ReadonlyArray<MetricVerdict["verdict"] | undefined>): boolean {
+  const defined = outcomes.flatMap((outcome) => (outcome === undefined ? [] : [outcome]));
+  return defined.length > 0 && defined.every((outcome) => QUIET_VERDICTS.has(outcome));
 }
 
 /**

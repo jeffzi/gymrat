@@ -3,9 +3,7 @@ import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
   type CellStyler,
   computeColumnWidth,
-  formatDelta,
   formatEvidence,
-  formatExclusions,
   formatHintLabel,
   formatLabel,
   formatMetricCell,
@@ -14,7 +12,9 @@ import {
   formatTableLine,
   formatVerdictDelta,
   GEOMEAN_LABEL,
+  geomeanParts,
   getGlyph,
+  isQuietRow,
   legendGlosses,
   methodFooterLines,
   QUIET_VERDICTS,
@@ -133,13 +133,9 @@ interface GeomeanCell {
  * an empty geomean computes to, which would read as "no change measured".
  */
 function formatGeomeanCell(geomean: GeomeanResult): GeomeanCell {
-  if (geomean.n === 0) return { figure: "—", text: "—  no stable gating metrics" };
-
-  const stable = `${geomean.n} stable metric${geomean.n === 1 ? "" : "s"}`;
-  const exclusions = formatExclusions(geomean.excluded);
-  const provenance = exclusions === "" ? stable : `${stable} · ${exclusions}`;
-  const figure = formatDelta(geomean.value);
-  return { figure, text: `${figure}  ${provenance}` };
+  const parts = geomeanParts(geomean);
+  if (parts === null) return { figure: "—", text: "—  no stable gating metrics" };
+  return { figure: parts.delta, text: `${parts.delta}  ${parts.provenance}` };
 }
 
 /** Width the metric-name column needs: the widest metric name or the geomean row's label. */
@@ -371,21 +367,6 @@ function joinCandidateCell(cell: CandidateCell, valueWidth: number): string {
 }
 
 /**
- * Whether a row has no news for any candidate.
- *
- * A metric that moved for one candidate has to stay bright for all of them: the
- * row is the comparison, and dimming it because a second candidate happened to
- * sit still would hide the one that did not. A row no candidate reported carries
- * no verdicts at all and is left alone rather than dimmed.
- */
-function isQuietRow(row: ComparisonRow): boolean {
-  const outcomes = row.candidates.flatMap((cell) =>
-    cell.outcome === undefined ? [] : [cell.outcome],
-  );
-  return outcomes.length > 0 && outcomes.every((outcome) => QUIET_VERDICTS.has(outcome));
-}
-
-/**
  * The multi-candidate table: the baseline's own figures once, then one column
  * per candidate carrying that candidate's figures and its verdict against the
  * baseline.
@@ -442,7 +423,9 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
         return outcome === undefined ? cell : styleGlyph(cell, outcome, useColor);
       },
     );
-    return isQuietRow(row) ? formatLabel(rendered, ["dim"], useColor) : rendered;
+    return isQuietRow(row.candidates.map((cell) => cell.outcome))
+      ? formatLabel(rendered, ["dim"], useColor)
+      : rendered;
   });
 
   const rule = formatTableRule(widths);
