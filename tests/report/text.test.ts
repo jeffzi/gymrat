@@ -1439,5 +1439,164 @@ describe("renderReport", () => {
         "../fixtures/report-two-candidates.golden.txt",
       );
     });
+
+    it("matches the recorded bytes for a representative colored run", async () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+          "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
+        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: -5.8,
+              n: 3,
+              excluded: [{ metric: "jittery/time", reason: "unstable" }],
+            },
+          }),
+        ],
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
+        worktreePruneError: "fatal: not a git repository",
+      });
+
+      await expect(renderReport(result, true)).toMatchFileSnapshot(
+        "../fixtures/report-representative-color.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a degenerate colored run", async () => {
+      const result = createComparisonResult({
+        samples: 4,
+        adapter: "metric-lines",
+        metrics: {
+          "zero-median/time": {
+            baselineMedian: 0,
+            baselineSpread: 0,
+            candidates: [
+              {
+                median: 0,
+                spread: 0,
+                verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: true, unit: "ns" },
+          },
+          "nan-delta/count": {
+            baselineMedian: 0,
+            candidates: [
+              {
+                median: 120,
+                verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: true },
+          },
+          "old-side-only/time": {
+            baselineMedian: 2048,
+            baselineSpread: 2,
+            candidates: [{}],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "throughput/ops": {
+            baselineMedian: 1200,
+            baselineSpread: 5,
+            candidates: [
+              {
+                median: 1560,
+                spread: 4,
+                verdict: {
+                  verdict: "improved",
+                  method: "band",
+                  delta: 30,
+                  n: 4,
+                  band: 2.5,
+                  noisePct: 2.5,
+                },
+              },
+            ],
+            meta: { direction: "higher", gating: false, exact: false },
+          },
+        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: 0,
+              n: 1,
+              excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
+            },
+          }),
+        ],
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc123", error: "contains modified files" }],
+        worktreePruneError: "could not lock config file",
+      });
+
+      await expect(renderReport(result, true)).toMatchFileSnapshot(
+        "../fixtures/report-degenerate-color.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a two-candidate colored run", async () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": {
+            baselineMedian: 100,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 90,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              {
+                median: 104,
+                spread: 1,
+                verdict: {
+                  verdict: "regressed",
+                  method: "signed-rank",
+                  delta: 4,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              {
+                median: 150,
+                spread: 3,
+                verdict: {
+                  verdict: "unstable",
+                  method: "band",
+                  delta: 50,
+                  n: 10,
+                  band: 30,
+                  noisePct: 30,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+
+      await expect(renderReport(result, true)).toMatchFileSnapshot(
+        "../fixtures/report-two-candidates-color.golden.txt",
+      );
+    });
   });
 });

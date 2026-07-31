@@ -1,0 +1,22 @@
+[1mgymrat compare[22m [2m·[22m main ↔ perf/faster-decode [2m·[22m 10 paired samples [2m·[22m adapter: mitata
+[1mmetric                    │       main │ perf/faster-decode │ vs main[22m
+──────────────────────────┼────────────┼────────────────────┼─────────────────────
+faster/time               │ 100ns ± 1% │          83ns ± 1% │ [32m✓[39m  -17.5%  [2m±2.5%[22m
+slower/time               │ 100ns ± 1% │         102ns ± 1% │ [31m✗[39m  +2.4%  [2m±2.5%[22m
+[2mflat/time                 │ 100ns ± 1% │         100ns ± 1% │ ~  +0.3%  ±2.5%[22m
+[2mjittery/time              │   100 ± 1% │            50 ± 1% │ [33m≈[39m  unstable  ±30.0%[22m
+──────────────────────────┼────────────┼────────────────────┼─────────────────────
+geomean (gating metrics)  │       [2mmain[22m │ [2mperf/faster-decode[22m │ [1m-5.8%[22m  [2m3 stable metrics · 1 excluded: unstable[22m
+
+[32m✓ 1 improved[39m   [31m✗ 1 regressed[39m   [33m≈ 1 unstable[39m   [2m~ 1 within noise[22m
+
+[1mhighlights[22m
+  [31m✗[39m slower/time    [31m+2.4%[39m
+  [32m✓[39m faster/time   [32m-17.5%[39m
+  [33m≈[39m jittery/time  [33munstable[39m  [2mnoise ±30.0%[22m
+
+[2mlegend: [32m✓[39m improved · [31m✗[39m regressed · [33m≈[39m unstable · ~ within noise — candidates are judged against main[22m
+[2mverdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05[22m
+1 worktree removed · 1 left behind
+  left behind: /tmp/gymrat-abc (is locked)
+  worktree prune failed: fatal: not a git repository

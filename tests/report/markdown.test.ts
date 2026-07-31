@@ -473,6 +473,32 @@ describe("renderMarkdown", () => {
       expect(output).not.toContain("\x1b[");
       expect(output).not.toMatch(/\x1b\[\d+m/);
     });
+
+    it("emits no ANSI when mixed methods exercise all format helpers with color paths", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
+          "flat/time": bandMetric({ verdict: "no-signal", delta: 0.1 }),
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+          "heap/size": exactMetric({ delta: -7.9 }),
+        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: -5.8,
+              n: 3,
+              excluded: [{ metric: "jittery/time", reason: "unstable" }],
+            },
+          }),
+        ],
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).not.toContain("\x1b[");
+      expect(output).not.toMatch(/\x1b\[\d+m/);
+    });
   });
 
   describe("when ordering highlights", () => {

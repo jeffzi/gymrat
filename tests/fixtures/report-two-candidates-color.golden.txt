@@ -1,0 +1,23 @@
+[1mgymrat compare[22m [2m·[22m main ↔ candidate-a, candidate-b, candidate-c [2m·[22m 10 paired samples [2m·[22m adapter: mitata
+[1mmetric                    │       main │ candidate-a vs main     │ candidate-b vs main    │ candidate-c vs main[22m
+──────────────────────────┼────────────┼─────────────────────────┼────────────────────────┼─────────────────────────
+decode/time               │ 100ns ± 1% │ 90ns ± 1%  [32m✓[39m  [32m-10.0%[39m    │ 104ns ± 1%  [31m✗[39m  [31m+4.0%[39m   │ 150ns ± 3%  [2m≈[22m  [2munstable[22m
+──────────────────────────┼────────────┼─────────────────────────┼────────────────────────┼─────────────────────────
+geomean (gating metrics)  │       [2mmain[22m │ [1m-10.0%[22m  [2m1 stable metric[22m │ [1m+4.0%[22m  [2m1 stable metric[22m │ [1m0.0%[22m  [2m1 stable metric[22m
+
+[1mcandidate-a[22m  [32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m~ 0 within noise[22m
+[1mcandidate-b[22m  [2m✓ 0 improved[22m   [31m✗ 1 regressed[39m   [2m≈ 0 unstable[22m   [2m~ 0 within noise[22m
+[1mcandidate-c[22m  [2m✓ 0 improved[22m   [2m✗ 0 regressed[22m   [33m≈ 1 unstable[39m   [2m~ 0 within noise[22m
+
+[1mhighlights[22m
+  [1mcandidate-a[22m
+    [32m✓[39m decode/time  [32m-10.0%[39m
+  [1mcandidate-b[22m
+    [31m✗[39m decode/time   [31m+4.0%[39m
+  [1mcandidate-c[22m
+    [33m≈[39m decode/time  [33munstable[39m  [2mnoise ±30.0%[22m
+
+[2mlegend: [32m✓[39m improved · [31m✗[39m regressed · [33m≈[39m unstable · ~ within noise — candidates are judged against main[22m
+[2mverdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05[22m
+[2mnoise band ±(half-range × K) — n=10 below signed-rank floor (6 pairs)[22m
+[33m[4mHint:[24m[39m re-run with --samples 6 or more for statistical verdicts

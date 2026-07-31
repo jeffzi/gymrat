@@ -1,0 +1,21 @@
+[1mgymrat compare[22m [2m·[22m main ↔ perf/faster-decode [2m·[22m 4 paired samples [2m·[22m adapter: metric-lines
+[1mmetric                    │       main │ perf/faster-decode │ vs main[22m
+──────────────────────────┼────────────┼────────────────────┼──────────────────
+[2mzero-median/time          │   0ns ± 0% │           0ns ± 0% │ ~  0.0%[22m
+[2mnan-delta/count           │          0 │                120 │ ~[22m
+old-side-only/time        │ 2.0µs ± 2% │                    │
+throughput/ops            │  1200 ± 5% │          1560 ± 4% │ [32m✓[39m  +30.0%  [2m±2.5%[22m
+──────────────────────────┼────────────┼────────────────────┼──────────────────
+geomean (gating metrics)  │       [2mmain[22m │ [2mperf/faster-decode[22m │ [1m0.0%[22m  [2m1 stable metric · 1 excluded: undefined-ratio[22m
+
+[32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m~ 2 within noise[22m
+
+[1mhighlights[22m
+  [32m✓[39m throughput/ops  [32m+30.0%[39m
+
+[2mlegend: [32m✓[39m improved · [31m✗[39m regressed · [33m≈[39m unstable · ~ within noise — candidates are judged against main[22m
+[2mnoise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)[22m
+[33m[4mHint:[24m[39m re-run with --samples 6 or more for statistical verdicts
+1 worktree removed · 1 left behind
+  left behind: /tmp/gymrat-abc123 (contains modified files)
+  worktree prune failed: could not lock config file
