@@ -2,29 +2,55 @@ import type { ResolvedMetricMeta } from "../config.js";
 import type { WorktreeRemovalFailure } from "../targets.js";
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 
-/** One metric's measured values, spreads and verdict, alongside the metadata that shaped them. */
-export interface MetricComparison {
-  medianA?: number;
-  medianB?: number;
-  spreadA?: number;
-  spreadB?: number;
+/** One candidate's side of a metric, and the verdict it earned against the baseline. */
+export interface CandidateMetric {
+  median?: number;
+  spread?: number;
   verdict?: MetricVerdict;
+}
+
+/**
+ * One metric across the run: the baseline's measurement once, then a candidate
+ * entry per candidate, alongside the metadata that shaped them.
+ *
+ * `candidates` is positional — entry _i_ belongs to `ComparisonResult.candidates[i]`.
+ */
+export interface MetricComparison {
+  baselineMedian?: number;
+  baselineSpread?: number;
+  candidates: readonly CandidateMetric[];
   meta: ResolvedMetricMeta;
 }
 
 /** Every metric a comparison produced, keyed by metric name. */
 export type MetricComparisons = Record<string, MetricComparison>;
 
+/** One candidate's run-level results, judged against the shared baseline. */
+export interface CandidateComparison {
+  label: string;
+  geomean: GeomeanResult;
+}
+
 /**
  * Everything `renderReport` needs to draw a comparison — the rendering input contract.
+ *
+ * The shape is a star, not a mesh: every candidate is compared with the baseline
+ * and never with another candidate. Those comparisons all reuse the same baseline
+ * samples, so the candidate verdicts of one metric are statistically correlated —
+ * a baseline round that happened to run slow inflates every candidate's delta at
+ * once. Read a candidate's verdict as evidence about that candidate alone; the
+ * difference between two candidates' deltas is not itself a tested quantity.
  */
 export interface ComparisonResult {
-  /** The baseline and candidate labels, in that order — everything in the report is judged against `labels[0]`. */
-  labels: [string, string];
+  /** Label of the target every candidate is judged against. */
+  baselineLabel: string;
+
+  /** The candidates, in the order they were given on the command line. */
+  candidates: readonly CandidateComparison[];
+
   samples: number;
   adapter: string;
   metrics: MetricComparisons;
-  geomean: GeomeanResult;
   worktreesRemoved: number;
 
   /** Worktrees cleanup could not remove, each with the reason git gave. */

@@ -2,11 +2,11 @@
 
 Standalone A/B benchmark runner with paired sampling and benchstat-style reports.
 
-`gymrat compare` runs a benchmark command against two revisions, alternates samples between them so
-both see the same machine noise, and prints a report that tells you, per metric, whether the change
-is a real improvement, a real regression, or noise. Verdicts come from a two-sided Wilcoxon
-signed-rank test once there are enough samples, and from a noise band below that. No session state,
-no config required to start.
+`gymrat compare` runs a benchmark command against a baseline revision and one or more candidates,
+cycling samples across them so every target sees the same machine noise, and prints a report that
+tells you, per metric, whether each candidate is a real improvement, a real regression, or noise.
+Verdicts come from a two-sided Wilcoxon signed-rank test once there are enough samples, and from a
+noise band below that. No session state, no config required to start.
 
 ## Install
 
@@ -33,14 +33,15 @@ gymrat resolves git refs in the current repository, so run it from inside your p
 ## Usage
 
 ```text
-gymrat compare [label=]<target> [label=]<target> [options]
+gymrat compare [label=]<baseline> [label=]<candidate>... [options]
 ```
 
-The first positional is the baseline; deltas are measured against it (the report's `vs old`
-column). Each target is either a path to an existing directory (used in place, never removed) or a
-git ref that gymrat resolves with `git rev-parse` and checks out into a temporary detached worktree.
-An existing directory wins over a git ref of the same name, so prefix the ref with `refs/heads/` to
-disambiguate.
+The first positional is the baseline; every later positional is a candidate, and each one is judged
+against the baseline alone — candidates are never compared with each other. Deltas are measured
+against the baseline (the report's `vs <baseline>` column). Each target is either a path to an
+existing directory (used in place, never removed) or a git ref that gymrat resolves with
+`git rev-parse` and checks out into a temporary detached worktree. An existing directory wins over a
+git ref of the same name, so prefix the ref with `refs/heads/` to disambiguate.
 
 An optional `label=` prefix sets the display name. Without it, a git target is labelled with its
 ref and a path target with the directory's base name, resolved through symlinks. Pass `label=`
@@ -50,6 +51,9 @@ contains `=` cannot be passed.
 ```sh
 # Compare two git refs
 gymrat compare main perf/faster-decode --bench "npm run bench"
+
+# Judge several candidates against one baseline
+gymrat compare main perf/simd perf/lookup-table --bench "npm run bench"
 
 # Label the columns
 gymrat compare old=main new=perf/faster-decode --bench "npm run bench"
@@ -77,9 +81,9 @@ gymrat compare main my-branch \
 `gymrat --version` prints the installed version; `gymrat compare --help` prints these options from
 the binary.
 
-Sampling is strictly sequential: for each of N windows gymrat runs the bench command in target 1,
-then in target 2. Both `bench` and `prepare` run through the shell with the working directory set to
-the target's directory.
+Sampling is strictly sequential: for each of N windows gymrat runs the bench command once per
+target, baseline first, then each candidate in the order given. Both `bench` and `prepare` run
+through the shell with the working directory set to the target's directory.
 
 ### Exit codes
 

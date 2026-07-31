@@ -2,7 +2,7 @@ import { styleText } from "node:util";
 
 import { assertNever } from "../errors.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
-import type { MetricComparison, MetricComparisons } from "./types.js";
+import type { CandidateMetric, MetricComparison, MetricComparisons } from "./types.js";
 
 type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
 
@@ -124,15 +124,18 @@ export interface VerdictCounts {
 }
 
 /**
- * Tally the verdict classes across a comparison's metrics.
+ * Tally the verdict classes one candidate earned against the baseline.
  *
  * This is the single source for the report's summary line: a new consumer
  * counts through this function rather than re-walking `metrics` on its own.
- * Metrics measured on one side only have no verdict and count towards nothing.
+ * Verdicts belong to a candidate, never to the run, so the tally is taken one
+ * candidate at a time. Metrics that candidate never reported have no verdict
+ * and count towards nothing.
  */
-export function countVerdicts(metrics: MetricComparisons): VerdictCounts {
+export function countVerdicts(metrics: MetricComparisons, candidateIndex: number): VerdictCounts {
   const counts: VerdictCounts = { improved: 0, regressed: 0, unstable: 0, noSignal: 0 };
-  for (const { verdict } of Object.values(metrics)) {
+  for (const metric of Object.values(metrics)) {
+    const verdict = metric.candidates[candidateIndex]?.verdict;
     if (verdict === undefined) continue;
     const outcome = verdict.verdict;
     switch (outcome) {
@@ -155,22 +158,30 @@ export function countVerdicts(metrics: MetricComparisons): VerdictCounts {
   return counts;
 }
 
-/** A metric comparison known to carry a verdict — what a highlight is built from. */
-export interface HighlightedMetric extends MetricComparison {
+/** A candidate's side of a metric, known to carry a verdict. */
+export interface HighlightedCandidate extends CandidateMetric {
   verdict: MetricVerdict;
 }
 
-/** A metric worth calling out, paired with the name it is reported under. */
+/** A metric worth calling out for one candidate, with the name it is reported under. */
 export interface MetricHighlight {
   name: string;
-  metric: HighlightedMetric;
+  metric: MetricComparison;
+  candidate: HighlightedCandidate;
 }
 
-/** Where each highlighted verdict class sits in the reported order. */
-const HIGHLIGHT_RANK: Partial<Record<MetricVerdict["verdict"], number>> = {
+/**
+ * Where each highlighted verdict class sits in the reported order.
+ *
+ * Total rather than partial: `undefined` is how a class opts out of highlights,
+ * so a verdict class added to the union without an entry here is a compile error
+ * rather than a class that silently never appears.
+ */
+const HIGHLIGHT_RANK: Record<MetricVerdict["verdict"], number | undefined> = {
   regressed: 0,
   improved: 1,
   unstable: 2,
+  "no-signal": undefined,
 };
 
 /**
@@ -186,24 +197,30 @@ function highlightWeight(verdict: MetricVerdict): number {
 }
 
 /**
- * The metrics worth calling out, ordered regressions first (by delta magnitude,
- * descending), then improvements the same way, then unstable metrics by noise.
+ * The metrics worth calling out for one candidate, ordered regressions first (by
+ * delta magnitude, descending), then improvements the same way, then unstable
+ * metrics by noise.
  *
- * Metrics that sat within the noise carry no news, so they are left out
- * entirely, and so is a metric measured on one side only: with no verdict it
- * has nothing to rank it against the rest. Ties keep the order the metrics
- * were measured in.
+ * Ranking is per candidate because the verdicts are: the same metric can be the
+ * loudest regression for one candidate and unremarkable for the next. Metrics
+ * that sat within the noise carry no news, so they are left out entirely, and so
+ * is a metric this candidate never reported: with no verdict it has nothing to
+ * rank it against the rest. Ties keep the order the metrics were measured in.
  */
-export function selectHighlights(metrics: MetricComparisons): readonly MetricHighlight[] {
+export function selectHighlights(
+  metrics: MetricComparisons,
+  candidateIndex: number,
+): readonly MetricHighlight[] {
   const ranked: { highlight: MetricHighlight; rank: number; weight: number }[] = [];
   for (const [name, metric] of Object.entries(metrics)) {
-    if (metric.verdict === undefined) continue;
-    const rank = HIGHLIGHT_RANK[metric.verdict.verdict];
+    const candidate = metric.candidates[candidateIndex];
+    if (candidate?.verdict === undefined) continue;
+    const rank = HIGHLIGHT_RANK[candidate.verdict.verdict];
     if (rank === undefined) continue;
     ranked.push({
-      highlight: { name, metric: { ...metric, verdict: metric.verdict } },
+      highlight: { name, metric, candidate: { ...candidate, verdict: candidate.verdict } },
       rank,
-      weight: highlightWeight(metric.verdict),
+      weight: highlightWeight(candidate.verdict),
     });
   }
   ranked.sort((a, b) => a.rank - b.rank || b.weight - a.weight);

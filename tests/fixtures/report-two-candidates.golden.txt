@@ -1,0 +1,24 @@
+gymrat compare · main ↔ perf/simd-decode, perf/lut-decode · 10 paired samples · adapter: mitata
+metric                    │        main │ perf/simd-decode vs main │ perf/lut-decode vs main
+──────────────────────────┼─────────────┼──────────────────────────┼───────────────────────────────
+decode/text=digits/time   │  1.7µs ± 1% │  1.4µs ± 1%  ✓  -17.9%   │  1.7µs ± 2%  ~  -2.1%
+encode/time               │  914ns ± 1% │  934ns ± 1%  ✗  +2.2%    │ 1.2µs ± 12%  ≈  unstable  n=4
+encode/heap               │ 49.2KB ± 0% │ 45.3KB ± 0%  ✓  -7.9%    │
+──────────────────────────┼─────────────┼──────────────────────────┼───────────────────────────────
+geomean (gating metrics)  │        main │ -12.4%  3 stable metrics │ +1.2%  2 stable metrics · 1 excluded: unstable
+
+perf/simd-decode  ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 0 within noise
+perf/lut-decode   ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   ~ 1 within noise
+
+highlights
+  perf/simd-decode
+    ✗ encode/time               +2.2%  p=0.002
+    ✓ decode/text=digits/time  -17.9%  p=0.002
+    ✓ encode/heap               -7.9%  (exact)
+  perf/lut-decode
+    ≈ encode/time  unstable  band ±30.0%
+
+legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
+verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
+noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)
+Hint: re-run with --samples 6 or more for statistical verdicts

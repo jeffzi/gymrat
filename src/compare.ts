@@ -123,20 +123,34 @@ export class CommandError extends GymratError {
 }
 
 /**
+ * One target of a comparison run.
+ *
+ * `target` is either a git ref (resolved to a throwaway worktree) or a
+ * filesystem directory path (benched in place).
+ */
+export interface TargetSpec {
+  target: string;
+  /** Display label; defaults to the ref name or the directory's base name. */
+  label?: string;
+}
+
+/**
  * Caller-facing configuration for a single comparison run.
  *
- * `oldTarget` / `newTarget` are either git refs (resolved to worktrees) or
- * filesystem directory paths (benched in place).
+ * One baseline, one or more candidates: every candidate is compared with the
+ * baseline and never with another candidate.
  */
 export interface CompareOptions {
-  oldTarget: string; // git ref or directory path
-  newTarget: string; // git ref or directory path
-  oldLabel?: string; // display label for old (defaults to ref name or dirname)
-  newLabel?: string; // display label for new
-  bench: string; // bench command to run in each target dir
-  prepare?: string; // optional prepare command before bench
-  adapter: string; // "metric-lines" or "mitata"
-  samples: number; // number of paired sample windows
+  baseline: TargetSpec;
+  /** Judged against `baseline`, and reported in this order. */
+  candidates: readonly TargetSpec[];
+  /** Run through the shell in each target's directory. */
+  bench: string;
+  prepare?: string;
+  /** Which output format `bench` writes: `"metric-lines"` or `"mitata"`. */
+  adapter: string;
+  /** How many rounds to run, each round sampling every target once. */
+  samples: number;
   timeoutSeconds: number;
   /**
    * Noise band width, in percent, above which a metric is reported "unstable".
@@ -148,7 +162,12 @@ export interface CompareOptions {
 }
 
 /**
- * Compute spread as percentage: (max - min) / (2 * median) * 100
+ * Half the observed range as a percentage of the median — the run-to-run jitter a
+ * verdict's noise band is judged against.
+ *
+ * Half-range rather than full range so the figure reads as "± this much" either
+ * side of the median, which is how the report prints it. A zero median has no
+ * scale to be a percentage of, so it contributes no spread at all.
  */
 function computeSpread(values: readonly number[]): number {
   /* v8 ignore if -- defensive check; never called with empty array */
@@ -173,6 +192,29 @@ interface TargetContext {
   dir: string;
   label: string;
   position: "old" | "new";
+}
+
+/** One target's measurements, kept beside the target that produced them. */
+interface TargetSamples {
+  readonly ctx: TargetContext;
+  readonly samples: Record<string, number>[];
+}
+
+/** Everything a run measured, in the shape the comparison reads it: one baseline, N candidates. */
+interface RunSamples {
+  readonly baseline: TargetSamples;
+  readonly candidates: readonly TargetSamples[];
+}
+
+/** A target's samples under the label the report shows them by. */
+interface LabeledSamples {
+  readonly label: string;
+  readonly samples: Record<string, number>[];
+}
+
+/** Drop the target's context, keeping only what the comparison reads from it. */
+function labelSamples({ ctx, samples }: TargetSamples): LabeledSamples {
+  return { label: ctx.label, samples };
 }
 
 /**
@@ -221,35 +263,43 @@ async function runCommand(
 }
 
 /**
- * Collect paired samples by alternating between old and new targets.
+ * Collect paired samples round-robin across the targets, baseline first.
+ *
+ * Each round runs the bench once per target, baseline first, before the next
+ * round starts, so a round is a block of measurements taken close together in
+ * time — that adjacency is what lets the machine's drift cancel out of the
+ * pairwise comparisons. `prepare` runs once per target, up front.
+ *
+ * Baseline and candidates stay apart in the return value rather than arriving as
+ * one list the caller has to split at position 0: the comparison only ever reads
+ * them in those roles.
  */
 async function collectSamples(
   adapter: Adapter,
-  oldCtx: TargetContext,
-  newCtx: TargetContext,
+  baseline: TargetContext,
+  candidates: readonly TargetContext[],
   options: Pick<CompareOptions, "bench" | "prepare" | "samples" | "timeoutSeconds">,
   signal: AbortSignal,
-): Promise<{ samplesA: Record<string, number>[]; samplesB: Record<string, number>[] }> {
+): Promise<RunSamples> {
   const timeoutMs = options.timeoutSeconds * 1000;
+  const baselineSamples: TargetSamples = { ctx: baseline, samples: [] };
+  const candidateSamples: TargetSamples[] = candidates.map((ctx) => ({ ctx, samples: [] }));
+  const collected = [baselineSamples, ...candidateSamples];
 
   if (options.prepare) {
-    for (const ctx of [oldCtx, newCtx]) {
+    for (const { ctx } of collected) {
       await runCommand("prepare", ctx, options.prepare, timeoutMs, signal);
     }
   }
 
-  const samplesA: Record<string, number>[] = [];
-  const samplesB: Record<string, number>[] = [];
-
-  for (let i = 0; i < options.samples; i++) {
-    const oldStdout = await runCommand("bench", oldCtx, options.bench, timeoutMs, signal, i + 1);
-    samplesA.push(adapter.parse(oldStdout));
-
-    const newStdout = await runCommand("bench", newCtx, options.bench, timeoutMs, signal, i + 1);
-    samplesB.push(adapter.parse(newStdout));
+  for (let round = 0; round < options.samples; round++) {
+    for (const { ctx, samples } of collected) {
+      const stdout = await runCommand("bench", ctx, options.bench, timeoutMs, signal, round + 1);
+      samples.push(adapter.parse(stdout));
+    }
   }
 
-  return { samplesA, samplesB };
+  return { baseline: baselineSamples, candidates: candidateSamples };
 }
 
 /**
@@ -277,22 +327,16 @@ function resolveLabel(explicit: string | undefined, resolved: Target): string {
   return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
 }
 
+/** One target's median and spread for a metric, or both undefined when it never reported it. */
 function computeMetricStats(
-  samplesA: readonly Record<string, number>[],
-  samplesB: readonly Record<string, number>[],
+  samples: readonly Record<string, number>[],
   metricName: string,
-): { medianA?: number; medianB?: number; spreadA?: number; spreadB?: number } {
-  const aValues = samplesA.map((s) => s[metricName]).filter((v) => v !== undefined);
-  const bValues = samplesB.map((s) => s[metricName]).filter((v) => v !== undefined);
-  const hasA = aValues.length > 0;
-  const hasB = bValues.length > 0;
-
-  return {
-    medianA: hasA ? computeMedian(aValues) : undefined,
-    medianB: hasB ? computeMedian(bValues) : undefined,
-    spreadA: hasA ? computeSpread(aValues) : undefined,
-    spreadB: hasB ? computeSpread(bValues) : undefined,
-  };
+): { median?: number; spread?: number } {
+  const values = samples.map((sample) => sample[metricName]).filter((v) => v !== undefined);
+  if (values.length === 0) {
+    return { median: undefined, spread: undefined };
+  }
+  return { median: computeMedian(values), spread: computeSpread(values) };
 }
 
 function buildComparisonResult(
@@ -300,23 +344,35 @@ function buildComparisonResult(
   options: Pick<CompareOptions, "samples" | "adapter">,
   cleanup: CleanupResult,
 ): ComparisonResult {
-  const { samplesA, samplesB, metricNames, metricMeta, verdicts, geomean, labels } = measurement;
+  const { baselineLabel, baselineSamples, candidates, metricNames, metricMeta } = measurement;
 
   const result: ComparisonResult = {
-    labels,
+    baselineLabel,
+    candidates: candidates.map((candidate) => ({
+      label: candidate.label,
+      geomean: candidate.geomean,
+    })),
     samples: options.samples,
     adapter: options.adapter,
     metrics: {},
-    geomean,
     worktreesRemoved: cleanup.removed,
     worktreesLeftBehind: cleanup.failures,
     worktreePruneError: cleanup.pruneError,
   };
 
   for (const metricName of metricNames) {
+    const baseline = computeMetricStats(baselineSamples, metricName);
     result.metrics[metricName] = {
-      ...computeMetricStats(samplesA, samplesB, metricName),
-      verdict: verdicts[metricName],
+      baselineMedian: baseline.median,
+      baselineSpread: baseline.spread,
+      candidates: candidates.map((candidate) => {
+        const stats = computeMetricStats(candidate.samples, metricName);
+        return {
+          median: stats.median,
+          spread: stats.spread,
+          verdict: candidate.verdicts[metricName],
+        };
+      }),
       meta: metricMeta[metricName]!,
     };
   }
@@ -324,14 +380,14 @@ function buildComparisonResult(
   return result;
 }
 
-function collectMetricNames(
-  samplesA: Record<string, number>[],
-  samplesB: Record<string, number>[],
-): Set<string> {
+/** Every metric name any target reported, so a one-sided metric still gets a row. */
+function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
   const names = new Set<string>();
-  for (const sample of [...samplesA, ...samplesB]) {
-    for (const name of Object.keys(sample)) {
-      names.add(name);
+  for (const samples of sampleSets) {
+    for (const sample of samples) {
+      for (const name of Object.keys(sample)) {
+        names.add(name);
+      }
     }
   }
   return names;
@@ -344,13 +400,42 @@ function collectMetricNames(
  * so the report can be rendered after worktree cleanup has already run.
  */
 interface Measurement {
-  samplesA: Record<string, number>[];
-  samplesB: Record<string, number>[];
+  baselineLabel: string;
+  baselineSamples: Record<string, number>[];
+  candidates: CandidateMeasurement[];
   metricNames: Set<string>;
   metricMeta: ReturnType<typeof resolveMetricMeta>;
+}
+
+/** One candidate's samples and the pairwise verdicts they earned against the baseline. */
+interface CandidateMeasurement {
+  label: string;
+  samples: Record<string, number>[];
   verdicts: ReturnType<typeof computeVerdicts>;
   geomean: ReturnType<typeof computeGeomean>;
-  labels: [string, string];
+}
+
+/**
+ * Judge every candidate against the same baseline samples, one pairwise
+ * comparison each.
+ *
+ * The topology is a star: no candidate is ever compared with another. Reusing
+ * one set of baseline samples is what keeps that affordable, and it is also why
+ * the resulting verdicts are statistically correlated — a baseline round that
+ * ran slow inflates every candidate's delta at once. Each verdict is still
+ * sound evidence about its own candidate; the gap between two candidates'
+ * deltas is not a quantity this test measured.
+ */
+function measureCandidates(
+  baselineSamples: Record<string, number>[],
+  candidates: readonly LabeledSamples[],
+  metricMeta: ReturnType<typeof resolveMetricMeta>,
+  unstableNoisePct: number | undefined,
+): CandidateMeasurement[] {
+  return candidates.map(({ label, samples }) => {
+    const verdicts = computeVerdicts(baselineSamples, samples, metricMeta, unstableNoisePct);
+    return { label, samples, verdicts, geomean: computeGeomean(verdicts, metricMeta) };
+  });
 }
 
 /**
@@ -380,12 +465,12 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
 }
 
 /**
- * Compare performance between two revisions.
+ * Compare one baseline revision against one or more candidate revisions.
  *
  * Orchestrates the comparison workflow:
  * 1. Resolves target directories/refs and creates worktrees as needed
- * 2. Runs bench command multiple times per target, parsing output with the configured adapter
- * 3. Computes verdicts using statistical tests (signed-rank or band method)
+ * 2. Runs the bench round-robin across every target, parsing output with the configured adapter
+ * 3. Computes each candidate's verdicts against the shared baseline (signed-rank or band method)
  * 4. Cleans up worktrees on both the success and the failure path
  * 5. Returns the comparison data carrying that cleanup's outcome
  *
@@ -430,37 +515,47 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
     try {
       const adapter = getAdapter(options.adapter);
 
-      const oldResolved = resolveTarget(options.oldTarget, repoDir);
-      const newResolved = resolveTarget(options.newTarget, repoDir);
-
-      const oldDir = resolveDir(oldResolved, repoDir, worktrees);
-      const newDir = resolveDir(newResolved, repoDir, worktrees);
-
-      const oldLabel = resolveLabel(options.oldLabel, oldResolved);
-      const newLabel = resolveLabel(options.newLabel, newResolved);
-
-      const oldCtx: TargetContext = {
-        target: oldResolved,
-        dir: oldDir,
-        label: oldLabel,
-        position: "old",
+      // Every target is resolved before any worktree is materialized, so an
+      // unresolvable candidate fails the run without leaving a directory on disk.
+      const resolvedBaseline = {
+        spec: options.baseline,
+        target: resolveTarget(options.baseline.target, repoDir),
       };
-      const newCtx: TargetContext = {
-        target: newResolved,
-        dir: newDir,
-        label: newLabel,
-        position: "new",
-      };
+      const resolvedCandidates = options.candidates.map((spec) => ({
+        spec,
+        target: resolveTarget(spec.target, repoDir),
+      }));
 
-      const { samplesA, samplesB } = await collectSamples(
+      const toContext = (
+        { spec, target }: { spec: TargetSpec; target: Target },
+        position: TargetContext["position"],
+      ): TargetContext => ({
+        target,
+        dir: resolveDir(target, repoDir, worktrees),
+        label: resolveLabel(spec.label, target),
+        position,
+      });
+
+      // Baseline first: its worktree is the one a cleanup sweep should find even
+      // if a candidate's checkout is what failed.
+      const baselineContext = toContext(resolvedBaseline, "old");
+      const candidateContexts = resolvedCandidates.map((resolved) => toContext(resolved, "new"));
+
+      const collected = await collectSamples(
         adapter,
-        oldCtx,
-        newCtx,
+        baselineContext,
+        candidateContexts,
         options,
         run.signal,
       );
 
-      const metricNames = collectMetricNames(samplesA, samplesB);
+      const baseline = labelSamples(collected.baseline);
+      const candidates = collected.candidates.map(labelSamples);
+
+      const metricNames = collectMetricNames([
+        collected.baseline.samples,
+        ...collected.candidates.map(({ samples }) => samples),
+      ]);
 
       /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
       if (metricNames.size === 0) {
@@ -468,17 +563,18 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
       }
 
       const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
-      const verdicts = computeVerdicts(samplesA, samplesB, metricMeta, options.unstableNoisePct);
-      const geomean = computeGeomean(verdicts, metricMeta);
 
       measurement = {
-        samplesA,
-        samplesB,
+        baselineLabel: baseline.label,
+        baselineSamples: baseline.samples,
+        candidates: measureCandidates(
+          baseline.samples,
+          candidates,
+          metricMeta,
+          options.unstableNoisePct,
+        ),
         metricNames,
         metricMeta,
-        verdicts,
-        geomean,
-        labels: [oldLabel, newLabel],
       };
     } catch (error) {
       const cleanup = cleanupWorktrees(worktrees, repoDir);

@@ -1,7 +1,24 @@
-import type { ComparisonResult } from "../../src/report/types.js";
+import type { CandidateComparison, ComparisonResult } from "../../src/report/types.js";
 
 /**
- * A comparison result with a clean two-branch run and no metrics.
+ * One candidate's run-level results, judged against the shared baseline.
+ *
+ * A test that only cares about the geomean can override that field alone.
+ */
+export function createCandidate(overrides: Partial<CandidateComparison> = {}): CandidateComparison {
+  return {
+    label: "perf/faster-decode",
+    geomean: {
+      value: -5.8,
+      n: 10,
+      excluded: [],
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * A comparison result with a clean baseline-plus-one-candidate run and no metrics.
  *
  * Shared by the renderer tests and the CLI tests so both drive the renderer
  * with the same shape `compare()` returns.
@@ -10,15 +27,11 @@ export function createComparisonResult(
   overrides: Partial<ComparisonResult> = {},
 ): ComparisonResult {
   return {
-    labels: ["main", "perf/faster-decode"],
+    baselineLabel: "main",
+    candidates: [createCandidate()],
     samples: 10,
     adapter: "mitata",
     metrics: {},
-    geomean: {
-      value: -5.8,
-      n: 10,
-      excluded: [],
-    },
     worktreesRemoved: 0,
     worktreesLeftBehind: [],
     worktreePruneError: undefined,

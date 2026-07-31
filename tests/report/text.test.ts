@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { renderReport } from "../../src/report/text.js";
 import type { ComparisonResult } from "../../src/report/types.js";
 import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
-import { createComparisonResult } from "../fixtures/comparison-result.js";
+import { createCandidate, createComparisonResult } from "../fixtures/comparison-result.js";
 
 type Metrics = ComparisonResult["metrics"];
 type MetricEntry = Metrics[string];
@@ -85,8 +85,8 @@ function highlightLines(report: string): string[] {
 function signedRankMetric(options: {
   verdict: ApproximateVerdictValue;
   delta: number;
-  medianA?: number;
-  medianB?: number;
+  baselineMedian?: number;
+  candidateMedian?: number;
   p?: number;
   noisePct?: number;
   unit?: "ns" | "bytes";
@@ -96,8 +96,8 @@ function signedRankMetric(options: {
   const {
     verdict,
     delta,
-    medianA = 100,
-    medianB = medianA * (1 + delta / 100),
+    baselineMedian = 100,
+    candidateMedian = baselineMedian * (1 + delta / 100),
     p = 0.01,
     noisePct = 2.5,
     unit,
@@ -105,11 +105,15 @@ function signedRankMetric(options: {
     n = 10,
   } = options;
   return {
-    medianA,
-    medianB,
-    spreadA: 1,
-    spreadB: 1,
-    verdict: { verdict, method: "signed-rank", delta, n, p, noisePct },
+    baselineMedian,
+    baselineSpread: 1,
+    candidates: [
+      {
+        median: candidateMedian,
+        spread: 1,
+        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct },
+      },
+    ],
     meta: { direction: "lower", gating, exact: false, unit },
   };
 }
@@ -123,34 +127,59 @@ function bandMetric(options: {
 }): MetricEntry {
   const { verdict, delta, noisePct = 2.5, n = 4 } = options;
   return {
-    medianA: 100,
-    medianB: 100 + delta,
-    spreadA: 5,
-    spreadB: 4,
-    verdict: { verdict, method: "band", delta, n, band: noisePct, noisePct },
+    baselineMedian: 100,
+    baselineSpread: 5,
+    candidates: [
+      {
+        median: 100 + delta,
+        spread: 4,
+        verdict: { verdict, method: "band", delta, n, band: noisePct, noisePct },
+      },
+    ],
     meta: { direction: "lower", gating: true, exact: false },
+  };
+}
+
+/** One metric judged for several candidates against a single shared baseline. */
+function nWayMetric(
+  candidates: readonly { verdict: ApproximateVerdictValue; delta: number; median: number }[],
+): MetricEntry {
+  const entries: MetricEntry["candidates"] = candidates.map(({ verdict, delta, median }) => ({
+    median,
+    spread: 1,
+    verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct: 2.5 },
+  }));
+  return {
+    baselineMedian: 100,
+    baselineSpread: 1,
+    candidates: entries,
+    meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
   };
 }
 
 /** A counted metric, compared exactly rather than statistically. */
 function exactMetric(options: {
   delta: number;
-  medianA?: number;
-  medianB?: number;
+  baselineMedian?: number;
+  candidateMedian?: number;
   n?: number;
   unit?: "ns" | "bytes";
 }): MetricEntry {
   const {
     delta,
-    medianA = 1000,
-    medianB = 1000 * (1 + delta / 100),
+    baselineMedian = 1000,
+    candidateMedian = 1000 * (1 + delta / 100),
     n = 10,
     unit = "bytes",
   } = options;
   return {
-    medianA,
-    medianB,
-    verdict: { verdict: delta < 0 ? "improved" : "regressed", method: "exact", delta, n },
+    baselineMedian,
+    candidates: [
+      {
+        median: candidateMedian,
+        verdict: { verdict: delta < 0 ? "improved" : "regressed", method: "exact", delta, n },
+      },
+    ],
     meta: { direction: "lower", gating: true, exact: true, unit },
   };
 }
@@ -159,7 +188,8 @@ describe("renderReport", () => {
   describe("when rendering the run header", () => {
     it("names both branches, the sample count and the adapter", () => {
       const result = createComparisonResult({
-        labels: ["main", "experiment"],
+        baselineLabel: "main",
+        candidates: [createCandidate({ label: "experiment" })],
         samples: 10,
         adapter: "mitata",
       });
@@ -175,15 +205,16 @@ describe("renderReport", () => {
   describe("when rendering the table header", () => {
     it("labels the value columns with the two target labels and the delta with the baseline", () => {
       const result = createComparisonResult();
+      const output = renderReport(result);
 
-      const headerLine = lineStartingWith(renderReport(result), "metric");
+      const headerLine = lineStartingWith(output, "metric");
 
-      expect(cellsOf(headerLine).map((cell) => cell.trim())).toStrictEqual([
-        "metric",
-        "main",
-        "perf/faster-decode",
-        "vs main",
-      ]);
+      expect
+        .soft(cellsOf(headerLine).map((cell) => cell.trim()))
+        .toStrictEqual(["metric", "main", "perf/faster-decode", "vs main"]);
+      expect.soft(output).toContain("gymrat compare");
+      expect.soft(output).toContain("geomean");
+      expect(output).toContain("legend:");
     });
   });
 
@@ -228,8 +259,9 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: {
           "old-only/time": {
-            medianA: 2048,
-            spreadA: 2,
+            baselineMedian: 2048,
+            baselineSpread: 2,
+            candidates: [{}],
             meta: { direction: "lower", gating: false, exact: false, unit: "ns" },
           },
         },
@@ -246,9 +278,13 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: {
           "nan-delta/count": {
-            medianA: 0,
-            medianB: 120,
-            verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 10 },
+            baselineMedian: 0,
+            candidates: [
+              {
+                median: 120,
+                verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 10 },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: true },
           },
         },
@@ -293,11 +329,16 @@ describe("renderReport", () => {
     it("right-aligns the value cells and keeps the metric names left-aligned", () => {
       const result = createComparisonResult({
         metrics: {
-          short: signedRankMetric({ verdict: "improved", delta: -50, medianA: 914, unit: "ns" }),
+          short: signedRankMetric({
+            verdict: "improved",
+            delta: -50,
+            baselineMedian: 914,
+            unit: "ns",
+          }),
           "very-long-metric-name": signedRankMetric({
             verdict: "improved",
             delta: -10,
-            medianA: 49152,
+            baselineMedian: 49152,
             unit: "bytes",
           }),
         },
@@ -320,11 +361,11 @@ describe("renderReport", () => {
           "a-much-longer-metric/time": signedRankMetric({
             verdict: "improved",
             delta: -5,
-            medianA: 100000,
+            baselineMedian: 100000,
             unit: "ns",
           }),
         },
-        geomean: { value: -5, n: 2, excluded: [] },
+        candidates: [createCandidate({ geomean: { value: -5, n: 2, excluded: [] } })],
       });
 
       const report = renderReport(result);
@@ -344,7 +385,7 @@ describe("renderReport", () => {
     it("repeats both labels in its value cells and counts the metrics behind the figure", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
-        geomean: { value: -5.8, n: 4, excluded: [] },
+        candidates: [createCandidate({ geomean: { value: -5.8, n: 4, excluded: [] } })],
       });
 
       const row = lineStartingWith(renderReport(result), "geomean");
@@ -360,11 +401,15 @@ describe("renderReport", () => {
     it("names how many metrics were excluded and why", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
-        geomean: {
-          value: 0,
-          n: 1,
-          excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
-        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: 0,
+              n: 1,
+              excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
+            },
+          }),
+        ],
       });
 
       const row = lineStartingWith(renderReport(result), "geomean");
@@ -375,11 +420,15 @@ describe("renderReport", () => {
     it("reports no stable gating metrics when every one was excluded", () => {
       const result = createComparisonResult({
         metrics: { "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50 }) },
-        geomean: {
-          value: Number.NaN,
-          n: 0,
-          excluded: [{ metric: "jittery/time", reason: "unstable" }],
-        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: Number.NaN,
+              n: 0,
+              excluded: [{ metric: "jittery/time", reason: "unstable" }],
+            },
+          }),
+        ],
       });
 
       const row = lineStartingWith(renderReport(result), "geomean");
@@ -654,19 +703,6 @@ describe("renderReport", () => {
     });
   });
 
-  describe("when rendering a run with no metrics", () => {
-    it("still renders the header, the table, the geomean row and the legend", () => {
-      const result = createComparisonResult({ metrics: {} });
-
-      const output = renderReport(result);
-
-      expect.soft(output).toContain("gymrat compare");
-      expect.soft(output).toContain("metric");
-      expect.soft(output).toContain("geomean");
-      expect(output).toContain("legend:");
-    });
-  });
-
   describe("when rendering with color", () => {
     /** A run whose rows cover every verdict class, plus a geomean figure. */
     function colorfulResult(): ComparisonResult {
@@ -677,11 +713,15 @@ describe("renderReport", () => {
           "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
           "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
         },
-        geomean: {
-          value: -5.8,
-          n: 3,
-          excluded: [{ metric: "jittery/time", reason: "unstable" }],
-        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: -5.8,
+              n: 3,
+              excluded: [{ metric: "jittery/time", reason: "unstable" }],
+            },
+          }),
+        ],
         worktreesRemoved: 1,
         worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
         worktreePruneError: "fatal: not a git repository",
@@ -753,10 +793,10 @@ describe("renderReport", () => {
     });
   });
 
-  describe("when rendering a full report", () => {
+  describe("when ordering the report sections", () => {
     it("emits table, summary, highlights, legend and method in that order", () => {
       const result = createComparisonResult({
-        labels: ["main", "faster"],
+        baselineLabel: "main",
         metrics: {
           "metric1/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
           "metric2/time": signedRankMetric({
@@ -766,7 +806,9 @@ describe("renderReport", () => {
             unit: "ns",
           }),
         },
-        geomean: { value: -5, n: 1, excluded: [] },
+        candidates: [
+          createCandidate({ label: "faster", geomean: { value: -5, n: 1, excluded: [] } }),
+        ],
       });
 
       const lines = renderReport(result).split("\n");
@@ -791,6 +833,203 @@ describe("renderReport", () => {
     });
   });
 
+  describe("when rendering more than one candidate", () => {
+    /**
+     * One baseline and three candidates whose verdicts on the same metric disagree.
+     *
+     * Every candidate was judged against the same baseline samples, so a renderer
+     * that reused one candidate's verdict for the next would collapse the three
+     * columns, summaries and highlight subsections into one.
+     */
+    function multiCandidateResult(): ComparisonResult {
+      return createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": {
+            baselineMedian: 100,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 90,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              {
+                median: 104,
+                spread: 1,
+                verdict: {
+                  verdict: "regressed",
+                  method: "signed-rank",
+                  delta: 4,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              {
+                median: 150,
+                spread: 3,
+                verdict: {
+                  verdict: "unstable",
+                  method: "band",
+                  delta: 50,
+                  n: 10,
+                  band: 30,
+                  noisePct: 30,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+    }
+
+    it("heads one column per candidate with its comparison against the baseline", () => {
+      const headerLine = lineStartingWith(renderReport(multiCandidateResult()), "metric");
+
+      expect(cellsOf(headerLine).map((cell) => cell.trim())).toStrictEqual([
+        "metric",
+        "main",
+        "candidate-a vs main",
+        "candidate-b vs main",
+        "candidate-c vs main",
+      ]);
+    });
+
+    it("keeps the baseline figure and pairs each candidate's own figure with its verdict", () => {
+      const row = lineStartingWith(renderReport(multiCandidateResult()), "decode/time");
+
+      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
+        "decode/time",
+        "100ns ± 1%",
+        "90ns ± 1%  ✓  -10.0%",
+        "104ns ± 1%  ✗  +4.0%",
+        "150ns ± 3%  ≈  unstable",
+      ]);
+    });
+
+    it("carries one geomean figure per candidate column and repeats the baseline label", () => {
+      const row = lineStartingWith(renderReport(multiCandidateResult()), "geomean");
+
+      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
+        "geomean (gating metrics)",
+        "main",
+        "-10.0%  1 stable metric",
+        "+4.0%  1 stable metric",
+        "0.0%  1 stable metric",
+      ]);
+    });
+
+    it("lines the column separators up across header, metric rows and geomean", () => {
+      const report = renderReport(multiCandidateResult());
+      const headerOffsets = separatorOffsets(lineStartingWith(report, "metric"));
+
+      expect
+        .soft(separatorOffsets(lineStartingWith(report, "decode/time")))
+        .toStrictEqual(headerOffsets);
+      expect(separatorOffsets(lineStartingWith(report, "geomean"))).toStrictEqual(headerOffsets);
+    });
+
+    it("summarizes each candidate on its own line, behind that candidate's label", () => {
+      const summaries = renderReport(multiCandidateResult())
+        .split("\n")
+        .filter((line) => /✓ \d+ improved/.test(line));
+
+      expect(summaries).toStrictEqual([
+        "candidate-a  ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   ~ 0 within noise",
+        "candidate-b  ✓ 0 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 0 within noise",
+        "candidate-c  ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   ~ 0 within noise",
+      ]);
+    });
+
+    it("groups the highlights into one subsection per candidate", () => {
+      const highlights = highlightLines(renderReport(multiCandidateResult()));
+
+      expect(highlights).toStrictEqual([
+        "  candidate-a",
+        "    ✓ decode/time  -10.0%  p=0.002",
+        "  candidate-b",
+        "    ✗ decode/time   +4.0%  p=0.002",
+        "  candidate-c",
+        "    ≈ decode/time  unstable  band ±30.0%",
+      ]);
+    });
+
+    it("drops the highlights section when no candidate has anything to highlight", () => {
+      const result = createComparisonResult({
+        candidates: [
+          createCandidate({ label: "candidate-a" }),
+          createCandidate({ label: "candidate-b" }),
+        ],
+        metrics: {
+          "decode/time": nWayMetric([
+            { verdict: "no-signal", delta: 0.4, median: 100 },
+            { verdict: "no-signal", delta: -0.3, median: 100 },
+          ]),
+        },
+      });
+
+      const report = renderReport(result);
+
+      expect.soft(report).not.toContain("highlights");
+      expect(report).toContain("candidate-a  ✓ 0 improved");
+    });
+
+    /**
+     * A run whose two rows differ in whether any candidate moved at all.
+     *
+     * `mixed/time` moved for one candidate and stayed flat for the other, which
+     * is exactly the row a per-candidate dimming rule would wrongly recede.
+     */
+    function dimmingResult(): ComparisonResult {
+      return createComparisonResult({
+        candidates: [
+          createCandidate({ label: "candidate-a" }),
+          createCandidate({ label: "candidate-b" }),
+        ],
+        metrics: {
+          "flat/time": nWayMetric([
+            { verdict: "no-signal", delta: 0.3, median: 100 },
+            { verdict: "unstable", delta: -50, median: 50 },
+          ]),
+          "mixed/time": nWayMetric([
+            { verdict: "no-signal", delta: 0.3, median: 100 },
+            { verdict: "improved", delta: -17.5, median: 83 },
+          ]),
+        },
+      });
+    }
+
+    it("dims a row only once every candidate on it stayed flat or unstable", () => {
+      const report = renderReport(dimmingResult(), true);
+
+      expect.soft(lineContaining(report, "flat/time")).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect(lineContaining(report, "mixed/time")).not.toContain("\x1b[2m");
+    });
+
+    it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
+      const result = multiCandidateResult();
+
+      const colored = renderReport(result, true);
+
+      expect.soft(colored).toContain("\x1b[");
+      expect(stripAnsi(colored)).toBe(renderReport(result, false));
+    });
+  });
+
   /**
    * Byte-level pins on the whole rendered report.
    *
@@ -809,60 +1048,76 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: {
           "decode/text=digits/time": {
-            medianA: 1735,
-            medianB: 1425,
-            spreadA: 1,
-            spreadB: 1,
-            verdict: {
-              verdict: "improved",
-              method: "signed-rank",
-              delta: -17.9,
-              n: 10,
-              p: 0.002,
-              noisePct: 2.5,
-            },
+            baselineMedian: 1735,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 1425,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -17.9,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "decode/text=words/time": {
-            medianA: 3065,
-            medianB: 3093,
-            spreadA: 1,
-            spreadB: 3,
-            verdict: {
-              verdict: "no-signal",
-              method: "signed-rank",
-              delta: 0.9,
-              n: 10,
-              p: 0.49,
-              noisePct: 2.5,
-            },
+            baselineMedian: 3065,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 3093,
+                spread: 3,
+                verdict: {
+                  verdict: "no-signal",
+                  method: "signed-rank",
+                  delta: 0.9,
+                  n: 10,
+                  p: 0.49,
+                  noisePct: 2.5,
+                },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "encode/time": {
-            medianA: 914,
-            medianB: 934,
-            spreadA: 1,
-            spreadB: 1,
-            verdict: {
-              verdict: "regressed",
-              method: "signed-rank",
-              delta: 2.2,
-              n: 10,
-              p: 0.002,
-              noisePct: 2.5,
-            },
+            baselineMedian: 914,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 934,
+                spread: 1,
+                verdict: {
+                  verdict: "regressed",
+                  method: "signed-rank",
+                  delta: 2.2,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "encode/heap": {
-            medianA: 49152,
-            medianB: 45261,
-            spreadA: 0,
-            spreadB: 0,
-            verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
+            baselineMedian: 49152,
+            baselineSpread: 0,
+            candidates: [
+              {
+                median: 45261,
+                spread: 0,
+                verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: true, unit: "bytes" },
           },
         },
-        geomean: { value: -6, n: 4, excluded: [] },
+        candidates: [createCandidate({ geomean: { value: -6, n: 4, excluded: [] } })],
       });
 
       await expect(renderReport(result)).toMatchFileSnapshot(
@@ -876,45 +1131,62 @@ describe("renderReport", () => {
         adapter: "metric-lines",
         metrics: {
           "zero-median/time": {
-            medianA: 0,
-            medianB: 0,
-            spreadA: 0,
-            spreadB: 0,
-            verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
+            baselineMedian: 0,
+            baselineSpread: 0,
+            candidates: [
+              {
+                median: 0,
+                spread: 0,
+                verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: true, unit: "ns" },
           },
           "nan-delta/count": {
-            medianA: 0,
-            medianB: 120,
-            verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
+            baselineMedian: 0,
+            candidates: [
+              {
+                median: 120,
+                verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
+              },
+            ],
             meta: { direction: "lower", gating: true, exact: true },
           },
           "old-side-only/time": {
-            medianA: 2048,
-            spreadA: 2,
+            baselineMedian: 2048,
+            baselineSpread: 2,
+            candidates: [{}],
             meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
           },
           "throughput/ops": {
-            medianA: 1200,
-            medianB: 1560,
-            spreadA: 5,
-            spreadB: 4,
-            verdict: {
-              verdict: "improved",
-              method: "band",
-              delta: 30,
-              n: 4,
-              band: 2.5,
-              noisePct: 2.5,
-            },
+            baselineMedian: 1200,
+            baselineSpread: 5,
+            candidates: [
+              {
+                median: 1560,
+                spread: 4,
+                verdict: {
+                  verdict: "improved",
+                  method: "band",
+                  delta: 30,
+                  n: 4,
+                  band: 2.5,
+                  noisePct: 2.5,
+                },
+              },
+            ],
             meta: { direction: "higher", gating: false, exact: false },
           },
         },
-        geomean: {
-          value: 0,
-          n: 1,
-          excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
-        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: 0,
+              n: 1,
+              excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
+            },
+          }),
+        ],
         worktreesRemoved: 1,
         worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc123", error: "contains modified files" }],
         worktreePruneError: "could not lock config file",
@@ -922,6 +1194,110 @@ describe("renderReport", () => {
 
       await expect(renderReport(result)).toMatchFileSnapshot(
         "../fixtures/report-degenerate.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a run with two candidates", async () => {
+      const result = createComparisonResult({
+        candidates: [
+          createCandidate({
+            label: "perf/simd-decode",
+            geomean: { value: -12.4, n: 3, excluded: [] },
+          }),
+          createCandidate({
+            label: "perf/lut-decode",
+            geomean: {
+              value: 1.2,
+              n: 2,
+              excluded: [{ metric: "encode/time", reason: "unstable" }],
+            },
+          }),
+        ],
+        metrics: {
+          "decode/text=digits/time": {
+            baselineMedian: 1735,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 1425,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -17.9,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              {
+                median: 1698,
+                spread: 2,
+                verdict: {
+                  verdict: "no-signal",
+                  method: "signed-rank",
+                  delta: -2.1,
+                  n: 10,
+                  p: 0.32,
+                  noisePct: 2.5,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "encode/time": {
+            baselineMedian: 914,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 934,
+                spread: 1,
+                verdict: {
+                  verdict: "regressed",
+                  method: "signed-rank",
+                  delta: 2.2,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              {
+                median: 1200,
+                spread: 12,
+                // The band method only runs below six pairs, so this metric was
+                // dropped on most rounds — which also pins the n= annotation in
+                // an N-way cell.
+                verdict: {
+                  verdict: "unstable",
+                  method: "band",
+                  delta: 31.3,
+                  n: 4,
+                  band: 30,
+                  noisePct: 30,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "encode/heap": {
+            baselineMedian: 49152,
+            baselineSpread: 0,
+            // The second candidate never reported this metric, so its cell stays empty.
+            candidates: [
+              {
+                median: 45261,
+                spread: 0,
+                verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
+              },
+              {},
+            ],
+            meta: { direction: "lower", gating: true, exact: true, unit: "bytes" },
+          },
+        },
+      });
+
+      await expect(renderReport(result)).toMatchFileSnapshot(
+        "../fixtures/report-two-candidates.golden.txt",
       );
     });
   });

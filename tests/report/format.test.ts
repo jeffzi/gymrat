@@ -19,29 +19,52 @@ import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
 type Metrics = ComparisonResult["metrics"];
 type MetricEntry = Metrics[string];
 
-/** A two-sided metric whose verdict came from the signed-rank method. */
+/** One candidate's signed-rank outcome against the shared baseline. */
+interface CandidateSpec {
+  verdict: ApproximateVerdictValue;
+  delta: number;
+  noisePct?: number;
+}
+
+/**
+ * A metric judged once per candidate against the shared baseline.
+ *
+ * The baseline median and spread are carried once, so the candidate entries
+ * differ only in what the pairwise verdict engine returned for each of them.
+ */
+function metricFor(
+  candidates: readonly CandidateSpec[],
+  direction: "lower" | "higher" = "lower",
+): MetricEntry {
+  return {
+    baselineMedian: 100,
+    baselineSpread: 1,
+    candidates: candidates.map(({ verdict, delta, noisePct = 2.5 }) => ({
+      median: 100 + delta,
+      spread: 1,
+      verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct },
+    })),
+    meta: { direction, gating: true, exact: false },
+  };
+}
+
+/** A single-candidate metric whose verdict came from the signed-rank method. */
 function approximateMetric(options: {
   verdict: ApproximateVerdictValue;
   delta: number;
   noisePct?: number;
   direction?: "lower" | "higher";
 }): MetricEntry {
-  const { verdict, delta, noisePct = 2.5, direction = "lower" } = options;
-  return {
-    medianA: 100,
-    medianB: 100 + delta,
-    spreadA: 1,
-    spreadB: 1,
-    verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct },
-    meta: { direction, gating: true, exact: false },
-  };
+  const { direction = "lower", ...candidate } = options;
+  return metricFor([candidate], direction);
 }
 
-/** A metric present on one side only, so no verdict could be computed. */
+/** A metric the candidate never reported, so no verdict could be computed. */
 function oneSidedMetric(): MetricEntry {
   return {
-    medianA: 100,
-    spreadA: 1,
+    baselineMedian: 100,
+    baselineSpread: 1,
+    candidates: [{}],
     meta: { direction: "lower", gating: false, exact: false },
   };
 }
@@ -162,26 +185,52 @@ describe("formatNoiseBand", () => {
 });
 
 describe("countVerdicts", () => {
-  it("counts every verdict class and ignores metrics that have no verdict", () => {
-    const metrics: Metrics = {
-      "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
-      "also-faster/time": approximateMetric({ verdict: "improved", delta: -5 }),
-      "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
-      "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
-      "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
-      "one-sided/time": oneSidedMetric(),
-    };
+  it.each([
+    {
+      desc: "counts every verdict class and ignores metrics that have no verdict",
+      metrics: {
+        "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+        "also-faster/time": approximateMetric({ verdict: "improved", delta: -5 }),
+        "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
+        "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
+        "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
+        "one-sided/time": oneSidedMetric(),
+      } as Metrics,
+      expected: { improved: 2, regressed: 1, unstable: 1, noSignal: 1 },
+    },
+    {
+      desc: "reports zeros when there are no metrics",
+      metrics: {} as Metrics,
+      expected: { improved: 0, regressed: 0, unstable: 0, noSignal: 0 },
+    },
+  ])("$desc", ({ metrics, expected }) => {
+    const counts = countVerdicts(metrics, 0);
 
-    const counts = countVerdicts(metrics);
-
-    expect(counts).toStrictEqual({ improved: 2, regressed: 1, unstable: 1, noSignal: 1 });
+    expect(counts).toStrictEqual(expected);
   });
 
-  it("reports zeros when there are no metrics", () => {
-    const counts = countVerdicts({});
+  it.each([
+    {
+      candidateIndex: 0,
+      expected: { improved: 1, regressed: 0, unstable: 0, noSignal: 0 },
+    },
+    {
+      candidateIndex: 1,
+      expected: { improved: 0, regressed: 1, unstable: 0, noSignal: 0 },
+    },
+  ])(
+    "counts only the verdicts belonging to candidate $candidateIndex",
+    ({ candidateIndex, expected }) => {
+      const metrics: Metrics = {
+        "decode/time": metricFor([
+          { verdict: "improved", delta: -10 },
+          { verdict: "regressed", delta: 8 },
+        ]),
+      };
 
-    expect(counts).toStrictEqual({ improved: 0, regressed: 0, unstable: 0, noSignal: 0 });
-  });
+      expect(countVerdicts(metrics, candidateIndex)).toStrictEqual(expected);
+    },
+  );
 });
 
 describe("selectHighlights", () => {
@@ -202,7 +251,7 @@ describe("selectHighlights", () => {
       "loud-unstable/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
     };
 
-    const highlights = selectHighlights(metrics);
+    const highlights = selectHighlights(metrics, 0);
 
     expect(highlights.map((highlight) => highlight.name)).toStrictEqual([
       "big-regression/ops",
@@ -225,7 +274,7 @@ describe("selectHighlights", () => {
       "first-listed/time": approximateMetric({ verdict: "regressed", delta: 9 }),
     };
 
-    const highlights = selectHighlights(metrics);
+    const highlights = selectHighlights(metrics, 0);
 
     expect(highlights.map((highlight) => highlight.name)).toStrictEqual([
       "first-listed/time",
@@ -234,15 +283,47 @@ describe("selectHighlights", () => {
     ]);
   });
 
-  it("carries each metric alongside its name so callers can render its values", () => {
+  it("carries the metric and the candidate slice that earned the highlight", () => {
     const metrics: Metrics = {
-      "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
+      "slower/time": metricFor([
+        { verdict: "improved", delta: -10 },
+        { verdict: "regressed", delta: 8 },
+      ]),
     };
 
-    const highlights = selectHighlights(metrics);
+    const highlights = selectHighlights(metrics, 1);
 
-    expect(highlights).toStrictEqual([{ name: "slower/time", metric: metrics["slower/time"] }]);
+    expect(highlights).toStrictEqual([
+      {
+        name: "slower/time",
+        metric: metrics["slower/time"],
+        candidate: metrics["slower/time"]?.candidates[1],
+      },
+    ]);
   });
+
+  it.each([
+    { candidateIndex: 0, expected: ["b/time", "a/time"] },
+    { candidateIndex: 1, expected: ["a/time"] },
+  ])(
+    "ranks candidate $candidateIndex by the verdicts it earned, not its neighbor's",
+    ({ candidateIndex, expected }) => {
+      const metrics: Metrics = {
+        "a/time": metricFor([
+          { verdict: "improved", delta: -4 },
+          { verdict: "regressed", delta: 3 },
+        ]),
+        "b/time": metricFor([
+          { verdict: "regressed", delta: 6 },
+          { verdict: "no-signal", delta: 0.2 },
+        ]),
+      };
+
+      expect(
+        selectHighlights(metrics, candidateIndex).map((highlight) => highlight.name),
+      ).toStrictEqual(expected);
+    },
+  );
 });
 
 describe("computeColumnWidth", () => {

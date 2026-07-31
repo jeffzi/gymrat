@@ -14,9 +14,9 @@ import { CommandError } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
-import { createComparisonResult } from "./fixtures/comparison-result.js";
+import { createCandidate, createComparisonResult } from "./fixtures/comparison-result.js";
 
-// Mock the compare module — pass through CommandError so tests can construct instances
+// `...actual` is spread so CommandError passes through unmocked and tests can construct real instances.
 vi.mock("../src/compare.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/compare.js")>();
   return {
@@ -99,6 +99,29 @@ function createProgramWithSubcommandOverrides(): Command {
 }
 
 /**
+ * Render `gymrat compare --help` and hand back everything it wrote.
+ *
+ * The subcommand renders its own help, so every command needs its own output
+ * config; `--help` throws rather than exiting because of `exitOverride`.
+ */
+async function captureCompareHelp(): Promise<string> {
+  const program = createProgram();
+  program.exitOverride();
+  let helpOutput = "";
+  for (const command of [program, ...program.commands]) {
+    command.configureOutput({
+      writeOut: (str) => {
+        helpOutput += str;
+      },
+    });
+  }
+
+  await expect(program.parseAsync(["node", "cli.js", "compare", "--help"])).rejects.toThrow();
+
+  return helpOutput;
+}
+
+/**
  * Build a CommandError with minimal context for testing formatCliError.
  *
  * Only `target.kind` matters for hint assignment — ref targets get the hint,
@@ -126,14 +149,6 @@ afterEach(() => {
 });
 
 describe("createProgram", () => {
-  it("returns a Command instance", () => {
-    // Arrange
-    const program = createProgram();
-
-    // Act & Assert
-    expect(program).toBeInstanceOf(Command);
-  });
-
   it("reports the version declared in package.json", () => {
     // Arrange
     const declaredVersion = readDeclaredVersion();
@@ -152,20 +167,27 @@ describe("createProgram", () => {
           form: "label=ref",
           positionals: ["baseline=main", "candidate=branch"],
           expected: {
-            oldTarget: "main",
-            newTarget: "branch",
-            oldLabel: "baseline",
-            newLabel: "candidate",
+            baseline: { target: "main", label: "baseline" },
+            candidates: [{ target: "branch", label: "candidate" }],
           },
         },
         {
           form: "bare ref",
           positionals: ["main", "branch"],
           expected: {
-            oldTarget: "main",
-            newTarget: "branch",
-            oldLabel: undefined,
-            newLabel: undefined,
+            baseline: { target: "main", label: undefined },
+            candidates: [{ target: "branch", label: undefined }],
+          },
+        },
+        {
+          form: "one baseline and two candidates",
+          positionals: ["main", "branch-a", "second=branch-b"],
+          expected: {
+            baseline: { target: "main", label: undefined },
+            candidates: [
+              { target: "branch-a", label: undefined },
+              { target: "branch-b", label: "second" },
+            ],
           },
         },
       ])(
@@ -282,7 +304,7 @@ describe("createProgram", () => {
     });
 
     describe("when unknown flag provided", () => {
-      it("throws CommanderError for unknown flag", async () => {
+      it("rejects with a usage error naming the unknown option", async () => {
         // Arrange
         const program = createProgramWithSubcommandOverrides();
 
@@ -297,7 +319,7 @@ describe("createProgram", () => {
       it.each([
         { description: "only one positional", args: ["main"] },
         { description: "no positionals", args: [] },
-      ])("throws CommanderError when $description provided", async ({ args }) => {
+      ])("rejects with a usage error when $description provided", async ({ args }) => {
         // Arrange
         const program = createProgramWithSubcommandOverrides();
 
@@ -309,25 +331,14 @@ describe("createProgram", () => {
     });
 
     describe("when --help requested", () => {
-      it("writes the compare usage text", async () => {
-        // Arrange
-        const program = createProgram();
-        program.exitOverride();
-        let helpOutput = "";
-        // The subcommand renders its own help, so it needs its own output config.
-        for (const command of [program, ...program.commands]) {
-          command.configureOutput({
-            writeOut: (str) => {
-              helpOutput += str;
-            },
-          });
-        }
-
-        // Act - --help throws when exitOverride is used
-        await expect(program.parseAsync(["node", "cli.js", "compare", "--help"])).rejects.toThrow();
+      it("writes the usage text and names the baseline and candidate roles and how they relate", async () => {
+        // Act
+        const helpOutput = await captureCompareHelp();
 
         // Assert
-        expect(helpOutput).toContain("Usage: gymrat compare");
+        expect.soft(helpOutput).toContain("Usage: gymrat compare");
+        expect.soft(helpOutput).toContain("<baseline> <candidates...>");
+        expect(helpOutput).toContain("judged against the baseline");
       });
     });
 
@@ -336,7 +347,10 @@ describe("createProgram", () => {
         // Arrange
         const program = createProgram();
         program.exitOverride();
-        const result = createComparisonResult({ labels: ["main", "branch"] });
+        const result = createComparisonResult({
+          baselineLabel: "main",
+          candidates: [createCandidate({ label: "branch" })],
+        });
         await setupMocks(result);
         const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
@@ -394,21 +408,26 @@ describe("createProgram", () => {
         const program = createProgram();
         program.exitOverride();
         const result = createComparisonResult({
-          labels: ["main", "branch"],
+          baselineLabel: "main",
+          candidates: [createCandidate({ label: "branch" })],
           metrics: {
             "decode/time": {
-              medianA: 100,
-              medianB: 82.5,
-              spreadA: 1,
-              spreadB: 1,
-              verdict: {
-                verdict: "improved",
-                method: "signed-rank",
-                delta: -17.5,
-                n: 10,
-                p: 0.002,
-                noisePct: 2.5,
-              },
+              baselineMedian: 100,
+              baselineSpread: 1,
+              candidates: [
+                {
+                  median: 82.5,
+                  spread: 1,
+                  verdict: {
+                    verdict: "improved",
+                    method: "signed-rank",
+                    delta: -17.5,
+                    n: 10,
+                    p: 0.002,
+                    noisePct: 2.5,
+                  },
+                },
+              ],
               meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
             },
           },
@@ -469,17 +488,6 @@ describe("formatCliError", () => {
     expect(rendered).toBe(expected);
   });
 
-  it("appends a hint line when the error carries a hint", () => {
-    // Arrange - ref targets produce a hint about worktree file visibility
-    const error = createCommandError("ref");
-
-    // Act
-    const rendered = formatCliError(error, false);
-
-    // Assert
-    expect(rendered).toContain("\nHint: ");
-  });
-
   it("does not append a hint line when CommandError has undefined hint", () => {
     // Arrange - in-place targets have no hint
     const error = createCommandError("in-place");
@@ -510,8 +518,8 @@ describe("formatCliError", () => {
     const rendered = formatCliError(error, true);
 
     // Assert - \x1b[33m = yellow, \x1b[4m = underline
-    expect(rendered).toContain("\x1b[33m");
-    expect(rendered).toContain("\x1b[4m");
+    expect.soft(rendered).toContain("\x1b[33m");
+    expect.soft(rendered).toContain("\x1b[4m");
     expect(rendered).toContain("Hint:");
   });
 
@@ -523,7 +531,7 @@ describe("formatCliError", () => {
     const rendered = formatCliError(error, false);
 
     // Assert
-    expect(rendered).toContain("\nHint: ");
+    expect.soft(rendered).toContain("\nHint: ");
     expect(rendered).not.toContain("\x1b[");
   });
 });

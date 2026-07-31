@@ -8,24 +8,24 @@ import { Command, InvalidArgumentError } from "commander";
 
 import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
-import type { CompareOptions } from "./compare.js";
+import type { CompareOptions, TargetSpec } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { GymratError } from "./errors.js";
 import { formatHintLabel } from "./report/format.js";
 import { renderReport } from "./report/text.js";
 
 /**
- * Parse label=ref syntax from a positional argument.
+ * Parse the `label=target` syntax of a positional argument, baseline or candidate.
  *
- * Only the first `=` splits, so a ref containing its own `=` survives intact —
- * `a=b=c` parses to label `a`, ref `b=c`.
+ * Only the first `=` splits, so a target containing its own `=` survives intact —
+ * `a=b=c` parses to label `a`, target `b=c`.
  */
-function parsePositional(positional: string): { label: string | undefined; ref: string } {
+function parsePositional(positional: string): TargetSpec {
   const eqIndex = positional.indexOf("=");
   if (eqIndex === -1) {
-    return { label: undefined, ref: positional };
+    return { label: undefined, target: positional };
   }
-  return { label: positional.slice(0, eqIndex), ref: positional.slice(eqIndex + 1) };
+  return { label: positional.slice(0, eqIndex), target: positional.slice(eqIndex + 1) };
 }
 
 /**
@@ -48,6 +48,17 @@ function parsePositiveInteger(value: string): number {
 }
 
 /**
+ * Whether a stream is attached to a terminal.
+ *
+ * `@types/node` declares `isTTY` as boolean, but node leaves it `undefined` when
+ * the stream is not a TTY. Naming the real type in one place keeps every caller's
+ * declared `boolean` honest instead of quietly handing back `undefined`.
+ */
+function isTerminal(stream: NodeJS.WriteStream): boolean {
+  return (stream.isTTY as boolean | undefined) === true;
+}
+
+/**
  * Render an error for stderr: either an adapter failure labelled with its
  * class name, or any other error with a styled hint line appended when it
  * carries one. The two are mutually exclusive — the adapter branch returns
@@ -64,7 +75,7 @@ function parsePositiveInteger(value: string): number {
  */
 export function formatCliError(
   error: unknown,
-  useColor: boolean = process.stderr.isTTY && process.env.NO_COLOR === undefined,
+  useColor: boolean = isTerminal(process.stderr) && process.env.NO_COLOR === undefined,
 ): string {
   if (error instanceof AdapterError) {
     return `${error.name}: ${error.message}`;
@@ -95,12 +106,7 @@ interface CompareFlags extends CliFlags {
  * their own.
  */
 function shouldColorReport(flags: CompareFlags): boolean {
-  // `@types/node` declares `isTTY` as boolean, but node leaves it `undefined` when
-  // stdout is not a TTY. Naming the real type keeps this function's declared
-  // `boolean` return honest instead of quietly handing back `undefined`.
-  const stdoutIsTty = process.stdout.isTTY as boolean | undefined;
-
-  return stdoutIsTty === true && process.env.NO_COLOR === undefined && flags.color;
+  return isTerminal(process.stdout) && process.env.NO_COLOR === undefined && flags.color;
 }
 
 /**
@@ -149,8 +155,10 @@ export function createProgram(): Command {
     .version(readPackageVersion());
 
   program
-    .command("compare <old> <new>")
-    .description("Compare performance between two revisions")
+    .command("compare")
+    .description("Compare one baseline revision against one or more candidates")
+    .argument("<baseline>", "[label=]<ref|dir> to measure against")
+    .argument("<candidates...>", "[label=]<ref|dir>, each judged against the baseline")
     .option("--bench <cmd>", "bench command")
     .option("--prepare <script>", "preparation script to run before each revision")
     .option("--adapter <type>", "adapter type for parsing benchmark output")
@@ -159,10 +167,7 @@ export function createProgram(): Command {
     .option("--config <file>", "configuration file path")
     .option("--no-color", "print the report without ANSI styles")
     .configureHelp(createHelpConfig())
-    .action(async (oldRef: string, newRef: string, options: CompareFlags) => {
-      const oldParsed = parsePositional(oldRef);
-      const newParsed = parsePositional(newRef);
-
+    .action(async (baselineArg: string, candidateArgs: string[], options: CompareFlags) => {
       const config = resolveConfig({
         bench: options.bench,
         prepare: options.prepare,
@@ -173,10 +178,8 @@ export function createProgram(): Command {
       });
 
       const compareOptions: CompareOptions = {
-        oldTarget: oldParsed.ref,
-        newTarget: newParsed.ref,
-        oldLabel: oldParsed.label,
-        newLabel: newParsed.label,
+        baseline: parsePositional(baselineArg),
+        candidates: candidateArgs.map((arg) => parsePositional(arg)),
         bench: config.bench,
         prepare: config.prepare,
         adapter: config.adapter,

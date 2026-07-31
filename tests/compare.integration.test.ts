@@ -9,6 +9,7 @@ import { compare, CommandError } from "../src/compare.js";
 import type { CompareOptions } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
 import { renderReport } from "../src/report/text.js";
+import type { ComparisonResult } from "../src/report/types.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
 import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
@@ -203,7 +204,7 @@ function raiseSignal(
 interface ErrorPathCase {
   oldBranch: BranchSetup;
   newBranch: BranchSetup;
-  options: Omit<CompareOptions, "oldTarget" | "newTarget">;
+  options: Omit<CompareOptions, "baseline" | "candidates">;
 }
 
 /**
@@ -230,8 +231,8 @@ function useErrorPathCase(setup: ErrorPathCase): {
     createBranch(repo, setup.newBranch);
 
     const options: CompareOptions = {
-      oldTarget: setup.oldBranch.name,
-      newTarget: setup.newBranch.name,
+      baseline: { target: setup.oldBranch.name },
+      candidates: [{ target: setup.newBranch.name }],
       ...setup.options,
     };
 
@@ -283,8 +284,8 @@ async function startInFlightRun(repo: ReturnType<typeof createScratchRepo>): Pro
   });
 
   const options: CompareOptions = {
-    oldTarget: "old-signal",
-    newTarget: "new-signal",
+    baseline: { target: "old-signal" },
+    candidates: [{ target: "new-signal" }],
     bench: "./bench.sh",
     adapter: "metric-lines",
     samples: 3,
@@ -361,8 +362,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-prep",
-          newTarget: "new-prep",
+          baseline: { target: "old-prep" },
+          candidates: [{ target: "new-prep" }],
           bench: "./bench.sh",
           prepare: "./prepare.sh",
           adapter: "metric-lines",
@@ -381,86 +382,194 @@ describe("compare – integration", () => {
     });
   });
 
-  describe("when targets are plain directories rather than refs", () => {
-    it("benches in place and labels each column with its directory name", async () => {
-      const repo = createScratchRepo();
+  describe("when one baseline is compared against two candidates", () => {
+    let repo: ReturnType<typeof createScratchRepo>;
+    let savedCwd: string;
+    let benchOrder: string[];
+    let result: ComparisonResult;
 
-      try {
-        process.chdir(repo.dir);
+    beforeAll(async () => {
+      savedCwd = process.cwd();
+      repo = createScratchRepo();
+      process.chdir(repo.dir);
 
-        // Untracked subdirectories of the repo: resolveTarget sees a directory
-        // and returns an in-place target, so no worktree is ever created.
-        for (const [name, latency] of [
-          ["old-dir", 100],
-          ["new-dir", 90],
-        ] as const) {
-          fs.mkdirSync(path.join(repo.dir, name));
-          const script = path.join(repo.dir, name, "bench.sh");
-          fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
-          fs.chmodSync(script, 0o755);
-        }
-
-        const options: CompareOptions = {
-          oldTarget: "old-dir",
-          newTarget: "new-dir",
-          bench: "./bench.sh",
-          adapter: "metric-lines",
-          samples: 3,
-          timeoutSeconds: 10,
-        };
-
-        const report = renderReport(await compare(options));
-
-        const headerRow = findLine(report, (line) => line.startsWith("metric"));
-        expect.soft(headerRow).toContain("old-dir");
-        expect.soft(headerRow).toContain("new-dir");
-        // No worktree was created, so cleanup has nothing to report and stays
-        // silent — the prune sweep is skipped, and sweeping anyway would fail
-        // on targets that need not be git repositories at all.
-        expect(report).not.toContain("worktrees removed");
-      } finally {
-        repo.cleanup();
+      // The benches run inside throwaway worktrees, so they append to one log in
+      // the main repo dir: a single file records the interleaving across targets.
+      const log = path.join(repo.dir, "round-robin.txt");
+      for (const [name, latency] of [
+        ["base3", 100],
+        ["candidate-a", 80],
+        ["candidate-b", 120],
+      ] as const) {
+        createBranch(repo, {
+          name,
+          benchScript: `#!/bin/sh\necho ${name} >> "${log}"\necho "METRIC latency=${latency}"`,
+        });
       }
+
+      const options: CompareOptions = {
+        baseline: { target: "base3" },
+        candidates: [{ target: "candidate-a" }, { target: "candidate-b" }],
+        bench: "./bench.sh",
+        adapter: "metric-lines",
+        samples: 3,
+        timeoutSeconds: 10,
+      };
+
+      result = await compare(options);
+      benchOrder = fs.readFileSync(log, "utf-8").trim().split("\n");
+    }, 60_000);
+
+    afterAll(() => {
+      process.chdir(savedCwd);
+      removeStrandedWorktrees(repo);
+      repo.cleanup();
+    });
+
+    it("runs the bench once per target per round, baseline first, in argument order", () => {
+      expect(benchOrder).toStrictEqual([
+        "base3",
+        "candidate-a",
+        "candidate-b",
+        "base3",
+        "candidate-a",
+        "candidate-b",
+        "base3",
+        "candidate-a",
+        "candidate-b",
+      ]);
+    });
+
+    it("carries the baseline once and every candidate in argument order", () => {
+      expect.soft(result.baselineLabel).toBe("base3");
+      expect
+        .soft(result.candidates.map((candidate) => candidate.label))
+        .toStrictEqual(["candidate-a", "candidate-b"]);
+      expect(result.metrics["latency"]?.baselineMedian).toBe(100);
+    });
+
+    it("gives each candidate its own verdict and geomean against the shared baseline", () => {
+      const latency = result.metrics["latency"];
+
+      expect
+        .soft(latency?.candidates.map((candidate) => candidate.median))
+        .toStrictEqual([80, 120]);
+      expect
+        .soft(latency?.candidates.map((candidate) => candidate.verdict?.verdict))
+        .toStrictEqual(["improved", "regressed"]);
+      expect.soft(result.candidates[0]?.geomean.value).toBeLessThan(0);
+      expect(result.candidates[1]?.geomean.value).toBeGreaterThan(0);
+    });
+
+    it("creates and removes one worktree per ref target", () => {
+      expect.soft(result.worktreesRemoved).toBe(3);
+      expect.soft(result.worktreesLeftBehind).toStrictEqual([]);
+      assertWorktreesCleanedUp(repo);
     });
   });
 
-  describe("when a run completes", () => {
-    it("returns the comparison data rather than the rendered report", async () => {
+  describe("when a candidate's bench fails in a three-target run", () => {
+    it("removes the worktree of every target the run created", async () => {
       const repo = createScratchRepo();
 
       try {
         process.chdir(repo.dir);
 
-        for (const [name, latency] of [
-          ["old-data", 100],
-          ["new-data", 90],
-        ] as const) {
-          fs.mkdirSync(path.join(repo.dir, name));
-          const script = path.join(repo.dir, name, "bench.sh");
-          fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
-          fs.chmodSync(script, 0o755);
-        }
+        createBranch(repo, {
+          name: "base-fail3",
+          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+        });
+        createBranch(repo, {
+          name: "candidate-ok3",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+        });
+        createBranch(repo, {
+          name: "candidate-bad3",
+          benchScript: '#!/bin/sh\necho "boom" >&2\nexit 1',
+        });
 
         const options: CompareOptions = {
-          oldTarget: "old-data",
-          newTarget: "new-data",
+          baseline: { target: "base-fail3" },
+          candidates: [{ target: "candidate-ok3" }, { target: "candidate-bad3" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
         };
 
-        const result = await compare(options);
+        const failure = await captureRejection(compare(options));
 
-        expect.soft(result.labels).toStrictEqual(["old-data", "new-data"]);
-        expect.soft(result.samples).toBe(3);
-        expect.soft(result.adapter).toBe("metric-lines");
-        expect.soft(result.metrics["latency"]?.medianA).toBe(100);
-        expect.soft(result.metrics["latency"]?.medianB).toBe(90);
-        expect(result.worktreesRemoved).toBe(0);
+        assertCommandError(failure);
+        expect.soft(failure.label).toBe("candidate-bad3");
+        expect.soft(failure.message).toContain("boom");
+        expect.soft(failure.message).not.toContain("left behind");
+        assertWorktreesCleanedUp(repo);
       } finally {
+        removeStrandedWorktrees(repo);
         repo.cleanup();
       }
+    }, 60_000);
+  });
+
+  describe("when targets are plain directories rather than refs", () => {
+    let repo: ReturnType<typeof createScratchRepo>;
+    let savedCwd: string;
+    let result: ComparisonResult;
+    let report: string;
+
+    beforeAll(async () => {
+      savedCwd = process.cwd();
+      repo = createScratchRepo();
+      process.chdir(repo.dir);
+
+      // Untracked subdirectories of the repo: resolveTarget sees a directory
+      // and returns an in-place target, so no worktree is ever created.
+      for (const [name, latency] of [
+        ["old-dir", 100],
+        ["new-dir", 90],
+      ] as const) {
+        fs.mkdirSync(path.join(repo.dir, name));
+        const script = path.join(repo.dir, name, "bench.sh");
+        fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
+        fs.chmodSync(script, 0o755);
+      }
+
+      const options: CompareOptions = {
+        baseline: { target: "old-dir" },
+        candidates: [{ target: "new-dir" }],
+        bench: "./bench.sh",
+        adapter: "metric-lines",
+        samples: 3,
+        timeoutSeconds: 10,
+      };
+
+      result = await compare(options);
+      report = renderReport(result);
+    }, 60_000);
+
+    afterAll(() => {
+      process.chdir(savedCwd);
+      repo.cleanup();
+    });
+
+    it("benches in place and labels each column with its directory name", () => {
+      const headerRow = findLine(report, (line) => line.startsWith("metric"));
+      expect.soft(headerRow).toContain("old-dir");
+      expect.soft(headerRow).toContain("new-dir");
+      // No worktree was created, so cleanup has nothing to report and stays
+      // silent — the prune sweep is skipped, and sweeping anyway would fail
+      // on targets that need not be git repositories at all.
+      expect(report).not.toContain("worktrees removed");
+    });
+
+    it("returns the comparison data rather than the rendered report", () => {
+      expect.soft(result.baselineLabel).toBe("old-dir");
+      expect.soft(result.candidates.map((candidate) => candidate.label)).toStrictEqual(["new-dir"]);
+      expect.soft(result.samples).toBe(3);
+      expect.soft(result.adapter).toBe("metric-lines");
+      expect.soft(result.metrics["latency"]?.baselineMedian).toBe(100);
+      expect.soft(result.metrics["latency"]?.candidates[0]?.median).toBe(90);
+      expect(result.worktreesRemoved).toBe(0);
     });
   });
 
@@ -482,10 +591,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-labelled",
-          newTarget: "new-labelled",
-          oldLabel: "baseline",
-          newLabel: "candidate",
+          baseline: { target: "old-labelled", label: "baseline" },
+          candidates: [{ target: "new-labelled", label: "candidate" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -523,8 +630,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-branch",
-          newTarget: "new-branch",
+          baseline: { target: "old-branch" },
+          candidates: [{ target: "new-branch" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -533,8 +640,12 @@ describe("compare – integration", () => {
 
         const report = renderReport(await compare(options));
 
-        expect(report).toContain("latency");
-        expect(report).toContain("throughput");
+        expect.soft(report).toContain("latency");
+        expect.soft(report).toContain("throughput");
+        // memory is baseline-only, so its row's candidate cell is empty — a
+        // trailing separator means the candidate and verdict cells were trimmed away.
+        const memoryRow = findLine(report, (line) => line.startsWith("memory"));
+        expect(memoryRow.endsWith("│")).toBe(true);
         assertWorktreesCleanedUp(repo);
       } finally {
         repo.cleanup();
@@ -543,84 +654,57 @@ describe("compare – integration", () => {
   });
 
   describe("when using mitata adapter with fixture replay", () => {
-    it("parses the mitata JSON fixture into metrics keyed by benchmark and stat", async () => {
-      const repo = createScratchRepo();
-      const fixturePath = path.resolve(originalCwd, "tests/fixtures/mitata.json");
+    let repo: ReturnType<typeof createScratchRepo>;
+    let savedCwd: string;
+    let result: ComparisonResult;
 
-      try {
-        process.chdir(repo.dir);
+    beforeAll(async () => {
+      savedCwd = process.cwd();
+      repo = createScratchRepo();
+      process.chdir(repo.dir);
 
-        const mitataBenchScript = `#!/bin/sh\ncat "${fixturePath}"`;
-        createBranch(repo, {
-          name: "mitata-branch",
-          benchScript: mitataBenchScript,
-        });
+      const fixturePath = path.resolve(savedCwd, "tests/fixtures/mitata.json");
+      const mitataBenchScript = `#!/bin/sh\ncat "${fixturePath}"`;
+      createBranch(repo, { name: "mitata-branch", benchScript: mitataBenchScript });
+      createBranch(repo, { name: "mitata-branch-2", benchScript: mitataBenchScript });
 
-        createBranch(repo, {
-          name: "mitata-branch-2",
-          benchScript: mitataBenchScript,
-        });
+      const options: CompareOptions = {
+        baseline: { target: "mitata-branch" },
+        candidates: [{ target: "mitata-branch-2" }],
+        bench: "./bench.sh",
+        adapter: "mitata",
+        samples: 3,
+        timeoutSeconds: 10,
+      };
 
-        const options: CompareOptions = {
-          oldTarget: "mitata-branch",
-          newTarget: "mitata-branch-2",
-          bench: "./bench.sh",
-          adapter: "mitata",
-          samples: 3,
-          timeoutSeconds: 10,
-        };
-
-        const result = await compare(options);
-
-        // Both branches replay the same fixture, so baseline and candidate
-        // medians must match exactly — a swapped side or a wrong median would
-        // make them differ.
-        expect.soft(result.metrics["decode/text=digits/time"]?.medianA).toBe(4.0791015625);
-        expect.soft(result.metrics["decode/text=digits/time"]?.medianB).toBe(4.0791015625);
-        expect.soft(result.metrics["decode/text=words/time"]?.medianA).toBe(7.8125);
-        expect.soft(result.metrics["decode/text=words/time"]?.medianB).toBe(7.8125);
-        expect.soft(result.metrics["encode/time"]?.medianA).toBe(42.66357421875);
-        expect(result.metrics["encode/time"]?.medianB).toBe(42.66357421875);
-      } finally {
-        repo.cleanup();
-      }
+      result = await compare(options);
     });
 
-    it("renders the parsed benchmarks in the report", async () => {
-      const repo = createScratchRepo();
-      const fixturePath = path.resolve(originalCwd, "tests/fixtures/mitata.json");
+    afterAll(() => {
+      process.chdir(savedCwd);
+      repo.cleanup();
+    });
 
-      try {
-        process.chdir(repo.dir);
+    it("parses the mitata JSON fixture into metrics keyed by benchmark and stat", () => {
+      // Both branches replay the same fixture, so baseline and candidate
+      // medians must match exactly — a swapped side or a wrong median would
+      // make them differ.
+      expect.soft(result.metrics["decode/text=digits/time"]?.baselineMedian).toBe(4.0791015625);
+      expect
+        .soft(result.metrics["decode/text=digits/time"]?.candidates[0]?.median)
+        .toBe(4.0791015625);
+      expect.soft(result.metrics["decode/text=words/time"]?.baselineMedian).toBe(7.8125);
+      expect.soft(result.metrics["decode/text=words/time"]?.candidates[0]?.median).toBe(7.8125);
+      expect.soft(result.metrics["encode/time"]?.baselineMedian).toBe(42.66357421875);
+      expect(result.metrics["encode/time"]?.candidates[0]?.median).toBe(42.66357421875);
+    });
 
-        const mitataBenchScript = `#!/bin/sh\ncat "${fixturePath}"`;
-        createBranch(repo, {
-          name: "mitata-branch",
-          benchScript: mitataBenchScript,
-        });
+    it("renders the parsed benchmarks in the report", () => {
+      const report = renderReport(result);
 
-        createBranch(repo, {
-          name: "mitata-branch-2",
-          benchScript: mitataBenchScript,
-        });
-
-        const options: CompareOptions = {
-          oldTarget: "mitata-branch",
-          newTarget: "mitata-branch-2",
-          bench: "./bench.sh",
-          adapter: "mitata",
-          samples: 3,
-          timeoutSeconds: 10,
-        };
-
-        const report = renderReport(await compare(options));
-
-        expect.soft(report).toContain("decode");
-        expect.soft(report).toContain("encode");
-        expect(report).toContain("time");
-      } finally {
-        repo.cleanup();
-      }
+      expect.soft(report).toContain("decode");
+      expect.soft(report).toContain("encode");
+      expect(report).toContain("time");
     });
   });
 
@@ -647,8 +731,8 @@ describe("compare – integration", () => {
           });
 
           const options: CompareOptions = {
-            oldTarget: `old-${samples}`,
-            newTarget: `new-${samples}`,
+            baseline: { target: `old-${samples}` },
+            candidates: [{ target: `new-${samples}` }],
             bench: "./bench.sh",
             adapter: "metric-lines",
             samples,
@@ -708,8 +792,8 @@ describe("compare – integration", () => {
           });
 
           const options: CompareOptions = {
-            oldTarget: `old-noisy-${unstableNoisePct}`,
-            newTarget: `new-noisy-${unstableNoisePct}`,
+            baseline: { target: `old-noisy-${unstableNoisePct}` },
+            candidates: [{ target: `new-noisy-${unstableNoisePct}` }],
             bench: "./bench.sh",
             adapter: "metric-lines",
             samples: 3,
@@ -909,8 +993,8 @@ describe("compare – integration", () => {
         }
 
         const options: CompareOptions = {
-          oldTarget: "old-dir-fail",
-          newTarget: "new-dir-fail",
+          baseline: { target: "old-dir-fail" },
+          candidates: [{ target: "new-dir-fail" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -962,8 +1046,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-unremovable",
-          newTarget: "new-unremovable",
+          baseline: { target: "old-unremovable" },
+          candidates: [{ target: "new-unremovable" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -1009,8 +1093,8 @@ describe("compare – integration", () => {
         killGitDuringWorktreeAdd(repo.dir);
 
         const options: CompareOptions = {
-          oldTarget: "old-interrupted",
-          newTarget: "new-interrupted",
+          baseline: { target: "old-interrupted" },
+          candidates: [{ target: "new-interrupted" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -1059,8 +1143,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-fail-unremovable",
-          newTarget: "new-fail-unremovable",
+          baseline: { target: "old-fail-unremovable" },
+          candidates: [{ target: "new-fail-unremovable" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -1074,8 +1158,8 @@ describe("compare – integration", () => {
         expect(leftBehindDirs).toHaveLength(1);
         expect(leftBehindDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual(leftBehindDirs);
         expect(failure.cause).toBeInstanceOf(Error);
-        // withCleanupFailures wraps the original CommandError in a plain Error;
-        // the hint must be forwarded so formatCliError can surface it later.
+        // The hint on the original CommandError must survive the re-wrap so
+        // formatCliError can still surface it.
         assertGymratError(failure);
         expect(failure.hint).toBe(REF_TARGET_HINT);
       } finally {
@@ -1089,7 +1173,7 @@ describe("compare – integration", () => {
   });
 
   describe("when metric values are zero", () => {
-    it("handles zero values gracefully in median and spread calculation", async () => {
+    it("renders a zero median as 0 ± 0% and a 0.0% delta rather than NaN", async () => {
       const repo = createScratchRepo();
 
       try {
@@ -1106,8 +1190,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-zero",
-          newTarget: "new-zero",
+          baseline: { target: "old-zero" },
+          candidates: [{ target: "new-zero" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -1116,8 +1200,6 @@ describe("compare – integration", () => {
 
         const report = renderReport(await compare(options));
 
-        // Zero medians must render as a zero spread and a zero delta rather than
-        // NaN or a division blow-up, so assert the row itself, not just the name.
         const latencyRow = findLine(report, (line) => line.startsWith("latency"));
         expect(latencyRow).toMatch(/^latency\s*│\s*0 ± 0%\s*│\s*0 ± 0%\s*│\s*~\s+0\.0%/);
       } finally {
@@ -1144,8 +1226,8 @@ describe("compare – integration", () => {
         });
 
         const options: CompareOptions = {
-          oldTarget: "old-empty",
-          newTarget: "new-empty",
+          baseline: { target: "old-empty" },
+          candidates: [{ target: "new-empty" }],
           bench: "./bench.sh",
           adapter: "metric-lines",
           samples: 3,
@@ -1219,37 +1301,47 @@ describe("compare – integration", () => {
       60_000,
     );
 
-    it("removes the worktrees it created", async () => {
-      const repo = createScratchRepo();
-      let run: InFlightRun | undefined;
+    describe("once SIGINT interrupts an in-flight run", () => {
+      let repo: ReturnType<typeof createScratchRepo>;
+      let run: InFlightRun;
+      let savedCwd: string;
 
-      try {
+      beforeAll(async () => {
+        savedCwd = process.cwd();
+        const signalListenersBefore = {
+          SIGINT: process.listeners("SIGINT"),
+          SIGTERM: process.listeners("SIGTERM"),
+        };
+        vi.spyOn(process, "exit").mockImplementation((code) => {
+          throw new ProcessExited(code);
+        });
+
+        repo = createScratchRepo();
         process.chdir(repo.dir);
         run = await startInFlightRun(repo);
+        // Without this guard, the post-signal assertions below would also pass for
+        // a pid that was never alive — `waitForPid` only proves a number reached
+        // the file. `expect()` isn't usable in `beforeAll`, so this throws instead.
+        if (!isAlive(run.benchGrandchildPid)) {
+          throw new Error(`bench grandchild pid ${run.benchGrandchildPid} is not alive`);
+        }
 
-        raiseSignal("SIGINT", listenersBefore.SIGINT);
+        raiseSignal("SIGINT", signalListenersBefore.SIGINT);
+      }, 60_000);
 
+      afterAll(async () => {
+        vi.restoreAllMocks();
+        process.chdir(savedCwd);
+        await cleanupInFlightRun(repo, run);
+      });
+
+      it("removes the worktrees it created", () => {
         expect(run.worktreeDirs.length).toBeGreaterThan(0);
         expect(run.worktreeDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual([]);
         assertWorktreesCleanedUp(repo);
-      } finally {
-        await cleanupInFlightRun(repo, run);
-      }
-    }, 60_000);
+      });
 
-    it("kills the bench process group, leaving nothing running in the removed worktree", async () => {
-      const repo = createScratchRepo();
-      let run: InFlightRun | undefined;
-
-      try {
-        process.chdir(repo.dir);
-        run = await startInFlightRun(repo);
-        // Without this, the assertion below would also pass for a pid that was
-        // never alive — `waitForPid` only proves a number reached the file.
-        expect(isAlive(run.benchGrandchildPid)).toBe(true);
-
-        raiseSignal("SIGINT", listenersBefore.SIGINT);
-
+      it("kills the bench process group, leaving nothing running in the removed worktree", async () => {
         const grandchildPid = run.benchGrandchildPid;
         await vi.waitFor(
           () => {
@@ -1257,10 +1349,8 @@ describe("compare – integration", () => {
           },
           { timeout: 5000, interval: 25 },
         );
-      } finally {
-        await cleanupInFlightRun(repo, run);
-      }
-    }, 60_000);
+      });
+    });
   });
 
   describe("when a run finishes on its own", () => {
@@ -1282,8 +1372,8 @@ describe("compare – integration", () => {
           });
 
           const options: CompareOptions = {
-            oldTarget: "old-settled",
-            newTarget: "new-settled",
+            baseline: { target: "old-settled" },
+            candidates: [{ target: "new-settled" }],
             bench: "./bench.sh",
             adapter: "metric-lines",
             samples: 3,
