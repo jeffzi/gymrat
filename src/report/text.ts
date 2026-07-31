@@ -145,6 +145,36 @@ function formatGeomeanCell(geomean: GeomeanResult): GeomeanCell {
   };
 }
 
+/**
+ * Style a geomean cell's aggregate bold and its provenance dim — the styling
+ * both the single- and multi-candidate tables apply to their geomean row.
+ */
+function styleGeomeanCell(cell: string, geomean: GeomeanCell, useColor: boolean): string {
+  const styled = styleWithin(cell, geomean.figure, ["bold"], useColor);
+  return styleWithin(styled, geomean.provenance, ["dim"], useColor);
+}
+
+/** The style names {@link styleWithin} accepts, in the shape it takes them. */
+type Style = Parameters<typeof styleWithin>[2];
+
+/**
+ * Style a verdict cell's glyph, and its delta when it has one, the same way.
+ *
+ * Shared by the multi-candidate table's bright cells and the highlights list:
+ * both style a glyph and its trailing delta identically, whether that is the
+ * verdict's own class color or a shared dim for a quiet cell on a bright row.
+ */
+function styleGlyphAndDelta(
+  cell: string,
+  outcome: MetricVerdict["verdict"],
+  delta: string,
+  style: Style,
+  useColor: boolean,
+): string {
+  const styled = styleWithin(cell, getGlyph(outcome), style, useColor);
+  return delta === "" ? styled : styleWithin(styled, delta, style, useColor);
+}
+
 /** Width the metric-name column needs: the widest metric name or the geomean row's label. */
 function computeMetricColumnWidth(metricNameLengths: readonly number[]): number {
   return computeColumnWidth(
@@ -264,11 +294,7 @@ function renderTable(
     formatRow(geomean, widths, (cell, index) => {
       if (index === 1) return styleWithin(cell, baseline, ["dim"], useColor);
       if (index === 2) return styleWithin(cell, candidate.label, ["dim"], useColor);
-      if (index === VERDICT_COLUMN) {
-        let styled = styleWithin(cell, geomeanCell.figure, ["bold"], useColor);
-        styled = styleWithin(styled, geomeanCell.provenance, ["dim"], useColor);
-        return styled;
-      }
+      if (index === VERDICT_COLUMN) return styleGeomeanCell(cell, geomeanCell, useColor);
       return cell;
     }),
   ];
@@ -441,25 +467,22 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
       row.candidates.map((cell) => cell.text),
       (cell, columnIndex) => {
         const candidateCell = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET];
-        if (candidateCell === undefined) return cell;
-        const outcome = candidateCell.outcome;
-        if (outcome === undefined) return cell;
+        const outcome = candidateCell?.outcome;
+        if (candidateCell === undefined || outcome === undefined) return cell;
 
         if (!QUIET_VERDICTS.has(outcome)) {
-          let styled = styleGlyph(cell, outcome, useColor);
-          if (candidateCell.delta !== "") {
-            styled = styleWithin(styled, candidateCell.delta, VERDICT_STYLES[outcome], useColor);
-          }
-          return styled;
+          return styleGlyphAndDelta(
+            cell,
+            outcome,
+            candidateCell.delta,
+            VERDICT_STYLES[outcome],
+            useColor,
+          );
         }
 
         // Quiet cell on a bright row: dim glyph and delta individually.
         if (!rowIsQuiet && candidateCell.verdict !== "") {
-          let styled = styleWithin(cell, getGlyph(outcome), ["dim"], useColor);
-          if (candidateCell.delta !== "") {
-            styled = styleWithin(styled, candidateCell.delta, ["dim"], useColor);
-          }
-          return styled;
+          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, ["dim"], useColor);
         }
 
         return styleGlyph(cell, outcome, useColor);
@@ -490,10 +513,7 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
       (cell, columnIndex) => {
         if (columnIndex === 1) return styleWithin(cell, baseline, ["dim"], useColor);
         const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
-        if (column === undefined) return cell;
-        let styled = styleWithin(cell, column.geomean.figure, ["bold"], useColor);
-        styled = styleWithin(styled, column.geomean.provenance, ["dim"], useColor);
-        return styled;
+        return column === undefined ? cell : styleGeomeanCell(cell, column.geomean, useColor);
       },
     ),
   ];
@@ -545,12 +565,9 @@ function highlightEntries(
 
     if (!useColor) return plain;
 
-    const style = VERDICT_STYLES[verdict.verdict];
-    let styled = styleWithin(plain, getGlyph(verdict.verdict), style, true);
     const deltaOrWord = verdict.verdict === "unstable" ? "unstable" : delta;
-    if (deltaOrWord !== "") {
-      styled = styleWithin(styled, deltaOrWord, style, true);
-    }
+    const style = VERDICT_STYLES[verdict.verdict];
+    let styled = styleGlyphAndDelta(plain, verdict.verdict, deltaOrWord, style, true);
     if (evidence !== "") {
       styled = styleWithin(styled, evidence, ["dim"], true);
     }

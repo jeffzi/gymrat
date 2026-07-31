@@ -57,6 +57,9 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[\d+m/g, "");
 }
 
+/** Matches a line dimmed end-to-end: opens with SGR 2, closes with SGR 22. */
+const DIMMED_LINE = /^\x1b\[2m.*\x1b\[22m$/;
+
 /**
  * The SGR parameters opened immediately before `marker` in `line`.
  *
@@ -654,7 +657,7 @@ describe("renderReport", () => {
     it.each([
       { verdict: "improved", metric: "faster/time", glyph: "✓", color: "green", code: "32" },
       { verdict: "regressed", metric: "slower/time", glyph: "✗", color: "red", code: "31" },
-      { verdict: "unstable", metric: "jittery/time", glyph: "≈", color: "amber", code: "33" },
+      { verdict: "unstable", metric: "jittery/time", glyph: "≈", color: "yellow", code: "33" },
     ])("paints the $verdict glyph $color", ({ metric, glyph, code }) => {
       const row = lineContaining(renderReport(colorfulResult(), true), metric);
 
@@ -673,7 +676,7 @@ describe("renderReport", () => {
     ])("dims the whole $verdict row", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult(), true), metric);
 
-      expect(row).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect(row).toMatch(DIMMED_LINE);
     });
 
     it.each([
@@ -682,7 +685,7 @@ describe("renderReport", () => {
     ])("leaves the $verdict row at full brightness", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult(), true), metric);
 
-      expect(row).not.toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect(row).not.toMatch(DIMMED_LINE);
     });
 
     it("emboldens the header row and the geomean figure", () => {
@@ -795,7 +798,7 @@ describe("renderReport", () => {
     it("dims the legend line overall", () => {
       const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
 
-      expect(legend).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect(legend).toMatch(DIMMED_LINE);
     });
 
     it.each([
@@ -822,7 +825,7 @@ describe("renderReport", () => {
       });
       const method = lineContaining(renderReport(result, true), "Wilcoxon");
 
-      expect(method).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect(method).toMatch(DIMMED_LINE);
     });
 
     it("dims the noise-band description", () => {
@@ -831,7 +834,7 @@ describe("renderReport", () => {
       });
       const band = lineContaining(renderReport(result, true), "noise band");
 
-      expect(band).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect(band).toMatch(DIMMED_LINE);
     });
 
     it("styles the Hint: label yellow and underlined", () => {
@@ -1103,8 +1106,8 @@ describe("renderReport", () => {
     it("dims a row only once every candidate on it stayed flat or unstable", () => {
       const report = renderReport(dimmingResult(), true);
 
-      expect.soft(lineContaining(report, "flat/time")).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
-      expect(lineContaining(report, "mixed/time")).not.toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+      expect.soft(lineContaining(report, "flat/time")).toMatch(DIMMED_LINE);
+      expect(lineContaining(report, "mixed/time")).not.toMatch(DIMMED_LINE);
     });
 
     it("pads on the plain text, so stripping the styles restores the uncolored report", () => {

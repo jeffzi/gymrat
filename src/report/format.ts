@@ -409,11 +409,8 @@ export function verdictSummaryParts(
 
   const stylePart = (verdict: MetricVerdict["verdict"], count: number, gloss: string): string => {
     const text = `${getGlyph(verdict)} ${count} ${gloss}`;
-    if (!useColor) return text;
-    if (verdict === "no-signal") return formatLabel(text, ["dim"], true);
-    return count > 0
-      ? formatLabel(text, VERDICT_STYLES[verdict], true)
-      : formatLabel(text, ["dim"], true);
+    const style: Style = verdict === "no-signal" || count === 0 ? ["dim"] : VERDICT_STYLES[verdict];
+    return formatLabel(text, style, useColor);
   };
 
   return [
@@ -494,9 +491,7 @@ export function legendGlosses(useColor = false): string {
   ];
   return glosses
     .map((verdict) => {
-      const glyph = useColor
-        ? formatLabel(getGlyph(verdict), VERDICT_STYLES[verdict], true)
-        : getGlyph(verdict);
+      const glyph = formatLabel(getGlyph(verdict), VERDICT_STYLES[verdict], useColor);
       return `${glyph} ${VERDICT_GLOSSES[verdict]}`;
     })
     .join(" · ");
