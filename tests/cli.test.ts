@@ -1,3 +1,9 @@
+/* eslint-disable typescript/no-unsafe-assignment -- vi.spyOn's generic return erases to any; spy results are inherently untyped */
+/* eslint-disable typescript/no-unsafe-member-access -- see above */
+/* eslint-disable typescript/no-unsafe-argument -- see above */
+/* eslint-disable typescript/no-unsafe-return -- see above */
+/* eslint-disable typescript/no-unsafe-call -- see above */
+/* eslint-disable typescript/no-unsafe-type-assertion -- process.exit mock requires never cast */
 import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,9 +15,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AdapterError } from "../src/adapters/index.js";
 import { createProgram, formatCliError } from "../src/cli.js";
-import type { CommandErrorContext, ExitFailure } from "../src/compare.js";
-import { CommandError } from "../src/compare.js";
+import {
+  CommandError,
+  type CommandErrorContext,
+  type CompareOptions,
+  type ExitFailure,
+  type ProgressStep,
+} from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
+import { renderJson } from "../src/report/json.js";
+import { renderMarkdown } from "../src/report/markdown.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
 import { createCandidate, createComparisonResult } from "./fixtures/comparison-result.js";
@@ -27,6 +40,14 @@ vi.mock("../src/compare.js", async (importOriginal) => {
 
 vi.mock("../src/config.js", () => ({
   resolveConfig: vi.fn(),
+}));
+
+vi.mock("../src/report/markdown.js", () => ({
+  renderMarkdown: vi.fn().mockReturnValue("# Markdown Report"),
+}));
+
+vi.mock("../src/report/json.js", () => ({
+  renderJson: vi.fn().mockReturnValue('{"report": true}'),
 }));
 
 async function setupMocks(
@@ -116,7 +137,7 @@ async function captureCompareHelp(): Promise<string> {
     });
   }
 
-  await expect(program.parseAsync(["node", "cli.js", "compare", "--help"])).rejects.toThrow();
+  await expect(program.parseAsync(compareArgv("--help"))).rejects.toThrow();
 
   return helpOutput;
 }
@@ -141,6 +162,66 @@ function createCommandError(targetKind: "ref" | "in-place"): CommandError {
   };
   const failure: ExitFailure = { exitCode: 1, stderr: "failed", stdout: "" };
   return new CommandError(context, failure);
+}
+
+/** Build a fresh program that throws instead of exiting, ready for a single successful parse. */
+function createRunnableProgram(): Command {
+  const program = createProgram();
+  program.exitOverride();
+  return program;
+}
+
+/** Prepends the `["node", "cli.js", "compare"]` prefix Commander expects. */
+function compareArgv(...args: string[]): string[] {
+  return ["node", "cli.js", "compare", ...args];
+}
+
+/** A single-metric, single-candidate result with an improved verdict, for tests that only care about output styling. */
+function createColorSensitiveResult(): ComparisonResult {
+  return createComparisonResult({
+    baselineLabel: "main",
+    candidates: [createCandidate({ label: "branch" })],
+    metrics: {
+      "decode/time": {
+        baselineMedian: 100,
+        baselineSpread: 1,
+        candidates: [
+          {
+            median: 82.5,
+            spread: 1,
+            verdict: {
+              verdict: "improved",
+              method: "signed-rank",
+              delta: -17.5,
+              n: 10,
+              p: 0.002,
+              noisePct: 2.5,
+            },
+          },
+        ],
+        meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+      },
+    },
+  });
+}
+
+function stderrWrites(stderrSpy: ReturnType<typeof vi.spyOn>): unknown[] {
+  return stderrSpy.mock.calls.map((c: unknown[]) => c[0]);
+}
+
+/**
+ * Prevent process.exit from terminating the test runner.
+ *
+ * Converts exit calls into catchable rejections that carry the intended
+ * exit code, so tests can assert on exit-code behavior without killing
+ * the vitest worker.
+ */
+function mockProcessExit(): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+    throw Object.assign(new Error(`process.exit(${code})`), {
+      exitCode: code,
+    });
+  }) as never);
 }
 
 afterEach(() => {
@@ -194,12 +275,11 @@ describe("createProgram", () => {
         "extracts targets and labels from $form positionals",
         async ({ positionals, expected }) => {
           // Arrange
-          const program = createProgram();
-          program.exitOverride();
+          const program = createRunnableProgram();
           const { compareMock } = await setupMocks();
 
           // Act
-          await program.parseAsync(["node", "cli.js", "compare", ...positionals]);
+          await program.parseAsync(compareArgv(...positionals));
 
           // Assert
           expect(compareMock).toHaveBeenCalledWith(expect.objectContaining(expected));
@@ -217,12 +297,11 @@ describe("createProgram", () => {
         { flag: "--config", value: "gymrat.json", expected: { config: "gymrat.json" } },
       ])("passes $flag through to resolveConfig", async ({ flag, value, expected }) => {
         // Arrange
-        const program = createProgram();
-        program.exitOverride();
+        const program = createRunnableProgram();
         const { resolveConfigMock } = await setupMocks();
 
         // Act
-        await program.parseAsync(["node", "cli.js", "compare", "main", "branch", flag, value]);
+        await program.parseAsync(compareArgv("main", "branch", flag, value));
 
         // Assert
         expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
@@ -251,12 +330,11 @@ describe("createProgram", () => {
         },
       ])("passes $desc through to compare", async ({ resolved, expected }) => {
         // Arrange
-        const program = createProgram();
-        program.exitOverride();
+        const program = createRunnableProgram();
         const { compareMock } = await setupMocks(undefined, resolved);
 
         // Act
-        await program.parseAsync(["node", "cli.js", "compare", "main", "branch"]);
+        await program.parseAsync(compareArgv("main", "branch"));
 
         // Assert
         expect(compareMock).toHaveBeenCalledWith(expect.objectContaining(expected));
@@ -286,15 +364,7 @@ describe("createProgram", () => {
         }
 
         // Act
-        const parsing = program.parseAsync([
-          "node",
-          "cli.js",
-          "compare",
-          "main",
-          "branch",
-          flag,
-          value,
-        ]);
+        const parsing = program.parseAsync(compareArgv("main", "branch", flag, value));
 
         // Assert - Commander renders the flag and the coercion reason
         await expect(parsing).rejects.toThrow(
@@ -310,7 +380,7 @@ describe("createProgram", () => {
 
         // Act & Assert
         await expect(
-          program.parseAsync(["node", "cli.js", "compare", "main", "branch", "--bogus", "value"]),
+          program.parseAsync(compareArgv("main", "branch", "--bogus", "value")),
         ).rejects.toThrow(/unknown option '--bogus'/);
       });
     });
@@ -324,7 +394,7 @@ describe("createProgram", () => {
         const program = createProgramWithSubcommandOverrides();
 
         // Act & Assert
-        await expect(program.parseAsync(["node", "cli.js", "compare", ...args])).rejects.toThrow(
+        await expect(program.parseAsync(compareArgv(...args))).rejects.toThrow(
           /missing required argument/,
         );
       });
@@ -345,8 +415,7 @@ describe("createProgram", () => {
     describe("on successful compare", () => {
       it("renders the comparison data compare returned and writes it to stdout", async () => {
         // Arrange
-        const program = createProgram();
-        program.exitOverride();
+        const program = createRunnableProgram();
         const result = createComparisonResult({
           baselineLabel: "main",
           candidates: [createCandidate({ label: "branch" })],
@@ -355,7 +424,7 @@ describe("createProgram", () => {
         const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(["node", "cli.js", "compare", "main", "branch"]);
+        await program.parseAsync(compareArgv("main", "branch"));
 
         // Assert
         expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
@@ -405,57 +474,462 @@ describe("createProgram", () => {
         },
       ])("writes a $expected report when $desc", async ({ isTTY, noColor, args, useColor }) => {
         // Arrange
-        const program = createProgram();
-        program.exitOverride();
-        const result = createComparisonResult({
-          baselineLabel: "main",
-          candidates: [createCandidate({ label: "branch" })],
-          metrics: {
-            "decode/time": {
-              baselineMedian: 100,
-              baselineSpread: 1,
-              candidates: [
-                {
-                  median: 82.5,
-                  spread: 1,
-                  verdict: {
-                    verdict: "improved",
-                    method: "signed-rank",
-                    delta: -17.5,
-                    n: 10,
-                    p: 0.002,
-                    noisePct: 2.5,
-                  },
-                },
-              ],
-              meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
-            },
-          },
-        });
+        const program = createRunnableProgram();
+        const result = createColorSensitiveResult();
         await setupMocks(result);
         process.stdout.isTTY = isTTY;
         vi.stubEnv("NO_COLOR", noColor);
         const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(["node", "cli.js", "compare", "main", "branch", ...args]);
+        await program.parseAsync(compareArgv("main", "branch", ...args));
 
         // Assert
         expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result, useColor)}\n`);
       });
     });
 
-    describe("on compare error", () => {
-      it("rejects when compare fails", async () => {
+    describe("when --format flag provided", () => {
+      it("routes to renderReport for --format text", async () => {
         // Arrange
-        const program = createProgram();
-        program.exitOverride();
+        const program = createRunnableProgram();
+        const result = createComparisonResult();
+        await setupMocks(result);
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--format", "text"));
+
+        // Assert
+        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
+      });
+
+      it("routes to renderMarkdown for --format markdown", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        const result = createComparisonResult();
+        await setupMocks(result);
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--format", "markdown"));
+
+        // Assert
+        expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result);
+        expect(writeSpy).toHaveBeenCalledWith("# Markdown Report\n");
+      });
+
+      it("routes to renderJson for --format json", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        const result = createComparisonResult();
+        await setupMocks(result);
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--format", "json"));
+
+        // Assert
+        expect(vi.mocked(renderJson)).toHaveBeenCalledWith(result);
+        expect(writeSpy).toHaveBeenCalledWith('{"report": true}\n');
+      });
+
+      it("rejects an invalid format value with Commander's invalid-argument error", async () => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+        for (const command of [program, ...program.commands]) {
+          command.configureOutput({ writeErr: () => {} });
+        }
+
+        // Act
+        const parsing = program.parseAsync(compareArgv("main", "branch", "--format", "csv"));
+
+        // Assert
+        await expect(parsing).rejects.toThrow(
+          /option '--format <value>' argument 'csv' is invalid\. Allowed choices are text, markdown, json\./,
+        );
+      });
+
+      it.each([
+        { format: "markdown", renderer: "renderMarkdown" },
+        { format: "json", renderer: "renderJson" },
+      ])("does not apply ANSI color when --format $format is used", async ({ format }) => {
+        // Arrange
+        const program = createRunnableProgram();
+        const result = createColorSensitiveResult();
+        await setupMocks(result);
+        const originalIsTTY = process.stdout.isTTY;
+        process.stdout.isTTY = true;
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--format", format));
+
+        // Assert - non-text formats must not contain ANSI escape sequences
+        const output = writeSpy.mock.calls[0]?.[0];
+        expect(typeof output).toBe("string");
+        expect(output).not.toContain("\x1b[");
+
+        // Cleanup
+        process.stdout.isTTY = originalIsTTY;
+      });
+    });
+
+    describe("progress feedback", () => {
+      const originalStderrIsTTY = process.stderr.isTTY;
+
+      afterEach(() => {
+        process.stderr.isTTY = originalStderrIsTTY;
+      });
+
+      const PREPARE_BASELINE_STEP: ProgressStep = { kind: "prepare", label: "baseline" };
+      const PREPARE_BASELINE_LINE = "prepare · baseline";
+
+      function findStderrWrite(stderrSpy: ReturnType<typeof vi.spyOn>, substring: string): unknown {
+        return stderrWrites(stderrSpy).find((w) => typeof w === "string" && w.includes(substring));
+      }
+
+      async function setupProgressMocks(
+        steps: ProgressStep[],
+      ): Promise<{ stderrSpy: ReturnType<typeof vi.spyOn> }> {
+        const { compareMock } = await setupMocks();
+
+        vi.mocked(compareMock).mockImplementation((opts: CompareOptions) => {
+          for (const step of steps) {
+            opts.onProgress?.(step);
+          }
+          return Promise.resolve(createComparisonResult());
+        });
+
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        // Suppress stdout report output so tests focus on stderr
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        return { stderrSpy };
+      }
+
+      it("writes prepare progress lines to stderr", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        process.stderr.isTTY = false;
+        const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert
+        expect(stderrWrites(stderrSpy)).toContainEqual(
+          expect.stringContaining(PREPARE_BASELINE_LINE),
+        );
+      });
+
+      it("writes sample progress lines to stderr with index/total and label", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        process.stderr.isTTY = false;
+        const { stderrSpy } = await setupProgressMocks([
+          { kind: "sample", index: 1, total: 10, label: "baseline" },
+        ]);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert
+        expect(stderrWrites(stderrSpy)).toContainEqual(
+          expect.stringContaining("sample 1/10 · baseline · bench"),
+        );
+      });
+
+      it("uses carriage-return and clear-to-EOL prefix in TTY mode", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        process.stderr.isTTY = true;
+        const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert - TTY lines start with \r\x1b[K to overwrite the previous line
+        const progressWrite = findStderrWrite(stderrSpy, PREPARE_BASELINE_LINE);
+        expect(progressWrite).toBeDefined();
+        expect(progressWrite).toMatch(/^\r\x1b\[K/);
+      });
+
+      it("uses newline-terminated lines without ANSI escapes in non-TTY mode", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        process.stderr.isTTY = false;
+        const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert - non-TTY lines end with \n and contain no ANSI escapes
+        const progressWrite = findStderrWrite(stderrSpy, PREPARE_BASELINE_LINE);
+        expect(progressWrite).toBeDefined();
+        expect(progressWrite).not.toContain("\x1b[");
+        expect(progressWrite).toMatch(/\n$/);
+      });
+
+      it("clears the last progress line before the report in TTY mode", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        process.stderr.isTTY = true;
+        const { stderrSpy } = await setupProgressMocks([
+          { kind: "sample", index: 1, total: 1, label: "baseline" },
+        ]);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert - after progress lines, a final \r\x1b[K clears the line before report
+        const lastWrite = stderrWrites(stderrSpy)
+          .map((w) => String(w))
+          .at(-1);
+        expect(lastWrite).toBe("\r\x1b[K");
+      });
+
+      it("passes an onProgress callback to compare", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        const { compareMock } = await setupMocks();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert - compare was called with an onProgress function
+        expect(compareMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            onProgress: expect.any(Function),
+          }),
+        );
+      });
+    });
+
+    describe("on compare error", () => {
+      it("exits 2 and writes the error to stderr", async () => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
         await setupMocks(new Error("Compare failed"));
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        mockProcessExit();
+
+        // Act & Assert
+        await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+          "exitCode",
+          2,
+        );
+
+        expect(stderrWrites(stderrSpy)).toContainEqual(expect.stringContaining("Compare failed"));
+      });
+    });
+
+    describe("--fail-on", () => {
+      /**
+       * A single-candidate result whose sole metric carries the given verdict.
+       *
+       * Defaults to a gating, lower-is-better metric so gate tests exercise the
+       * standard path. Override `gating` or `geomeanValue` to test edge cases.
+       */
+      function createGatingResult(
+        verdict: "regressed" | "improved" | "no-signal" | "unstable",
+        { gating = true, geomeanValue = -5.0 }: { gating?: boolean; geomeanValue?: number } = {},
+      ): ComparisonResult {
+        let delta: number;
+        if (verdict === "regressed") {
+          delta = 8;
+        } else if (verdict === "improved") {
+          delta = -10;
+        } else {
+          delta = 0.2;
+        }
+        return createComparisonResult({
+          candidates: [
+            createCandidate({
+              geomean: { value: geomeanValue, n: 10, excluded: [] },
+            }),
+          ],
+          metrics: {
+            "decode/time": {
+              baselineMedian: 100,
+              baselineSpread: 1,
+              candidates: [
+                {
+                  median: 100 + delta,
+                  spread: 1,
+                  verdict: {
+                    verdict,
+                    method: "signed-rank",
+                    delta,
+                    n: 10,
+                    p: 0.01,
+                    noisePct: verdict === "unstable" ? 300 : 2.5,
+                  },
+                },
+              ],
+              meta: { direction: "lower", gating, exact: false },
+            },
+          },
+        });
+      }
+
+      /**
+       * Arrange a --fail-on test: a program with subcommand overrides, `compare`
+       * mocked to resolve (or reject) with `compareMockReturn`, stdout/stderr
+       * stubbed, and process.exit converted into a catchable rejection that
+       * carries the intended exit code.
+       */
+      async function setupFailOnTest(compareMockReturn: ComparisonResult | Error): Promise<{
+        program: Command;
+        stdoutSpy: ReturnType<typeof vi.spyOn>;
+        exitSpy: ReturnType<typeof vi.spyOn>;
+      }> {
+        const program = createProgramWithSubcommandOverrides();
+        await setupMocks(compareMockReturn);
+        const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const exitSpy = mockProcessExit();
+        return { program, stdoutSpy, exitSpy };
+      }
+
+      it("exits 1 when a gating metric has a regressed verdict", async () => {
+        // Arrange
+        const { program, stdoutSpy } = await setupFailOnTest(createGatingResult("regressed"));
 
         // Act & Assert
         await expect(
-          program.parseAsync(["node", "cli.js", "compare", "main", "branch"]),
-        ).rejects.toThrow("Compare failed");
+          program.parseAsync(compareArgv("main", "branch", "--fail-on", "regressed")),
+        ).rejects.toHaveProperty("exitCode", 1);
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      it("exits 0 when no gating metric regressed", async () => {
+        // Arrange
+        const { program, stdoutSpy } = await setupFailOnTest(createGatingResult("improved"));
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--fail-on", "regressed"));
+
+        // Assert
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      it("exits 1 when geomean delta exceeds threshold", async () => {
+        // Arrange - geomean +5.0% exceeds the 2% gate
+        const { program, stdoutSpy } = await setupFailOnTest(
+          createGatingResult("no-signal", { geomeanValue: 5.0 }),
+        );
+
+        // Act & Assert
+        await expect(
+          program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
+        ).rejects.toHaveProperty("exitCode", 1);
+        // The report must be written before exit — distinguishes gate trip from
+        // a Commander parse error, which would not produce any report output.
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      it("exits 0 when geomean delta is within threshold", async () => {
+        // Arrange - geomean +1.5% is within the 2% gate
+        const { program, stdoutSpy } = await setupFailOnTest(
+          createGatingResult("no-signal", { geomeanValue: 1.5 }),
+        );
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2"));
+
+        // Assert
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      it("trips when any of multiple conditions matches", async () => {
+        // Arrange - no regression verdict, but geomean +5.0% exceeds the 2% gate
+        const { program, stdoutSpy } = await setupFailOnTest(
+          createGatingResult("improved", { geomeanValue: 5.0 }),
+        );
+
+        // Act & Assert
+        await expect(
+          program.parseAsync(
+            compareArgv("main", "branch", "--fail-on", "regressed", "--fail-on", "geomean:2"),
+          ),
+        ).rejects.toHaveProperty("exitCode", 1);
+        // The report must be written — distinguishes a gate trip from a parse error
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      it("rejects a malformed condition with the allowed grammar in the error", async () => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+        for (const cmd of [program, ...program.commands]) {
+          cmd.configureOutput({ writeErr: () => {} });
+        }
+        mockProcessExit();
+
+        // Act & Assert
+        await expect(
+          program.parseAsync(compareArgv("main", "branch", "--fail-on", "bogus")),
+        ).rejects.toThrow(/regressed.*geomean|geomean.*regressed/);
+      });
+
+      it("prints the report to stdout before exiting 1 on gate trip", async () => {
+        // Arrange
+        const { program, stdoutSpy, exitSpy } = await setupFailOnTest(
+          createGatingResult("regressed"),
+        );
+
+        // Act
+        const error = await program
+          .parseAsync(compareArgv("main", "branch", "--fail-on", "regressed"))
+          .catch((e: unknown) => e);
+
+        // Assert - report was written before exit was called
+        expect(error).toHaveProperty("exitCode", 1);
+        expect(stdoutSpy).toHaveBeenCalled();
+        const reportOrder = stdoutSpy.mock.invocationCallOrder[0]!;
+        const exitOrder = exitSpy.mock.invocationCallOrder[0]!;
+        expect(reportOrder).toBeLessThan(exitOrder);
+      });
+
+      it("does not trip when the regressed metric is non-gating", async () => {
+        // Arrange - the only regressed metric has gating: false
+        const { program, stdoutSpy } = await setupFailOnTest(
+          createGatingResult("regressed", { gating: false }),
+        );
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--fail-on", "regressed"));
+
+        // Assert
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      it("exits 2 when compare throws a tool error", async () => {
+        // Arrange
+        const { program } = await setupFailOnTest(new Error("benchmark timed out"));
+
+        // Act & Assert
+        await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+          "exitCode",
+          2,
+        );
+      });
+
+      it("exits 2 for Commander usage errors", async () => {
+        // Arrange - use createProgram() directly so the production exitOverride
+        // (which sets exit code 2) is not replaced by the test helper's plain one
+        const program = createProgram();
+        for (const cmd of [program, ...program.commands]) {
+          cmd.configureOutput({ writeErr: () => {} });
+        }
+        mockProcessExit();
+
+        // Act & Assert
+        await expect(
+          program.parseAsync(compareArgv("main", "branch", "--bogus")),
+        ).rejects.toHaveProperty("exitCode", 2);
       });
     });
   });

@@ -1,0 +1,679 @@
+import { describe, it, expect } from "vitest";
+
+import { renderMarkdown } from "../../src/report/markdown.js";
+import type { ComparisonResult } from "../../src/report/types.js";
+import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
+import { createCandidate, createComparisonResult } from "../fixtures/comparison-result.js";
+
+type Metrics = ComparisonResult["metrics"];
+type MetricEntry = Metrics[string];
+
+/** A two-sided metric whose verdict came from the signed-rank method. */
+function signedRankMetric(options: {
+  verdict: ApproximateVerdictValue;
+  delta: number;
+  baselineMedian?: number;
+  candidateMedian?: number;
+  p?: number;
+  noisePct?: number;
+  unit?: "ns" | "bytes";
+  gating?: boolean;
+  n?: number;
+}): MetricEntry {
+  const {
+    verdict,
+    delta,
+    baselineMedian = 100,
+    candidateMedian = baselineMedian * (1 + delta / 100),
+    p = 0.01,
+    noisePct = 2.5,
+    unit,
+    gating = true,
+    n = 10,
+  } = options;
+  return {
+    baselineMedian,
+    baselineSpread: 1,
+    candidates: [
+      {
+        median: candidateMedian,
+        spread: 1,
+        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct },
+      },
+    ],
+    meta: { direction: "lower", gating, exact: false, unit },
+  };
+}
+
+/** A two-sided metric whose verdict fell back to the noise band. */
+function bandMetric(options: {
+  verdict: ApproximateVerdictValue;
+  delta: number;
+  noisePct?: number;
+  n?: number;
+}): MetricEntry {
+  const { verdict, delta, noisePct = 2.5, n = 4 } = options;
+  return {
+    baselineMedian: 100,
+    baselineSpread: 5,
+    candidates: [
+      {
+        median: 100 + delta,
+        spread: 4,
+        verdict: { verdict, method: "band", delta, n, band: noisePct, noisePct },
+      },
+    ],
+    meta: { direction: "lower", gating: true, exact: false },
+  };
+}
+
+/** One metric judged for several candidates against a single shared baseline. */
+function nWayMetric(
+  candidates: readonly { verdict: ApproximateVerdictValue; delta: number; median: number }[],
+): MetricEntry {
+  const entries: MetricEntry["candidates"] = candidates.map(({ verdict, delta, median }) => ({
+    median,
+    spread: 1,
+    verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct: 2.5 },
+  }));
+  return {
+    baselineMedian: 100,
+    baselineSpread: 1,
+    candidates: entries,
+    meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+  };
+}
+
+/** A counted metric, compared exactly rather than statistically. */
+function exactMetric(options: {
+  delta: number;
+  baselineMedian?: number;
+  candidateMedian?: number;
+  n?: number;
+  unit?: "ns" | "bytes";
+}): MetricEntry {
+  const {
+    delta,
+    baselineMedian = 1000,
+    candidateMedian = 1000 * (1 + delta / 100),
+    n = 10,
+    unit = "bytes",
+  } = options;
+  return {
+    baselineMedian,
+    candidates: [
+      {
+        median: candidateMedian,
+        verdict: { verdict: delta < 0 ? "improved" : "regressed", method: "exact", delta, n },
+      },
+    ],
+    meta: { direction: "lower", gating: true, exact: true, unit },
+  };
+}
+
+/** Extract lines that look like GFM table rows (start with |). */
+function tableRows(output: string): string[] {
+  return output.split("\n").filter((line) => line.startsWith("|"));
+}
+
+/** Extract the header separator row from a GFM table. */
+function headerSeparator(output: string): string | undefined {
+  return tableRows(output).find((line) => /^\|[\s:|-]+\|$/.test(line));
+}
+
+describe("renderMarkdown", () => {
+  describe("when rendering a single-candidate report with mixed verdicts", () => {
+    function mixedResult(): ComparisonResult {
+      return createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({
+            label: "perf/faster-decode",
+            geomean: { value: -5.8, n: 3, excluded: [] },
+          }),
+        ],
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.2, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+        },
+      });
+    }
+
+    it("produces a summary line counting each verdict class", () => {
+      const output = renderMarkdown(mixedResult());
+
+      expect(output).toContain("✓ 1 improved");
+      expect(output).toContain("✗ 1 regressed");
+      expect(output).toContain("~ 1 within noise");
+    });
+
+    it("includes a highlights section as a markdown list", () => {
+      const output = renderMarkdown(mixedResult());
+
+      // Regressions first, then improvements
+      const lines = output.split("\n");
+      const regLine = lines.find((l) => l.includes("slower/time"));
+      const impLine = lines.find((l) => l.includes("faster/time"));
+
+      expect(regLine).toContain("✗");
+      expect(regLine).toContain("+2.2%");
+      expect(impLine).toContain("✓");
+      expect(impLine).toContain("-17.5%");
+
+      // Regression comes before improvement
+      expect(lines.indexOf(regLine!)).toBeLessThan(lines.indexOf(impLine!));
+    });
+
+    it("renders a GFM table with pipe-delimited columns and a header separator", () => {
+      const output = renderMarkdown(mixedResult());
+      const rows = tableRows(output);
+
+      // At least header + separator + metric rows + geomean
+      expect(rows.length).toBeGreaterThanOrEqual(5);
+
+      // Header row has expected columns
+      const header = rows[0]!;
+      expect(header).toContain("Metric");
+      expect(header).toContain("main");
+      expect(header).toContain("perf/faster-decode");
+      expect(header).toContain("vs main");
+
+      // Separator row exists with alignment markers
+      const sep = headerSeparator(output);
+      expect(sep).toBeDefined();
+    });
+
+    it("includes a blockquote legend line", () => {
+      const output = renderMarkdown(mixedResult());
+      const legendLine = output.split("\n").find((l) => l.startsWith(">"));
+
+      expect(legendLine).toContain("✓ improved");
+      expect(legendLine).toContain("✗ regressed");
+      expect(legendLine).toContain("≈ unstable");
+      expect(legendLine).toContain("~ within noise");
+      expect(legendLine).toContain("`main`");
+    });
+
+    it("includes a method line naming the signed-rank test", () => {
+      const output = renderMarkdown(mixedResult());
+
+      expect(output).toContain("Wilcoxon signed-rank");
+    });
+  });
+
+  describe("when rendering a multi-candidate report", () => {
+    function multiCandidateResult(): ComparisonResult {
+      return createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": nWayMetric([
+            { verdict: "improved", delta: -10, median: 90 },
+            { verdict: "regressed", delta: 4, median: 104 },
+          ]),
+        },
+      });
+    }
+
+    it("produces per-candidate summary lines prefixed with the label", () => {
+      const output = renderMarkdown(multiCandidateResult());
+
+      const lines = output.split("\n");
+      const candidateALine = lines.find((l) => l.includes("candidate-a") && l.includes("improved"));
+      const candidateBLine = lines.find(
+        (l) => l.includes("candidate-b") && l.includes("regressed"),
+      );
+
+      expect(candidateALine).toBeDefined();
+      expect(candidateBLine).toBeDefined();
+    });
+
+    it("groups highlights by candidate under sub-headers", () => {
+      const output = renderMarkdown(multiCandidateResult());
+
+      expect(output).toContain("**candidate-a**");
+      expect(output).toContain("**candidate-b**");
+
+      // Each candidate's highlight appears
+      const lines = output.split("\n");
+      const aHeaderIdx = lines.findIndex((l) => l.includes("**candidate-a**"));
+      const bHeaderIdx = lines.findIndex((l) => l.includes("**candidate-b**"));
+      expect(aHeaderIdx).toBeLessThan(bHeaderIdx);
+    });
+
+    it("renders multi-candidate table with combined value+verdict cells", () => {
+      const output = renderMarkdown(multiCandidateResult());
+      const rows = tableRows(output);
+
+      // Header should have columns for each candidate
+      const header = rows[0]!;
+      expect(header).toContain("candidate-a vs main");
+      expect(header).toContain("candidate-b vs main");
+
+      // Data row should have combined value+verdict cells
+      const dataRow = rows.find((r) => r.includes("decode/time"));
+      expect(dataRow).toContain("✓");
+      expect(dataRow).toContain("-10.0%");
+      expect(dataRow).toContain("✗");
+      expect(dataRow).toContain("+4.0%");
+    });
+
+    it("renders a value-only cell when a candidate has a measurement but no verdict", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: 0, n: 0, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 0, n: 0, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": {
+            baselineMedian: 1000,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 900,
+                spread: 2,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                },
+              },
+              { median: 950, spread: 3 },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const dataRow = tableRows(output).find((r) => r.includes("decode/time"));
+
+      expect(dataRow).toContain("950ns");
+      expect(dataRow).toContain("✓");
+    });
+  });
+
+  describe("when within-noise rows are present", () => {
+    it("places them inside a <details> block", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).toContain("<details>");
+      expect(output).toContain("</details>");
+      expect(output).toContain("<summary>");
+
+      // The within-noise metric row should be inside the details block
+      const detailsStart = output.indexOf("<details>");
+      const detailsEnd = output.indexOf("</details>");
+      const flatIdx = output.indexOf("flat/time", detailsStart);
+      expect(flatIdx).toBeGreaterThan(detailsStart);
+      expect(flatIdx).toBeLessThan(detailsEnd);
+    });
+
+    it("includes the count in the details summary", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+          "flat2/time": signedRankMetric({ verdict: "no-signal", delta: -0.1, unit: "ns" }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).toContain("2 within noise");
+    });
+
+    it("counts unstable rows in the details summary alongside within-noise", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+          "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).toContain("<summary>");
+      const summaryMatch = output.match(/<summary>(.*?)<\/summary>/);
+      expect(summaryMatch?.[1]).toContain("within noise");
+      expect(summaryMatch?.[1]).toContain("unstable");
+    });
+  });
+
+  describe("when rendering highlight evidence", () => {
+    it("shows (exact) for exact verdicts", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "heap/size": exactMetric({ delta: -7.9 }),
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const highlightLine = output.split("\n").find((l) => l.includes("heap/size"));
+
+      expect(highlightLine).toContain("(exact)");
+    });
+
+    it("shows noise band for unstable verdicts", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const highlightLine = output.split("\n").find((l) => l.includes("jittery/time"));
+
+      expect(highlightLine).toContain("unstable");
+      expect(highlightLine).toContain("noise");
+      expect(highlightLine).toContain("±30.0%");
+    });
+
+    it("shows no trailing evidence for signed-rank/band improved or regressed", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const highlightLine = output
+        .split("\n")
+        .find((l) => l.includes("faster/time") && l.includes("✓"));
+
+      expect(highlightLine).toBeDefined();
+      expect(highlightLine).toContain("-17.5%");
+      expect(highlightLine).not.toContain("(exact)");
+      expect(highlightLine).not.toContain("noise");
+    });
+  });
+
+  describe("when rendering a multi-candidate report with quiet rows", () => {
+    it("collapses within-noise and unstable rows into a details block", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": nWayMetric([
+            { verdict: "improved", delta: -10, median: 90 },
+            { verdict: "regressed", delta: 4, median: 104 },
+          ]),
+          "flat/time": nWayMetric([
+            { verdict: "no-signal", delta: 0.1, median: 100 },
+            { verdict: "no-signal", delta: -0.2, median: 100 },
+          ]),
+          "jittery/time": {
+            baselineMedian: 100,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 105,
+                spread: 1,
+                verdict: {
+                  verdict: "unstable",
+                  method: "signed-rank",
+                  delta: 5,
+                  n: 10,
+                  p: 0.4,
+                  noisePct: 300,
+                },
+              },
+              {
+                median: 97,
+                spread: 1,
+                verdict: {
+                  verdict: "unstable",
+                  method: "signed-rank",
+                  delta: -3,
+                  n: 10,
+                  p: 0.5,
+                  noisePct: 300,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).toContain("<details>");
+      const summaryMatch = output.match(/<summary>(.*?)<\/summary>/);
+      expect(summaryMatch?.[1]).toContain("within noise");
+      expect(summaryMatch?.[1]).toContain("unstable");
+      const detailsStart = output.indexOf("<details>");
+      const detailsEnd = output.indexOf("</details>");
+      const flatIdx = output.indexOf("flat/time", detailsStart);
+      expect(flatIdx).toBeGreaterThan(detailsStart);
+      expect(flatIdx).toBeLessThan(detailsEnd);
+    });
+
+    it("drops the highlights section when no candidate has anything to highlight", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: 0, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 0, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "flat/time": nWayMetric([
+            { verdict: "no-signal", delta: 0.1, median: 100 },
+            { verdict: "no-signal", delta: -0.2, median: 100 },
+          ]),
+        },
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).not.toContain("**candidate-a**");
+      expect(output).not.toContain("**candidate-b**");
+    });
+  });
+
+  describe("when the geomean has exclusions", () => {
+    it("includes the exclusion count and reasons in the geomean row", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "a/time": signedRankMetric({ verdict: "improved", delta: -6 }),
+        },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: -5.8,
+              n: 3,
+              excluded: [
+                { metric: "jittery/time", reason: "unstable" },
+                { metric: "broken/ratio", reason: "undefined-ratio" },
+              ],
+            },
+          }),
+        ],
+      });
+
+      const output = renderMarkdown(result);
+      const geomeanRow = tableRows(output).find((r) => r.includes("geomean"));
+
+      expect(geomeanRow).toContain("2 excluded");
+    });
+  });
+
+  describe("when rendering the geomean row", () => {
+    it("renders geomean at the bottom of the table with the delta", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
+        candidates: [createCandidate({ geomean: { value: -5.8, n: 4, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+      const rows = tableRows(output);
+      const lastDataRow = rows[rows.length - 1]!;
+
+      expect(lastDataRow).toContain("geomean");
+      expect(lastDataRow).toContain("-5.8%");
+    });
+
+    it("shows a dash when no stable gating metrics exist", () => {
+      const result = createComparisonResult({
+        metrics: { "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50 }) },
+        candidates: [
+          createCandidate({
+            geomean: {
+              value: Number.NaN,
+              n: 0,
+              excluded: [{ metric: "jittery/time", reason: "unstable" }],
+            },
+          }),
+        ],
+      });
+
+      const output = renderMarkdown(result);
+      const geomeanRow = tableRows(output).find((r) => r.includes("geomean"));
+
+      expect(geomeanRow).toContain("—");
+    });
+  });
+
+  describe("when no ANSI codes are present", () => {
+    it("never includes ANSI escape sequences anywhere in the output", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+          "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5.8, n: 3, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).not.toContain("\x1b[");
+      expect(output).not.toMatch(/\x1b\[\d+m/);
+    });
+  });
+
+  describe("when ordering highlights", () => {
+    it("lists regressions first by |delta| desc, then improvements, then unstable", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "small-regression/time": signedRankMetric({ verdict: "regressed", delta: 2.2 }),
+          "big-regression/time": signedRankMetric({ verdict: "regressed", delta: 15 }),
+          "improvement/time": signedRankMetric({ verdict: "improved", delta: -10 }),
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const lines = output.split("\n");
+
+      const bigRegIdx = lines.findIndex((l) => l.includes("big-regression/time"));
+      const smallRegIdx = lines.findIndex((l) => l.includes("small-regression/time"));
+      const impIdx = lines.findIndex((l) => l.includes("improvement/time"));
+      const unstableIdx = lines.findIndex((l) => l.includes("jittery/time"));
+
+      // All should be present
+      expect(bigRegIdx).not.toBe(-1);
+      expect(smallRegIdx).not.toBe(-1);
+      expect(impIdx).not.toBe(-1);
+      expect(unstableIdx).not.toBe(-1);
+
+      // Order: regressions (big first) > improvements > unstable
+      expect(bigRegIdx).toBeLessThan(smallRegIdx);
+      expect(smallRegIdx).toBeLessThan(impIdx);
+      expect(impIdx).toBeLessThan(unstableIdx);
+    });
+  });
+
+  describe("when rendering GFM table syntax", () => {
+    it("produces valid pipe-delimited rows with a header separator containing alignment", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "a/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+      const rows = tableRows(output);
+
+      // Every row starts and ends with |
+      for (const row of rows) {
+        expect(row.startsWith("|")).toBe(true);
+        expect(row.endsWith("|")).toBe(true);
+      }
+
+      // Header separator has alignment markers
+      const sep = headerSeparator(output)!;
+      expect(sep).toBeDefined();
+      // Should have right-alignment for numeric columns (at least some cells with --)
+      expect(sep).toMatch(/--/);
+    });
+
+    it("has consistent column count across all rows", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "a/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "b/time": signedRankMetric({ verdict: "no-signal", delta: 0.2, unit: "ns" }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+      // Include table rows from both main table and details block
+      const allPipeRows = output.split("\n").filter((l) => l.startsWith("|"));
+      const columnCounts = allPipeRows.map((row) => row.split("|").length);
+
+      // All rows should have the same column count
+      const expected = columnCounts[0];
+      for (const count of columnCounts) {
+        expect(count).toBe(expected);
+      }
+    });
+  });
+
+  describe("when rendering the method footer", () => {
+    it("names the noise band and shows a hint when it is the only method", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).toContain("noise band");
+      expect(output).toContain("re-run with --samples 6 or more");
+    });
+
+    it("drops the hint when the signed-rank test carried the run", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -10 }) },
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).not.toContain("re-run with --samples");
+    });
+  });
+});

@@ -1,23 +1,27 @@
 import type { WorktreeRemovalFailure } from "../targets.js";
-import type { GeomeanExclusion, GeomeanResult, Method, MetricVerdict } from "../verdict/verdict.js";
+import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
   type CellStyler,
   computeColumnWidth,
-  countVerdicts,
   formatDelta,
+  formatEvidence,
+  formatExclusions,
   formatHintLabel,
   formatLabel,
+  formatMetricCell,
   formatNoiseBand,
   formatPairCount,
-  formatSpread,
   formatTableLine,
-  formatValue,
   formatVerdictDelta,
+  GEOMEAN_LABEL,
   getGlyph,
+  legendGlosses,
+  methodFooterLines,
+  QUIET_VERDICTS,
   selectHighlights,
   styleGlyph,
   styleWithin,
-  VERDICT_GLOSSES,
+  verdictSummaryParts,
 } from "./format.js";
 import type { CandidateComparison, ComparisonResult, MetricComparisons } from "./types.js";
 
@@ -49,17 +53,6 @@ const CANDIDATE_COLUMN_OFFSET = 2;
 /** Gap between a candidate's own figure and the verdict that follows it in the same cell. */
 const CANDIDATE_CELL_GUTTER = "  ";
 
-/**
- * The verdicts whose rows recede.
- *
- * A metric that sat within the noise, or was too jittery to judge, is the row a
- * reader skips; dimming it whole leaves the rows that did move to carry the
- * table.
- */
-const QUIET_VERDICTS: ReadonlySet<MetricVerdict["verdict"]> = new Set(["no-signal", "unstable"]);
-
-const GEOMEAN_LABEL = "geomean (gating metrics)";
-
 /** The heading a candidate's non-empty highlights list opens with. */
 const HIGHLIGHTS_HEADING = "highlights";
 
@@ -71,8 +64,6 @@ const HIGHLIGHTS_HEADING = "highlights";
  * can stand in for a delta, `unstable`, simply starts two columns further left.
  */
 const HIGHLIGHT_DELTA_WIDTH = 6;
-
-const SAMPLES_HINT = "re-run with --samples 6 or more for statistical verdicts";
 
 /**
  * The hint closes the method footer, well below the table the report's colors
@@ -98,9 +89,9 @@ function alignLeft(content: string): string {
   return ` ${content}`;
 }
 
-function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
-  if (median === undefined) return "";
-  return `${formatValue(median, unit)}${formatSpread(spread)}`;
+/** Join a verdict cell's parts, dropping whichever ones the verdict has none of. */
+function joinCellParts(parts: readonly string[]): string {
+  return parts.filter((part) => part !== "").join("  ");
 }
 
 /**
@@ -125,14 +116,7 @@ function formatVerdictCell(verdict: MetricVerdict | undefined, samples: number):
   const delta = formatVerdictDelta(verdict);
   const band = "noisePct" in verdict ? formatNoiseBand(verdict.noisePct) : "";
   const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
-  return [getGlyph(verdict.verdict), delta, band, pairs].filter((part) => part !== "").join("  ");
-}
-
-/** How many gating metrics the geomean left out, and on what grounds. */
-function formatExclusions(excluded: readonly GeomeanExclusion[]): string {
-  if (excluded.length === 0) return "";
-  const reasons = [...new Set(excluded.map((exclusion) => exclusion.reason))];
-  return `${excluded.length} excluded: ${reasons.join(", ")}`;
+  return joinCellParts([getGlyph(verdict.verdict), delta, band, pairs]);
 }
 
 /** The geomean's verdict cell, and the aggregate inside it that the row exists for. */
@@ -292,9 +276,7 @@ function renderTable(
 function formatCandidateVerdict(verdict: MetricVerdict | undefined, samples: number): string {
   if (verdict === undefined) return "";
   const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
-  return [getGlyph(verdict.verdict), formatVerdictDelta(verdict), pairs]
-    .filter((part) => part !== "")
-    .join("  ");
+  return joinCellParts([getGlyph(verdict.verdict), formatVerdictDelta(verdict), pairs]);
 }
 
 /**
@@ -492,26 +474,7 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
 
 /** One line tallying every verdict class one candidate earned. */
 function renderSummary(metrics: MetricComparisons, candidateIndex: number): string {
-  const counts = countVerdicts(metrics, candidateIndex);
-  return [
-    `${getGlyph("improved")} ${counts.improved} ${VERDICT_GLOSSES.improved}`,
-    `${getGlyph("regressed")} ${counts.regressed} ${VERDICT_GLOSSES.regressed}`,
-    `${getGlyph("unstable")} ${counts.unstable} ${VERDICT_GLOSSES.unstable}`,
-    `${getGlyph("no-signal")} ${counts.noSignal} ${VERDICT_GLOSSES["no-signal"]}`,
-  ].join("   ");
-}
-
-/**
- * The evidence suffix for a highlighted metric.
- *
- * Exact entries keep `(exact)`. Unstable entries show the noise that swamped the
- * signal. Improved/regressed/no-signal entries from approximate methods carry no
- * trailing evidence — the glyph and delta already tell the story.
- */
-function formatEvidence(verdict: MetricVerdict): string {
-  if (verdict.method === "exact") return "(exact)";
-  if (verdict.verdict === "unstable") return `noise ${formatNoiseBand(verdict.noisePct)}`;
-  return "";
+  return verdictSummaryParts(metrics, candidateIndex).join("   ");
 }
 
 /** Gap between the longest highlighted metric name and the delta that follows it. */
@@ -611,30 +574,7 @@ function renderComparison(result: ComparisonResult, useColor: boolean): string[]
  * thing a reader cannot infer from the numbers.
  */
 function renderLegend(baseline: string): string {
-  const glosses = [
-    `${getGlyph("improved")} ${VERDICT_GLOSSES.improved}`,
-    `${getGlyph("regressed")} ${VERDICT_GLOSSES.regressed}`,
-    `${getGlyph("unstable")} ${VERDICT_GLOSSES.unstable}`,
-    `${getGlyph("no-signal")} ${VERDICT_GLOSSES["no-signal"]}`,
-  ].join(" · ");
-  return `legend: ${glosses} — candidates are judged against ${baseline}`;
-}
-
-/**
- * The pair counts behind every verdict a given method decided, across every
- * candidate.
- *
- * The method footer speaks for the whole run rather than for one candidate, so
- * a method any candidate's verdict used has to be named there.
- */
-function pairCounts(metrics: MetricComparisons, method: Method): number[] {
-  const counts: number[] = [];
-  for (const metric of Object.values(metrics)) {
-    for (const { verdict } of metric.candidates) {
-      if (verdict?.method === method) counts.push(verdict.n);
-    }
-  }
-  return counts;
+  return `legend: ${legendGlosses()} — candidates are judged against ${baseline}`;
 }
 
 /**
@@ -657,23 +597,7 @@ function pairCounts(metrics: MetricComparisons, method: Method): number[] {
  * metric the reader picks, the line it read stays true of it.
  */
 function renderMethodFooter(result: ComparisonResult): string[] {
-  const signedRank = pairCounts(result.metrics, "signed-rank");
-  const band = pairCounts(result.metrics, "band");
-  const lines: string[] = [];
-
-  if (signedRank.length > 0) {
-    const pairs = formatPairCount(Math.min(...signedRank));
-    lines.push(`verdicts: Wilcoxon signed-rank on pairs (${pairs} ≥ 6) · ~ = no signal at α=0.05`);
-  }
-  if (band.length > 0) {
-    const pairs = formatPairCount(Math.max(...band));
-    lines.push(
-      `noise band ±(half-range × K) — ${pairs} below signed-rank floor (6 pairs)`,
-      `${HINT_LABEL} ${SAMPLES_HINT}`,
-    );
-  }
-
-  return lines;
+  return methodFooterLines(result.metrics, (hint) => `${HINT_LABEL} ${hint}`);
 }
 
 /**

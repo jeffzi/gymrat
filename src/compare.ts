@@ -13,6 +13,23 @@ import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } fr
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
 
+/** A prepare step about to run for a target with a prepare script. */
+export interface PrepareProgressStep {
+  kind: "prepare";
+  label: string;
+}
+
+/** A bench/sample step about to run — 1-based index within the total sample count. */
+export interface SampleProgressStep {
+  kind: "sample";
+  index: number;
+  total: number;
+  label: string;
+}
+
+/** Structured step info emitted at the start of each prepare or sample step. */
+export type ProgressStep = PrepareProgressStep | SampleProgressStep;
+
 /** Fields that identify which command failed and where, for structured error reporting. */
 export interface CommandErrorContext {
   phase: "prepare" | "bench";
@@ -159,6 +176,8 @@ export interface CompareOptions {
    */
   unstableNoisePct?: number;
   configMetrics?: ConfigMetrics;
+  /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
+  onProgress?: (step: ProgressStep) => void;
 }
 
 /**
@@ -278,7 +297,7 @@ async function collectSamples(
   adapter: Adapter,
   baseline: TargetContext,
   candidates: readonly TargetContext[],
-  options: Pick<CompareOptions, "bench" | "prepare" | "samples" | "timeoutSeconds">,
+  options: Pick<CompareOptions, "bench" | "prepare" | "samples" | "timeoutSeconds" | "onProgress">,
   signal: AbortSignal,
 ): Promise<RunSamples> {
   const timeoutMs = options.timeoutSeconds * 1000;
@@ -288,12 +307,19 @@ async function collectSamples(
 
   if (options.prepare) {
     for (const { ctx } of collected) {
+      options.onProgress?.({ kind: "prepare", label: ctx.label });
       await runCommand("prepare", ctx, options.prepare, timeoutMs, signal);
     }
   }
 
   for (let round = 0; round < options.samples; round++) {
     for (const { ctx, samples } of collected) {
+      options.onProgress?.({
+        kind: "sample",
+        index: round + 1,
+        total: options.samples,
+        label: ctx.label,
+      });
       const stdout = await runCommand("bench", ctx, options.bench, timeoutMs, signal, round + 1);
       samples.push(adapter.parse(stdout));
     }

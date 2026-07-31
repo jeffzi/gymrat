@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 
 import { compare, CommandError } from "../src/compare.js";
-import type { CompareOptions } from "../src/compare.js";
+import type { CompareOptions, ProgressStep } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
@@ -1401,5 +1401,214 @@ describe("compare – integration", () => {
       },
       60_000,
     );
+  });
+
+  describe("progress callback", () => {
+    /** A steps sink and the `onProgress` callback that appends to it, in call order. */
+    function collectSteps(): {
+      steps: ProgressStep[];
+      onProgress: (step: ProgressStep) => void;
+    } {
+      const steps: ProgressStep[] = [];
+      return { steps, onProgress: (step) => steps.push(step) };
+    }
+
+    it("receives sample steps in round-robin order when no prepare is configured", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        createBranch(repo, {
+          name: "old-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+        });
+
+        createBranch(repo, {
+          name: "new-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+        });
+
+        const { steps, onProgress } = collectSteps();
+        const options: CompareOptions = {
+          baseline: { target: "old-progress" },
+          candidates: [{ target: "new-progress" }],
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 3,
+          timeoutSeconds: 10,
+          onProgress,
+        };
+
+        await compare(options);
+
+        expect(steps).toStrictEqual([
+          { kind: "sample", index: 1, total: 3, label: "old-progress" },
+          { kind: "sample", index: 1, total: 3, label: "new-progress" },
+          { kind: "sample", index: 2, total: 3, label: "old-progress" },
+          { kind: "sample", index: 2, total: 3, label: "new-progress" },
+          { kind: "sample", index: 3, total: 3, label: "old-progress" },
+          { kind: "sample", index: 3, total: 3, label: "new-progress" },
+        ]);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it("receives prepare steps before sample steps when prepare is configured", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        createBranch(repo, {
+          name: "old-prep-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+          prepareScript: "#!/bin/sh\nexit 0",
+        });
+
+        createBranch(repo, {
+          name: "new-prep-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+          prepareScript: "#!/bin/sh\nexit 0",
+        });
+
+        const { steps, onProgress } = collectSteps();
+        const options: CompareOptions = {
+          baseline: { target: "old-prep-progress" },
+          candidates: [{ target: "new-prep-progress" }],
+          bench: "./bench.sh",
+          prepare: "./prepare.sh",
+          adapter: "metric-lines",
+          samples: 2,
+          timeoutSeconds: 10,
+          onProgress,
+        };
+
+        await compare(options);
+
+        expect(steps).toStrictEqual([
+          { kind: "prepare", label: "old-prep-progress" },
+          { kind: "prepare", label: "new-prep-progress" },
+          { kind: "sample", index: 1, total: 2, label: "old-prep-progress" },
+          { kind: "sample", index: 1, total: 2, label: "new-prep-progress" },
+          { kind: "sample", index: 2, total: 2, label: "old-prep-progress" },
+          { kind: "sample", index: 2, total: 2, label: "new-prep-progress" },
+        ]);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it("uses explicit labels in progress steps when supplied", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        createBranch(repo, {
+          name: "old-labelled-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+        });
+
+        createBranch(repo, {
+          name: "new-labelled-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+        });
+
+        const { steps, onProgress } = collectSteps();
+        const options: CompareOptions = {
+          baseline: { target: "old-labelled-progress", label: "baseline" },
+          candidates: [{ target: "new-labelled-progress", label: "candidate" }],
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 2,
+          timeoutSeconds: 10,
+          onProgress,
+        };
+
+        await compare(options);
+
+        const labels = steps.map((s) => s.label);
+        expect(labels).toStrictEqual(["baseline", "candidate", "baseline", "candidate"]);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it("emits sample steps for three targets in round-robin order", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        for (const [name, latency] of [
+          ["base-progress-3", 100],
+          ["cand-a-progress", 80],
+          ["cand-b-progress", 120],
+        ] as const) {
+          createBranch(repo, {
+            name,
+            benchScript: `#!/bin/sh\necho "METRIC latency=${latency}"`,
+          });
+        }
+
+        const { steps, onProgress } = collectSteps();
+        const options: CompareOptions = {
+          baseline: { target: "base-progress-3" },
+          candidates: [{ target: "cand-a-progress" }, { target: "cand-b-progress" }],
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 2,
+          timeoutSeconds: 10,
+          onProgress,
+        };
+
+        await compare(options);
+
+        expect(steps).toStrictEqual([
+          { kind: "sample", index: 1, total: 2, label: "base-progress-3" },
+          { kind: "sample", index: 1, total: 2, label: "cand-a-progress" },
+          { kind: "sample", index: 1, total: 2, label: "cand-b-progress" },
+          { kind: "sample", index: 2, total: 2, label: "base-progress-3" },
+          { kind: "sample", index: 2, total: 2, label: "cand-a-progress" },
+          { kind: "sample", index: 2, total: 2, label: "cand-b-progress" },
+        ]);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it("does not call the callback when onProgress is omitted", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        createBranch(repo, {
+          name: "old-no-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+        });
+
+        createBranch(repo, {
+          name: "new-no-progress",
+          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+        });
+
+        const options: CompareOptions = {
+          baseline: { target: "old-no-progress" },
+          candidates: [{ target: "new-no-progress" }],
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 2,
+          timeoutSeconds: 10,
+        };
+
+        const result = await compare(options);
+        expect(result.samples).toBe(2);
+      } finally {
+        repo.cleanup();
+      }
+    });
   });
 });

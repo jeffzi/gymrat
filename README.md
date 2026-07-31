@@ -67,14 +67,17 @@ gymrat compare main my-branch \
 
 ### Options
 
-| Option               | Default         | Description                                        |
-| -------------------- | --------------- | -------------------------------------------------- |
-| `--bench <cmd>`      | — (required\*)  | Bench command run in each target directory         |
-| `--prepare <script>` | none            | Per-target setup, e.g. `"npm ci && npm run build"` |
-| `--adapter <type>`   | `metric-lines`  | Output parser: `metric-lines` or `mitata`          |
-| `--samples <number>` | `10`            | Paired samples per target                          |
-| `--timeout <number>` | `1800`          | Timeout in seconds per `prepare` and per bench run |
-| `--config <file>`    | `./gymrat.json` | Config file (loaded automatically when present)    |
+| Option                  | Default         | Description                                                               |
+| ----------------------- | --------------- | ------------------------------------------------------------------------- |
+| `--bench <cmd>`         | — (required\*)  | Bench command run in each target directory                                |
+| `--prepare <script>`    | none            | Per-target setup, e.g. `"npm ci && npm run build"`                        |
+| `--adapter <type>`      | `metric-lines`  | Output parser: `metric-lines` or `mitata`                                 |
+| `--samples <number>`    | `10`            | Paired samples per target                                                 |
+| `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare` and per bench run                        |
+| `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                           |
+| `--format <value>`      | `text`          | Output format: `text`, `markdown`, or `json`                              |
+| `--no-color`            | auto            | Print the report without ANSI styles                                      |
+| `--fail-on <condition>` | none            | Exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
 
 \*`--bench` is required either on the command line or in the config file.
 
@@ -87,11 +90,31 @@ through the shell with the working directory set to the target's directory.
 
 ### Exit codes
 
-- `0`: a report was produced. Verdicts never affect the exit code.
-- `1`: an operational error (unresolvable target, nonzero bench/prepare exit, timeout, zero metrics
-  parsed, or config error). gymrat surfaces the captured command output so you can see what went
-  wrong.
+- `0`: a report was produced and no `--fail-on` gate tripped.
+- `1`: a `--fail-on` gate tripped. The full report is printed before the exit, so you can inspect
+  the results.
+- `2`: an operational error (unresolvable target, nonzero bench/prepare exit, timeout, zero metrics
+  parsed, config error, or invalid usage). gymrat surfaces the captured command output so you can
+  see what went wrong.
 - `130` / `143`: interrupted by `SIGINT` or `SIGTERM`. No report is produced.
+
+#### `--fail-on` conditions
+
+`--fail-on` is repeatable. Each condition is checked against every candidate independently:
+
+- `regressed` — trips when any gating metric has a `regressed` verdict on any candidate. Unstable
+  and non-gating metrics never trip this gate.
+- `geomean:<pct>` — trips when any candidate's geomean delta is worse than `<pct>` percent in the
+  costly direction (e.g. `geomean:2` trips at +2.0% or worse for lower-is-better metrics).
+
+```sh
+# Block on any regression
+gymrat compare main my-branch --bench "npm run bench" --fail-on regressed
+
+# Block on regressions or geomean drift above 2%
+gymrat compare main my-branch --bench "npm run bench" \
+  --fail-on regressed --fail-on geomean:2
+```
 
 gymrat removes temporary worktrees created for git-ref targets on success, on error, and on
 `SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left behind,
@@ -109,28 +132,46 @@ With a `gymrat.json` marking `encode/heap` as an exact metric, that prints:
 
 ```text
 gymrat compare · main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
-metric                   │old (main)    │new (perf/faster-decode)  │vs old
-─────────────────────────┼──────────────┼──────────────────────────┼──────────────────────────
-decode/text=digits/time  │1.735µ ± 1%   │1.425µ ± 1%               │✓ -17.9%  (p=0.002 n=10)
-decode/text=words/time   │3.065µ ± 1%   │3.093µ ± 3%               │~ +0.9%  (p=0.49 n=10)
-encode/time              │914n ± 1%     │934n ± 1%                 │✗ +2.2%  (p=0.002 n=10)
-encode/heap              │48.0k ± 0%    │44.2k ± 0%                │✓ -7.9%  (exact)
-─────────────────────────┼──────────────┼──────────────────────────┼──────────────────────────
-geomean (gating metrics) │              │                          │-6.0%
+metric                    │        main │ perf/faster-decode │ vs main
+──────────────────────────┼─────────────┼────────────────────┼──────────────────
+decode/text=digits/time   │  1.7µs ± 1% │         1.4µs ± 1% │ ✓  -17.9%  ±2.5%
+decode/text=words/time    │  3.1µs ± 1% │         3.1µs ± 3% │ ~  +0.9%  ±2.5%
+encode/time               │  914ns ± 1% │         934ns ± 1% │ ✗  +2.2%  ±2.5%
+encode/heap               │ 49.2KB ± 0% │        45.3KB ± 0% │ ✓  -7.9%
+──────────────────────────┼─────────────┼────────────────────┼──────────────────
+geomean (gating metrics)  │        main │ perf/faster-decode │ -6.0%  4 stable metrics
+
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 1 within noise
+
+highlights
+  ✗ encode/time               +2.2%
+  ✓ decode/text=digits/time  -17.9%
+  ✓ encode/heap               -7.9%  (exact)
+
+legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
-2 worktrees removed · 0 left behind
 ```
 
-- The **delta is always shown**, even under `~`, so "-1.9% but no signal" is visible rather than
+**Anatomy:**
+
+- The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class at a glance.
+- The **highlights** block lists regressions first, then improvements, with the delta and method
+  evidence. Exact metrics show `(exact)`. Metrics marked `≈ unstable` (noise band wider than
+  `unstableNoisePct`) show `noise ±N%` — these are too jittery to judge and are excluded from the
+  geomean.
+- The **`±` noise band** in the verdict column is the spread the signed-rank test used to decide
+  signal vs. noise. It appears only for approximate metrics.
+- The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
   hidden.
-- The **glyph is direction-aware**: `✓` improved, `✗` regressed, `~` no signal. You never do
-  better-is-higher math yourself.
-- The **± spread** cell is the cross-run half-range of the per-run values as a percentage of the
-  median, the same dispersion the noise band uses.
+- The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `~` no signal. You
+  never do better-is-higher math yourself.
+- The **± spread** in the value columns is the cross-run half-range of the per-run values as a
+  percentage of the median, the same dispersion the noise band uses.
 - Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
   `metric-lines` values carry no unit and are rounded to the nearest integer.
-- The **geomean** (geometric mean) row aggregates gating metrics only. All metrics are gating by
-  default; disable per metric in the config file.
+- The **geomean** (geometric mean) row aggregates gating metrics only. Unstable metrics are excluded
+  automatically, and exclusion reasons are reported (e.g. `2 excluded: unstable`). All metrics are
+  gating by default; disable per metric in the config file.
 - A metric present on only one side renders one-sided: its value in the present column, a blank cell
   on the other, and no verdict.
 
@@ -147,6 +188,57 @@ from the per-side medians.
   too when ties leave fewer than 6 nonzero differences.
 - **Exact metrics** (config-flagged, e.g. binary size): any difference between medians is a signal;
   a single sample suffices.
+
+## CI integration
+
+### GitHub Actions
+
+Use `--fail-on` to gate CI on regressions, and `--format json` or `--format markdown` for
+machine-readable output:
+
+```yaml
+- name: Benchmark comparison
+  run: |
+    gymrat compare main ${{ github.head_ref }} \
+      --bench "npm run bench" \
+      --format json \
+      --fail-on regressed \
+      --fail-on geomean:2 \
+      > bench-report.json
+```
+
+Post the markdown report as a PR comment:
+
+```yaml
+- name: Comment benchmark results
+  run: |
+    gymrat compare main ${{ github.head_ref }} \
+      --bench "npm run bench" \
+      --format markdown \
+      > bench-report.md
+    gh pr comment ${{ github.event.number }} --body-file bench-report.md
+```
+
+### JSON schema
+
+`--format json` produces a stable JSON structure (currently `schemaVersion: 1`). Top-level fields:
+
+| Field           | Description                                                             |
+| --------------- | ----------------------------------------------------------------------- |
+| `schemaVersion` | Always `1`; will increment on breaking changes.                         |
+| `baseline`      | Baseline label.                                                         |
+| `candidates`    | Ordered array of candidate labels.                                      |
+| `samples`       | Number of paired samples.                                               |
+| `adapter`       | Adapter used (`metric-lines` or `mitata`).                              |
+| `metrics`       | Per-metric object: baseline medians, per-candidate verdicts and deltas. |
+| `perCandidate`  | Per-candidate geomean (value, exclusions) and verdict counts.           |
+| `worktrees`     | Cleanup state: removed count, left-behind paths, prune errors.          |
+
+Each candidate's verdict includes `method` (`signed-rank`, `band`, or `exact`), `delta`, `p` (for
+signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a method are `null`.
+
+Candidates are compared against the baseline independently — never against each other. The geomean
+aggregates only gating metrics and excludes unstable ones.
 
 ## The `metric-lines` format
 

@@ -1,7 +1,7 @@
 import { styleText } from "node:util";
 
 import { assertNever } from "../errors.js";
-import type { MetricVerdict } from "../verdict/verdict.js";
+import type { GeomeanExclusion, Method, MetricVerdict } from "../verdict/verdict.js";
 import type { CandidateMetric, MetricComparison, MetricComparisons } from "./types.js";
 
 type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
@@ -45,6 +45,12 @@ export function formatValue(value: number, unit?: "ns" | "bytes"): string {
 export function formatSpread(spread?: number): string {
   if (spread === undefined) return "";
   return ` ± ${spread.toFixed(0)}%`;
+}
+
+/** A value cell: the scaled measurement and its spread, or nothing when unmeasured. */
+export function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
+  if (median === undefined) return "";
+  return `${formatValue(median, unit)}${formatSpread(spread)}`;
 }
 
 /**
@@ -100,6 +106,34 @@ export const VERDICT_GLOSSES: Record<MetricVerdict["verdict"], string> = {
 /** The delta cell: the word `unstable` for a verdict too noisy to trust, otherwise the signed percentage. */
 export function formatVerdictDelta(verdict: MetricVerdict): string {
   return verdict.verdict === "unstable" ? "unstable" : formatDelta(verdict.delta);
+}
+
+/**
+ * The verdicts whose rows carry no news worth keeping above the fold.
+ *
+ * Shared by every renderer: a metric that sat within the noise, or was too
+ * jittery to judge, is dimmed (text) or collapsed into a `<details>` block
+ * (markdown) rather than competing with the rows that moved.
+ */
+export const QUIET_VERDICTS: ReadonlySet<MetricVerdict["verdict"]> = new Set([
+  "no-signal",
+  "unstable",
+]);
+
+/** The label the geomean row is reported under, in every renderer. */
+export const GEOMEAN_LABEL = "geomean (gating metrics)";
+
+/**
+ * The evidence suffix for a highlighted metric.
+ *
+ * Exact entries keep `(exact)`. Unstable entries show the noise that swamped the
+ * signal. Improved/regressed/no-signal entries from approximate methods carry no
+ * trailing evidence — the glyph and delta already tell the story.
+ */
+export function formatEvidence(verdict: MetricVerdict): string {
+  if (verdict.method === "exact") return "(exact)";
+  if (verdict.verdict === "unstable") return `noise ${formatNoiseBand(verdict.noisePct)}`;
+  return "";
 }
 
 /** A metric's noise band, as the `±N%` the row annotations and highlights share. */
@@ -312,6 +346,93 @@ const VERDICT_STYLES: Record<MetricVerdict["verdict"], Style> = {
  */
 export function styleWithin(cell: string, marker: string, style: Style, useColor: boolean): string {
   return cell.replace(marker, formatLabel(marker, style, useColor));
+}
+
+/** How many gating metrics the geomean left out, and on what grounds. */
+export function formatExclusions(excluded: readonly GeomeanExclusion[]): string {
+  if (excluded.length === 0) return "";
+  const reasons = [...new Set(excluded.map((exclusion) => exclusion.reason))];
+  return `${excluded.length} excluded: ${reasons.join(", ")}`;
+}
+
+/**
+ * One tally part per verdict class, in the order the report legend lists them.
+ *
+ * Renderers join these with their own separator — `"   "` for aligned text
+ * columns, `" · "` for inline markdown.
+ */
+export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
+  const counts = countVerdicts(metrics, candidateIndex);
+  return [
+    `${getGlyph("improved")} ${counts.improved} ${VERDICT_GLOSSES.improved}`,
+    `${getGlyph("regressed")} ${counts.regressed} ${VERDICT_GLOSSES.regressed}`,
+    `${getGlyph("unstable")} ${counts.unstable} ${VERDICT_GLOSSES.unstable}`,
+    `${getGlyph("no-signal")} ${counts.noSignal} ${VERDICT_GLOSSES["no-signal"]}`,
+  ];
+}
+
+/**
+ * The pair counts behind every verdict a given method decided, across every
+ * candidate.
+ */
+export function pairCounts(metrics: MetricComparisons, method: Method): number[] {
+  const counts: number[] = [];
+  for (const metric of Object.values(metrics)) {
+    for (const { verdict } of metric.candidates) {
+      if (verdict?.method === method) counts.push(verdict.n);
+    }
+  }
+  return counts;
+}
+
+const SAMPLES_HINT = "re-run with --samples 6 or more for statistical verdicts";
+
+/**
+ * The method-footer lines naming how each verdict was decided, plus — when any
+ * metric fell back to the noise band — a hint telling the user how to get a
+ * statistical verdict instead.
+ *
+ * `formatHint` turns the shared hint string into a format-appropriate line:
+ * the text renderer prepends a styled label, the markdown renderer wraps it in
+ * a blockquote with italic emphasis.
+ */
+export function methodFooterLines(
+  metrics: MetricComparisons,
+  formatHint: (hint: string) => string,
+): string[] {
+  const signedRank = pairCounts(metrics, "signed-rank");
+  const band = pairCounts(metrics, "band");
+  const lines: string[] = [];
+
+  if (signedRank.length > 0) {
+    const pairs = formatPairCount(Math.min(...signedRank));
+    lines.push(`verdicts: Wilcoxon signed-rank on pairs (${pairs} ≥ 6) · ~ = no signal at α=0.05`);
+  }
+  if (band.length > 0) {
+    const pairs = formatPairCount(Math.max(...band));
+    lines.push(
+      `noise band ±(half-range × K) — ${pairs} below signed-rank floor (6 pairs)`,
+      formatHint(SAMPLES_HINT),
+    );
+  }
+
+  return lines;
+}
+
+/**
+ * The glosses line shared by every legend: each verdict class's glyph and word,
+ * joined by ` · `.
+ *
+ * Renderers wrap this into their own format (plain text prefix, blockquote,
+ * etc.) and append the baseline attribution.
+ */
+export function legendGlosses(): string {
+  return [
+    `${getGlyph("improved")} ${VERDICT_GLOSSES.improved}`,
+    `${getGlyph("regressed")} ${VERDICT_GLOSSES.regressed}`,
+    `${getGlyph("unstable")} ${VERDICT_GLOSSES.unstable}`,
+    `${getGlyph("no-signal")} ${VERDICT_GLOSSES["no-signal"]}`,
+  ].join(" · ");
 }
 
 /** Paint a verdict's glyph in the color of its class, inside an already-padded cell. */
