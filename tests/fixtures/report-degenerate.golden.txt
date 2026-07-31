@@ -11,7 +11,7 @@ geomean (gating metrics)  │       main │ perf/faster-decode │ 0.0%  1 stab
 ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   ~ 2 within noise
 
 highlights
-  ✓ throughput/ops  +30.0%  band ±2.5%
+  ✓ throughput/ops  +30.0%
 
 legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
 noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)

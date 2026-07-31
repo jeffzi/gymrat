@@ -1,4 +1,3 @@
-import { assertNever } from "../errors.js";
 import type { WorktreeRemovalFailure } from "../targets.js";
 import type { GeomeanExclusion, GeomeanResult, Method, MetricVerdict } from "../verdict/verdict.js";
 import {
@@ -10,7 +9,6 @@ import {
   formatLabel,
   formatNoiseBand,
   formatPairCount,
-  formatPValue,
   formatSpread,
   formatTableLine,
   formatValue,
@@ -503,19 +501,17 @@ function renderSummary(metrics: MetricComparisons, candidateIndex: number): stri
   ].join("   ");
 }
 
-/** The statistic backing a verdict, in the terms of the method that produced it. */
+/**
+ * The evidence suffix for a highlighted metric.
+ *
+ * Exact entries keep `(exact)`. Unstable entries show the noise that swamped the
+ * signal. Improved/regressed/no-signal entries from approximate methods carry no
+ * trailing evidence — the glyph and delta already tell the story.
+ */
 function formatEvidence(verdict: MetricVerdict): string {
-  switch (verdict.method) {
-    case "signed-rank":
-      return formatPValue(verdict.p);
-    case "band":
-      return `band ${formatNoiseBand(verdict.band)}`;
-    case "exact":
-      return "(exact)";
-    /* v8 ignore next -- exhaustive switch; compile-time guard via assertNever */
-    default:
-      return assertNever(verdict);
-  }
+  if (verdict.method === "exact") return "(exact)";
+  if (verdict.verdict === "unstable") return `noise ${formatNoiseBand(verdict.noisePct)}`;
+  return "";
 }
 
 /** Gap between the longest highlighted metric name and the delta that follows it. */
@@ -537,9 +533,11 @@ function highlightEntries(metrics: MetricComparisons, candidateIndex: number): s
   return highlights.map(({ name, candidate }) => {
     const verdict = candidate.verdict;
     const delta = formatVerdictDelta(verdict);
+    const evidence = formatEvidence(verdict);
+    const suffix = evidence === "" ? "" : `  ${evidence}`;
     return `  ${getGlyph(verdict.verdict)} ${name.padEnd(nameWidth)}${delta.padStart(
       HIGHLIGHT_DELTA_WIDTH,
-    )}  ${formatEvidence(verdict)}`;
+    )}${suffix}`;
   });
 }
 

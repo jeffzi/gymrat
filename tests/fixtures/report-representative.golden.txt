@@ -11,8 +11,8 @@ geomean (gating metrics)  │        main │ perf/faster-decode │ -6.0%  4 st
 ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 1 within noise
 
 highlights
-  ✗ encode/time               +2.2%  p=0.002
-  ✓ decode/text=digits/time  -17.9%  p=0.002
+  ✗ encode/time               +2.2%
+  ✓ decode/text=digits/time  -17.9%
   ✓ encode/heap               -7.9%  (exact)
 
 legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main

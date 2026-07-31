@@ -470,9 +470,9 @@ describe("renderReport", () => {
       const highlights = highlightLines(renderReport(result)).map((line) => line.trim());
 
       expect(highlights).toStrictEqual([
-        "✗ slower/time    +2.2%  p=0.002",
+        "✗ slower/time    +2.2%",
         "✓ cheaper/heap   -7.9%  (exact)",
-        "≈ jittery/time  unstable  band ±30.0%",
+        "≈ jittery/time  unstable  noise ±30.0%",
       ]);
     });
 
@@ -960,11 +960,11 @@ describe("renderReport", () => {
 
       expect(highlights).toStrictEqual([
         "  candidate-a",
-        "    ✓ decode/time  -10.0%  p=0.002",
+        "    ✓ decode/time  -10.0%",
         "  candidate-b",
-        "    ✗ decode/time   +4.0%  p=0.002",
+        "    ✗ decode/time   +4.0%",
         "  candidate-c",
-        "    ≈ decode/time  unstable  band ±30.0%",
+        "    ≈ decode/time  unstable  noise ±30.0%",
       ]);
     });
 

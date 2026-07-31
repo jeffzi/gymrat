@@ -12,11 +12,11 @@ perf/lut-decode   ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   ~ 1 within
 
 highlights
   perf/simd-decode
-    ✗ encode/time               +2.2%  p=0.002
-    ✓ decode/text=digits/time  -17.9%  p=0.002
+    ✗ encode/time               +2.2%
+    ✓ decode/text=digits/time  -17.9%
     ✓ encode/heap               -7.9%  (exact)
   perf/lut-decode
-    ≈ encode/time  unstable  band ±30.0%
+    ≈ encode/time  unstable  noise ±30.0%
 
 legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
