@@ -2,6 +2,7 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { styleText } from "node:util";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
 import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
@@ -170,6 +171,26 @@ function formatProgressLine(step: ProgressStep): string {
   }
 }
 
+/**
+ * Apply ANSI styling to the progress line for spinner display:
+ * step word dim, counter yellow (sample only), label cyan.
+ *
+ * `validateStream: false` bypasses `styleText`'s own TTY check — the caller
+ * already decided color is appropriate.
+ */
+function styleProgressLine(step: ProgressStep): string {
+  const opts = { validateStream: false } as const;
+  const label = styleText("cyan", step.label, opts);
+  switch (step.kind) {
+    case "prepare":
+      return `${styleText("dim", "prepare", opts)} · ${label}`;
+    case "sample":
+      return `${styleText("dim", "sample", opts)} ${styleText("yellow", `${step.index}/${step.total}`, opts)} · ${label}`;
+    default:
+      return assertNever(step);
+  }
+}
+
 /** Carriage-return + clear-to-EOL: rewinds the cursor and erases the line it lands on. */
 const CLEAR_LINE = "\r\x1b[K";
 
@@ -213,14 +234,13 @@ function createProgressReporter(colorAllowed: boolean, tty: boolean): ProgressRe
 
   return {
     emit(step: ProgressStep): void {
-      const line = formatProgressLine(step);
       if (spinner) {
-        spinner.text = line;
+        spinner.text = styleProgressLine(step);
         if (!spinner.isSpinning) {
           spinner.start();
         }
       } else {
-        writeProgress(line, tty);
+        writeProgress(formatProgressLine(step), tty);
       }
     },
     stop(): void {

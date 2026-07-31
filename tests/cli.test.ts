@@ -618,6 +618,14 @@ describe("createProgram", () => {
       const PREPARE_BASELINE_STEP: ProgressStep = { kind: "prepare", label: "baseline" };
       const PREPARE_BASELINE_LINE = "prepare · baseline";
 
+      // ANSI open/close sequences used in styled progress text assertions.
+      const DIM_O = "\x1b[2m";
+      const DIM_C = "\x1b[22m";
+      const YEL_O = "\x1b[33m";
+      const YEL_C = "\x1b[39m";
+      const CYN_O = "\x1b[36m";
+      const CYN_C = "\x1b[39m";
+
       function findStderrWrite(stderrSpy: ReturnType<typeof vi.spyOn>, substring: string): unknown {
         return stderrWrites(stderrSpy).find((w) => typeof w === "string" && w.includes(substring));
       }
@@ -714,6 +722,40 @@ describe("createProgram", () => {
 
           // Assert
           expect(mockSpinnerInstance.start).toHaveBeenCalled();
+        });
+
+        it("styles the prepare step word dim and the label cyan in spinner text", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks([{ kind: "prepare", label: "baseline" }]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — prepare word is dim, label is cyan, separator unstyled
+          const text = mockSpinnerInstance.text;
+          expect.soft(text).toContain(DIM_O + "prepare" + DIM_C);
+          expect.soft(text).toContain(CYN_O + "baseline" + CYN_C);
+          expect(text).not.toContain(DIM_O + "·");
+        });
+
+        it("styles the sample step word dim, counter yellow, and label cyan in spinner text", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = true;
+          vi.stubEnv("NO_COLOR", undefined);
+          await setupProgressMocks([{ kind: "sample", index: 1, total: 5, label: "baseline" }]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — sample word is dim, counter is yellow, label is cyan
+          const text = mockSpinnerInstance.text;
+          expect.soft(text).toContain(DIM_O + "sample" + DIM_C);
+          expect.soft(text).toContain(YEL_O + "1/5" + YEL_C);
+          expect(text).toContain(CYN_O + "baseline" + CYN_C);
         });
       });
 
