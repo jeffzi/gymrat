@@ -619,8 +619,6 @@ describe("createProgram", () => {
       const PREPARE_BASELINE_LINE = "prepare · baseline";
 
       // ANSI open/close sequences used in styled progress text assertions.
-      const DIM_O = "\x1b[2m";
-      const DIM_C = "\x1b[22m";
       const YEL_O = "\x1b[33m";
       const YEL_C = "\x1b[39m";
       const CYN_O = "\x1b[36m";
@@ -724,7 +722,7 @@ describe("createProgram", () => {
           expect(mockSpinnerInstance.start).toHaveBeenCalled();
         });
 
-        it("styles the prepare step word dim and the label cyan in spinner text", async () => {
+        it("styles the prepare step word yellow and the label cyan in spinner text", async () => {
           // Arrange
           const program = createRunnableProgram();
           process.stderr.isTTY = true;
@@ -734,14 +732,14 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — prepare word is dim, label is cyan, separator unstyled
+          // Assert — prepare word is yellow, label is cyan, separator unstyled
           const text = mockSpinnerInstance.text;
-          expect.soft(text).toContain(DIM_O + "prepare" + DIM_C);
+          expect.soft(text).toContain(YEL_O + "prepare" + YEL_C);
           expect.soft(text).toContain(CYN_O + "baseline" + CYN_C);
-          expect(text).not.toContain(DIM_O + "·");
+          expect(text).not.toContain(YEL_O + "·");
         });
 
-        it("styles the sample step word dim, counter yellow, and label cyan in spinner text", async () => {
+        it("styles the sample step word yellow, counter yellow, and label cyan in spinner text", async () => {
           // Arrange
           const program = createRunnableProgram();
           process.stderr.isTTY = true;
@@ -751,9 +749,9 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — sample word is dim, counter is yellow, label is cyan
+          // Assert — sample word is yellow, counter is yellow, label is cyan
           const text = mockSpinnerInstance.text;
-          expect.soft(text).toContain(DIM_O + "sample" + DIM_C);
+          expect.soft(text).toContain(YEL_O + "sample" + YEL_C);
           expect.soft(text).toContain(YEL_O + "1/5" + YEL_C);
           expect(text).toContain(CYN_O + "baseline" + CYN_C);
         });

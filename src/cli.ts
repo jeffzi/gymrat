@@ -2,7 +2,6 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { styleText } from "node:util";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
 import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
@@ -13,7 +12,7 @@ import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { assertNever, GymratError } from "./errors.js";
-import { countVerdicts, formatHintLabel } from "./report/format.js";
+import { countVerdicts, formatHintLabel, formatLabel } from "./report/format.js";
 import { renderJson } from "./report/json.js";
 import { renderMarkdown } from "./report/markdown.js";
 import { renderReport } from "./report/text.js";
@@ -173,19 +172,15 @@ function formatProgressLine(step: ProgressStep): string {
 
 /**
  * Apply ANSI styling to the progress line for spinner display:
- * step word dim, counter yellow (sample only), label cyan.
- *
- * `validateStream: false` bypasses `styleText`'s own TTY check — the caller
- * already decided color is appropriate.
+ * step word yellow (matches the spinner glyph), counter yellow (sample only), label cyan.
  */
 function styleProgressLine(step: ProgressStep): string {
-  const opts = { validateStream: false } as const;
-  const label = styleText("cyan", step.label, opts);
+  const label = formatLabel(step.label, "cyan", true);
   switch (step.kind) {
     case "prepare":
-      return `${styleText("dim", "prepare", opts)} · ${label}`;
+      return `${formatLabel("prepare", "yellow", true)} · ${label}`;
     case "sample":
-      return `${styleText("dim", "sample", opts)} ${styleText("yellow", `${step.index}/${step.total}`, opts)} · ${label}`;
+      return `${formatLabel("sample", "yellow", true)} ${formatLabel(`${step.index}/${step.total}`, "yellow", true)} · ${label}`;
     default:
       return assertNever(step);
   }
