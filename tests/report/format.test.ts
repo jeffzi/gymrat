@@ -11,7 +11,10 @@ import {
   formatTableLine,
   formatValue,
   getGlyph,
+  legendGlosses,
+  methodFooterLines,
   selectHighlights,
+  verdictSummaryParts,
 } from "../../src/report/format.js";
 import type { ComparisonResult } from "../../src/report/types.js";
 import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
@@ -381,5 +384,120 @@ describe("formatLabel", () => {
 
   it("returns the bare label when color is off", () => {
     expect(formatLabel("Hint:", ["yellow", "underline"], false)).toBe("Hint:");
+  });
+});
+
+describe("verdictSummaryParts", () => {
+  const mixed: Metrics = {
+    "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+    "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
+    "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
+    "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
+  };
+
+  it("returns parts with no ANSI escapes when color is off", () => {
+    const parts = verdictSummaryParts(mixed, 0, false);
+
+    expect(parts.join("")).not.toContain("\x1b[");
+  });
+
+  it.each([
+    { label: "improved", code: "32", color: "green" },
+    { label: "regressed", code: "31", color: "red" },
+    { label: "unstable", code: "33", color: "yellow" },
+  ])("styles the non-zero $label part $color when color is on", ({ label, code }) => {
+    const parts = verdictSummaryParts(mixed, 0, true);
+    const part = parts.find((p) => p.includes(label));
+
+    expect(part).toContain(`\x1b[${code}m`);
+  });
+
+  it("dims a zero-count part when color is on", () => {
+    const onlyImproved: Metrics = {
+      "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+    };
+
+    const parts = verdictSummaryParts(onlyImproved, 0, true);
+    const regressedPart = parts.find((p) => p.includes("regressed"));
+
+    expect(regressedPart).toContain("\x1b[2m");
+  });
+
+  it("dims the within-noise part regardless of count when color is on", () => {
+    const parts = verdictSummaryParts(mixed, 0, true);
+    const noisePart = parts.find((p) => p.includes("within noise"));
+
+    expect(noisePart).toContain("\x1b[2m");
+  });
+});
+
+describe("legendGlosses", () => {
+  it("returns plain text with no ANSI escapes when color is off", () => {
+    expect(legendGlosses(false)).not.toContain("\x1b[");
+  });
+
+  it.each([
+    { glyph: "✓", code: "32", color: "green" },
+    { glyph: "✗", code: "31", color: "red" },
+    { glyph: "≈", code: "33", color: "yellow" },
+  ])("colors the $glyph glyph $color when color is on", ({ glyph, code }) => {
+    const gloss = legendGlosses(true);
+    const idx = gloss.indexOf(glyph);
+
+    expect(gloss.slice(0, idx)).toContain(`\x1b[${code}m`);
+  });
+});
+
+describe("methodFooterLines", () => {
+  it("returns lines with no ANSI escapes when color is off", () => {
+    const metrics: Metrics = {
+      "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
+    };
+
+    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`, false);
+
+    for (const line of lines) {
+      expect(line).not.toContain("\x1b[");
+    }
+  });
+
+  it("dims the descriptive verdict line when color is on", () => {
+    const metrics: Metrics = {
+      "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
+    };
+
+    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`, true);
+    const verdictLine = lines.find((l) => l.includes("Wilcoxon"));
+
+    expect(verdictLine).toContain("\x1b[2m");
+  });
+
+  it("does not dim the hint line when color is on", () => {
+    const metrics: Metrics = {
+      "a/time": {
+        baselineMedian: 100,
+        baselineSpread: 5,
+        candidates: [
+          {
+            median: 95,
+            spread: 4,
+            verdict: {
+              verdict: "no-signal" as const,
+              method: "band" as const,
+              delta: -5,
+              n: 4,
+              band: 2.5,
+              noisePct: 2.5,
+            },
+          },
+        ],
+        meta: { direction: "lower" as const, gating: true, exact: false },
+      },
+    };
+
+    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`, true);
+    const hintLine = lines.find((l) => l.includes("Hint:"));
+
+    expect(hintLine).not.toContain("\x1b[2m");
   });
 });

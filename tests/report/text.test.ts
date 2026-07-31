@@ -75,7 +75,7 @@ function stylesAt(line: string, marker: string): string[] {
 /** The lines of the `highlights` block, its heading excluded. */
 function highlightLines(report: string): string[] {
   const lines = report.split("\n");
-  const start = lines.indexOf("highlights");
+  const start = lines.findIndex((line) => stripAnsi(line) === "highlights");
   if (start === -1) {
     return [];
   }
@@ -691,6 +691,177 @@ describe("renderReport", () => {
       expect.soft(lineContaining(report, "vs main")).toMatch(/^\x1b\[1m.*\x1b\[22m$/);
       expect(stylesAt(lineContaining(report, "geomean"), "-5.8%")).toContain("1");
     });
+
+    it("emboldens 'gymrat compare' in the report header", () => {
+      const header = lineContaining(renderReport(colorfulResult(), true), "gymrat compare");
+
+      expect(stylesAt(header, "gymrat compare")).toContain("1");
+    });
+
+    it("dims each · separator in the report header", () => {
+      const header = lineContaining(renderReport(colorfulResult(), true), "gymrat compare");
+
+      expect(stylesAt(header, "·")).toContain("2");
+    });
+
+    it.each([
+      { label: "improved", glyph: "✓", code: "32", color: "green" },
+      { label: "regressed", glyph: "✗", code: "31", color: "red" },
+      { label: "unstable", glyph: "≈", code: "33", color: "yellow" },
+    ])("styles the non-zero $label tally $color in the verdict summary", ({ glyph, code }) => {
+      const summary = lineContaining(renderReport(colorfulResult(), true), "improved");
+
+      expect(stylesAt(summary, glyph)).toContain(code);
+    });
+
+    it("dims zero-count segments in the verdict summary", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+        },
+      });
+      const summary = lineContaining(renderReport(result, true), "improved");
+
+      expect(stylesAt(summary, "✗")).toContain("2");
+    });
+
+    it("dims the within-noise segment regardless of count in the verdict summary", () => {
+      const summary = lineContaining(renderReport(colorfulResult(), true), "within noise");
+
+      expect(stylesAt(summary, "~")).toContain("2");
+    });
+
+    it("emboldens the highlights heading", () => {
+      const lines = renderReport(colorfulResult(), true).split("\n");
+      const heading = lines.find((line) => stripAnsi(line) === "highlights");
+
+      expect(heading).toMatch(/^\x1b\[1m/);
+    });
+
+    it("styles the improved highlight glyph and delta green", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+        },
+      });
+      const highlights = highlightLines(renderReport(result, true));
+      const entry = highlights[0]!;
+
+      expect.soft(stylesAt(entry, "✓")).toContain("32");
+      expect(stylesAt(entry, "-17.5%")).toContain("32");
+    });
+
+    it("styles the regressed highlight glyph and delta red", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.2, unit: "ns" }),
+        },
+      });
+      const highlights = highlightLines(renderReport(result, true));
+      const entry = highlights[0]!;
+
+      expect.soft(stylesAt(entry, "✗")).toContain("31");
+      expect(stylesAt(entry, "+2.2%")).toContain("31");
+    });
+
+    it("styles the unstable highlight glyph and word yellow", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+      const highlights = highlightLines(renderReport(result, true));
+      const entry = highlights[0]!;
+
+      expect.soft(stylesAt(entry, "≈")).toContain("33");
+      expect(stylesAt(entry, "unstable")).toContain("33");
+    });
+
+    it("dims the evidence suffixes in highlight entries", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "cheaper/heap": exactMetric({ delta: -7.9 }),
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+      const highlights = highlightLines(renderReport(result, true));
+      const exactEntry = highlights.find((line) => line.includes("cheaper/heap"))!;
+      const unstableEntry = highlights.find((line) => line.includes("jittery/time"))!;
+
+      expect.soft(stylesAt(exactEntry, "(exact)")).toContain("2");
+      expect(stylesAt(unstableEntry, "noise")).toContain("2");
+    });
+
+    it("dims the legend line overall", () => {
+      const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
+
+      expect(legend).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+    });
+
+    it.each([
+      { glyph: "✓", code: "32", color: "green" },
+      { glyph: "✗", code: "31", color: "red" },
+      { glyph: "≈", code: "33", color: "yellow" },
+    ])("colors the legend $glyph glyph $color inside the dim line", ({ glyph, code }) => {
+      const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
+
+      expect(stylesAt(legend, glyph)).toContain(code);
+    });
+
+    it("leaves the legend ~ glyph uncolored", () => {
+      const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
+
+      expect(stylesAt(legend, "~")).toStrictEqual([]);
+    });
+
+    it("dims the verdict method description", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "a/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+        },
+      });
+      const method = lineContaining(renderReport(result, true), "Wilcoxon");
+
+      expect(method).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+    });
+
+    it("dims the noise-band description", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
+      });
+      const band = lineContaining(renderReport(result, true), "noise band");
+
+      expect(band).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
+    });
+
+    it("styles the Hint: label yellow and underlined", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
+      });
+      const hint = lineContaining(renderReport(result, true), "Hint:");
+
+      expect.soft(stylesAt(hint, "Hint:")).toContain("33");
+      expect(stylesAt(hint, "Hint:")).toContain("4");
+    });
+
+    it("renders the hint sentence text plain in colored mode", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
+      });
+      const hint = lineContaining(renderReport(result, true), "Hint:");
+      const afterLabel = hint.slice(hint.indexOf("re-run"));
+
+      expect(afterLabel).not.toContain("\x1b[2m");
+    });
+
+    it("renders the hint line entirely plain when color is off", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
+      });
+      const hint = lineContaining(renderReport(result, false), "Hint:");
+
+      expect(hint).not.toContain("\x1b[");
+    });
   });
 
   describe("when ordering the report sections", () => {
@@ -927,6 +1098,29 @@ describe("renderReport", () => {
 
       expect.soft(colored).toContain("\x1b[");
       expect(stripAnsi(colored)).toBe(renderReport(result, false));
+    });
+
+    it("emboldens the candidate label in N-way summary lines when color is on", () => {
+      const report = renderReport(multiCandidateResult(), true);
+      const summaries = report.split("\n").filter((line) => /✓ \d+ improved/.test(line));
+
+      expect(summaries).toHaveLength(3);
+      expect.soft(stylesAt(summaries[0]!, "candidate-a")).toContain("1");
+      expect.soft(stylesAt(summaries[1]!, "candidate-b")).toContain("1");
+      expect(stylesAt(summaries[2]!, "candidate-c")).toContain("1");
+    });
+
+    it("emboldens the candidate sublabels in N-way highlights when color is on", () => {
+      const highlights = highlightLines(renderReport(multiCandidateResult(), true));
+      const sublabels = highlights.filter((line) => {
+        const stripped = stripAnsi(line).trim();
+        return ["candidate-a", "candidate-b", "candidate-c"].includes(stripped);
+      });
+
+      expect(sublabels).toHaveLength(3);
+      for (const sublabel of sublabels) {
+        expect(sublabel).toContain("\x1b[1m");
+      }
     });
   });
 

@@ -330,7 +330,7 @@ export function formatHintLabel(useColor: boolean): string {
  * as dim amber. Nesting a second dim inside the row's would close it at the
  * glyph and leave the rest of the row bright.
  */
-const VERDICT_STYLES: Record<MetricVerdict["verdict"], Style> = {
+export const VERDICT_STYLES: Record<MetricVerdict["verdict"], Style> = {
   improved: ["green"],
   regressed: ["red"],
   unstable: ["yellow"],
@@ -394,14 +394,33 @@ export function isQuietRow(outcomes: ReadonlyArray<MetricVerdict["verdict"] | un
  *
  * Renderers join these with their own separator — `"   "` for aligned text
  * columns, `" · "` for inline markdown.
+ *
+ * When `useColor` is true, non-zero improved/regressed/unstable parts carry
+ * their class color and zero-count parts are dimmed. The `within noise`
+ * segment is always dimmed regardless of count — it carries no news worth
+ * highlighting.
  */
-export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
+export function verdictSummaryParts(
+  metrics: MetricComparisons,
+  candidateIndex: number,
+  useColor = false,
+): string[] {
   const counts = countVerdicts(metrics, candidateIndex);
+
+  const stylePart = (verdict: MetricVerdict["verdict"], count: number, gloss: string): string => {
+    const text = `${getGlyph(verdict)} ${count} ${gloss}`;
+    if (!useColor) return text;
+    if (verdict === "no-signal") return formatLabel(text, ["dim"], true);
+    return count > 0
+      ? formatLabel(text, VERDICT_STYLES[verdict], true)
+      : formatLabel(text, ["dim"], true);
+  };
+
   return [
-    `${getGlyph("improved")} ${counts.improved} ${VERDICT_GLOSSES.improved}`,
-    `${getGlyph("regressed")} ${counts.regressed} ${VERDICT_GLOSSES.regressed}`,
-    `${getGlyph("unstable")} ${counts.unstable} ${VERDICT_GLOSSES.unstable}`,
-    `${getGlyph("no-signal")} ${counts.noSignal} ${VERDICT_GLOSSES["no-signal"]}`,
+    stylePart("improved", counts.improved, VERDICT_GLOSSES.improved),
+    stylePart("regressed", counts.regressed, VERDICT_GLOSSES.regressed),
+    stylePart("unstable", counts.unstable, VERDICT_GLOSSES.unstable),
+    stylePart("no-signal", counts.noSignal, VERDICT_GLOSSES["no-signal"]),
   ];
 }
 
@@ -429,25 +448,27 @@ const SAMPLES_HINT = "re-run with --samples 6 or more for statistical verdicts";
  * `formatHint` turns the shared hint string into a format-appropriate line:
  * the text renderer prepends a styled label, the markdown renderer wraps it in
  * a blockquote with italic emphasis.
+ *
+ * When `useColor` is true, descriptive lines (signed-rank / noise-band) are
+ * dimmed. The hint line is left unstyled here — its label carries its own
+ * color through `formatHint`.
  */
 export function methodFooterLines(
   metrics: MetricComparisons,
   formatHint: (hint: string) => string,
+  useColor = false,
 ): string[] {
   const signedRank = pairCounts(metrics, "signed-rank");
   const band = pairCounts(metrics, "band");
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
-    const pairs = formatPairCount(Math.min(...signedRank));
-    lines.push(`verdicts: Wilcoxon signed-rank on pairs (${pairs} ≥ 6) · ~ = no signal at α=0.05`);
+    const desc = `verdicts: Wilcoxon signed-rank on pairs (${formatPairCount(Math.min(...signedRank))} ≥ 6) · ~ = no signal at α=0.05`;
+    lines.push(formatLabel(desc, ["dim"], useColor));
   }
   if (band.length > 0) {
-    const pairs = formatPairCount(Math.max(...band));
-    lines.push(
-      `noise band ±(half-range × K) — ${pairs} below signed-rank floor (6 pairs)`,
-      formatHint(SAMPLES_HINT),
-    );
+    const desc = `noise band ±(half-range × K) — ${formatPairCount(Math.max(...band))} below signed-rank floor (6 pairs)`;
+    lines.push(formatLabel(desc, ["dim"], useColor), formatHint(SAMPLES_HINT));
   }
 
   return lines;
@@ -459,14 +480,26 @@ export function methodFooterLines(
  *
  * Renderers wrap this into their own format (plain text prefix, blockquote,
  * etc.) and append the baseline attribution.
+ *
+ * When `useColor` is true, each glyph is painted in its verdict class color.
+ * The `~` glyph has no color of its own — it stays the color of whatever wraps
+ * the line (typically dim).
  */
-export function legendGlosses(): string {
-  return [
-    `${getGlyph("improved")} ${VERDICT_GLOSSES.improved}`,
-    `${getGlyph("regressed")} ${VERDICT_GLOSSES.regressed}`,
-    `${getGlyph("unstable")} ${VERDICT_GLOSSES.unstable}`,
-    `${getGlyph("no-signal")} ${VERDICT_GLOSSES["no-signal"]}`,
-  ].join(" · ");
+export function legendGlosses(useColor = false): string {
+  const glosses: readonly (keyof typeof VERDICT_GLOSSES)[] = [
+    "improved",
+    "regressed",
+    "unstable",
+    "no-signal",
+  ];
+  return glosses
+    .map((verdict) => {
+      const glyph = useColor
+        ? formatLabel(getGlyph(verdict), VERDICT_STYLES[verdict], true)
+        : getGlyph(verdict);
+      return `${glyph} ${VERDICT_GLOSSES[verdict]}`;
+    })
+    .join(" · ");
 }
 
 /** Paint a verdict's glyph in the color of its class, inside an already-padded cell. */
