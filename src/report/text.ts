@@ -118,6 +118,7 @@ function formatVerdictCell(verdict: MetricVerdict | undefined, samples: number):
 /** The geomean's verdict cell, and the aggregate inside it that the row exists for. */
 interface GeomeanCell {
   readonly figure: string;
+  readonly provenance: string;
   readonly text: string;
 }
 
@@ -130,8 +131,18 @@ interface GeomeanCell {
  */
 function formatGeomeanCell(geomean: GeomeanResult): GeomeanCell {
   const parts = geomeanParts(geomean);
-  if (parts === null) return { figure: "—", text: "—  no stable gating metrics" };
-  return { figure: parts.delta, text: `${parts.delta}  ${parts.provenance}` };
+  if (parts === null) {
+    return {
+      figure: "—",
+      provenance: "no stable gating metrics",
+      text: "—  no stable gating metrics",
+    };
+  }
+  return {
+    figure: parts.delta,
+    provenance: parts.provenance,
+    text: `${parts.delta}  ${parts.provenance}`,
+  };
 }
 
 /** Width the metric-name column needs: the widest metric name or the geomean row's label. */
@@ -180,7 +191,13 @@ function formatMetricRow(
   const line = formatRow(
     row,
     widths,
-    styleVerdictCell((cell) => styleGlyph(cell, outcome, useColor)),
+    styleVerdictCell((cell) => {
+      let styled = styleGlyph(cell, outcome, useColor);
+      if (!QUIET_VERDICTS.has(outcome) && "noisePct" in verdict) {
+        styled = styleWithin(styled, formatNoiseBand(verdict.noisePct), ["dim"], useColor);
+      }
+      return styled;
+    }),
   );
   return QUIET_VERDICTS.has(outcome) ? formatLabel(line, ["dim"], useColor) : line;
 }
@@ -244,11 +261,16 @@ function renderTable(
     rule,
     ...rows.map((row) => formatMetricRow(row.cells, widths, row.verdict, useColor)),
     rule,
-    formatRow(
-      geomean,
-      widths,
-      styleVerdictCell((cell) => styleWithin(cell, geomeanCell.figure, ["bold"], useColor)),
-    ),
+    formatRow(geomean, widths, (cell, index) => {
+      if (index === 1) return styleWithin(cell, baseline, ["dim"], useColor);
+      if (index === 2) return styleWithin(cell, candidate.label, ["dim"], useColor);
+      if (index === VERDICT_COLUMN) {
+        let styled = styleWithin(cell, geomeanCell.figure, ["bold"], useColor);
+        styled = styleWithin(styled, geomeanCell.provenance, ["dim"], useColor);
+        return styled;
+      }
+      return cell;
+    }),
   ];
 }
 
@@ -281,6 +303,7 @@ function formatCandidateVerdict(verdict: MetricVerdict | undefined, samples: num
 interface CandidateCell {
   readonly value: string;
   readonly verdict: string;
+  readonly delta: string;
   readonly outcome: MetricVerdict["verdict"] | undefined;
   text: string;
 }
@@ -333,6 +356,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
       const cell: CandidateCell = {
         value: formatMetricCell(side?.median, side?.spread, metric.meta.unit),
         verdict: formatCandidateVerdict(side?.verdict, result.samples),
+        delta: side?.verdict ? formatVerdictDelta(side.verdict) : "",
         outcome: side?.verdict?.verdict,
         text: "",
       };
@@ -410,18 +434,38 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
     );
 
   const metricRows = rows.map((row) => {
+    const rowIsQuiet = isQuietRow(row.candidates.map((cell) => cell.outcome));
     const rendered = line(
       row.name,
       row.baseline,
       row.candidates.map((cell) => cell.text),
       (cell, columnIndex) => {
-        const outcome = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET]?.outcome;
-        return outcome === undefined ? cell : styleGlyph(cell, outcome, useColor);
+        const candidateCell = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET];
+        if (candidateCell === undefined) return cell;
+        const outcome = candidateCell.outcome;
+        if (outcome === undefined) return cell;
+
+        if (!QUIET_VERDICTS.has(outcome)) {
+          let styled = styleGlyph(cell, outcome, useColor);
+          if (candidateCell.delta !== "") {
+            styled = styleWithin(styled, candidateCell.delta, VERDICT_STYLES[outcome], useColor);
+          }
+          return styled;
+        }
+
+        // Quiet cell on a bright row: dim glyph and delta individually.
+        if (!rowIsQuiet && candidateCell.verdict !== "") {
+          let styled = styleWithin(cell, getGlyph(outcome), ["dim"], useColor);
+          if (candidateCell.delta !== "") {
+            styled = styleWithin(styled, candidateCell.delta, ["dim"], useColor);
+          }
+          return styled;
+        }
+
+        return styleGlyph(cell, outcome, useColor);
       },
     );
-    return isQuietRow(row.candidates.map((cell) => cell.outcome))
-      ? formatLabel(rendered, ["dim"], useColor)
-      : rendered;
+    return rowIsQuiet ? formatLabel(rendered, ["dim"], useColor) : rendered;
   });
 
   const rule = formatTableRule(widths);
@@ -444,8 +488,12 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
       baseline,
       columns.map((column) => column.geomean.text),
       (cell, columnIndex) => {
-        const figure = columns[columnIndex - CANDIDATE_COLUMN_OFFSET]?.geomean.figure;
-        return figure === undefined ? cell : styleWithin(cell, figure, ["bold"], useColor);
+        if (columnIndex === 1) return styleWithin(cell, baseline, ["dim"], useColor);
+        const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
+        if (column === undefined) return cell;
+        let styled = styleWithin(cell, column.geomean.figure, ["bold"], useColor);
+        styled = styleWithin(styled, column.geomean.provenance, ["dim"], useColor);
+        return styled;
       },
     ),
   ];

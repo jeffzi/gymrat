@@ -682,7 +682,7 @@ describe("renderReport", () => {
     ])("leaves the $verdict row at full brightness", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult(), true), metric);
 
-      expect(row).not.toContain("\x1b[2m");
+      expect(row).not.toMatch(/^\x1b\[2m.*\x1b\[22m$/);
     });
 
     it("emboldens the header row and the geomean figure", () => {
@@ -861,6 +861,22 @@ describe("renderReport", () => {
       const hint = lineContaining(renderReport(result, false), "Hint:");
 
       expect(hint).not.toContain("\x1b[");
+    });
+
+    it("dims the band annotation on improved and regressed rows", () => {
+      const report = renderReport(colorfulResult(), true);
+
+      expect.soft(stylesAt(lineContaining(report, "faster/time"), "±2.5%")).toContain("2");
+      expect(stylesAt(lineContaining(report, "slower/time"), "±2.5%")).toContain("2");
+    });
+
+    it("dims the repeated labels and provenance in the geomean row", () => {
+      const report = renderReport(colorfulResult(), true);
+      const geomean = lineContaining(report, "geomean");
+
+      expect.soft(stylesAt(geomean, "main")).toContain("2");
+      expect.soft(stylesAt(geomean, "perf/faster-decode")).toContain("2");
+      expect(stylesAt(geomean, "3 stable")).toContain("2");
     });
   });
 
@@ -1088,7 +1104,7 @@ describe("renderReport", () => {
       const report = renderReport(dimmingResult(), true);
 
       expect.soft(lineContaining(report, "flat/time")).toMatch(/^\x1b\[2m.*\x1b\[22m$/);
-      expect(lineContaining(report, "mixed/time")).not.toContain("\x1b[2m");
+      expect(lineContaining(report, "mixed/time")).not.toMatch(/^\x1b\[2m.*\x1b\[22m$/);
     });
 
     it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
@@ -1121,6 +1137,32 @@ describe("renderReport", () => {
       for (const sublabel of sublabels) {
         expect(sublabel).toContain("\x1b[1m");
       }
+    });
+
+    it("colors glyph and delta together in N-way improved and regressed cells", () => {
+      const report = renderReport(multiCandidateResult(), true);
+      const row = lineContaining(report, "decode/time");
+
+      expect.soft(stylesAt(row, "✓")).toContain("32");
+      expect.soft(stylesAt(row, "-10.0%")).toContain("32");
+      expect.soft(stylesAt(row, "✗")).toContain("31");
+      expect(stylesAt(row, "+4.0%")).toContain("31");
+    });
+
+    it("dims the quiet candidate segment on a bright N-way row", () => {
+      const report = renderReport(dimmingResult(), true);
+      const row = lineContaining(report, "mixed/time");
+
+      expect.soft(stylesAt(row, "~")).toContain("2");
+      expect(stylesAt(row, "+0.3%")).toContain("2");
+    });
+
+    it("dims the baseline label and provenance in N-way geomean cells", () => {
+      const report = renderReport(multiCandidateResult(), true);
+      const geomean = lineContaining(report, "geomean");
+
+      expect.soft(stylesAt(geomean, "main")).toContain("2");
+      expect(stylesAt(geomean, "1 stable metric")).toContain("2");
     });
   });
 
