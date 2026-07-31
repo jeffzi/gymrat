@@ -77,7 +77,8 @@ function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, 
 
 function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): string {
   let result = alias;
-  for (const [key, value] of Object.entries(args)) {
+  const entries = Object.entries(args).toSorted(([a], [b]) => b.length - a.length);
+  for (const [key, value] of entries) {
     result = result.replaceAll(`$${key}`, `${key}=${String(value)}`);
   }
   return result;
