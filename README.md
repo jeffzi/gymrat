@@ -12,17 +12,11 @@ noise band below that. No session state, no config required to start.
 
 Requires Node ≥ 22 and `git` on your `PATH`.
 
-gymrat is not yet published to npm. For now, install from source:
-
 ```sh
-git clone https://github.com/jeffzi/gymrat.git
-cd gymrat
-npm install
-npm run build
-npm link
+npm install -g gymrat
 ```
 
-`npm link` puts `gymrat` on your `PATH`. Then, from inside the project you want to benchmark:
+Then, from inside the project you want to benchmark:
 
 ```sh
 gymrat compare main my-branch --bench "npm run bench"
