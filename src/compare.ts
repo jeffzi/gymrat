@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { getAdapter } from "./adapters/index.js";
+import { getAdapter, AdapterError } from "./adapters/index.js";
 import type { Adapter } from "./adapters/types.js";
 import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
@@ -203,7 +203,7 @@ function computeSpread(values: readonly number[]): number {
     return 0;
   }
 
-  return ((max - min) / (2 * median)) * 100;
+  return ((max - min) / (2 * Math.abs(median))) * 100;
 }
 
 interface TargetContext {
@@ -487,7 +487,11 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
     return new GymratError(combinedMessage, error.hint, { cause: error });
   }
 
-  return new Error(combinedMessage, { cause: error });
+  if (error instanceof AdapterError) {
+    return new AdapterError(combinedMessage, undefined, { cause: error });
+  }
+
+  return new GymratError(combinedMessage, undefined, { cause: error });
 }
 
 /**
