@@ -1129,6 +1129,213 @@ describe("createProgram", () => {
           expect(mockSpinnerInstance.stop).toHaveBeenCalled();
         });
       });
+
+      describe("ETA countdown interpolation", () => {
+        afterEach(() => {
+          vi.useRealTimers();
+        });
+
+        /**
+         * Set up a compare mock that fires the given progress steps immediately,
+         * then returns a promise the caller controls via `resolveCompare`. This
+         * lets tests advance fake timers between `emit()` and `stop()`.
+         *
+         * `delayedStep`, if given, fires as a second `onProgress` emit after
+         * `delayMs` — used to test countdown resets mid-flight.
+         */
+        async function setupCountdownTest(
+          steps: ProgressStep[],
+          delayedStep?: { step: ProgressStep; delayMs: number },
+        ): Promise<{
+          stderrSpy: ReturnType<typeof vi.spyOn>;
+          resolveCompare: () => void;
+        }> {
+          const { compareMock } = await setupMocks();
+          let settle!: () => void;
+
+          vi.mocked(compareMock).mockImplementation((opts: CompareOptions) => {
+            for (const step of steps) {
+              opts.onProgress?.(step);
+            }
+            if (delayedStep) {
+              setTimeout(() => {
+                opts.onProgress?.(delayedStep.step);
+              }, delayedStep.delayMs);
+            }
+            return new Promise<ComparisonResult>((r) => {
+              settle = () => {
+                r(createComparisonResult());
+              };
+            });
+          });
+
+          const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+          vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+          // Wrapper defers the read: `settle` is assigned when `compareMock` runs
+          // inside `parseAsync`, which happens after this function returns.
+          return {
+            stderrSpy,
+            resolveCompare: () => {
+              settle();
+            },
+          };
+        }
+
+        /** Resolves the compare promise, flushes the resulting microtask, and awaits `parseAsync`. */
+        async function settleCompare(
+          resolveCompare: () => void,
+          parsePromise: Promise<unknown>,
+        ): Promise<void> {
+          resolveCompare();
+          await vi.advanceTimersByTimeAsync(0);
+          await parsePromise;
+        }
+
+        /** Stubs `formatEta` to render `~<seconds>s left`, floor-rounded, for countdown assertions. */
+        function stubFormatEtaInSeconds(): void {
+          mockFormatEta.mockImplementation((ms: number) => `~${Math.floor(ms / 1000)}s left`);
+        }
+
+        it("ticks down spinner text every ~1s using elapsed wall-clock time", async () => {
+          // Arrange
+          vi.useFakeTimers();
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValue(130_000);
+          stubFormatEtaInSeconds();
+
+          const { resolveCompare } = await setupCountdownTest([
+            { kind: "sample", index: 2, total: 5, label: "baseline" },
+          ]);
+
+          // Act
+          const parsePromise = program.parseAsync(compareArgv("main", "branch"));
+          await vi.advanceTimersByTimeAsync(1000);
+
+          // Assert — formatEta called with the decremented value, spinner text updated
+          expect(mockFormatEta).toHaveBeenCalledWith(129_000);
+          expect(mockSpinnerInstance.text).toContain("~129s left");
+
+          // Cleanup
+          await settleCompare(resolveCompare, parsePromise);
+        });
+
+        it("resets the countdown to the fresh ETA when a new emit arrives", async () => {
+          // Arrange
+          vi.useFakeTimers();
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValueOnce(10_000).mockReturnValue(60_000);
+          stubFormatEtaInSeconds();
+
+          const { resolveCompare } = await setupCountdownTest(
+            [{ kind: "sample", index: 2, total: 5, label: "baseline" }],
+            { step: { kind: "sample", index: 3, total: 5, label: "baseline" }, delayMs: 5000 },
+          );
+
+          // Act
+          const parsePromise = program.parseAsync(compareArgv("main", "branch"));
+          // Advance past the first ETA and trigger the second emit at t=5000
+          await vi.advanceTimersByTimeAsync(5000);
+          mockFormatEta.mockClear();
+          // Advance 1s after the second emit — countdown should use new ETA (60_000)
+          await vi.advanceTimersByTimeAsync(1000);
+
+          // Assert — the countdown is from the new ETA (60_000 - 1000 = 59_000),
+          // not the old depleted one (10_000 - 6000 = clamped to 0)
+          expect(mockFormatEta).toHaveBeenCalledWith(59_000);
+
+          // Cleanup
+          await settleCompare(resolveCompare, parsePromise);
+        });
+
+        it("clears the countdown interval when stop is called", async () => {
+          // Arrange
+          vi.useFakeTimers();
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValue(130_000);
+          stubFormatEtaInSeconds();
+
+          const { resolveCompare } = await setupCountdownTest([
+            { kind: "sample", index: 2, total: 5, label: "baseline" },
+          ]);
+
+          // Act — start, advance to prove countdown is active, then stop
+          const parsePromise = program.parseAsync(compareArgv("main", "branch"));
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(mockFormatEta).toHaveBeenCalledWith(129_000);
+
+          // Resolve compare → stop() is called
+          await settleCompare(resolveCompare, parsePromise);
+
+          // Assert — after stop, no more formatEta calls from countdown
+          mockFormatEta.mockClear();
+          await vi.advanceTimersByTimeAsync(5000);
+          expect(mockFormatEta).not.toHaveBeenCalled();
+        });
+
+        it("clears a running countdown when a subsequent emit yields no ETA", async () => {
+          // Arrange
+          vi.useFakeTimers();
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValueOnce(130_000).mockReturnValue(undefined);
+          stubFormatEtaInSeconds();
+
+          const { resolveCompare } = await setupCountdownTest(
+            [{ kind: "sample", index: 2, total: 5, label: "baseline" }],
+            { step: { kind: "sample", index: 3, total: 5, label: "baseline" }, delayMs: 2000 },
+          );
+
+          // Act
+          const parsePromise = program.parseAsync(compareArgv("main", "branch"));
+          // Advance 1s — countdown fires, proving interval is active
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(mockFormatEta).toHaveBeenCalledWith(129_000);
+
+          // Advance 1s more — second emit fires with undefined ETA
+          await vi.advanceTimersByTimeAsync(1000);
+          mockFormatEta.mockClear();
+
+          // Advance 2s more — if interval were still active, formatEta would be called
+          await vi.advanceTimersByTimeAsync(2000);
+
+          // Assert — no more formatEta calls after interval was cleared
+          expect(mockFormatEta).not.toHaveBeenCalled();
+
+          // Cleanup
+          await settleCompare(resolveCompare, parsePromise);
+        });
+
+        it("clamps the countdown ETA to zero instead of going negative", async () => {
+          // Arrange
+          vi.useFakeTimers();
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValue(1500);
+          mockFormatEta.mockImplementation((ms: number) => `~${Math.ceil(ms / 1000)}s left`);
+
+          const { resolveCompare } = await setupCountdownTest([
+            { kind: "sample", index: 2, total: 5, label: "baseline" },
+          ]);
+
+          // Act — advance past the ETA
+          const parsePromise = program.parseAsync(compareArgv("main", "branch"));
+          await vi.advanceTimersByTimeAsync(5000);
+
+          // Assert — every formatEta call used a non-negative value
+          for (const [ms] of mockFormatEta.mock.calls as [number][]) {
+            expect(ms).toBeGreaterThanOrEqual(0);
+          }
+          // The clamped value (0) was reached
+          expect(mockFormatEta).toHaveBeenCalledWith(0);
+
+          // Cleanup
+          await settleCompare(resolveCompare, parsePromise);
+        });
+      });
     });
 
     describe("on compare error", () => {

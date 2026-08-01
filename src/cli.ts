@@ -244,6 +244,9 @@ interface ProgressReporter {
   stop(): void;
 }
 
+/** How often the spinner's ETA countdown ticks down while waiting for the next step. */
+const COUNTDOWN_TICK_MS = 1000;
+
 /**
  * TTY + color allowed: use yocto-spinner (yellow glyph on stderr).
  * TTY + color vetoed: fall back to \r\x1b[K overwrite with plain text —
@@ -259,20 +262,47 @@ function createProgressReporter(
     ? yoctoSpinner({ color: "yellow", stream: process.stderr })
     : undefined;
   const eta = new EtaTracker(targetCount);
+  let countdownInterval: ReturnType<typeof setInterval> | undefined;
+
+  function clearCountdown(): void {
+    if (countdownInterval !== undefined) {
+      clearInterval(countdownInterval);
+      countdownInterval = undefined;
+    }
+  }
+
+  /** Tick the spinner text down toward zero every second until the next `emit`. */
+  function startCountdown(
+    activeSpinner: ReturnType<typeof yoctoSpinner>,
+    step: ProgressStep,
+    etaMs: number,
+  ): void {
+    const emitTime = Date.now();
+    countdownInterval = setInterval(() => {
+      const remaining = Math.max(0, etaMs - (Date.now() - emitTime));
+      activeSpinner.text = styleProgressLine(step, remaining);
+    }, COUNTDOWN_TICK_MS);
+  }
 
   return {
     emit(step: ProgressStep): void {
       const etaMs = eta.record(step);
-      if (spinner) {
-        spinner.text = styleProgressLine(step, etaMs);
-        if (!spinner.isSpinning) {
-          spinner.start();
-        }
-      } else {
+      if (!spinner) {
         writeProgress(formatProgressLine(step, etaMs), tty);
+        return;
+      }
+
+      spinner.text = styleProgressLine(step, etaMs);
+      if (!spinner.isSpinning) {
+        spinner.start();
+      }
+      clearCountdown();
+      if (etaMs !== undefined) {
+        startCountdown(spinner, step, etaMs);
       }
     },
     stop(): void {
+      clearCountdown();
       if (spinner) {
         spinner.stop();
       } else {
