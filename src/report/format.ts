@@ -317,8 +317,8 @@ export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteSt
 const HINT_STYLE: Style = ["yellow", "underline"];
 
 /** The `Hint:` label every hint line opens with, styled by `styleText` auto-detection. */
-export function formatHintLabel(): string {
-  return formatLabel("Hint:", HINT_STYLE);
+export function formatHintLabel(stream?: NodeJS.WriteStream): string {
+  return formatLabel("Hint:", HINT_STYLE, stream);
 }
 
 /**

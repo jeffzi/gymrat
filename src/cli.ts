@@ -134,7 +134,7 @@ export function formatCliError(error: unknown): string {
   let output = error instanceof Error ? error.message : String(error);
 
   if (error instanceof GymratError && error.hint !== undefined) {
-    output += `\n${formatHintLabel()} ${error.hint}`;
+    output += `\n${formatHintLabel(process.stderr)} ${error.hint}`;
   }
 
   return output;
