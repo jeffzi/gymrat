@@ -477,54 +477,44 @@ describe("createProgram", () => {
         process.stdout.isTTY = originalIsTTY;
       });
 
-      it.each([
-        {
-          desc: "stdout is a terminal and nothing forbids it",
-          isTTY: true,
-          noColor: undefined,
-          args: [],
-          expected: "colored",
-        },
-        {
-          desc: "--no-color was passed",
-          isTTY: true,
-          noColor: undefined,
-          args: ["--no-color"],
-          expected: "plain",
-        },
-        {
-          desc: "NO_COLOR is set",
-          isTTY: true,
-          noColor: "1",
-          args: [],
-          expected: "plain",
-        },
-        {
-          desc: "stdout is redirected",
-          isTTY: false,
-          noColor: undefined,
-          args: [],
-          expected: "plain",
-        },
-      ])("writes a $expected report when $desc", async ({ isTTY, noColor, args }) => {
+      const ANSI_RE = /\x1b\[/;
+
+      it("includes ANSI escapes when stdout is a terminal", async () => {
         // Arrange
         const program = createRunnableProgram();
-        const result = createColorSensitiveResult();
-        await setupMocks(result);
-        process.stdout.isTTY = isTTY;
-        vi.stubEnv("NO_COLOR", noColor);
+        await setupMocks(createColorSensitiveResult());
+        process.stdout.isTTY = true;
+        vi.stubEnv("NO_COLOR", undefined);
         const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch", ...args));
+        await program.parseAsync(compareArgv("main", "branch"));
 
         // Assert
-        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
+        const output = writeSpy.mock.calls[0]![0] as string;
+        expect(output).toMatch(ANSI_RE);
+      });
+
+      it("omits ANSI escapes when stdout is redirected", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        await setupMocks(createColorSensitiveResult());
+        process.stdout.isTTY = false;
+        vi.stubEnv("NO_COLOR", undefined);
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch"));
+
+        // Assert
+        const output = writeSpy.mock.calls[0]![0] as string;
+        expect(output).not.toMatch(ANSI_RE);
       });
 
       it("sets process.env.NO_COLOR when --no-color is passed", async () => {
         // Arrange
         const program = createRunnableProgram();
+        vi.stubEnv("NO_COLOR", undefined);
         await setupMocks();
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
@@ -629,6 +619,7 @@ describe("createProgram", () => {
           async (format) => {
             // Arrange
             const program = createRunnableProgram();
+            vi.stubEnv("NO_COLOR", undefined);
             await setupMocks();
             process.stdout.isTTY = true;
             vi.spyOn(process.stdout, "write").mockReturnValue(true);

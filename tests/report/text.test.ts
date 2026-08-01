@@ -1123,80 +1123,81 @@ describe("renderReport", () => {
       });
     }
 
-    it("dims a row only once every candidate on it stayed flat or unstable", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-      const report = renderReport(dimmingResult());
-
-      expect.soft(lineContaining(report, "flat/time")).toMatch(DIMMED_LINE);
-      expect(lineContaining(report, "mixed/time")).not.toMatch(DIMMED_LINE);
-    });
-
-    it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
-      const result = multiCandidateResult();
-
-      vi.stubEnv("NO_COLOR", "1");
-      const plain = renderReport(result);
-
-      vi.stubEnv("NO_COLOR", undefined);
-      vi.stubEnv("FORCE_COLOR", "1");
-      const colored = renderReport(result);
-
-      expect.soft(colored).toContain("\x1b[");
-      expect(stripAnsi(colored)).toBe(plain);
-    });
-
-    it("emboldens the candidate label in N-way summary lines when color is on", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-      const report = renderReport(multiCandidateResult());
-      const summaries = report.split("\n").filter((line) => /✓ \d+ improved/.test(line));
-
-      expect(summaries).toHaveLength(3);
-      expect.soft(stylesAt(summaries[0]!, "candidate-a")).toContain("1");
-      expect.soft(stylesAt(summaries[1]!, "candidate-b")).toContain("1");
-      expect(stylesAt(summaries[2]!, "candidate-c")).toContain("1");
-    });
-
-    it("emboldens the candidate sublabels in N-way highlights when color is on", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-      const highlights = highlightLines(renderReport(multiCandidateResult()));
-      const sublabels = highlights.filter((line) => {
-        const stripped = stripAnsi(line).trim();
-        return ["candidate-a", "candidate-b", "candidate-c"].includes(stripped);
+    describe("color styling", () => {
+      beforeEach(() => {
+        vi.stubEnv("FORCE_COLOR", "1");
       });
 
-      expect(sublabels).toHaveLength(3);
-      for (const sublabel of sublabels) {
-        expect(sublabel).toContain("\x1b[1m");
-      }
-    });
+      it("dims a row only once every candidate on it stayed flat or unstable", () => {
+        const report = renderReport(dimmingResult());
 
-    it("colors glyph and delta together in N-way improved and regressed cells", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-      const report = renderReport(multiCandidateResult());
-      const row = lineContaining(report, "decode/time");
+        expect.soft(lineContaining(report, "flat/time")).toMatch(DIMMED_LINE);
+        expect(lineContaining(report, "mixed/time")).not.toMatch(DIMMED_LINE);
+      });
 
-      expect.soft(stylesAt(row, "✓")).toContain("32");
-      expect.soft(stylesAt(row, "-10.0%")).toContain("32");
-      expect.soft(stylesAt(row, "✗")).toContain("31");
-      expect(stylesAt(row, "+4.0%")).toContain("31");
-    });
+      it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
+        const result = multiCandidateResult();
 
-    it("dims the quiet candidate segment on a bright N-way row", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-      const report = renderReport(dimmingResult());
-      const row = lineContaining(report, "mixed/time");
+        vi.stubEnv("FORCE_COLOR", undefined);
+        vi.stubEnv("NO_COLOR", "1");
+        const plain = renderReport(result);
 
-      expect.soft(stylesAt(row, "~")).toContain("2");
-      expect(stylesAt(row, "+0.3%")).toContain("2");
-    });
+        vi.stubEnv("NO_COLOR", undefined);
+        vi.stubEnv("FORCE_COLOR", "1");
+        const colored = renderReport(result);
 
-    it("dims the baseline label and provenance in N-way geomean cells", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-      const report = renderReport(multiCandidateResult());
-      const geomean = lineContaining(report, "geomean");
+        expect.soft(colored).toContain("\x1b[");
+        expect(stripAnsi(colored)).toBe(plain);
+      });
 
-      expect.soft(stylesAt(geomean, "main")).toContain("2");
-      expect(stylesAt(geomean, "1 stable metric")).toContain("2");
+      it("emboldens the candidate label in N-way summary lines when color is on", () => {
+        const report = renderReport(multiCandidateResult());
+        const summaries = report.split("\n").filter((line) => /✓ \d+ improved/.test(line));
+
+        expect(summaries).toHaveLength(3);
+        expect.soft(stylesAt(summaries[0]!, "candidate-a")).toContain("1");
+        expect.soft(stylesAt(summaries[1]!, "candidate-b")).toContain("1");
+        expect(stylesAt(summaries[2]!, "candidate-c")).toContain("1");
+      });
+
+      it("emboldens the candidate sublabels in N-way highlights when color is on", () => {
+        const highlights = highlightLines(renderReport(multiCandidateResult()));
+        const sublabels = highlights.filter((line) => {
+          const stripped = stripAnsi(line).trim();
+          return ["candidate-a", "candidate-b", "candidate-c"].includes(stripped);
+        });
+
+        expect(sublabels).toHaveLength(3);
+        for (const sublabel of sublabels) {
+          expect(sublabel).toContain("\x1b[1m");
+        }
+      });
+
+      it("colors glyph and delta together in N-way improved and regressed cells", () => {
+        const report = renderReport(multiCandidateResult());
+        const row = lineContaining(report, "decode/time");
+
+        expect.soft(stylesAt(row, "✓")).toContain("32");
+        expect.soft(stylesAt(row, "-10.0%")).toContain("32");
+        expect.soft(stylesAt(row, "✗")).toContain("31");
+        expect(stylesAt(row, "+4.0%")).toContain("31");
+      });
+
+      it("dims the quiet candidate segment on a bright N-way row", () => {
+        const report = renderReport(dimmingResult());
+        const row = lineContaining(report, "mixed/time");
+
+        expect.soft(stylesAt(row, "~")).toContain("2");
+        expect(stylesAt(row, "+0.3%")).toContain("2");
+      });
+
+      it("dims the baseline label and provenance in N-way geomean cells", () => {
+        const report = renderReport(multiCandidateResult());
+        const geomean = lineContaining(report, "geomean");
+
+        expect.soft(stylesAt(geomean, "main")).toContain("2");
+        expect(stylesAt(geomean, "1 stable metric")).toContain("2");
+      });
     });
   });
 
