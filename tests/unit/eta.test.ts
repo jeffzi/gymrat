@@ -55,9 +55,9 @@ describe("EtaTracker", () => {
 
       // Assert
       // mean = 100, targetCount = 2 (from constructor)
-      // completedSampleSteps = 2, remaining = 3*2 - 2 = 4
-      // estimate = 100 * 4 = 400
-      expect(result).toBe(400);
+      // completedSampleSteps before this call = 1, remaining = 3*2 - 1 = 5
+      // estimate = 100 * 5 = 500
+      expect(result).toBe(500);
     });
 
     it("uses constructor-provided target count, not inferred from index-1 steps", () => {
@@ -70,9 +70,9 @@ describe("EtaTracker", () => {
 
       // Assert
       // mean = 100, targetCount = 3 (from constructor, not 2 seen targets)
-      // completedSampleSteps = 2, remaining = 4*3 - 2 = 10
-      // estimate = 100 * 10 = 1000
-      expect(result).toBe(1000);
+      // completedSampleSteps before this call = 1, remaining = 4*3 - 1 = 11
+      // estimate = 100 * 11 = 1100
+      expect(result).toBe(1100);
     });
 
     it("pools gaps from different targets into a shared mean", () => {
@@ -86,9 +86,9 @@ describe("EtaTracker", () => {
 
       // Assert
       // durations = [100, 200], mean = 150 (pooled across targets)
-      // targetCount = 2, completedSampleSteps = 3, remaining = 3*2 - 3 = 3
-      // estimate = 150 * 3 = 450
-      expect(result).toBe(450);
+      // targetCount = 2, completedSampleSteps before this call = 2, remaining = 3*2 - 2 = 4
+      // estimate = 150 * 4 = 600
+      expect(result).toBe(600);
     });
 
     it("excludes the gap following a prepare step from the mean", () => {
@@ -102,9 +102,9 @@ describe("EtaTracker", () => {
 
       // Assert
       // durations = [100] (prepare gap excluded), mean = 100
-      // targetCount = 1, completedSampleSteps = 2, remaining = 3*1 - 2 = 1
-      // estimate = 100 * 1 = 100 (would be 550 if prepare gap were included)
-      expect(result).toBe(100);
+      // targetCount = 1, completedSampleSteps before this call = 1, remaining = 3*1 - 1 = 2
+      // estimate = 100 * 2 = 200
+      expect(result).toBe(200);
     });
 
     it("excludes mid-run prepare gaps, keying off kind not position", () => {
@@ -119,9 +119,9 @@ describe("EtaTracker", () => {
 
       // Assert
       // durations = [100] (900ms prepare gap excluded), mean = 100
-      // targetCount = 2, completedSampleSteps = 3, remaining = 3*2 - 3 = 3
-      // estimate = 100 * 3 = 300
-      expect(result).toBe(300);
+      // targetCount = 2, completedSampleSteps before this call = 2, remaining = 3*2 - 2 = 4
+      // estimate = 100 * 4 = 400
+      expect(result).toBe(400);
     });
   });
 });

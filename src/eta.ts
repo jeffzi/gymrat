@@ -49,15 +49,17 @@ export class EtaTracker {
 
     this.#prevWasPrepare = false;
     this.#prevTime = now;
-    this.#completedSamples++;
 
     if (this.#durations.length === 0) {
+      this.#completedSamples++;
       return undefined;
     }
 
     const mean =
       this.#durations.reduce((sum, duration) => sum + duration, 0) / this.#durations.length;
     const remaining = step.total * this.#targetCount - this.#completedSamples;
+
+    this.#completedSamples++;
 
     return mean * remaining;
   }
