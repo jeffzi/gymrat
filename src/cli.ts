@@ -150,27 +150,47 @@ function exitWithError(error: unknown): never {
 /** Shown after a sample step until enough gaps have been measured for an ETA. */
 const ETA_PENDING_LABEL = "estimating time left…";
 
+/** Structured segments shared by {@link formatProgressLine} and {@link styleProgressLine}. */
+interface ProgressLineParts {
+  readonly stepWord: string;
+  readonly counter: string | undefined;
+  readonly label: string;
+  readonly etaSuffix: string | undefined;
+}
+
+/**
+ * Derive the step word, counter, label, and ETA suffix for a progress line,
+ * leaving presentation (plain text vs. ANSI styling) to the caller.
+ */
+function buildProgressLineParts(step: ProgressStep, etaMs?: number): ProgressLineParts {
+  const etaSuffix =
+    etaMs !== undefined ? formatEta(etaMs) : step.kind === "sample" ? ETA_PENDING_LABEL : undefined;
+
+  switch (step.kind) {
+    case "prepare":
+      return { stepWord: "prepare", counter: undefined, label: step.label, etaSuffix };
+    case "sample":
+      return {
+        stepWord: "sample",
+        counter: `${step.index}/${step.total}`,
+        label: step.label,
+        etaSuffix,
+      };
+    default:
+      return assertNever(step);
+  }
+}
+
 /**
  * Each line names the target so the user can tell which one is running;
  * samples also show their position in the total.
  * When an ETA estimate is available, it is appended as plain text.
  */
 function formatProgressLine(step: ProgressStep, etaMs?: number): string {
-  let line: string;
-  switch (step.kind) {
-    case "prepare":
-      line = `prepare · ${step.label}`;
-      break;
-    case "sample":
-      line = `sample ${step.index}/${step.total} · ${step.label}`;
-      break;
-    default:
-      return assertNever(step);
-  }
-  if (etaMs !== undefined) {
-    line += ` · ${formatEta(etaMs)}`;
-  } else if (step.kind === "sample") {
-    line += ` · ${ETA_PENDING_LABEL}`;
+  const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
+  let line = counter === undefined ? `${stepWord} · ${label}` : `${stepWord} ${counter} · ${label}`;
+  if (etaSuffix !== undefined) {
+    line += ` · ${etaSuffix}`;
   }
   return line;
 }
@@ -182,22 +202,14 @@ function formatProgressLine(step: ProgressStep, etaMs?: number): string {
  * When no ETA is available for a sample step, a dim placeholder is shown.
  */
 function styleProgressLine(step: ProgressStep, etaMs?: number): string {
-  const label = formatLabel(step.label, "cyan", process.stderr);
-  let line: string;
-  switch (step.kind) {
-    case "prepare":
-      line = `prepare · ${label}`;
-      break;
-    case "sample":
-      line = `sample ${formatLabel(`${step.index}/${step.total}`, "bold", process.stderr)} · ${label}`;
-      break;
-    default:
-      return assertNever(step);
-  }
-  if (etaMs !== undefined) {
-    line += formatLabel(` · ${formatEta(etaMs)}`, "dim", process.stderr);
-  } else if (step.kind === "sample") {
-    line += formatLabel(` · ${ETA_PENDING_LABEL}`, "dim", process.stderr);
+  const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
+  const styledLabel = formatLabel(label, "cyan", process.stderr);
+  let line =
+    counter === undefined
+      ? `${stepWord} · ${styledLabel}`
+      : `${stepWord} ${formatLabel(counter, "bold", process.stderr)} · ${styledLabel}`;
+  if (etaSuffix !== undefined) {
+    line += formatLabel(` · ${etaSuffix}`, "dim", process.stderr);
   }
   return line;
 }
