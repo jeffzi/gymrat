@@ -12,6 +12,7 @@ import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { assertNever, GymratError } from "./errors.js";
+import { EtaTracker, formatEta } from "./eta.js";
 import { countVerdicts, formatHintLabel, formatLabel } from "./report/format.js";
 import { renderJson } from "./report/json.js";
 import { renderMarkdown } from "./report/markdown.js";
@@ -149,32 +150,48 @@ function exitWithError(error: unknown): never {
 /**
  * Each line names the target so the user can tell which one is running;
  * samples also show their position in the total.
+ * When an ETA estimate is available, it is appended as plain text.
  */
-function formatProgressLine(step: ProgressStep): string {
+function formatProgressLine(step: ProgressStep, etaMs?: number): string {
+  let line: string;
   switch (step.kind) {
     case "prepare":
-      return `prepare · ${step.label}`;
+      line = `prepare · ${step.label}`;
+      break;
     case "sample":
-      return `sample ${step.index}/${step.total} · ${step.label}`;
+      line = `sample ${step.index}/${step.total} · ${step.label}`;
+      break;
     default:
       return assertNever(step);
   }
+  if (etaMs !== undefined) {
+    line += ` · ${formatEta(etaMs)}`;
+  }
+  return line;
 }
 
 /**
  * Apply ANSI styling to the progress line for spinner display:
- * step word yellow (matches the spinner glyph), counter yellow (sample only), label cyan.
+ * step word dim, counter bold (sample only), label cyan.
+ * When an ETA estimate is available, it is appended as a dim segment.
  */
-function styleProgressLine(step: ProgressStep): string {
+function styleProgressLine(step: ProgressStep, etaMs?: number): string {
   const label = formatLabel(step.label, "cyan", process.stderr);
+  let line: string;
   switch (step.kind) {
     case "prepare":
-      return `${formatLabel("prepare", "yellow", process.stderr)} · ${label}`;
+      line = `${formatLabel("prepare", "dim", process.stderr)} · ${label}`;
+      break;
     case "sample":
-      return `${formatLabel("sample", "yellow", process.stderr)} ${formatLabel(`${step.index}/${step.total}`, "yellow", process.stderr)} · ${label}`;
+      line = `${formatLabel("sample", "dim", process.stderr)} ${formatLabel(`${step.index}/${step.total}`, "bold", process.stderr)} · ${label}`;
+      break;
     default:
       return assertNever(step);
   }
+  if (etaMs !== undefined) {
+    line += formatLabel(` · ${formatEta(etaMs)}`, "dim", process.stderr);
+  }
+  return line;
 }
 
 /** Carriage-return + clear-to-EOL: rewinds the cursor and erases the line it lands on. */
@@ -200,7 +217,7 @@ function clearProgress(tty: boolean): void {
   }
 }
 
-/** Reports each benchmark step as it starts, then stops cleanly once the run is over. */
+/** Single-use: `stop()` must be called exactly once, after the run completes or fails. */
 interface ProgressReporter {
   emit(step: ProgressStep): void;
   /** Stop the spinner or erase the in-place line so the next output starts clean. */
@@ -217,16 +234,18 @@ function createProgressReporter(colorAllowed: boolean, tty: boolean): ProgressRe
   const spinner = colorAllowed
     ? yoctoSpinner({ color: "yellow", stream: process.stderr })
     : undefined;
+  const eta = new EtaTracker();
 
   return {
     emit(step: ProgressStep): void {
+      const etaMs = eta.record(step);
       if (spinner) {
-        spinner.text = styleProgressLine(step);
+        spinner.text = styleProgressLine(step, etaMs);
         if (!spinner.isSpinning) {
           spinner.start();
         }
       } else {
-        writeProgress(formatProgressLine(step), tty);
+        writeProgress(formatProgressLine(step, etaMs), tty);
       }
     },
     stop(): void {

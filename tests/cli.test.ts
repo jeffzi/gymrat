@@ -50,7 +50,7 @@ vi.mock("../src/report/json.js", () => ({
   renderJson: vi.fn().mockReturnValue('{"report": true}'),
 }));
 
-const { mockSpinnerInstance, mockYoctoSpinner } = vi.hoisted(() => {
+const { mockSpinnerInstance, mockYoctoSpinner, mockEtaRecord, mockFormatEta } = vi.hoisted(() => {
   const instance = {
     start: vi.fn(),
     stop: vi.fn(),
@@ -71,12 +71,24 @@ const { mockSpinnerInstance, mockYoctoSpinner } = vi.hoisted(() => {
   return {
     mockSpinnerInstance: instance,
     mockYoctoSpinner: vi.fn().mockReturnValue(instance),
+    mockEtaRecord: vi.fn(),
+    mockFormatEta: vi.fn(),
   };
 });
 
 vi.mock("yocto-spinner", () => ({
   default: mockYoctoSpinner,
 }));
+
+vi.mock("../src/eta.js", () => {
+  class MockEtaTracker {
+    record = mockEtaRecord;
+  }
+  return {
+    EtaTracker: MockEtaTracker,
+    formatEta: mockFormatEta,
+  };
+});
 
 async function setupMocks(
   compareMockReturn?: ComparisonResult | Error,
@@ -644,8 +656,10 @@ describe("createProgram", () => {
       const PREPARE_BASELINE_LINE = "prepare · baseline";
 
       // ANSI open/close sequences used in styled progress text assertions.
-      const YEL_O = "\x1b[33m";
-      const YEL_C = "\x1b[39m";
+      const DIM_O = "\x1b[2m";
+      const DIM_C = "\x1b[22m";
+      const BOLD_O = "\x1b[1m";
+      const BOLD_C = "\x1b[22m";
       const CYN_O = "\x1b[36m";
       const CYN_C = "\x1b[39m";
 
@@ -674,6 +688,18 @@ describe("createProgram", () => {
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         return { stderrSpy };
+      }
+
+      /** Simulates an interactive stderr with color allowed (TTY, NO_COLOR unset). */
+      function useColorTty(): void {
+        process.stderr.isTTY = true;
+        vi.stubEnv("NO_COLOR", undefined);
+      }
+
+      /** Simulates an interactive stderr with color vetoed via NO_COLOR. */
+      function useNoColorTty(): void {
+        process.stderr.isTTY = true;
+        vi.stubEnv("NO_COLOR", "1");
       }
 
       describe("progress text format", () => {
@@ -714,8 +740,7 @@ describe("createProgram", () => {
         it("constructs a yocto-spinner with yellow color and stderr stream", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
           // Act
@@ -731,8 +756,7 @@ describe("createProgram", () => {
         it("starts the spinner and updates its text on each progress callback", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           const steps: ProgressStep[] = [
             { kind: "prepare", label: "baseline" },
             { kind: "sample", index: 1, total: 5, label: "baseline" },
@@ -747,38 +771,82 @@ describe("createProgram", () => {
           expect(mockSpinnerInstance.start).toHaveBeenCalled();
         });
 
-        it("styles the prepare step word yellow and the label cyan in spinner text", async () => {
+        it("styles the prepare step word dim and the label cyan in spinner text", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           await setupProgressMocks([{ kind: "prepare", label: "baseline" }]);
 
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — prepare word is yellow, label is cyan, separator unstyled
+          // Assert — prepare word is dim, label is cyan, nothing is yellow
           const text = mockSpinnerInstance.text;
-          expect.soft(text).toContain(YEL_O + "prepare" + YEL_C);
+          expect.soft(text).toContain(DIM_O + "prepare" + DIM_C);
           expect.soft(text).toContain(CYN_O + "baseline" + CYN_C);
-          expect(text).not.toContain(YEL_O + "·");
+          expect(text).not.toContain("\x1b[33m");
         });
 
-        it("styles the sample step word yellow, counter yellow, and label cyan in spinner text", async () => {
+        it("styles the sample step word dim, counter bold, and label cyan in spinner text", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           await setupProgressMocks([{ kind: "sample", index: 1, total: 5, label: "baseline" }]);
 
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — sample word is yellow, counter is yellow, label is cyan
+          // Assert — sample word is dim, counter is bold, label is cyan
           const text = mockSpinnerInstance.text;
-          expect.soft(text).toContain(YEL_O + "sample" + YEL_C);
-          expect.soft(text).toContain(YEL_O + "1/5" + YEL_C);
+          expect.soft(text).toContain(DIM_O + "sample" + DIM_C);
+          expect.soft(text).toContain(BOLD_O + "1/5" + BOLD_C);
           expect(text).toContain(CYN_O + "baseline" + CYN_C);
+        });
+
+        it("appends a dim ETA segment when the tracker yields an estimate", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValue(130_000);
+          mockFormatEta.mockReturnValue("~2m 10s left");
+          await setupProgressMocks([{ kind: "sample", index: 2, total: 5, label: "baseline" }]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — ETA segment is rendered dim
+          const text = mockSpinnerInstance.text;
+          expect(text).toContain(DIM_O + " · ~2m 10s left" + DIM_C);
+        });
+
+        it("omits the ETA segment for prepare steps", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValue(undefined);
+          await setupProgressMocks([{ kind: "prepare", label: "baseline" }]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — no ETA segment
+          const text = mockSpinnerInstance.text;
+          expect(text).not.toContain("left");
+        });
+
+        it("omits the ETA segment for first-round sample steps", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useColorTty();
+          mockEtaRecord.mockReturnValue(undefined);
+          await setupProgressMocks([{ kind: "sample", index: 1, total: 5, label: "baseline" }]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — no ETA segment
+          const text = mockSpinnerInstance.text;
+          expect(text).not.toContain("left");
         });
       });
 
@@ -786,8 +854,7 @@ describe("createProgram", () => {
         it("does not construct a spinner when NO_COLOR is set", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", "1");
+          useNoColorTty();
           await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
           // Act
@@ -800,8 +867,7 @@ describe("createProgram", () => {
         it("does not construct a spinner when --no-color is passed", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
           // Act
@@ -814,8 +880,7 @@ describe("createProgram", () => {
         it("falls back to \\r\\x1b[K overwrite with unstyled text", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", "1");
+          useNoColorTty();
           const { stderrSpy } = await setupProgressMocks([PREPARE_BASELINE_STEP]);
 
           // Act
@@ -830,8 +895,7 @@ describe("createProgram", () => {
         it("clears the last progress line with \\r\\x1b[K before the report", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", "1");
+          useNoColorTty();
           const { stderrSpy } = await setupProgressMocks([
             { kind: "sample", index: 1, total: 1, label: "baseline" },
           ]);
@@ -849,8 +913,7 @@ describe("createProgram", () => {
         it("clears progress before error text when compare throws", async () => {
           // Arrange
           const program = createProgramWithSubcommandOverrides();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", "1");
+          useNoColorTty();
           const { stderrSpy } = await setupProgressMocks(
             [{ kind: "sample", index: 1, total: 5, label: "baseline" }],
             new Error("adapter parse failed"),
@@ -870,6 +933,44 @@ describe("createProgram", () => {
           expect(clearIndex).toBeGreaterThanOrEqual(0);
           expect(errorIndex).toBeGreaterThanOrEqual(0);
           expect(clearIndex).toBeLessThan(errorIndex);
+        });
+
+        it("appends a plain ETA segment when the tracker yields an estimate", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useNoColorTty();
+          mockEtaRecord.mockReturnValue(130_000);
+          mockFormatEta.mockReturnValue("~2m 10s left");
+          const { stderrSpy } = await setupProgressMocks([
+            { kind: "sample", index: 3, total: 10, label: "baseline" },
+          ]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — plain text with ETA, no ANSI escapes
+          const progressWrite = findStderrWrite(stderrSpy, "~2m 10s left");
+          expect(progressWrite).toBeDefined();
+          expect(progressWrite).toContain("sample 3/10 · baseline · ~2m 10s left");
+          expect(progressWrite).not.toContain("\x1b[2m");
+        });
+
+        it("omits the ETA segment when the tracker yields no estimate", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useNoColorTty();
+          mockEtaRecord.mockReturnValue(undefined);
+          const { stderrSpy } = await setupProgressMocks([
+            { kind: "sample", index: 3, total: 10, label: "baseline" },
+          ]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — plain text without ETA
+          const progressWrite = findStderrWrite(stderrSpy, "sample 3/10 · baseline");
+          expect(progressWrite).toBeDefined();
+          expect(progressWrite).not.toContain("left");
         });
       });
 
@@ -902,14 +1003,52 @@ describe("createProgram", () => {
           expect(progressWrite).not.toContain("\x1b[");
           expect(progressWrite).toMatch(/\n$/);
         });
+
+        it("includes a plain ETA segment in newline-terminated output when estimate exists", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          mockEtaRecord.mockReturnValue(130_000);
+          mockFormatEta.mockReturnValue("~2m 10s left");
+          const { stderrSpy } = await setupProgressMocks([
+            { kind: "sample", index: 3, total: 10, label: "baseline" },
+          ]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — newline-terminated, plain text with ETA
+          const progressWrite = findStderrWrite(stderrSpy, "~2m 10s left");
+          expect(progressWrite).toBeDefined();
+          expect(progressWrite).toContain("sample 3/10 · baseline · ~2m 10s left");
+          expect(progressWrite).toMatch(/\n$/);
+          expect(progressWrite).not.toContain("\x1b[");
+        });
+
+        it("omits the ETA segment when no estimate is available", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          mockEtaRecord.mockReturnValue(undefined);
+          const { stderrSpy } = await setupProgressMocks([
+            { kind: "sample", index: 3, total: 10, label: "baseline" },
+          ]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — plain text without ETA
+          const progressWrite = findStderrWrite(stderrSpy, "sample 3/10 · baseline");
+          expect(progressWrite).toBeDefined();
+          expect(progressWrite).not.toContain("left");
+        });
       });
 
       describe("spinner cleared before output", () => {
         it("stops the spinner before the report prints to stdout", async () => {
           // Arrange
           const program = createRunnableProgram();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           await setupProgressMocks([PREPARE_BASELINE_STEP]);
           const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
@@ -926,8 +1065,7 @@ describe("createProgram", () => {
         it("stops the spinner before a formatted error prints to stderr", async () => {
           // Arrange
           const program = createProgramWithSubcommandOverrides();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
           const { stderrSpy } = await setupProgressMocks(
             [PREPARE_BASELINE_STEP],
             new Error("benchmark crashed"),
@@ -954,8 +1092,7 @@ describe("createProgram", () => {
         it("stops the spinner before the --fail-on gate-failure exit", async () => {
           // Arrange
           const program = createProgramWithSubcommandOverrides();
-          process.stderr.isTTY = true;
-          vi.stubEnv("NO_COLOR", undefined);
+          useColorTty();
 
           const regressedResult = createComparisonResult({
             candidates: [createCandidate()],

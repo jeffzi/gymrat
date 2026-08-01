@@ -1,0 +1,160 @@
+import { describe, expect, it } from "vitest";
+
+import type { ProgressStep } from "../../src/compare.js";
+import { EtaTracker, formatEta } from "../../src/eta.js";
+
+function prepare(label: string): ProgressStep {
+  return { kind: "prepare", label };
+}
+
+function sample(index: number, total: number, label: string): ProgressStep {
+  return { kind: "sample", index, total, label };
+}
+
+/** Throws once the sequence is exhausted, rather than returning `undefined`. */
+function clockSequence(...times: readonly number[]): () => number {
+  let i = 0;
+  return () => {
+    const t = times[i++];
+    if (t === undefined) throw new Error("Clock sequence exhausted");
+    return t;
+  };
+}
+
+describe("EtaTracker", () => {
+  describe("record", () => {
+    it("returns undefined for a prepare step", () => {
+      // Arrange
+      const tracker = new EtaTracker(clockSequence(0));
+
+      // Act
+      const result = tracker.record(prepare("A"));
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it("returns undefined for a first-round sample step (index === 1)", () => {
+      // Arrange
+      const tracker = new EtaTracker(clockSequence(0));
+
+      // Act
+      const result = tracker.record(sample(1, 3, "A"));
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it("computes estimate as mean sample duration times remaining steps", () => {
+      // Arrange — 2 targets, 3 rounds each, uniform 100ms gaps
+      const tracker = new EtaTracker(clockSequence(0, 100, 200, 300));
+
+      // Act
+      tracker.record(sample(1, 3, "A")); // t=0
+      tracker.record(sample(1, 3, "B")); // t=100, duration of prev = 100
+      tracker.record(sample(2, 3, "A")); // t=200, duration of prev = 100
+      const result = tracker.record(sample(2, 3, "B")); // t=300, duration of prev = 100
+
+      // Assert
+      // mean duration = (100+100+100)/3 = 100
+      // targetCount = 2 (two index===1 steps)
+      // completedSampleSteps = 4, remaining = 3*2 - 4 = 2
+      // estimate = 100 * 2 = 200
+      expect(result).toBe(200);
+    });
+
+    it("excludes the gap following a prepare step from the mean", () => {
+      // Arrange — prepare introduces a 1000ms gap that must not skew the mean
+      const tracker = new EtaTracker(clockSequence(0, 1000, 1100));
+
+      // Act
+      tracker.record(prepare("A")); // t=0
+      tracker.record(sample(1, 3, "A")); // t=1000, gap=1000 excluded (after prepare)
+      const result = tracker.record(sample(2, 3, "A")); // t=1100, gap=100 included
+
+      // Assert
+      // durations = [100] (only the sample-to-sample gap), mean = 100
+      // targetCount = 1, completedSampleSteps = 2, remaining = 3*1 - 2 = 1
+      // estimate = 100 * 1 = 100 (would be 550 if prepare gap were included)
+      expect(result).toBe(100);
+    });
+
+    it("counts targets by index-1 occurrences, not by labels", () => {
+      // Arrange — two targets sharing the same label "A"
+      const tracker = new EtaTracker(clockSequence(0, 100, 200));
+
+      // Act
+      tracker.record(sample(1, 3, "A")); // t=0, target 1
+      tracker.record(sample(1, 3, "A")); // t=100, target 2 (same label!)
+      const result = tracker.record(sample(2, 3, "A")); // t=200
+
+      // Assert
+      // durations = [100, 100], mean = 100
+      // targetCount = 2 (two index===1 steps, NOT 1 unique label)
+      // completedSampleSteps = 3, remaining = 3*2 - 3 = 3
+      // estimate = 100 * 3 = 300 (would be 0 if label-derived: 3*1 - 3 = 0)
+      expect(result).toBe(300);
+    });
+
+    it("handles prepare steps at any position, keying off kind not position", () => {
+      // Arrange — prepare appears between sample steps, not just at the start
+      const tracker = new EtaTracker(clockSequence(0, 100, 1000, 1100));
+
+      // Act
+      tracker.record(sample(1, 3, "A")); // t=0
+      tracker.record(prepare("B")); // t=100, no duration pushed (prepare returns early)
+      tracker.record(sample(1, 3, "B")); // t=1000, gap excluded (prevWasPrepare)
+      const result = tracker.record(sample(2, 3, "A")); // t=1100, gap=100 included
+
+      // Assert
+      // durations = [100], mean = 100
+      // targetCount = 2, completedSampleSteps = 3, remaining = 3*2 - 3 = 3
+      // estimate = 100 * 3 = 300
+      expect(result).toBe(300);
+    });
+  });
+});
+
+describe("formatEta", () => {
+  describe("when below 1000ms", () => {
+    it.each([
+      { ms: 0, expected: "~1s left" },
+      { ms: 500, expected: "~1s left" },
+      { ms: 999, expected: "~1s left" },
+    ])("formats $ms ms as '$expected' (floor at 1 second)", ({ ms, expected }) => {
+      expect(formatEta(ms)).toBe(expected);
+    });
+  });
+
+  describe("when seconds-only (1000ms to 59999ms)", () => {
+    it.each([
+      { ms: 1000, expected: "~1s left" },
+      { ms: 48200, expected: "~48s left" },
+      { ms: 59999, expected: "~60s left" },
+    ])("formats $ms ms as '$expected'", ({ ms, expected }) => {
+      expect(formatEta(ms)).toBe(expected);
+    });
+  });
+
+  describe("when minutes and seconds (60000ms to 3599999ms)", () => {
+    it.each([
+      { ms: 60000, expected: "~1m left" },
+      { ms: 130000, expected: "~2m 10s left" },
+      { ms: 120000, expected: "~2m left" },
+      { ms: 3599999, expected: "~60m left" },
+    ])("formats $ms ms as '$expected'", ({ ms, expected }) => {
+      expect(formatEta(ms)).toBe(expected);
+    });
+  });
+
+  describe("when hours and minutes (3600000ms and above)", () => {
+    it.each([
+      { ms: 3600000, expected: "~1h left" },
+      { ms: 3900000, expected: "~1h 5m left" },
+      { ms: 7200000, expected: "~2h left" },
+      { ms: 7260000, expected: "~2h 1m left" },
+    ])("formats $ms ms as '$expected'", ({ ms, expected }) => {
+      expect(formatEta(ms)).toBe(expected);
+    });
+  });
+});
