@@ -111,11 +111,6 @@ function isTerminal(stream: NodeJS.WriteStream): boolean {
   return (stream.isTTY as boolean | undefined) === true;
 }
 
-/** See the NO_COLOR spec: https://no-color.org */
-function isColorAllowed(stream: NodeJS.WriteStream, colorFlag: boolean): boolean {
-  return isTerminal(stream) && process.env.NO_COLOR === undefined && colorFlag;
-}
-
 /**
  * Render an error for stderr: either an adapter failure labelled with its
  * class name, or any other error with a styled hint line appended when it
@@ -128,13 +123,10 @@ function isColorAllowed(stream: NodeJS.WriteStream, colorFlag: boolean): boolean
  * handling — is at fault. Errors raised elsewhere already name their own
  * subsystem, so prefixing them would only add noise.
  *
- * `useColor` defaults to auto-detection: true when stderr is a TTY and
- * `NO_COLOR` is not set.
+ * Color is governed by `styleText` auto-detection: `NO_COLOR` / `FORCE_COLOR`
+ * env vars and the stream's TTY status.
  */
-export function formatCliError(
-  error: unknown,
-  useColor: boolean = isColorAllowed(process.stderr, true),
-): string {
+export function formatCliError(error: unknown): string {
   if (error instanceof AdapterError) {
     return `${error.name}: ${error.message}`;
   }
@@ -142,8 +134,7 @@ export function formatCliError(
   let output = error instanceof Error ? error.message : String(error);
 
   if (error instanceof GymratError && error.hint !== undefined) {
-    const hintLabel = formatHintLabel(useColor);
-    output += `\n${hintLabel} ${error.hint}`;
+    output += `\n${formatHintLabel()} ${error.hint}`;
   }
 
   return output;
@@ -175,12 +166,12 @@ function formatProgressLine(step: ProgressStep): string {
  * step word yellow (matches the spinner glyph), counter yellow (sample only), label cyan.
  */
 function styleProgressLine(step: ProgressStep): string {
-  const label = formatLabel(step.label, "cyan", true);
+  const label = formatLabel(step.label, "cyan", process.stderr);
   switch (step.kind) {
     case "prepare":
-      return `${formatLabel("prepare", "yellow", true)} · ${label}`;
+      return `${formatLabel("prepare", "yellow", process.stderr)} · ${label}`;
     case "sample":
-      return `${formatLabel("sample", "yellow", true)} ${formatLabel(`${step.index}/${step.total}`, "yellow", true)} · ${label}`;
+      return `${formatLabel("sample", "yellow", process.stderr)} ${formatLabel(`${step.index}/${step.total}`, "yellow", process.stderr)} · ${label}`;
     default:
       return assertNever(step);
   }
@@ -259,15 +250,6 @@ interface CompareFlags extends CliFlags {
 }
 
 /**
- * The report is written to stdout, so it is stdout that has to be a terminal —
- * a report piped into a file stays plain even when stderr is still attached to
- * one.
- */
-function shouldColorReport(flags: CompareFlags): boolean {
-  return isColorAllowed(process.stdout, flags.color);
-}
-
-/**
  * `import ... with { type: "json" }` would be tidier, but package.json sits
  * outside `rootDir`, so importing it would pull an extra directory level into
  * `dist/` and break the `dist/cli.js` bin path. Reading at runtime keeps the
@@ -337,10 +319,12 @@ export function createProgram(): Command {
     .action(async (baselineArg: string, candidateArgs: string[], options: CompareFlags) => {
       let result: ComparisonResult;
 
-      const progress = createProgressReporter(
-        isColorAllowed(process.stderr, options.color),
-        isTerminal(process.stderr),
-      );
+      if (!options.color) {
+        process.env.NO_COLOR = "1";
+      }
+
+      const tty = isTerminal(process.stderr);
+      const progress = createProgressReporter(tty && process.env.NO_COLOR === undefined, tty);
 
       try {
         const config = resolveConfig({
@@ -374,6 +358,10 @@ export function createProgram(): Command {
         exitWithError(error);
       }
 
+      if (options.format !== "text") {
+        process.env.NO_COLOR = "1";
+      }
+
       let output: string;
       switch (options.format) {
         case "markdown":
@@ -383,7 +371,7 @@ export function createProgram(): Command {
           output = renderJson(result);
           break;
         case "text":
-          output = renderReport(result, shouldColorReport(options));
+          output = renderReport(result);
           break;
         default:
           assertNever(options.format);

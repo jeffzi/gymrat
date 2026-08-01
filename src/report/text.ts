@@ -20,6 +20,7 @@ import {
   QUIET_VERDICTS,
   selectHighlights,
   styleGlyph,
+  type Style,
   styleWithin,
   verdictSummaryParts,
   VERDICT_STYLES,
@@ -149,13 +150,10 @@ function formatGeomeanCell(geomean: GeomeanResult): GeomeanCell {
  * Style a geomean cell's aggregate bold and its provenance dim — the styling
  * both the single- and multi-candidate tables apply to their geomean row.
  */
-function styleGeomeanCell(cell: string, geomean: GeomeanCell, useColor: boolean): string {
-  const styled = styleWithin(cell, geomean.figure, ["bold"], useColor);
-  return styleWithin(styled, geomean.provenance, ["dim"], useColor);
+function styleGeomeanCell(cell: string, geomean: GeomeanCell): string {
+  const styled = styleWithin(cell, geomean.figure, ["bold"]);
+  return styleWithin(styled, geomean.provenance, ["dim"]);
 }
-
-/** The style names {@link styleWithin} accepts, in the shape it takes them. */
-type Style = Parameters<typeof styleWithin>[2];
 
 /**
  * Style a verdict cell's glyph, and its delta when it has one, the same way.
@@ -169,10 +167,9 @@ function styleGlyphAndDelta(
   outcome: MetricVerdict["verdict"],
   delta: string,
   style: Style,
-  useColor: boolean,
 ): string {
-  const styled = styleWithin(cell, getGlyph(outcome), style, useColor);
-  return delta === "" ? styled : styleWithin(styled, delta, style, useColor);
+  const styled = styleWithin(cell, getGlyph(outcome), style);
+  return delta === "" ? styled : styleWithin(styled, delta, style);
 }
 
 /** Width the metric-name column needs: the widest metric name or the geomean row's label. */
@@ -209,12 +206,7 @@ function styleVerdictCell(style: (cell: string) => string): CellStyler {
  * Both styles land on the finished line, so the column widths behind them were
  * measured on plain text.
  */
-function formatMetricRow(
-  row: Row,
-  widths: Widths,
-  verdict: MetricVerdict | undefined,
-  useColor: boolean,
-): string {
+function formatMetricRow(row: Row, widths: Widths, verdict: MetricVerdict | undefined): string {
   if (verdict === undefined) return formatRow(row, widths);
 
   const outcome = verdict.verdict;
@@ -222,14 +214,14 @@ function formatMetricRow(
     row,
     widths,
     styleVerdictCell((cell) => {
-      let styled = styleGlyph(cell, outcome, useColor);
+      let styled = styleGlyph(cell, outcome);
       if (!QUIET_VERDICTS.has(outcome) && "noisePct" in verdict) {
-        styled = styleWithin(styled, formatNoiseBand(verdict.noisePct), ["dim"], useColor);
+        styled = styleWithin(styled, formatNoiseBand(verdict.noisePct), ["dim"]);
       }
       return styled;
     }),
   );
-  return QUIET_VERDICTS.has(outcome) ? formatLabel(line, ["dim"], useColor) : line;
+  return QUIET_VERDICTS.has(outcome) ? formatLabel(line, ["dim"]) : line;
 }
 
 /**
@@ -245,7 +237,6 @@ function renderTable(
   result: ComparisonResult,
   candidate: CandidateComparison,
   candidateIndex: number,
-  useColor: boolean,
 ): string[] {
   const baseline = result.baselineLabel;
   const headers: Row = ["metric", baseline, candidate.label, `vs ${baseline}`];
@@ -287,14 +278,14 @@ function renderTable(
   const geomean: Row = [GEOMEAN_LABEL, baseline, candidate.label, geomeanCell.text];
 
   return [
-    formatLabel(formatRow(headers, widths), ["bold"], useColor),
+    formatLabel(formatRow(headers, widths), ["bold"]),
     rule,
-    ...rows.map((row) => formatMetricRow(row.cells, widths, row.verdict, useColor)),
+    ...rows.map((row) => formatMetricRow(row.cells, widths, row.verdict)),
     rule,
     formatRow(geomean, widths, (cell, index) => {
-      if (index === 1) return styleWithin(cell, baseline, ["dim"], useColor);
-      if (index === 2) return styleWithin(cell, candidate.label, ["dim"], useColor);
-      if (index === VERDICT_COLUMN) return styleGeomeanCell(cell, geomeanCell, useColor);
+      if (index === 1) return styleWithin(cell, baseline, ["dim"]);
+      if (index === 2) return styleWithin(cell, candidate.label, ["dim"]);
+      if (index === VERDICT_COLUMN) return styleGeomeanCell(cell, geomeanCell);
       return cell;
     }),
   ];
@@ -424,7 +415,7 @@ function joinCandidateCell(cell: CandidateCell, valueWidth: number): string {
  * letting a long exclusion list size the column instead would stretch the rule
  * under every metric row for one cell's sake.
  */
-function renderComparisonTable(result: ComparisonResult, useColor: boolean): string[] {
+function renderComparisonTable(result: ComparisonResult): string[] {
   const baseline = result.baselineLabel;
   const { rows, columns } = buildComparisonGrid(result);
 
@@ -471,24 +462,18 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
         if (candidateCell === undefined || outcome === undefined) return cell;
 
         if (!QUIET_VERDICTS.has(outcome)) {
-          return styleGlyphAndDelta(
-            cell,
-            outcome,
-            candidateCell.delta,
-            VERDICT_STYLES[outcome],
-            useColor,
-          );
+          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, VERDICT_STYLES[outcome]);
         }
 
         // Quiet cell on a bright row: dim glyph and delta individually.
         if (!rowIsQuiet && candidateCell.verdict !== "") {
-          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, ["dim"], useColor);
+          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, ["dim"]);
         }
 
-        return styleGlyph(cell, outcome, useColor);
+        return styleGlyph(cell, outcome);
       },
     );
-    return rowIsQuiet ? formatLabel(rendered, ["dim"], useColor) : rendered;
+    return rowIsQuiet ? formatLabel(rendered, ["dim"]) : rendered;
   });
 
   const rule = formatTableRule(widths);
@@ -501,7 +486,6 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
         columns.map((column) => column.header),
       ),
       ["bold"],
-      useColor,
     ),
     rule,
     ...metricRows,
@@ -511,21 +495,17 @@ function renderComparisonTable(result: ComparisonResult, useColor: boolean): str
       baseline,
       columns.map((column) => column.geomean.text),
       (cell, columnIndex) => {
-        if (columnIndex === 1) return styleWithin(cell, baseline, ["dim"], useColor);
+        if (columnIndex === 1) return styleWithin(cell, baseline, ["dim"]);
         const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
-        return column === undefined ? cell : styleGeomeanCell(cell, column.geomean, useColor);
+        return column === undefined ? cell : styleGeomeanCell(cell, column.geomean);
       },
     ),
   ];
 }
 
 /** One line tallying every verdict class one candidate earned. */
-function renderSummary(
-  metrics: MetricComparisons,
-  candidateIndex: number,
-  useColor = false,
-): string {
-  return verdictSummaryParts(metrics, candidateIndex, useColor).join("   ");
+function renderSummary(metrics: MetricComparisons, candidateIndex: number): string {
+  return verdictSummaryParts(metrics, candidateIndex).join("   ");
 }
 
 /** Gap between the longest highlighted metric name and the delta that follows it. */
@@ -538,14 +518,10 @@ const HIGHLIGHT_NAME_GUTTER = 2;
  * bug, and a run that changed nothing has nothing to highlight.
  *
  * Padding is measured on the plain strings before any styling wraps them.
- * When `useColor` is true, each entry's glyph and delta (or `unstable` word)
- * carry the verdict's class color, and evidence suffixes are dimmed.
+ * Each entry's glyph and delta (or `unstable` word) carry the verdict's class
+ * color, and evidence suffixes are dimmed, via `styleText` auto-detection.
  */
-function highlightEntries(
-  metrics: MetricComparisons,
-  candidateIndex: number,
-  useColor = false,
-): string[] {
+function highlightEntries(metrics: MetricComparisons, candidateIndex: number): string[] {
   const highlights = selectHighlights(metrics, candidateIndex);
   if (highlights.length === 0) return [];
 
@@ -563,26 +539,20 @@ function highlightEntries(
       HIGHLIGHT_DELTA_WIDTH,
     )}${suffix}`;
 
-    if (!useColor) return plain;
-
     const deltaOrWord = verdict.verdict === "unstable" ? "unstable" : delta;
     const style = VERDICT_STYLES[verdict.verdict];
-    let styled = styleGlyphAndDelta(plain, verdict.verdict, deltaOrWord, style, true);
+    let styled = styleGlyphAndDelta(plain, verdict.verdict, deltaOrWord, style);
     if (evidence !== "") {
-      styled = styleWithin(styled, evidence, ["dim"], true);
+      styled = styleWithin(styled, evidence, ["dim"]);
     }
     return styled;
   });
 }
 
-function renderHighlights(
-  metrics: MetricComparisons,
-  candidateIndex: number,
-  useColor = false,
-): string[] {
-  const entries = highlightEntries(metrics, candidateIndex, useColor);
+function renderHighlights(metrics: MetricComparisons, candidateIndex: number): string[] {
+  const entries = highlightEntries(metrics, candidateIndex);
   if (entries.length === 0) return [];
-  return [formatLabel(HIGHLIGHTS_HEADING, ["bold"], useColor), ...entries];
+  return [formatLabel(HIGHLIGHTS_HEADING, ["bold"]), ...entries];
 }
 
 /**
@@ -592,19 +562,19 @@ function renderHighlights(
  * A candidate whose metrics all sat still contributes no subsection: an empty
  * one under its label reads as a rendering fault rather than as good news.
  */
-function renderCandidateHighlights(result: ComparisonResult, useColor: boolean): string[] {
+function renderCandidateHighlights(result: ComparisonResult): string[] {
   const blocks = result.candidates
     .map((candidate, index) => ({
       label: candidate.label,
-      entries: highlightEntries(result.metrics, index, useColor),
+      entries: highlightEntries(result.metrics, index),
     }))
     .filter((block) => block.entries.length > 0);
   if (blocks.length === 0) return [];
 
-  const lines = [formatLabel(HIGHLIGHTS_HEADING, ["bold"], useColor)];
+  const lines = [formatLabel(HIGHLIGHTS_HEADING, ["bold"])];
   for (const block of blocks) {
     lines.push(
-      `  ${formatLabel(block.label, ["bold"], useColor)}`,
+      `  ${formatLabel(block.label, ["bold"])}`,
       ...block.entries.map((entry) => `  ${entry}`),
     );
   }
@@ -619,12 +589,12 @@ function renderCandidateHighlights(result: ComparisonResult, useColor: boolean):
  * ragged left edge would break. Padding is measured on the plain label, then
  * bold is applied.
  */
-function renderSummaries(result: ComparisonResult, useColor: boolean): string[] {
+function renderSummaries(result: ComparisonResult): string[] {
   const labelWidth = Math.max(...result.candidates.map((candidate) => candidate.label.length));
   return result.candidates.map((candidate, index) => {
     const paddedLabel = candidate.label.padEnd(labelWidth);
-    const styledLabel = formatLabel(paddedLabel, ["bold"], useColor);
-    return `${styledLabel}  ${renderSummary(result.metrics, index, useColor)}`;
+    const styledLabel = formatLabel(paddedLabel, ["bold"]);
+    return `${styledLabel}  ${renderSummary(result.metrics, index)}`;
   });
 }
 
@@ -636,14 +606,10 @@ function renderSummaries(result: ComparisonResult, useColor: boolean): string[] 
  * candidates off one row is the comparison the run was for, and a table apiece
  * would leave the reader aligning columns by eye.
  */
-function renderComparison(result: ComparisonResult, useColor: boolean): string[] {
-  const lines = [
-    ...renderComparisonTable(result, useColor),
-    "",
-    ...renderSummaries(result, useColor),
-  ];
+function renderComparison(result: ComparisonResult): string[] {
+  const lines = [...renderComparisonTable(result), "", ...renderSummaries(result)];
 
-  const highlights = renderCandidateHighlights(result, useColor);
+  const highlights = renderCandidateHighlights(result);
   if (highlights.length > 0) {
     lines.push("", ...highlights);
   }
@@ -658,9 +624,9 @@ function renderComparison(result: ComparisonResult, useColor: boolean): string[]
  * the report's whole vocabulary, and which target is the baseline is the one
  * thing a reader cannot infer from the numbers.
  */
-function renderLegend(baseline: string, useColor: boolean): string {
-  const text = `legend: ${legendGlosses(useColor)} — candidates are judged against ${baseline}`;
-  return formatLabel(text, ["dim"], useColor);
+function renderLegend(baseline: string): string {
+  const text = `legend: ${legendGlosses()} — candidates are judged against ${baseline}`;
+  return formatLabel(text, ["dim"]);
 }
 
 /**
@@ -682,12 +648,8 @@ function renderLegend(baseline: string, useColor: boolean): string {
  * six-pair floor: the fewest for signed-rank, the most for the band. Whichever
  * metric the reader picks, the line it read stays true of it.
  */
-function renderMethodFooter(result: ComparisonResult, useColor: boolean): string[] {
-  return methodFooterLines(
-    result.metrics,
-    (hint) => `${formatHintLabel(useColor)} ${hint}`,
-    useColor,
-  );
+function renderMethodFooter(result: ComparisonResult): string[] {
+  return methodFooterLines(result.metrics, (hint) => `${formatHintLabel()} ${hint}`);
 }
 
 /**
@@ -755,15 +717,14 @@ function renderCandidate(
   result: ComparisonResult,
   candidate: CandidateComparison,
   candidateIndex: number,
-  useColor: boolean,
 ): string[] {
   const lines = [
-    ...renderTable(result, candidate, candidateIndex, useColor),
+    ...renderTable(result, candidate, candidateIndex),
     "",
-    renderSummary(result.metrics, candidateIndex, useColor),
+    renderSummary(result.metrics, candidateIndex),
   ];
 
-  const highlights = renderHighlights(result.metrics, candidateIndex, useColor);
+  const highlights = renderHighlights(result.metrics, candidateIndex);
   if (highlights.length > 0) {
     lines.push("", ...highlights);
   }
@@ -784,33 +745,31 @@ function renderCandidate(
  * single table with a column each, since the whole point of running them
  * together is reading them off the same row.
  *
- * Whether the report is styled is the caller's decision, not this renderer's: it
- * never reads `isTTY` or `NO_COLOR`, so the same result renders the same bytes
- * wherever it runs. Color is off unless asked for, which keeps a piped or
- * captured report plain by default.
+ * Whether the report is styled is governed by `styleText` auto-detection:
+ * `NO_COLOR` / `FORCE_COLOR` env vars and the stream's TTY status. The CLI
+ * sets `NO_COLOR=1` when `--no-color` is passed or when the output format is
+ * not text, so the renderer never needs a boolean flag.
  */
-export function renderReport(result: ComparisonResult, useColor = false): string {
+export function renderReport(result: ComparisonResult): string {
   const candidateLabels = result.candidates.map((candidate) => candidate.label).join(", ");
   const headerPlain = `gymrat compare ${HEADER_SEPARATOR} ${result.baselineLabel} ↔ ${candidateLabels} ${HEADER_SEPARATOR} ${result.samples} paired samples ${HEADER_SEPARATOR} adapter: ${result.adapter}`;
   let header = headerPlain;
-  if (useColor) {
-    header = styleWithin(header, "gymrat compare", ["bold"], true);
-    header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"], true));
-  }
+  header = styleWithin(header, "gymrat compare", ["bold"]);
+  header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"]));
   const lines = [header];
 
   if (result.candidates.length > 1) {
-    lines.push(...renderComparison(result, useColor));
+    lines.push(...renderComparison(result));
   } else {
     for (const [index, candidate] of result.candidates.entries()) {
-      lines.push(...renderCandidate(result, candidate, index, useColor));
+      lines.push(...renderCandidate(result, candidate, index));
     }
   }
 
   lines.push(
     "",
-    renderLegend(result.baselineLabel, useColor),
-    ...renderMethodFooter(result, useColor),
+    renderLegend(result.baselineLabel),
+    ...renderMethodFooter(result),
     ...renderWorktreeFooter(result),
   );
 

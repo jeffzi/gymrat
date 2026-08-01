@@ -255,6 +255,7 @@ function mockProcessExit(): ReturnType<typeof vi.spyOn> {
 afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("createProgram", () => {
@@ -464,7 +465,6 @@ describe("createProgram", () => {
 
       afterEach(() => {
         process.stdout.isTTY = originalIsTTY;
-        vi.unstubAllEnvs();
       });
 
       it.each([
@@ -474,7 +474,6 @@ describe("createProgram", () => {
           noColor: undefined,
           args: [],
           expected: "colored",
-          useColor: true,
         },
         {
           desc: "--no-color was passed",
@@ -482,7 +481,6 @@ describe("createProgram", () => {
           noColor: undefined,
           args: ["--no-color"],
           expected: "plain",
-          useColor: false,
         },
         {
           desc: "NO_COLOR is set",
@@ -490,7 +488,6 @@ describe("createProgram", () => {
           noColor: "1",
           args: [],
           expected: "plain",
-          useColor: false,
         },
         {
           desc: "stdout is redirected",
@@ -498,9 +495,8 @@ describe("createProgram", () => {
           noColor: undefined,
           args: [],
           expected: "plain",
-          useColor: false,
         },
-      ])("writes a $expected report when $desc", async ({ isTTY, noColor, args, useColor }) => {
+      ])("writes a $expected report when $desc", async ({ isTTY, noColor, args }) => {
         // Arrange
         const program = createRunnableProgram();
         const result = createColorSensitiveResult();
@@ -513,7 +509,20 @@ describe("createProgram", () => {
         await program.parseAsync(compareArgv("main", "branch", ...args));
 
         // Assert
-        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result, useColor)}\n`);
+        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
+      });
+
+      it("sets process.env.NO_COLOR when --no-color is passed", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        await setupMocks();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--no-color"));
+
+        // Assert
+        expect(process.env.NO_COLOR).toBe("1");
       });
     });
 
@@ -604,6 +613,23 @@ describe("createProgram", () => {
           expect(typeof output).toBe("string");
           expect(output).not.toContain("\x1b[");
         });
+
+        it.each(["markdown", "json"])(
+          "sets NO_COLOR before rendering %s output",
+          async (format) => {
+            // Arrange
+            const program = createRunnableProgram();
+            await setupMocks();
+            process.stdout.isTTY = true;
+            vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+            // Act
+            await program.parseAsync(compareArgv("main", "branch", "--format", format));
+
+            // Assert — CLI should set NO_COLOR so renderers auto-detect plain
+            expect(process.env.NO_COLOR).toBe("1");
+          },
+        );
       });
     });
 
@@ -612,7 +638,6 @@ describe("createProgram", () => {
 
       afterEach(() => {
         process.stderr.isTTY = originalStderrIsTTY;
-        vi.unstubAllEnvs();
       });
 
       const PREPARE_BASELINE_STEP: ProgressStep = { kind: "prepare", label: "baseline" };
@@ -1233,7 +1258,7 @@ describe("formatCliError", () => {
     const error = createCommandError("in-place");
 
     // Act
-    const rendered = formatCliError(error, false);
+    const rendered = formatCliError(error);
 
     // Assert
     expect(rendered).not.toContain("Hint:");
@@ -1244,18 +1269,19 @@ describe("formatCliError", () => {
     const error = new Error("git rev-parse failed");
 
     // Act
-    const rendered = formatCliError(error, false);
+    const rendered = formatCliError(error);
 
     // Assert
     expect(rendered).not.toContain("Hint:");
   });
 
-  it("styles the Hint: label with ANSI yellow+underline when useColor is true", () => {
+  it("styles the Hint: label with ANSI yellow+underline when color is forced", () => {
     // Arrange
+    vi.stubEnv("FORCE_COLOR", "1");
     const error = createCommandError("ref");
 
     // Act
-    const rendered = formatCliError(error, true);
+    const rendered = formatCliError(error);
 
     // Assert - \x1b[33m = yellow, \x1b[4m = underline
     expect.soft(rendered).toContain("\x1b[33m");
@@ -1263,12 +1289,13 @@ describe("formatCliError", () => {
     expect(rendered).toContain("Hint:");
   });
 
-  it("renders Hint: as plain text when useColor is false", () => {
+  it("renders Hint: as plain text when NO_COLOR is set", () => {
     // Arrange
+    vi.stubEnv("NO_COLOR", "1");
     const error = createCommandError("ref");
 
     // Act
-    const rendered = formatCliError(error, false);
+    const rendered = formatCliError(error);
 
     // Assert
     expect.soft(rendered).toContain("\nHint: ");

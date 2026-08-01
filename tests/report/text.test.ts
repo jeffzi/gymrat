@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderReport } from "../../src/report/text.js";
 import type { ComparisonResult } from "../../src/report/types.js";
@@ -88,6 +88,10 @@ function highlightLines(report: string): string[] {
 }
 
 describe("renderReport", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe("when rendering the run header", () => {
     it("names both branches, the sample count and the adapter", () => {
       const result = createComparisonResult({
@@ -607,6 +611,10 @@ describe("renderReport", () => {
   });
 
   describe("when rendering with color", () => {
+    beforeEach(() => {
+      vi.stubEnv("FORCE_COLOR", "1");
+    });
+
     /** A run whose rows cover every verdict class, plus a geomean figure. */
     function colorfulResult(): ComparisonResult {
       return createComparisonResult({
@@ -631,7 +639,10 @@ describe("renderReport", () => {
       });
     }
 
-    it("leaves the report unstyled when the caller asks for no color", () => {
+    it("leaves the report unstyled when NO_COLOR is set", () => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       const output = renderReport(colorfulResult());
 
       expect(output).not.toContain("\x1b[");
@@ -648,10 +659,16 @@ describe("renderReport", () => {
     it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
       const result = colorfulResult();
 
-      const colored = renderReport(result, true);
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const plain = renderReport(result);
+
+      vi.stubEnv("NO_COLOR", undefined);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const colored = renderReport(result);
 
       expect.soft(colored).toContain("\x1b[");
-      expect(stripAnsi(colored)).toBe(renderReport(result, false));
+      expect(stripAnsi(colored)).toBe(plain);
     });
 
     it.each([
@@ -659,13 +676,13 @@ describe("renderReport", () => {
       { verdict: "regressed", metric: "slower/time", glyph: "✗", color: "red", code: "31" },
       { verdict: "unstable", metric: "jittery/time", glyph: "≈", color: "yellow", code: "33" },
     ])("paints the $verdict glyph $color", ({ metric, glyph, code }) => {
-      const row = lineContaining(renderReport(colorfulResult(), true), metric);
+      const row = lineContaining(renderReport(colorfulResult()), metric);
 
       expect(stylesAt(row, glyph)).toContain(code);
     });
 
     it("paints the no-signal glyph with no color of its own", () => {
-      const row = lineContaining(renderReport(colorfulResult(), true), "flat/time");
+      const row = lineContaining(renderReport(colorfulResult()), "flat/time");
 
       expect(stylesAt(row, "~")).toStrictEqual([]);
     });
@@ -674,7 +691,7 @@ describe("renderReport", () => {
       { verdict: "within noise", metric: "flat/time" },
       { verdict: "unstable", metric: "jittery/time" },
     ])("dims the whole $verdict row", ({ metric }) => {
-      const row = lineContaining(renderReport(colorfulResult(), true), metric);
+      const row = lineContaining(renderReport(colorfulResult()), metric);
 
       expect(row).toMatch(DIMMED_LINE);
     });
@@ -683,26 +700,26 @@ describe("renderReport", () => {
       { verdict: "improved", metric: "faster/time" },
       { verdict: "regressed", metric: "slower/time" },
     ])("leaves the $verdict row at full brightness", ({ metric }) => {
-      const row = lineContaining(renderReport(colorfulResult(), true), metric);
+      const row = lineContaining(renderReport(colorfulResult()), metric);
 
       expect(row).not.toMatch(DIMMED_LINE);
     });
 
     it("emboldens the header row and the geomean figure", () => {
-      const report = renderReport(colorfulResult(), true);
+      const report = renderReport(colorfulResult());
 
       expect.soft(lineContaining(report, "vs main")).toMatch(/^\x1b\[1m.*\x1b\[22m$/);
       expect(stylesAt(lineContaining(report, "geomean"), "-5.8%")).toContain("1");
     });
 
     it("emboldens 'gymrat compare' in the report header", () => {
-      const header = lineContaining(renderReport(colorfulResult(), true), "gymrat compare");
+      const header = lineContaining(renderReport(colorfulResult()), "gymrat compare");
 
       expect(stylesAt(header, "gymrat compare")).toContain("1");
     });
 
     it("dims each · separator in the report header", () => {
-      const header = lineContaining(renderReport(colorfulResult(), true), "gymrat compare");
+      const header = lineContaining(renderReport(colorfulResult()), "gymrat compare");
 
       expect(stylesAt(header, "·")).toContain("2");
     });
@@ -712,7 +729,7 @@ describe("renderReport", () => {
       { label: "regressed", glyph: "✗", code: "31", color: "red" },
       { label: "unstable", glyph: "≈", code: "33", color: "yellow" },
     ])("styles the non-zero $label tally $color in the verdict summary", ({ glyph, code }) => {
-      const summary = lineContaining(renderReport(colorfulResult(), true), "improved");
+      const summary = lineContaining(renderReport(colorfulResult()), "improved");
 
       expect(stylesAt(summary, glyph)).toContain(code);
     });
@@ -723,19 +740,19 @@ describe("renderReport", () => {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
         },
       });
-      const summary = lineContaining(renderReport(result, true), "improved");
+      const summary = lineContaining(renderReport(result), "improved");
 
       expect(stylesAt(summary, "✗")).toContain("2");
     });
 
     it("dims the within-noise segment regardless of count in the verdict summary", () => {
-      const summary = lineContaining(renderReport(colorfulResult(), true), "within noise");
+      const summary = lineContaining(renderReport(colorfulResult()), "within noise");
 
       expect(stylesAt(summary, "~")).toContain("2");
     });
 
     it("emboldens the highlights heading", () => {
-      const lines = renderReport(colorfulResult(), true).split("\n");
+      const lines = renderReport(colorfulResult()).split("\n");
       const heading = lines.find((line) => stripAnsi(line) === "highlights");
 
       expect(heading).toMatch(/^\x1b\[1m/);
@@ -747,7 +764,7 @@ describe("renderReport", () => {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
         },
       });
-      const highlights = highlightLines(renderReport(result, true));
+      const highlights = highlightLines(renderReport(result));
       const entry = highlights[0]!;
 
       expect.soft(stylesAt(entry, "✓")).toContain("32");
@@ -760,7 +777,7 @@ describe("renderReport", () => {
           "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.2, unit: "ns" }),
         },
       });
-      const highlights = highlightLines(renderReport(result, true));
+      const highlights = highlightLines(renderReport(result));
       const entry = highlights[0]!;
 
       expect.soft(stylesAt(entry, "✗")).toContain("31");
@@ -773,7 +790,7 @@ describe("renderReport", () => {
           "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
         },
       });
-      const highlights = highlightLines(renderReport(result, true));
+      const highlights = highlightLines(renderReport(result));
       const entry = highlights[0]!;
 
       expect.soft(stylesAt(entry, "≈")).toContain("33");
@@ -787,7 +804,7 @@ describe("renderReport", () => {
           "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
         },
       });
-      const highlights = highlightLines(renderReport(result, true));
+      const highlights = highlightLines(renderReport(result));
       const exactEntry = highlights.find((line) => line.includes("cheaper/heap"))!;
       const unstableEntry = highlights.find((line) => line.includes("jittery/time"))!;
 
@@ -796,7 +813,7 @@ describe("renderReport", () => {
     });
 
     it("dims the legend line overall", () => {
-      const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
+      const legend = lineContaining(renderReport(colorfulResult()), "legend:");
 
       expect(legend).toMatch(DIMMED_LINE);
     });
@@ -806,13 +823,13 @@ describe("renderReport", () => {
       { glyph: "✗", code: "31", color: "red" },
       { glyph: "≈", code: "33", color: "yellow" },
     ])("colors the legend $glyph glyph $color inside the dim line", ({ glyph, code }) => {
-      const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
+      const legend = lineContaining(renderReport(colorfulResult()), "legend:");
 
       expect(stylesAt(legend, glyph)).toContain(code);
     });
 
     it("leaves the legend ~ glyph uncolored", () => {
-      const legend = lineContaining(renderReport(colorfulResult(), true), "legend:");
+      const legend = lineContaining(renderReport(colorfulResult()), "legend:");
 
       expect(stylesAt(legend, "~")).toStrictEqual([]);
     });
@@ -823,7 +840,7 @@ describe("renderReport", () => {
           "a/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
         },
       });
-      const method = lineContaining(renderReport(result, true), "Wilcoxon");
+      const method = lineContaining(renderReport(result), "Wilcoxon");
 
       expect(method).toMatch(DIMMED_LINE);
     });
@@ -832,7 +849,7 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const band = lineContaining(renderReport(result, true), "noise band");
+      const band = lineContaining(renderReport(result), "noise band");
 
       expect(band).toMatch(DIMMED_LINE);
     });
@@ -841,7 +858,7 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const hint = lineContaining(renderReport(result, true), "Hint:");
+      const hint = lineContaining(renderReport(result), "Hint:");
 
       expect.soft(stylesAt(hint, "Hint:")).toContain("33");
       expect(stylesAt(hint, "Hint:")).toContain("4");
@@ -851,30 +868,33 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const hint = lineContaining(renderReport(result, true), "Hint:");
+      const hint = lineContaining(renderReport(result), "Hint:");
       const afterLabel = hint.slice(hint.indexOf("re-run"));
 
       expect(afterLabel).not.toContain("\x1b[2m");
     });
 
     it("renders the hint line entirely plain when color is off", () => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const hint = lineContaining(renderReport(result, false), "Hint:");
+      const hint = lineContaining(renderReport(result), "Hint:");
 
       expect(hint).not.toContain("\x1b[");
     });
 
     it("dims the band annotation on improved and regressed rows", () => {
-      const report = renderReport(colorfulResult(), true);
+      const report = renderReport(colorfulResult());
 
       expect.soft(stylesAt(lineContaining(report, "faster/time"), "±2.5%")).toContain("2");
       expect(stylesAt(lineContaining(report, "slower/time"), "±2.5%")).toContain("2");
     });
 
     it("dims the repeated labels and provenance in the geomean row", () => {
-      const report = renderReport(colorfulResult(), true);
+      const report = renderReport(colorfulResult());
       const geomean = lineContaining(report, "geomean");
 
       expect.soft(stylesAt(geomean, "main")).toContain("2");
@@ -1104,7 +1124,8 @@ describe("renderReport", () => {
     }
 
     it("dims a row only once every candidate on it stayed flat or unstable", () => {
-      const report = renderReport(dimmingResult(), true);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const report = renderReport(dimmingResult());
 
       expect.soft(lineContaining(report, "flat/time")).toMatch(DIMMED_LINE);
       expect(lineContaining(report, "mixed/time")).not.toMatch(DIMMED_LINE);
@@ -1113,14 +1134,20 @@ describe("renderReport", () => {
     it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
       const result = multiCandidateResult();
 
-      const colored = renderReport(result, true);
+      vi.stubEnv("NO_COLOR", "1");
+      const plain = renderReport(result);
+
+      vi.stubEnv("NO_COLOR", undefined);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const colored = renderReport(result);
 
       expect.soft(colored).toContain("\x1b[");
-      expect(stripAnsi(colored)).toBe(renderReport(result, false));
+      expect(stripAnsi(colored)).toBe(plain);
     });
 
     it("emboldens the candidate label in N-way summary lines when color is on", () => {
-      const report = renderReport(multiCandidateResult(), true);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const report = renderReport(multiCandidateResult());
       const summaries = report.split("\n").filter((line) => /✓ \d+ improved/.test(line));
 
       expect(summaries).toHaveLength(3);
@@ -1130,7 +1157,8 @@ describe("renderReport", () => {
     });
 
     it("emboldens the candidate sublabels in N-way highlights when color is on", () => {
-      const highlights = highlightLines(renderReport(multiCandidateResult(), true));
+      vi.stubEnv("FORCE_COLOR", "1");
+      const highlights = highlightLines(renderReport(multiCandidateResult()));
       const sublabels = highlights.filter((line) => {
         const stripped = stripAnsi(line).trim();
         return ["candidate-a", "candidate-b", "candidate-c"].includes(stripped);
@@ -1143,7 +1171,8 @@ describe("renderReport", () => {
     });
 
     it("colors glyph and delta together in N-way improved and regressed cells", () => {
-      const report = renderReport(multiCandidateResult(), true);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const report = renderReport(multiCandidateResult());
       const row = lineContaining(report, "decode/time");
 
       expect.soft(stylesAt(row, "✓")).toContain("32");
@@ -1153,7 +1182,8 @@ describe("renderReport", () => {
     });
 
     it("dims the quiet candidate segment on a bright N-way row", () => {
-      const report = renderReport(dimmingResult(), true);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const report = renderReport(dimmingResult());
       const row = lineContaining(report, "mixed/time");
 
       expect.soft(stylesAt(row, "~")).toContain("2");
@@ -1161,7 +1191,8 @@ describe("renderReport", () => {
     });
 
     it("dims the baseline label and provenance in N-way geomean cells", () => {
-      const report = renderReport(multiCandidateResult(), true);
+      vi.stubEnv("FORCE_COLOR", "1");
+      const report = renderReport(multiCandidateResult());
       const geomean = lineContaining(report, "geomean");
 
       expect.soft(stylesAt(geomean, "main")).toContain("2");
@@ -1441,6 +1472,8 @@ describe("renderReport", () => {
     });
 
     it("matches the recorded bytes for a representative colored run", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
       const result = createComparisonResult({
         metrics: {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
@@ -1462,12 +1495,14 @@ describe("renderReport", () => {
         worktreePruneError: "fatal: not a git repository",
       });
 
-      await expect(renderReport(result, true)).toMatchFileSnapshot(
+      await expect(renderReport(result)).toMatchFileSnapshot(
         "../fixtures/report-representative-color.golden.txt",
       );
     });
 
     it("matches the recorded bytes for a degenerate colored run", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
       const result = createComparisonResult({
         samples: 4,
         adapter: "metric-lines",
@@ -1534,12 +1569,14 @@ describe("renderReport", () => {
         worktreePruneError: "could not lock config file",
       });
 
-      await expect(renderReport(result, true)).toMatchFileSnapshot(
+      await expect(renderReport(result)).toMatchFileSnapshot(
         "../fixtures/report-degenerate-color.golden.txt",
       );
     });
 
     it("matches the recorded bytes for a two-candidate colored run", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
       const result = createComparisonResult({
         baselineLabel: "main",
         candidates: [
@@ -1594,7 +1631,7 @@ describe("renderReport", () => {
         },
       });
 
-      await expect(renderReport(result, true)).toMatchFileSnapshot(
+      await expect(renderReport(result)).toMatchFileSnapshot(
         "../fixtures/report-two-candidates-color.golden.txt",
       );
     });

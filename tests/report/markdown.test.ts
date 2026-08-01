@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { renderMarkdown } from "../../src/report/markdown.js";
 import type { ComparisonResult } from "../../src/report/types.js";
@@ -22,6 +22,9 @@ function headerSeparator(output: string): string | undefined {
 }
 
 describe("renderMarkdown", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
   describe("when rendering a single-candidate report with mixed verdicts", () => {
     function mixedResult(): ComparisonResult {
       return createComparisonResult({
@@ -458,6 +461,8 @@ describe("renderMarkdown", () => {
 
   describe("when no ANSI codes are present", () => {
     it("never includes ANSI escape sequences anywhere in the output", () => {
+      vi.stubEnv("NO_COLOR", "1");
+
       const result = createComparisonResult({
         metrics: {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
@@ -475,6 +480,8 @@ describe("renderMarkdown", () => {
     });
 
     it("emits no ANSI when mixed methods exercise all format helpers with color paths", () => {
+      vi.stubEnv("NO_COLOR", "1");
+
       const result = createComparisonResult({
         metrics: {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),

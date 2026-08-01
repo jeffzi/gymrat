@@ -299,26 +299,26 @@ export function formatTableLine(
   return line.split("│").map(styleCell).join("│");
 }
 
-/**
- * `validateStream: false` tells `styleText` to skip its own TTY check — the
- * caller already decided whether color is appropriate via the `useColor` flag.
- */
-export function formatLabel(
-  label: string,
-  style: Parameters<typeof styleText>[0],
-  useColor: boolean,
-): string {
-  return useColor ? styleText(style, label, { validateStream: false }) : label;
-}
+/** The style names `styleText` accepts. */
+export type Style = Parameters<typeof styleText>[0];
 
-/** The style names `styleText` accepts, in the shape {@link formatLabel} takes them. */
-type Style = Parameters<typeof styleText>[0];
+/**
+ * Apply `style` to `label` via `styleText`.
+ *
+ * `stream` lets callers target `styleText`'s TTY/color auto-detection at a
+ * specific stream instead of the default `process.stdout`. Either way,
+ * `styleText` returns the bare label when the environment suppresses styling
+ * (`NO_COLOR`, a non-TTY stream).
+ */
+export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteStream): string {
+  return stream !== undefined ? styleText(style, label, { stream }) : styleText(style, label);
+}
 
 const HINT_STYLE: Style = ["yellow", "underline"];
 
-/** The `Hint:` label every hint line opens with, styled when the caller allows it. */
-export function formatHintLabel(useColor: boolean): string {
-  return formatLabel("Hint:", HINT_STYLE, useColor);
+/** The `Hint:` label every hint line opens with, styled by `styleText` auto-detection. */
+export function formatHintLabel(): string {
+  return formatLabel("Hint:", HINT_STYLE);
 }
 
 /**
@@ -344,8 +344,8 @@ export const VERDICT_STYLES: Record<MetricVerdict["verdict"], Style> = {
  * prevent: `padEnd` counts an ANSI escape as visible width, so a styled cell is
  * padded short and every column after it slides left.
  */
-export function styleWithin(cell: string, marker: string, style: Style, useColor: boolean): string {
-  return cell.replace(marker, formatLabel(marker, style, useColor));
+export function styleWithin(cell: string, marker: string, style: Style): string {
+  return cell.replace(marker, formatLabel(marker, style));
 }
 
 /** How many gating metrics the geomean left out, and on what grounds. */
@@ -395,22 +395,18 @@ export function isQuietRow(outcomes: ReadonlyArray<MetricVerdict["verdict"] | un
  * Renderers join these with their own separator — `"   "` for aligned text
  * columns, `" · "` for inline markdown.
  *
- * When `useColor` is true, non-zero improved/regressed/unstable parts carry
- * their class color and zero-count parts are dimmed. The `within noise`
- * segment is always dimmed regardless of count — it carries no news worth
- * highlighting.
+ * Non-zero improved/regressed/unstable parts carry their class color and
+ * zero-count parts are dimmed. The `within noise` segment is always dimmed
+ * regardless of count — it carries no news worth highlighting. Color is
+ * governed by `styleText` auto-detection.
  */
-export function verdictSummaryParts(
-  metrics: MetricComparisons,
-  candidateIndex: number,
-  useColor = false,
-): string[] {
+export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
   const counts = countVerdicts(metrics, candidateIndex);
 
   const stylePart = (verdict: MetricVerdict["verdict"], count: number, gloss: string): string => {
     const text = `${getGlyph(verdict)} ${count} ${gloss}`;
     const style: Style = verdict === "no-signal" || count === 0 ? ["dim"] : VERDICT_STYLES[verdict];
-    return formatLabel(text, style, useColor);
+    return formatLabel(text, style);
   };
 
   return [
@@ -446,14 +442,13 @@ const SAMPLES_HINT = "re-run with --samples 6 or more for statistical verdicts";
  * the text renderer prepends a styled label, the markdown renderer wraps it in
  * a blockquote with italic emphasis.
  *
- * When `useColor` is true, descriptive lines (signed-rank / noise-band) are
- * dimmed. The hint line is left unstyled here — its label carries its own
- * color through `formatHint`.
+ * Descriptive lines (signed-rank / noise-band) are dimmed via `styleText`
+ * auto-detection. The hint line is left unstyled here — its label carries its
+ * own color through `formatHint`.
  */
 export function methodFooterLines(
   metrics: MetricComparisons,
   formatHint: (hint: string) => string,
-  useColor = false,
 ): string[] {
   const signedRank = pairCounts(metrics, "signed-rank");
   const band = pairCounts(metrics, "band");
@@ -461,11 +456,11 @@ export function methodFooterLines(
 
   if (signedRank.length > 0) {
     const desc = `verdicts: Wilcoxon signed-rank on pairs (${formatPairCount(Math.min(...signedRank))} ≥ 6) · ~ = no signal at α=0.05`;
-    lines.push(formatLabel(desc, ["dim"], useColor));
+    lines.push(formatLabel(desc, ["dim"]));
   }
   if (band.length > 0) {
     const desc = `noise band ±(half-range × K) — ${formatPairCount(Math.max(...band))} below signed-rank floor (6 pairs)`;
-    lines.push(formatLabel(desc, ["dim"], useColor), formatHint(SAMPLES_HINT));
+    lines.push(formatLabel(desc, ["dim"]), formatHint(SAMPLES_HINT));
   }
 
   return lines;
@@ -478,11 +473,11 @@ export function methodFooterLines(
  * Renderers wrap this into their own format (plain text prefix, blockquote,
  * etc.) and append the baseline attribution.
  *
- * When `useColor` is true, each glyph is painted in its verdict class color.
- * The `~` glyph has no color of its own — it stays the color of whatever wraps
- * the line (typically dim).
+ * Each glyph is painted in its verdict class color via `styleText`
+ * auto-detection. The `~` glyph has no color of its own — it stays the color
+ * of whatever wraps the line (typically dim).
  */
-export function legendGlosses(useColor = false): string {
+export function legendGlosses(): string {
   const glosses: readonly (keyof typeof VERDICT_GLOSSES)[] = [
     "improved",
     "regressed",
@@ -491,17 +486,13 @@ export function legendGlosses(useColor = false): string {
   ];
   return glosses
     .map((verdict) => {
-      const glyph = formatLabel(getGlyph(verdict), VERDICT_STYLES[verdict], useColor);
+      const glyph = formatLabel(getGlyph(verdict), VERDICT_STYLES[verdict]);
       return `${glyph} ${VERDICT_GLOSSES[verdict]}`;
     })
     .join(" · ");
 }
 
 /** Paint a verdict's glyph in the color of its class, inside an already-padded cell. */
-export function styleGlyph(
-  cell: string,
-  verdict: MetricVerdict["verdict"],
-  useColor: boolean,
-): string {
-  return styleWithin(cell, GLYPHS[verdict], VERDICT_STYLES[verdict], useColor);
+export function styleGlyph(cell: string, verdict: MetricVerdict["verdict"]): string {
+  return styleWithin(cell, GLYPHS[verdict], VERDICT_STYLES[verdict]);
 }

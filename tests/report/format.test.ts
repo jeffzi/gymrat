@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   computeColumnWidth,
@@ -373,8 +373,14 @@ describe("formatTableLine", () => {
 });
 
 describe("formatLabel", () => {
-  it("wraps the label in ANSI codes for the requested styles when color is on", () => {
-    const styled = formatLabel("Hint:", ["yellow", "underline"], true);
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("wraps the label in ANSI codes for the requested styles when color is forced", () => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
+    const styled = formatLabel("Hint:", ["yellow", "underline"]);
 
     // \x1b[33m = yellow, \x1b[4m = underline
     expect.soft(styled).toContain("\x1b[33m");
@@ -382,12 +388,16 @@ describe("formatLabel", () => {
     expect(styled).toContain("Hint:");
   });
 
-  it("returns the bare label when color is off", () => {
-    expect(formatLabel("Hint:", ["yellow", "underline"], false)).toBe("Hint:");
+  it("returns the bare label when stdout is not a TTY", () => {
+    expect(formatLabel("Hint:", ["yellow", "underline"])).toBe("Hint:");
   });
 });
 
 describe("verdictSummaryParts", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   const mixed: Metrics = {
     "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
     "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
@@ -395,8 +405,8 @@ describe("verdictSummaryParts", () => {
     "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
   };
 
-  it("returns parts with no ANSI escapes when color is off", () => {
-    const parts = verdictSummaryParts(mixed, 0, false);
+  it("returns parts with no ANSI escapes when stdout is not a TTY", () => {
+    const parts = verdictSummaryParts(mixed, 0);
 
     expect(parts.join("")).not.toContain("\x1b[");
   });
@@ -405,26 +415,32 @@ describe("verdictSummaryParts", () => {
     { label: "improved", code: "32", color: "green" },
     { label: "regressed", code: "31", color: "red" },
     { label: "unstable", code: "33", color: "yellow" },
-  ])("styles the non-zero $label part $color when color is on", ({ label, code }) => {
-    const parts = verdictSummaryParts(mixed, 0, true);
+  ])("styles the non-zero $label part $color when color is forced", ({ label, code }) => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
+    const parts = verdictSummaryParts(mixed, 0);
     const part = parts.find((p) => p.includes(label));
 
     expect(part).toContain(`\x1b[${code}m`);
   });
 
-  it("dims a zero-count part when color is on", () => {
+  it("dims a zero-count part when color is forced", () => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
     const onlyImproved: Metrics = {
       "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const parts = verdictSummaryParts(onlyImproved, 0, true);
+    const parts = verdictSummaryParts(onlyImproved, 0);
     const regressedPart = parts.find((p) => p.includes("regressed"));
 
     expect(regressedPart).toContain("\x1b[2m");
   });
 
-  it("dims the within-noise part regardless of count when color is on", () => {
-    const parts = verdictSummaryParts(mixed, 0, true);
+  it("dims the within-noise part regardless of count when color is forced", () => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
+    const parts = verdictSummaryParts(mixed, 0);
     const noisePart = parts.find((p) => p.includes("within noise"));
 
     expect(noisePart).toContain("\x1b[2m");
@@ -432,16 +448,22 @@ describe("verdictSummaryParts", () => {
 });
 
 describe("legendGlosses", () => {
-  it("returns plain text with no ANSI escapes when color is off", () => {
-    expect(legendGlosses(false)).not.toContain("\x1b[");
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns plain text with no ANSI escapes when stdout is not a TTY", () => {
+    expect(legendGlosses()).not.toContain("\x1b[");
   });
 
   it.each([
     { glyph: "✓", code: "32", color: "green" },
     { glyph: "✗", code: "31", color: "red" },
     { glyph: "≈", code: "33", color: "yellow" },
-  ])("colors the $glyph glyph $color when color is on", ({ glyph, code }) => {
-    const gloss = legendGlosses(true);
+  ])("colors the $glyph glyph $color when color is forced", ({ glyph, code }) => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
+    const gloss = legendGlosses();
     const idx = gloss.indexOf(glyph);
 
     expect(gloss.slice(0, idx)).toContain(`\x1b[${code}m`);
@@ -449,30 +471,38 @@ describe("legendGlosses", () => {
 });
 
 describe("methodFooterLines", () => {
-  it("returns lines with no ANSI escapes when color is off", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns lines with no ANSI escapes when stdout is not a TTY", () => {
     const metrics: Metrics = {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`, false);
+    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`);
 
     for (const line of lines) {
       expect(line).not.toContain("\x1b[");
     }
   });
 
-  it("dims the descriptive verdict line when color is on", () => {
+  it("dims the descriptive verdict line when color is forced", () => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
     const metrics: Metrics = {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`, true);
+    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`);
     const verdictLine = lines.find((l) => l.includes("Wilcoxon"));
 
     expect(verdictLine).toContain("\x1b[2m");
   });
 
-  it("does not dim the hint line when color is on", () => {
+  it("does not dim the hint line when color is forced", () => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
     const metrics: Metrics = {
       "a/time": {
         baselineMedian: 100,
@@ -495,7 +525,7 @@ describe("methodFooterLines", () => {
       },
     };
 
-    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`, true);
+    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`);
     const hintLine = lines.find((l) => l.includes("Hint:"));
 
     expect(hintLine).not.toContain("\x1b[2m");
