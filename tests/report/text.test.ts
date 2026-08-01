@@ -93,7 +93,7 @@ describe("renderReport", () => {
   });
 
   describe("when rendering the run header", () => {
-    it("names both branches, the sample count and the adapter", () => {
+    it("names the baseline's role, both variants, the sample count and the adapter", () => {
       const result = createComparisonResult({
         baselineLabel: "main",
         candidates: [createCandidate({ label: "experiment" })],
@@ -104,8 +104,22 @@ describe("renderReport", () => {
       const output = renderReport(result);
 
       expect(output).toContain(
-        "gymrat compare · main ↔ experiment · 10 paired samples · adapter: mitata",
+        'gymrat compare · baseline "main" ↔ "experiment" · 10 paired samples · adapter: mitata',
       );
+    });
+
+    it("lists every candidate against the one baseline", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a" }),
+          createCandidate({ label: "candidate-b" }),
+        ],
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain('gymrat compare · baseline "main" ↔ "candidate-a", "candidate-b" ·');
     });
   });
 
@@ -118,10 +132,32 @@ describe("renderReport", () => {
 
       expect
         .soft(cellsOf(headerLine).map((cell) => cell.trim()))
-        .toStrictEqual(["metric", "main", "perf/faster-decode", "vs main"]);
+        .toStrictEqual(["metric", '"main"', '"perf/faster-decode"', "vs main"]);
       expect.soft(output).toContain("gymrat compare");
       expect.soft(output).toContain("geomean");
       expect(output).toContain("legend:");
+    });
+  });
+
+  describe("when a variant label overflows the display width", () => {
+    it("truncates the label wherever it prints, leaving metric names whole", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [createCandidate({ label: "feature/entity-spawn-fastpath" })],
+        metrics: {
+          "decode/an-extremely-long-metric-name/time": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            unit: "ns",
+          }),
+        },
+      });
+
+      const output = renderReport(result);
+
+      expect.soft(output).not.toContain("feature/entity-spawn-fastpath");
+      expect.soft(output).toContain("feature/en…-fastpath");
+      expect(output).toContain("decode/an-extremely-long-metric-name/time");
     });
   });
 
@@ -781,22 +817,17 @@ describe("renderReport", () => {
      *
      * `padEnd` counts escape codes as characters, so a renderer that styles
      * first and pads second pads short and slides every column to the right of
-     * it out of line. Stripping the styles back off has to land on the
-     * uncolored report, byte for byte.
+     * it out of line. Stripping the styles back off has to leave every
+     * separator where the header put it.
      */
-    it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
-      const result = colorfulResult();
+    it("pads on the plain text, so the colored columns line up once the styles are stripped", () => {
+      const bare = stripAnsi(renderReport(colorfulResult()));
+      const headerOffsets = separatorOffsets(lineStartingWith(bare, "metric"));
 
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-      const plain = renderReport(result);
-
-      vi.stubEnv("NO_COLOR", undefined);
-      vi.stubEnv("FORCE_COLOR", "1");
-      const colored = renderReport(result);
-
-      expect.soft(colored).toContain("\x1b[");
-      expect(stripAnsi(colored)).toBe(plain);
+      expect
+        .soft(separatorOffsets(lineStartingWith(bare, "faster/time")))
+        .toStrictEqual(headerOffsets);
+      expect(separatorOffsets(lineStartingWith(bare, "geomean"))).toStrictEqual(headerOffsets);
     });
 
     it.each([
@@ -833,11 +864,27 @@ describe("renderReport", () => {
       expect(row).not.toMatch(DIMMED_LINE);
     });
 
-    it("emboldens the header row and the geomean figure", () => {
+    it("emboldens the geomean figure", () => {
       const report = renderReport(colorfulResult());
 
-      expect.soft(lineContaining(report, "vs main")).toMatch(/^\x1b\[1m.*\x1b\[22m$/);
       expect(stylesAt(lineContaining(report, "geomean"), "-5.8%")).toContain("1");
+    });
+
+    it.each([
+      { position: "run header", anchor: "gymrat compare" },
+      { position: "column header", anchor: "metric  " },
+    ])("emboldens and underlines the variant names in the $position", ({ anchor }) => {
+      const line = lineContaining(renderReport(colorfulResult()), anchor);
+
+      expect.soft(stylesAt(line, "main")).toStrictEqual(["1", "4"]);
+      expect(stylesAt(line, "perf/faster-decode")).toStrictEqual(["1", "4"]);
+    });
+
+    it("leaves the rest of the column header row unstyled", () => {
+      const header = lineContaining(renderReport(colorfulResult()), "metric  ");
+
+      expect.soft(header).not.toMatch(/^\x1b\[1m/);
+      expect(stylesAt(header, "metric")).toStrictEqual([]);
     });
 
     it("emboldens 'gymrat compare' in the report header", () => {
@@ -1088,7 +1135,7 @@ describe("renderReport", () => {
       const lines = renderReport(result).split("\n");
 
       // Each section's content is asserted by its own test; this pins the order.
-      expect.soft(lines[0]).toContain("gymrat compare · main ↔ faster");
+      expect.soft(lines[0]).toContain('gymrat compare · baseline "main" ↔ "faster"');
       expect.soft(lines[1]).toMatch(/^metric\s+│/);
       expect.soft(lines[2]).toMatch(/^─+┼/);
       expect.soft(lines[3]).toContain("metric1/time");
@@ -1175,15 +1222,15 @@ describe("renderReport", () => {
       });
     }
 
-    it("heads one column per candidate with its comparison against the baseline", () => {
+    it("heads one column per candidate with that candidate's name alone", () => {
       const headerLine = lineStartingWith(renderReport(multiCandidateResult()), "metric");
 
       expect(cellsOf(headerLine).map((cell) => cell.trim())).toStrictEqual([
         "metric",
-        "main",
-        "candidate-a vs main",
-        "candidate-b vs main",
-        "candidate-c vs main",
+        '"main"',
+        '"candidate-a"',
+        '"candidate-b"',
+        '"candidate-c"',
       ]);
     });
 
@@ -1304,19 +1351,14 @@ describe("renderReport", () => {
         expect(lineContaining(report, "mixed/time")).not.toMatch(DIMMED_LINE);
       });
 
-      it("pads on the plain text, so stripping the styles restores the uncolored report", () => {
-        const result = multiCandidateResult();
+      it("pads on the plain text, so the colored columns line up once the styles are stripped", () => {
+        const bare = stripAnsi(renderReport(multiCandidateResult()));
+        const headerOffsets = separatorOffsets(lineStartingWith(bare, "metric"));
 
-        vi.stubEnv("FORCE_COLOR", undefined);
-        vi.stubEnv("NO_COLOR", "1");
-        const plain = renderReport(result);
-
-        vi.stubEnv("NO_COLOR", undefined);
-        vi.stubEnv("FORCE_COLOR", "1");
-        const colored = renderReport(result);
-
-        expect.soft(colored).toContain("\x1b[");
-        expect(stripAnsi(colored)).toBe(plain);
+        expect
+          .soft(separatorOffsets(lineStartingWith(bare, "decode/time")))
+          .toStrictEqual(headerOffsets);
+        expect(separatorOffsets(lineStartingWith(bare, "geomean"))).toStrictEqual(headerOffsets);
       });
 
       it("emboldens the candidate label in N-way summary lines when color is on", () => {

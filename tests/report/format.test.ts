@@ -17,6 +17,7 @@ import {
   legendGlosses,
   methodFooterLines,
   selectHighlights,
+  truncateLabels,
   verdictSummaryParts,
 } from "../../src/report/format.js";
 import type { ComparisonResult } from "../../src/report/types.js";
@@ -574,6 +575,40 @@ describe("formatTableLine", () => {
     },
   ])("$desc", ({ cells, widths, expected }) => {
     expect(formatTableLine(cells, widths)).toBe(expected);
+  });
+});
+
+describe("truncateLabels", () => {
+  describe("when every label fits the display width", () => {
+    it("returns each one verbatim", () => {
+      // "feature/short-branch" is exactly the 20-char display width.
+      expect(truncateLabels(["main", "feature/short-branch"])).toStrictEqual([
+        "main",
+        "feature/short-branch",
+      ]);
+    });
+  });
+
+  describe("when a label overflows the display width", () => {
+    it("joins its head and tail with a single ellipsis", () => {
+      const truncated = truncateLabels(["feature/entity-spawn-fastpath"]);
+
+      expect.soft(truncated).toStrictEqual(["feature/en…-fastpath"]);
+      expect(truncated[0]).toHaveLength(20);
+    });
+  });
+
+  describe("when two labels are identical once truncated", () => {
+    it("extends the kept tail until the displayed labels differ", () => {
+      // Both share the same 10-char head and 9-char tail, so the 20-char form
+      // would name two different branches identically.
+      const truncated = truncateLabels([
+        "feature/experiment-one-fastpath",
+        "feature/exploration-two-fastpath",
+      ]);
+
+      expect(truncated).toStrictEqual(["feature/ex…e-fastpath", "feature/ex…o-fastpath"]);
+    });
   });
 });
 

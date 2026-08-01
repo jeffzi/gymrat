@@ -8,7 +8,12 @@ import {
   type Method,
   type MetricVerdict,
 } from "../verdict/verdict.js";
-import type { CandidateMetric, MetricComparison, MetricComparisons } from "./types.js";
+import type {
+  CandidateMetric,
+  ComparisonResult,
+  MetricComparison,
+  MetricComparisons,
+} from "./types.js";
 
 type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
 
@@ -401,6 +406,113 @@ export type Style = Parameters<typeof styleText>[0];
  */
 export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteStream): string {
   return stream !== undefined ? styleText(style, label, { stream }) : styleText(style, label);
+}
+
+/**
+ * Widest a variant label prints, ellipsis included.
+ *
+ * A branch name is free to be as long as git allows, but every column it heads
+ * is sized from it, so an unbounded one pushes the figures the report exists to
+ * show off the right edge of the terminal.
+ */
+const LABEL_DISPLAY_WIDTH = 20;
+
+/** U+2026, one character wide — three periods would cost two more columns. */
+const ELLIPSIS = "…";
+
+/** Characters kept from the head of an overlong label. */
+const LABEL_HEAD_WIDTH = Math.ceil((LABEL_DISPLAY_WIDTH - ELLIPSIS.length) / 2);
+
+/** Characters kept from the tail of an overlong label before collisions widen it. */
+const LABEL_TAIL_WIDTH = LABEL_DISPLAY_WIDTH - ELLIPSIS.length - LABEL_HEAD_WIDTH;
+
+/** One label under the name it prints, keeping `tail` of its trailing characters. */
+function shortenLabel(label: string, tail: number): string {
+  if (label.length <= LABEL_DISPLAY_WIDTH) return label;
+  return `${label.slice(0, LABEL_HEAD_WIDTH)}${ELLIPSIS}${label.slice(-tail)}`;
+}
+
+/**
+ * Every variant label under the name the report prints for it.
+ *
+ * Labels are shortened as a set rather than one at a time because the tail is
+ * what tells sibling branches apart: `feature/experiment-one-fastpath` and
+ * `feature/exploration-two-fastpath` share both ends, so the shortest tail that
+ * keeps them distinct is the one worth keeping. The tail grows until the
+ * displayed names are as distinct as the labels were — two candidates named
+ * identically stay that way, which is the run's own doing, not the display's.
+ *
+ * Truncation is display-only: `label=` parsing, the config, and the JSON
+ * renderer all keep the full label.
+ */
+export function truncateLabels(labels: readonly string[]): string[] {
+  const longest = Math.max(0, ...labels.map((label) => label.length));
+  const distinct = new Set(labels).size;
+  for (let tail = LABEL_TAIL_WIDTH; tail < longest; tail++) {
+    const shortened = labels.map((label) => shortenLabel(label, tail));
+    if (new Set(shortened).size === distinct) return shortened;
+  }
+  return [...labels];
+}
+
+/**
+ * `result` with every variant label replaced by the name the report prints.
+ *
+ * Every renderer reads its labels off this copy, so a label is shortened once
+ * per report and prints the same way in the header, the column it heads, the
+ * geomean row and the legend.
+ */
+export function withDisplayLabels(result: ComparisonResult): ComparisonResult {
+  const [baseline, ...candidates] = truncateLabels([
+    result.baselineLabel,
+    ...result.candidates.map((candidate) => candidate.label),
+  ]);
+  return {
+    ...result,
+    baselineLabel: baseline ?? result.baselineLabel,
+    candidates: result.candidates.map((candidate, index) => ({
+      ...candidate,
+      label: candidates[index] ?? candidate.label,
+    })),
+  };
+}
+
+/** The style a variant name wears where the report names it as a name. */
+export const VARIANT_NAME_STYLE: Style = ["bold", "underline"];
+
+/** Probe text whose styled form differs from itself whenever styling is live. */
+const STYLE_PROBE = "x";
+
+/**
+ * Whether `styleText` is emitting escapes at all right now.
+ *
+ * `styleText` answers this only by doing it — it returns the bare string when
+ * `NO_COLOR`, a non-TTY stream, or anything else suppresses styling — so the
+ * probe asks it the same question the renderer is about to.
+ */
+function stylingActive(stream?: NodeJS.WriteStream): boolean {
+  return formatLabel(STYLE_PROBE, VARIANT_NAME_STYLE, stream) !== STYLE_PROBE;
+}
+
+/**
+ * A variant name as it prints before {@link VARIANT_NAME_STYLE} wraps it.
+ *
+ * Emphasis is what separates a branch name from the prose around it. Where
+ * there is none to be had the quotes do that work instead, so a piped report
+ * still reads `baseline "main" ↔ "perf/simd"` rather than running the names
+ * into the sentence carrying them.
+ *
+ * Callers padding a cell need this plain form for the width, then apply
+ * {@link VARIANT_NAME_STYLE} to the padded cell; callers writing prose can take
+ * {@link formatVariantName} instead.
+ */
+export function variantName(label: string, stream?: NodeJS.WriteStream): string {
+  return stylingActive(stream) ? label : `"${label}"`;
+}
+
+/** A variant name, styled — for the unpadded prose of the run header. */
+export function formatVariantName(label: string, stream?: NodeJS.WriteStream): string {
+  return formatLabel(variantName(label, stream), VARIANT_NAME_STYLE, stream);
 }
 
 const HINT_STYLE: Style = ["yellow", "underline"];

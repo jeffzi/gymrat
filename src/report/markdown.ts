@@ -15,6 +15,7 @@ import {
   selectHighlights,
   UNSTABLE_FUTILITY_NOTE,
   verdictSummaryParts,
+  withDisplayLabels,
 } from "./format.js";
 import type {
   CandidateComparison,
@@ -26,6 +27,17 @@ import type {
 /** One line tallying every verdict class one candidate earned. */
 function renderSummary(metrics: MetricComparisons, candidateIndex: number): string {
   return verdictSummaryParts(metrics, candidateIndex).join(" · ");
+}
+
+/**
+ * A variant name as markdown code.
+ *
+ * Code spans are what the text report's emphasis becomes here: they set a
+ * branch name apart from the prose and stop a name carrying `_` or `*` from
+ * being read as markup.
+ */
+function variantName(label: string): string {
+  return `\`${label}\``;
 }
 
 /** Format a single highlight entry as a markdown list item. */
@@ -150,7 +162,12 @@ function renderSingleCandidateTable(
   candidateIndex: number,
 ): string[] {
   const baseline = result.baselineLabel;
-  const header = gfmRow(["Metric", baseline, candidate.label, `vs ${baseline}`]);
+  const header = gfmRow([
+    "Metric",
+    variantName(baseline),
+    variantName(candidate.label),
+    `vs ${variantName(baseline)}`,
+  ]);
   const separator = gfmSeparator(4);
 
   const prominentRows: string[] = [];
@@ -179,7 +196,12 @@ function renderSingleCandidateTable(
   }
 
   const geomeanDelta = formatGeomeanCell(candidate.geomean);
-  const geomeanRow = gfmRow([GEOMEAN_LABEL, baseline, candidate.label, geomeanDelta]);
+  const geomeanRow = gfmRow([
+    GEOMEAN_LABEL,
+    variantName(baseline),
+    variantName(candidate.label),
+    geomeanDelta,
+  ]);
 
   return [
     header,
@@ -210,8 +232,8 @@ function formatMultiCandidateCell(
  */
 function renderMultiCandidateTable(result: ComparisonResult): string[] {
   const baseline = result.baselineLabel;
-  const candidateHeaders = result.candidates.map((c) => `${c.label} vs ${baseline}`);
-  const header = gfmRow(["Metric", baseline, ...candidateHeaders]);
+  const candidateHeaders = result.candidates.map((c) => variantName(c.label));
+  const header = gfmRow(["Metric", variantName(baseline), ...candidateHeaders]);
   const separator = gfmSeparator(2 + result.candidates.length);
 
   const prominentRows: string[] = [];
@@ -244,7 +266,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
   }
 
   const geomeanCells = result.candidates.map((c) => formatGeomeanCell(c.geomean));
-  const geomeanRow = gfmRow([GEOMEAN_LABEL, baseline, ...geomeanCells]);
+  const geomeanRow = gfmRow([GEOMEAN_LABEL, variantName(baseline), ...geomeanCells]);
 
   return [
     header,
@@ -262,14 +284,15 @@ function renderMethodFooter(result: ComparisonResult): string[] {
 
 /** The legend as a blockquote: what each glyph means and which target is the baseline. */
 function renderLegend(baseline: string): string {
-  return `> ${legendGlosses()} — candidates are judged against \`${baseline}\``;
+  return `> ${legendGlosses()} — candidates are judged against ${variantName(baseline)}`;
 }
 
 /** Summary lines — one per candidate for multi, one total for single. */
 function renderSummaryLines(result: ComparisonResult): string[] {
   if (result.candidates.length > 1) {
     return result.candidates.map(
-      (candidate, index) => `${candidate.label}: ${renderSummary(result.metrics, index)}`,
+      (candidate, index) =>
+        `${variantName(candidate.label)}: ${renderSummary(result.metrics, index)}`,
     );
   }
   return [renderSummary(result.metrics, 0)];
@@ -290,7 +313,7 @@ function renderHighlightLines(result: ComparisonResult): string[] {
       }))
       .filter((block) => block.entries.length > 0);
 
-    const lines = blocks.flatMap((block) => [`**${block.label}**:`, ...block.entries]);
+    const lines = blocks.flatMap((block) => [`**${variantName(block.label)}**:`, ...block.entries]);
     if (blocks.some((block) => block.unstable)) lines.push(FUTILITY_LINE);
     return lines;
   }
@@ -316,15 +339,16 @@ function renderTable(result: ComparisonResult): string[] {
  * No ANSI codes — glyphs are plain text.
  */
 export function renderMarkdown(result: ComparisonResult): string {
-  const lines = [...renderSummaryLines(result), ""];
+  const display = withDisplayLabels(result);
+  const lines = [...renderSummaryLines(display), ""];
 
-  const highlights = renderHighlightLines(result);
+  const highlights = renderHighlightLines(display);
   if (highlights.length > 0) lines.push(...highlights, "");
 
-  lines.push(...renderTable(result), "");
-  lines.push(renderLegend(result.baselineLabel));
+  lines.push(...renderTable(display), "");
+  lines.push(renderLegend(display.baselineLabel));
 
-  const methodLines = renderMethodFooter(result);
+  const methodLines = renderMethodFooter(display);
   if (methodLines.length > 0) lines.push("", ...methodLines);
 
   return lines.join("\n");

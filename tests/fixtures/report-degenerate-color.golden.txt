@@ -1,5 +1,5 @@
-[1mgymrat compare[22m [2m·[22m main ↔ perf/faster-decode [2m·[22m 4 paired samples [2m·[22m adapter: metric-lines
-[1mmetric                    │       main │ perf/faster-decode │ vs main[22m
+[1mgymrat compare[22m [2m·[22m baseline [1m[4mmain[24m[22m ↔ [1m[4mperf/faster-decode[24m[22m [2m·[22m 4 paired samples [2m·[22m adapter: metric-lines
+metric                    │       [1m[4mmain[24m[22m │ [1m[4mperf/faster-decode[24m[22m │ vs main
 ──────────────────────────┼────────────┼────────────────────┼──────────────────
 [2mzero-median/time          │   0ns ± 0% │           0ns ± 0% │ ~  0.0%[22m
 [2mnan-delta/count           │          0 │                120 │ ~[22m

@@ -12,6 +12,7 @@ import {
   formatNoiseBand,
   formatPairCount,
   formatTableLine,
+  formatVariantName,
   formatVerdictDelta,
   GEOMEAN_LABEL,
   geomeanParts,
@@ -26,8 +27,11 @@ import {
   type Style,
   styleWithin,
   UNSTABLE_FUTILITY_NOTE,
+  VARIANT_NAME_STYLE,
+  variantName,
   verdictSummaryParts,
   VERDICT_STYLES,
+  withDisplayLabels,
 } from "./format.js";
 import type { CandidateComparison, ComparisonResult, MetricComparisons } from "./types.js";
 
@@ -248,7 +252,12 @@ function renderTable(
   candidateIndex: number,
 ): string[] {
   const baseline = result.baselineLabel;
-  const headers: Row = ["metric", baseline, candidate.label, `vs ${baseline}`];
+  const headers: Row = [
+    "metric",
+    variantName(baseline),
+    variantName(candidate.label),
+    `vs ${baseline}`,
+  ];
 
   const rows: MetricRow[] = Object.entries(result.metrics).map(([name, metric]) => {
     const side = metric.candidates[candidateIndex];
@@ -287,7 +296,9 @@ function renderTable(
   const geomean: Row = [GEOMEAN_LABEL, baseline, candidate.label, geomeanCell.text];
 
   return [
-    formatLabel(formatRow(headers, widths), ["bold"]),
+    formatRow(headers, widths, (cell, index) =>
+      index === 1 || index === 2 ? styleWithin(cell, headers[index], VARIANT_NAME_STYLE) : cell,
+    ),
     rule,
     ...rows.map((row) => formatMetricRow(row.cells, widths, row.verdict)),
     rule,
@@ -369,7 +380,7 @@ interface ComparisonGrid {
  */
 function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
   const columns: CandidateColumn[] = result.candidates.map((candidate) => ({
-    header: `${candidate.label} vs ${result.baselineLabel}`,
+    header: variantName(candidate.label),
     geomean: formatGeomeanCell(candidate.geomean),
     cells: [],
   }));
@@ -433,9 +444,10 @@ function renderComparisonTable(result: ComparisonResult): string[] {
     for (const cell of column.cells) cell.text = joinCandidateCell(cell, valueWidth);
   }
 
+  const baselineHeader = variantName(baseline);
   const metricWidth = computeMetricColumnWidth(rows.map((row) => row.name.length));
   const baselineWidth = computeColumnWidth(
-    baseline.length,
+    baselineHeader.length,
     rows.map((row) => row.baseline.length),
     VALUE_COLUMN_MIN,
   );
@@ -488,13 +500,16 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   const rule = formatTableRule(widths);
 
   return [
-    formatLabel(
-      line(
-        "metric",
-        baseline,
-        columns.map((column) => column.header),
-      ),
-      ["bold"],
+    line(
+      "metric",
+      baselineHeader,
+      columns.map((column) => column.header),
+      (cell, columnIndex) => {
+        if (columnIndex === 0) return cell;
+        if (columnIndex === 1) return styleWithin(cell, baselineHeader, VARIANT_NAME_STYLE);
+        const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
+        return column === undefined ? cell : styleWithin(cell, column.header, VARIANT_NAME_STYLE);
+      },
     ),
     rule,
     ...metricRows,
@@ -780,26 +795,29 @@ function renderCandidate(
  * not text, so the renderer never needs a boolean flag.
  */
 export function renderReport(result: ComparisonResult): string {
-  const candidateLabels = result.candidates.map((candidate) => candidate.label).join(", ");
-  const headerPlain = `gymrat compare ${HEADER_SEPARATOR} ${result.baselineLabel} ↔ ${candidateLabels} ${HEADER_SEPARATOR} ${result.samples} paired samples ${HEADER_SEPARATOR} adapter: ${result.adapter}`;
+  const display = withDisplayLabels(result);
+  const candidateNames = display.candidates
+    .map((candidate) => formatVariantName(candidate.label))
+    .join(", ");
+  const headerPlain = `gymrat compare ${HEADER_SEPARATOR} baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames} ${HEADER_SEPARATOR} ${display.samples} paired samples ${HEADER_SEPARATOR} adapter: ${display.adapter}`;
   let header = headerPlain;
   header = styleWithin(header, "gymrat compare", ["bold"]);
   header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"]));
   const lines = [header];
 
-  if (result.candidates.length > 1) {
-    lines.push(...renderComparison(result));
+  if (display.candidates.length > 1) {
+    lines.push(...renderComparison(display));
   } else {
-    for (const [index, candidate] of result.candidates.entries()) {
-      lines.push(...renderCandidate(result, candidate, index));
+    for (const [index, candidate] of display.candidates.entries()) {
+      lines.push(...renderCandidate(display, candidate, index));
     }
   }
 
   lines.push(
     "",
-    renderLegend(result.baselineLabel),
-    ...renderMethodFooter(result),
-    ...renderWorktreeFooter(result),
+    renderLegend(display.baselineLabel),
+    ...renderMethodFooter(display),
+    ...renderWorktreeFooter(display),
   );
 
   return lines.join("\n");

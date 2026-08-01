@@ -75,12 +75,12 @@ describe("renderMarkdown", () => {
       // At least header + separator + metric rows + geomean
       expect(rows.length).toBeGreaterThanOrEqual(5);
 
-      // Header row has expected columns
+      // Header row has expected columns, with every variant name in backticks
       const header = rows[0]!;
       expect(header).toContain("Metric");
-      expect(header).toContain("main");
-      expect(header).toContain("perf/faster-decode");
-      expect(header).toContain("vs main");
+      expect(header).toContain("`main`");
+      expect(header).toContain("`perf/faster-decode`");
+      expect(header).toContain("vs `main`");
 
       // Separator row exists with alignment markers
       const sep = headerSeparator(output);
@@ -138,24 +138,40 @@ describe("renderMarkdown", () => {
     it("groups highlights by candidate under sub-headers", () => {
       const output = renderMarkdown(multiCandidateResult());
 
-      expect(output).toContain("**candidate-a**");
-      expect(output).toContain("**candidate-b**");
+      expect(output).toContain("**`candidate-a`**");
+      expect(output).toContain("**`candidate-b`**");
 
       // Each candidate's highlight appears
       const lines = output.split("\n");
-      const aHeaderIdx = lines.findIndex((l) => l.includes("**candidate-a**"));
-      const bHeaderIdx = lines.findIndex((l) => l.includes("**candidate-b**"));
+      const aHeaderIdx = lines.findIndex((l) => l.includes("**`candidate-a`**"));
+      const bHeaderIdx = lines.findIndex((l) => l.includes("**`candidate-b`**"));
       expect(aHeaderIdx).toBeLessThan(bHeaderIdx);
+    });
+
+    it("heads each candidate column with the label alone, in backticks", () => {
+      const header = tableRows(renderMarkdown(multiCandidateResult()))[0]!;
+
+      expect.soft(header).toContain("`candidate-a`");
+      expect.soft(header).toContain("`candidate-b`");
+      expect(header).not.toContain("vs main");
+    });
+
+    it("wraps the candidate label in backticks in each summary line", () => {
+      const summary = renderMarkdown(multiCandidateResult())
+        .split("\n")
+        .find((line) => line.includes("candidate-a") && line.includes("improved"));
+
+      expect(summary).toContain("`candidate-a`");
     });
 
     it("renders multi-candidate table with combined value+verdict cells", () => {
       const output = renderMarkdown(multiCandidateResult());
       const rows = tableRows(output);
 
-      // Header should have columns for each candidate
+      // Header should have one column per candidate
       const header = rows[0]!;
-      expect(header).toContain("candidate-a vs main");
-      expect(header).toContain("candidate-b vs main");
+      expect(header).toContain("`candidate-a`");
+      expect(header).toContain("`candidate-b`");
 
       // Data row should have combined value+verdict cells
       const dataRow = rows.find((r) => r.includes("decode/time"));
@@ -202,6 +218,28 @@ describe("renderMarkdown", () => {
 
       expect(dataRow).toContain("950ns");
       expect(dataRow).toContain("✓");
+    });
+  });
+
+  describe("when a variant label overflows the display width", () => {
+    it("truncates the label wherever it prints, leaving metric names whole", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [createCandidate({ label: "feature/entity-spawn-fastpath" })],
+        metrics: {
+          "decode/an-extremely-long-metric-name/time": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            unit: "ns",
+          }),
+        },
+      });
+
+      const output = renderMarkdown(result);
+
+      expect.soft(output).not.toContain("feature/entity-spawn-fastpath");
+      expect.soft(output).toContain("`feature/en…-fastpath`");
+      expect(output).toContain("decode/an-extremely-long-metric-name/time");
     });
   });
 
@@ -534,8 +572,8 @@ describe("renderMarkdown", () => {
 
       const output = renderMarkdown(result);
 
-      expect(output).not.toContain("**candidate-a**");
-      expect(output).not.toContain("**candidate-b**");
+      expect(output).not.toContain("**`candidate-a`**");
+      expect(output).not.toContain("**`candidate-b`**");
     });
   });
 
