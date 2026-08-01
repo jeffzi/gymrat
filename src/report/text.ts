@@ -5,11 +5,12 @@ import {
   computeColumnWidth,
   displayClass,
   type DisplayClass,
+  formatDelta,
   formatEvidence,
   formatHintLabel,
   formatLabel,
-  formatMetricCell,
-  formatNoiseBand,
+  formatMetricCellParts,
+  formatNoiseBandValue,
   formatPairCount,
   formatTableLine,
   formatVariantName,
@@ -20,9 +21,12 @@ import {
   hasUnstableHighlight,
   isQuietRow,
   legendGlosses,
+  type MetricCellParts,
   methodFooterLines,
+  PLUS_MINUS,
   QUIET_VERDICTS,
   selectHighlights,
+  SPREAD_SEPARATOR,
   styleGlyph,
   type Style,
   styleWithin,
@@ -30,6 +34,7 @@ import {
   VARIANT_NAME_STYLE,
   variantName,
   verdictSummaryParts,
+  VERDICT_GLOSSES,
   VERDICT_STYLES,
   withDisplayLabels,
 } from "./format.js";
@@ -45,6 +50,8 @@ type Widths = readonly [number, number, number, number];
 interface MetricRow {
   readonly cells: Row;
   readonly verdict: MetricVerdict | undefined;
+  /** The noise band as it was padded into the verdict cell — what the dim style looks for. */
+  readonly band: string;
 }
 
 const METRIC_COLUMN_MIN = 16;
@@ -60,8 +67,11 @@ const VERDICT_COLUMN = 3;
  */
 const CANDIDATE_COLUMN_OFFSET = 2;
 
-/** Gap between a candidate's own figure and the verdict that follows it in the same cell. */
-const CANDIDATE_CELL_GUTTER = "  ";
+/**
+ * Gap between the fields of one cell: a candidate's figure and the verdict
+ * behind it, and the verdict's own glyph, delta and noise band.
+ */
+const CELL_GUTTER = "  ";
 
 /** The heading a candidate's non-empty highlights list opens with. */
 const HIGHLIGHTS_HEADING = "highlights";
@@ -94,18 +104,43 @@ function alignLeft(content: string): string {
   return ` ${content}`;
 }
 
-/** Join a verdict cell's parts, dropping whichever ones the verdict has none of. */
-function joinCellParts(parts: readonly string[]): string {
-  return parts.filter((part) => part !== "").join("  ");
+/** Widths a value column pads its two fields to, measured on plain text. */
+interface ValueWidths {
+  readonly magnitude: number;
+  readonly spread: number;
+}
+
+/** The widest magnitude and the widest spread a column of value cells holds. */
+function valueWidths(cells: readonly MetricCellParts[]): ValueWidths {
+  return {
+    magnitude: Math.max(0, ...cells.map((cell) => cell.magnitude.length)),
+    spread: Math.max(0, ...cells.map((cell) => cell.spread.length)),
+  };
 }
 
 /**
- * A verdict as one cell: its glyph, its delta, the noise it was judged against,
- * and — where it rests on fewer pairs than the run took — how many.
+ * A value cell with its magnitude and its spread each right-aligned in a field
+ * of the column's own width.
  *
- * An unstable metric prints the word in place of the delta — the number exists,
- * but a band that wide makes it a coin toss, and showing it would invite the
- * reader to trust it. Its cell ends there: the band it was judged against is
+ * The cell fills both fields whatever it has to put in them, so a measurement
+ * with no spread of its own — or none at all — keeps its magnitude under the
+ * ones that report one instead of sliding right into their `±`.
+ */
+function joinValueCell(parts: MetricCellParts, widths: ValueWidths): string {
+  const magnitude = parts.magnitude.padStart(widths.magnitude);
+  if (widths.spread === 0) return magnitude;
+  const spread =
+    parts.spread === "" ? "" : `${SPREAD_SEPARATOR}${parts.spread.padStart(widths.spread)}`;
+  return `${magnitude}${spread}`.padEnd(widths.magnitude + SPREAD_SEPARATOR.length + widths.spread);
+}
+
+/**
+ * A verdict cell taken apart: its glyph, its delta, the noise it was judged
+ * against, and — where it rests on fewer pairs than the run took — how many.
+ *
+ * An unstable metric puts the word in `word` rather than in `delta` — the number
+ * exists, but a band that wide makes it a coin toss, and showing it would invite
+ * the reader to trust it. Its cell ends there: the band it was judged against is
  * what the word already means, and the highlights carry the figure for the
  * reader who wants it.
  *
@@ -118,15 +153,73 @@ function joinCellParts(parts: readonly string[]): string {
  * carries, but omitting it where it differs lets the header speak for a metric
  * it does not describe.
  */
-function formatVerdictCell(verdict: MetricVerdict | undefined, samples: number): string {
-  if (verdict === undefined) return "";
-  const delta = formatVerdictDelta(verdict);
-  const band =
-    verdict.verdict !== "unstable" && "noisePct" in verdict
-      ? formatNoiseBand(verdict.noisePct)
-      : "";
-  const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
-  return joinCellParts([getGlyph(displayClass(verdict)), delta, band, pairs]);
+interface VerdictParts {
+  readonly glyph: string;
+  /** The signed percentage, right-aligned among the column's other deltas. */
+  readonly delta: string;
+  /** The word standing in for a delta too noisy to report, empty for every other verdict. */
+  readonly word: string;
+  /** The noise band's figure, without the `±` the column pins in front of it. */
+  readonly band: string;
+  readonly pairs: string;
+}
+
+/**
+ * One verdict's fields, with the noise band only where the caller shows one.
+ *
+ * The multi-candidate table drops the band from its cells, so it asks for the
+ * same fields with that one left empty.
+ */
+function verdictParts(verdict: MetricVerdict, samples: number, withBand: boolean): VerdictParts {
+  const unstable = verdict.verdict === "unstable";
+  const banded = withBand && !unstable && "noisePct" in verdict;
+  return {
+    glyph: getGlyph(displayClass(verdict)),
+    delta: unstable ? "" : formatDelta(verdict.delta),
+    word: unstable ? VERDICT_GLOSSES.unstable : "",
+    band: banded ? formatNoiseBandValue(verdict.noisePct) : "",
+    pairs: verdict.n === samples ? "" : formatPairCount(verdict.n),
+  };
+}
+
+/** Widths a verdict column pads its delta and noise band to, measured on plain text. */
+interface VerdictWidths {
+  readonly delta: number;
+  readonly band: number;
+}
+
+/**
+ * The widest delta and noise band a column of verdict cells holds.
+ *
+ * The word standing in for a delta is not measured: it is wider than any
+ * percentage, and sizing the field from it would push a whole column of bands
+ * right for the sake of the one row that has none.
+ */
+function verdictWidths(cells: readonly VerdictParts[]): VerdictWidths {
+  return {
+    delta: Math.max(0, ...cells.map((cell) => cell.delta.length)),
+    band: Math.max(0, ...cells.map((cell) => cell.band.length)),
+  };
+}
+
+/** The noise band as it prints: the `±` pinned, its figure right-aligned behind it. */
+function bandField(band: string, width: number): string {
+  return band === "" ? "" : `${PLUS_MINUS}${band.padStart(width)}`;
+}
+
+/**
+ * A verdict cell, each field padded to the width its column settled on.
+ *
+ * A field the verdict has nothing for still holds its column's width, so the
+ * fields behind it stay where the rows above put them; the trailing run of
+ * padding is cut, since nothing lines up against the end of a line.
+ */
+function joinVerdictCell(parts: VerdictParts, widths: VerdictWidths): string {
+  const delta = parts.word === "" ? parts.delta.padStart(widths.delta) : parts.word;
+  return [parts.glyph, delta, bandField(parts.band, widths.band), parts.pairs]
+    .filter((field) => field !== "")
+    .join(CELL_GUTTER)
+    .trimEnd();
 }
 
 /** The geomean's verdict cell, and the aggregate inside it that the row exists for. */
@@ -219,17 +312,17 @@ function styleVerdictCell(style: (cell: string) => string): CellStyler {
  * Both styles land on the finished line, so the column widths behind them were
  * measured on plain text.
  */
-function formatMetricRow(row: Row, widths: Widths, verdict: MetricVerdict | undefined): string {
-  if (verdict === undefined) return formatRow(row, widths);
+function formatMetricRow(row: MetricRow, widths: Widths): string {
+  if (row.verdict === undefined) return formatRow(row.cells, widths);
 
-  const outcome = displayClass(verdict);
+  const outcome = displayClass(row.verdict);
   const line = formatRow(
-    row,
+    row.cells,
     widths,
     styleVerdictCell((cell) => {
       let styled = styleGlyph(cell, outcome);
-      if (!QUIET_VERDICTS.has(outcome) && "noisePct" in verdict) {
-        styled = styleWithin(styled, formatNoiseBand(verdict.noisePct), ["dim"]);
+      if (!QUIET_VERDICTS.has(outcome) && row.band !== "") {
+        styled = styleWithin(styled, row.band, ["dim"]);
       }
       return styled;
     }),
@@ -259,18 +352,38 @@ function renderTable(
     `vs ${baseline}`,
   ];
 
-  const rows: MetricRow[] = Object.entries(result.metrics).map(([name, metric]) => {
+  const measured = Object.entries(result.metrics).map(([name, metric]) => {
     const side = metric.candidates[candidateIndex];
     return {
-      cells: [
-        name,
-        formatMetricCell(metric.baselineMedian, metric.baselineSpread, metric.meta.unit),
-        formatMetricCell(side?.median, side?.spread, metric.meta.unit),
-        formatVerdictCell(side?.verdict, result.samples),
-      ],
+      name,
+      baseline: formatMetricCellParts(
+        metric.baselineMedian,
+        metric.baselineSpread,
+        metric.meta.unit,
+      ),
+      candidate: formatMetricCellParts(side?.median, side?.spread, metric.meta.unit),
       verdict: side?.verdict,
+      parts:
+        side?.verdict === undefined ? undefined : verdictParts(side.verdict, result.samples, true),
     };
   });
+
+  const baselineFields = valueWidths(measured.map((row) => row.baseline));
+  const candidateFields = valueWidths(measured.map((row) => row.candidate));
+  const verdictFields = verdictWidths(
+    measured.map((row) => row.parts).filter((parts) => parts !== undefined),
+  );
+
+  const rows: MetricRow[] = measured.map((row) => ({
+    cells: [
+      row.name,
+      joinValueCell(row.baseline, baselineFields),
+      joinValueCell(row.candidate, candidateFields),
+      row.parts === undefined ? "" : joinVerdictCell(row.parts, verdictFields),
+    ],
+    verdict: row.verdict,
+    band: row.parts === undefined ? "" : bandField(row.parts.band, verdictFields.band),
+  }));
 
   const widths: Widths = [
     computeMetricColumnWidth(rows.map((row) => row.cells[0].length)),
@@ -300,7 +413,7 @@ function renderTable(
       index === 1 || index === 2 ? styleWithin(cell, headers[index], VARIANT_NAME_STYLE) : cell,
     ),
     rule,
-    ...rows.map((row) => formatMetricRow(row.cells, widths, row.verdict)),
+    ...rows.map((row) => formatMetricRow(row, widths)),
     rule,
     formatRow(geomean, widths, (cell, index) => {
       if (index === 1) return styleWithin(cell, baseline, ["dim"]);
@@ -324,22 +437,23 @@ function renderTable(
  * is the band only for band-method verdicts; a signed-rank or no-signal metric's
  * band does not appear anywhere in the N-way report.
  */
-function formatCandidateVerdict(verdict: MetricVerdict | undefined, samples: number): string {
-  if (verdict === undefined) return "";
-  const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
-  return joinCellParts([getGlyph(displayClass(verdict)), formatVerdictDelta(verdict), pairs]);
+function formatCandidateVerdict(
+  verdict: MetricVerdict | undefined,
+  samples: number,
+): VerdictParts | undefined {
+  return verdict === undefined ? undefined : verdictParts(verdict, samples, false);
 }
 
 /**
  * One candidate's side of a metric: what it measured, how that was judged, and
  * the two joined into a finished cell.
  *
- * `text` is filled during layout rather than at build time because the width it
- * pads to belongs to the whole column, which is not known until every row exists.
+ * `text` is filled during layout rather than at build time because the widths it
+ * pads to belong to the whole column, which is not known until every row exists.
  */
 interface CandidateCell {
-  readonly value: string;
-  readonly verdict: string;
+  readonly value: MetricCellParts;
+  readonly verdict: VerdictParts | undefined;
   readonly delta: string;
   readonly outcome: DisplayClass | undefined;
   text: string;
@@ -348,7 +462,9 @@ interface CandidateCell {
 /** One metric across every candidate, in the multi-candidate table's column order. */
 interface ComparisonRow {
   readonly name: string;
-  readonly baseline: string;
+  readonly baseline: MetricCellParts;
+  /** Filled during layout, like {@link CandidateCell.text}: the baseline figure, padded. */
+  baselineCell: string;
   readonly candidates: readonly CandidateCell[];
 }
 
@@ -391,7 +507,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
     for (const [index, column] of columns.entries()) {
       const side = metric.candidates[index];
       const cell: CandidateCell = {
-        value: formatMetricCell(side?.median, side?.spread, metric.meta.unit),
+        value: formatMetricCellParts(side?.median, side?.spread, metric.meta.unit),
         verdict: formatCandidateVerdict(side?.verdict, result.samples),
         delta: side?.verdict ? formatVerdictDelta(side.verdict) : "",
         outcome: side?.verdict === undefined ? undefined : displayClass(side.verdict),
@@ -402,7 +518,12 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
     }
     rows.push({
       name,
-      baseline: formatMetricCell(metric.baselineMedian, metric.baselineSpread, metric.meta.unit),
+      baseline: formatMetricCellParts(
+        metric.baselineMedian,
+        metric.baselineSpread,
+        metric.meta.unit,
+      ),
+      baselineCell: "",
       candidates,
     });
   }
@@ -411,16 +532,21 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
 }
 
 /**
- * A candidate's figure and its verdict as one cell, the figures right-aligned
- * among themselves.
+ * A candidate's figure and its verdict as one cell, every field padded to the
+ * width its column settled on.
  *
- * Padding the figure to the column's widest one keeps the glyphs of a candidate
+ * Padding the figure to the column's own fields keeps the glyphs of a candidate
  * column in a line, so the reader scans one strip of glyphs per candidate rather
  * than hunting for them at whatever offset each row's figure happens to end.
  */
-function joinCandidateCell(cell: CandidateCell, valueWidth: number): string {
-  const value = cell.value.padStart(valueWidth);
-  return cell.verdict === "" ? value : `${value}${CANDIDATE_CELL_GUTTER}${cell.verdict}`;
+function joinCandidateCell(
+  cell: CandidateCell,
+  values: ValueWidths,
+  verdicts: VerdictWidths,
+): string {
+  const value = joinValueCell(cell.value, values);
+  if (cell.verdict === undefined) return value;
+  return `${value}${CELL_GUTTER}${joinVerdictCell(cell.verdict, verdicts)}`;
 }
 
 /**
@@ -440,15 +566,21 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   const { rows, columns } = buildComparisonGrid(result);
 
   for (const column of columns) {
-    const valueWidth = Math.max(0, ...column.cells.map((cell) => cell.value.length));
-    for (const cell of column.cells) cell.text = joinCandidateCell(cell, valueWidth);
+    const values = valueWidths(column.cells.map((cell) => cell.value));
+    const verdicts = verdictWidths(
+      column.cells.map((cell) => cell.verdict).filter((parts) => parts !== undefined),
+    );
+    for (const cell of column.cells) cell.text = joinCandidateCell(cell, values, verdicts);
   }
+
+  const baselineFields = valueWidths(rows.map((row) => row.baseline));
+  for (const row of rows) row.baselineCell = joinValueCell(row.baseline, baselineFields);
 
   const baselineHeader = variantName(baseline);
   const metricWidth = computeMetricColumnWidth(rows.map((row) => row.name.length));
   const baselineWidth = computeColumnWidth(
     baselineHeader.length,
-    rows.map((row) => row.baseline.length),
+    rows.map((row) => row.baselineCell.length),
     VALUE_COLUMN_MIN,
   );
   const lastColumn = columns.length - 1;
@@ -475,7 +607,7 @@ function renderComparisonTable(result: ComparisonResult): string[] {
     const rowIsQuiet = isQuietRow(row.candidates.map((cell) => cell.outcome));
     const rendered = line(
       row.name,
-      row.baseline,
+      row.baselineCell,
       row.candidates.map((cell) => cell.text),
       (cell, columnIndex) => {
         const candidateCell = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET];
@@ -487,7 +619,7 @@ function renderComparisonTable(result: ComparisonResult): string[] {
         }
 
         // Quiet cell on a bright row: dim glyph and delta individually.
-        if (!rowIsQuiet && candidateCell.verdict !== "") {
+        if (!rowIsQuiet && candidateCell.verdict !== undefined) {
           return styleGlyphAndDelta(cell, outcome, candidateCell.delta, ["dim"]);
         }
 

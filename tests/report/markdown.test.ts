@@ -489,6 +489,34 @@ describe("renderMarkdown", () => {
     });
   });
 
+  describe("when the metric cells of a column print at different widths", () => {
+    it("joins each cell's magnitude and spread with a single space, padding neither", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "first/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 162000,
+            baselineSpread: 9,
+            unit: "ns",
+          }),
+          "second/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 29200,
+            baselineSpread: 12,
+            unit: "ns",
+          }),
+        },
+      });
+
+      const rows = tableRows(renderMarkdown(result));
+
+      expect.soft(rows.find((row) => row.includes("first/metric"))).toContain("| 162.0µs ± 9% |");
+      expect(rows.find((row) => row.includes("second/metric"))).toContain("| 29.2µs ± 12% |");
+    });
+  });
+
   describe("when rendering a multi-candidate report with quiet rows", () => {
     it("collapses within-noise and unstable rows into a details block", () => {
       const result = createComparisonResult({

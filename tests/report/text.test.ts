@@ -342,6 +342,263 @@ describe("renderReport", () => {
     });
   });
 
+  describe("when aligning the value columns", () => {
+    /** A run whose two metrics differ in how wide their value sub-fields print. */
+    function valueResult(metrics: ComparisonResult["metrics"]): ComparisonResult {
+      return createComparisonResult({ metrics });
+    }
+
+    it.each([
+      {
+        desc: "percentage spreads",
+        metrics: {
+          "first/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 162000,
+            baselineSpread: 9,
+            unit: "ns" as const,
+          }),
+          "second/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 29200,
+            baselineSpread: 12,
+            unit: "ns" as const,
+          }),
+        },
+        first: "162.0µs ±  9%",
+        second: " 29.2µs ± 12%",
+      },
+      {
+        desc: "an absolute spread beside a percentage one",
+        metrics: {
+          "first/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 5,
+            baselineSpread: 7620,
+            unit: "bytes" as const,
+          }),
+          "second/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 49152,
+            baselineSpread: 1,
+            unit: "bytes" as const,
+          }),
+        },
+        first: "    5B ± 381B",
+        second: "49.2KB ±   1%",
+      },
+    ])("stacks the magnitude, the ± and the spread of $desc", ({ metrics, first, second }) => {
+      const report = renderReport(valueResult(metrics));
+
+      const firstCell = cellsOf(lineStartingWith(report, "first/metric"))[1] ?? "";
+      const secondCell = cellsOf(lineStartingWith(report, "second/metric"))[1] ?? "";
+
+      expect.soft(firstCell).toContain(first);
+      expect.soft(secondCell).toContain(second);
+      expect(firstCell.indexOf("±")).toBe(secondCell.indexOf("±"));
+    });
+
+    it("keeps a magnitude with no spread of its own in the magnitude field", () => {
+      const report = renderReport(
+        valueResult({
+          "first/metric": signedRankMetric({
+            verdict: "improved",
+            delta: -10,
+            baselineMedian: 2048,
+            baselineSpread: 2,
+            unit: "ns",
+          }),
+          "second/metric": {
+            baselineMedian: 120,
+            candidates: [
+              { median: 120, verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 10 } },
+            ],
+            meta: { direction: "lower", gating: true, exact: true },
+          },
+        }),
+      );
+
+      const firstCell = cellsOf(lineStartingWith(report, "first/metric"))[1] ?? "";
+      const secondCell = cellsOf(lineStartingWith(report, "second/metric"))[1] ?? "";
+
+      // "2.0µs" and "120" end at the same offset; the ± field stays blank below.
+      expect(firstCell.indexOf("2.0µs") + "2.0µs".length).toBe(
+        secondCell.indexOf("120") + "120".length,
+      );
+    });
+  });
+
+  describe("when aligning the verdict column", () => {
+    it("right-aligns every delta, the unsigned zero included, and pins the band's ±", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "regressed/time": signedRankMetric({
+            verdict: "regressed",
+            delta: 0.4,
+            noisePct: 2.5,
+            unit: "ns",
+          }),
+          "flat/time": signedRankMetric({
+            verdict: "no-signal",
+            delta: 0,
+            noisePct: 100,
+            unit: "ns",
+          }),
+          "improved/time": signedRankMetric({
+            verdict: "improved",
+            delta: -12.4,
+            noisePct: 30,
+            unit: "ns",
+          }),
+        },
+      });
+
+      const report = renderReport(result);
+      const verdictOf = (metric: string): string | undefined =>
+        cellsOf(lineStartingWith(report, metric)).at(-1)?.trim();
+
+      expect.soft(verdictOf("regressed/time")).toBe("✗   +0.4%  ±  2.5%");
+      expect.soft(verdictOf("flat/time")).toBe("~    0.0%  ±100.0%");
+      expect(verdictOf("improved/time")).toBe("✓  -12.4%  ± 30.0%");
+    });
+
+    it("seats the word unstable in the delta slot without widening it for the other rows", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "improved/time": signedRankMetric({ verdict: "improved", delta: -12.4, unit: "ns" }),
+          "jittery/time": signedRankMetric({
+            verdict: "unstable",
+            delta: -50,
+            noisePct: 30,
+            unit: "ns",
+          }),
+        },
+      });
+
+      const report = renderReport(result);
+
+      expect
+        .soft(cellsOf(lineStartingWith(report, "improved/time")).at(-1)?.trim())
+        .toBe("✓  -12.4%  ±2.5%");
+      expect(cellsOf(lineStartingWith(report, "jittery/time")).at(-1)?.trim()).toBe("≈  unstable");
+    });
+  });
+
+  describe("when aligning the sub-fields of candidate columns", () => {
+    /**
+     * Two candidates whose columns differ in how wide their sub-fields print.
+     *
+     * Each column carries its own widest magnitude, spread and delta, so a
+     * renderer that measured the table as a whole would pad one from the other.
+     */
+    function twoColumnResult(): ComparisonResult {
+      return createComparisonResult({
+        candidates: [
+          createCandidate({ label: "candidate-a" }),
+          createCandidate({ label: "candidate-b" }),
+        ],
+        metrics: {
+          "decode/time": {
+            baselineMedian: 1735,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 1425,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                  noiseAbs: 2.5,
+                },
+              },
+              {
+                median: 1698,
+                spread: 2,
+                verdict: {
+                  verdict: "unstable",
+                  method: "signed-rank",
+                  delta: -2.1,
+                  n: 10,
+                  p: 0.32,
+                  noisePct: 30,
+                  noiseAbs: 30,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+          "encode/time": {
+            baselineMedian: 914,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 934,
+                spread: 1,
+                verdict: {
+                  verdict: "regressed",
+                  method: "signed-rank",
+                  delta: 2.2,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                  noiseAbs: 2.5,
+                },
+              },
+              {
+                median: 1200000,
+                spread: 12,
+                verdict: {
+                  verdict: "no-signal",
+                  method: "signed-rank",
+                  delta: -2.1,
+                  n: 10,
+                  p: 0.32,
+                  noisePct: 2.5,
+                  noiseAbs: 2.5,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+    }
+
+    it("stacks the value and verdict sub-fields within each candidate column", () => {
+      const report = renderReport(twoColumnResult());
+
+      const decode = cellsOf(lineStartingWith(report, "decode/time")).map((cell) => cell.trim());
+      const encode = cellsOf(lineStartingWith(report, "encode/time")).map((cell) => cell.trim());
+
+      expect
+        .soft(decode.slice(2))
+        .toStrictEqual(["1.4µs ± 1%  ✓  -10.0%", "1.7µs ±  2%  ≈  unstable"]);
+      expect(encode.slice(2)).toStrictEqual(["934ns ± 1%  ✗   +2.2%", "1.2ms ± 12%  ~  -2.1%"]);
+    });
+
+    it("measures the candidate sub-fields on the plain text, so colored cells stack the same", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      const bare = stripAnsi(renderReport(twoColumnResult()));
+
+      const decode = cellsOf(lineStartingWith(bare, "decode/time")).map((cell) => cell.trim());
+      const encode = cellsOf(lineStartingWith(bare, "encode/time")).map((cell) => cell.trim());
+
+      expect
+        .soft(decode.slice(2))
+        .toStrictEqual(["1.4µs ± 1%  ✓  -10.0%", "1.7µs ±  2%  ≈  unstable"]);
+      expect(encode.slice(2)).toStrictEqual(["934ns ± 1%  ✗   +2.2%", "1.2ms ± 12%  ~  -2.1%"]);
+    });
+  });
+
   describe("when rendering the geomean row", () => {
     it("repeats both labels in its value cells and counts the metrics behind the figure", () => {
       const result = createComparisonResult({
@@ -432,7 +689,8 @@ describe("renderReport", () => {
     it("marks the row identical rather than within noise", () => {
       const row = lineStartingWith(renderReport(identicalResult()), "tied/heap");
 
-      expect(cellsOf(row).at(-1)?.trim()).toBe("=  -0.5%  ±2.5%");
+      // The row's delta is padded to the width of faster/time's -10.0%.
+      expect(cellsOf(row).at(-1)?.trim()).toBe("=   -0.5%  ±2.5%");
     });
 
     it("tallies it apart from the metrics that are merely within noise", () => {
@@ -828,6 +1086,34 @@ describe("renderReport", () => {
         .soft(separatorOffsets(lineStartingWith(bare, "faster/time")))
         .toStrictEqual(headerOffsets);
       expect(separatorOffsets(lineStartingWith(bare, "geomean"))).toStrictEqual(headerOffsets);
+    });
+
+    it("measures the verdict sub-fields on the plain text, so the bands stack once stripped", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "improved/time": signedRankMetric({
+            verdict: "improved",
+            delta: -12.4,
+            noisePct: 2.5,
+            unit: "ns",
+          }),
+          "flat/time": signedRankMetric({
+            verdict: "no-signal",
+            delta: 0.4,
+            noisePct: 100,
+            unit: "ns",
+          }),
+        },
+      });
+
+      const bare = stripAnsi(renderReport(result));
+
+      expect
+        .soft(cellsOf(lineStartingWith(bare, "improved/time")).at(-1)?.trim())
+        .toBe("✓  -12.4%  ±  2.5%");
+      expect(cellsOf(lineStartingWith(bare, "flat/time")).at(-1)?.trim()).toBe(
+        "~   +0.4%  ±100.0%",
+      );
     });
 
     it.each([

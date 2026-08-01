@@ -52,10 +52,21 @@ export function formatValue(value: number, unit?: "ns" | "bytes"): string {
   return scaleTier(value, TIER_MAP[unit]);
 }
 
+/** The sign every spread and noise band is stated behind. */
+export const PLUS_MINUS = "±";
+
+/**
+ * What separates a value from the spread that follows it.
+ *
+ * Exported because the text table pads a cell's magnitude and spread into fields
+ * of their own and has to rebuild the join around them.
+ */
+export const SPREAD_SEPARATOR = ` ${PLUS_MINUS} `;
+
 /** The `± N%` suffix that follows a value, or nothing when the spread is unknown. */
 export function formatSpread(spread?: number): string {
   if (spread === undefined) return "";
-  return ` ± ${spread.toFixed(0)}%`;
+  return `${SPREAD_SEPARATOR}${spread.toFixed(0)}%`;
 }
 
 /**
@@ -69,18 +80,49 @@ export function formatSpread(spread?: number): string {
 const RELATIVE_SPREAD_CAP_PCT = 100;
 
 /**
- * A value cell: the scaled measurement and its spread, or nothing when unmeasured.
+ * A value cell taken apart, so a table can pad each field to its own column width.
+ *
+ * Both fields are empty when the side reported nothing, and the spread alone is
+ * empty when the measurement carries no scatter.
+ */
+export interface MetricCellParts {
+  /** The scaled measurement. */
+  readonly magnitude: string;
+  /** What follows the `±`: a percentage, or absolute units once it outgrows the median. */
+  readonly spread: string;
+}
+
+/**
+ * A value cell's fields: the scaled measurement and the spread stated behind it.
  *
  * A spread past `RELATIVE_SPREAD_CAP_PCT` is restated in absolute units, so
  * `5B ± 7620%` reads `5B ± 381B` instead.
  */
-export function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
-  if (median === undefined) return "";
-  const value = formatValue(median, unit);
-  if (spread !== undefined && spread > RELATIVE_SPREAD_CAP_PCT) {
-    return `${value} ± ${formatValue((median * spread) / 100, unit)}`;
+export function formatMetricCellParts(
+  median?: number,
+  spread?: number,
+  unit?: "ns" | "bytes",
+): MetricCellParts {
+  if (median === undefined) return { magnitude: "", spread: "" };
+  const magnitude = formatValue(median, unit);
+  if (spread === undefined) return { magnitude, spread: "" };
+  if (spread > RELATIVE_SPREAD_CAP_PCT) {
+    return { magnitude, spread: formatValue((median * spread) / 100, unit) };
   }
-  return `${value}${formatSpread(spread)}`;
+  return { magnitude, spread: `${spread.toFixed(0)}%` };
+}
+
+/**
+ * A value cell as one string, or nothing when unmeasured.
+ *
+ * The fields are joined by a single space either side of the `±`: this is the
+ * form markdown embeds in its cells, where the renderer does no padding of its
+ * own. The text table pads {@link formatMetricCellParts} instead.
+ */
+export function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
+  const { magnitude, spread: scatter } = formatMetricCellParts(median, spread, unit);
+  if (magnitude === "" || scatter === "") return magnitude;
+  return `${magnitude}${SPREAD_SEPARATOR}${scatter}`;
 }
 
 /**
@@ -221,9 +263,19 @@ export function formatEvidence(
  */
 export const UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples";
 
+/**
+ * A noise band's figure, without the sign it is stated behind.
+ *
+ * The text table pins the `±` of a verdict column and right-aligns this behind
+ * it, so it needs the two apart.
+ */
+export function formatNoiseBandValue(noisePct: number): string {
+  return `${noisePct.toFixed(1)}%`;
+}
+
 /** A metric's noise band, as the `±N%` the row annotations and highlights share. */
 export function formatNoiseBand(noisePct: number): string {
-  return `±${noisePct.toFixed(1)}%`;
+  return `${PLUS_MINUS}${formatNoiseBandValue(noisePct)}`;
 }
 
 /**
