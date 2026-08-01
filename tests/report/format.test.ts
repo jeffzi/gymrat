@@ -62,6 +62,42 @@ function approximateMetric(options: {
   return metricFor([candidate], direction);
 }
 
+/**
+ * A single-candidate metric whose verdict fell back to the noise-band method.
+ *
+ * `n` is `pairedA.length` (total pair count). When `n < 6` the fallback is due
+ * to insufficient samples; when `n >= 6` it is due to too many tied pairs
+ * zeroing out the Wilcoxon-usable differences.
+ */
+function bandMetric(options: {
+  verdict?: ApproximateVerdictValue;
+  delta?: number;
+  n: number;
+  noisePct?: number;
+  direction?: "lower" | "higher";
+}): MetricEntry {
+  const { verdict = "no-signal", delta = -1, n, noisePct = 2.5, direction = "lower" } = options;
+  return {
+    baselineMedian: 100,
+    baselineSpread: 5,
+    candidates: [
+      {
+        median: 100 + delta,
+        spread: 4,
+        verdict: {
+          verdict,
+          method: "band" as const,
+          delta,
+          n,
+          band: noisePct,
+          noisePct,
+        },
+      },
+    ],
+    meta: { direction, gating: true, exact: false },
+  };
+}
+
 /** A metric the candidate never reported, so no verdict could be computed. */
 function oneSidedMetric(): MetricEntry {
   return {
@@ -471,6 +507,13 @@ describe("legendGlosses", () => {
 });
 
 describe("methodFooterLines", () => {
+  const formatHint = (hint: string): string => `Hint: ${hint}`;
+
+  /** The footer's hint line, if `methodFooterLines` emitted one for these metrics. */
+  function hintLineFor(metrics: Metrics): string | undefined {
+    return methodFooterLines(metrics, formatHint).find((line) => line.includes("Hint:"));
+  }
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -480,7 +523,7 @@ describe("methodFooterLines", () => {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`);
+    const lines = methodFooterLines(metrics, formatHint);
 
     for (const line of lines) {
       expect(line).not.toContain("\x1b[");
@@ -494,8 +537,8 @@ describe("methodFooterLines", () => {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`);
-    const verdictLine = lines.find((l) => l.includes("Wilcoxon"));
+    const lines = methodFooterLines(metrics, formatHint);
+    const verdictLine = lines.find((line) => line.includes("Wilcoxon"));
 
     expect(verdictLine).toContain("\x1b[2m");
   });
@@ -503,31 +546,55 @@ describe("methodFooterLines", () => {
   it("does not dim the hint line when color is forced", () => {
     vi.stubEnv("FORCE_COLOR", "1");
 
-    const metrics: Metrics = {
-      "a/time": {
-        baselineMedian: 100,
-        baselineSpread: 5,
-        candidates: [
-          {
-            median: 95,
-            spread: 4,
-            verdict: {
-              verdict: "no-signal" as const,
-              method: "band" as const,
-              delta: -5,
-              n: 4,
-              band: 2.5,
-              noisePct: 2.5,
-            },
-          },
-        ],
-        meta: { direction: "lower" as const, gating: true, exact: false },
-      },
-    };
+    const metrics: Metrics = { "a/time": bandMetric({ n: 4 }) };
 
-    const lines = methodFooterLines(metrics, (hint) => `Hint: ${hint}`);
-    const hintLine = lines.find((l) => l.includes("Hint:"));
+    expect(hintLineFor(metrics)).not.toContain("\x1b[2m");
+  });
 
-    expect(hintLine).not.toContain("\x1b[2m");
+  describe("when all band metrics have too few samples", () => {
+    it("shows the sample-shortage hint", () => {
+      const metrics: Metrics = {
+        "decode/time": bandMetric({ n: 3 }),
+        "encode/time": bandMetric({ n: 5 }),
+        "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      };
+
+      expect(hintLineFor(metrics)).toContain("--samples 6");
+    });
+  });
+
+  describe("when all band metrics have enough samples but fell back due to ties", () => {
+    it("shows the ties hint listing the affected metric names", () => {
+      const metrics: Metrics = {
+        "entity.alive_check/heap": bandMetric({ n: 10 }),
+        "iteration.soa_5field/heap": bandMetric({ n: 8 }),
+        "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      };
+      const hintLine = hintLineFor(metrics);
+
+      expect.soft(hintLine).toContain("entity.alive_check/heap");
+      expect.soft(hintLine).toContain("iteration.soa_5field/heap");
+      expect.soft(hintLine).toContain("close-to-identical");
+      expect(hintLine).not.toContain("--samples");
+    });
+  });
+
+  describe("when band metrics include both sample-shortage and ties", () => {
+    it("shows the sample-shortage hint first, then the ties hint", () => {
+      const metrics: Metrics = {
+        "decode/time": bandMetric({ n: 3 }),
+        "entity.alive_check/heap": bandMetric({ n: 10 }),
+        "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      };
+
+      const hintLines = methodFooterLines(metrics, formatHint).filter((line) =>
+        line.includes("Hint:"),
+      );
+
+      expect(hintLines).toHaveLength(2);
+      expect.soft(hintLines[0]).toContain("--samples");
+      expect.soft(hintLines[1]).toContain("entity.alive_check/heap");
+      expect(hintLines[1]).toContain("close-to-identical");
+    });
   });
 });

@@ -25,7 +25,11 @@ export type Verdict = "improved" | "regressed" | "no-signal";
 export type ApproximateVerdictValue = Verdict | "unstable";
 
 const P_VALUE_THRESHOLD = 0.05;
-const MIN_WILCOXON_N = 6;
+/**
+ * Minimum paired-sample count required to use the signed-rank method; below
+ * this the verdict falls back to the noise band.
+ */
+export const MIN_WILCOXON_N = 6;
 
 /** Multiplier applied to the observed spread when sizing the noise band. */
 const NOISE_K = 1.5;

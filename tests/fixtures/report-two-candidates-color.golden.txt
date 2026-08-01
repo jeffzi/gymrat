@@ -20,4 +20,4 @@ geomean (gating metrics)  │       [2mmain[22m │ [1m-10.0%[22m  [2m1 sta
 [2mlegend: [32m✓[39m improved · [31m✗[39m regressed · [33m≈[39m unstable · ~ within noise — candidates are judged against main[22m
 [2mverdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05[22m
 [2mnoise band ±(half-range × K) — n=10 below signed-rank floor (6 pairs)[22m
-[33m[4mHint:[24m[39m re-run with --samples 6 or more for statistical verdicts
+[33m[4mHint:[24m[39m decode/time has close-to-identical values across runs — verdicts won't improve with more samples

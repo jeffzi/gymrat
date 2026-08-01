@@ -1,7 +1,13 @@
 import { styleText } from "node:util";
 
 import { assertNever } from "../errors.js";
-import type { GeomeanExclusion, GeomeanResult, Method, MetricVerdict } from "../verdict/verdict.js";
+import {
+  MIN_WILCOXON_N,
+  type GeomeanExclusion,
+  type GeomeanResult,
+  type Method,
+  type MetricVerdict,
+} from "../verdict/verdict.js";
 import type { CandidateMetric, MetricComparison, MetricComparisons } from "./types.js";
 
 type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
@@ -430,12 +436,50 @@ export function pairCounts(metrics: MetricComparisons, method: Method): number[]
   return counts;
 }
 
-const SAMPLES_HINT = "re-run with --samples 6 or more for statistical verdicts";
+const SAMPLES_HINT = `re-run with --samples ${MIN_WILCOXON_N} or more for statistical verdicts`;
+
+/**
+ * Partition band-method metrics into those that fell back because of too few
+ * samples (`n < 6`) and those that fell back because too many paired
+ * differences were zero (ties: `n >= 6` total pairs, but the Wilcoxon-usable
+ * count dropped below the floor).
+ */
+function partitionBandMetrics(metrics: MetricComparisons): {
+  bandCounts: number[];
+  tiedMetricNames: string[];
+  hasSampleShortage: boolean;
+} {
+  const bandCounts: number[] = [];
+  const tiedMetricNames = new Set<string>();
+  let hasSampleShortage = false;
+
+  for (const [name, metric] of Object.entries(metrics)) {
+    for (const { verdict } of metric.candidates) {
+      if (verdict?.method !== "band") continue;
+      bandCounts.push(verdict.n);
+      if (verdict.n >= MIN_WILCOXON_N) {
+        tiedMetricNames.add(name);
+      } else {
+        hasSampleShortage = true;
+      }
+    }
+  }
+
+  return { bandCounts, tiedMetricNames: [...tiedMetricNames], hasSampleShortage };
+}
 
 /**
  * The method-footer lines naming how each verdict was decided, plus — when any
  * metric fell back to the noise band — a hint telling the user how to get a
  * statistical verdict instead.
+ *
+ * Two distinct reasons cause a band fallback, each with its own hint:
+ *
+ * - **Sample shortage** (`n < 6`): "re-run with --samples 6 or more …"
+ * - **Tied pairs** (`n >= 6` total but too many zero-difference pairs):
+ *   lists the affected metric names and explains more samples won't help
+ *
+ * When both reasons are present, both hints appear (sample shortage first).
  *
  * `formatHint` turns the shared hint string into a format-appropriate line:
  * the text renderer prepends a styled label, the markdown renderer wraps it in
@@ -450,16 +494,25 @@ export function methodFooterLines(
   formatHint: (hint: string) => string,
 ): string[] {
   const signedRank = pairCounts(metrics, "signed-rank");
-  const band = pairCounts(metrics, "band");
+  const { bandCounts, tiedMetricNames, hasSampleShortage } = partitionBandMetrics(metrics);
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
-    const desc = `verdicts: Wilcoxon signed-rank on pairs (${formatPairCount(Math.min(...signedRank))} ≥ 6) · ~ = no signal at α=0.05`;
+    const desc = `verdicts: Wilcoxon signed-rank on pairs (${formatPairCount(Math.min(...signedRank))} ≥ ${MIN_WILCOXON_N}) · ~ = no signal at α=0.05`;
     lines.push(formatLabel(desc, ["dim"]));
   }
-  if (band.length > 0) {
-    const desc = `noise band ±(half-range × K) — ${formatPairCount(Math.max(...band))} below signed-rank floor (6 pairs)`;
-    lines.push(formatLabel(desc, ["dim"]), formatHint(SAMPLES_HINT));
+  if (bandCounts.length > 0) {
+    const desc = `noise band ±(half-range × K) — ${formatPairCount(Math.max(...bandCounts))} below signed-rank floor (${MIN_WILCOXON_N} pairs)`;
+    lines.push(formatLabel(desc, ["dim"]));
+
+    if (hasSampleShortage) {
+      lines.push(formatHint(SAMPLES_HINT));
+    }
+    if (tiedMetricNames.length > 0) {
+      const verb = tiedMetricNames.length === 1 ? "has" : "have";
+      const tiesHint = `${tiedMetricNames.join(", ")} ${verb} close-to-identical values across runs — verdicts won't improve with more samples`;
+      lines.push(formatHint(tiesHint));
+    }
   }
 
   return lines;
