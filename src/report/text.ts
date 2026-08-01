@@ -16,6 +16,7 @@ import {
   GEOMEAN_LABEL,
   geomeanParts,
   getGlyph,
+  hasUnstableHighlight,
   isQuietRow,
   legendGlosses,
   methodFooterLines,
@@ -24,6 +25,7 @@ import {
   styleGlyph,
   type Style,
   styleWithin,
+  UNSTABLE_FUTILITY_NOTE,
   verdictSummaryParts,
   VERDICT_STYLES,
 } from "./format.js";
@@ -99,7 +101,9 @@ function joinCellParts(parts: readonly string[]): string {
  *
  * An unstable metric prints the word in place of the delta — the number exists,
  * but a band that wide makes it a coin toss, and showing it would invite the
- * reader to trust it.
+ * reader to trust it. Its cell ends there: the band it was judged against is
+ * what the word already means, and the highlights carry the figure for the
+ * reader who wants it.
  *
  * The noise band appears only for the two approximate methods: an exact
  * verdict carries no `noisePct`, so its cell ends at the delta.
@@ -113,7 +117,10 @@ function joinCellParts(parts: readonly string[]): string {
 function formatVerdictCell(verdict: MetricVerdict | undefined, samples: number): string {
   if (verdict === undefined) return "";
   const delta = formatVerdictDelta(verdict);
-  const band = "noisePct" in verdict ? formatNoiseBand(verdict.noisePct) : "";
+  const band =
+    verdict.verdict !== "unstable" && "noisePct" in verdict
+      ? formatNoiseBand(verdict.noisePct)
+      : "";
   const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
   return joinCellParts([getGlyph(displayClass(verdict)), delta, band, pairs]);
 }
@@ -513,6 +520,12 @@ function renderSummary(metrics: MetricComparisons, candidateIndex: number): stri
 /** Gap between the longest highlighted metric name and the delta that follows it. */
 const HIGHLIGHT_NAME_GUTTER = 2;
 
+/** One candidate's highlight entries, and whether the noise swamped any of them. */
+interface HighlightBlock {
+  readonly entries: string[];
+  readonly unstable: boolean;
+}
+
 /**
  * The metrics worth a second look, loudest first, with the evidence behind each.
  *
@@ -523,18 +536,18 @@ const HIGHLIGHT_NAME_GUTTER = 2;
  * Each entry's glyph and delta (or `unstable` word) carry the verdict's class
  * color, and evidence suffixes are dimmed, via `styleText` auto-detection.
  */
-function highlightEntries(metrics: MetricComparisons, candidateIndex: number): string[] {
+function highlightEntries(metrics: MetricComparisons, candidateIndex: number): HighlightBlock {
   const highlights = selectHighlights(metrics, candidateIndex);
-  if (highlights.length === 0) return [];
+  if (highlights.length === 0) return { entries: [], unstable: false };
 
   const nameWidth =
     Math.max(...highlights.map((highlight) => highlight.name.length)) + HIGHLIGHT_NAME_GUTTER;
 
-  return highlights.map(({ name, candidate }) => {
+  const entries = highlights.map(({ name, metric, candidate }) => {
     const verdict = candidate.verdict;
     const shown = displayClass(verdict);
     const delta = formatVerdictDelta(verdict);
-    const evidence = formatEvidence(verdict);
+    const evidence = formatEvidence(verdict, metric.meta.unit, metric.baselineMedian);
     const suffix = evidence === "" ? "" : `  ${evidence}`;
 
     // Pad on plain text, then style the glyph+delta and dim evidence.
@@ -550,12 +563,21 @@ function highlightEntries(metrics: MetricComparisons, candidateIndex: number): s
     }
     return styled;
   });
+
+  return { entries, unstable: hasUnstableHighlight(highlights) };
+}
+
+/** The futility note, indented to sit under the entries it qualifies. */
+function futilityLine(): string {
+  return `  ${formatLabel(UNSTABLE_FUTILITY_NOTE, ["dim"])}`;
 }
 
 function renderHighlights(metrics: MetricComparisons, candidateIndex: number): string[] {
-  const entries = highlightEntries(metrics, candidateIndex);
+  const { entries, unstable } = highlightEntries(metrics, candidateIndex);
   if (entries.length === 0) return [];
-  return [formatLabel(HIGHLIGHTS_HEADING, ["bold"]), ...entries];
+  const lines = [formatLabel(HIGHLIGHTS_HEADING, ["bold"]), ...entries];
+  if (unstable) lines.push(futilityLine());
+  return lines;
 }
 
 /**
@@ -564,12 +586,15 @@ function renderHighlights(metrics: MetricComparisons, candidateIndex: number): s
  *
  * A candidate whose metrics all sat still contributes no subsection: an empty
  * one under its label reads as a rendering fault rather than as good news.
+ *
+ * The futility note closes the whole section rather than each subsection —
+ * it says the same thing about every unstable metric on the page.
  */
 function renderCandidateHighlights(result: ComparisonResult): string[] {
   const blocks = result.candidates
     .map((candidate, index) => ({
       label: candidate.label,
-      entries: highlightEntries(result.metrics, index),
+      ...highlightEntries(result.metrics, index),
     }))
     .filter((block) => block.entries.length > 0);
   if (blocks.length === 0) return [];
@@ -581,6 +606,7 @@ function renderCandidateHighlights(result: ComparisonResult): string[] {
       ...block.entries.map((entry) => `  ${entry}`),
     );
   }
+  if (blocks.some((block) => block.unstable)) lines.push(futilityLine());
   return lines;
 }
 

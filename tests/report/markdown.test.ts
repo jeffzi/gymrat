@@ -345,6 +345,26 @@ describe("renderMarkdown", () => {
       expect(highlightLine).toContain("±30.0%");
     });
 
+    it("states the noise in absolute units once it outgrows the median", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/heap": signedRankMetric({
+            verdict: "unstable",
+            delta: 5,
+            baselineMedian: 5,
+            noisePct: 7620,
+            noiseAbs: 381,
+            unit: "bytes",
+          }),
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const bullet = output.split("\n").find((line) => line.startsWith("- "));
+
+      expect(bullet).toBe("- ≈ jittery/heap  unstable  ±381B noise on a 5B median");
+    });
+
     it("shows no trailing evidence for signed-rank/band improved or regressed", () => {
       const result = createComparisonResult({
         metrics: {
@@ -361,6 +381,73 @@ describe("renderMarkdown", () => {
       expect(highlightLine).toContain("-17.5%");
       expect(highlightLine).not.toContain("(exact)");
       expect(highlightLine).not.toContain("noise");
+    });
+  });
+
+  describe("when unstable metrics reach the highlights", () => {
+    it("closes the list with an italic futility note", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+
+      const lines = renderMarkdown(result).split("\n");
+      const noteIndex = lines.findIndex((line) => line.includes("won't stabilize"));
+
+      expect.soft(lines[noteIndex]).toBe("_unstable metrics won't stabilize with more samples_");
+      expect(lines[noteIndex - 1]).toBe("- ≈ jittery/time  unstable  noise ±30.0%");
+    });
+
+    it("states it once for the whole section, however many candidates carry one", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: 0, n: 1, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 0, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": nWayMetric([
+            { verdict: "unstable", delta: 5, median: 105 },
+            { verdict: "unstable", delta: -3, median: 97 },
+          ]),
+        },
+      });
+
+      const notes = renderMarkdown(result)
+        .split("\n")
+        .filter((line) => line.includes("won't stabilize"));
+
+      expect(notes).toHaveLength(1);
+    });
+
+    it("says nothing about stabilizing when no highlight is unstable", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+        },
+      });
+
+      expect(renderMarkdown(result)).not.toContain("won't stabilize");
+    });
+
+    it("states a table spread wider than the median in absolute units", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/heap": signedRankMetric({
+            verdict: "unstable",
+            delta: 5,
+            baselineMedian: 5,
+            baselineSpread: 7620,
+            unit: "bytes",
+          }),
+        },
+      });
+
+      const row = tableRows(renderMarkdown(result)).find((r) => r.includes("jittery/heap"));
+
+      expect(row).toContain("5B ± 381B");
     });
   });
 

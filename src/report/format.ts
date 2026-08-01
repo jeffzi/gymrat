@@ -53,10 +53,29 @@ export function formatSpread(spread?: number): string {
   return ` ± ${spread.toFixed(0)}%`;
 }
 
-/** A value cell: the scaled measurement and its spread, or nothing when unmeasured. */
+/**
+ * The scatter, relative to the median, past which a percentage stops informing.
+ *
+ * Once the spread outgrows the median the percentage climbs without bound —
+ * `± 7620%` reads as a rendering fault rather than as a measurement — so both
+ * the value cells and the unstable evidence restate it in the metric's own
+ * units at that point.
+ */
+const RELATIVE_SPREAD_CAP_PCT = 100;
+
+/**
+ * A value cell: the scaled measurement and its spread, or nothing when unmeasured.
+ *
+ * A spread past `RELATIVE_SPREAD_CAP_PCT` is restated in absolute units, so
+ * `5B ± 7620%` reads `5B ± 381B` instead.
+ */
 export function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
   if (median === undefined) return "";
-  return `${formatValue(median, unit)}${formatSpread(spread)}`;
+  const value = formatValue(median, unit);
+  if (spread !== undefined && spread > RELATIVE_SPREAD_CAP_PCT) {
+    return `${value} ± ${formatValue((median * spread) / 100, unit)}`;
+  }
+  return `${value}${formatSpread(spread)}`;
 }
 
 /**
@@ -168,14 +187,34 @@ export const GEOMEAN_LABEL = "geomean (gating metrics)";
  * The evidence suffix for a highlighted metric.
  *
  * Exact entries keep `(exact)`. Unstable entries show the noise that swamped the
- * signal. Improved/regressed/no-signal entries from approximate methods carry no
- * trailing evidence — the glyph and delta already tell the story.
+ * signal — as a percentage while that stays readable, and against the baseline
+ * median in the metric's own units past `RELATIVE_SPREAD_CAP_PCT`, where the
+ * percentage no longer conveys the scale. Improved/regressed/no-signal entries
+ * from approximate methods carry no trailing evidence — the glyph and delta
+ * already tell the story.
  */
-export function formatEvidence(verdict: MetricVerdict): string {
+export function formatEvidence(
+  verdict: MetricVerdict,
+  unit?: "ns" | "bytes",
+  baselineMedian?: number,
+): string {
   if (verdict.method === "exact") return "(exact)";
-  if (verdict.verdict === "unstable") return `noise ${formatNoiseBand(verdict.noisePct)}`;
-  return "";
+  if (verdict.verdict !== "unstable") return "";
+  if (verdict.noisePct > RELATIVE_SPREAD_CAP_PCT && baselineMedian !== undefined) {
+    const noise = formatValue(verdict.noiseAbs, unit);
+    return `±${noise} noise on a ${formatValue(baselineMedian, unit)} median`;
+  }
+  return `noise ${formatNoiseBand(verdict.noisePct)}`;
 }
+
+/**
+ * What stops a reader re-running the suite in the hope of a cleaner verdict.
+ *
+ * An unstable verdict is judged against a half-range band, and a half-range
+ * never shrinks as samples accumulate: more rounds can only widen it. Whatever
+ * else changes the wording here, it must not promise that more samples help.
+ */
+export const UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples";
 
 /** A metric's noise band, as the `±N%` the row annotations and highlights share. */
 export function formatNoiseBand(noisePct: number): string {
@@ -305,6 +344,11 @@ export function selectHighlights(
   }
   ranked.sort((a, b) => a.rank - b.rank || b.weight - a.weight);
   return ranked.map(({ highlight }) => highlight);
+}
+
+/** Whether any of these highlights is one the noise swamped, and so carries no usable delta. */
+export function hasUnstableHighlight(highlights: readonly MetricHighlight[]): boolean {
+  return highlights.some(({ candidate }) => displayClass(candidate.verdict) === "unstable");
 }
 
 /**

@@ -5,7 +5,9 @@ import {
   countVerdicts,
   displayClass,
   formatDelta,
+  formatEvidence,
   formatLabel,
+  formatMetricCell,
   formatNoiseBand,
   formatPValue,
   formatSpread,
@@ -219,6 +221,55 @@ describe("formatSpread", () => {
 
   it("renders nothing when the spread is unknown", () => {
     expect(formatSpread(undefined)).toBe("");
+  });
+});
+
+describe("formatMetricCell", () => {
+  describe("when the spread stays within the median", () => {
+    it.each([
+      { desc: "an ordinary spread", median: 5, spread: 12, expected: "5B ± 12%" },
+      { desc: "a spread at the cap", median: 5, spread: 100, expected: "5B ± 100%" },
+    ])("keeps $desc relative", ({ median, spread, expected }) => {
+      expect(formatMetricCell(median, spread, "bytes")).toBe(expected);
+    });
+  });
+
+  describe("when the spread outgrows the median", () => {
+    it.each([
+      { unit: "bytes" as const, median: 5, spread: 7620, expected: "5B ± 381B" },
+      { unit: "ns" as const, median: 1735, spread: 200, expected: "1.7µs ± 3.5µs" },
+      { unit: undefined, median: 1200, spread: 150, expected: "1200 ± 1800" },
+    ])(
+      "restates a $spread% spread in $unit units as '$expected'",
+      ({ median, spread, unit, expected }) => {
+        expect(formatMetricCell(median, spread, unit)).toBe(expected);
+      },
+    );
+  });
+});
+
+describe("formatEvidence", () => {
+  it("marks a counted verdict as exact", () => {
+    expect(formatEvidence(exactVerdict({ verdict: "improved", delta: -7.9 }))).toBe("(exact)");
+  });
+
+  it("leaves a statistical improvement with nothing to add", () => {
+    expect(formatEvidence(signedRankVerdict({ verdict: "improved", delta: -10 }))).toBe("");
+  });
+
+  it.each([
+    { desc: "well below the cap", noisePct: 30, expected: "noise ±30.0%" },
+    { desc: "at the cap", noisePct: 100, expected: "noise ±100.0%" },
+  ])("states unstable noise $desc as a percentage", ({ noisePct, expected }) => {
+    const verdict = signedRankVerdict({ verdict: "unstable", noisePct, noiseAbs: 381 });
+
+    expect(formatEvidence(verdict, "bytes", 5)).toBe(expected);
+  });
+
+  it("states unstable noise past the cap in the metric's own units", () => {
+    const verdict = signedRankVerdict({ verdict: "unstable", noisePct: 7620, noiseAbs: 381 });
+
+    expect(formatEvidence(verdict, "bytes", 5)).toBe("±381B noise on a 5B median");
   });
 });
 

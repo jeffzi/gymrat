@@ -8,13 +8,20 @@ import {
   GEOMEAN_LABEL,
   geomeanParts,
   getGlyph,
+  hasUnstableHighlight,
   isQuietRow,
   legendGlosses,
   methodFooterLines,
   selectHighlights,
+  UNSTABLE_FUTILITY_NOTE,
   verdictSummaryParts,
 } from "./format.js";
-import type { CandidateComparison, ComparisonResult, MetricComparisons } from "./types.js";
+import type {
+  CandidateComparison,
+  ComparisonResult,
+  MetricComparison,
+  MetricComparisons,
+} from "./types.js";
 
 /** One line tallying every verdict class one candidate earned. */
 function renderSummary(metrics: MetricComparisons, candidateIndex: number): string {
@@ -22,19 +29,40 @@ function renderSummary(metrics: MetricComparisons, candidateIndex: number): stri
 }
 
 /** Format a single highlight entry as a markdown list item. */
-function formatHighlightEntry(name: string, verdict: MetricVerdict): string {
+function formatHighlightEntry(
+  name: string,
+  metric: MetricComparison,
+  verdict: MetricVerdict,
+): string {
   const glyph = getGlyph(displayClass(verdict));
   const delta = formatVerdictDelta(verdict);
-  const evidence = formatEvidence(verdict);
+  const evidence = formatEvidence(verdict, metric.meta.unit, metric.baselineMedian);
   const suffix = evidence === "" ? "" : `  ${evidence}`;
   return `- ${glyph} ${name}  ${delta}${suffix}`;
 }
 
-/** Render highlights for a single candidate as markdown list items. */
-function renderHighlightEntries(metrics: MetricComparisons, candidateIndex: number): string[] {
-  const highlights = selectHighlights(metrics, candidateIndex);
-  return highlights.map(({ name, candidate }) => formatHighlightEntry(name, candidate.verdict));
+/** One candidate's highlight list items, and whether the noise swamped any of them. */
+interface HighlightBlock {
+  readonly entries: string[];
+  readonly unstable: boolean;
 }
+
+/** Render highlights for a single candidate as markdown list items. */
+function renderHighlightEntries(
+  metrics: MetricComparisons,
+  candidateIndex: number,
+): HighlightBlock {
+  const highlights = selectHighlights(metrics, candidateIndex);
+  return {
+    entries: highlights.map(({ name, metric, candidate }) =>
+      formatHighlightEntry(name, metric, candidate.verdict),
+    ),
+    unstable: hasUnstableHighlight(highlights),
+  };
+}
+
+/** The futility note, as the italic line that closes a highlights list. */
+const FUTILITY_LINE = `_${UNSTABLE_FUTILITY_NOTE}_`;
 
 /**
  * A verdict rendered as part of a cell: glyph + delta.
@@ -247,19 +275,29 @@ function renderSummaryLines(result: ComparisonResult): string[] {
   return [renderSummary(result.metrics, 0)];
 }
 
-/** Highlight entries, grouped by candidate label when multi-candidate. */
+/**
+ * Highlight entries, grouped by candidate label when multi-candidate.
+ *
+ * The futility note closes the whole section rather than each group — it says
+ * the same thing about every unstable metric on the page.
+ */
 function renderHighlightLines(result: ComparisonResult): string[] {
   if (result.candidates.length > 1) {
     const blocks = result.candidates
       .map((candidate, index) => ({
         label: candidate.label,
-        entries: renderHighlightEntries(result.metrics, index),
+        ...renderHighlightEntries(result.metrics, index),
       }))
       .filter((block) => block.entries.length > 0);
 
-    return blocks.flatMap((block) => [`**${block.label}**:`].concat(block.entries));
+    const lines = blocks.flatMap((block) => [`**${block.label}**:`, ...block.entries]);
+    if (blocks.some((block) => block.unstable)) lines.push(FUTILITY_LINE);
+    return lines;
   }
-  return renderHighlightEntries(result.metrics, 0);
+
+  const { entries, unstable } = renderHighlightEntries(result.metrics, 0);
+  if (entries.length === 0) return [];
+  return unstable ? [...entries, FUTILITY_LINE] : entries;
 }
 
 /** The metric comparison table — dispatches to single or multi layout. */

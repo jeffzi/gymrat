@@ -53,6 +53,7 @@ export function signedRankMetric(options: {
   candidateSpread?: number;
   p?: number;
   noisePct?: number;
+  noiseAbs?: number;
   unit?: "ns" | "bytes";
   gating?: boolean;
   n?: number;
@@ -66,6 +67,7 @@ export function signedRankMetric(options: {
     candidateSpread = 1,
     p = 0.01,
     noisePct = 2.5,
+    noiseAbs = noisePct,
     unit,
     gating = true,
     n = 10,
@@ -77,7 +79,7 @@ export function signedRankMetric(options: {
       {
         median: candidateMedian,
         spread: candidateSpread,
-        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct, noiseAbs: noisePct },
+        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct, noiseAbs },
       },
     ],
     meta: { direction: "lower", gating, exact: false, unit },

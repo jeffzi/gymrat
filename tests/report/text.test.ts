@@ -135,11 +135,11 @@ describe("renderReport", () => {
         expected: "✓  -17.5%  ±2.5%",
       },
       {
-        desc: "prints the word unstable in place of a delta the noise swamped",
+        desc: "prints the word unstable alone, with no band trailing it",
         verdict: "unstable" as const,
         delta: -50,
         noisePct: 30,
-        expected: "≈  unstable  ±30.0%",
+        expected: "≈  unstable",
       },
     ])("$desc", ({ verdict, delta, noisePct, expected }) => {
       const result = createComparisonResult({
@@ -148,7 +148,7 @@ describe("renderReport", () => {
 
       const row = lineStartingWith(renderReport(result), "decode/time");
 
-      expect(row).toContain(expected);
+      expect(cellsOf(row).at(-1)?.trim()).toBe(expected);
     });
 
     it("drops the per-row pair count and p-value now the footer carries them", () => {
@@ -200,6 +200,24 @@ describe("renderReport", () => {
       const row = lineStartingWith(renderReport(result), "nan-delta/count");
 
       expect(cellsOf(row).at(-1)?.trim()).toBe("~");
+    });
+
+    it("states a spread wider than the median in absolute units", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/heap": signedRankMetric({
+            verdict: "unstable",
+            delta: 5,
+            baselineMedian: 5,
+            baselineSpread: 7620,
+            unit: "bytes",
+          }),
+        },
+      });
+
+      const row = lineStartingWith(renderReport(result), "jittery/heap");
+
+      expect(cellsOf(row)[1]?.trim()).toBe("5B ± 381B");
     });
   });
 
@@ -470,7 +488,27 @@ describe("renderReport", () => {
         "✗ slower/time    +2.2%",
         "✓ cheaper/heap   -7.9%  (exact)",
         "≈ jittery/time  unstable  noise ±30.0%",
+        "unstable metrics won't stabilize with more samples",
       ]);
+    });
+
+    it("states the noise in absolute units once it outgrows the median", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/heap": signedRankMetric({
+            verdict: "unstable",
+            delta: 5,
+            baselineMedian: 5,
+            noisePct: 7620,
+            noiseAbs: 381,
+            unit: "bytes",
+          }),
+        },
+      });
+
+      const highlights = highlightLines(renderReport(result)).map((line) => line.trim());
+
+      expect(highlights[0]).toBe("≈ jittery/heap  unstable  ±381B noise on a 5B median");
     });
 
     it("omits the block when nothing improved, regressed or was unstable", () => {
@@ -927,6 +965,17 @@ describe("renderReport", () => {
       expect(stylesAt(unstableEntry, "noise")).toContain("2");
     });
 
+    it("dims the futility note closing the highlights", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+      const note = lineContaining(renderReport(result), "won't stabilize");
+
+      expect(stylesAt(note, "unstable metrics")).toContain("2");
+    });
+
     it("dims the legend line overall", () => {
       const legend = lineContaining(renderReport(colorfulResult()), "legend:");
 
@@ -1194,6 +1243,7 @@ describe("renderReport", () => {
         "    ✗ decode/time   +4.0%",
         "  candidate-c",
         "    ≈ decode/time  unstable  noise ±30.0%",
+        "  unstable metrics won't stabilize with more samples",
       ]);
     });
 
