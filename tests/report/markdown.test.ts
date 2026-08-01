@@ -187,6 +187,7 @@ describe("renderMarkdown", () => {
                   n: 10,
                   p: 0.002,
                   noisePct: 2.5,
+                  noiseAbs: 2.5,
                 },
               },
               { median: 950, spread: 3 },
@@ -341,6 +342,7 @@ describe("renderMarkdown", () => {
                   n: 10,
                   p: 0.4,
                   noisePct: 300,
+                  noiseAbs: 300,
                 },
               },
               {
@@ -353,6 +355,7 @@ describe("renderMarkdown", () => {
                   n: 10,
                   p: 0.5,
                   noisePct: 300,
+                  noiseAbs: 300,
                 },
               },
             ],

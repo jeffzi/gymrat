@@ -77,7 +77,7 @@ export function signedRankMetric(options: {
       {
         median: candidateMedian,
         spread: candidateSpread,
-        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct },
+        verdict: { verdict, method: "signed-rank", delta, n, p, noisePct, noiseAbs: noisePct },
       },
     ],
     meta: { direction: "lower", gating, exact: false, unit },
@@ -99,7 +99,16 @@ export function bandMetric(options: {
       {
         median: 100 + delta,
         spread: 4,
-        verdict: { verdict, method: "band", delta, n, band: noisePct, noisePct },
+        verdict: {
+          verdict,
+          method: "band",
+          delta,
+          n,
+          usableN: n,
+          band: noisePct,
+          noisePct,
+          noiseAbs: noisePct,
+        },
       },
     ],
     meta: { direction: "lower", gating: true, exact: false },
@@ -140,7 +149,15 @@ export function nWayMetric(
   const entries: MetricEntry["candidates"] = candidates.map(({ verdict, delta, median }) => ({
     median,
     spread: 1,
-    verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct: 2.5 },
+    verdict: {
+      verdict,
+      method: "signed-rank",
+      delta,
+      n: 10,
+      p: 0.01,
+      noisePct: 2.5,
+      noiseAbs: 2.5,
+    },
   }));
   return {
     baselineMedian: 100,

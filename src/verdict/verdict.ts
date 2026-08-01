@@ -60,20 +60,33 @@ type VerdictBase = {
  * Fields every non-exact verdict carries.
  *
  * `noisePct` is the measurement noise of the metric, expressed as a percentage
- * of its median — see `computeNoisePct`. It is reported whichever non-exact
- * method decided the verdict, so a caller can compare a delta against the noise
- * floor without knowing which test ran.
+ * of its median; `noiseAbs` is that same noise in the metric's own unit — see
+ * `computeNoise`. Both are reported whichever non-exact method decided the
+ * verdict, so a caller can compare a delta against the noise floor without
+ * knowing which test ran.
  */
 type ApproximateVerdictBase = VerdictBase & {
   verdict: ApproximateVerdictValue;
   noisePct: number;
+  noiseAbs: number;
 };
 
 /** A verdict from the Wilcoxon signed-rank test, which always yields a p-value. */
 export type SignedRankVerdict = ApproximateVerdictBase & { method: "signed-rank"; p: number };
 
-/** A verdict from the noise-band method, which always yields a band width. */
-export type BandVerdict = ApproximateVerdictBase & { method: "band"; band: number };
+/**
+ * A verdict from the noise-band method, which always yields a band width.
+ *
+ * `usableN` is how many of the `n` pairs differed by a non-zero amount, which is
+ * what the signed-rank test would have had to work with. It separates the two
+ * causes of a band fallback: `usableN < n` means tied pairs starved the test,
+ * while `usableN === n` below `MIN_WILCOXON_N` means the run was simply short.
+ */
+export type BandVerdict = ApproximateVerdictBase & {
+  method: "band";
+  band: number;
+  usableN: number;
+};
 
 /** A verdict from the exact path, where any difference at all is signal. */
 export type ExactVerdict = VerdictBase & { verdict: Verdict; method: "exact" };
@@ -294,13 +307,15 @@ function computeApproximateVerdict(
 
   if (pairedA.length < MIN_WILCOXON_N || wilcoxonResult.n < MIN_WILCOXON_N) {
     return applyUnstableOverride(
-      computeBandMethod(pairedA, pairedB, delta, direction),
+      computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n),
       unstableNoisePct,
     );
   }
 
   const verdict: Verdict =
     wilcoxonResult.p < P_VALUE_THRESHOLD ? determineVerdict(delta, direction) : "no-signal";
+
+  const noise = computeNoise(pairedA, pairedB);
 
   return applyUnstableOverride(
     {
@@ -309,7 +324,8 @@ function computeApproximateVerdict(
       delta,
       n: pairedA.length,
       p: wilcoxonResult.p,
-      noisePct: computeNoisePct(pairedA, pairedB),
+      noisePct: noise.pct,
+      noiseAbs: noise.abs,
     },
     unstableNoisePct,
   );
@@ -347,20 +363,29 @@ function computeHalfRange(values: readonly number[]): number {
   return (Math.max(...values) - Math.min(...values)) / 2;
 }
 
+/** The measurement noise of a metric, in both the forms a report can show. */
+type Noise = {
+  /** Noise as a percentage of the metric's median, never below the floor. */
+  pct: number;
+  /** The same noise in the metric's own unit, with no floor applied. */
+  abs: number;
+};
+
 /**
- * Compute the measurement noise of a metric as a percentage of its median.
+ * Compute the measurement noise of a metric.
  *
- * Formula: max(K × 100 × max(halfRange(A)/median(A), halfRange(B)/median(B)), floor%)
- * where K = 1.5 and floor = 0.5%.
+ * Percentage form: max(K × 100 × max(halfRange(A)/median(A), halfRange(B)/median(B)), floor%)
+ * where K = 1.5 and floor = 0.5%. Absolute form: K × max(halfRange(A), halfRange(B)).
  *
  * When a median is 0, halfRange/median is undefined; that side's spread
- * contribution is treated as 0.
+ * contribution to the percentage is treated as 0. The absolute form divides by
+ * nothing, so it stays meaningful for such a metric.
  *
  * @param pairedA Array of values from sample A
  * @param pairedB Array of values from sample B
- * @returns Noise as a percentage, never below the floor
+ * @returns The noise as a percentage (never below the floor) and in raw units
  */
-function computeNoisePct(pairedA: readonly number[], pairedB: readonly number[]): number {
+function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): Noise {
   const medianA = computeMedian(pairedA);
   const medianB = computeMedian(pairedB);
   const halfRangeA = computeHalfRange(pairedA);
@@ -370,19 +395,23 @@ function computeNoisePct(pairedA: readonly number[], pairedB: readonly number[])
   const spreadB = medianB === 0 ? 0 : halfRangeB / medianB;
   const maxSpread = Math.max(spreadA, spreadB);
 
-  return Math.max(NOISE_K * 100 * maxSpread, NOISE_FLOOR_PCT);
+  return {
+    pct: Math.max(NOISE_K * 100 * maxSpread, NOISE_FLOOR_PCT),
+    abs: NOISE_K * Math.max(halfRangeA, halfRangeB),
+  };
 }
 
 /**
  * Compute verdict using the noise band method.
  *
- * The band is the metric's noise percentage (see `computeNoisePct`). Signal when
+ * The band is the metric's noise percentage (see `computeNoise`). Signal when
  * |delta%| > band%; no-signal when |delta%| ≤ band%.
  *
  * @param pairedA Array of values from sample A
  * @param pairedB Array of values from sample B
  * @param delta Delta percentage already computed
  * @param direction "lower" or "higher"
+ * @param usableN Pairs with a non-zero difference, as counted by `wilcoxonSignedRank`
  * @returns A band verdict whose `band` and `noisePct` hold the same value — the
  *   band a delta is judged against *is* the metric's own noise.
  */
@@ -391,19 +420,22 @@ function computeBandMethod(
   pairedB: readonly number[],
   delta: number,
   direction: "lower" | "higher",
+  usableN: number,
 ): BandVerdict {
-  const band = computeNoisePct(pairedA, pairedB);
+  const noise = computeNoise(pairedA, pairedB);
 
   const absDelta = Math.abs(delta);
-  const verdict: Verdict = absDelta > band ? determineVerdict(delta, direction) : "no-signal";
+  const verdict: Verdict = absDelta > noise.pct ? determineVerdict(delta, direction) : "no-signal";
 
   return {
     verdict,
     method: "band",
     delta,
     n: pairedA.length,
-    band,
-    noisePct: band,
+    usableN,
+    band: noise.pct,
+    noisePct: noise.pct,
+    noiseAbs: noise.abs,
   };
 }
 

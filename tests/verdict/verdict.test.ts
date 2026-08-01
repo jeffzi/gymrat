@@ -464,6 +464,41 @@ describe("computeVerdicts", () => {
       expect(verdict.band).toBeCloseTo(0.5, 1);
     });
 
+    it.each([
+      {
+        cause: "tied pairs",
+        // 6 pairs, but 3 of them differ by zero → the Wilcoxon test can use only 3
+        samplesB: [
+          { metric: 100 },
+          { metric: 100 },
+          { metric: 100 },
+          { metric: 95 },
+          { metric: 90 },
+          { metric: 105 },
+        ],
+        expectedN: 6,
+        expectedUsableN: 3,
+      },
+      {
+        cause: "too few samples",
+        // 3 pairs is already short of the Wilcoxon minimum, and one of them is tied
+        samplesB: [{ metric: 100 }, { metric: 95 }, { metric: 90 }],
+        expectedN: 3,
+        expectedUsableN: 2,
+      },
+    ])(
+      "reports usableN as the non-zero-difference pairs behind a $cause fallback",
+      ({ samplesB, expectedN, expectedUsableN }) => {
+        const samplesA = createSamples(samplesB.length, 100);
+
+        const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
+
+        const verdict = getBandVerdict(result, "metric");
+        expect(verdict.n).toBe(expectedN);
+        expect(verdict.usableN).toBe(expectedUsableN);
+      },
+    );
+
     it("treats spread as 0 when median is 0 (band = floor)", () => {
       // When medianA or medianB is 0, halfRange/median is undefined
       // Should treat spread as 0 and use floor
@@ -605,6 +640,37 @@ describe("computeVerdicts", () => {
       const verdict = getSignedRankVerdict(result, "metric");
       expect(verdict.noisePct).toBeCloseTo(0.5, 5);
     });
+
+    it.each([
+      {
+        method: "signed-rank",
+        // No tied difference among the 6 pairs, so the verdict stays on the signed-rank path
+        valuesA: [180, 190, 200, 200, 210, 220],
+        valuesB: [90, 95, 100, 100, 105, 110],
+      },
+      {
+        method: "band",
+        valuesA: [180, 220],
+        valuesB: [90, 110],
+      },
+    ])(
+      "carries noiseAbs as K × the widest half-range on a $method verdict",
+      ({ method, valuesA, valuesB }) => {
+        // halfRange(A) = 20 around median 200, halfRange(B) = 10 around median 100
+        // noisePct = max(1.5 * 100 * max(0.1, 0.1), 0.5) = 15
+        // noiseAbs = 1.5 * max(20, 10) = 30, in the metric's own raw unit
+        const result = computeVerdicts(
+          valuesA.map((metric) => ({ metric })),
+          valuesB.map((metric) => ({ metric })),
+          METRIC_APPROX_LOWER,
+        );
+
+        const verdict = getNoisyVerdict(result, "metric");
+        expect(verdict.method).toBe(method);
+        expect(verdict.noisePct).toBeCloseTo(15, 5);
+        expect(verdict.noiseAbs).toBeCloseTo(30, 5);
+      },
+    );
   });
 
   describe("when noisePct exceeds the unstable threshold", () => {
@@ -989,8 +1055,10 @@ describe("computeGeomean", () => {
           method: "band" as const,
           delta: -50,
           n: 4,
+          usableN: 4,
           band: 250,
           noisePct: 250,
+          noiseAbs: 25,
         },
         stable: {
           verdict: "improved" as const,
@@ -1018,8 +1086,10 @@ describe("computeGeomean", () => {
           method: "band" as const,
           delta: Number.NaN,
           n: 4,
+          usableN: 4,
           band: 300,
           noisePct: 300,
+          noiseAbs: 30,
         },
       };
       const metricMeta = {

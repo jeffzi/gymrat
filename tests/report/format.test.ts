@@ -45,7 +45,15 @@ function metricFor(
     candidates: candidates.map(({ verdict, delta, noisePct = 2.5 }) => ({
       median: 100 + delta,
       spread: 1,
-      verdict: { verdict, method: "signed-rank", delta, n: 10, p: 0.01, noisePct },
+      verdict: {
+        verdict,
+        method: "signed-rank",
+        delta,
+        n: 10,
+        p: 0.01,
+        noisePct,
+        noiseAbs: noisePct,
+      },
     })),
     meta: { direction, gating: true, exact: false },
   };
@@ -89,8 +97,10 @@ function bandMetric(options: {
           method: "band" as const,
           delta,
           n,
+          usableN: n,
           band: noisePct,
           noisePct,
+          noiseAbs: noisePct,
         },
       },
     ],
