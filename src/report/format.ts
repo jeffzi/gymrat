@@ -299,7 +299,6 @@ export function formatTableLine(
   return line.split("│").map(styleCell).join("│");
 }
 
-/** The style names `styleText` accepts. */
 export type Style = Parameters<typeof styleText>[0];
 
 /**
