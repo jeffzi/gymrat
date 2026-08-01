@@ -79,34 +79,68 @@ export function formatPValue(p: number): string {
   return `p=${p.toFixed(2)}`;
 }
 
-const GLYPHS: Record<MetricVerdict["verdict"], string> = {
+/**
+ * How a verdict presents itself in the report.
+ *
+ * `no-signal` splits in two here: a metric whose two sides measured close enough
+ * to identical to starve the signed-rank test reads `identical`, and every other
+ * no-signal verdict reads `within-noise`. The split is presentation only — the
+ * stored verdict stays `no-signal`, so geomean gating, `--fail-on` and the JSON
+ * report see one class where the report shows two.
+ */
+export type DisplayClass = "improved" | "regressed" | "unstable" | "identical" | "within-noise";
+
+/**
+ * Which display class a verdict reads as.
+ *
+ * A band verdict with enough pairs for the signed-rank test but too few usable
+ * ones fell back because tied pairs zeroed the differences out — the two sides
+ * measured the same, which `identical` says and `within noise` does not. An
+ * `ExactVerdict` carries no `usableN`, so an exact no-signal always reads
+ * `within-noise`.
+ */
+export function displayClass(verdict: MetricVerdict): DisplayClass {
+  if (verdict.verdict !== "no-signal") return verdict.verdict;
+  if (
+    verdict.method === "band" &&
+    verdict.n >= MIN_WILCOXON_N &&
+    verdict.usableN < MIN_WILCOXON_N
+  ) {
+    return "identical";
+  }
+  return "within-noise";
+}
+
+const GLYPHS: Record<DisplayClass, string> = {
   improved: "✓",
   regressed: "✗",
-  "no-signal": "~",
   unstable: "≈",
+  identical: "=",
+  "within-noise": "~",
 };
 
 /**
- * ✓ improved, ✗ regressed, ~ no signal, ≈ unstable — the glyphs the report
- * footer legend explains.
+ * ✓ improved, ✗ regressed, ≈ unstable, = identical, ~ within noise — the glyphs
+ * the report's rows and legend are written in.
  */
-export function getGlyph(verdict: MetricVerdict["verdict"]): string {
-  return GLYPHS[verdict];
+export function getGlyph(shown: DisplayClass): string {
+  return GLYPHS[shown];
 }
 
 /**
- * The word each verdict class reads as, shared by the summary line and the legend.
+ * The word each display class reads as, shared by the summary line and the legend.
  *
- * Typed as a `Record` over the verdict union rather than listed inline at each
- * call site: a verdict class added to the union without an entry here is a
- * compile error, instead of a class that renders in the table but is missing
- * from both the summary and the legend.
+ * Typed as a `Record` over the display union rather than listed inline at each
+ * call site: a class added to the union without an entry here is a compile
+ * error, instead of a class that renders in the table but is missing from both
+ * the summary and the legend.
  */
-export const VERDICT_GLOSSES: Record<MetricVerdict["verdict"], string> = {
+export const VERDICT_GLOSSES: Record<DisplayClass, string> = {
   improved: "improved",
   regressed: "regressed",
   unstable: "unstable",
-  "no-signal": "within noise",
+  identical: "identical",
+  "within-noise": "within noise",
 };
 
 /** The delta cell: the word `unstable` for a verdict too noisy to trust, otherwise the signed percentage. */
@@ -115,14 +149,15 @@ export function formatVerdictDelta(verdict: MetricVerdict): string {
 }
 
 /**
- * The verdicts whose rows carry no news worth keeping above the fold.
+ * The display classes whose rows carry no news worth keeping above the fold.
  *
- * Shared by every renderer: a metric that sat within the noise, or was too
- * jittery to judge, is dimmed (text) or collapsed into a `<details>` block
- * (markdown) rather than competing with the rows that moved.
+ * Shared by every renderer: a metric that sat within the noise, measured
+ * identical, or was too jittery to judge, is dimmed (text) or collapsed into a
+ * `<details>` block (markdown) rather than competing with the rows that moved.
  */
-export const QUIET_VERDICTS: ReadonlySet<MetricVerdict["verdict"]> = new Set([
-  "no-signal",
+export const QUIET_VERDICTS: ReadonlySet<DisplayClass> = new Set([
+  "within-noise",
+  "identical",
   "unstable",
 ]);
 
@@ -164,10 +199,13 @@ export interface VerdictCounts {
 }
 
 /**
- * Tally the verdict classes one candidate earned against the baseline.
+ * Tally the stored verdict classes one candidate earned against the baseline.
  *
- * This is the single source for the report's summary line: a new consumer
- * counts through this function rather than re-walking `metrics` on its own.
+ * These are the verdicts as decided, not as displayed — the JSON report is
+ * written from them, so `noSignal` covers every no-signal metric whether the
+ * text report shows it as identical or as within noise. The summary line counts
+ * through {@link verdictSummaryParts} instead.
+ *
  * Verdicts belong to a candidate, never to the run, so the tally is taken one
  * candidate at a time. Metrics that candidate never reported have no verdict
  * and count towards nothing.
@@ -211,17 +249,18 @@ export interface MetricHighlight {
 }
 
 /**
- * Where each highlighted verdict class sits in the reported order.
+ * Where each highlighted display class sits in the reported order.
  *
  * Total rather than partial: `undefined` is how a class opts out of highlights,
- * so a verdict class added to the union without an entry here is a compile error
- * rather than a class that silently never appears.
+ * so a class added to the union without an entry here is a compile error rather
+ * than a class that silently never appears.
  */
-const HIGHLIGHT_RANK: Record<MetricVerdict["verdict"], number | undefined> = {
+const HIGHLIGHT_RANK: Record<DisplayClass, number | undefined> = {
   regressed: 0,
   improved: 1,
   unstable: 2,
-  "no-signal": undefined,
+  identical: undefined,
+  "within-noise": undefined,
 };
 
 /**
@@ -243,9 +282,10 @@ function highlightWeight(verdict: MetricVerdict): number {
  *
  * Ranking is per candidate because the verdicts are: the same metric can be the
  * loudest regression for one candidate and unremarkable for the next. Metrics
- * that sat within the noise carry no news, so they are left out entirely, and so
- * is a metric this candidate never reported: with no verdict it has nothing to
- * rank it against the rest. Ties keep the order the metrics were measured in.
+ * that sat within the noise or measured identical carry no news, so they are
+ * left out entirely, and so is a metric this candidate never reported: with no
+ * verdict it has nothing to rank it against the rest. Ties keep the order the
+ * metrics were measured in.
  */
 export function selectHighlights(
   metrics: MetricComparisons,
@@ -255,7 +295,7 @@ export function selectHighlights(
   for (const [name, metric] of Object.entries(metrics)) {
     const candidate = metric.candidates[candidateIndex];
     if (candidate?.verdict === undefined) continue;
-    const rank = HIGHLIGHT_RANK[candidate.verdict.verdict];
+    const rank = HIGHLIGHT_RANK[displayClass(candidate.verdict)];
     if (rank === undefined) continue;
     ranked.push({
       highlight: { name, metric, candidate: { ...candidate, verdict: candidate.verdict } },
@@ -327,20 +367,31 @@ export function formatHintLabel(stream?: NodeJS.WriteStream): string {
 }
 
 /**
- * The color each verdict wears in a styled report.
+ * The color each display class wears on a table row.
  *
- * A metric that carries no news — within noise, or too unstable to call — has
- * its whole row dimmed by the renderer, so `no-signal` asks for no color of its
- * own and `unstable` asks only for amber: the row's dim is what makes it read
- * as dim amber. Nesting a second dim inside the row's would close it at the
- * glyph and leave the rest of the row bright.
+ * A metric that carries no news — within noise, identical, or too unstable to
+ * call — has its whole row dimmed by the renderer, so those classes ask for no
+ * color of their own and `unstable` asks only for amber: the row's dim is what
+ * makes it read as dim amber. Nesting a second dim inside the row's would close
+ * it at the glyph and leave the rest of the row bright.
  */
-export const VERDICT_STYLES: Record<MetricVerdict["verdict"], Style> = {
+export const VERDICT_STYLES: Record<DisplayClass, Style> = {
   improved: ["green"],
   regressed: ["red"],
   unstable: ["yellow"],
-  "no-signal": [],
+  identical: [],
+  "within-noise": [],
 };
+
+/**
+ * The color each display class wears in the verdict summary line.
+ *
+ * Identical is the one class the summary paints differently from a row: on a
+ * row it rides the row's dim, but the summary line is bright, so a color of its
+ * own is what separates "measured the same" from the within-noise tally beside
+ * it.
+ */
+const SUMMARY_STYLES: Record<DisplayClass, Style> = { ...VERDICT_STYLES, identical: ["cyan"] };
 
 /**
  * Style `marker` where it sits inside an already-padded cell.
@@ -382,43 +433,65 @@ export function geomeanParts(geomean: GeomeanResult): GeomeanParts | null {
 }
 
 /**
- * Whether every defined verdict outcome in a row belongs to
+ * Whether every defined display class in a row belongs to
  * {@link QUIET_VERDICTS}.
  *
  * Shared by every renderer to decide whether a row carries no news worth
  * keeping above the fold. A row with no verdicts at all is left alone rather
  * than counted as quiet.
  */
-export function isQuietRow(outcomes: ReadonlyArray<MetricVerdict["verdict"] | undefined>): boolean {
+export function isQuietRow(outcomes: ReadonlyArray<DisplayClass | undefined>): boolean {
   const defined = outcomes.flatMap((outcome) => (outcome === undefined ? [] : [outcome]));
   return defined.length > 0 && defined.every((outcome) => QUIET_VERDICTS.has(outcome));
 }
 
+/** How many metrics one candidate landed in each display class. */
+function displayCounts(
+  metrics: MetricComparisons,
+  candidateIndex: number,
+): Record<DisplayClass, number> {
+  const counts: Record<DisplayClass, number> = {
+    improved: 0,
+    regressed: 0,
+    unstable: 0,
+    identical: 0,
+    "within-noise": 0,
+  };
+  for (const metric of Object.values(metrics)) {
+    const verdict = metric.candidates[candidateIndex]?.verdict;
+    if (verdict === undefined) continue;
+    counts[displayClass(verdict)] += 1;
+  }
+  return counts;
+}
+
 /**
- * One tally part per verdict class, in the order the report legend lists them.
+ * One tally part per display class, in the order the report legend lists them.
  *
  * Renderers join these with their own separator — `"   "` for aligned text
  * columns, `" · "` for inline markdown.
  *
- * Non-zero improved/regressed/unstable parts carry their class color and
- * zero-count parts are dimmed. The `within noise` segment is always dimmed
+ * Non-zero improved/regressed/unstable/identical parts carry their class color
+ * and zero-count parts are dimmed. The `within noise` segment is always dimmed
  * regardless of count — it carries no news worth highlighting. Color is
  * governed by `styleText` auto-detection.
  */
 export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
-  const counts = countVerdicts(metrics, candidateIndex);
+  const counts = displayCounts(metrics, candidateIndex);
 
-  const stylePart = (verdict: MetricVerdict["verdict"], count: number, gloss: string): string => {
-    const text = `${getGlyph(verdict)} ${count} ${gloss}`;
-    const style: Style = verdict === "no-signal" || count === 0 ? ["dim"] : VERDICT_STYLES[verdict];
+  const stylePart = (shown: DisplayClass): string => {
+    const count = counts[shown];
+    const text = `${getGlyph(shown)} ${count} ${VERDICT_GLOSSES[shown]}`;
+    const style: Style = shown === "within-noise" || count === 0 ? ["dim"] : SUMMARY_STYLES[shown];
     return formatLabel(text, style);
   };
 
   return [
-    stylePart("improved", counts.improved, VERDICT_GLOSSES.improved),
-    stylePart("regressed", counts.regressed, VERDICT_GLOSSES.regressed),
-    stylePart("unstable", counts.unstable, VERDICT_GLOSSES.unstable),
-    stylePart("no-signal", counts.noSignal, VERDICT_GLOSSES["no-signal"]),
+    stylePart("improved"),
+    stylePart("regressed"),
+    stylePart("unstable"),
+    stylePart("identical"),
+    stylePart("within-noise"),
   ];
 }
 
@@ -439,47 +512,35 @@ export function pairCounts(metrics: MetricComparisons, method: Method): number[]
 const SAMPLES_HINT = `re-run with --samples ${MIN_WILCOXON_N} or more for statistical verdicts`;
 
 /**
- * Partition band-method metrics into those that fell back because of too few
- * samples (`n < 6`) and those that fell back because too many paired
- * differences were zero (ties: `n >= 6` total pairs, but the Wilcoxon-usable
- * count dropped below the floor).
+ * The pair counts behind every band-method verdict, and whether any of them fell
+ * back for want of samples (`n < 6`) rather than because tied pairs starved the
+ * signed-rank test.
  */
 function partitionBandMetrics(metrics: MetricComparisons): {
   bandCounts: number[];
-  tiedMetricNames: string[];
   hasSampleShortage: boolean;
 } {
   const bandCounts: number[] = [];
-  const tiedMetricNames = new Set<string>();
   let hasSampleShortage = false;
 
-  for (const [name, metric] of Object.entries(metrics)) {
+  for (const metric of Object.values(metrics)) {
     for (const { verdict } of metric.candidates) {
       if (verdict?.method !== "band") continue;
       bandCounts.push(verdict.n);
-      if (verdict.n >= MIN_WILCOXON_N) {
-        tiedMetricNames.add(name);
-      } else {
-        hasSampleShortage = true;
-      }
+      if (verdict.n < MIN_WILCOXON_N) hasSampleShortage = true;
     }
   }
 
-  return { bandCounts, tiedMetricNames: [...tiedMetricNames], hasSampleShortage };
+  return { bandCounts, hasSampleShortage };
 }
 
 /**
  * The method-footer lines naming how each verdict was decided, plus — when any
- * metric fell back to the noise band — a hint telling the user how to get a
- * statistical verdict instead.
+ * metric fell back to the noise band for want of samples — a hint telling the
+ * user how to get a statistical verdict instead.
  *
- * Two distinct reasons cause a band fallback, each with its own hint:
- *
- * - **Sample shortage** (`n < 6`): "re-run with --samples 6 or more …"
- * - **Tied pairs** (`n >= 6` total but too many zero-difference pairs):
- *   lists the affected metric names and explains more samples won't help
- *
- * When both reasons are present, both hints appear (sample shortage first).
+ * The other cause of a band fallback, tied pairs, gets no hint: more samples
+ * cannot help it, and the `=` glyph on those rows already reports what happened.
  *
  * `formatHint` turns the shared hint string into a format-appropriate line:
  * the text renderer prepends a styled label, the markdown renderer wraps it in
@@ -494,7 +555,7 @@ export function methodFooterLines(
   formatHint: (hint: string) => string,
 ): string[] {
   const signedRank = pairCounts(metrics, "signed-rank");
-  const { bandCounts, tiedMetricNames, hasSampleShortage } = partitionBandMetrics(metrics);
+  const { bandCounts, hasSampleShortage } = partitionBandMetrics(metrics);
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
@@ -507,11 +568,6 @@ export function methodFooterLines(
 
     if (hasSampleShortage) {
       lines.push(formatHint(SAMPLES_HINT));
-    }
-    if (tiedMetricNames.length > 0) {
-      const verb = tiedMetricNames.length === 1 ? "has" : "have";
-      const tiesHint = `${tiedMetricNames.join(", ")} ${verb} close-to-identical values across runs — verdicts won't improve with more samples`;
-      lines.push(formatHint(tiesHint));
     }
   }
 
@@ -530,21 +586,16 @@ export function methodFooterLines(
  * of whatever wraps the line (typically dim).
  */
 export function legendGlosses(): string {
-  const glosses: readonly (keyof typeof VERDICT_GLOSSES)[] = [
-    "improved",
-    "regressed",
-    "unstable",
-    "no-signal",
-  ];
+  const glosses: readonly DisplayClass[] = ["improved", "regressed", "unstable", "within-noise"];
   return glosses
-    .map((verdict) => {
-      const glyph = formatLabel(getGlyph(verdict), VERDICT_STYLES[verdict]);
-      return `${glyph} ${VERDICT_GLOSSES[verdict]}`;
+    .map((shown) => {
+      const glyph = formatLabel(getGlyph(shown), VERDICT_STYLES[shown]);
+      return `${glyph} ${VERDICT_GLOSSES[shown]}`;
     })
     .join(" · ");
 }
 
-/** Paint a verdict's glyph in the color of its class, inside an already-padded cell. */
-export function styleGlyph(cell: string, verdict: MetricVerdict["verdict"]): string {
-  return styleWithin(cell, GLYPHS[verdict], VERDICT_STYLES[verdict]);
+/** Paint a display class's glyph in the color of its class, inside an already-padded cell. */
+export function styleGlyph(cell: string, shown: DisplayClass): string {
+  return styleWithin(cell, GLYPHS[shown], VERDICT_STYLES[shown]);
 }

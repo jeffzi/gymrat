@@ -7,8 +7,8 @@ encode/heap               │ 49.2KB ± 0% │ 45.3KB ± 0%  ✓  -7.9%    │
 ──────────────────────────┼─────────────┼──────────────────────────┼───────────────────────────────
 geomean (gating metrics)  │        main │ -12.4%  3 stable metrics │ +1.2%  2 stable metrics · 1 excluded: unstable
 
-perf/simd-decode  ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 0 within noise
-perf/lut-decode   ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   ~ 1 within noise
+perf/simd-decode  ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise
+perf/lut-decode   ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   = 0 identical   ~ 1 within noise
 
 highlights
   perf/simd-decode

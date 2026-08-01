@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   computeColumnWidth,
   countVerdicts,
+  displayClass,
   formatDelta,
   formatLabel,
   formatNoiseBand,
@@ -17,7 +18,12 @@ import {
   verdictSummaryParts,
 } from "../../src/report/format.js";
 import type { ComparisonResult } from "../../src/report/types.js";
-import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
+import type {
+  ApproximateVerdictValue,
+  BandVerdict,
+  ExactVerdict,
+  SignedRankVerdict,
+} from "../../src/verdict/verdict.js";
 
 type Metrics = ComparisonResult["metrics"];
 type MetricEntry = Metrics[string];
@@ -73,18 +79,27 @@ function approximateMetric(options: {
 /**
  * A single-candidate metric whose verdict fell back to the noise-band method.
  *
- * `n` is `pairedA.length` (total pair count). When `n < 6` the fallback is due
- * to insufficient samples; when `n >= 6` it is due to too many tied pairs
+ * `n` is `pairedA.length` (total pair count) and `usableN` how many of those
+ * pairs survived tie-dropping. When `n < 6` the fallback is due to insufficient
+ * samples; when `n >= 6` and `usableN < 6` it is due to too many tied pairs
  * zeroing out the Wilcoxon-usable differences.
  */
 function bandMetric(options: {
   verdict?: ApproximateVerdictValue;
   delta?: number;
   n: number;
+  usableN?: number;
   noisePct?: number;
   direction?: "lower" | "higher";
 }): MetricEntry {
-  const { verdict = "no-signal", delta = -1, n, noisePct = 2.5, direction = "lower" } = options;
+  const {
+    verdict = "no-signal",
+    delta = -1,
+    n,
+    usableN = n,
+    noisePct = 2.5,
+    direction = "lower",
+  } = options;
   return {
     baselineMedian: 100,
     baselineSpread: 5,
@@ -97,7 +112,7 @@ function bandMetric(options: {
           method: "band" as const,
           delta,
           n,
-          usableN: n,
+          usableN,
           band: noisePct,
           noisePct,
           noiseAbs: noisePct,
@@ -106,6 +121,40 @@ function bandMetric(options: {
     ],
     meta: { direction, gating: true, exact: false },
   };
+}
+
+/** A noise-band verdict, tied pairs and all. */
+function bandVerdict(overrides: Partial<BandVerdict> = {}): BandVerdict {
+  return {
+    verdict: "no-signal",
+    method: "band",
+    delta: -0.5,
+    n: 10,
+    usableN: 3,
+    band: 2.5,
+    noisePct: 2.5,
+    noiseAbs: 2.5,
+    ...overrides,
+  };
+}
+
+/** A verdict the Wilcoxon signed-rank test produced. */
+function signedRankVerdict(overrides: Partial<SignedRankVerdict> = {}): SignedRankVerdict {
+  return {
+    verdict: "no-signal",
+    method: "signed-rank",
+    delta: 0.2,
+    n: 10,
+    p: 0.49,
+    noisePct: 2.5,
+    noiseAbs: 2.5,
+    ...overrides,
+  };
+}
+
+/** A verdict read straight off a counted metric, with no statistics behind it. */
+function exactVerdict(overrides: Partial<ExactVerdict> = {}): ExactVerdict {
+  return { verdict: "no-signal", method: "exact", delta: 0, n: 10, ...overrides };
 }
 
 /** A metric the candidate never reported, so no verdict could be computed. */
@@ -211,14 +260,62 @@ describe("formatPValue", () => {
   });
 });
 
+describe("displayClass", () => {
+  it.each([
+    {
+      desc: "ties left the signed-rank test too few usable pairs",
+      verdict: bandVerdict({ n: 10, usableN: 3 }),
+      expected: "identical",
+    },
+    {
+      desc: "ties left exactly enough usable pairs",
+      verdict: bandVerdict({ n: 10, usableN: 6 }),
+      expected: "within-noise",
+    },
+    {
+      desc: "the pair count sits one below the signed-rank floor",
+      verdict: bandVerdict({ n: 6, usableN: 5 }),
+      expected: "identical",
+    },
+    {
+      desc: "the run was too short to reach the floor at all",
+      verdict: bandVerdict({ n: 5, usableN: 5 }),
+      expected: "within-noise",
+    },
+    {
+      desc: "the band found an improvement despite the ties",
+      verdict: bandVerdict({ verdict: "improved", delta: -10, n: 10, usableN: 3 }),
+      expected: "improved",
+    },
+    {
+      desc: "the noise swamped the band",
+      verdict: bandVerdict({ verdict: "unstable", n: 10, usableN: 3 }),
+      expected: "unstable",
+    },
+    {
+      desc: "the signed-rank test itself found no signal",
+      verdict: signedRankVerdict(),
+      expected: "within-noise",
+    },
+    {
+      desc: "a counted metric came out unchanged",
+      verdict: exactVerdict(),
+      expected: "within-noise",
+    },
+  ])("shows $expected when $desc", ({ verdict, expected }) => {
+    expect(displayClass(verdict)).toBe(expected);
+  });
+});
+
 describe("getGlyph", () => {
   it.each([
-    { verdict: "improved" as const, expected: "✓" },
-    { verdict: "regressed" as const, expected: "✗" },
-    { verdict: "no-signal" as const, expected: "~" },
-    { verdict: "unstable" as const, expected: "≈" },
-  ])("marks $verdict with $expected", ({ verdict, expected }) => {
-    expect(getGlyph(verdict)).toBe(expected);
+    { displayClass: "improved" as const, expected: "✓" },
+    { displayClass: "regressed" as const, expected: "✗" },
+    { displayClass: "unstable" as const, expected: "≈" },
+    { displayClass: "identical" as const, expected: "=" },
+    { displayClass: "within-noise" as const, expected: "~" },
+  ])("marks $displayClass with $expected", ({ displayClass: shown, expected }) => {
+    expect(getGlyph(shown)).toBe(expected);
   });
 });
 
@@ -310,6 +407,17 @@ describe("selectHighlights", () => {
       "loud-unstable/time",
       "quiet-unstable/time",
     ]);
+  });
+
+  it("leaves identical metrics out, the way it leaves within-noise ones out", () => {
+    const metrics: Metrics = {
+      "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      "tied/heap": bandMetric({ n: 10, usableN: 3 }),
+    };
+
+    const highlights = selectHighlights(metrics, 0);
+
+    expect(highlights.map((highlight) => highlight.name)).toStrictEqual(["faster/time"]);
   });
 
   it("keeps declaration order for metrics of equal magnitude", () => {
@@ -449,6 +557,7 @@ describe("verdictSummaryParts", () => {
     "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
     "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
     "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
+    "tied/heap": bandMetric({ n: 10, usableN: 3 }),
   };
 
   it("returns parts with no ANSI escapes when stdout is not a TTY", () => {
@@ -457,10 +566,18 @@ describe("verdictSummaryParts", () => {
     expect(parts.join("")).not.toContain("\x1b[");
   });
 
+  it("tallies identical metrics apart from the ones within noise", () => {
+    const parts = verdictSummaryParts(mixed, 0);
+
+    expect.soft(parts.find((p) => p.includes("identical"))).toBe("= 1 identical");
+    expect(parts.find((p) => p.includes("within noise"))).toBe("~ 1 within noise");
+  });
+
   it.each([
     { label: "improved", code: "32", color: "green" },
     { label: "regressed", code: "31", color: "red" },
     { label: "unstable", code: "33", color: "yellow" },
+    { label: "identical", code: "36", color: "cyan" },
   ])("styles the non-zero $label part $color when color is forced", ({ label, code }) => {
     vi.stubEnv("FORCE_COLOR", "1");
 
@@ -470,18 +587,21 @@ describe("verdictSummaryParts", () => {
     expect(part).toContain(`\x1b[${code}m`);
   });
 
-  it("dims a zero-count part when color is forced", () => {
-    vi.stubEnv("FORCE_COLOR", "1");
+  it.each([{ label: "regressed" }, { label: "identical" }])(
+    "dims the zero-count $label part when color is forced",
+    ({ label }) => {
+      vi.stubEnv("FORCE_COLOR", "1");
 
-    const onlyImproved: Metrics = {
-      "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
-    };
+      const onlyImproved: Metrics = {
+        "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      };
 
-    const parts = verdictSummaryParts(onlyImproved, 0);
-    const regressedPart = parts.find((p) => p.includes("regressed"));
+      const parts = verdictSummaryParts(onlyImproved, 0);
+      const part = parts.find((p) => p.includes(label));
 
-    expect(regressedPart).toContain("\x1b[2m");
-  });
+      expect(part).toContain("\x1b[2m");
+    },
+  );
 
   it("dims the within-noise part regardless of count when color is forced", () => {
     vi.stubEnv("FORCE_COLOR", "1");
@@ -574,26 +694,22 @@ describe("methodFooterLines", () => {
   });
 
   describe("when all band metrics have enough samples but fell back due to ties", () => {
-    it("shows the ties hint listing the affected metric names", () => {
+    it("shows no hint, since the = glyph already says the values are identical", () => {
       const metrics: Metrics = {
-        "entity.alive_check/heap": bandMetric({ n: 10 }),
-        "iteration.soa_5field/heap": bandMetric({ n: 8 }),
+        "entity.alive_check/heap": bandMetric({ n: 10, usableN: 3 }),
+        "iteration.soa_5field/heap": bandMetric({ n: 8, usableN: 2 }),
         "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
       };
-      const hintLine = hintLineFor(metrics);
 
-      expect.soft(hintLine).toContain("entity.alive_check/heap");
-      expect.soft(hintLine).toContain("iteration.soa_5field/heap");
-      expect.soft(hintLine).toContain("close-to-identical");
-      expect(hintLine).not.toContain("--samples");
+      expect(hintLineFor(metrics)).toBeUndefined();
     });
   });
 
   describe("when band metrics include both sample-shortage and ties", () => {
-    it("shows the sample-shortage hint first, then the ties hint", () => {
+    it("shows the sample-shortage hint alone", () => {
       const metrics: Metrics = {
         "decode/time": bandMetric({ n: 3 }),
-        "entity.alive_check/heap": bandMetric({ n: 10 }),
+        "entity.alive_check/heap": bandMetric({ n: 10, usableN: 3 }),
         "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
       };
 
@@ -601,10 +717,8 @@ describe("methodFooterLines", () => {
         line.includes("Hint:"),
       );
 
-      expect(hintLines).toHaveLength(2);
-      expect.soft(hintLines[0]).toContain("--samples");
-      expect.soft(hintLines[1]).toContain("entity.alive_check/heap");
-      expect(hintLines[1]).toContain("close-to-identical");
+      expect(hintLines).toHaveLength(1);
+      expect(hintLines[0]).toContain("--samples");
     });
   });
 });

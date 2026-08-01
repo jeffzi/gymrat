@@ -263,6 +263,59 @@ describe("renderMarkdown", () => {
     });
   });
 
+  describe("when ties starved the signed-rank test", () => {
+    /** A run whose `tied/heap` metric moved too little to break any pair apart. */
+    function identicalResult(): ComparisonResult {
+      return createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
+      });
+    }
+
+    it("marks the table cell identical rather than within noise", () => {
+      const row = tableRows(renderMarkdown(identicalResult())).find((r) => r.includes("tied/heap"));
+
+      expect(row).toContain("=  -0.5%");
+    });
+
+    it("tallies it apart from the metrics that are merely within noise", () => {
+      const output = renderMarkdown(identicalResult());
+
+      expect(output).toContain("≈ 0 unstable · = 1 identical · ~ 1 within noise");
+    });
+
+    it("counts it on its own in the details summary", () => {
+      const output = renderMarkdown(identicalResult());
+
+      expect(output.match(/<summary>(.*?)<\/summary>/)?.[1]).toBe("1 within noise / 1 identical");
+    });
+
+    it("collapses it into the details block", () => {
+      const output = renderMarkdown(identicalResult());
+
+      const detailsStart = output.indexOf("<details>");
+      const tiedIdx = output.indexOf("tied/heap");
+      expect.soft(tiedIdx).toBeGreaterThan(detailsStart);
+      expect(tiedIdx).toBeLessThan(output.indexOf("</details>"));
+    });
+
+    it("leaves it out of the highlights list", () => {
+      const bullets = renderMarkdown(identicalResult())
+        .split("\n")
+        .filter((line) => line.startsWith("- "));
+
+      expect(bullets).toStrictEqual(["- ✓ faster/time  -10.0%"]);
+    });
+
+    it("says nothing more about it in the method footer", () => {
+      expect(renderMarkdown(identicalResult())).not.toContain("close-to-identical");
+    });
+  });
+
   describe("when rendering highlight evidence", () => {
     it("shows (exact) for exact verdicts", () => {
       const result = createComparisonResult({

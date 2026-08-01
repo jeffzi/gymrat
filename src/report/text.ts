@@ -3,6 +3,8 @@ import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
   type CellStyler,
   computeColumnWidth,
+  displayClass,
+  type DisplayClass,
   formatEvidence,
   formatHintLabel,
   formatLabel,
@@ -113,7 +115,7 @@ function formatVerdictCell(verdict: MetricVerdict | undefined, samples: number):
   const delta = formatVerdictDelta(verdict);
   const band = "noisePct" in verdict ? formatNoiseBand(verdict.noisePct) : "";
   const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
-  return joinCellParts([getGlyph(verdict.verdict), delta, band, pairs]);
+  return joinCellParts([getGlyph(displayClass(verdict)), delta, band, pairs]);
 }
 
 /** The geomean's verdict cell, and the aggregate inside it that the row exists for. */
@@ -164,11 +166,11 @@ function styleGeomeanCell(cell: string, geomean: GeomeanCell): string {
  */
 function styleGlyphAndDelta(
   cell: string,
-  outcome: MetricVerdict["verdict"],
+  shown: DisplayClass,
   delta: string,
   style: Style,
 ): string {
-  const styled = styleWithin(cell, getGlyph(outcome), style);
+  const styled = styleWithin(cell, getGlyph(shown), style);
   return delta === "" ? styled : styleWithin(styled, delta, style);
 }
 
@@ -209,7 +211,7 @@ function styleVerdictCell(style: (cell: string) => string): CellStyler {
 function formatMetricRow(row: Row, widths: Widths, verdict: MetricVerdict | undefined): string {
   if (verdict === undefined) return formatRow(row, widths);
 
-  const outcome = verdict.verdict;
+  const outcome = displayClass(verdict);
   const line = formatRow(
     row,
     widths,
@@ -307,7 +309,7 @@ function renderTable(
 function formatCandidateVerdict(verdict: MetricVerdict | undefined, samples: number): string {
   if (verdict === undefined) return "";
   const pairs = verdict.n === samples ? "" : formatPairCount(verdict.n);
-  return joinCellParts([getGlyph(verdict.verdict), formatVerdictDelta(verdict), pairs]);
+  return joinCellParts([getGlyph(displayClass(verdict)), formatVerdictDelta(verdict), pairs]);
 }
 
 /**
@@ -321,7 +323,7 @@ interface CandidateCell {
   readonly value: string;
   readonly verdict: string;
   readonly delta: string;
-  readonly outcome: MetricVerdict["verdict"] | undefined;
+  readonly outcome: DisplayClass | undefined;
   text: string;
 }
 
@@ -374,7 +376,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
         value: formatMetricCell(side?.median, side?.spread, metric.meta.unit),
         verdict: formatCandidateVerdict(side?.verdict, result.samples),
         delta: side?.verdict ? formatVerdictDelta(side.verdict) : "",
-        outcome: side?.verdict?.verdict,
+        outcome: side?.verdict === undefined ? undefined : displayClass(side.verdict),
         text: "",
       };
       candidates.push(cell);
@@ -530,18 +532,19 @@ function highlightEntries(metrics: MetricComparisons, candidateIndex: number): s
 
   return highlights.map(({ name, candidate }) => {
     const verdict = candidate.verdict;
+    const shown = displayClass(verdict);
     const delta = formatVerdictDelta(verdict);
     const evidence = formatEvidence(verdict);
     const suffix = evidence === "" ? "" : `  ${evidence}`;
 
     // Pad on plain text, then style the glyph+delta and dim evidence.
-    const plain = `  ${getGlyph(verdict.verdict)} ${name.padEnd(nameWidth)}${delta.padStart(
+    const plain = `  ${getGlyph(shown)} ${name.padEnd(nameWidth)}${delta.padStart(
       HIGHLIGHT_DELTA_WIDTH,
     )}${suffix}`;
 
-    const deltaOrWord = verdict.verdict === "unstable" ? "unstable" : delta;
-    const style = VERDICT_STYLES[verdict.verdict];
-    let styled = styleGlyphAndDelta(plain, verdict.verdict, deltaOrWord, style);
+    const deltaOrWord = shown === "unstable" ? "unstable" : delta;
+    const style = VERDICT_STYLES[shown];
+    let styled = styleGlyphAndDelta(plain, shown, deltaOrWord, style);
     if (evidence !== "") {
       styled = styleWithin(styled, evidence, ["dim"]);
     }

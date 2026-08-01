@@ -1,5 +1,7 @@
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
+  displayClass,
+  type DisplayClass,
   formatEvidence,
   formatMetricCell,
   formatVerdictDelta,
@@ -21,7 +23,7 @@ function renderSummary(metrics: MetricComparisons, candidateIndex: number): stri
 
 /** Format a single highlight entry as a markdown list item. */
 function formatHighlightEntry(name: string, verdict: MetricVerdict): string {
-  const glyph = getGlyph(verdict.verdict);
+  const glyph = getGlyph(displayClass(verdict));
   const delta = formatVerdictDelta(verdict);
   const evidence = formatEvidence(verdict);
   const suffix = evidence === "" ? "" : `  ${evidence}`;
@@ -43,7 +45,7 @@ function renderHighlightEntries(metrics: MetricComparisons, candidateIndex: numb
  */
 function formatVerdictPart(verdict: MetricVerdict | undefined): string {
   if (verdict === undefined) return "";
-  return `${getGlyph(verdict.verdict)}  ${formatVerdictDelta(verdict)}`;
+  return `${getGlyph(displayClass(verdict))}  ${formatVerdictDelta(verdict)}`;
 }
 
 /**
@@ -56,23 +58,30 @@ function formatGeomeanCell(geomean: GeomeanResult): string {
   return `${parts.delta}  ${parts.provenance}`;
 }
 
+/** How many of the collapsed rows each quiet class beyond within-noise accounts for. */
+interface QuietCounts {
+  identical: number;
+  unstable: number;
+}
+
 /**
- * Wrap quiet rows in a `<details>` block with a summary labelling how many
- * are within noise vs unstable. Returns an empty array when there are no quiet
- * rows.
+ * Wrap quiet rows in a `<details>` block with a summary labelling how many are
+ * within noise, identical, or unstable. Returns an empty array when there are no
+ * quiet rows.
  */
 function renderQuietBlock(
   header: string,
   separator: string,
   quietRows: readonly string[],
-  unstableCount: number,
+  counts: QuietCounts,
 ): string[] {
   if (quietRows.length === 0) return [];
 
-  const noiseCount = quietRows.length - unstableCount;
+  const noiseCount = quietRows.length - counts.identical - counts.unstable;
   const parts: string[] = [];
   if (noiseCount > 0) parts.push(`${noiseCount} within noise`);
-  if (unstableCount > 0) parts.push(`${unstableCount} unstable`);
+  if (counts.identical > 0) parts.push(`${counts.identical} identical`);
+  if (counts.unstable > 0) parts.push(`${counts.unstable} unstable`);
 
   return [
     "",
@@ -118,7 +127,7 @@ function renderSingleCandidateTable(
 
   const prominentRows: string[] = [];
   const quietRows: string[] = [];
-  let unstableCount = 0;
+  const quietCounts: QuietCounts = { identical: 0, unstable: 0 };
 
   for (const [name, metric] of Object.entries(result.metrics)) {
     const side = metric.candidates[candidateIndex];
@@ -131,9 +140,11 @@ function renderSingleCandidateTable(
     const verdictCell = formatVerdictPart(side?.verdict);
     const row = gfmRow([name, baselineCell, candidateCell, verdictCell]);
 
-    if (isQuietRow([side?.verdict?.verdict])) {
+    const shown = side?.verdict === undefined ? undefined : displayClass(side.verdict);
+    if (isQuietRow([shown])) {
       quietRows.push(row);
-      if (side?.verdict?.verdict === "unstable") unstableCount++;
+      if (shown === "unstable") quietCounts.unstable++;
+      else if (shown === "identical") quietCounts.identical++;
     } else {
       prominentRows.push(row);
     }
@@ -146,7 +157,7 @@ function renderSingleCandidateTable(
     header,
     separator,
     ...prominentRows,
-    ...renderQuietBlock(header, separator, quietRows, unstableCount),
+    ...renderQuietBlock(header, separator, quietRows, quietCounts),
     geomeanRow,
   ];
 }
@@ -177,7 +188,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
 
   const prominentRows: string[] = [];
   const quietRows: string[] = [];
-  let unstableCount = 0;
+  const quietCounts: QuietCounts = { identical: 0, unstable: 0 };
 
   for (const [name, metric] of Object.entries(result.metrics)) {
     const baselineCell = formatMetricCell(
@@ -190,11 +201,15 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
     );
 
     const row = gfmRow([name, baselineCell, ...candidateCells]);
-    const verdicts = result.candidates.map((_, index) => metric.candidates[index]?.verdict);
+    const shownList: (DisplayClass | undefined)[] = result.candidates.map((_, index) => {
+      const verdict = metric.candidates[index]?.verdict;
+      return verdict === undefined ? undefined : displayClass(verdict);
+    });
 
-    if (isQuietRow(verdicts.map((v) => v?.verdict))) {
+    if (isQuietRow(shownList)) {
       quietRows.push(row);
-      if (verdicts.some((v) => v?.verdict === "unstable")) unstableCount++;
+      if (shownList.includes("unstable")) quietCounts.unstable++;
+      else if (shownList.includes("identical")) quietCounts.identical++;
     } else {
       prominentRows.push(row);
     }
@@ -207,7 +222,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
     header,
     separator,
     ...prominentRows,
-    ...renderQuietBlock(header, separator, quietRows, unstableCount),
+    ...renderQuietBlock(header, separator, quietRows, quietCounts),
     geomeanRow,
   ];
 }

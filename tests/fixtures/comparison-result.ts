@@ -84,14 +84,21 @@ export function signedRankMetric(options: {
   };
 }
 
-/** A two-sided metric whose verdict fell back to the noise band. */
+/**
+ * A two-sided metric whose verdict fell back to the noise band.
+ *
+ * `n` is the total pair count and `usableN` how many of those pairs survived
+ * tie-dropping. `n < 6` means the run was too short for the signed-rank test;
+ * `n >= 6` with `usableN < 6` means ties starved it instead.
+ */
 export function bandMetric(options: {
   verdict: ApproximateVerdictValue;
   delta: number;
   noisePct?: number;
   n?: number;
+  usableN?: number;
 }): MetricEntry {
-  const { verdict, delta, noisePct = 2.5, n = 4 } = options;
+  const { verdict, delta, noisePct = 2.5, n = 4, usableN = n } = options;
   return {
     baselineMedian: 100,
     baselineSpread: 5,
@@ -104,7 +111,7 @@ export function bandMetric(options: {
           method: "band",
           delta,
           n,
-          usableN: n,
+          usableN,
           band: noisePct,
           noisePct,
           noiseAbs: noisePct,

@@ -359,8 +359,98 @@ describe("renderReport", () => {
       const report = renderReport(result);
 
       expect(lineStartingWith(report, "✓ 2 improved")).toBe(
-        "✓ 2 improved   ✗ 1 regressed   ≈ 1 unstable   ~ 1 within noise",
+        "✓ 2 improved   ✗ 1 regressed   ≈ 1 unstable   = 0 identical   ~ 1 within noise",
       );
+    });
+  });
+
+  describe("when ties starved the signed-rank test", () => {
+    /** A run whose `tied/heap` metric moved too little to break any pair apart. */
+    function identicalResult(): ComparisonResult {
+      return createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+        },
+      });
+    }
+
+    it("marks the row identical rather than within noise", () => {
+      const row = lineStartingWith(renderReport(identicalResult()), "tied/heap");
+
+      expect(cellsOf(row).at(-1)?.trim()).toBe("=  -0.5%  ±2.5%");
+    });
+
+    it("tallies it apart from the metrics that are merely within noise", () => {
+      const report = renderReport(identicalResult());
+
+      expect(lineStartingWith(report, "✓ 1 improved")).toBe(
+        "✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 1 identical   ~ 0 within noise",
+      );
+    });
+
+    it("leaves it out of the highlights", () => {
+      const highlights = highlightLines(renderReport(identicalResult())).map((line) => line.trim());
+
+      expect(highlights).toStrictEqual(["✓ faster/time  -10.0%"]);
+    });
+
+    it("says nothing more about it in the footer", () => {
+      expect(renderReport(identicalResult())).not.toContain("close-to-identical");
+    });
+
+    it("marks the candidate cell identical in an N-way row", () => {
+      const result = createComparisonResult({
+        candidates: [
+          createCandidate({ label: "candidate-a" }),
+          createCandidate({ label: "candidate-b" }),
+        ],
+        metrics: {
+          "tied/time": {
+            baselineMedian: 100,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 100,
+                spread: 1,
+                verdict: {
+                  verdict: "no-signal",
+                  method: "band",
+                  delta: -0.5,
+                  n: 10,
+                  usableN: 3,
+                  band: 2.5,
+                  noisePct: 2.5,
+                  noiseAbs: 2.5,
+                },
+              },
+              {
+                median: 90,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                  noiseAbs: 2.5,
+                },
+              },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+
+      const row = lineStartingWith(renderReport(result), "tied/time");
+
+      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
+        "tied/time",
+        "100ns ± 1%",
+        "100ns ± 1%  =  -0.5%",
+        "90ns ± 1%  ✓  -10.0%",
+      ]);
     });
   });
 
@@ -734,15 +824,40 @@ describe("renderReport", () => {
       expect(stylesAt(summary, glyph)).toContain(code);
     });
 
-    it("dims zero-count segments in the verdict summary", () => {
+    it.each([{ glyph: "✗" }, { glyph: "=" }])(
+      "dims the zero-count $glyph segment in the verdict summary",
+      ({ glyph }) => {
+        const result = createComparisonResult({
+          metrics: {
+            "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          },
+        });
+        const summary = lineContaining(renderReport(result), "improved");
+
+        expect(stylesAt(summary, glyph)).toContain("2");
+      },
+    );
+
+    it("paints the non-zero identical tally cyan in the verdict summary", () => {
       const result = createComparisonResult({
         metrics: {
-          "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
         },
       });
-      const summary = lineContaining(renderReport(result), "improved");
+      const summary = lineContaining(renderReport(result), "identical");
 
-      expect(stylesAt(summary, "✗")).toContain("2");
+      expect(stylesAt(summary, "=")).toContain("36");
+    });
+
+    it("paints the identical glyph on its row with no color of its own", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+        },
+      });
+      const row = lineContaining(renderReport(result), "tied/heap");
+
+      expect(stylesAt(row, "=")).toStrictEqual([]);
     });
 
     it("dims the within-noise segment regardless of count in the verdict summary", () => {
@@ -1063,9 +1178,9 @@ describe("renderReport", () => {
         .filter((line) => /✓ \d+ improved/.test(line));
 
       expect(summaries).toStrictEqual([
-        "candidate-a  ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   ~ 0 within noise",
-        "candidate-b  ✓ 0 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 0 within noise",
-        "candidate-c  ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   ~ 0 within noise",
+        "candidate-a  ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise",
+        "candidate-b  ✓ 0 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise",
+        "candidate-c  ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   = 0 identical   ~ 0 within noise",
       ]);
     });
 

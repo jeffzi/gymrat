@@ -8,7 +8,7 @@ slower/time               │ 100ns ± 1% │         102ns ± 1% │ [31m✗[
 ──────────────────────────┼────────────┼────────────────────┼─────────────────────
 geomean (gating metrics)  │       [2mmain[22m │ [2mperf/faster-decode[22m │ [1m-5.8%[22m  [2m3 stable metrics · 1 excluded: unstable[22m
 
-[32m✓ 1 improved[39m   [31m✗ 1 regressed[39m   [33m≈ 1 unstable[39m   [2m~ 1 within noise[22m
+[32m✓ 1 improved[39m   [31m✗ 1 regressed[39m   [33m≈ 1 unstable[39m   [2m= 0 identical[22m   [2m~ 1 within noise[22m
 
 [1mhighlights[22m
   [31m✗[39m slower/time    [31m+2.4%[39m

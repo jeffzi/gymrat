@@ -8,7 +8,7 @@ throughput/ops            │  1200 ± 5% │          1560 ± 4% │ [32m✓[
 ──────────────────────────┼────────────┼────────────────────┼──────────────────
 geomean (gating metrics)  │       [2mmain[22m │ [2mperf/faster-decode[22m │ [1m0.0%[22m  [2m1 stable metric · 1 excluded: undefined-ratio[22m
 
-[32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m~ 2 within noise[22m
+[32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 2 within noise[22m
 
 [1mhighlights[22m
   [32m✓[39m throughput/ops  [32m+30.0%[39m
