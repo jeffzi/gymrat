@@ -11,6 +11,7 @@ import type { ProgressStep } from "./compare.js";
  * durations are unpredictable and would skew the estimate.
  */
 export class EtaTracker {
+  readonly #targetCount: number;
   readonly #clock: () => number;
 
   /** Durations of completed sample-to-sample gaps (milliseconds). */
@@ -23,17 +24,15 @@ export class EtaTracker {
 
   #completedSamples = 0;
 
-  /** Number of sample steps observed with index === 1 (one per target). */
-  #targetCount = 0;
-
-  constructor(clock: () => number = Date.now) {
+  constructor(targetCount: number, clock: () => number = Date.now) {
+    this.#targetCount = targetCount;
     this.#clock = clock;
   }
 
   /**
-   * Returns undefined for `prepare` steps and for the first sample of each
-   * target (no gap to measure yet); otherwise returns the estimated
-   * remaining wall-clock time in milliseconds.
+   * Returns undefined for `prepare` steps and when no sample-to-sample gap
+   * has been measured yet; otherwise returns the estimated remaining
+   * wall-clock time in milliseconds.
    */
   record(step: ProgressStep): number | undefined {
     const now = this.#clock();
@@ -51,11 +50,6 @@ export class EtaTracker {
     this.#prevWasPrepare = false;
     this.#prevTime = now;
     this.#completedSamples++;
-
-    if (step.index === 1) {
-      this.#targetCount++;
-      return undefined;
-    }
 
     if (this.#durations.length === 0) {
       return undefined;

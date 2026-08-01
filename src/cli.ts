@@ -147,6 +147,9 @@ function exitWithError(error: unknown): never {
   process.exit(2);
 }
 
+/** Shown after a sample step until enough gaps have been measured for an ETA. */
+const ETA_PENDING_LABEL = "estimating time left…";
+
 /**
  * Each line names the target so the user can tell which one is running;
  * samples also show their position in the total.
@@ -166,30 +169,35 @@ function formatProgressLine(step: ProgressStep, etaMs?: number): string {
   }
   if (etaMs !== undefined) {
     line += ` · ${formatEta(etaMs)}`;
+  } else if (step.kind === "sample") {
+    line += ` · ${ETA_PENDING_LABEL}`;
   }
   return line;
 }
 
 /**
  * Apply ANSI styling to the progress line for spinner display:
- * step word dim, counter bold (sample only), label cyan.
+ * step word in default foreground, counter bold (sample only), label cyan.
  * When an ETA estimate is available, it is appended as a dim segment.
+ * When no ETA is available for a sample step, a dim placeholder is shown.
  */
 function styleProgressLine(step: ProgressStep, etaMs?: number): string {
   const label = formatLabel(step.label, "cyan", process.stderr);
   let line: string;
   switch (step.kind) {
     case "prepare":
-      line = `${formatLabel("prepare", "dim", process.stderr)} · ${label}`;
+      line = `prepare · ${label}`;
       break;
     case "sample":
-      line = `${formatLabel("sample", "dim", process.stderr)} ${formatLabel(`${step.index}/${step.total}`, "bold", process.stderr)} · ${label}`;
+      line = `sample ${formatLabel(`${step.index}/${step.total}`, "bold", process.stderr)} · ${label}`;
       break;
     default:
       return assertNever(step);
   }
   if (etaMs !== undefined) {
     line += formatLabel(` · ${formatEta(etaMs)}`, "dim", process.stderr);
+  } else if (step.kind === "sample") {
+    line += formatLabel(` · ${ETA_PENDING_LABEL}`, "dim", process.stderr);
   }
   return line;
 }
@@ -230,11 +238,15 @@ interface ProgressReporter {
  *   yocto-spinner's frame color cannot be disabled through its API.
  * Non-TTY: one newline-terminated line per step, no ANSI.
  */
-function createProgressReporter(colorAllowed: boolean, tty: boolean): ProgressReporter {
+function createProgressReporter(
+  colorAllowed: boolean,
+  tty: boolean,
+  targetCount: number,
+): ProgressReporter {
   const spinner = colorAllowed
     ? yoctoSpinner({ color: "yellow", stream: process.stderr })
     : undefined;
-  const eta = new EtaTracker();
+  const eta = new EtaTracker(targetCount);
 
   return {
     emit(step: ProgressStep): void {
@@ -343,7 +355,12 @@ export function createProgram(): Command {
       }
 
       const tty = isTerminal(process.stderr);
-      const progress = createProgressReporter(tty && process.env.NO_COLOR === undefined, tty);
+      const targetCount = 1 + candidateArgs.length;
+      const progress = createProgressReporter(
+        tty && process.env.NO_COLOR === undefined,
+        tty,
+        targetCount,
+      );
 
       try {
         const config = resolveConfig({

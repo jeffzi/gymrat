@@ -25,7 +25,7 @@ describe("EtaTracker", () => {
   describe("record", () => {
     it("returns undefined for a prepare step", () => {
       // Arrange
-      const tracker = new EtaTracker(clockSequence(0));
+      const tracker = new EtaTracker(1, clockSequence(0));
 
       // Act
       const result = tracker.record(prepare("A"));
@@ -34,9 +34,9 @@ describe("EtaTracker", () => {
       expect(result).toBeUndefined();
     });
 
-    it("returns undefined for a first-round sample step (index === 1)", () => {
+    it("returns undefined for the very first sample step (no gap measured)", () => {
       // Arrange
-      const tracker = new EtaTracker(clockSequence(0));
+      const tracker = new EtaTracker(1, clockSequence(0));
 
       // Act
       const result = tracker.record(sample(1, 3, "A"));
@@ -45,69 +45,80 @@ describe("EtaTracker", () => {
       expect(result).toBeUndefined();
     });
 
-    it("computes estimate as mean sample duration times remaining steps", () => {
-      // Arrange — 2 targets, 3 rounds each, uniform 100ms gaps
-      const tracker = new EtaTracker(clockSequence(0, 100, 200, 300));
+    it("returns an estimate at the second sample step once one gap is known", () => {
+      // Arrange — 2 targets, 3 rounds; estimate available at target B's first step
+      const tracker = new EtaTracker(2, clockSequence(0, 100));
+
+      // Act
+      tracker.record(sample(1, 3, "A")); // t=0, first sample, no gap yet
+      const result = tracker.record(sample(1, 3, "B")); // t=100, gap=100
+
+      // Assert
+      // mean = 100, targetCount = 2 (from constructor)
+      // completedSampleSteps = 2, remaining = 3*2 - 2 = 4
+      // estimate = 100 * 4 = 400
+      expect(result).toBe(400);
+    });
+
+    it("uses constructor-provided target count, not inferred from index-1 steps", () => {
+      // Arrange — constructor says 3 targets, but only 2 have appeared so far
+      const tracker = new EtaTracker(3, clockSequence(0, 100));
+
+      // Act
+      tracker.record(sample(1, 4, "A")); // t=0
+      const result = tracker.record(sample(1, 4, "B")); // t=100, gap=100
+
+      // Assert
+      // mean = 100, targetCount = 3 (from constructor, not 2 seen targets)
+      // completedSampleSteps = 2, remaining = 4*3 - 2 = 10
+      // estimate = 100 * 10 = 1000
+      expect(result).toBe(1000);
+    });
+
+    it("pools gaps from different targets into a shared mean", () => {
+      // Arrange — target A takes 100ms, target B takes 200ms
+      const tracker = new EtaTracker(2, clockSequence(0, 100, 300));
 
       // Act
       tracker.record(sample(1, 3, "A")); // t=0
-      tracker.record(sample(1, 3, "B")); // t=100, duration of prev = 100
-      tracker.record(sample(2, 3, "A")); // t=200, duration of prev = 100
-      const result = tracker.record(sample(2, 3, "B")); // t=300, duration of prev = 100
+      tracker.record(sample(1, 3, "B")); // t=100, gap=100 (A's duration)
+      const result = tracker.record(sample(2, 3, "A")); // t=300, gap=200 (B's duration)
 
       // Assert
-      // mean duration = (100+100+100)/3 = 100
-      // targetCount = 2 (two index===1 steps)
-      // completedSampleSteps = 4, remaining = 3*2 - 4 = 2
-      // estimate = 100 * 2 = 200
-      expect(result).toBe(200);
+      // durations = [100, 200], mean = 150 (pooled across targets)
+      // targetCount = 2, completedSampleSteps = 3, remaining = 3*2 - 3 = 3
+      // estimate = 150 * 3 = 450
+      expect(result).toBe(450);
     });
 
     it("excludes the gap following a prepare step from the mean", () => {
       // Arrange — prepare introduces a 1000ms gap that must not skew the mean
-      const tracker = new EtaTracker(clockSequence(0, 1000, 1100));
+      const tracker = new EtaTracker(1, clockSequence(0, 1000, 1100));
 
       // Act
       tracker.record(prepare("A")); // t=0
-      tracker.record(sample(1, 3, "A")); // t=1000, gap=1000 excluded (after prepare)
+      tracker.record(sample(1, 3, "A")); // t=1000, gap excluded (after prepare)
       const result = tracker.record(sample(2, 3, "A")); // t=1100, gap=100 included
 
       // Assert
-      // durations = [100] (only the sample-to-sample gap), mean = 100
+      // durations = [100] (prepare gap excluded), mean = 100
       // targetCount = 1, completedSampleSteps = 2, remaining = 3*1 - 2 = 1
       // estimate = 100 * 1 = 100 (would be 550 if prepare gap were included)
       expect(result).toBe(100);
     });
 
-    it("counts targets by index-1 occurrences, not by labels", () => {
-      // Arrange — two targets sharing the same label "A"
-      const tracker = new EtaTracker(clockSequence(0, 100, 200));
-
-      // Act
-      tracker.record(sample(1, 3, "A")); // t=0, target 1
-      tracker.record(sample(1, 3, "A")); // t=100, target 2 (same label!)
-      const result = tracker.record(sample(2, 3, "A")); // t=200
-
-      // Assert
-      // durations = [100, 100], mean = 100
-      // targetCount = 2 (two index===1 steps, NOT 1 unique label)
-      // completedSampleSteps = 3, remaining = 3*2 - 3 = 3
-      // estimate = 100 * 3 = 300 (would be 0 if label-derived: 3*1 - 3 = 0)
-      expect(result).toBe(300);
-    });
-
-    it("handles prepare steps at any position, keying off kind not position", () => {
+    it("excludes mid-run prepare gaps, keying off kind not position", () => {
       // Arrange — prepare appears between sample steps, not just at the start
-      const tracker = new EtaTracker(clockSequence(0, 100, 1000, 1100));
+      const tracker = new EtaTracker(2, clockSequence(0, 100, 1000, 1100));
 
       // Act
       tracker.record(sample(1, 3, "A")); // t=0
-      tracker.record(prepare("B")); // t=100, no duration pushed (prepare returns early)
+      tracker.record(prepare("B")); // t=100, prepare returns early
       tracker.record(sample(1, 3, "B")); // t=1000, gap excluded (prevWasPrepare)
       const result = tracker.record(sample(2, 3, "A")); // t=1100, gap=100 included
 
       // Assert
-      // durations = [100], mean = 100
+      // durations = [100] (900ms prepare gap excluded), mean = 100
       // targetCount = 2, completedSampleSteps = 3, remaining = 3*2 - 3 = 3
       // estimate = 100 * 3 = 300
       expect(result).toBe(300);

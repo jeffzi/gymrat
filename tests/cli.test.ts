@@ -160,8 +160,6 @@ function createProgramWithSubcommandOverrides(): Command {
 }
 
 /**
- * Render `gymrat compare --help` and hand back everything it wrote.
- *
  * The subcommand renders its own help, so every command needs its own output
  * config; `--help` throws rather than exiting because of `exitOverride`.
  */
@@ -771,7 +769,7 @@ describe("createProgram", () => {
           expect(mockSpinnerInstance.start).toHaveBeenCalled();
         });
 
-        it("styles the prepare step word dim and the label cyan in spinner text", async () => {
+        it("renders the prepare step word in default foreground (no dim) with cyan label", async () => {
           // Arrange
           const program = createRunnableProgram();
           useColorTty();
@@ -780,14 +778,15 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — prepare word is dim, label is cyan, nothing is yellow
+          // Assert — step word has no dim wrapping, label is cyan, nothing is yellow
           const text = mockSpinnerInstance.text;
-          expect.soft(text).toContain(DIM_O + "prepare" + DIM_C);
+          expect.soft(text).toContain("prepare");
+          expect.soft(text).not.toContain(DIM_O + "prepare" + DIM_C);
           expect.soft(text).toContain(CYN_O + "baseline" + CYN_C);
           expect(text).not.toContain("\x1b[33m");
         });
 
-        it("styles the sample step word dim, counter bold, and label cyan in spinner text", async () => {
+        it("renders the sample step word in default foreground (no dim) with bold counter and cyan label", async () => {
           // Arrange
           const program = createRunnableProgram();
           useColorTty();
@@ -796,9 +795,10 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — sample word is dim, counter is bold, label is cyan
+          // Assert — step word has no dim wrapping, counter is bold, label is cyan
           const text = mockSpinnerInstance.text;
-          expect.soft(text).toContain(DIM_O + "sample" + DIM_C);
+          expect.soft(text).toContain("sample");
+          expect.soft(text).not.toContain(DIM_O + "sample" + DIM_C);
           expect.soft(text).toContain(BOLD_O + "1/5" + BOLD_C);
           expect(text).toContain(CYN_O + "baseline" + CYN_C);
         });
@@ -819,7 +819,7 @@ describe("createProgram", () => {
           expect(text).toContain(DIM_O + " · ~2m 10s left" + DIM_C);
         });
 
-        it("omits the ETA segment for prepare steps", async () => {
+        it("omits both ETA and placeholder for prepare steps", async () => {
           // Arrange
           const program = createRunnableProgram();
           useColorTty();
@@ -829,12 +829,13 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — no ETA segment
+          // Assert — no ETA segment and no placeholder
           const text = mockSpinnerInstance.text;
-          expect(text).not.toContain("left");
+          expect.soft(text).not.toContain("left");
+          expect(text).not.toContain("estimating");
         });
 
-        it("omits the ETA segment for first-round sample steps", async () => {
+        it("renders a dim placeholder when ETA is not yet available for a sample step", async () => {
           // Arrange
           const program = createRunnableProgram();
           useColorTty();
@@ -844,9 +845,9 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — no ETA segment
+          // Assert — placeholder is dim-styled
           const text = mockSpinnerInstance.text;
-          expect(text).not.toContain("left");
+          expect(text).toContain(DIM_O + " · estimating time left…" + DIM_C);
         });
       });
 
@@ -955,7 +956,7 @@ describe("createProgram", () => {
           expect(progressWrite).not.toContain("\x1b[2m");
         });
 
-        it("omits the ETA segment when the tracker yields no estimate", async () => {
+        it("renders a plain placeholder when ETA is not yet available for a sample step", async () => {
           // Arrange
           const program = createRunnableProgram();
           useNoColorTty();
@@ -967,10 +968,11 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — plain text without ETA
-          const progressWrite = findStderrWrite(stderrSpy, "sample 3/10 · baseline");
+          // Assert — placeholder as plain text, no ANSI escapes
+          const progressWrite = findStderrWrite(stderrSpy, "estimating time left");
           expect(progressWrite).toBeDefined();
-          expect(progressWrite).not.toContain("left");
+          expect(progressWrite).toContain("sample 3/10 · baseline · estimating time left…");
+          expect(progressWrite).not.toContain("\x1b[2m");
         });
       });
 
@@ -1025,7 +1027,7 @@ describe("createProgram", () => {
           expect(progressWrite).not.toContain("\x1b[");
         });
 
-        it("omits the ETA segment when no estimate is available", async () => {
+        it("renders a plain placeholder when ETA is not yet available for a sample step", async () => {
           // Arrange
           const program = createRunnableProgram();
           process.stderr.isTTY = false;
@@ -1037,10 +1039,11 @@ describe("createProgram", () => {
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
 
-          // Assert — plain text without ETA
-          const progressWrite = findStderrWrite(stderrSpy, "sample 3/10 · baseline");
+          // Assert — placeholder as plain text, no ANSI escapes
+          const progressWrite = findStderrWrite(stderrSpy, "estimating time left");
           expect(progressWrite).toBeDefined();
-          expect(progressWrite).not.toContain("left");
+          expect(progressWrite).toContain("sample 3/10 · baseline · estimating time left…");
+          expect(progressWrite).not.toContain("\x1b[");
         });
       });
 
@@ -1081,10 +1084,12 @@ describe("createProgram", () => {
           // Assert - spinner stopped before error message written
           expect(mockSpinnerInstance.stop).toHaveBeenCalled();
           const stopOrder = mockSpinnerInstance.stop.mock.invocationCallOrder[0]!;
-          const errorWrite = stderrSpy.mock.invocationCallOrder.find((order: number, i: number) => {
-            const arg = stderrSpy.mock.calls[i]?.[0];
-            return typeof arg === "string" && arg.includes("benchmark crashed") ? order : false;
-          });
+          const errorWrite = stderrSpy.mock.invocationCallOrder.find(
+            (_order: number, i: number) => {
+              const arg = stderrSpy.mock.calls[i]?.[0];
+              return typeof arg === "string" && arg.includes("benchmark crashed");
+            },
+          );
           expect(errorWrite).toBeDefined();
           expect(stopOrder).toBeLessThan(errorWrite as number);
         });
