@@ -480,8 +480,10 @@ function renderTable(
     }
     if (index === VERDICT_COLUMN) {
       // The marker is the bare baseline name, not the whole `vs …` header: the
-      // emphasis belongs to the name, and `vs` is prose around it.
-      return styleWithin(cell, baseline, VARIANT_NAME_STYLE);
+      // emphasis belongs to the name, and `vs` is prose around it. The name
+      // trails that prose, so a baseline of `v`, `s` or `vs` needs the last
+      // occurrence to land on the name instead of the prefix.
+      return styleWithin(cell, baseline, VARIANT_NAME_STYLE, { last: true });
     }
     return cell;
   };

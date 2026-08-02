@@ -640,15 +640,41 @@ export const VERDICT_STYLES: Record<DisplayClass, Style> = {
   "within-noise": ["dim"],
 };
 
+/** Which occurrence of the marker `styleWithin` reaches for. */
+export interface StyleWithinOptions {
+  /**
+   * Style the last occurrence rather than the first.
+   *
+   * Set it wherever the marker can also appear in the prose introducing it — a
+   * one-letter variant name inside a `vs ` prefix, say.
+   */
+  last?: boolean;
+}
+
 /**
  * Style `marker` where it sits inside an already-padded cell.
  *
  * Styling a cell before it is padded is the alignment bug this exists to
  * prevent: `padEnd` counts an ANSI escape as visible width, so a styled cell is
  * padded short and every column after it slides left.
+ *
+ * The splice is positional rather than a `String.replace`, because a marker is
+ * user data — a branch name, a metric name — and `replace` reads `$&`, `` $` ``,
+ * `$'` and `$<n>` in its replacement argument as patterns, splicing the
+ * surrounding cell text into the styled span. A marker the cell does not
+ * contain leaves the cell alone.
  */
-export function styleWithin(cell: string, marker: string, style: Style): string {
-  return cell.replace(marker, formatLabel(marker, style));
+export function styleWithin(
+  cell: string,
+  marker: string,
+  style: Style,
+  options: StyleWithinOptions = {},
+): string {
+  const index = options.last === true ? cell.lastIndexOf(marker) : cell.indexOf(marker);
+  if (index === -1) {
+    return cell;
+  }
+  return cell.slice(0, index) + formatLabel(marker, style) + cell.slice(index + marker.length);
 }
 
 /** The geomean's delta and the provenance describing what stands behind it. */
