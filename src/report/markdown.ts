@@ -2,6 +2,7 @@ import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
   displayClass,
   type DisplayClass,
+  footerLines,
   formatEvidence,
   formatMetricCell,
   formatVerdictDelta,
@@ -10,13 +11,14 @@ import {
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
-  hintFooterLines,
+  type HighlightBlock,
   isQuietRow,
-  methodFooterLines,
   NO_GEOMEAN_CELL,
   selectHighlights,
+  shownClass,
   UNSTABLE_FUTILITY_NOTE,
   verdictSummaryParts,
+  withColor,
   withDisplayLabels,
 } from "./format.js";
 import type {
@@ -54,12 +56,6 @@ function formatHighlightEntry(
   const evidence = formatEvidence(verdict, metric.meta.unit, metric.baselineMedian);
   const suffix = evidence === "" ? "" : `  ${evidence}`;
   return `- ${glyph} ${name}  ${delta}${suffix}`;
-}
-
-/** One candidate's highlight list items, and whether the noise swamped any of them. */
-interface HighlightBlock {
-  readonly entries: string[];
-  readonly unstable: boolean;
 }
 
 /** Render highlights for a single candidate as markdown list items. */
@@ -220,8 +216,7 @@ function renderSingleCandidateTable(
     const verdictCell = formatVerdictPart(side?.verdict);
     const row = gfmRow([name, baselineCell, candidateCell, verdictCell]);
 
-    const shown = side?.verdict === undefined ? undefined : displayClass(side.verdict);
-    bucketRow(row, [shown], prominentRows, quietRows, quietCounts);
+    bucketRow(row, [shownClass(side?.verdict)], prominentRows, quietRows, quietCounts);
   }
 
   const geomeanRow = gfmRow([
@@ -279,10 +274,9 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
     );
 
     const row = gfmRow([name, baselineCell, ...candidateCells]);
-    const shownList: (DisplayClass | undefined)[] = result.candidates.map((_, index) => {
-      const verdict = metric.candidates[index]?.verdict;
-      return verdict === undefined ? undefined : displayClass(verdict);
-    });
+    const shownList: (DisplayClass | undefined)[] = result.candidates.map((_, index) =>
+      shownClass(metric.candidates[index]?.verdict),
+    );
 
     bucketRow(row, shownList, prominentRows, quietRows, quietCounts);
   }
@@ -304,10 +298,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
  * hint telling the reader when more samples would buy a statistical verdict.
  */
 function renderMethodFooter(result: ComparisonResult, verbose: boolean): string[] {
-  return [
-    ...(verbose ? methodFooterLines(result.metrics) : []),
-    ...hintFooterLines(result.metrics, (hint) => `> *Hint: ${hint}*`),
-  ];
+  return footerLines(result.metrics, verbose, (hint) => `> *Hint: ${hint}*`);
 }
 
 /** Summary lines — one per candidate for multi, one total for single. */
@@ -359,19 +350,24 @@ function renderTable(result: ComparisonResult): string[] {
  *
  * Summary and highlights sit above the fold for PR comments. The full metric
  * table follows, with within-noise rows collapsed in a `<details>` block.
- * No ANSI codes — glyphs are plain text.
+ *
+ * Rendering runs with color pinned off: markdown is read by GitHub and by files,
+ * neither of which interprets ANSI, so an ambient `FORCE_COLOR` must not reach
+ * the shared formatting helpers this shares with the terminal report.
  */
 export function renderMarkdown(result: ComparisonResult, options: ReportOptions = {}): string {
-  const display = withDisplayLabels(result);
-  const lines = [...renderSummaryLines(display), ""];
+  return withColor(false, () => {
+    const display = withDisplayLabels(result);
+    const lines = [...renderSummaryLines(display), ""];
 
-  const highlights = renderHighlightLines(display);
-  if (highlights.length > 0) lines.push(...highlights, "");
+    const highlights = renderHighlightLines(display);
+    if (highlights.length > 0) lines.push(...highlights, "");
 
-  lines.push(...renderTable(display));
+    lines.push(...renderTable(display));
 
-  const methodLines = renderMethodFooter(display, options.verbose ?? false);
-  if (methodLines.length > 0) lines.push("", ...methodLines);
+    const methodLines = renderMethodFooter(display, options.verbose ?? false);
+    if (methodLines.length > 0) lines.push("", ...methodLines);
 
-  return lines.join("\n");
+    return lines.join("\n");
+  });
 }
