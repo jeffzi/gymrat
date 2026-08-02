@@ -16,6 +16,7 @@ import {
   hintFooterLines,
   methodFooterLines,
   selectHighlights,
+  styleWithin,
   truncateLabels,
   verdictSummaryParts,
   withColor,
@@ -575,6 +576,60 @@ describe("formatLabel", () => {
 
   it("returns the bare label when stdout is not a TTY", () => {
     expect(formatLabel("Hint:", ["yellow", "underline"])).toBe("Hint:");
+  });
+});
+
+describe("styleWithin", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("when the marker occurs more than once", () => {
+    it.each([
+      {
+        desc: "styles the first occurrence by default",
+        options: undefined,
+        expected: "\x1b[1mvs\x1b[22m vs",
+      },
+      {
+        desc: "styles the first occurrence when last is false",
+        options: { last: false },
+        expected: "\x1b[1mvs\x1b[22m vs",
+      },
+      {
+        desc: "styles the last occurrence when last is true",
+        options: { last: true },
+        expected: "vs \x1b[1mvs\x1b[22m",
+      },
+    ])("$desc", ({ options, expected }) => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      expect(styleWithin("vs vs", "vs", ["bold"], options)).toBe(expected);
+    });
+  });
+
+  describe("when the marker carries a $ replacement pattern", () => {
+    // `String.replace` expands these in its replacement argument, which would
+    // splice the surrounding cell text in place of the marker.
+    it.each([
+      { desc: "the whole match", pattern: "$&" },
+      { desc: "the text after the match", pattern: "$'" },
+      { desc: "the text before the match", pattern: "$`" },
+      { desc: "a capture group", pattern: "$1" },
+      { desc: "an escaped dollar", pattern: "$$" },
+    ])("styles $pattern, which means $desc, as the literal text it is", ({ pattern }) => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      expect(styleWithin(`cost ${pattern} up`, pattern, ["bold"])).toBe(
+        `cost \x1b[1m${pattern}\x1b[22m up`,
+      );
+    });
+  });
+
+  it("returns the cell unchanged when the marker is absent", () => {
+    vi.stubEnv("FORCE_COLOR", "1");
+
+    expect(styleWithin("vs main", "absent", ["bold"])).toBe("vs main");
   });
 });
 

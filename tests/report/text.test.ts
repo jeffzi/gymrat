@@ -1339,6 +1339,22 @@ describe("renderReport", () => {
       expect(stylesAt(deltaCell, "main")).toStrictEqual(["1", "4"]);
     });
 
+    // A short branch name can hide inside the "vs " prose that introduces it,
+    // so the styled span has to be the name after the prefix, not the prefix.
+    it.each([{ baseline: "v" }, { baseline: "s" }, { baseline: "vs" }])(
+      "emboldens the '$baseline' baseline after the vs prefix, leaving the prefix plain",
+      ({ baseline }) => {
+        const result = createComparisonResult({
+          baselineLabel: baseline,
+          metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }) },
+        });
+
+        const deltaCell = deltaCellOf(lineContaining(renderReport(result), "metric  "));
+
+        expect(deltaCell).toContain(`vs \x1b[1m\x1b[4m${baseline}\x1b[24m\x1b[22m`);
+      },
+    );
+
     it("leaves the rest of the column header row unstyled", () => {
       const header = lineContaining(renderReport(colorfulResult()), "metric  ");
 
