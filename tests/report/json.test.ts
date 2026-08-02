@@ -253,7 +253,7 @@ describe("renderJson", () => {
                   n: 10,
                   p: 0.01,
                   noisePct: 2.5,
-                  noiseAbs: 2.5,
+                  noiseAbs: 3.5,
                 },
               },
             ],
@@ -289,7 +289,7 @@ describe("renderJson", () => {
                   n: 10,
                   p: 0.01,
                   noisePct: 2.5,
-                  noiseAbs: 2.5,
+                  noiseAbs: 3.5,
                 },
               },
               {

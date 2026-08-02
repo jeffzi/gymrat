@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,20 +21,20 @@ export function createScratchRepo(): ScratchRepo {
   try {
     // -b main pins the initial branch: without it the name comes from the
     // developer's init.defaultBranch, and tests that check out from "main" break.
-    execSync("git init -b main", { cwd: dir, stdio: "pipe" });
+    execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "pipe" });
 
-    const configs = [
+    const configs: [string, string][] = [
       ["user.name", "Test User"],
       ["user.email", "test@example.com"],
       ["commit.gpgsign", "false"],
     ];
     for (const [key, value] of configs) {
-      execSync(`git config ${key} '${value}'`, { cwd: dir, stdio: "pipe" });
+      execFileSync("git", ["config", key, value], { cwd: dir, stdio: "pipe" });
     }
 
     fs.writeFileSync(path.join(dir, "README.md"), "# Test Repo\n");
-    execSync("git add README.md", { cwd: dir, stdio: "pipe" });
-    execSync("git commit -m 'Initial commit'", { cwd: dir, stdio: "pipe" });
+    execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "pipe" });
+    execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: dir, stdio: "pipe" });
   } catch (error) {
     fs.rmSync(dir, { recursive: true, force: true });
     throw error;

@@ -67,7 +67,7 @@ export function signedRankMetric(options: {
     candidateSpread = 1,
     p = 0.01,
     noisePct = 2.5,
-    noiseAbs = noisePct,
+    noiseAbs = 3.5,
     unit,
     gating = true,
     n = 10,
@@ -126,7 +126,7 @@ export function bandMetric(
           usableN,
           band: noisePct,
           noisePct,
-          noiseAbs: noisePct,
+          noiseAbs: 3.5,
         },
       },
     ],
@@ -175,7 +175,7 @@ export function nWayMetric(
       n: 10,
       p: 0.01,
       noisePct: 2.5,
-      noiseAbs: 2.5,
+      noiseAbs: 3.5,
     },
   }));
   return {
