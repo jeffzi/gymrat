@@ -2,7 +2,7 @@
  * Verdict engine core: pairing, delta computation, and verdict determination.
  */
 
-import { computeMedian } from "../math.js";
+import { computeHalfRange, computeMedian } from "../math.js";
 import { wilcoxonSignedRank } from "./wilcoxon.js";
 
 /**
@@ -310,7 +310,7 @@ function computeApproximateVerdict(
   const pairs = pairedA.map((a, i): readonly [number, number] => [a, pairedB[i]!]);
   const wilcoxonResult = wilcoxonSignedRank(pairs);
 
-  if (pairedA.length < MIN_WILCOXON_N || wilcoxonResult.n < MIN_WILCOXON_N) {
+  if (wilcoxonResult.n < MIN_WILCOXON_N) {
     return applyUnstableOverride(
       computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n),
       unstableNoisePct,
@@ -355,11 +355,6 @@ function applyUnstableOverride(
 ): SignedRankVerdict | BandVerdict {
   if (verdict.noisePct <= unstableNoisePct) return verdict;
   return { ...verdict, verdict: "unstable" };
-}
-
-function computeHalfRange(values: readonly number[]): number {
-  if (values.length === 0) return 0;
-  return (Math.max(...values) - Math.min(...values)) / 2;
 }
 
 /** The measurement noise of a metric, in both the forms a report can show. */

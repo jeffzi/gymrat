@@ -160,14 +160,6 @@ export function loadConfigFile(
   return parse(configFileValidator, parsed, (issue) => configMessage(configPath, issue));
 }
 
-function pickDefined<T>(a: T | undefined, b: T): T;
-function pickDefined<T>(a: T | undefined, b: T | undefined): T | undefined;
-function pickDefined<T>(a: T | undefined, b: T | undefined, c: T): T;
-function pickDefined<T>(...values: (T | undefined)[]): T | undefined;
-function pickDefined<T>(...values: (T | undefined)[]): T | undefined {
-  return values.find((v) => v !== undefined);
-}
-
 /**
  * Settle a run configuration from flags, config file, and built-in defaults.
  *
@@ -180,20 +172,15 @@ function pickDefined<T>(...values: (T | undefined)[]): T | undefined {
  * without it throws.
  */
 export function resolveConfig(flags: CliFlags): ResolvedConfig {
-  const configPath = pickDefined(flags.config, path.join(process.cwd(), "gymrat.json"));
+  const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
 
-  const bench = pickDefined(flags.bench, configFile.bench);
-  const prepare = pickDefined(flags.prepare, configFile.prepare);
-  const adapter = pickDefined(flags.adapter, configFile.adapter, DEFAULTS.adapter);
-  const samples = pickDefined(flags.samples, configFile.samples, DEFAULTS.samples);
-  const timeoutSeconds = pickDefined(
-    flags.timeout,
-    configFile.timeoutSeconds,
-    DEFAULTS.timeoutSeconds,
-  );
-  // No flag counterpart: the noise threshold comes from the file or the default.
-  const unstableNoisePct = pickDefined(configFile.unstableNoisePct, DEFAULTS.unstableNoisePct);
+  const bench = flags.bench ?? configFile.bench;
+  const prepare = flags.prepare ?? configFile.prepare;
+  const adapter = flags.adapter ?? configFile.adapter ?? DEFAULTS.adapter;
+  const samples = flags.samples ?? configFile.samples ?? DEFAULTS.samples;
+  const timeoutSeconds = flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds;
+  const unstableNoisePct = configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct;
   const metrics = configFile.metrics;
 
   if (!bench) {

@@ -1,3 +1,4 @@
+import { messageOf } from "../errors.js";
 import type { Adapter, MetricDefaults } from "./types.js";
 import { AdapterError } from "./types.js";
 
@@ -17,9 +18,7 @@ function extractJson(stdout: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(stdout.slice(startIdx, endIdx + 1)) as unknown;
   } catch (err) {
-    throw new AdapterError(
-      `Failed to parse JSON: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new AdapterError(`Failed to parse JSON: ${messageOf(err)}`);
   }
 
   if (!isRecord(parsed)) {
@@ -84,20 +83,20 @@ function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): st
   return result;
 }
 
-function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): number {
-  if (!isRecord(benchmark)) return 0;
+function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): boolean {
+  if (!isRecord(benchmark)) return false;
 
   const alias = benchmark.alias;
   const runs = benchmark.runs;
-  if (typeof alias !== "string" || !Array.isArray(runs)) return 0;
+  if (typeof alias !== "string" || !Array.isArray(runs)) return false;
 
-  let count = 0;
+  let found = false;
   for (const run of runs) {
     if (extractRunMetrics(run, alias, metrics)) {
-      count++;
+      found = true;
     }
   }
-  return count;
+  return found;
 }
 
 /**
@@ -124,13 +123,15 @@ const mitataAdapter: Adapter = {
     const json = extractJson(stdout);
     const benchmarks = parseBenchmarks(json);
     const metrics: Record<string, number> = {};
-    let metricsFound = 0;
+    let found = false;
 
     for (const benchmark of benchmarks) {
-      metricsFound += extractBenchmarkMetrics(benchmark, metrics);
+      if (extractBenchmarkMetrics(benchmark, metrics)) {
+        found = true;
+      }
     }
 
-    if (metricsFound === 0) {
+    if (!found) {
       throw new AdapterError("No valid benchmark runs found");
     }
 

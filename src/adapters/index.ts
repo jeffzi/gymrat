@@ -1,5 +1,4 @@
 export { AdapterError } from "./types.js";
-export type { Adapter, MetricDefaults } from "./types.js";
 
 import metricLinesAdapter from "./metric-lines.js";
 import mitataAdapter from "./mitata.js";

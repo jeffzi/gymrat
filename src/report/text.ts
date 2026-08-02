@@ -765,9 +765,8 @@ function highlightEntries(metrics: MetricComparisons, candidateIndex: number): H
       HIGHLIGHT_DELTA_WIDTH,
     )}${suffix}`;
 
-    const deltaOrWord = shown === "unstable" ? "unstable" : delta;
     const style = VERDICT_STYLES[shown];
-    let styled = styleGlyphAndDelta(plain, shown, deltaOrWord, style);
+    let styled = styleGlyphAndDelta(plain, shown, delta, style);
     if (evidence !== "") {
       styled = styleWithin(styled, evidence, ["dim"]);
     }

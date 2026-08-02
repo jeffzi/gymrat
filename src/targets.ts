@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { messageOf } from "./errors.js";
+
 /** A directory benchmarked where it sits, with no worktree of its own. */
 export interface InPlaceTarget {
   kind: "in-place";
@@ -29,7 +31,6 @@ export type Target = InPlaceTarget | RefTarget;
  */
 export interface WorktreeInfo {
   dir: string;
-  ref: string;
   sha: string;
 }
 
@@ -136,7 +137,6 @@ export function resolveTarget(input: string, repoDir: string): Target {
 export function planWorktree(ref: RefTarget): WorktreeInfo {
   return {
     dir: path.join(os.tmpdir(), `gymrat-wt-${crypto.randomUUID()}`),
-    ref: ref.ref,
     sha: ref.resolvedSha,
   };
 }
@@ -170,7 +170,7 @@ function gitErrorText(error: unknown): string {
   /* v8 ignore next 2 -- spawn-level failures (git missing from PATH, repoDir
      deleted) throw before the child runs, leaving stderr null; the test harness
      cannot reproduce those without breaking the environment it runs in. */
-  return error instanceof Error ? error.message : String(error);
+  return messageOf(error);
 }
 
 /**

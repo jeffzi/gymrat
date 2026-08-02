@@ -11,7 +11,7 @@ import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
-import { assertNever, GymratError } from "./errors.js";
+import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { countVerdicts, formatHintLabel, formatLabel } from "./report/format.js";
 import { renderJson } from "./report/json.js";
@@ -142,7 +142,7 @@ export function formatCliError(error: unknown): string {
     return `${error.name}: ${error.message}`;
   }
 
-  let output = error instanceof Error ? error.message : String(error);
+  let output = messageOf(error);
 
   if (error instanceof GymratError && error.hint !== undefined) {
     output += `\n${formatHintLabel(process.stderr)} ${error.hint}`;
@@ -496,7 +496,7 @@ export function createProgram(): Command {
   return program;
 }
 
-/* v8 ignore next 20 -- entry point. The "executes CLI when invoked through symlink"
+/* v8 ignore next 13 -- entry point. The "executes CLI when invoked through symlink"
    test in tests/cli.test.ts does run this block, but it spawns a child process, and
    in-process v8 coverage cannot attribute execution that happens outside the worker. */
 if (import.meta.url === pathToFileURL(realpathSync(process.argv[1]!)).href) {

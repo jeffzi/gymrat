@@ -37,8 +37,7 @@ const TIER_MAP: Record<"ns" | "bytes", readonly Tier[]> = {
 
 function scaleTier(value: number, tiers: readonly Tier[]): string {
   if (!Number.isFinite(value)) return value.toString();
-  const tier = tiers.find(([threshold]) => value < threshold);
-  if (tier === undefined) return value.toString();
+  const tier = tiers.find(([threshold]) => value < threshold)!;
   const [, divisor, suffix, decimals] = tier;
   return `${(value / divisor).toFixed(decimals)}${suffix}`;
 }
@@ -128,13 +127,6 @@ export function formatDelta(delta: number): string {
   const magnitude = Math.abs(delta).toFixed(1);
   if (magnitude === "0.0") return "0.0%";
   return `${delta > 0 ? "+" : "-"}${magnitude}%`;
-}
-
-/** A p-value at reading precision, collapsed to `p<0.001` below the display floor. */
-export function formatPValue(p: number): string {
-  if (p < 0.001) return "p<0.001";
-  if (p < 0.01) return `p=${p.toFixed(3)}`;
-  return `p=${p.toFixed(2)}`;
 }
 
 /**
@@ -276,9 +268,9 @@ export function formatEvidence(
 ): string {
   if (verdict.method === "exact") return "(exact)";
   if (verdict.verdict !== "unstable") return "";
-  if (verdict.noisePct > RELATIVE_SPREAD_CAP_PCT && baselineMedian !== undefined) {
+  if (verdict.noisePct > RELATIVE_SPREAD_CAP_PCT) {
     const noise = formatValue(verdict.noiseAbs, unit);
-    return `±${noise} noise on a ${formatValue(baselineMedian, unit)} median`;
+    return `±${noise} noise on a ${formatValue(baselineMedian!, unit)} median`;
   }
   return `noise ${formatNoiseBand(verdict.noisePct)}`;
 }
@@ -767,7 +759,7 @@ export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: 
  * The pair counts behind every verdict a given method decided, across every
  * candidate.
  */
-export function pairCounts(metrics: MetricComparisons, method: Method): number[] {
+function pairCounts(metrics: MetricComparisons, method: Method): number[] {
   const counts: number[] = [];
   for (const metric of Object.values(metrics)) {
     for (const { verdict } of metric.candidates) {

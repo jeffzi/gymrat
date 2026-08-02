@@ -22,12 +22,6 @@ export interface ExecOptions {
   signal?: AbortSignal;
 }
 
-/* v8 ignore next 3 -- only reachable from killProcessGroup's catch; requires
-   process.kill to throw, which needs a race between pid check and kill */
-function isEsrch(err: unknown): boolean {
-  return err instanceof Error && "code" in err && err.code === "ESRCH";
-}
-
 function killProcessGroup(pid: number): void {
   try {
     process.kill(-pid, "SIGKILL");
@@ -35,7 +29,7 @@ function killProcessGroup(pid: number): void {
   } catch (err) {
     // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
     // where a throw becomes an uncaught exception.
-    if (!isEsrch(err)) {
+    if (!(err instanceof Error && "code" in err && err.code === "ESRCH")) {
       process.emitWarning(err instanceof Error ? err : String(err));
     }
   }

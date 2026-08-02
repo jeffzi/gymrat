@@ -9,7 +9,6 @@ import {
   formatLabel,
   formatMetricCell,
   formatNoiseBand,
-  formatPValue,
   formatTableLine,
   formatValue,
   getGlyph,
@@ -239,17 +238,6 @@ describe("formatDelta", () => {
 
   it("renders nothing when the delta is undefined arithmetic", () => {
     expect(formatDelta(Number.NaN)).toBe("");
-  });
-});
-
-describe("formatPValue", () => {
-  it.each([
-    { desc: "collapses zero to the display floor", p: 0, expected: "p<0.001" },
-    { desc: "collapses values below the floor", p: 0.0001, expected: "p<0.001" },
-    { desc: "keeps three decimals below 0.01", p: 0.002, expected: "p=0.002" },
-    { desc: "keeps two decimals at 0.01 and above", p: 0.08, expected: "p=0.08" },
-  ])("$desc: $p", ({ p, expected }) => {
-    expect(formatPValue(p)).toBe(expected);
   });
 });
 

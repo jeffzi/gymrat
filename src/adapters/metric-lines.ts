@@ -11,15 +11,18 @@ function parseMetricLine(line: string): { name: string; value: number } | null {
   const afterMetric = trimmed.slice(METRIC_PREFIX.length).trim();
   const lastEqIndex = afterMetric.lastIndexOf("=");
 
-  const name = lastEqIndex > 0 ? afterMetric.slice(0, lastEqIndex) : "";
-  const value = lastEqIndex > 0 ? Number(afterMetric.slice(lastEqIndex + 1)) : Number.NaN;
-
-  if (lastEqIndex <= 0 || !Number.isFinite(value)) {
+  if (lastEqIndex <= 0) {
     console.warn(`Failed to parse METRIC line: ${trimmed}`);
     return null;
   }
 
-  return { name, value };
+  const value = Number(afterMetric.slice(lastEqIndex + 1));
+  if (!Number.isFinite(value)) {
+    console.warn(`Failed to parse METRIC line: ${trimmed}`);
+    return null;
+  }
+
+  return { name: afterMetric.slice(0, lastEqIndex), value };
 }
 
 /**

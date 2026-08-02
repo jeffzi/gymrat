@@ -203,7 +203,6 @@ describe("planWorktree", () => {
 
       const worktree = planWorktree(refTarget);
 
-      expect(worktree.ref).toBe("my-tag");
       expect(worktree.sha).toBe(UNKNOWN_SHA);
       expect(path.dirname(worktree.dir)).toBe(os.tmpdir());
       expect(fs.existsSync(worktree.dir)).toBe(false);
@@ -344,7 +343,7 @@ describe("cleanupWorktrees", () => {
 
     function createStrayWorktree(): WorktreeInfo {
       strayDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-stray-"));
-      return { dir: strayDir, ref: "stray", sha: UNKNOWN_SHA };
+      return { dir: strayDir, sha: UNKNOWN_SHA };
     }
 
     it("reports the failing directory with git's own error text", () => {
@@ -386,7 +385,6 @@ describe("cleanupWorktrees", () => {
       // git call this list reaches — and it runs against a non-repo.
       const vanished: WorktreeInfo = {
         dir: path.join(nonRepoDir, "gone"),
-        ref: "gone",
         sha: UNKNOWN_SHA,
       };
 

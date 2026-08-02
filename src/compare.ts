@@ -5,7 +5,7 @@ import type { Adapter } from "./adapters/types.js";
 import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
-import { computeMedian } from "./math.js";
+import { computeHalfRange, computeMedian } from "./math.js";
 import { formatCleanupFailures } from "./report/text.js";
 import type { ComparisonResult } from "./report/types.js";
 import { installTerminationCleanup } from "./signals.js";
@@ -194,16 +194,12 @@ function computeSpread(values: readonly number[]): number {
     return 0;
   }
 
-  const sorted = [...values].toSorted((a, b) => a - b);
-  const min = sorted[0]!;
-  const max = sorted[sorted.length - 1]!;
-  const median = computeMedian(sorted);
-
+  const median = computeMedian(values);
   if (median === 0) {
     return 0;
   }
 
-  return ((max - min) / (2 * Math.abs(median))) * 100;
+  return (computeHalfRange(values) / Math.abs(median)) * 100;
 }
 
 interface TargetContext {
@@ -223,17 +219,6 @@ interface TargetSamples {
 interface RunSamples {
   readonly baseline: TargetSamples;
   readonly candidates: readonly TargetSamples[];
-}
-
-/** A target's samples under the label the report shows them by. */
-interface LabeledSamples {
-  readonly label: string;
-  readonly samples: Record<string, number>[];
-}
-
-/** Drop the target's context, keeping only what the comparison reads from it. */
-function labelSamples({ ctx, samples }: TargetSamples): LabeledSamples {
-  return { label: ctx.label, samples };
 }
 
 /**
@@ -454,13 +439,13 @@ interface CandidateMeasurement {
  */
 function measureCandidates(
   baselineSamples: Record<string, number>[],
-  candidates: readonly LabeledSamples[],
+  candidates: readonly TargetSamples[],
   metricMeta: ReturnType<typeof resolveMetricMeta>,
   unstableNoisePct: number | undefined,
 ): CandidateMeasurement[] {
-  return candidates.map(({ label, samples }) => {
+  return candidates.map(({ ctx, samples }) => {
     const verdicts = computeVerdicts(baselineSamples, samples, metricMeta, unstableNoisePct);
-    return { label, samples, verdicts, geomean: computeGeomean(verdicts, metricMeta) };
+    return { label: ctx.label, samples, verdicts, geomean: computeGeomean(verdicts, metricMeta) };
   });
 }
 
@@ -579,9 +564,6 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         run.signal,
       );
 
-      const baseline = labelSamples(collected.baseline);
-      const candidates = collected.candidates.map(labelSamples);
-
       const metricNames = collectMetricNames([
         collected.baseline.samples,
         ...collected.candidates.map(({ samples }) => samples),
@@ -595,11 +577,11 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
       const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
 
       measurement = {
-        baselineLabel: baseline.label,
-        baselineSamples: baseline.samples,
+        baselineLabel: collected.baseline.ctx.label,
+        baselineSamples: collected.baseline.samples,
         candidates: measureCandidates(
-          baseline.samples,
-          candidates,
+          collected.baseline.samples,
+          collected.candidates,
           metricMeta,
           options.unstableNoisePct,
         ),

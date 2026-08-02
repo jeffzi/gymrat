@@ -1,4 +1,4 @@
-import type { GeomeanExclusion, GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
+import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import { countVerdicts, type VerdictCounts } from "./format.js";
 import type { CandidateMetric, ComparisonResult, MetricComparisons } from "./types.js";
 
@@ -25,15 +25,9 @@ interface JsonMetric {
   candidates: JsonCandidateMetric[];
 }
 
-interface JsonGeomean {
-  value: number;
-  n: number;
-  excluded: GeomeanExclusion[];
-}
-
 interface JsonPerCandidate {
   label: string;
-  geomean: JsonGeomean;
+  geomean: GeomeanResult;
   verdictCounts: VerdictCounts;
 }
 
@@ -119,18 +113,10 @@ function serializeMetrics(
   return result;
 }
 
-function serializeGeomean(geomean: GeomeanResult): JsonGeomean {
-  return {
-    value: geomean.value,
-    n: geomean.n,
-    excluded: geomean.excluded,
-  };
-}
-
 function serializePerCandidate(result: ComparisonResult): JsonPerCandidate[] {
   return result.candidates.map((candidate, i) => ({
     label: candidate.label,
-    geomean: serializeGeomean(candidate.geomean),
+    geomean: candidate.geomean,
     verdictCounts: countVerdicts(result.metrics, i),
   }));
 }

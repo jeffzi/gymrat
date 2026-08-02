@@ -15,3 +15,8 @@ export function computeMedian(values: readonly number[]): number {
 
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
+
+/** Half the range of `values`: `(max - min) / 2`. */
+export function computeHalfRange(values: readonly number[]): number {
+  return (Math.max(...values) - Math.min(...values)) / 2;
+}
