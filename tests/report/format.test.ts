@@ -574,7 +574,8 @@ describe("formatLabel", () => {
     expect(styled).toContain("Hint:");
   });
 
-  it("returns the bare label when stdout is not a TTY", () => {
+  it("returns the bare label when color is suppressed", () => {
+    vi.stubEnv("NO_COLOR", "1");
     expect(formatLabel("Hint:", ["yellow", "underline"])).toBe("Hint:");
   });
 });
@@ -646,7 +647,8 @@ describe("verdictSummaryParts", () => {
     "tied/heap": bandMetric({ n: 10, usableN: 0 }),
   };
 
-  it("returns parts with no ANSI escapes when stdout is not a TTY", () => {
+  it("returns parts with no ANSI escapes when color is suppressed", () => {
+    vi.stubEnv("NO_COLOR", "1");
     const parts = verdictSummaryParts(mixed, 0);
 
     expect(parts.join("")).not.toContain("\x1b[");
@@ -709,7 +711,8 @@ describe("methodFooterLines", () => {
     vi.unstubAllEnvs();
   });
 
-  it("returns lines with no ANSI escapes when stdout is not a TTY", () => {
+  it("returns lines with no ANSI escapes when color is suppressed", () => {
+    vi.stubEnv("NO_COLOR", "1");
     const metrics: Metrics = {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
