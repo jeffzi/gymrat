@@ -39,8 +39,8 @@ git ref of the same name, so prefix the ref with `refs/heads/` to disambiguate.
 
 An optional `label=` prefix sets the display name. Without it, a git target is labelled with its
 ref and a path target with the directory's base name, resolved through symlinks. Pass `label=`
-when two paths share a base name. The prefix splits at the first `=`, so a target whose own name
-contains `=` cannot be passed.
+when two paths share a base name. The prefix splits at the first `=`, so `label=a=b` passes a
+target containing `=`; a bare `a=b` without a label cannot.
 
 ```sh
 # Compare two git refs
@@ -126,17 +126,18 @@ gymrat compare main perf/faster-decode --bench "node bench.js" --adapter mitata 
 With a `gymrat.json` marking `encode/heap` as an exact metric, that prints:
 
 ```text
-gymrat compare · main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
-metric                    │        main │ perf/faster-decode │ vs main
-──────────────────────────┼─────────────┼────────────────────┼──────────────────
-decode/text=digits/time   │  1.7µs ± 1% │         1.4µs ± 1% │ ✓  -17.9%  ±2.5%
-decode/text=words/time    │  3.1µs ± 1% │         3.1µs ± 3% │ ~  +0.9%  ±2.5%
-encode/time               │  914ns ± 1% │         934ns ± 1% │ ✗  +2.2%  ±2.5%
-encode/heap               │ 49.2KB ± 0% │        45.3KB ± 0% │ ✓  -7.9%
-──────────────────────────┼─────────────┼────────────────────┼──────────────────
-geomean (gating metrics)  │        main │ perf/faster-decode │ -6.0%  4 stable metrics
+gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
+metric                      │        main │ perf/faster-decode │ vs main
+────────────────────────────┼─────────────┼────────────────────┼──────────────────
+decode/text=digits/time     │  1.7µs ± 1% │         1.4µs ± 1% │ ✓  -17.9%  ±2.5%
+decode/text=words/time      │  3.1µs ± 1% │         3.1µs ± 3% │ ~   +0.9%  ±2.5%
+encode/time                 │  914ns ± 1% │         934ns ± 1% │ ✗   +2.2%  ±2.5%
+encode/heap                 │ 49.2KB ± 0% │        45.3KB ± 0% │ ✓   -7.9%
+────────────────────────────┼─────────────┼────────────────────┼──────────────────
+geomean (4 stable metrics)  │             │                    │     -6.0%
+                            │        main │ perf/faster-decode │ vs main
 
-✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   ~ 1 within noise
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise
 
 highlights
   ✗ encode/time               +2.2%
@@ -144,7 +145,7 @@ highlights
   ✓ encode/heap               -7.9%  (exact)
 ```
 
-Add `--verbose` to close the report with the method behind the verdicts:
+Add `--verbose` to name the method behind each verdict in the footer:
 
 ```text
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
@@ -156,23 +157,39 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
   and doubles as the legend for the glyphs used throughout the report.
 - The **highlights** block lists regressions first, then improvements, with the delta and method
   evidence. Exact metrics show `(exact)`. Metrics marked `≈ unstable` (noise band wider than
-  `unstableNoisePct`) show `noise ±N%` — these are too jittery to judge and are excluded from the
-  geomean.
-- The **`±` noise band** in the verdict column is the spread the signed-rank test used to decide
-  signal vs. noise. It appears only for approximate metrics.
+  `unstableNoisePct`) show the noise in the metric's own units (`±<noise> noise on a <median>
+median`) at default thresholds; the `noise ±N%` form appears only when the relative spread stays
+  below 100%. Unstable metrics are too jittery to judge and are excluded from the geomean.
+  A candidate with an unstable metric closes the block with a note that unstable metrics won't
+  stabilize with more samples.
+- The **`±` noise band** in the verdict column is the half-range-derived spread both approximate
+  methods compute. The band decides the verdict only on the band path; signed-rank decides on `p`.
+  It appears only for approximate metrics in the single-candidate table — multi-candidate tables
+  drop the band from cells to save width. Unstable metrics omit the band (the word `unstable`
+  replaces it).
 - The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
   hidden.
-- The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `~` no signal. You
-  never do better-is-higher math yourself.
+- The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
+  within noise. You never do better-is-higher math yourself.
 - The **± spread** in the value columns is the cross-run half-range of the per-run values as a
-  percentage of the median, the same dispersion the noise band uses.
+  percentage of the median, the same dispersion the noise band uses. Past 100%, the spread is
+  restated in the metric's own units (e.g. `5B ± 381B` instead of `5B ± 7620%`).
+- **Value columns vs. delta/verdict:** the value columns show each side's median and spread over
+  the windows that reported the metric; the delta and verdict come from paired windows only
+  (windows where both sides reported the metric). When a metric is missing from some windows, the
+  two sets can differ.
 - Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
   `metric-lines` values carry no unit and are rounded to the nearest integer.
 - The **geomean** (geometric mean) row aggregates gating metrics only. Unstable metrics are excluded
-  automatically, and exclusion reasons are reported (e.g. `2 excluded: unstable`). All metrics are
-  gating by default; disable per metric in the config file.
+  automatically, and the label reports how many stable metrics remain (e.g. `geomean (4 stable
+metrics)`). All metrics are gating by default; disable per metric in the config file.
 - A metric present on only one side renders one-sided: its value in the present column, a blank cell
   on the other, and no verdict.
+- The **`Hint:` line** prints regardless of `--verbose`, and only when a metric fell back to the
+  noise band for want of samples.
+- **Display-width limitation:** column alignment assumes one character equals one display column.
+  CJK or other wide characters in metric names or labels may misalign columns; label truncation
+  can split a multi-byte character. A display-width dependency is not planned.
 
 ### How verdicts are decided
 
@@ -183,8 +200,10 @@ from the per-side medians.
   `p < 0.05`.
 - **Noise band** (fewer than 6 nonzero differences): the band is
   `max(150 × max(halfRange/median over both sides), 0.5%)`, and `|delta%|` must exceed it to
-  count as signal. Rendered as e.g. `~ -1.9% (band ±3.0%, n=4)`. Runs of 6 or more samples land here
-  too when ties leave fewer than 6 nonzero differences.
+  count as signal. With fewer than 2 pairs, every non-exact metric is no-signal regardless of
+  delta — the band has no observable spread to measure against. Rendered as e.g.
+  `~  -1.9%  ±3.0%  n=4` (glyph, delta, band, and pair count when it differs from `--samples`).
+  Runs of 6 or more samples land here too when ties leave fewer than 6 nonzero differences.
 - **Exact metrics** (config-flagged, e.g. binary size): any difference between medians is a signal;
   a single sample suffices.
 
@@ -235,9 +254,8 @@ Post the markdown report as a PR comment:
 
 Each candidate's verdict includes `method` (`signed-rank`, `band`, or `exact`), `delta`, `p` (for
 signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a method are `null`.
-
-Candidates are compared against the baseline independently — never against each other. The geomean
-aggregates only gating metrics and excludes unstable ones.
+A `NaN` delta (zero baseline median, non-zero candidate) serializes as `null`; it is distinguished
+from a missing verdict by the non-null `verdict` field.
 
 ## The `metric-lines` format
 
@@ -262,8 +280,8 @@ METRIC <name>=<value>
   emits a warning on gymrat's stderr without failing the run.
 - A **repeated name within one run** produces within-run samples: gymrat takes the median of the
   occurrences as the run's value.
-- A run in which **zero** metrics are found is an operational error. gymrat aborts and surfaces the
-  captured bench output.
+- A run in which **zero** metrics are found is an operational error (exit 2; see
+  [Exit codes](#exit-codes)).
 - Every metric defaults to **lower-is-better** and is rounded to the nearest integer, with no unit
   scaling. Emit nanoseconds or microseconds rather than fractional seconds, or every value collapses
   to `0` or `1`. Override direction per metric in the config file.
@@ -307,8 +325,10 @@ an error, to catch typos.
 
 - `bench`, `prepare`, `adapter`, `samples`, `timeoutSeconds` mirror the command-line options.
 - `unstableNoisePct` (default `200`, any positive number) is the noise band width, in percent, above
-  which a metric is too noisy to judge: its verdict becomes no-signal and it drops out of the
-  geomean. It has no flag — set it in the config file or leave the default.
+  which a metric is too noisy to judge: its verdict becomes `unstable` (tallied under `≈` in the
+  summary, serialized as `"unstable"` in JSON) and it drops out of the geomean. The comparison is
+  strict — a metric sitting exactly on the threshold keeps its verdict. It has no flag — set it in
+  the config file or leave the default.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
   - `direction`: `"lower"` or `"higher"` (which way is better).
   - `gating`: whether the metric counts toward the geomean. Defaults to `true`.
