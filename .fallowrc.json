@@ -4,11 +4,9 @@
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
     "cspell",
-    "esbuild",
     "fallow",
     "lefthook",
     "markdownlint-cli2",
-    "mitata",
     "oxfmt",
     "oxlint",
     "oxlint-tsgolint",
