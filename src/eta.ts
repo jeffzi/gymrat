@@ -36,37 +36,33 @@ export class EtaTracker {
    */
   record(step: ProgressStep): number | undefined {
     const now = this.#clock();
+    const isPrepare = step.kind === "prepare";
 
-    if (step.kind === "prepare") {
-      this.#prevWasPrepare = true;
-      this.#prevTime = now;
-      return undefined;
-    }
-
-    if (this.#prevTime !== undefined && !this.#prevWasPrepare) {
+    if (this.#prevTime !== undefined && !this.#prevWasPrepare && !isPrepare) {
       this.#durations.push(now - this.#prevTime);
     }
 
-    this.#prevWasPrepare = false;
+    this.#prevWasPrepare = isPrepare;
     this.#prevTime = now;
 
+    if (isPrepare) {
+      return undefined;
+    }
+
+    const remaining = step.total * this.#targetCount - this.#completedSamples;
+    this.#completedSamples++;
+
     if (this.#durations.length === 0) {
-      this.#completedSamples++;
       return undefined;
     }
 
     const mean =
       this.#durations.reduce((sum, duration) => sum + duration, 0) / this.#durations.length;
-    const remaining = step.total * this.#targetCount - this.#completedSamples;
-
-    this.#completedSamples++;
 
     return mean * remaining;
   }
 }
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 3_600_000;
 const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 3600;
 
@@ -92,11 +88,11 @@ function formatRemainder(
 export function formatEta(ms: number): string {
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
 
-  if (ms < MINUTE_MS) {
+  if (totalSeconds < SECONDS_PER_MINUTE) {
     return `~${String(totalSeconds)}s left`;
   }
 
-  if (ms < HOUR_MS) {
+  if (totalSeconds < SECONDS_PER_HOUR) {
     const minutes = Math.floor(totalSeconds / SECONDS_PER_MINUTE);
     const seconds = totalSeconds % SECONDS_PER_MINUTE;
     return formatRemainder(minutes, "m", seconds, "s");

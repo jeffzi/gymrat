@@ -45,34 +45,32 @@ describe("EtaTracker", () => {
       expect(result).toBeUndefined();
     });
 
-    it("returns an estimate at the second sample step once one gap is known", () => {
-      // Arrange — 2 targets, 3 rounds; estimate available at target B's first step
-      const tracker = new EtaTracker(2, clockSequence(0, 100));
+    it.each([
+      {
+        name: "returns an estimate at the second sample step once one gap is known",
+        targets: 2,
+        total: 3,
+        expected: 500,
+      },
+      {
+        name: "uses constructor-provided target count, not inferred from index-1 steps",
+        targets: 3,
+        total: 4,
+        expected: 1100,
+      },
+    ])("$name", ({ targets, total, expected }) => {
+      // Arrange — constructor-provided target count, gap of 100 between two index-1 steps
+      const tracker = new EtaTracker(targets, clockSequence(0, 100));
 
       // Act
-      tracker.record(sample(1, 3, "A")); // t=0, first sample, no gap yet
-      const result = tracker.record(sample(1, 3, "B")); // t=100, gap=100
+      tracker.record(sample(1, total, "A")); // t=0, first sample, no gap yet
+      const result = tracker.record(sample(1, total, "B")); // t=100, gap=100
 
       // Assert
-      // mean = 100, targetCount = 2 (from constructor)
-      // completedSampleSteps before this call = 1, remaining = 3*2 - 1 = 5
-      // estimate = 100 * 5 = 500
-      expect(result).toBe(500);
-    });
-
-    it("uses constructor-provided target count, not inferred from index-1 steps", () => {
-      // Arrange — constructor says 3 targets, but only 2 have appeared so far
-      const tracker = new EtaTracker(3, clockSequence(0, 100));
-
-      // Act
-      tracker.record(sample(1, 4, "A")); // t=0
-      const result = tracker.record(sample(1, 4, "B")); // t=100, gap=100
-
-      // Assert
-      // mean = 100, targetCount = 3 (from constructor, not 2 seen targets)
-      // completedSampleSteps before this call = 1, remaining = 4*3 - 1 = 11
-      // estimate = 100 * 11 = 1100
-      expect(result).toBe(1100);
+      // mean = 100, targetCount from constructor
+      // completedSampleSteps before this call = 1, remaining = total*targets - 1
+      // estimate = 100 * remaining
+      expect(result).toBe(expected);
     });
 
     it("pools gaps from different targets into a shared mean", () => {
@@ -141,7 +139,7 @@ describe("formatEta", () => {
     it.each([
       { ms: 1000, expected: "~1s left" },
       { ms: 48200, expected: "~48s left" },
-      { ms: 59999, expected: "~60s left" },
+      { ms: 59999, expected: "~1m left" },
     ])("formats $ms ms as '$expected'", ({ ms, expected }) => {
       expect(formatEta(ms)).toBe(expected);
     });
@@ -152,7 +150,7 @@ describe("formatEta", () => {
       { ms: 60000, expected: "~1m left" },
       { ms: 130000, expected: "~2m 10s left" },
       { ms: 120000, expected: "~2m left" },
-      { ms: 3599999, expected: "~60m left" },
+      { ms: 3599999, expected: "~1h left" },
     ])("formats $ms ms as '$expected'", ({ ms, expected }) => {
       expect(formatEta(ms)).toBe(expected);
     });
