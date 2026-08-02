@@ -29,6 +29,15 @@ function cellsOf(line: string): string[] {
   return line.split("│");
 }
 
+/** The last cell of a rendered table line — the delta column. */
+function deltaCellOf(line: string): string {
+  const cell = cellsOf(line).at(-1);
+  if (cell === undefined) {
+    throw new Error(`no cells in line: ${JSON.stringify(line)}`);
+  }
+  return cell;
+}
+
 /** The single rendered line starting with `prefix`, or a failure naming the report. */
 function lineStartingWith(report: string, prefix: string): string {
   const line = report.split("\n").find((candidate) => candidate.startsWith(prefix));
@@ -1328,6 +1337,14 @@ describe("renderReport", () => {
 
       expect.soft(stylesAt(line, "main")).toStrictEqual(["1", "4"]);
       expect(stylesAt(line, "perf/faster-decode")).toStrictEqual(["1", "4"]);
+    });
+
+    it("emboldens and underlines the baseline name inside the delta column header", () => {
+      const header = lineContaining(renderReport(colorfulResult()), "metric  ");
+
+      const deltaCell = deltaCellOf(header);
+
+      expect(stylesAt(deltaCell, "main")).toStrictEqual(["1", "4"]);
     });
 
     it("leaves the rest of the column header row unstyled", () => {

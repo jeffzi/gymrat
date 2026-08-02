@@ -470,8 +470,14 @@ function renderTable(
     "",
     joinVerdictCell(geomeanVerdictParts(geomeanCell), verdictFields),
   ];
-  const styleVariantCells: CellStyler = (cell, index) =>
-    index === 1 || index === 2 ? styleWithin(cell, headers[index], VARIANT_NAME_STYLE) : cell;
+  const styleVariantCells: CellStyler = (cell, index) => {
+    if (index === 1 || index === 2) {
+      return styleWithin(cell, headers[index], VARIANT_NAME_STYLE);
+    }
+    // The marker is the bare baseline name, not the whole `vs …` header: the
+    // emphasis belongs to the name, and `vs` is prose around it.
+    return index === VERDICT_COLUMN ? styleWithin(cell, baseline, VARIANT_NAME_STYLE) : cell;
+  };
 
   return [
     formatRow(headers, widths, styleVariantCells),
