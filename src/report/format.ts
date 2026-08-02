@@ -587,11 +587,20 @@ export function formatVariantName(label: string, stream?: NodeJS.WriteStream): s
   return formatLabel(variantName(label), VARIANT_NAME_STYLE, stream);
 }
 
-const HINT_STYLE: Style = ["yellow", "underline"];
+/** The style the word `Hint` wears — the only part of the label the underline reaches. */
+const HINT_WORD_STYLE: Style = ["yellow", "underline"];
 
-/** The `Hint:` label every hint line opens with, styled by `styleText` auto-detection. */
+/** The style the label's colon wears — colored with the word, never underlined. */
+const HINT_COLON_STYLE: Style = ["yellow"];
+
+/**
+ * The `Hint:` label every hint line opens with, styled by `styleText` auto-detection.
+ *
+ * Word and colon are styled as two spans so the underline stops at the word: an
+ * underscore running under a colon reads as punctuation of its own.
+ */
 export function formatHintLabel(stream?: NodeJS.WriteStream): string {
-  return formatLabel("Hint:", HINT_STYLE, stream);
+  return formatLabel("Hint", HINT_WORD_STYLE, stream) + formatLabel(":", HINT_COLON_STYLE, stream);
 }
 
 /**

@@ -1499,21 +1499,31 @@ describe("renderReport", () => {
       expect(band).toMatch(DIMMED_LINE);
     });
 
-    it("styles the Hint: label yellow and underlined", () => {
+    it("styles the Hint word yellow and underlined", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const hint = lineContaining(renderReport(result), "Hint:");
+      const hint = lineContaining(renderReport(result), "Hint");
 
-      expect.soft(stylesAt(hint, "Hint:")).toContain("33");
-      expect(stylesAt(hint, "Hint:")).toContain("4");
+      expect.soft(stylesAt(hint, "Hint")).toContain("33");
+      expect(stylesAt(hint, "Hint")).toContain("4");
+    });
+
+    it("styles the hint label colon yellow without underlining it", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
+      });
+      const hint = lineContaining(renderReport(result), "Hint");
+
+      expect.soft(stylesAt(hint, ":")).toContain("33");
+      expect(stylesAt(hint, ":")).not.toContain("4");
     });
 
     it("renders the hint sentence text plain in colored mode", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const hint = lineContaining(renderReport(result), "Hint:");
+      const hint = lineContaining(renderReport(result), "Hint");
       const afterLabel = hint.slice(hint.indexOf("re-run"));
 
       expect(afterLabel).not.toContain("\x1b[2m");

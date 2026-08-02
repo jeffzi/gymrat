@@ -15,7 +15,7 @@ geomean (1 stable metric)  │            │                    │      [1m0.
   [32m✓[39m throughput/ops  [32m+30.0%[39m
 
 [2mnoise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)[22m
-[33m[4mHint:[24m[39m re-run with --samples 6 or more for statistical verdicts
+[33m[4mHint[24m[39m[33m:[39m re-run with --samples 6 or more for statistical verdicts
 1 worktree removed · 1 left behind
   left behind: /tmp/gymrat-abc123 (contains modified files)
   worktree prune failed: could not lock config file

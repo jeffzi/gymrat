@@ -1681,7 +1681,7 @@ describe("formatCliError", () => {
     // Assert - \x1b[33m = yellow, \x1b[4m = underline
     expect.soft(rendered).toContain("\x1b[33m");
     expect.soft(rendered).toContain("\x1b[4m");
-    expect(rendered).toContain("Hint:");
+    expect(rendered).toContain("Hint");
   });
 
   it("renders Hint: as plain text when NO_COLOR is set", () => {
