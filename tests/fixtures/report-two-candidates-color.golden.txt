@@ -1,23 +1,25 @@
-[1mgymrat compare[22m [2m·[22m baseline [1m[4mmain[24m[22m ↔ [1m[4mcandidate-a[24m[22m, [1m[4mcandidate-b[24m[22m, [1m[4mcandidate-c[24m[22m [2m·[22m 10 paired samples [2m·[22m adapter: mitata
-metric          │       [1m[4mmain[24m[22m │ [1m[4mcandidate-a[24m[22m              │ [1m[4mcandidate-b[24m[22m             │ [1m[4mcandidate-c[24m[22m
-────────────────┼────────────┼──────────────────────────┼─────────────────────────┼─────────────────────────
-decode/time     │ 100ns ± 1% │ 90ns ± 1%  [32m✓[39m  [32m-10.0%[39m     │ 104ns ± 1%  [31m✗[39m  [31m+4.0%[39m    │ 150ns ± 3%  [33m≈[39m  [33munstable[39m
-────────────────┼────────────┼──────────────────────────┼─────────────────────────┼─────────────────────────
-geomean         │            │ [1m-10.0%[22m · [2m1 stable metric[22m │ [1m+4.0%[22m · [2m1 stable metric[22m │ [1m0.0%[22m · [2m1 stable metric[22m
-[2m                │       [1m[4mmain[24m[22m[2m │ [1m[4mcandidate-a[24m[22m[2m              │ [1m[4mcandidate-b[24m[22m[2m             │ [1m[4mcandidate-c[24m[22m[22m
+[1mgymrat compare[22m [2m·[22m baseline [1m[4mmain[24m[22m ↔ [1m[4mperf/simd-decode[24m[22m, [1m[4mperf/lut-decode[24m[22m [2m·[22m 10 paired samples [2m·[22m adapter: mitata
+metric                   │        [1m[4mmain[24m[22m │ [1m[4mperf/simd-decode[24m[22m          │ [1m[4mperf/lut-decode[24m[22m
+─────────────────────────┼─────────────┼───────────────────────────┼───────────────────────────────
+decode/text=digits/time  │  1.7µs ± 1% │  1.4µs ± 1%  [32m✓[39m  [32m-17.9%[39m    │ 1.7µs ±  2%  [2m~[22m  [2m-2.1%[22m
+encode/time              │  914ns ± 1% │  934ns ± 1%  [31m✗[39m   [31m+2.2%[39m    │ 1.2µs ± 12%  [33m≈[39m  [33munstable[39m  n=4
+encode/heap              │ 49.2KB ± 0% │ 45.3KB ± 0%  [32m✓[39m   [32m-7.9%[39m    │
+─────────────────────────┼─────────────┼───────────────────────────┼───────────────────────────────
+geomean                  │             │ [1m-12.4%[22m · [2m3 stable metrics[22m │ [1m+1.2%[22m · [2m2 stable metrics[22m
+[2m                         │        [1m[4mmain[24m[22m[2m │ [1m[4mperf/simd-decode[24m[22m[2m          │ [1m[4mperf/lut-decode[24m[22m[22m
 
-[1mcandidate-a[22m  [32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m
-[1mcandidate-b[22m  [2m✓ 0 improved[22m   [31m✗ 1 regressed[39m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m
-[1mcandidate-c[22m  [2m✓ 0 improved[22m   [2m✗ 0 regressed[22m   [33m≈ 1 unstable[39m   [2m= 0 identical[22m   [2m~ 0 within noise[22m
+[1mperf/simd-decode[22m  [32m✓ 2 improved[39m   [31m✗ 1 regressed[39m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m
+[1mperf/lut-decode [22m  [2m✓ 0 improved[22m   [2m✗ 0 regressed[22m   [33m≈ 1 unstable[39m   [2m= 0 identical[22m   [2m~ 1 within noise[22m
 
 [1mhighlights[22m
-  [1mcandidate-a[22m
-    [32m✓[39m decode/time  [32m-10.0%[39m
-  [1mcandidate-b[22m
-    [31m✗[39m decode/time   [31m+4.0%[39m
-  [1mcandidate-c[22m
-    [33m≈[39m decode/time  [33munstable[39m  [2mnoise ±30.0%[22m
+  [1mperf/simd-decode[22m
+    [31m✗[39m encode/time               [31m+2.2%[39m
+    [32m✓[39m decode/text=digits/time  [32m-17.9%[39m
+    [32m✓[39m encode/heap               [32m-7.9%[39m  [2m(exact)[22m
+  [1mperf/lut-decode[22m
+    [33m≈[39m encode/time  [33munstable[39m  [2mnoise ±30.0%[22m
   [2munstable metrics won't stabilize with more samples[22m
 
 [2mverdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05[22m
-[2mnoise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)[22m
+[2mnoise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)[22m
+[33m[4mHint[24m[39m[33m:[39m re-run with --samples 6 or more for statistical verdicts

@@ -2107,8 +2107,8 @@ describe("renderReport", () => {
       );
     });
 
-    it("matches the recorded bytes for a verbose run with two candidates", async () => {
-      const result = createComparisonResult({
+    function twoCandidateResult(): ComparisonResult {
+      return createComparisonResult({
         candidates: [
           createCandidate({
             label: "perf/simd-decode",
@@ -2210,8 +2210,10 @@ describe("renderReport", () => {
           },
         },
       });
+    }
 
-      await expect(renderReport(result, { verbose: true })).toMatchFileSnapshot(
+    it("matches the recorded bytes for a verbose run with two candidates", async () => {
+      await expect(renderReport(twoCandidateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates.golden.txt",
       );
     });
@@ -2256,7 +2258,7 @@ describe("renderReport", () => {
     it("matches the recorded bytes for a verbose two-candidate colored run", async () => {
       vi.stubEnv("FORCE_COLOR", "1");
 
-      await expect(renderReport(multiCandidateResult(), { verbose: true })).toMatchFileSnapshot(
+      await expect(renderReport(twoCandidateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates-color.golden.txt",
       );
     });
