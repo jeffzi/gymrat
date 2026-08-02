@@ -783,7 +783,7 @@ describe("renderReport", () => {
       return createComparisonResult({
         metrics: {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
-          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 0 }),
         },
       });
     }
@@ -832,7 +832,7 @@ describe("renderReport", () => {
                   method: "band",
                   delta: -0.5,
                   n: 10,
-                  usableN: 3,
+                  usableN: 0,
                   band: 2.5,
                   noisePct: 2.5,
                   noiseAbs: 2.5,
@@ -1207,7 +1207,7 @@ describe("renderReport", () => {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
           "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
           "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
-          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 0 }),
           "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
         },
         candidates: [
@@ -1284,16 +1284,8 @@ describe("renderReport", () => {
       { verdict: "improved", metric: "faster/time", glyph: "✓", color: "green", code: "32" },
       { verdict: "regressed", metric: "slower/time", glyph: "✗", color: "red", code: "31" },
       { verdict: "unstable", metric: "jittery/time", glyph: "≈", color: "yellow", code: "33" },
-    ])("paints the $verdict glyph $color", ({ metric, glyph, code }) => {
-      const row = lineContaining(renderReport(colorfulResult()), metric);
-
-      expect(stylesAt(row, glyph)).toContain(code);
-    });
-
-    it.each([
-      { verdict: "within noise", metric: "flat/time", glyph: "~", code: "2", color: "dim" },
-      { verdict: "identical", metric: "tied/heap", glyph: "=", code: "36", color: "cyan" },
-      { verdict: "unstable", metric: "jittery/time", glyph: "≈", code: "33", color: "amber" },
+      { verdict: "identical", metric: "tied/heap", glyph: "=", color: "cyan", code: "36" },
+      { verdict: "within noise", metric: "flat/time", glyph: "~", color: "dim", code: "2" },
     ])("paints the $verdict verdict $color on its row", ({ metric, glyph, code }) => {
       const row = lineContaining(renderReport(colorfulResult()), metric);
 
@@ -1393,7 +1385,7 @@ describe("renderReport", () => {
     it("paints the non-zero identical tally cyan in the verdict summary", () => {
       const result = createComparisonResult({
         metrics: {
-          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 0 }),
         },
       });
       const summary = lineContaining(renderReport(result), "identical");
@@ -1553,6 +1545,23 @@ describe("renderReport", () => {
       expect(separatorOffsets(echoRow(bare))).toStrictEqual(
         separatorOffsets(lineStartingWith(bare, "metric")),
       );
+    });
+
+    describe("when the color option overrides the environment", () => {
+      it("leaves the report unstyled when color is false, despite FORCE_COLOR", () => {
+        const output = renderReport(colorfulResult(), { color: false });
+
+        expect(output).not.toContain("\x1b[");
+      });
+
+      it("styles the report when color is true, despite NO_COLOR", () => {
+        vi.stubEnv("FORCE_COLOR", undefined);
+        vi.stubEnv("NO_COLOR", "1");
+
+        const output = renderReport(colorfulResult(), { color: true });
+
+        expect(output).toContain("\x1b[");
+      });
     });
   });
 
