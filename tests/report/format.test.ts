@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
   computeColumnWidth,
@@ -10,7 +10,6 @@ import {
   formatMetricCell,
   formatNoiseBand,
   formatPValue,
-  formatSpread,
   formatTableLine,
   formatValue,
   getGlyph,
@@ -19,14 +18,16 @@ import {
   selectHighlights,
   truncateLabels,
   verdictSummaryParts,
+  withColor,
 } from "../../src/report/format.js";
-import type { ComparisonResult } from "../../src/report/types.js";
+import type { ComparisonResult, ReportOptions } from "../../src/report/types.js";
 import type {
   ApproximateVerdictValue,
   BandVerdict,
   ExactVerdict,
   SignedRankVerdict,
 } from "../../src/verdict/verdict.js";
+import { bandMetric } from "../fixtures/comparison-result.js";
 
 type Metrics = ComparisonResult["metrics"];
 type MetricEntry = Metrics[string];
@@ -77,53 +78,6 @@ function approximateMetric(options: {
 }): MetricEntry {
   const { direction = "lower", ...candidate } = options;
   return metricFor([candidate], direction);
-}
-
-/**
- * A single-candidate metric whose verdict fell back to the noise-band method.
- *
- * `n` is `pairedA.length` (total pair count) and `usableN` how many of those
- * pairs survived tie-dropping. When `n < 6` the fallback is due to insufficient
- * samples; when `n >= 6` and `usableN < 6` it is due to too many tied pairs
- * zeroing out the Wilcoxon-usable differences.
- */
-function bandMetric(options: {
-  verdict?: ApproximateVerdictValue;
-  delta?: number;
-  n: number;
-  usableN?: number;
-  noisePct?: number;
-  direction?: "lower" | "higher";
-}): MetricEntry {
-  const {
-    verdict = "no-signal",
-    delta = -1,
-    n,
-    usableN = n,
-    noisePct = 2.5,
-    direction = "lower",
-  } = options;
-  return {
-    baselineMedian: 100,
-    baselineSpread: 5,
-    candidates: [
-      {
-        median: 100 + delta,
-        spread: 4,
-        verdict: {
-          verdict,
-          method: "band" as const,
-          delta,
-          n,
-          usableN,
-          band: noisePct,
-          noisePct,
-          noiseAbs: noisePct,
-        },
-      },
-    ],
-    meta: { direction, gating: true, exact: false },
-  };
 }
 
 /** A noise-band verdict, tied pairs and all. */
@@ -208,20 +162,6 @@ describe("formatValue", () => {
     ])("renders $value unscaled as $expected", ({ value, expected }) => {
       expect(formatValue(value)).toBe(expected);
     });
-  });
-});
-
-describe("formatSpread", () => {
-  it.each([
-    { spread: 0, expected: " ± 0%" },
-    { spread: 1, expected: " ± 1%" },
-    { spread: 25, expected: " ± 25%" },
-  ])("renders $spread as '$expected'", ({ spread, expected }) => {
-    expect(formatSpread(spread)).toBe(expected);
-  });
-
-  it("renders nothing when the spread is unknown", () => {
-    expect(formatSpread(undefined)).toBe("");
   });
 });
 
@@ -315,9 +255,14 @@ describe("formatPValue", () => {
 describe("displayClass", () => {
   it.each([
     {
-      desc: "ties left the signed-rank test too few usable pairs",
-      verdict: bandVerdict({ n: 10, usableN: 3 }),
+      desc: "every pair tied, leaving the signed-rank test nothing to work with",
+      verdict: bandVerdict({ n: 10, usableN: 0 }),
       expected: "identical",
+    },
+    {
+      desc: "ties left some pairs usable, short of what the signed-rank test needs",
+      verdict: bandVerdict({ n: 10, usableN: 3 }),
+      expected: "within-noise",
     },
     {
       desc: "ties left exactly enough usable pairs",
@@ -327,7 +272,7 @@ describe("displayClass", () => {
     {
       desc: "the pair count sits one below the signed-rank floor",
       verdict: bandVerdict({ n: 6, usableN: 5 }),
-      expected: "identical",
+      expected: "within-noise",
     },
     {
       desc: "the run was too short to reach the floor at all",
@@ -643,7 +588,7 @@ describe("verdictSummaryParts", () => {
     "slower/time": approximateMetric({ verdict: "regressed", delta: 8 }),
     "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
     "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
-    "tied/heap": bandMetric({ n: 10, usableN: 3 }),
+    "tied/heap": bandMetric({ n: 10, usableN: 0 }),
   };
 
   it("returns parts with no ANSI escapes when stdout is not a TTY", () => {
@@ -831,5 +776,84 @@ describe("hintFooterLines", () => {
 
   it.each(hintCases)("hints when $desc", ({ metrics, expected }) => {
     expect(hintFooterLines(metrics, formatHint)).toStrictEqual(expected);
+  });
+});
+
+describe("ReportOptions", () => {
+  it("carries an optional color override", () => {
+    expectTypeOf<ReportOptions>().toHaveProperty("color").toEqualTypeOf<boolean | undefined>();
+  });
+});
+
+describe("withColor", () => {
+  /** The two env vars that decide whether `styleText` emits ANSI codes. */
+  interface ColorEnv {
+    FORCE_COLOR: string | undefined;
+    NO_COLOR: string | undefined;
+  }
+
+  function colorEnv(): ColorEnv {
+    return { FORCE_COLOR: process.env.FORCE_COLOR, NO_COLOR: process.env.NO_COLOR };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("while the callback runs", () => {
+    it.each([
+      {
+        mode: "undefined",
+        color: undefined,
+        expected: { FORCE_COLOR: "1", NO_COLOR: "0" },
+      },
+      {
+        mode: "false",
+        color: false,
+        expected: { FORCE_COLOR: undefined, NO_COLOR: "1" },
+      },
+      {
+        mode: "true",
+        color: true,
+        expected: { FORCE_COLOR: "1", NO_COLOR: undefined },
+      },
+    ])("hands the callback the environment for color=$mode", ({ color, expected }) => {
+      vi.stubEnv("FORCE_COLOR", "1");
+      vi.stubEnv("NO_COLOR", "0");
+
+      expect(withColor(color, colorEnv)).toStrictEqual(expected);
+    });
+  });
+
+  describe("once the callback is done", () => {
+    it.each([
+      { desc: "puts back the values it found", prior: { FORCE_COLOR: "1", NO_COLOR: "0" } },
+      {
+        desc: "leaves absent vars absent",
+        prior: { FORCE_COLOR: undefined, NO_COLOR: undefined },
+      },
+    ])("$desc", ({ prior }) => {
+      vi.stubEnv("FORCE_COLOR", prior.FORCE_COLOR);
+      vi.stubEnv("NO_COLOR", prior.NO_COLOR);
+
+      withColor(false, () => undefined);
+
+      expect(colorEnv()).toStrictEqual(prior);
+    });
+
+    it("restores the environment even when the callback throws", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+      vi.stubEnv("NO_COLOR", "0");
+
+      expect
+        .soft(() =>
+          withColor(true, () => {
+            throw new Error("render failed");
+          }),
+        )
+        .toThrow("render failed");
+
+      expect(colorEnv()).toStrictEqual({ FORCE_COLOR: "1", NO_COLOR: "0" });
+    });
   });
 });
