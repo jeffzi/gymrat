@@ -975,8 +975,7 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
   const candidateNames = display.candidates
     .map((candidate) => formatVariantName(candidate.label))
     .join(", ");
-  const headerPlain = `gymrat compare ${HEADER_SEPARATOR} baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames} ${HEADER_SEPARATOR} ${display.samples} paired samples ${HEADER_SEPARATOR} adapter: ${display.adapter}`;
-  let header = headerPlain;
+  let header = `gymrat compare ${HEADER_SEPARATOR} baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames} ${HEADER_SEPARATOR} ${display.samples} paired samples ${HEADER_SEPARATOR} adapter: ${display.adapter}`;
   header = styleWithin(header, "gymrat compare", ["bold"]);
   header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"]));
   const lines = [header];

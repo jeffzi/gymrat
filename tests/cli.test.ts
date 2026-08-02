@@ -249,6 +249,25 @@ function stderrWrites(stderrSpy: ReturnType<typeof vi.spyOn>): unknown[] {
 }
 
 /**
+ * Run `compare main branch <extraArgs>`, mocking `compare()` to resolve with
+ * `result`, and hand back the stdout write spy.
+ *
+ * Callers that need TTY or env state in place before the run set it before
+ * calling this helper — it only owns program creation, mock setup and the
+ * write spy, in that order.
+ */
+async function runCompareCapturingStdout(
+  result: ComparisonResult,
+  ...extraArgs: string[]
+): Promise<ReturnType<typeof vi.spyOn>> {
+  const program = createRunnableProgram();
+  await setupMocks(result);
+  const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  await program.parseAsync(compareArgv("main", "branch", ...extraArgs));
+  return writeSpy;
+}
+
+/**
  * Prevent process.exit from terminating the test runner.
  *
  * Converts exit calls into catchable rejections that carry the intended
@@ -455,16 +474,13 @@ describe("createProgram", () => {
     describe("on successful compare", () => {
       it("renders the comparison data compare returned and writes it to stdout", async () => {
         // Arrange
-        const program = createRunnableProgram();
         const result = createComparisonResult({
           baselineLabel: "main",
           candidates: [createCandidate({ label: "branch" })],
         });
-        await setupMocks(result);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+        const writeSpy = await runCompareCapturingStdout(result);
 
         // Assert
         expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
@@ -482,14 +498,11 @@ describe("createProgram", () => {
 
       it("includes ANSI escapes when stdout is a terminal", async () => {
         // Arrange
-        const program = createRunnableProgram();
-        await setupMocks(createColorSensitiveResult());
         process.stdout.isTTY = true;
         vi.stubEnv("NO_COLOR", undefined);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+        const writeSpy = await runCompareCapturingStdout(createColorSensitiveResult());
 
         // Assert
         const output = writeSpy.mock.calls[0]![0] as string;
@@ -498,14 +511,11 @@ describe("createProgram", () => {
 
       it("omits ANSI escapes when stdout is redirected", async () => {
         // Arrange
-        const program = createRunnableProgram();
-        await setupMocks(createColorSensitiveResult());
         process.stdout.isTTY = false;
         vi.stubEnv("NO_COLOR", undefined);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch"));
+        const writeSpy = await runCompareCapturingStdout(createColorSensitiveResult());
 
         // Assert
         const output = writeSpy.mock.calls[0]![0] as string;
@@ -514,13 +524,10 @@ describe("createProgram", () => {
 
       it("sets process.env.NO_COLOR when --no-color is passed", async () => {
         // Arrange
-        const program = createRunnableProgram();
         vi.stubEnv("NO_COLOR", undefined);
-        await setupMocks();
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch", "--no-color"));
+        await runCompareCapturingStdout(createComparisonResult(), "--no-color");
 
         // Assert
         expect(process.env.NO_COLOR).toBe("1");
@@ -530,13 +537,10 @@ describe("createProgram", () => {
     describe("when --format flag provided", () => {
       it("routes to renderReport for --format text", async () => {
         // Arrange
-        const program = createRunnableProgram();
         const result = createComparisonResult();
-        await setupMocks(result);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch", "--format", "text"));
+        const writeSpy = await runCompareCapturingStdout(result, "--format", "text");
 
         // Assert
         expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
@@ -544,13 +548,10 @@ describe("createProgram", () => {
 
       it("routes to renderMarkdown for --format markdown", async () => {
         // Arrange
-        const program = createRunnableProgram();
         const result = createComparisonResult();
-        await setupMocks(result);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch", "--format", "markdown"));
+        const writeSpy = await runCompareCapturingStdout(result, "--format", "markdown");
 
         // Assert
         expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result, { verbose: false });
@@ -559,13 +560,10 @@ describe("createProgram", () => {
 
       it("routes to renderJson for --format json", async () => {
         // Arrange
-        const program = createRunnableProgram();
         const result = createComparisonResult();
-        await setupMocks(result);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch", "--format", "json"));
+        const writeSpy = await runCompareCapturingStdout(result, "--format", "json");
 
         // Assert
         expect(vi.mocked(renderJson)).toHaveBeenCalledWith(result);
@@ -595,38 +593,35 @@ describe("createProgram", () => {
           process.stdout.isTTY = originalIsTTY;
         });
 
-        it.each([
-          { format: "markdown", renderer: "renderMarkdown" },
-          { format: "json", renderer: "renderJson" },
-        ])("does not apply ANSI color when --format $format is used", async ({ format }) => {
-          // Arrange
-          const program = createRunnableProgram();
-          const result = createColorSensitiveResult();
-          await setupMocks(result);
-          process.stdout.isTTY = true;
-          const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        it.each(["markdown", "json"])(
+          "does not apply ANSI color when --format %s is used",
+          async (format) => {
+            // Arrange
+            process.stdout.isTTY = true;
 
-          // Act
-          await program.parseAsync(compareArgv("main", "branch", "--format", format));
+            // Act
+            const writeSpy = await runCompareCapturingStdout(
+              createColorSensitiveResult(),
+              "--format",
+              format,
+            );
 
-          // Assert - non-text formats must not contain ANSI escape sequences
-          const output = writeSpy.mock.calls[0]?.[0];
-          expect(typeof output).toBe("string");
-          expect(output).not.toContain("\x1b[");
-        });
+            // Assert - non-text formats must not contain ANSI escape sequences
+            const output = writeSpy.mock.calls[0]?.[0];
+            expect(typeof output).toBe("string");
+            expect(output).not.toContain("\x1b[");
+          },
+        );
 
         it.each(["markdown", "json"])(
           "sets NO_COLOR before rendering %s output",
           async (format) => {
             // Arrange
-            const program = createRunnableProgram();
             vi.stubEnv("NO_COLOR", undefined);
-            await setupMocks();
             process.stdout.isTTY = true;
-            vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
             // Act
-            await program.parseAsync(compareArgv("main", "branch", "--format", format));
+            await runCompareCapturingStdout(createComparisonResult(), "--format", format);
 
             // Assert — CLI should set NO_COLOR so renderers auto-detect plain
             expect(process.env.NO_COLOR).toBe("1");
@@ -638,12 +633,10 @@ describe("createProgram", () => {
     describe("--verbose", () => {
       /** Runs `compare` over a signed-rank result and returns what reached stdout. */
       async function renderWith(...extraArgs: string[]): Promise<string> {
-        const program = createRunnableProgram();
-        await setupMocks(createColorSensitiveResult());
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-
-        await program.parseAsync(compareArgv("main", "branch", ...extraArgs));
-
+        const writeSpy = await runCompareCapturingStdout(
+          createColorSensitiveResult(),
+          ...extraArgs,
+        );
         return String(writeSpy.mock.calls[0]?.[0]);
       }
 
@@ -665,15 +658,10 @@ describe("createProgram", () => {
 
       it("passes the flag through to the markdown renderer", async () => {
         // Arrange
-        const program = createRunnableProgram();
         const result = createComparisonResult();
-        await setupMocks(result);
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(
-          compareArgv("main", "branch", "--format", "markdown", "--verbose"),
-        );
+        await runCompareCapturingStdout(result, "--format", "markdown", "--verbose");
 
         // Assert
         expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result, { verbose: true });
@@ -681,13 +669,10 @@ describe("createProgram", () => {
 
       it("leaves the JSON renderer untouched", async () => {
         // Arrange
-        const program = createRunnableProgram();
         const result = createComparisonResult();
-        await setupMocks(result);
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
         // Act
-        await program.parseAsync(compareArgv("main", "branch", "--format", "json", "--verbose"));
+        await runCompareCapturingStdout(result, "--format", "json", "--verbose");
 
         // Assert
         expect(vi.mocked(renderJson)).toHaveBeenCalledWith(result);

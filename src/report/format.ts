@@ -480,6 +480,7 @@ export function formatTableLine(
   return line.split("│").map(styleCell).join("│");
 }
 
+/** The style-tag union {@link styleText} accepts — the type every renderer's style constants are typed against. */
 export type Style = Parameters<typeof styleText>[0];
 
 /**

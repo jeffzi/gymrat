@@ -163,6 +163,29 @@ function gfmRow(cells: readonly string[]): string {
 }
 
 /**
+ * File a rendered row as prominent or quiet, tallying which cause — identical or
+ * unstable — a quiet row carries.
+ *
+ * Shared by the single- and multi-candidate tables: the single-candidate table
+ * passes one outcome, the multi-candidate table one per candidate.
+ */
+function bucketRow(
+  row: string,
+  outcomes: ReadonlyArray<DisplayClass | undefined>,
+  prominentRows: string[],
+  quietRows: string[],
+  quietCounts: QuietCounts,
+): void {
+  if (!isQuietRow(outcomes)) {
+    prominentRows.push(row);
+    return;
+  }
+  quietRows.push(row);
+  if (outcomes.includes("unstable")) quietCounts.unstable++;
+  else if (outcomes.includes("identical")) quietCounts.identical++;
+}
+
+/**
  * Render the single-candidate GFM table.
  *
  * Columns: Metric | baseline | candidate | vs baseline.
@@ -198,13 +221,7 @@ function renderSingleCandidateTable(
     const row = gfmRow([name, baselineCell, candidateCell, verdictCell]);
 
     const shown = side?.verdict === undefined ? undefined : displayClass(side.verdict);
-    if (isQuietRow([shown])) {
-      quietRows.push(row);
-      if (shown === "unstable") quietCounts.unstable++;
-      else if (shown === "identical") quietCounts.identical++;
-    } else {
-      prominentRows.push(row);
-    }
+    bucketRow(row, [shown], prominentRows, quietRows, quietCounts);
   }
 
   const geomeanRow = gfmRow([
@@ -267,13 +284,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
       return verdict === undefined ? undefined : displayClass(verdict);
     });
 
-    if (isQuietRow(shownList)) {
-      quietRows.push(row);
-      if (shownList.includes("unstable")) quietCounts.unstable++;
-      else if (shownList.includes("identical")) quietCounts.identical++;
-    } else {
-      prominentRows.push(row);
-    }
+    bucketRow(row, shownList, prominentRows, quietRows, quietCounts);
   }
 
   const geomeanCells = result.candidates.map((c) => formatGeomeanCell(c.geomean));

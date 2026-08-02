@@ -149,16 +149,65 @@ export type GeomeanResult = {
   excluded: GeomeanExclusion[];
 };
 
-/**
- * Determine verdict based on delta sign and direction.
- *
- * @param delta Delta percentage (may be NaN for undefined ratios)
- * @param direction Whether lower or higher values are better
- * @returns "improved" or "regressed" based on direction and delta sign
- */
+// delta may be NaN for undefined ratios
 function determineVerdict(delta: number, direction: "lower" | "higher"): Verdict {
   const isImproved = direction === "lower" ? delta < 0 : delta > 0;
   return isImproved ? "improved" : "regressed";
+}
+
+/**
+ * Pair sample windows by index for a single metric, dropping windows where
+ * either side is missing it.
+ *
+ * @param metric Metric name to pair
+ * @param samplesA Array of metric maps from the first sample set
+ * @param samplesB Array of metric maps from the second sample set
+ * @returns Paired values, one array per side, growing together
+ */
+function pairSamples(
+  metric: string,
+  samplesA: ReadonlyArray<Record<string, number>>,
+  samplesB: ReadonlyArray<Record<string, number>>,
+): { pairedA: number[]; pairedB: number[] } {
+  const pairedA: number[] = [];
+  const pairedB: number[] = [];
+
+  for (let i = 0; i < samplesA.length && i < samplesB.length; i++) {
+    const valA = samplesA[i]?.[metric];
+    const valB = samplesB[i]?.[metric];
+
+    if (valA !== undefined && valB !== undefined) {
+      pairedA.push(valA);
+      pairedB.push(valB);
+    }
+  }
+
+  return { pairedA, pairedB };
+}
+
+/**
+ * Compute the exact-path verdict: any difference between medians is a signal.
+ *
+ * @param medianA Median of sample A
+ * @param medianB Median of sample B
+ * @param delta Delta percentage already computed
+ * @param direction "lower" or "higher"
+ * @param n Number of paired samples
+ * @returns A verdict from the exact method
+ */
+function computeExactVerdict(
+  medianA: number,
+  medianB: number,
+  delta: number,
+  direction: "lower" | "higher",
+  n: number,
+): ExactVerdict {
+  // Equal medians, and a NaN delta (medianA=0, medianB≠0, so the ratio is
+  // undefined), both lack a meaningful signal direction.
+  const verdict: Verdict =
+    medianA === medianB || Number.isNaN(delta) ? "no-signal" : determineVerdict(delta, direction);
+
+  return { verdict, method: "exact", delta, n };
 }
 
 /**
@@ -215,18 +264,7 @@ export function computeVerdicts(
   const allMetrics = new Set(Object.keys(metricMeta));
 
   for (const metric of allMetrics) {
-    const pairedA: number[] = [];
-    const pairedB: number[] = [];
-
-    for (let i = 0; i < samplesA.length && i < samplesB.length; i++) {
-      const valA = samplesA[i]?.[metric];
-      const valB = samplesB[i]?.[metric];
-
-      if (valA !== undefined && valB !== undefined) {
-        pairedA.push(valA);
-        pairedB.push(valB);
-      }
-    }
+    const { pairedA, pairedB } = pairSamples(metric, samplesA, samplesB);
 
     // Both paired arrays grow together, so one length check covers both.
     if (pairedA.length === 0) {
@@ -247,34 +285,9 @@ export function computeVerdicts(
       delta = ((medianB - medianA) / medianA) * 100;
     }
 
-    // Exact path: any difference is a signal
-    if (meta.exact) {
-      let verdict: Verdict;
-
-      if (medianA === medianB) {
-        verdict = "no-signal";
-      } else if (Number.isNaN(delta)) {
-        // When delta is NaN (medianA=0, medianB≠0), we lack a meaningful signal direction
-        verdict = "no-signal";
-      } else {
-        verdict = determineVerdict(delta, meta.direction);
-      }
-
-      result[metric] = {
-        verdict,
-        method: "exact",
-        delta,
-        n: pairedA.length,
-      };
-    } else {
-      result[metric] = computeApproximateVerdict(
-        pairedA,
-        pairedB,
-        delta,
-        meta.direction,
-        unstableNoisePct,
-      );
-    }
+    result[metric] = meta.exact
+      ? computeExactVerdict(medianA, medianB, delta, meta.direction, pairedA.length)
+      : computeApproximateVerdict(pairedA, pairedB, delta, meta.direction, unstableNoisePct);
   }
 
   return result;
@@ -352,12 +365,6 @@ function applyUnstableOverride(
   return { ...verdict, verdict: "unstable" };
 }
 
-/**
- * Compute the "half-range" (half the spread from min to max) of a numeric array.
- *
- * @param values Array of numbers
- * @returns (max - min) / 2
- */
 function computeHalfRange(values: readonly number[]): number {
   if (values.length === 0) return 0;
   return (Math.max(...values) - Math.min(...values)) / 2;
