@@ -499,6 +499,25 @@ describe("computeVerdicts", () => {
       },
     );
 
+    it.each([
+      { pairs: 1, expected: "no-signal" },
+      { pairs: 2, expected: "improved" },
+    ])(
+      "reports $expected for a −50% delta measured from $pairs paired window(s)",
+      ({ pairs, expected }) => {
+        // A single window has no observable spread, so the band collapses to the floor
+        // and any delta would look definitive. Two windows give a usable half-range.
+        const samplesA = createSamples(pairs, 100);
+        const samplesB = createSamples(pairs, 50);
+
+        const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
+
+        const verdict = getVerdict(result, "metric");
+        expect(verdict.method).toBe("band");
+        expect(verdict.verdict).toBe(expected);
+      },
+    );
+
     it("treats spread as 0 when median is 0 (band = floor)", () => {
       // When medianA or medianB is 0, halfRange/median is undefined
       // Should treat spread as 0 and use floor

@@ -38,6 +38,16 @@ const NOISE_K = 1.5;
 const NOISE_FLOOR_PCT = 0.5;
 
 /**
+ * Minimum paired-sample count the band method needs to report a signal.
+ *
+ * A single pair has no observable spread, so the band collapses to
+ * `NOISE_FLOOR_PCT` — a bound meant for metrics measured many times, not for one
+ * observation whose spread is simply unknown. Two pairs already yield a real
+ * half-range, so the guard stops there.
+ */
+const MIN_BAND_N = 2;
+
+/**
  * Noise band width, in percent, above which a metric is reported "unstable".
  *
  * A band this wide spans a factor of three around the median, so the sign of a
@@ -412,7 +422,8 @@ function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): N
  * Compute verdict using the noise band method.
  *
  * The band is the metric's noise percentage (see `computeNoise`). Signal when
- * |delta%| > band%; no-signal when |delta%| ≤ band%.
+ * |delta%| > band%; no-signal when |delta%| ≤ band%, or when fewer than
+ * `MIN_BAND_N` pairs make the band meaningless.
  *
  * @param pairedA Array of values from sample A
  * @param pairedB Array of values from sample B
@@ -432,7 +443,8 @@ function computeBandMethod(
   const noise = computeNoise(pairedA, pairedB);
 
   const absDelta = Math.abs(delta);
-  const verdict: Verdict = absDelta > noise.pct ? determineVerdict(delta, direction) : "no-signal";
+  const hasSignal = pairedA.length >= MIN_BAND_N && absDelta > noise.pct;
+  const verdict: Verdict = hasSignal ? determineVerdict(delta, direction) : "no-signal";
 
   return {
     verdict,
