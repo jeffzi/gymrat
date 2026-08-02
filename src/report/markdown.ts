@@ -159,6 +159,30 @@ function gfmRow(cells: readonly string[]): string {
 }
 
 /**
+ * A table's finished lines: header, separator, prominent rows, the quiet rows'
+ * `<details>` block (empty when there are none), and the geomean row.
+ *
+ * Shared by the single- and multi-candidate tables, which differ only in how
+ * they build the rows and counts passed in.
+ */
+function assembleTableLines(
+  header: string,
+  separator: string,
+  prominentRows: readonly string[],
+  quietRows: readonly string[],
+  quietCounts: QuietCounts,
+  geomeanRow: string,
+): string[] {
+  return [
+    header,
+    separator,
+    ...prominentRows,
+    ...renderQuietBlock(header, separator, quietRows, quietCounts),
+    geomeanRow,
+  ];
+}
+
+/**
  * File a rendered row as prominent or quiet, tallying which cause — identical or
  * unstable — a quiet row carries.
  *
@@ -226,13 +250,7 @@ function renderSingleCandidateTable(
     formatSoleGeomeanCell(candidate.geomean),
   ]);
 
-  return [
-    header,
-    separator,
-    ...prominentRows,
-    ...renderQuietBlock(header, separator, quietRows, quietCounts),
-    geomeanRow,
-  ];
+  return assembleTableLines(header, separator, prominentRows, quietRows, quietCounts, geomeanRow);
 }
 
 /** Format a multi-candidate cell: value + verdict, or just value, or empty. */
@@ -284,13 +302,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
   const geomeanCells = result.candidates.map((c) => formatGeomeanCell(c.geomean));
   const geomeanRow = gfmRow([GEOMEAN_LABEL, "", ...geomeanCells]);
 
-  return [
-    header,
-    separator,
-    ...prominentRows,
-    ...renderQuietBlock(header, separator, quietRows, quietCounts),
-    geomeanRow,
-  ];
+  return assembleTableLines(header, separator, prominentRows, quietRows, quietCounts, geomeanRow);
 }
 
 /**

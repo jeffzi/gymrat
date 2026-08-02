@@ -195,6 +195,11 @@ function buildProgressLineParts(step: ProgressStep, etaMs?: number): ProgressLin
   }
 }
 
+/** Join a step word with its optional counter and label, `·`-separated. */
+function joinStepLine(stepWord: string, counter: string | undefined, label: string): string {
+  return counter === undefined ? `${stepWord} · ${label}` : `${stepWord} ${counter} · ${label}`;
+}
+
 /**
  * Each line names the target so the user can tell which one is running;
  * samples also show their position in the total.
@@ -202,7 +207,7 @@ function buildProgressLineParts(step: ProgressStep, etaMs?: number): ProgressLin
  */
 function formatProgressLine(step: ProgressStep, etaMs?: number): string {
   const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
-  let line = counter === undefined ? `${stepWord} · ${label}` : `${stepWord} ${counter} · ${label}`;
+  let line = joinStepLine(stepWord, counter, label);
   if (etaSuffix !== undefined) {
     line += ` · ${etaSuffix}`;
   }
@@ -218,10 +223,9 @@ function formatProgressLine(step: ProgressStep, etaMs?: number): string {
 function styleProgressLine(step: ProgressStep, etaMs?: number): string {
   const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
   const styledLabel = formatLabel(label, "cyan", process.stderr);
-  let line =
-    counter === undefined
-      ? `${stepWord} · ${styledLabel}`
-      : `${stepWord} ${formatLabel(counter, "bold", process.stderr)} · ${styledLabel}`;
+  const styledCounter =
+    counter === undefined ? undefined : formatLabel(counter, "bold", process.stderr);
+  let line = joinStepLine(stepWord, styledCounter, styledLabel);
   if (etaSuffix !== undefined) {
     line += formatLabel(` · ${etaSuffix}`, "dim", process.stderr);
   }

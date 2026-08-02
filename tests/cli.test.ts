@@ -1403,14 +1403,13 @@ describe("createProgram", () => {
         verdict: "regressed" | "improved" | "no-signal" | "unstable",
         { gating = true, geomeanValue = -5.0 }: { gating?: boolean; geomeanValue?: number } = {},
       ): ComparisonResult {
-        let delta: number;
-        if (verdict === "regressed") {
-          delta = 8;
-        } else if (verdict === "improved") {
-          delta = -10;
-        } else {
-          delta = 0.2;
-        }
+        const deltaByVerdict: Record<typeof verdict, number> = {
+          regressed: 8,
+          improved: -10,
+          "no-signal": 0.2,
+          unstable: 0.2,
+        };
+        const delta = deltaByVerdict[verdict];
         return createComparisonResult({
           candidates: [
             createCandidate({

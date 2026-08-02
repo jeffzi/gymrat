@@ -64,7 +64,6 @@ export const SPREAD_SEPARATOR = ` ${PLUS_MINUS} `;
 
 /**
  * The scatter, relative to the median, past which a percentage stops informing.
- *
  * Once the spread outgrows the median the percentage climbs without bound —
  * `± 7620%` reads as a rendering fault rather than as a measurement — so both
  * the value cells and the unstable evidence restate it in the metric's own
@@ -707,6 +706,15 @@ function displayCounts(
   return counts;
 }
 
+/** The order the summary line and the legend list display classes in. */
+const DISPLAY_CLASS_ORDER: readonly DisplayClass[] = [
+  "improved",
+  "regressed",
+  "unstable",
+  "identical",
+  "within-noise",
+];
+
 /**
  * One tally part per display class, in the order the report legend lists them.
  *
@@ -721,20 +729,12 @@ function displayCounts(
 export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
   const counts = displayCounts(metrics, candidateIndex);
 
-  const stylePart = (shown: DisplayClass): string => {
+  return DISPLAY_CLASS_ORDER.map((shown) => {
     const count = counts[shown];
     const text = `${getGlyph(shown)} ${count} ${VERDICT_GLOSSES[shown]}`;
     const style: Style = count === 0 ? ["dim"] : VERDICT_STYLES[shown];
     return formatLabel(text, style);
-  };
-
-  return [
-    stylePart("improved"),
-    stylePart("regressed"),
-    stylePart("unstable"),
-    stylePart("identical"),
-    stylePart("within-noise"),
-  ];
+  });
 }
 
 /**
