@@ -1,3 +1,5 @@
+import { describe, expect, it } from "vitest";
+
 import mitataAdapter from "../../src/adapters/mitata.js";
 import { AdapterError } from "../../src/adapters/types.js";
 

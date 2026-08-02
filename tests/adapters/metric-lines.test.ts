@@ -1,3 +1,5 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
 import metricLinesAdapter from "../../src/adapters/metric-lines.js";
 import { AdapterError } from "../../src/adapters/types.js";
 

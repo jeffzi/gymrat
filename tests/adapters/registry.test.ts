@@ -1,3 +1,5 @@
+import { describe, expect, it } from "vitest";
+
 import { AdapterError, getAdapter } from "../../src/adapters/index.js";
 
 describe("getAdapter registry", () => {
