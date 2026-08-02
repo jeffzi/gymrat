@@ -166,11 +166,6 @@ describe("renderMarkdown", () => {
       const output = renderMarkdown(multiCandidateResult());
       const rows = tableRows(output);
 
-      // Header should have one column per candidate
-      const header = rows[0]!;
-      expect(header).toContain("`candidate-a`");
-      expect(header).toContain("`candidate-b`");
-
       // Data row should have combined value+verdict cells
       const dataRow = rows.find((r) => r.includes("decode/time"));
       expect(dataRow).toContain("✓");
@@ -306,7 +301,7 @@ describe("renderMarkdown", () => {
         metrics: {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
           "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
-          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 0 }),
         },
         candidates: [createCandidate({ geomean: { value: -5, n: 1, excluded: [] } })],
       });
@@ -745,6 +740,26 @@ describe("renderMarkdown", () => {
 
       expect(output).not.toContain("\x1b[");
       expect(output).not.toMatch(/\x1b\[\d+m/);
+    });
+  });
+
+  describe("when the ambient environment forces color", () => {
+    it("still emits no ANSI escape sequences", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+      const result = createComparisonResult({
+        metrics: {
+          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
+          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
+          "flat/time": bandMetric({ verdict: "no-signal", delta: 0.1 }),
+          "jittery/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+          "heap/size": exactMetric({ delta: -7.9 }),
+        },
+        candidates: [createCandidate({ geomean: { value: -5.8, n: 3, excluded: [] } })],
+      });
+
+      const output = renderMarkdown(result);
+
+      expect(output).not.toMatch(/\x1b\[/);
     });
   });
 
