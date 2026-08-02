@@ -75,6 +75,21 @@ function stylesAt(line: string, marker: string): string[] {
   return [...opened.matchAll(/\x1b\[(\d+)m/g)].map((match) => match[1] ?? "");
 }
 
+/**
+ * The row echoing the header labels at the foot of the table.
+ *
+ * It is the line below the geomean row, which is the last row carrying data.
+ */
+function echoRow(report: string): string {
+  const lines = report.split("\n");
+  const geomean = lines.findIndex((line) => stripAnsi(line).startsWith("geomean"));
+  const echo = geomean === -1 ? undefined : lines[geomean + 1];
+  if (echo === undefined) {
+    throw new Error(`no row below the geomean row in report:\n${report}`);
+  }
+  return echo;
+}
+
 /** The lines of the `highlights` block, its heading excluded. */
 function highlightLines(report: string): string[] {
   const lines = report.split("\n");
@@ -600,7 +615,7 @@ describe("renderReport", () => {
   });
 
   describe("when rendering the geomean row", () => {
-    it("repeats both labels in its value cells and counts the metrics behind the figure", () => {
+    it("reduces to a counted label and the delta alone", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
         candidates: [createCandidate({ geomean: { value: -5.8, n: 4, excluded: [] } })],
@@ -609,14 +624,41 @@ describe("renderReport", () => {
       const row = lineStartingWith(renderReport(result), "geomean");
 
       expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
-        "geomean (gating metrics)",
-        "main",
-        "perf/faster-decode",
-        "-5.8%  4 stable metrics",
+        "geomean (4 stable metrics)",
+        "",
+        "",
+        "-5.8%",
       ]);
     });
 
-    it("names how many metrics were excluded and why", () => {
+    it("counts a lone stable metric in the singular", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
+        candidates: [createCandidate({ geomean: { value: -5.8, n: 1, excluded: [] } })],
+      });
+
+      const row = lineStartingWith(renderReport(result), "geomean");
+
+      expect(cellsOf(row)[0]?.trim()).toBe("geomean (1 stable metric)");
+    });
+
+    it("aligns its delta with the delta column above", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -17.9 }) },
+        candidates: [createCandidate({ geomean: { value: -6, n: 1, excluded: [] } })],
+      });
+
+      const report = renderReport(result);
+      const metricCell = cellsOf(lineStartingWith(report, "a/time")).at(-1) ?? "";
+      const geomeanCell = cellsOf(lineStartingWith(report, "geomean")).at(-1) ?? "";
+
+      // Right-aligned deltas end at the same offset within the verdict column.
+      expect(geomeanCell.indexOf("-6.0%") + "-6.0%".length).toBe(
+        metricCell.indexOf("-17.9%") + "-17.9%".length,
+      );
+    });
+
+    it("leaves the excluded metrics to the verdict summary", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
         candidates: [
@@ -632,10 +674,10 @@ describe("renderReport", () => {
 
       const row = lineStartingWith(renderReport(result), "geomean");
 
-      expect(row).toContain("0.0%  1 stable metric · 1 excluded: undefined-ratio");
+      expect(row).not.toContain("excluded");
     });
 
-    it("reports no stable gating metrics when every one was excluded", () => {
+    it("reports no stable metrics when every one was excluded", () => {
       const result = createComparisonResult({
         metrics: { "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50 }) },
         candidates: [
@@ -651,7 +693,43 @@ describe("renderReport", () => {
 
       const row = lineStartingWith(renderReport(result), "geomean");
 
-      expect(cellsOf(row).at(-1)?.trim()).toBe("—  no stable gating metrics");
+      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
+        "geomean",
+        "",
+        "",
+        "—  no stable metrics",
+      ]);
+    });
+  });
+
+  describe("when closing the table with an echo of the header", () => {
+    it("repeats the header labels on the line below the geomean row", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
+      });
+
+      const echo = echoRow(renderReport(result));
+
+      expect(cellsOf(echo).map((cell) => cell.trim())).toStrictEqual([
+        "",
+        '"main"',
+        '"perf/faster-decode"',
+        "vs main",
+      ]);
+    });
+
+    it("lines its columns up with the header", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "a-much-longer-metric/time": signedRankMetric({ verdict: "improved", delta: -6 }),
+        },
+      });
+
+      const report = renderReport(result);
+
+      expect(separatorOffsets(echoRow(report))).toStrictEqual(
+        separatorOffsets(lineStartingWith(report, "metric")),
+      );
     });
   });
 
@@ -1390,13 +1468,16 @@ describe("renderReport", () => {
       expect(stylesAt(lineContaining(report, "slower/time"), "±2.5%")).toContain("2");
     });
 
-    it("dims the repeated labels and provenance in the geomean row", () => {
-      const report = renderReport(colorfulResult());
-      const geomean = lineContaining(report, "geomean");
+    it("dims the echo row closing the table", () => {
+      expect(echoRow(renderReport(colorfulResult()))).toMatch(DIMMED_LINE);
+    });
 
-      expect.soft(stylesAt(geomean, "main")).toContain("2");
-      expect.soft(stylesAt(geomean, "perf/faster-decode")).toContain("2");
-      expect(stylesAt(geomean, "3 stable")).toContain("2");
+    it("keeps the echoed columns aligned with the header once the styles are stripped", () => {
+      const bare = stripAnsi(renderReport(colorfulResult()));
+
+      expect(separatorOffsets(echoRow(bare))).toStrictEqual(
+        separatorOffsets(lineStartingWith(bare, "metric")),
+      );
     });
   });
 
@@ -1428,15 +1509,16 @@ describe("renderReport", () => {
       expect.soft(lines[4]).toContain("metric2/time");
       expect.soft(lines[5]).toMatch(/^─+┼/);
       expect.soft(lines[6]).toContain("geomean");
-      expect.soft(lines[7]).toBe("");
-      expect.soft(lines[8]).toContain("✓ 1 improved");
-      expect.soft(lines[9]).toBe("");
-      expect.soft(lines[10]).toBe("highlights");
-      expect.soft(lines[11]).toContain("metric1/time");
-      expect.soft(lines[12]).toBe("");
-      expect.soft(lines[13]).toContain("legend:");
-      expect.soft(lines[14]).toContain("Wilcoxon signed-rank");
-      expect(lines).toHaveLength(15);
+      expect.soft(lines[7]).toContain('"faster"');
+      expect.soft(lines[8]).toBe("");
+      expect.soft(lines[9]).toContain("✓ 1 improved");
+      expect.soft(lines[10]).toBe("");
+      expect.soft(lines[11]).toBe("highlights");
+      expect.soft(lines[12]).toContain("metric1/time");
+      expect.soft(lines[13]).toBe("");
+      expect.soft(lines[14]).toContain("legend:");
+      expect.soft(lines[15]).toContain("Wilcoxon signed-rank");
+      expect(lines).toHaveLength(16);
     });
   });
 
@@ -1532,15 +1614,27 @@ describe("renderReport", () => {
       ]);
     });
 
-    it("carries one geomean figure per candidate column and repeats the baseline label", () => {
+    it("carries one geomean figure per candidate column, each with its own count", () => {
       const row = lineStartingWith(renderReport(multiCandidateResult()), "geomean");
 
       expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
-        "geomean (gating metrics)",
-        "main",
-        "-10.0%  1 stable metric",
-        "+4.0%  1 stable metric",
-        "0.0%  1 stable metric",
+        "geomean",
+        "",
+        "-10.0% · 1 stable metric",
+        "+4.0% · 1 stable metric",
+        "0.0% · 1 stable metric",
+      ]);
+    });
+
+    it("echoes one header label per column below the geomean row", () => {
+      const echo = echoRow(renderReport(multiCandidateResult()));
+
+      expect(cellsOf(echo).map((cell) => cell.trim())).toStrictEqual([
+        "",
+        '"main"',
+        '"candidate-a"',
+        '"candidate-b"',
+        '"candidate-c"',
       ]);
     });
 
@@ -1688,12 +1782,15 @@ describe("renderReport", () => {
         expect(stylesAt(row, "+0.3%")).toContain("2");
       });
 
-      it("dims the baseline label and provenance in N-way geomean cells", () => {
+      it("dims the provenance in N-way geomean cells", () => {
         const report = renderReport(multiCandidateResult());
         const geomean = lineContaining(report, "geomean");
 
-        expect.soft(stylesAt(geomean, "main")).toContain("2");
         expect(stylesAt(geomean, "1 stable metric")).toContain("2");
+      });
+
+      it("dims the echo row closing an N-way table", () => {
+        expect(echoRow(renderReport(multiCandidateResult()))).toMatch(DIMMED_LINE);
       });
     });
   });

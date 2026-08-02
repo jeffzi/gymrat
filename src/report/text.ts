@@ -16,6 +16,7 @@ import {
   formatVariantName,
   formatVerdictDelta,
   GEOMEAN_LABEL,
+  geomeanLabel,
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
@@ -23,6 +24,9 @@ import {
   legendGlosses,
   type MetricCellParts,
   methodFooterLines,
+  NO_GEOMEAN_CELL,
+  NO_GEOMEAN_FIGURE,
+  NO_STABLE_METRICS,
   PLUS_MINUS,
   QUIET_VERDICTS,
   selectHighlights,
@@ -222,39 +226,77 @@ function joinVerdictCell(parts: VerdictParts, widths: VerdictWidths): string {
     .trimEnd();
 }
 
-/** The geomean's verdict cell, and the aggregate inside it that the row exists for. */
+/** The geomean's aggregate and the fields a cell holding it is styled by. */
 interface GeomeanCell {
+  /** The aggregate itself, or the dash standing in for one. */
   readonly figure: string;
+  /** How many metrics stand behind the figure, where the cell rather than the label carries it. */
   readonly provenance: string;
+  /** Whether anything survived to aggregate. */
+  readonly aggregated: boolean;
+  /** The finished cell of a candidate column in the multi-candidate table. */
   readonly text: string;
 }
 
 /**
- * The geomean's verdict cell: the aggregate, then how many metrics stand behind
- * it.
+ * The geomean of one candidate column: the aggregate, then how many metrics
+ * stand behind it.
  *
- * With nothing left to aggregate the cell says so rather than printing the 0.0%
- * an empty geomean computes to, which would read as "no change measured".
+ * Every candidate aggregates its own metrics, so a table holding several has a
+ * count per column and carries each beside its own figure. The single-candidate
+ * table has one count for the whole row and names it in the label instead,
+ * which is what leaves its cell holding the figure alone.
  */
 function formatGeomeanCell(geomean: GeomeanResult): GeomeanCell {
   const parts = geomeanParts(geomean);
   if (parts === null) {
     return {
-      figure: "—",
-      provenance: "no stable gating metrics",
-      text: "—  no stable gating metrics",
+      figure: NO_GEOMEAN_FIGURE,
+      provenance: NO_STABLE_METRICS,
+      aggregated: false,
+      text: NO_GEOMEAN_CELL,
     };
   }
   return {
     figure: parts.delta,
     provenance: parts.provenance,
-    text: `${parts.delta}  ${parts.provenance}`,
+    aggregated: true,
+    text: `${parts.delta} · ${parts.provenance}`,
+  };
+}
+
+/**
+ * The blank the geomean leaves where a metric row carries its glyph.
+ *
+ * The row reports an aggregate, not a verdict, so it has no glyph to show;
+ * holding the slot open is what seats its figure under the deltas above.
+ */
+const GEOMEAN_GLYPH_SLOT = " ";
+
+/**
+ * The geomean as the single-candidate table's verdict cell: the aggregate
+ * alone, in the delta field of the column it closes.
+ *
+ * Reading down the delta column and landing on the run's one aggregate is the
+ * comparison the row is there to make, so the figure sits where the deltas sit
+ * rather than at the head of the cell.
+ */
+function geomeanVerdictParts(geomean: GeomeanCell): VerdictParts {
+  return {
+    glyph: geomean.aggregated ? GEOMEAN_GLYPH_SLOT : geomean.figure,
+    delta: geomean.aggregated ? geomean.figure : "",
+    word: geomean.aggregated ? "" : geomean.provenance,
+    band: "",
+    pairs: "",
   };
 }
 
 /**
  * Style a geomean cell's aggregate bold and its provenance dim — the styling
  * both the single- and multi-candidate tables apply to their geomean row.
+ *
+ * A cell whose count rides in the row's label shows no provenance, and styling
+ * text a cell does not hold changes nothing.
  */
 function styleGeomeanCell(cell: string, geomean: GeomeanCell): string {
   const styled = styleWithin(cell, geomean.figure, ["bold"]);
@@ -279,10 +321,10 @@ function styleGlyphAndDelta(
 }
 
 /** Width the metric-name column needs: the widest metric name or the geomean row's label. */
-function computeMetricColumnWidth(metricNameLengths: readonly number[]): number {
+function computeMetricColumnWidth(metricNameLengths: readonly number[], label: string): number {
   return computeColumnWidth(
     "metric".length,
-    [...metricNameLengths, GEOMEAN_LABEL.length],
+    [...metricNameLengths, label.length],
     METRIC_COLUMN_MIN,
   );
 }
@@ -331,13 +373,19 @@ function formatMetricRow(row: MetricRow, widths: Widths): string {
 }
 
 /**
- * The metric table: header, rule, one row per metric, rule, geomean.
+ * The metric table: header, rule, one row per metric, rule, geomean, echo.
  *
  * Widths come from the widest cell rather than a fixed size, so a long metric
  * name or label widens the table instead of being cut. The geomean's own verdict
  * cell is left out of that measurement: it ends its line and is never padded, so
- * letting its provenance text size the column would stretch the rule under every
- * metric row for nothing.
+ * letting a long cell size the column would stretch the rule under every metric
+ * row for nothing.
+ *
+ * The echo closing the table repeats the header cell for cell — same quoting,
+ * same emphasis, same widths — because a table long enough to scroll leaves the
+ * reader at the bottom with columns they can no longer name. It is dimmed whole
+ * so it reads as the frame closing rather than as one more row of data, and its
+ * name cell stays blank: `metric` heads that column, it does not label the echo.
  */
 function renderTable(
   result: ComparisonResult,
@@ -385,8 +433,12 @@ function renderTable(
     band: row.parts === undefined ? "" : bandField(row.parts.band, verdictFields.band),
   }));
 
+  const label = geomeanLabel(candidate.geomean.n);
   const widths: Widths = [
-    computeMetricColumnWidth(rows.map((row) => row.cells[0].length)),
+    computeMetricColumnWidth(
+      rows.map((row) => row.cells[0].length),
+      label,
+    ),
     computeColumnWidth(
       headers[1].length,
       rows.map((row) => row.cells[1].length),
@@ -406,21 +458,26 @@ function renderTable(
 
   const rule = formatTableRule(widths);
   const geomeanCell = formatGeomeanCell(candidate.geomean);
-  const geomean: Row = [GEOMEAN_LABEL, baseline, candidate.label, geomeanCell.text];
+  const geomean: Row = [
+    label,
+    "",
+    "",
+    joinVerdictCell(geomeanVerdictParts(geomeanCell), verdictFields),
+  ];
+  const styleVariantCells: CellStyler = (cell, index) =>
+    index === 1 || index === 2 ? styleWithin(cell, headers[index], VARIANT_NAME_STYLE) : cell;
 
   return [
-    formatRow(headers, widths, (cell, index) =>
-      index === 1 || index === 2 ? styleWithin(cell, headers[index], VARIANT_NAME_STYLE) : cell,
-    ),
+    formatRow(headers, widths, styleVariantCells),
     rule,
     ...rows.map((row) => formatMetricRow(row, widths)),
     rule,
-    formatRow(geomean, widths, (cell, index) => {
-      if (index === 1) return styleWithin(cell, baseline, ["dim"]);
-      if (index === 2) return styleWithin(cell, candidate.label, ["dim"]);
-      if (index === VERDICT_COLUMN) return styleGeomeanCell(cell, geomeanCell);
-      return cell;
-    }),
+    formatRow(geomean, widths, (cell, index) =>
+      index === VERDICT_COLUMN ? styleGeomeanCell(cell, geomeanCell) : cell,
+    ),
+    formatLabel(formatRow(["", headers[1], headers[2], headers[3]], widths, styleVariantCells), [
+      "dim",
+    ]),
   ];
 }
 
@@ -555,11 +612,14 @@ function joinCandidateCell(
  * baseline.
  *
  * Every width is measured on plain text and taken from the widest cell the
- * column holds. The geomean's provenance text counts towards that width in every
- * candidate column but the last, which is the one place it can overflow harmlessly:
- * it ends the line there, exactly as it does in the single-candidate table, and
- * letting a long exclusion list size the column instead would stretch the rule
- * under every metric row for one cell's sake.
+ * column holds. The geomean cell counts towards that width in every candidate
+ * column but the last, which is the one place it can overflow harmlessly: it
+ * ends the line there, exactly as it does in the single-candidate table, and
+ * letting the count behind a figure size the column instead would stretch the
+ * rule under every metric row for one cell's sake.
+ *
+ * The table closes on the same dimmed echo of its header as the single-candidate
+ * one — see {@link renderTable}.
  */
 function renderComparisonTable(result: ComparisonResult): string[] {
   const baseline = result.baselineLabel;
@@ -577,7 +637,10 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   for (const row of rows) row.baselineCell = joinValueCell(row.baseline, baselineFields);
 
   const baselineHeader = variantName(baseline);
-  const metricWidth = computeMetricColumnWidth(rows.map((row) => row.name.length));
+  const metricWidth = computeMetricColumnWidth(
+    rows.map((row) => row.name.length),
+    GEOMEAN_LABEL,
+  );
   const baselineWidth = computeColumnWidth(
     baselineHeader.length,
     rows.map((row) => row.baselineCell.length),
@@ -630,32 +693,29 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   });
 
   const rule = formatTableRule(widths);
+  const headers = columns.map((column) => column.header);
+  const styleVariantCells: CellStyler = (cell, columnIndex) => {
+    if (columnIndex === 0) return cell;
+    if (columnIndex === 1) return styleWithin(cell, baselineHeader, VARIANT_NAME_STYLE);
+    const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
+    return column === undefined ? cell : styleWithin(cell, column.header, VARIANT_NAME_STYLE);
+  };
 
   return [
-    line(
-      "metric",
-      baselineHeader,
-      columns.map((column) => column.header),
-      (cell, columnIndex) => {
-        if (columnIndex === 0) return cell;
-        if (columnIndex === 1) return styleWithin(cell, baselineHeader, VARIANT_NAME_STYLE);
-        const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
-        return column === undefined ? cell : styleWithin(cell, column.header, VARIANT_NAME_STYLE);
-      },
-    ),
+    line("metric", baselineHeader, headers, styleVariantCells),
     rule,
     ...metricRows,
     rule,
     line(
       GEOMEAN_LABEL,
-      baseline,
+      "",
       columns.map((column) => column.geomean.text),
       (cell, columnIndex) => {
-        if (columnIndex === 1) return styleWithin(cell, baseline, ["dim"]);
         const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
         return column === undefined ? cell : styleGeomeanCell(cell, column.geomean);
       },
     ),
+    formatLabel(line("", baselineHeader, headers, styleVariantCells), ["dim"]),
   ];
 }
 

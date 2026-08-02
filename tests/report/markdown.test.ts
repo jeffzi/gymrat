@@ -606,7 +606,7 @@ describe("renderMarkdown", () => {
   });
 
   describe("when the geomean has exclusions", () => {
-    it("includes the exclusion count and reasons in the geomean row", () => {
+    it("leaves the excluded metrics out of the geomean row", () => {
       const result = createComparisonResult({
         metrics: {
           "a/time": signedRankMetric({ verdict: "improved", delta: -6 }),
@@ -628,12 +628,12 @@ describe("renderMarkdown", () => {
       const output = renderMarkdown(result);
       const geomeanRow = tableRows(output).find((r) => r.includes("geomean"));
 
-      expect(geomeanRow).toContain("2 excluded");
+      expect(geomeanRow).not.toContain("excluded");
     });
   });
 
   describe("when rendering the geomean row", () => {
-    it("renders geomean at the bottom of the table with the delta", () => {
+    it("closes the table with the counted label and the delta alone", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
         candidates: [createCandidate({ geomean: { value: -5.8, n: 4, excluded: [] } })],
@@ -643,11 +643,44 @@ describe("renderMarkdown", () => {
       const rows = tableRows(output);
       const lastDataRow = rows[rows.length - 1]!;
 
-      expect(lastDataRow).toContain("geomean");
-      expect(lastDataRow).toContain("-5.8%");
+      expect(lastDataRow.split("|").map((cell) => cell.trim())).toStrictEqual([
+        "",
+        "geomean (4 stable metrics)",
+        "",
+        "",
+        "-5.8%",
+        "",
+      ]);
     });
 
-    it("shows a dash when no stable gating metrics exist", () => {
+    it("pairs each candidate's figure with its own count when several were compared", () => {
+      const result = createComparisonResult({
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 3, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": nWayMetric([
+            { verdict: "improved", delta: -10, median: 90 },
+            { verdict: "regressed", delta: 4, median: 104 },
+          ]),
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const geomeanRow = tableRows(output).find((r) => r.includes("geomean"));
+
+      expect(geomeanRow?.split("|").map((cell) => cell.trim())).toStrictEqual([
+        "",
+        "geomean",
+        "",
+        "-10.0% · 3 stable metrics",
+        "+4.0% · 1 stable metric",
+        "",
+      ]);
+    });
+
+    it("shows a dash when no stable metrics exist", () => {
       const result = createComparisonResult({
         metrics: { "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50 }) },
         candidates: [
@@ -664,7 +697,7 @@ describe("renderMarkdown", () => {
       const output = renderMarkdown(result);
       const geomeanRow = tableRows(output).find((r) => r.includes("geomean"));
 
-      expect(geomeanRow).toContain("—");
+      expect(geomeanRow).toContain("—  no stable metrics");
     });
   });
 

@@ -6,12 +6,14 @@ import {
   formatMetricCell,
   formatVerdictDelta,
   GEOMEAN_LABEL,
+  geomeanLabel,
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
   isQuietRow,
   legendGlosses,
   methodFooterLines,
+  NO_GEOMEAN_CELL,
   selectHighlights,
   UNSTABLE_FUTILITY_NOTE,
   verdictSummaryParts,
@@ -89,13 +91,22 @@ function formatVerdictPart(verdict: MetricVerdict | undefined): string {
 }
 
 /**
- * The geomean cell: delta plus provenance (how many metrics stand behind it
- * and how many were excluded), or a dash when nothing survived.
+ * The geomean cell of one candidate column: the delta, then how many metrics
+ * stand behind it.
+ *
+ * Every candidate aggregates its own metrics, so a table holding several
+ * carries each count beside its own figure; a table with one names that count
+ * in the row's label and prints {@link formatSoleGeomeanCell} instead.
  */
 function formatGeomeanCell(geomean: GeomeanResult): string {
   const parts = geomeanParts(geomean);
-  if (parts === null) return "—";
-  return `${parts.delta}  ${parts.provenance}`;
+  if (parts === null) return NO_GEOMEAN_CELL;
+  return `${parts.delta} · ${parts.provenance}`;
+}
+
+/** The geomean cell of the only candidate: the delta its label already counts. */
+function formatSoleGeomeanCell(geomean: GeomeanResult): string {
+  return geomeanParts(geomean)?.delta ?? NO_GEOMEAN_CELL;
 }
 
 /** How many of the collapsed rows each quiet class beyond within-noise accounts for. */
@@ -195,12 +206,11 @@ function renderSingleCandidateTable(
     }
   }
 
-  const geomeanDelta = formatGeomeanCell(candidate.geomean);
   const geomeanRow = gfmRow([
-    GEOMEAN_LABEL,
-    variantName(baseline),
-    variantName(candidate.label),
-    geomeanDelta,
+    geomeanLabel(candidate.geomean.n),
+    "",
+    "",
+    formatSoleGeomeanCell(candidate.geomean),
   ]);
 
   return [
@@ -266,7 +276,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
   }
 
   const geomeanCells = result.candidates.map((c) => formatGeomeanCell(c.geomean));
-  const geomeanRow = gfmRow([GEOMEAN_LABEL, variantName(baseline), ...geomeanCells]);
+  const geomeanRow = gfmRow([GEOMEAN_LABEL, "", ...geomeanCells]);
 
   return [
     header,

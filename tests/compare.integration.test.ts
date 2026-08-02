@@ -770,7 +770,7 @@ describe("compare – integration", () => {
       {
         unstableNoisePct: 20,
         expectedVerdict: "≈  unstable",
-        expectedGeomean: "no stable gating metrics",
+        expectedGeomean: "no stable metrics",
       },
       { unstableNoisePct: 40, expectedVerdict: "✓  -50.0%", expectedGeomean: "-50.0%" },
     ])(

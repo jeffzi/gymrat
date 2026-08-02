@@ -1,9 +1,10 @@
 [1mgymrat compare[22m [2m·[22m baseline [1m[4mmain[24m[22m ↔ [1m[4mcandidate-a[24m[22m, [1m[4mcandidate-b[24m[22m, [1m[4mcandidate-c[24m[22m [2m·[22m 10 paired samples [2m·[22m adapter: mitata
-metric                    │       [1m[4mmain[24m[22m │ [1m[4mcandidate-a[24m[22m             │ [1m[4mcandidate-b[24m[22m            │ [1m[4mcandidate-c[24m[22m
-──────────────────────────┼────────────┼─────────────────────────┼────────────────────────┼─────────────────────────
-decode/time               │ 100ns ± 1% │ 90ns ± 1%  [32m✓[39m  [32m-10.0%[39m    │ 104ns ± 1%  [31m✗[39m  [31m+4.0%[39m   │ 150ns ± 3%  [2m≈[22m  [2munstable[22m
-──────────────────────────┼────────────┼─────────────────────────┼────────────────────────┼─────────────────────────
-geomean (gating metrics)  │       [2mmain[22m │ [1m-10.0%[22m  [2m1 stable metric[22m │ [1m+4.0%[22m  [2m1 stable metric[22m │ [1m0.0%[22m  [2m1 stable metric[22m
+metric          │       [1m[4mmain[24m[22m │ [1m[4mcandidate-a[24m[22m              │ [1m[4mcandidate-b[24m[22m             │ [1m[4mcandidate-c[24m[22m
+────────────────┼────────────┼──────────────────────────┼─────────────────────────┼─────────────────────────
+decode/time     │ 100ns ± 1% │ 90ns ± 1%  [32m✓[39m  [32m-10.0%[39m     │ 104ns ± 1%  [31m✗[39m  [31m+4.0%[39m    │ 150ns ± 3%  [2m≈[22m  [2munstable[22m
+────────────────┼────────────┼──────────────────────────┼─────────────────────────┼─────────────────────────
+geomean         │            │ [1m-10.0%[22m · [2m1 stable metric[22m │ [1m+4.0%[22m · [2m1 stable metric[22m │ [1m0.0%[22m · [2m1 stable metric[22m
+[2m                │       [1m[4mmain[24m[22m[2m │ [1m[4mcandidate-a[24m[22m[2m              │ [1m[4mcandidate-b[24m[22m[2m             │ [1m[4mcandidate-c[24m[22m[22m
 
 [1mcandidate-a[22m  [32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m
 [1mcandidate-b[22m  [2m✓ 0 improved[22m   [31m✗ 1 regressed[39m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m

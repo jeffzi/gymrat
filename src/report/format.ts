@@ -3,7 +3,6 @@ import { styleText } from "node:util";
 import { assertNever } from "../errors.js";
 import {
   MIN_WILCOXON_N,
-  type GeomeanExclusion,
   type GeomeanResult,
   type Method,
   type MetricVerdict,
@@ -227,8 +226,40 @@ export const QUIET_VERDICTS: ReadonlySet<DisplayClass> = new Set([
   "unstable",
 ]);
 
-/** The label the geomean row is reported under, in every renderer. */
-export const GEOMEAN_LABEL = "geomean (gating metrics)";
+/** The name the geomean row is reported under, in every renderer. */
+export const GEOMEAN_LABEL = "geomean";
+
+/** How many gating metrics an aggregate rests on, as the reader is told. */
+function stableMetrics(n: number): string {
+  return `${n} stable metric${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The geomean row's label, carrying the count of metrics behind the figure.
+ *
+ * A table with one candidate has a single count to name and names it here,
+ * which is what frees its cells of everything but the aggregate itself. A table
+ * with several has a count per candidate, no one of which describes the row, so
+ * it takes {@link GEOMEAN_LABEL} and carries each count in its own cell — the
+ * same form an empty geomean takes, having no count to name.
+ */
+export function geomeanLabel(n: number): string {
+  return n === 0 ? GEOMEAN_LABEL : `${GEOMEAN_LABEL} (${stableMetrics(n)})`;
+}
+
+/** The figure standing in for a geomean with nothing to aggregate. */
+export const NO_GEOMEAN_FIGURE = "—";
+
+/** What an empty geomean says in place of the count behind a figure. */
+export const NO_STABLE_METRICS = "no stable metrics";
+
+/**
+ * The whole cell a geomean with nothing left to aggregate prints.
+ *
+ * It says so rather than printing the 0.0% an empty geomean computes to, which
+ * would read as "no change measured".
+ */
+export const NO_GEOMEAN_CELL = `${NO_GEOMEAN_FIGURE}  ${NO_STABLE_METRICS}`;
 
 /**
  * The evidence suffix for a highlighted metric.
@@ -441,7 +472,9 @@ export function formatTableLine(
   styleCell?: CellStyler,
 ): string {
   const padded = widths.map((width, i) => (cells[i] ?? "").padEnd(width));
-  const line = padded.join("│").trim();
+  // Only the trailing run is cut: leading padding is the first column's width,
+  // which a row opening on an empty cell needs to stay under the header.
+  const line = padded.join("│").trimEnd();
   if (styleCell === undefined) return line;
   return line.split("│").map(styleCell).join("│");
 }
@@ -612,13 +645,6 @@ export function styleWithin(cell: string, marker: string, style: Style): string 
   return cell.replace(marker, formatLabel(marker, style));
 }
 
-/** How many gating metrics the geomean left out, and on what grounds. */
-export function formatExclusions(excluded: readonly GeomeanExclusion[]): string {
-  if (excluded.length === 0) return "";
-  const reasons = [...new Set(excluded.map((exclusion) => exclusion.reason))];
-  return `${excluded.length} excluded: ${reasons.join(", ")}`;
-}
-
 /** The geomean's delta and the provenance describing what stands behind it. */
 export interface GeomeanParts {
   readonly delta: string;
@@ -626,18 +652,19 @@ export interface GeomeanParts {
 }
 
 /**
- * The geomean's delta plus provenance (how many metrics stand behind it and
- * how many were excluded), or `null` when nothing survived to aggregate.
+ * The geomean's delta and how many metrics stand behind it, or `null` when
+ * nothing survived to aggregate.
  *
- * Shared by every renderer: each wraps the parts into its own cell shape
- * (text splits `figure`/`text`, markdown joins them into one string).
+ * The metrics left out are named nowhere near the figure: an unstable metric is
+ * already tallied in the verdict summary and flagged in the highlights, so
+ * restating the exclusions here spent the row's width on news the reader has.
+ *
+ * Shared by every renderer: each wraps the parts into its own cell shape, and
+ * an empty geomean into {@link NO_GEOMEAN_CELL}.
  */
 export function geomeanParts(geomean: GeomeanResult): GeomeanParts | null {
   if (geomean.n === 0) return null;
-  const stable = `${geomean.n} stable metric${geomean.n === 1 ? "" : "s"}`;
-  const exclusions = formatExclusions(geomean.excluded);
-  const provenance = exclusions === "" ? stable : `${stable} · ${exclusions}`;
-  return { delta: formatDelta(geomean.value), provenance };
+  return { delta: formatDelta(geomean.value), provenance: stableMetrics(geomean.n) };
 }
 
 /**
