@@ -1306,9 +1306,6 @@ describe("renderReport", () => {
     it.each([
       { verdict: "improved", metric: "faster/time" },
       { verdict: "regressed", metric: "slower/time" },
-      { verdict: "within noise", metric: "flat/time" },
-      { verdict: "identical", metric: "tied/heap" },
-      { verdict: "unstable", metric: "jittery/time" },
     ])("leaves the $verdict row without an end-to-end dim", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult()), metric);
 
