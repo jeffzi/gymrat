@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
 import { AdapterError } from "../src/adapters/index.js";
 import { createProgram, formatCliError } from "../src/cli.js";
@@ -72,7 +72,7 @@ const { mockSpinnerInstance, mockYoctoSpinner, mockEtaRecord, mockFormatEta } = 
     mockSpinnerInstance: instance,
     mockYoctoSpinner: vi.fn().mockReturnValue(instance),
     mockEtaRecord: vi.fn(),
-    mockFormatEta: vi.fn(),
+    mockFormatEta: vi.fn<(ms: number) => string>(),
   };
 });
 
@@ -259,7 +259,7 @@ function stderrWrites(stderrSpy: ReturnType<typeof vi.spyOn>): unknown[] {
 async function runCompareCapturingStdout(
   result: ComparisonResult,
   ...extraArgs: string[]
-): Promise<ReturnType<typeof vi.spyOn>> {
+): Promise<MockInstance<typeof process.stdout.write>> {
   const program = createRunnableProgram();
   await setupMocks(result);
   const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -505,7 +505,7 @@ describe("createProgram", () => {
         const writeSpy = await runCompareCapturingStdout(createColorSensitiveResult());
 
         // Assert
-        const output = writeSpy.mock.calls[0]![0] as string;
+        const output = writeSpy.mock.calls[0]![0];
         expect(output).toMatch(ANSI_RE);
       });
 
@@ -518,7 +518,7 @@ describe("createProgram", () => {
         const writeSpy = await runCompareCapturingStdout(createColorSensitiveResult());
 
         // Assert
-        const output = writeSpy.mock.calls[0]![0] as string;
+        const output = writeSpy.mock.calls[0]![0];
         expect(output).not.toMatch(ANSI_RE);
       });
 
@@ -532,6 +532,30 @@ describe("createProgram", () => {
         // Assert
         expect(process.env.NO_COLOR).toBe("1");
       });
+
+      it.each([
+        { flags: ["--no-color"], when: "--no-color is passed", expected: false },
+        { flags: [], when: "no color flag is passed", expected: undefined },
+      ])(
+        "hands the renderer color $expected in its report options when $when",
+        async ({ flags, expected }) => {
+          // Arrange
+          vi.stubEnv("NO_COLOR", undefined);
+          process.stdout.isTTY = true;
+
+          // Act
+          await runCompareCapturingStdout(
+            createComparisonResult(),
+            "--format",
+            "markdown",
+            ...flags,
+          );
+
+          // Assert
+          const renderOptions = vi.mocked(renderMarkdown).mock.calls[0]?.[1];
+          expect(renderOptions?.color).toBe(expected);
+        },
+      );
     });
 
     describe("when --format flag provided", () => {
@@ -583,49 +607,6 @@ describe("createProgram", () => {
         // Assert
         await expect(parsing).rejects.toThrow(
           /option '--format <value>' argument 'csv' is invalid\. Allowed choices are text, markdown, json\./,
-        );
-      });
-
-      describe("when checking ANSI color in non-text formats", () => {
-        const originalIsTTY = process.stdout.isTTY;
-
-        afterEach(() => {
-          process.stdout.isTTY = originalIsTTY;
-        });
-
-        it.each(["markdown", "json"])(
-          "does not apply ANSI color when --format %s is used",
-          async (format) => {
-            // Arrange
-            process.stdout.isTTY = true;
-
-            // Act
-            const writeSpy = await runCompareCapturingStdout(
-              createColorSensitiveResult(),
-              "--format",
-              format,
-            );
-
-            // Assert - non-text formats must not contain ANSI escape sequences
-            const output = writeSpy.mock.calls[0]?.[0];
-            expect(typeof output).toBe("string");
-            expect(output).not.toContain("\x1b[");
-          },
-        );
-
-        it.each(["markdown", "json"])(
-          "sets NO_COLOR before rendering %s output",
-          async (format) => {
-            // Arrange
-            vi.stubEnv("NO_COLOR", undefined);
-            process.stdout.isTTY = true;
-
-            // Act
-            await runCompareCapturingStdout(createComparisonResult(), "--format", format);
-
-            // Assert — CLI should set NO_COLOR so renderers auto-detect plain
-            expect(process.env.NO_COLOR).toBe("1");
-          },
         );
       });
     });
@@ -1298,7 +1279,7 @@ describe("createProgram", () => {
 
           // Assert — the countdown is from the new ETA (60_000 - 1000 = 59_000),
           // not the old depleted one (10_000 - 6000 = clamped to 0)
-          expect(mockFormatEta).toHaveBeenCalledWith(59_000);
+          expect(mockSpinnerInstance.text).toContain("~59s left");
 
           // Cleanup
           await settleCompare(resolveCompare, parsePromise);
@@ -1319,15 +1300,15 @@ describe("createProgram", () => {
           // Act — start, advance to prove countdown is active, then stop
           const parsePromise = program.parseAsync(compareArgv("main", "branch"));
           await vi.advanceTimersByTimeAsync(1000);
-          expect(mockFormatEta).toHaveBeenCalledWith(129_000);
+          expect(mockSpinnerInstance.text).toContain("~129s left");
 
           // Resolve compare → stop() is called
           await settleCompare(resolveCompare, parsePromise);
 
-          // Assert — after stop, no more formatEta calls from countdown
-          mockFormatEta.mockClear();
+          // Assert — after stop, further ticks no longer update the spinner text
+          const textAfterStop = mockSpinnerInstance.text;
           await vi.advanceTimersByTimeAsync(5000);
-          expect(mockFormatEta).not.toHaveBeenCalled();
+          expect(mockSpinnerInstance.text).toBe(textAfterStop);
         });
 
         it("clears a running countdown when a subsequent emit yields no ETA", async () => {
@@ -1347,17 +1328,17 @@ describe("createProgram", () => {
           const parsePromise = program.parseAsync(compareArgv("main", "branch"));
           // Advance 1s — countdown fires, proving interval is active
           await vi.advanceTimersByTimeAsync(1000);
-          expect(mockFormatEta).toHaveBeenCalledWith(129_000);
+          expect(mockSpinnerInstance.text).toContain("~129s left");
 
           // Advance 1s more — second emit fires with undefined ETA
           await vi.advanceTimersByTimeAsync(1000);
-          mockFormatEta.mockClear();
+          const textAfterUndefinedEta = mockSpinnerInstance.text;
 
-          // Advance 2s more — if interval were still active, formatEta would be called
+          // Advance 2s more — if interval were still active, spinner text would keep changing
           await vi.advanceTimersByTimeAsync(2000);
 
-          // Assert — no more formatEta calls after interval was cleared
-          expect(mockFormatEta).not.toHaveBeenCalled();
+          // Assert — no further updates after the interval was cleared
+          expect(mockSpinnerInstance.text).toBe(textAfterUndefinedEta);
 
           // Cleanup
           await settleCompare(resolveCompare, parsePromise);
@@ -1380,11 +1361,11 @@ describe("createProgram", () => {
           await vi.advanceTimersByTimeAsync(5000);
 
           // Assert — every formatEta call used a non-negative value
-          for (const [ms] of mockFormatEta.mock.calls as [number][]) {
+          for (const [ms] of mockFormatEta.mock.calls) {
             expect(ms).toBeGreaterThanOrEqual(0);
           }
           // The clamped value (0) was reached
-          expect(mockFormatEta).toHaveBeenCalledWith(0);
+          expect(mockSpinnerInstance.text).toContain("~0s left");
 
           // Cleanup
           await settleCompare(resolveCompare, parsePromise);
