@@ -139,7 +139,6 @@ describe("formatEta", () => {
     it.each([
       { ms: 1000, expected: "~1s left" },
       { ms: 48200, expected: "~48s left" },
-      { ms: 59999, expected: "~1m left" },
     ])("formats $ms ms as '$expected'", ({ ms, expected }) => {
       expect(formatEta(ms)).toBe(expected);
     });
@@ -147,6 +146,7 @@ describe("formatEta", () => {
 
   describe("when minutes and seconds (60000ms to 3599999ms)", () => {
     it.each([
+      { ms: 59999, expected: "~1m left" },
       { ms: 60000, expected: "~1m left" },
       { ms: 130000, expected: "~2m 10s left" },
       { ms: 120000, expected: "~2m left" },

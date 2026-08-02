@@ -20,17 +20,14 @@ import {
   verdictSummaryParts,
   withColor,
 } from "../../src/report/format.js";
-import type { ComparisonResult, ReportOptions } from "../../src/report/types.js";
+import type { ReportOptions } from "../../src/report/types.js";
 import type {
   ApproximateVerdictValue,
   BandVerdict,
   ExactVerdict,
   SignedRankVerdict,
 } from "../../src/verdict/verdict.js";
-import { bandMetric } from "../fixtures/comparison-result.js";
-
-type Metrics = ComparisonResult["metrics"];
-type MetricEntry = Metrics[string];
+import { bandMetric, type Metrics, type MetricEntry } from "../fixtures/comparison-result.js";
 
 /** One candidate's signed-rank outcome against the shared baseline. */
 interface CandidateSpec {

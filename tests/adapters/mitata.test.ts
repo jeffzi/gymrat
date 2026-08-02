@@ -506,7 +506,6 @@ describe("mitata adapter", () => {
       (metricName) => {
         const result = mitataAdapter.defaults(metricName);
         expect(result).toStrictEqual({ direction: "lower" });
-        expect(result).not.toHaveProperty("unit");
       },
     );
   });

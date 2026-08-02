@@ -1,3 +1,5 @@
+import { stripVTControlCharacters as stripAnsi } from "node:util";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderReport } from "../../src/report/text.js";
@@ -59,11 +61,6 @@ function lineContaining(report: string, needle: string): string {
     throw new Error(`no line containing ${needle} in report:\n${report}`);
   }
   return line;
-}
-
-/** `text` with every ANSI style sequence removed. */
-function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[\d+m/g, "");
 }
 
 /**
@@ -131,6 +128,73 @@ describe("renderReport", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
+
+  /**
+   * One baseline and three candidates whose verdicts on the same metric disagree.
+   *
+   * Every candidate was judged against the same baseline samples, so a renderer
+   * that reused one candidate's verdict for the next would collapse the three
+   * columns, summaries and highlight subsections into one.
+   */
+  function multiCandidateResult(): ComparisonResult {
+    return createComparisonResult({
+      baselineLabel: "main",
+      candidates: [
+        createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
+        createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+        createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
+      ],
+      metrics: {
+        "decode/time": {
+          baselineMedian: 100,
+          baselineSpread: 1,
+          candidates: [
+            {
+              median: 90,
+              spread: 1,
+              verdict: {
+                verdict: "improved",
+                method: "signed-rank",
+                delta: -10,
+                n: 10,
+                p: 0.002,
+                noisePct: 2.5,
+                noiseAbs: 2.5,
+              },
+            },
+            {
+              median: 104,
+              spread: 1,
+              verdict: {
+                verdict: "regressed",
+                method: "signed-rank",
+                delta: 4,
+                n: 10,
+                p: 0.002,
+                noisePct: 2.5,
+                noiseAbs: 2.5,
+              },
+            },
+            {
+              median: 150,
+              spread: 3,
+              verdict: {
+                verdict: "unstable",
+                method: "band",
+                delta: 50,
+                n: 10,
+                usableN: 3,
+                band: 30,
+                noisePct: 30,
+                noiseAbs: 30,
+              },
+            },
+          ],
+          meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+        },
+      },
+    });
+  }
 
   describe("when rendering the run header", () => {
     it("names the baseline's role, both variants, the sample count and the adapter", () => {
@@ -1629,73 +1693,6 @@ describe("renderReport", () => {
   });
 
   describe("when rendering more than one candidate", () => {
-    /**
-     * One baseline and three candidates whose verdicts on the same metric disagree.
-     *
-     * Every candidate was judged against the same baseline samples, so a renderer
-     * that reused one candidate's verdict for the next would collapse the three
-     * columns, summaries and highlight subsections into one.
-     */
-    function multiCandidateResult(): ComparisonResult {
-      return createComparisonResult({
-        baselineLabel: "main",
-        candidates: [
-          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
-          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
-          createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
-        ],
-        metrics: {
-          "decode/time": {
-            baselineMedian: 100,
-            baselineSpread: 1,
-            candidates: [
-              {
-                median: 90,
-                spread: 1,
-                verdict: {
-                  verdict: "improved",
-                  method: "signed-rank",
-                  delta: -10,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
-              },
-              {
-                median: 104,
-                spread: 1,
-                verdict: {
-                  verdict: "regressed",
-                  method: "signed-rank",
-                  delta: 4,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
-              },
-              {
-                median: 150,
-                spread: 3,
-                verdict: {
-                  verdict: "unstable",
-                  method: "band",
-                  delta: 50,
-                  n: 10,
-                  usableN: 3,
-                  band: 30,
-                  noisePct: 30,
-                  noiseAbs: 30,
-                },
-              },
-            ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
-          },
-        },
-      });
-    }
-
     it("heads one column per candidate with that candidate's name alone", () => {
       const headerLine = lineStartingWith(renderReport(multiCandidateResult()), "metric");
 
@@ -2034,8 +2031,8 @@ describe("renderReport", () => {
       );
     });
 
-    it("matches the recorded bytes for degenerate inputs and a dirty cleanup", async () => {
-      const result = createComparisonResult({
+    function degenerateResult(): ComparisonResult {
+      return createComparisonResult({
         samples: 4,
         adapter: "metric-lines",
         metrics: {
@@ -2102,8 +2099,10 @@ describe("renderReport", () => {
         worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc123", error: "contains modified files" }],
         worktreePruneError: "could not lock config file",
       });
+    }
 
-      await expect(renderReport(result)).toMatchFileSnapshot(
+    it("matches the recorded bytes for degenerate inputs and a dirty cleanup", async () => {
+      await expect(renderReport(degenerateResult())).toMatchFileSnapshot(
         "../fixtures/report-degenerate.golden.txt",
       );
     });
@@ -2249,75 +2248,7 @@ describe("renderReport", () => {
     it("matches the recorded bytes for a verbose degenerate colored run", async () => {
       vi.stubEnv("FORCE_COLOR", "1");
 
-      const result = createComparisonResult({
-        samples: 4,
-        adapter: "metric-lines",
-        metrics: {
-          "zero-median/time": {
-            baselineMedian: 0,
-            baselineSpread: 0,
-            candidates: [
-              {
-                median: 0,
-                spread: 0,
-                verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
-              },
-            ],
-            meta: { direction: "lower", gating: true, exact: true, unit: "ns" },
-          },
-          "nan-delta/count": {
-            baselineMedian: 0,
-            candidates: [
-              {
-                median: 120,
-                verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
-              },
-            ],
-            meta: { direction: "lower", gating: true, exact: true },
-          },
-          "old-side-only/time": {
-            baselineMedian: 2048,
-            baselineSpread: 2,
-            candidates: [{}],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
-          },
-          "throughput/ops": {
-            baselineMedian: 1200,
-            baselineSpread: 5,
-            candidates: [
-              {
-                median: 1560,
-                spread: 4,
-                verdict: {
-                  verdict: "improved",
-                  method: "band",
-                  delta: 30,
-                  n: 4,
-                  usableN: 4,
-                  band: 2.5,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
-              },
-            ],
-            meta: { direction: "higher", gating: false, exact: false },
-          },
-        },
-        candidates: [
-          createCandidate({
-            geomean: {
-              value: 0,
-              n: 1,
-              excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
-            },
-          }),
-        ],
-        worktreesRemoved: 1,
-        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc123", error: "contains modified files" }],
-        worktreePruneError: "could not lock config file",
-      });
-
-      await expect(renderReport(result, { verbose: true })).toMatchFileSnapshot(
+      await expect(renderReport(degenerateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-degenerate-color.golden.txt",
       );
     });
@@ -2325,65 +2256,7 @@ describe("renderReport", () => {
     it("matches the recorded bytes for a verbose two-candidate colored run", async () => {
       vi.stubEnv("FORCE_COLOR", "1");
 
-      const result = createComparisonResult({
-        baselineLabel: "main",
-        candidates: [
-          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
-          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
-          createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
-        ],
-        metrics: {
-          "decode/time": {
-            baselineMedian: 100,
-            baselineSpread: 1,
-            candidates: [
-              {
-                median: 90,
-                spread: 1,
-                verdict: {
-                  verdict: "improved",
-                  method: "signed-rank",
-                  delta: -10,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
-              },
-              {
-                median: 104,
-                spread: 1,
-                verdict: {
-                  verdict: "regressed",
-                  method: "signed-rank",
-                  delta: 4,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
-              },
-              {
-                median: 150,
-                spread: 3,
-                verdict: {
-                  verdict: "unstable",
-                  method: "band",
-                  delta: 50,
-                  n: 10,
-                  usableN: 3,
-                  band: 30,
-                  noisePct: 30,
-                  noiseAbs: 30,
-                },
-              },
-            ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
-          },
-        },
-      });
-
-      await expect(renderReport(result, { verbose: true })).toMatchFileSnapshot(
+      await expect(renderReport(multiCandidateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates-color.golden.txt",
       );
     });

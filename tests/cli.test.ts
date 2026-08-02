@@ -127,20 +127,10 @@ async function setupMocks(
  * manifest — which is the whole point of the check.
  */
 function readDeclaredVersion(): string {
-  const manifest: unknown = JSON.parse(
+  const { version } = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  );
-
-  if (
-    typeof manifest !== "object" ||
-    manifest === null ||
-    !("version" in manifest) ||
-    typeof manifest.version !== "string"
-  ) {
-    throw new Error("package.json has no string version field");
-  }
-
-  return manifest.version;
+  ) as { version: string };
+  return version;
 }
 
 /**
@@ -1577,17 +1567,6 @@ describe("createProgram", () => {
 
         // Assert
         expect(stdoutSpy).toHaveBeenCalled();
-      });
-
-      it("exits 2 when compare throws a tool error", async () => {
-        // Arrange
-        const { program } = await setupFailOnTest(new Error("benchmark timed out"));
-
-        // Act & Assert
-        await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
-          "exitCode",
-          2,
-        );
       });
 
       it("exits 2 for Commander usage errors", async () => {

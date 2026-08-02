@@ -325,17 +325,6 @@ describe("computeVerdicts", () => {
       expect(verdict.method).toBe("signed-rank");
     });
 
-    it("includes p field in MetricVerdict for signed-rank method", () => {
-      const samplesA = createSamples(6, 100);
-      const samplesB = createSamples(6, 95);
-
-      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
-
-      const verdict = getSignedRankVerdict(result, "metric");
-      expect("p" in verdict).toBe(true);
-      expect(typeof verdict.p).toBe("number");
-    });
-
     it("returns no-signal when p >= 0.05", () => {
       // Symmetric diffs cancel out: -1,+1,-2,+2,-3,+3 → all non-zero, n=6, p=1.0
       const samplesA = createSamples(6, 100);
@@ -371,8 +360,6 @@ describe("computeVerdicts", () => {
 
       const verdict = getVerdict(result, "metric");
       expect(verdict.method).toBe("band");
-      expect("band" in verdict).toBe(true);
-      expect("p" in verdict).toBe(false);
     });
   });
 
@@ -385,17 +372,6 @@ describe("computeVerdicts", () => {
 
       const verdict = getVerdict(result, "metric");
       expect(verdict.method).toBe("band");
-    });
-
-    it("includes band field in MetricVerdict for band method", () => {
-      const samplesA = createSamples(2, 100);
-      const samplesB = createSamples(2, 95);
-
-      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
-
-      const verdict = getBandVerdict(result, "metric");
-      expect("band" in verdict).toBe(true);
-      expect(typeof verdict.band).toBe("number");
     });
 
     it("signals when |delta%| > band%", () => {

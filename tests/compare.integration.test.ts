@@ -1057,9 +1057,7 @@ describe("compare – integration", () => {
 
         const report = renderReport(await compare(options));
 
-        leftBehindDirs.push(
-          ...report.split("\n").flatMap((line) => /^ {2}left behind: (\S+) /.exec(line)?.[1] ?? []),
-        );
+        leftBehindDirs.push(...parseLeftBehindDirs(report));
         expect(report).toContain("1 worktree removed · 1 left behind");
         expect(leftBehindDirs).toHaveLength(1);
         expect(leftBehindDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual(leftBehindDirs);

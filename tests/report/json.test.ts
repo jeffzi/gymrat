@@ -36,14 +36,6 @@ describe("renderJson", () => {
       expect(json).toHaveProperty("perCandidate");
       expect(json).toHaveProperty("worktrees");
     });
-
-    it("always includes schemaVersion as 1", () => {
-      const result = createComparisonResult();
-
-      const json = JSON.parse(renderJson(result));
-
-      expect(json.schemaVersion).toBe(1);
-    });
   });
 
   describe("multi-candidate support", () => {

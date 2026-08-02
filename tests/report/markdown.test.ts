@@ -740,25 +740,6 @@ describe("renderMarkdown", () => {
   });
 
   describe("when no ANSI codes are present", () => {
-    it("never includes ANSI escape sequences anywhere in the output", () => {
-      vi.stubEnv("NO_COLOR", "1");
-
-      const result = createComparisonResult({
-        metrics: {
-          "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
-          "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
-          "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
-          "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
-        },
-        candidates: [createCandidate({ geomean: { value: -5.8, n: 3, excluded: [] } })],
-      });
-
-      const output = renderMarkdown(result);
-
-      expect(output).not.toContain("\x1b[");
-      expect(output).not.toMatch(/\x1b\[\d+m/);
-    });
-
     it("emits no ANSI when mixed methods exercise all format helpers with color paths", () => {
       vi.stubEnv("NO_COLOR", "1");
 

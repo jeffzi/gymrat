@@ -145,7 +145,6 @@ describe("metric-lines adapter", () => {
       (metricName) => {
         const result = metricLinesAdapter.defaults(metricName);
         expect(result).toStrictEqual({ direction: "lower" });
-        expect(result).not.toHaveProperty("unit");
       },
     );
   });
