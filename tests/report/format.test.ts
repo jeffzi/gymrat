@@ -563,6 +563,7 @@ describe("formatLabel", () => {
   });
 
   it("returns the bare label when color is suppressed", () => {
+    vi.stubEnv("FORCE_COLOR", undefined);
     vi.stubEnv("NO_COLOR", "1");
     expect(formatLabel("Hint:", ["yellow", "underline"])).toBe("Hint:");
   });
@@ -636,6 +637,7 @@ describe("verdictSummaryParts", () => {
   };
 
   it("returns parts with no ANSI escapes when color is suppressed", () => {
+    vi.stubEnv("FORCE_COLOR", undefined);
     vi.stubEnv("NO_COLOR", "1");
     const parts = verdictSummaryParts(mixed, 0);
 
@@ -643,6 +645,8 @@ describe("verdictSummaryParts", () => {
   });
 
   it("tallies identical metrics apart from the ones within noise", () => {
+    vi.stubEnv("FORCE_COLOR", undefined);
+    vi.stubEnv("NO_COLOR", "1");
     const parts = verdictSummaryParts(mixed, 0);
 
     expect.soft(parts.find((p) => p.includes("identical"))).toBe("= 1 identical");
@@ -700,6 +704,7 @@ describe("methodFooterLines", () => {
   });
 
   it("returns lines with no ANSI escapes when color is suppressed", () => {
+    vi.stubEnv("FORCE_COLOR", undefined);
     vi.stubEnv("NO_COLOR", "1");
     const metrics: Metrics = {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
@@ -762,6 +767,8 @@ describe("methodFooterLines", () => {
   ];
 
   it.each(bandCases)("phrases the band line by cause when $cause", ({ metrics, expected }) => {
+    vi.stubEnv("FORCE_COLOR", undefined);
+    vi.stubEnv("NO_COLOR", "1");
     expect(bandLinesFor(metrics)).toStrictEqual(expected);
   });
 });

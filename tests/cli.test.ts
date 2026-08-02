@@ -286,6 +286,8 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  mockSpinnerInstance.text = "";
+  mockSpinnerInstance.isSpinning = false;
 });
 
 describe("createProgram", () => {
@@ -461,6 +463,9 @@ describe("createProgram", () => {
 
     describe("when --help requested", () => {
       it("writes the usage text and names the baseline and candidate roles and how they relate", async () => {
+        // Arrange
+        vi.stubEnv("FORCE_COLOR", undefined);
+
         // Act
         const helpOutput = await captureCompareHelp();
 
@@ -512,6 +517,7 @@ describe("createProgram", () => {
       it("omits ANSI escapes when stdout is redirected", async () => {
         // Arrange
         process.stdout.isTTY = false;
+        vi.stubEnv("FORCE_COLOR", undefined);
         vi.stubEnv("NO_COLOR", undefined);
 
         // Act
@@ -722,6 +728,7 @@ describe("createProgram", () => {
       /** Simulates an interactive stderr with color vetoed via NO_COLOR. */
       function useNoColorTty(): void {
         process.stderr.isTTY = true;
+        vi.stubEnv("FORCE_COLOR", undefined);
         vi.stubEnv("NO_COLOR", "1");
       }
 
@@ -1666,6 +1673,7 @@ describe("formatCliError", () => {
 
   it("renders Hint: as plain text when NO_COLOR is set", () => {
     // Arrange
+    vi.stubEnv("FORCE_COLOR", undefined);
     vi.stubEnv("NO_COLOR", "1");
     const error = createCommandError("ref");
 
@@ -1695,6 +1703,7 @@ describe("entry point", () => {
         ["--import", "tsx", symlinkPath, "compare", "--help"],
         {
           timeout: 10000,
+          env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: "1" },
         },
       );
 
