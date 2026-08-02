@@ -567,39 +567,24 @@ export function withDisplayLabels(result: ComparisonResult): ComparisonResult {
 /** The style a variant name wears where the report names it as a name. */
 export const VARIANT_NAME_STYLE: Style = ["bold", "underline"];
 
-/** Probe text whose styled form differs from itself whenever styling is live. */
-const STYLE_PROBE = "x";
-
-/**
- * Whether `styleText` is emitting escapes at all right now.
- *
- * `styleText` answers this only by doing it — it returns the bare string when
- * `NO_COLOR`, a non-TTY stream, or anything else suppresses styling — so the
- * probe asks it the same question the renderer is about to.
- */
-function stylingActive(stream?: NodeJS.WriteStream): boolean {
-  return formatLabel(STYLE_PROBE, VARIANT_NAME_STYLE, stream) !== STYLE_PROBE;
-}
-
 /**
  * A variant name as it prints before {@link VARIANT_NAME_STYLE} wraps it.
  *
- * Emphasis is what separates a branch name from the prose around it. Where
- * there is none to be had the quotes do that work instead, so a piped report
- * still reads `baseline "main" ↔ "perf/simd"` rather than running the names
- * into the sentence carrying them.
+ * Always the bare label — emphasis (bold+underline when styling is active)
+ * separates a branch name from the prose around it, and width stays the same
+ * either way so column geometry is identical across modes.
  *
  * Callers padding a cell need this plain form for the width, then apply
  * {@link VARIANT_NAME_STYLE} to the padded cell; callers writing prose can take
  * {@link formatVariantName} instead.
  */
-export function variantName(label: string, stream?: NodeJS.WriteStream): string {
-  return stylingActive(stream) ? label : `"${label}"`;
+export function variantName(label: string): string {
+  return label;
 }
 
 /** A variant name, styled — for the unpadded prose of the run header. */
 export function formatVariantName(label: string, stream?: NodeJS.WriteStream): string {
-  return formatLabel(variantName(label, stream), VARIANT_NAME_STYLE, stream);
+  return formatLabel(variantName(label), VARIANT_NAME_STYLE, stream);
 }
 
 const HINT_STYLE: Style = ["yellow", "underline"];

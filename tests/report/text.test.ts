@@ -135,7 +135,7 @@ describe("renderReport", () => {
       const output = renderReport(result);
 
       expect(output).toContain(
-        'gymrat compare · baseline "main" ↔ "experiment" · 10 paired samples · adapter: mitata',
+        "gymrat compare · baseline main ↔ experiment · 10 paired samples · adapter: mitata",
       );
     });
 
@@ -150,7 +150,7 @@ describe("renderReport", () => {
 
       const output = renderReport(result);
 
-      expect(output).toContain('gymrat compare · baseline "main" ↔ "candidate-a", "candidate-b" ·');
+      expect(output).toContain("gymrat compare · baseline main ↔ candidate-a, candidate-b ·");
     });
   });
 
@@ -163,7 +163,7 @@ describe("renderReport", () => {
 
       expect
         .soft(cellsOf(headerLine).map((cell) => cell.trim()))
-        .toStrictEqual(["metric", '"main"', '"perf/faster-decode"', "vs main"]);
+        .toStrictEqual(["metric", "main", "perf/faster-decode", "vs main"]);
       expect.soft(output).toContain("gymrat compare");
       expect(output).toContain("geomean");
     });
@@ -727,8 +727,8 @@ describe("renderReport", () => {
 
       expect(cellsOf(echo).map((cell) => cell.trim())).toStrictEqual([
         "",
-        '"main"',
-        '"perf/faster-decode"',
+        "main",
+        "perf/faster-decode",
         "vs main",
       ]);
     });
@@ -1558,14 +1558,14 @@ describe("renderReport", () => {
       const lines = renderReport(orderedResult()).split("\n");
 
       // Each section's content is asserted by its own test; this pins the order.
-      expect.soft(lines[0]).toContain('gymrat compare · baseline "main" ↔ "faster"');
+      expect.soft(lines[0]).toContain("gymrat compare · baseline main ↔ faster");
       expect.soft(lines[1]).toMatch(/^metric\s+│/);
       expect.soft(lines[2]).toMatch(/^─+┼/);
       expect.soft(lines[3]).toContain("metric1/time");
       expect.soft(lines[4]).toContain("metric2/time");
       expect.soft(lines[5]).toMatch(/^─+┼/);
       expect.soft(lines[6]).toContain("geomean");
-      expect.soft(lines[7]).toContain('"faster"');
+      expect.soft(lines[7]).toContain("faster");
       expect.soft(lines[8]).toBe("");
       expect.soft(lines[9]).toContain("✓ 1 improved");
       expect.soft(lines[10]).toBe("");
@@ -1657,10 +1657,10 @@ describe("renderReport", () => {
 
       expect(cellsOf(headerLine).map((cell) => cell.trim())).toStrictEqual([
         "metric",
-        '"main"',
-        '"candidate-a"',
-        '"candidate-b"',
-        '"candidate-c"',
+        "main",
+        "candidate-a",
+        "candidate-b",
+        "candidate-c",
       ]);
     });
 
@@ -1693,10 +1693,10 @@ describe("renderReport", () => {
 
       expect(cellsOf(echo).map((cell) => cell.trim())).toStrictEqual([
         "",
-        '"main"',
-        '"candidate-a"',
-        '"candidate-b"',
-        '"candidate-c"',
+        "main",
+        "candidate-a",
+        "candidate-b",
+        "candidate-c",
       ]);
     });
 
