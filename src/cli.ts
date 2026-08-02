@@ -113,6 +113,16 @@ function isTerminal(stream: NodeJS.WriteStream): boolean {
 }
 
 /**
+ * Veto color unconditionally: `styleText` resolves `FORCE_COLOR` before `NO_COLOR`, so a
+ * `FORCE_COLOR` left over from the caller's shell would otherwise defeat `NO_COLOR` and leak
+ * ANSI escapes into non-interactive output.
+ */
+function suppressColor(): void {
+  delete process.env.FORCE_COLOR;
+  process.env.NO_COLOR = "1";
+}
+
+/**
  * Render an error for stderr: either an adapter failure labelled with its
  * class name, or any other error with a styled hint line appended when it
  * carries one. The two are mutually exclusive — the adapter branch returns
@@ -163,8 +173,12 @@ interface ProgressLineParts {
  * leaving presentation (plain text vs. ANSI styling) to the caller.
  */
 function buildProgressLineParts(step: ProgressStep, etaMs?: number): ProgressLineParts {
-  const etaSuffix =
-    etaMs !== undefined ? formatEta(etaMs) : step.kind === "sample" ? ETA_PENDING_LABEL : undefined;
+  let etaSuffix: string | undefined;
+  if (etaMs !== undefined) {
+    etaSuffix = formatEta(etaMs);
+  } else if (step.kind === "sample") {
+    etaSuffix = ETA_PENDING_LABEL;
+  }
 
   switch (step.kind) {
     case "prepare":
@@ -396,16 +410,13 @@ export function createProgram(): Command {
       let result: ComparisonResult;
 
       if (!options.color) {
-        process.env.NO_COLOR = "1";
+        suppressColor();
       }
 
       const tty = isTerminal(process.stderr);
+      const colorSuppressed = process.env.NO_COLOR !== undefined;
       const targetCount = 1 + candidateArgs.length;
-      const progress = createProgressReporter(
-        tty && process.env.NO_COLOR === undefined,
-        tty,
-        targetCount,
-      );
+      const progress = createProgressReporter(tty && !colorSuppressed, tty, targetCount);
 
       try {
         const config = resolveConfig({
@@ -439,21 +450,21 @@ export function createProgram(): Command {
         exitWithError(error);
       }
 
-      if (options.format !== "text") {
-        process.env.NO_COLOR = "1";
-      }
+      // `--no-color` is a veto, never a force: left unset, each renderer keeps
+      // its own detection rather than being told what the stream supports.
+      const color = options.color ? undefined : false;
 
       let output: string;
       switch (options.format) {
         case "markdown":
-          output = renderMarkdown(result, { verbose: options.verbose });
+          output = renderMarkdown(result, { verbose: options.verbose, color });
           break;
         case "json":
           // Machine-readable output stays byte-identical whatever --verbose says.
           output = renderJson(result);
           break;
         case "text":
-          output = renderReport(result, { verbose: options.verbose });
+          output = renderReport(result, { verbose: options.verbose, color });
           break;
         default:
           assertNever(options.format);
