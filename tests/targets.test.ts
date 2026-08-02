@@ -397,16 +397,17 @@ describe("cleanupWorktrees", () => {
   });
 
   describe("idempotency", () => {
-    it("is safe to call multiple times on the same worktrees", () => {
+    it("reports removed: 0 and no failures on a second sweep of the same worktrees", () => {
       repo = createScratchRepo();
       const worktree = createHeadWorktree(repo.dir);
 
       cleanupWorktrees([worktree], repo.dir);
+      const second = cleanupWorktrees([worktree], repo.dir);
 
-      cleanupWorktrees([worktree], repo.dir);
-
-      expect(fs.existsSync(worktree.dir)).toBe(false);
-      expect(listWorktreeDirs(repo.dir)).toHaveLength(1);
+      expect.soft(fs.existsSync(worktree.dir)).toBe(false);
+      expect.soft(listWorktreeDirs(repo.dir)).toHaveLength(1);
+      expect.soft(second.removed).toBe(0);
+      expect(second.failures).toStrictEqual([]);
     });
   });
 });

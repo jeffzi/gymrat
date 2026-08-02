@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 
+import { AdapterError } from "../src/adapters/index.js";
 import { compare, CommandError } from "../src/compare.js";
 import type { CompareOptions, ProgressStep } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
@@ -1209,7 +1210,7 @@ describe("compare – integration", () => {
   });
 
   describe("when bench script produces no metrics", () => {
-    it("throws error indicating no metrics found", async () => {
+    it("raises an AdapterError so the CLI blames the bench script", async () => {
       const repo = createScratchRepo();
 
       try {
@@ -1234,7 +1235,9 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        await expect(compare(options)).rejects.toThrow(/[Nn]o valid METRIC|[Nn]o metrics/);
+        const error = await compare(options).catch((e: unknown) => e);
+        expect.soft(error).toBeInstanceOf(AdapterError);
+        expect(error).toHaveProperty("message", expect.stringMatching(/[Nn]o valid METRIC/));
       } finally {
         repo.cleanup();
       }
@@ -1604,6 +1607,7 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
+        expect(options).not.toHaveProperty("onProgress");
         const result = await compare(options);
         expect(result.samples).toBe(2);
       } finally {

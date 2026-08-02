@@ -209,8 +209,53 @@ describe("renderMarkdown", () => {
       const output = renderMarkdown(result);
       const dataRow = tableRows(output).find((r) => r.includes("decode/time"));
 
-      expect(dataRow).toContain("950ns");
+      const cells = dataRow!.split("|").map((c) => c.trim());
+      const candidateBCell = cells[4];
+
+      expect.soft(candidateBCell).toContain("950ns");
+      expect.soft(candidateBCell).not.toContain("✓");
+      expect.soft(candidateBCell).not.toContain("✗");
       expect(dataRow).toContain("✓");
+    });
+
+    it("renders an empty cell when a candidate never reported the metric", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main",
+        candidates: [
+          createCandidate({ label: "candidate-a", geomean: { value: 0, n: 0, excluded: [] } }),
+          createCandidate({ label: "candidate-b", geomean: { value: 0, n: 0, excluded: [] } }),
+        ],
+        metrics: {
+          "decode/time": {
+            baselineMedian: 1000,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 900,
+                spread: 2,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.002,
+                  noisePct: 2.5,
+                  noiseAbs: 2.5,
+                },
+              },
+              {},
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+
+      const output = renderMarkdown(result);
+      const dataRow = tableRows(output).find((r) => r.includes("decode/time"))!;
+      const cells = dataRow.split("|").map((c) => c.trim());
+      const candidateBCell = cells[4];
+
+      expect(candidateBCell).toBe("");
     });
   });
 

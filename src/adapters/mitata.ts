@@ -21,6 +21,7 @@ function extractJson(stdout: string): Record<string, unknown> {
     throw new AdapterError(`Failed to parse JSON: ${messageOf(err)}`);
   }
 
+  /* v8 ignore next 3 -- first-`{`-to-last-`}` slice cannot parse to a non-object without throwing */
   if (!isRecord(parsed)) {
     throw new AdapterError("JSON must be an object");
   }

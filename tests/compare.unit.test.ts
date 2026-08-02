@@ -213,6 +213,19 @@ describe("CommandError", () => {
     });
   });
 
+  describe("when only stdout is non-empty", () => {
+    it("shows stdout without separators", () => {
+      const ctx = createContext();
+      const failure = createExitFailure({ stderr: "", stdout: "bench output here" });
+
+      const error = new CommandError(ctx, failure);
+
+      expect.soft(error.message).toContain("bench output here");
+      expect.soft(error.message).not.toContain("--- stderr ---");
+      expect(error.message).not.toContain("--- stdout ---");
+    });
+  });
+
   describe("when stderr and stdout are both empty", () => {
     it("does not include any output separator or body", () => {
       const ctx = createContext();
