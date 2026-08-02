@@ -8,13 +8,7 @@
   "ignorePatterns": ["dist", "coverage", "node_modules", ".claude", ".agent"],
   "overrides": [
     {
-      "files": ["scripts/**"],
-      "rules": {
-        "no-console": "off"
-      }
-    },
-    {
-      "files": ["src/adapters/**"],
+      "files": ["src/adapters/metric-lines.ts"],
       "rules": {
         "no-console": "off"
       }
@@ -38,7 +32,7 @@
     "import/no-namespace": "error",
     "import/no-self-import": "error",
     "no-await-in-loop": "off",
-    "no-console": "warn",
+    "no-console": "error",
     "no-constructor-return": "error",
     "no-else-return": ["error", { "allowElseIf": false }],
     "no-empty": "error",

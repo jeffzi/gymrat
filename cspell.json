@@ -3,7 +3,6 @@
   "version": "0.2",
   "language": "en",
   "words": [
-    "Abramowitz",
     "benchstat",
     "cand",
     "catchable",
@@ -13,13 +12,12 @@
     "geomean",
     "gpgsign",
     "gymrat",
+    "misalign",
     "jeffzi",
     "mitata",
     "oxlint",
     "sublabel",
     "sublabels",
-    "scipy",
-    "Stegun",
     "typebox",
     "unjudgeable",
     "unpadded",
@@ -30,10 +28,8 @@
     "worktrees",
     "yocto"
   ],
-  "files": ["**/*.{ts,tsx,mts,cts,md}"],
   "ignorePaths": [
     ".planning",
-    ".research",
     "node_modules",
     "coverage",
     "dist",

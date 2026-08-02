@@ -1,4 +1,5 @@
 # yaml-language-server: $schema=https://json.schemastore.org/lefthook.json
+glob_matcher: doublestar
 pre-commit:
   commands:
     lint:
@@ -15,7 +16,7 @@ pre-commit:
       run: npx oxfmt --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
     type:
-      glob: "**/*.{ts,tsx,mts,cts}"
+      glob: "**/*.{ts,tsx,mts,cts,json}"
       run: npm run check:type
     quality:
       glob: "**/*.{ts,tsx,mts,cts,js,json}"
@@ -40,5 +41,4 @@ pre-push:
     check:
       run: npm run check
     test:
-      glob: "**/*.{ts,tsx,mts,cts}"
       run: npm test
