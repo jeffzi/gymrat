@@ -93,14 +93,24 @@ export function signedRankMetric(options: {
  * tie-dropping. `n < 6` means the run was too short for the signed-rank test;
  * `n >= 6` with `usableN < 6` means ties starved it instead.
  */
-export function bandMetric(options: {
-  verdict: ApproximateVerdictValue;
-  delta: number;
-  noisePct?: number;
-  n?: number;
-  usableN?: number;
-}): MetricEntry {
-  const { verdict, delta, noisePct = 2.5, n = 4, usableN = n } = options;
+export function bandMetric(
+  options: {
+    verdict?: ApproximateVerdictValue;
+    delta?: number;
+    noisePct?: number;
+    n?: number;
+    usableN?: number;
+    direction?: "lower" | "higher";
+  } = {},
+): MetricEntry {
+  const {
+    verdict = "no-signal",
+    delta = -1,
+    noisePct = 2.5,
+    n = 4,
+    usableN = n,
+    direction = "lower",
+  } = options;
   return {
     baselineMedian: 100,
     baselineSpread: 5,
@@ -120,7 +130,7 @@ export function bandMetric(options: {
         },
       },
     ],
-    meta: { direction: "lower", gating: true, exact: false },
+    meta: { direction, gating: true, exact: false },
   };
 }
 
