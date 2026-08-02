@@ -5,6 +5,7 @@ import {
   computeColumnWidth,
   displayClass,
   type DisplayClass,
+  footerLines,
   formatDelta,
   formatEvidence,
   formatHintLabel,
@@ -20,24 +21,24 @@ import {
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
-  hintFooterLines,
+  type HighlightBlock,
   type MetricCellParts,
-  methodFooterLines,
   NO_GEOMEAN_CELL,
   NO_GEOMEAN_FIGURE,
   NO_STABLE_METRICS,
   PLUS_MINUS,
   QUIET_VERDICTS,
   selectHighlights,
+  shownClass,
   SPREAD_SEPARATOR,
   type Style,
   styleWithin,
   UNSTABLE_FUTILITY_NOTE,
   VARIANT_NAME_STYLE,
-  variantName,
   verdictSummaryParts,
   VERDICT_GLOSSES,
   VERDICT_STYLES,
+  withColor,
   withDisplayLabels,
 } from "./format.js";
 import type {
@@ -220,10 +221,18 @@ function bandField(band: string, width: number): string {
  * A field the verdict has nothing for still holds its column's width, so the
  * fields behind it stay where the rows above put them; the trailing run of
  * padding is cut, since nothing lines up against the end of a line.
+ *
+ * The band field is padded to the same width even when this verdict has none,
+ * as long as some cell in the column does: dropping it outright, as an empty
+ * string would when the array is filtered, slides the pairs field behind it
+ * out of alignment with every row that does carry a band.
  */
 function joinVerdictCell(parts: VerdictParts, widths: VerdictWidths): string {
   const delta = parts.word === "" ? parts.delta.padStart(widths.delta) : parts.word;
-  return [parts.glyph, delta, bandField(parts.band, widths.band), parts.pairs]
+  const band = bandField(parts.band, widths.band);
+  const bandCell =
+    band === "" && widths.band > 0 ? " ".repeat(PLUS_MINUS.length + widths.band) : band;
+  return [parts.glyph, delta, bandCell, parts.pairs]
     .filter((field) => field !== "")
     .join(CELL_GUTTER)
     .trimEnd();
@@ -399,12 +408,7 @@ function renderTable(
   candidateIndex: number,
 ): string[] {
   const baseline = result.baselineLabel;
-  const headers: Row = [
-    "metric",
-    variantName(baseline),
-    variantName(candidate.label),
-    `vs ${baseline}`,
-  ];
+  const headers: Row = ["metric", baseline, candidate.label, `vs ${baseline}`];
 
   const measured = Object.entries(result.metrics).map(([name, metric]) => {
     const side = metric.candidates[candidateIndex];
@@ -568,7 +572,7 @@ interface ComparisonGrid {
  */
 function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
   const columns: CandidateColumn[] = result.candidates.map((candidate) => ({
-    header: variantName(candidate.label),
+    header: candidate.label,
     geomean: formatGeomeanCell(candidate.geomean),
     cells: [],
   }));
@@ -582,7 +586,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
         value: formatMetricCellParts(side?.median, side?.spread, metric.meta.unit),
         verdict: formatCandidateVerdict(side?.verdict, result.samples),
         delta: side?.verdict ? formatVerdictDelta(side.verdict) : "",
-        outcome: side?.verdict === undefined ? undefined : displayClass(side.verdict),
+        outcome: shownClass(side?.verdict),
         text: "",
       };
       candidates.push(cell);
@@ -651,7 +655,7 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   const baselineFields = valueWidths(rows.map((row) => row.baseline));
   for (const row of rows) row.baselineCell = joinValueCell(row.baseline, baselineFields);
 
-  const baselineHeader = variantName(baseline);
+  const baselineHeader = baseline;
   const metricWidth = computeMetricColumnWidth(
     rows.map((row) => row.name.length),
     GEOMEAN_LABEL,
@@ -729,12 +733,6 @@ function renderSummary(metrics: MetricComparisons, candidateIndex: number): stri
 
 /** Gap between the longest highlighted metric name and the delta that follows it. */
 const HIGHLIGHT_NAME_GUTTER = 2;
-
-/** One candidate's highlight entries, and whether the noise swamped any of them. */
-interface HighlightBlock {
-  readonly entries: string[];
-  readonly unstable: boolean;
-}
 
 /**
  * The metrics worth a second look, loudest first, with the evidence behind each.
@@ -875,10 +873,7 @@ function renderComparison(result: ComparisonResult): string[] {
  * to change what they ran rather than explaining what already happened.
  */
 function renderMethodFooter(result: ComparisonResult, verbose: boolean): string[] {
-  return [
-    ...(verbose ? methodFooterLines(result.metrics) : []),
-    ...hintFooterLines(result.metrics, (hint) => `${formatHintLabel()} ${hint}`),
-  ];
+  return footerLines(result.metrics, verbose, (hint) => `${formatHintLabel()} ${hint}`);
 }
 
 /**
@@ -974,36 +969,38 @@ function renderCandidate(
  * single table with a column each, since the whole point of running them
  * together is reading them off the same row.
  *
- * Whether the report is styled is governed by `styleText` auto-detection:
- * `NO_COLOR` / `FORCE_COLOR` env vars and the stream's TTY status. The CLI
- * sets `NO_COLOR=1` when `--no-color` is passed or when the output format is
- * not text, so the renderer never needs a boolean flag.
+ * Whether the report is styled follows `options.color`, which `withColor` pins
+ * for the whole render: `false` leaves the report free of escapes, `true` forces
+ * them, and `undefined` defers to `styleText` auto-detection — the `NO_COLOR` /
+ * `FORCE_COLOR` env vars and the stream's TTY status.
  */
 export function renderReport(result: ComparisonResult, options: ReportOptions = {}): string {
-  const display = withDisplayLabels(result);
-  const candidateNames = display.candidates
-    .map((candidate) => formatVariantName(candidate.label))
-    .join(", ");
-  let header = `gymrat compare ${HEADER_SEPARATOR} baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames} ${HEADER_SEPARATOR} ${display.samples} paired samples ${HEADER_SEPARATOR} adapter: ${display.adapter}`;
-  header = styleWithin(header, "gymrat compare", ["bold"]);
-  header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"]));
-  const lines = [header];
+  return withColor(options.color, () => {
+    const display = withDisplayLabels(result);
+    const candidateNames = display.candidates
+      .map((candidate) => formatVariantName(candidate.label))
+      .join(", ");
+    let header = `gymrat compare ${HEADER_SEPARATOR} baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames} ${HEADER_SEPARATOR} ${display.samples} paired samples ${HEADER_SEPARATOR} adapter: ${display.adapter}`;
+    header = styleWithin(header, "gymrat compare", ["bold"]);
+    header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"]));
+    const lines = [header];
 
-  if (display.candidates.length > 1) {
-    lines.push(...renderComparison(display));
-  } else {
-    for (const [index, candidate] of display.candidates.entries()) {
-      lines.push(...renderCandidate(display, candidate, index));
+    if (display.candidates.length > 1) {
+      lines.push(...renderComparison(display));
+    } else {
+      for (const [index, candidate] of display.candidates.entries()) {
+        lines.push(...renderCandidate(display, candidate, index));
+      }
     }
-  }
 
-  const footer = [
-    ...renderMethodFooter(display, options.verbose ?? false),
-    ...renderWorktreeFooter(display),
-  ];
-  if (footer.length > 0) {
-    lines.push("", ...footer);
-  }
+    const footer = [
+      ...renderMethodFooter(display, options.verbose ?? false),
+      ...renderWorktreeFooter(display),
+    ];
+    if (footer.length > 0) {
+      lines.push("", ...footer);
+    }
 
-  return lines.join("\n");
+    return lines.join("\n");
+  });
 }
