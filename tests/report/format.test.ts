@@ -14,7 +14,7 @@ import {
   formatTableLine,
   formatValue,
   getGlyph,
-  legendGlosses,
+  hintFooterLines,
   methodFooterLines,
   selectHighlights,
   truncateLabels,
@@ -699,35 +699,10 @@ describe("verdictSummaryParts", () => {
   });
 });
 
-describe("legendGlosses", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("returns plain text with no ANSI escapes when stdout is not a TTY", () => {
-    expect(legendGlosses()).not.toContain("\x1b[");
-  });
-
-  it.each([
-    { glyph: "✓", code: "32", color: "green" },
-    { glyph: "✗", code: "31", color: "red" },
-    { glyph: "≈", code: "33", color: "yellow" },
-  ])("colors the $glyph glyph $color when color is forced", ({ glyph, code }) => {
-    vi.stubEnv("FORCE_COLOR", "1");
-
-    const gloss = legendGlosses();
-    const idx = gloss.indexOf(glyph);
-
-    expect(gloss.slice(0, idx)).toContain(`\x1b[${code}m`);
-  });
-});
-
 describe("methodFooterLines", () => {
-  const formatHint = (hint: string): string => `Hint: ${hint}`;
-
-  /** The footer's hint line, if `methodFooterLines` emitted one for these metrics. */
-  function hintLineFor(metrics: Metrics): string | undefined {
-    return methodFooterLines(metrics, formatHint).find((line) => line.includes("Hint:"));
+  /** The lines describing the noise-band fallback, in the order they were emitted. */
+  function bandLinesFor(metrics: Metrics): string[] {
+    return methodFooterLines(metrics).filter((line) => line.startsWith("noise band"));
   }
 
   afterEach(() => {
@@ -739,7 +714,7 @@ describe("methodFooterLines", () => {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics, formatHint);
+    const lines = methodFooterLines(metrics);
 
     for (const line of lines) {
       expect(line).not.toContain("\x1b[");
@@ -753,10 +728,58 @@ describe("methodFooterLines", () => {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics, formatHint);
+    const lines = methodFooterLines(metrics);
     const verdictLine = lines.find((line) => line.includes("Wilcoxon"));
 
     expect(verdictLine).toContain("\x1b[2m");
+  });
+
+  it("leaves the sample-shortage hint to the hint lines", () => {
+    const metrics: Metrics = { "a/time": bandMetric({ n: 4 }) };
+
+    expect(methodFooterLines(metrics).join("\n")).not.toContain("Hint");
+  });
+
+  const bandCases: { cause: string; metrics: Metrics; expected: string[] }[] = [
+    {
+      cause: "the run was too short to reach the signed-rank floor",
+      metrics: {
+        "decode/time": bandMetric({ n: 3 }),
+        "encode/time": bandMetric({ n: 5 }),
+      },
+      expected: ["noise band ±(half-range × K) — n=5 below signed-rank floor (6 pairs)"],
+    },
+    {
+      cause: "ties starved a long-enough run",
+      metrics: {
+        "entity.alive_check/heap": bandMetric({ n: 10, usableN: 3 }),
+        "iteration.soa_5field/heap": bandMetric({ n: 8, usableN: 2 }),
+      },
+      expected: ["noise band ±(half-range × K) — ties left n=2 usable pairs (6 needed)"],
+    },
+    {
+      cause: "each cause struck a different metric",
+      metrics: {
+        "decode/time": bandMetric({ n: 3 }),
+        "tied/heap": bandMetric({ n: 10, usableN: 3 }),
+      },
+      expected: [
+        "noise band ±(half-range × K) — n=3 below signed-rank floor (6 pairs)",
+        "noise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)",
+      ],
+    },
+  ];
+
+  it.each(bandCases)("phrases the band line by cause when $cause", ({ metrics, expected }) => {
+    expect(bandLinesFor(metrics)).toStrictEqual(expected);
+  });
+});
+
+describe("hintFooterLines", () => {
+  const formatHint = (hint: string): string => `Hint: ${hint}`;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("does not dim the hint line when color is forced", () => {
@@ -764,47 +787,49 @@ describe("methodFooterLines", () => {
 
     const metrics: Metrics = { "a/time": bandMetric({ n: 4 }) };
 
-    expect(hintLineFor(metrics)).not.toContain("\x1b[2m");
+    expect(hintFooterLines(metrics, formatHint)[0]).not.toContain("\x1b[2m");
   });
 
-  describe("when all band metrics have too few samples", () => {
-    it("shows the sample-shortage hint", () => {
-      const metrics: Metrics = {
+  const hintCases: { desc: string; metrics: Metrics; expected: string[] }[] = [
+    {
+      desc: "every band metric ran short of pairs",
+      metrics: {
         "decode/time": bandMetric({ n: 3 }),
         "encode/time": bandMetric({ n: 5 }),
         "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
-      };
-
-      expect(hintLineFor(metrics)).toContain("--samples 6");
-    });
-  });
-
-  describe("when all band metrics have enough samples but fell back due to ties", () => {
-    it("shows no hint, since the = glyph already says the values are identical", () => {
-      const metrics: Metrics = {
+      },
+      expected: ["Hint: re-run with --samples 6 or more for statistical verdicts"],
+    },
+    {
+      // The = glyph already says the values are identical, so more samples buy
+      // nothing.
+      desc: "ties alone starved the signed-rank test",
+      metrics: {
         "entity.alive_check/heap": bandMetric({ n: 10, usableN: 3 }),
         "iteration.soa_5field/heap": bandMetric({ n: 8, usableN: 2 }),
         "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
-      };
-
-      expect(hintLineFor(metrics)).toBeUndefined();
-    });
-  });
-
-  describe("when band metrics include both sample-shortage and ties", () => {
-    it("shows the sample-shortage hint alone", () => {
-      const metrics: Metrics = {
+      },
+      expected: [],
+    },
+    {
+      desc: "a shortage and ties struck different metrics",
+      metrics: {
         "decode/time": bandMetric({ n: 3 }),
         "entity.alive_check/heap": bandMetric({ n: 10, usableN: 3 }),
         "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
-      };
+      },
+      expected: ["Hint: re-run with --samples 6 or more for statistical verdicts"],
+    },
+    {
+      desc: "the signed-rank test carried every metric",
+      metrics: {
+        "parse/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      },
+      expected: [],
+    },
+  ];
 
-      const hintLines = methodFooterLines(metrics, formatHint).filter((line) =>
-        line.includes("Hint:"),
-      );
-
-      expect(hintLines).toHaveLength(1);
-      expect(hintLines[0]).toContain("--samples");
-    });
+  it.each(hintCases)("hints when $desc", ({ metrics, expected }) => {
+    expect(hintFooterLines(metrics, formatHint)).toStrictEqual(expected);
   });
 });

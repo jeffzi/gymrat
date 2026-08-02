@@ -15,6 +15,3 @@ highlights
   ✗ encode/time               +2.2%
   ✓ decode/text=digits/time  -17.9%
   ✓ encode/heap               -7.9%  (exact)
-
-legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
-verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05

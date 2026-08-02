@@ -71,6 +71,7 @@ gymrat compare main my-branch \
 | `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                           |
 | `--format <value>`      | `text`          | Output format: `text`, `markdown`, or `json`                              |
 | `--no-color`            | auto            | Print the report without ANSI styles                                      |
+| `--verbose`             | off             | Name the statistical method behind each verdict in the footer             |
 | `--fail-on <condition>` | none            | Exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
 
 \*`--bench` is required either on the command line or in the config file.
@@ -141,14 +142,18 @@ highlights
   ✗ encode/time               +2.2%
   ✓ decode/text=digits/time  -17.9%
   ✓ encode/heap               -7.9%  (exact)
+```
 
-legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
+Add `--verbose` to close the report with the method behind the verdicts:
+
+```text
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 ```
 
 **Anatomy:**
 
-- The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class at a glance.
+- The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class at a glance,
+  and doubles as the legend for the glyphs used throughout the report.
 - The **highlights** block lists regressions first, then improvements, with the delta and method
   evidence. Exact metrics show `(exact)`. Metrics marked `≈ unstable` (noise band wider than
   `unstableNoisePct`) show `noise ±N%` — these are too jittery to judge and are excluded from the

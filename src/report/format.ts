@@ -625,15 +625,6 @@ export const VERDICT_STYLES: Record<DisplayClass, Style> = {
 };
 
 /**
- * The glyph styles the legend paints — every class style but a dim one.
- *
- * The legend line is dimmed whole, and a nested dim closes at the same reset
- * that would have ended the outer one, leaving the rest of the line bright. A
- * class that reads dim already wears the line's, so it asks for nothing here.
- */
-const LEGEND_STYLES: Record<DisplayClass, Style> = { ...VERDICT_STYLES, "within-noise": [] };
-
-/**
  * Style `marker` where it sits inside an already-padded cell.
  *
  * Styling a cell before it is padded is the alignment bug this exists to
@@ -745,86 +736,88 @@ export function pairCounts(metrics: MetricComparisons, method: Method): number[]
 
 const SAMPLES_HINT = `re-run with --samples ${MIN_WILCOXON_N} or more for statistical verdicts`;
 
+/** How the band method names itself wherever the footer describes a fallback. */
+const BAND_METHOD = "noise band ±(half-range × K)";
+
 /**
- * The pair counts behind every band-method verdict, and whether any of them fell
- * back for want of samples (`n < 6`) rather than because tied pairs starved the
- * signed-rank test.
+ * Why the band method decided a verdict the signed-rank test would otherwise
+ * have owned.
+ *
+ * `shortage` counts the total pairs of every metric that never reached the
+ * signed-rank floor; `ties` counts the surviving pairs of every metric that
+ * reached it but had too many of them tied away. A run can hit both across
+ * different metrics.
  */
-function partitionBandMetrics(metrics: MetricComparisons): {
-  bandCounts: number[];
-  hasSampleShortage: boolean;
-} {
-  const bandCounts: number[] = [];
-  let hasSampleShortage = false;
+interface BandFallbacks {
+  shortage: number[];
+  ties: number[];
+}
+
+/** Sorts every band-method verdict into the cause that forced the fallback. */
+function bandFallbacks(metrics: MetricComparisons): BandFallbacks {
+  const shortage: number[] = [];
+  const ties: number[] = [];
 
   for (const metric of Object.values(metrics)) {
     for (const { verdict } of metric.candidates) {
       if (verdict?.method !== "band") continue;
-      bandCounts.push(verdict.n);
-      if (verdict.n < MIN_WILCOXON_N) hasSampleShortage = true;
+      if (verdict.n < MIN_WILCOXON_N) {
+        shortage.push(verdict.n);
+      } else {
+        ties.push(verdict.usableN);
+      }
     }
   }
 
-  return { bandCounts, hasSampleShortage };
+  return { shortage, ties };
 }
 
 /**
- * The method-footer lines naming how each verdict was decided, plus — when any
- * metric fell back to the noise band for want of samples — a hint telling the
- * user how to get a statistical verdict instead.
+ * The verbose method lines naming how each verdict was decided.
  *
- * The other cause of a band fallback, tied pairs, gets no hint: more samples
- * cannot help it, and the `=` glyph on those rows already reports what happened.
+ * A band fallback gets one line per cause, because the counts that explain a
+ * short run and a tie-starved one are different numbers: the worst total pair
+ * count for a shortage, the worst usable pair count for ties. A run that hit
+ * both causes on different metrics gets both lines.
  *
- * `formatHint` turns the shared hint string into a format-appropriate line:
- * the text renderer prepends a styled label, the markdown renderer wraps it in
- * a blockquote with italic emphasis.
- *
- * Descriptive lines (signed-rank / noise-band) are dimmed via `styleText`
- * auto-detection. The hint line is left unstyled here — its label carries its
- * own color through `formatHint`.
+ * Every line is dimmed via `styleText` auto-detection.
  */
-export function methodFooterLines(
-  metrics: MetricComparisons,
-  formatHint: (hint: string) => string,
-): string[] {
+export function methodFooterLines(metrics: MetricComparisons): string[] {
   const signedRank = pairCounts(metrics, "signed-rank");
-  const { bandCounts, hasSampleShortage } = partitionBandMetrics(metrics);
+  const { shortage, ties } = bandFallbacks(metrics);
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
     const desc = `verdicts: Wilcoxon signed-rank on pairs (${formatPairCount(Math.min(...signedRank))} ≥ ${MIN_WILCOXON_N}) · ~ = no signal at α=0.05`;
     lines.push(formatLabel(desc, ["dim"]));
   }
-  if (bandCounts.length > 0) {
-    const desc = `noise band ±(half-range × K) — ${formatPairCount(Math.max(...bandCounts))} below signed-rank floor (${MIN_WILCOXON_N} pairs)`;
+  if (shortage.length > 0) {
+    const desc = `${BAND_METHOD} — ${formatPairCount(Math.max(...shortage))} below signed-rank floor (${MIN_WILCOXON_N} pairs)`;
     lines.push(formatLabel(desc, ["dim"]));
-
-    if (hasSampleShortage) {
-      lines.push(formatHint(SAMPLES_HINT));
-    }
+  }
+  if (ties.length > 0) {
+    const desc = `${BAND_METHOD} — ties left ${formatPairCount(Math.min(...ties))} usable pairs (${MIN_WILCOXON_N} needed)`;
+    lines.push(formatLabel(desc, ["dim"]));
   }
 
   return lines;
 }
 
 /**
- * The glosses line shared by every legend: each verdict class's glyph and word,
- * joined by ` · `.
+ * The always-on footer hint, told when a metric fell back to the noise band for
+ * want of samples and more of them would buy a statistical verdict.
  *
- * Renderers wrap this into their own format (plain text prefix, blockquote,
- * etc.) and append the baseline attribution.
+ * The other cause of a band fallback, tied pairs, gets no hint: more samples
+ * cannot help it, and the `=` glyph on those rows already reports what happened.
  *
- * Each glyph is painted in its {@link LEGEND_STYLES} color via `styleText`
- * auto-detection. The `~` glyph takes none of its own — it stays the color of
- * whatever wraps the line (typically dim).
+ * `formatHint` turns the shared hint string into a format-appropriate line: the
+ * text renderer prepends a styled label, the markdown renderer wraps it in a
+ * blockquote with italic emphasis. The line is left unstyled here — its label
+ * carries its own color through `formatHint`.
  */
-export function legendGlosses(): string {
-  const glosses: readonly DisplayClass[] = ["improved", "regressed", "unstable", "within-noise"];
-  return glosses
-    .map((shown) => {
-      const glyph = formatLabel(getGlyph(shown), LEGEND_STYLES[shown]);
-      return `${glyph} ${VERDICT_GLOSSES[shown]}`;
-    })
-    .join(" · ");
+export function hintFooterLines(
+  metrics: MetricComparisons,
+  formatHint: (hint: string) => string,
+): string[] {
+  return bandFallbacks(metrics).shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
 }

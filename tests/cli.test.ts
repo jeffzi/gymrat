@@ -553,7 +553,7 @@ describe("createProgram", () => {
         await program.parseAsync(compareArgv("main", "branch", "--format", "markdown"));
 
         // Assert
-        expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result);
+        expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result, { verbose: false });
         expect(writeSpy).toHaveBeenCalledWith("# Markdown Report\n");
       });
 
@@ -632,6 +632,73 @@ describe("createProgram", () => {
             expect(process.env.NO_COLOR).toBe("1");
           },
         );
+      });
+    });
+
+    describe("--verbose", () => {
+      /** Runs `compare` over a signed-rank result and returns what reached stdout. */
+      async function renderWith(...extraArgs: string[]): Promise<string> {
+        const program = createRunnableProgram();
+        await setupMocks(createColorSensitiveResult());
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        await program.parseAsync(compareArgv("main", "branch", ...extraArgs));
+
+        return String(writeSpy.mock.calls[0]?.[0]);
+      }
+
+      it("adds the method footer to the text report", async () => {
+        // Act
+        const output = await renderWith("--verbose");
+
+        // Assert
+        expect(output).toContain("Wilcoxon signed-rank");
+      });
+
+      it("leaves the method footer out of the text report by default", async () => {
+        // Act
+        const output = await renderWith();
+
+        // Assert
+        expect(output).not.toContain("Wilcoxon signed-rank");
+      });
+
+      it("passes the flag through to the markdown renderer", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        const result = createComparisonResult();
+        await setupMocks(result);
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(
+          compareArgv("main", "branch", "--format", "markdown", "--verbose"),
+        );
+
+        // Assert
+        expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result, { verbose: true });
+      });
+
+      it("leaves the JSON renderer untouched", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        const result = createComparisonResult();
+        await setupMocks(result);
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", "--format", "json", "--verbose"));
+
+        // Assert
+        expect(vi.mocked(renderJson)).toHaveBeenCalledWith(result);
+      });
+
+      it("is documented in the compare help", async () => {
+        // Act
+        const helpOutput = await captureCompareHelp();
+
+        // Assert
+        expect(helpOutput).toContain("--verbose");
       });
     });
 

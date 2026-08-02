@@ -14,8 +14,6 @@ geomean (1 stable metric)  │            │                      │      0.0%
 highlights
   ✓ throughput/ops  +30.0%
 
-legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
-noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)
 Hint: re-run with --samples 6 or more for statistical verdicts
 1 worktree removed · 1 left behind
   left behind: /tmp/gymrat-abc123 (contains modified files)

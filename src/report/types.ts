@@ -59,3 +59,19 @@ export interface ComparisonResult {
   /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
   worktreePruneError: string | undefined;
 }
+
+/**
+ * What the human-readable renderers print beyond the report itself.
+ *
+ * The JSON renderer takes none of these: its consumers parse fields rather than
+ * read prose, so its output must not vary with a presentation flag.
+ */
+export interface ReportOptions {
+  /**
+   * Name the statistical method behind each verdict in the footer.
+   *
+   * Off by default — the glyphs and the summary line carry the reading, and the
+   * method only matters once a reader questions a verdict.
+   */
+  verbose?: boolean;
+}

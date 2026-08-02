@@ -87,21 +87,19 @@ describe("renderMarkdown", () => {
       expect(sep).toBeDefined();
     });
 
-    it("includes a blockquote legend line", () => {
-      const output = renderMarkdown(mixedResult());
-      const legendLine = output.split("\n").find((l) => l.startsWith(">"));
+    it.each([
+      { mode: "plain", options: {} },
+      { mode: "verbose", options: { verbose: true } },
+    ])("spells out no blockquote legend in $mode mode", ({ options }) => {
+      const output = renderMarkdown(mixedResult(), options);
 
-      expect(legendLine).toContain("✓ improved");
-      expect(legendLine).toContain("✗ regressed");
-      expect(legendLine).toContain("≈ unstable");
-      expect(legendLine).toContain("~ within noise");
-      expect(legendLine).toContain("`main`");
+      expect.soft(output).not.toContain("✓ improved · ✗ regressed");
+      expect(output).not.toContain("candidates are judged against");
     });
 
-    it("includes a method line naming the signed-rank test", () => {
-      const output = renderMarkdown(mixedResult());
-
-      expect(output).toContain("Wilcoxon signed-rank");
+    it("names the signed-rank test in a method line only when verbose", () => {
+      expect.soft(renderMarkdown(mixedResult())).not.toContain("Wilcoxon signed-rank");
+      expect(renderMarkdown(mixedResult(), { verbose: true })).toContain("Wilcoxon signed-rank");
     });
   });
 
@@ -830,14 +828,24 @@ describe("renderMarkdown", () => {
   });
 
   describe("when rendering the method footer", () => {
-    it("names the noise band and shows a hint when it is the only method", () => {
-      const result = createComparisonResult({
+    /** A run whose only metric fell back to the band for want of samples. */
+    function bandOnlyResult(): ComparisonResult {
+      return createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
+    }
 
-      const output = renderMarkdown(result);
+    it("names the noise band only when verbose", () => {
+      expect.soft(renderMarkdown(bandOnlyResult())).not.toContain("noise band");
+      expect(renderMarkdown(bandOnlyResult(), { verbose: true })).toContain("noise band");
+    });
 
-      expect(output).toContain("noise band");
+    it.each([
+      { mode: "plain", options: {} },
+      { mode: "verbose", options: { verbose: true } },
+    ])("hints at more samples in $mode mode", ({ options }) => {
+      const output = renderMarkdown(bandOnlyResult(), options);
+
       expect(output).toContain("re-run with --samples 6 or more");
     });
 
@@ -849,6 +857,24 @@ describe("renderMarkdown", () => {
       const output = renderMarkdown(result);
 
       expect(output).not.toContain("re-run with --samples");
+    });
+
+    it("gives each band fallback the phrasing its own cause earned", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "short/time": bandMetric({ verdict: "no-signal", delta: 1, n: 4 }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+        },
+      });
+
+      const bandLines = renderMarkdown(result, { verbose: true })
+        .split("\n")
+        .filter((line) => line.startsWith("noise band"));
+
+      expect(bandLines).toStrictEqual([
+        "noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)",
+        "noise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)",
+      ]);
     });
   });
 });

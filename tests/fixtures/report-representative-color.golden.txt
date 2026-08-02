@@ -17,8 +17,6 @@ geomean (3 stable metrics)  │            │                    │     [1m-5
   [33m≈[39m jittery/time  [33munstable[39m  [2mnoise ±30.0%[22m
   [2munstable metrics won't stabilize with more samples[22m
 
-[2mlegend: [32m✓[39m improved · [31m✗[39m regressed · [33m≈[39m unstable · ~ within noise — candidates are judged against main[22m
-[2mverdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05[22m
 1 worktree removed · 1 left behind
   left behind: /tmp/gymrat-abc (is locked)
   worktree prune failed: fatal: not a git repository

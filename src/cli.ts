@@ -320,6 +320,8 @@ interface CompareFlags extends CliFlags {
   format: "text" | "markdown" | "json";
   /** Gate conditions that cause exit 1 when any trips. Empty when `--fail-on` is not used. */
   failOn: FailOnCondition[];
+  /** Name the statistical method behind each verdict in the report footer. */
+  verbose: boolean;
 }
 
 /**
@@ -377,6 +379,7 @@ export function createProgram(): Command {
     .option("--timeout <number>", "timeout in seconds", parsePositiveInteger)
     .option("--config <file>", "configuration file path")
     .option("--no-color", "print the report without ANSI styles")
+    .option("--verbose", "name the statistical method behind each verdict", false)
     .addOption(
       new Option("--format <value>", "output format")
         .choices(["text", "markdown", "json"])
@@ -443,13 +446,14 @@ export function createProgram(): Command {
       let output: string;
       switch (options.format) {
         case "markdown":
-          output = renderMarkdown(result);
+          output = renderMarkdown(result, { verbose: options.verbose });
           break;
         case "json":
+          // Machine-readable output stays byte-identical whatever --verbose says.
           output = renderJson(result);
           break;
         case "text":
-          output = renderReport(result);
+          output = renderReport(result, { verbose: options.verbose });
           break;
         default:
           assertNever(options.format);

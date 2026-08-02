@@ -739,7 +739,7 @@ describe("compare – integration", () => {
             timeoutSeconds: 10,
           };
 
-          const report = renderReport(await compare(options));
+          const report = renderReport(await compare(options), { verbose: true });
 
           expect(report).toContain(expectedFooter);
         } finally {

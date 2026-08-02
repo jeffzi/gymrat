@@ -19,6 +19,5 @@ geomean         │            │ [1m-10.0%[22m · [2m1 stable metric[22m �
     [33m≈[39m decode/time  [33munstable[39m  [2mnoise ±30.0%[22m
   [2munstable metrics won't stabilize with more samples[22m
 
-[2mlegend: [32m✓[39m improved · [31m✗[39m regressed · [33m≈[39m unstable · ~ within noise — candidates are judged against main[22m
 [2mverdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05[22m
-[2mnoise band ±(half-range × K) — n=10 below signed-rank floor (6 pairs)[22m
+[2mnoise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)[22m

@@ -20,7 +20,6 @@ highlights
     ≈ encode/time  unstable  noise ±30.0%
   unstable metrics won't stabilize with more samples
 
-legend: ✓ improved · ✗ regressed · ≈ unstable · ~ within noise — candidates are judged against main
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)
 Hint: re-run with --samples 6 or more for statistical verdicts

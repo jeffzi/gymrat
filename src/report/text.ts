@@ -20,7 +20,7 @@ import {
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
-  legendGlosses,
+  hintFooterLines,
   type MetricCellParts,
   methodFooterLines,
   NO_GEOMEAN_CELL,
@@ -40,7 +40,12 @@ import {
   VERDICT_STYLES,
   withDisplayLabels,
 } from "./format.js";
-import type { CandidateComparison, ComparisonResult, MetricComparisons } from "./types.js";
+import type {
+  CandidateComparison,
+  ComparisonResult,
+  MetricComparisons,
+  ReportOptions,
+} from "./types.js";
 
 /** The metric name, the two measured values, and the verdict, in column order. */
 type Row = readonly [metric: string, baseline: string, candidate: string, verdict: string];
@@ -843,25 +848,13 @@ function renderComparison(result: ComparisonResult): string[] {
 }
 
 /**
- * What each glyph means, and which way round the comparison runs.
- *
- * Printed for every run, whichever method decided the verdicts: the glyphs are
- * the report's whole vocabulary, and which target is the baseline is the one
- * thing a reader cannot infer from the numbers.
- */
-function renderLegend(baseline: string): string {
-  const text = `legend: ${legendGlosses()} — candidates are judged against ${baseline}`;
-  return formatLabel(text, ["dim"]);
-}
-
-/**
  * Name the two approximate methods the verdicts came from, and — where any
- * metric fell back to the noise band — how to get a statistical verdict for
- * it instead.
+ * metric fell back to the noise band for want of samples — how to get a
+ * statistical verdict for it instead.
  *
  * `Method` has a third variant, `exact`, but it needs no line here: an exact
  * verdict is self-describing through its `(exact)` evidence, so a run where
- * every metric compared exactly prints no footer at all.
+ * every metric compared exactly prints no method line at all.
  *
  * A run can reach both approximate methods at once: each metric is paired
  * independently, so a metric that survived enough rounds gets the signed-rank
@@ -869,12 +862,14 @@ function renderLegend(baseline: string): string {
  * only the winner of a precedence order would leave the reader attributing
  * the other metric's verdict to a test that never ran on it.
  *
- * Each line reports the pair count that put its metrics on that side of the
- * six-pair floor: the fewest for signed-rank, the most for the band. Whichever
- * metric the reader picks, the line it read stays true of it.
+ * The hint outlives `verbose`, because it is the one line that tells a reader
+ * to change what they ran rather than explaining what already happened.
  */
-function renderMethodFooter(result: ComparisonResult): string[] {
-  return methodFooterLines(result.metrics, (hint) => `${formatHintLabel()} ${hint}`);
+function renderMethodFooter(result: ComparisonResult, verbose: boolean): string[] {
+  return [
+    ...(verbose ? methodFooterLines(result.metrics) : []),
+    ...hintFooterLines(result.metrics, (hint) => `${formatHintLabel()} ${hint}`),
+  ];
 }
 
 /**
@@ -961,9 +956,9 @@ function renderCandidate(
  * Render a comparison as the plain-text report the CLI prints.
  *
  * The run header comes first, then the body, and finally what speaks for the run
- * as a whole: the legend, the method footer, and any cleanup failure. Terminals
- * anchor on the last lines they printed, so each summary sits below the table it
- * summarizes rather than above it.
+ * as a whole: the method footer and any cleanup failure. Terminals anchor on the
+ * last lines they printed, so each summary sits below the table it summarizes
+ * rather than above it.
  *
  * The body's shape follows the number of candidates. One candidate gets the
  * two-column comparison it is: baseline, candidate, verdict. Two or more share a
@@ -975,7 +970,7 @@ function renderCandidate(
  * sets `NO_COLOR=1` when `--no-color` is passed or when the output format is
  * not text, so the renderer never needs a boolean flag.
  */
-export function renderReport(result: ComparisonResult): string {
+export function renderReport(result: ComparisonResult, options: ReportOptions = {}): string {
   const display = withDisplayLabels(result);
   const candidateNames = display.candidates
     .map((candidate) => formatVariantName(candidate.label))
@@ -994,12 +989,13 @@ export function renderReport(result: ComparisonResult): string {
     }
   }
 
-  lines.push(
-    "",
-    renderLegend(display.baselineLabel),
-    ...renderMethodFooter(display),
+  const footer = [
+    ...renderMethodFooter(display, options.verbose ?? false),
     ...renderWorktreeFooter(display),
-  );
+  ];
+  if (footer.length > 0) {
+    lines.push("", ...footer);
+  }
 
   return lines.join("\n");
 }

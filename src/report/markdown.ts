@@ -10,8 +10,8 @@ import {
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
+  hintFooterLines,
   isQuietRow,
-  legendGlosses,
   methodFooterLines,
   NO_GEOMEAN_CELL,
   selectHighlights,
@@ -24,6 +24,7 @@ import type {
   ComparisonResult,
   MetricComparison,
   MetricComparisons,
+  ReportOptions,
 } from "./types.js";
 
 /** One line tallying every verdict class one candidate earned. */
@@ -287,14 +288,15 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
   ];
 }
 
-/** The method footer lines, naming how each verdict was decided. */
-function renderMethodFooter(result: ComparisonResult): string[] {
-  return methodFooterLines(result.metrics, (hint) => `> *Hint: ${hint}*`);
-}
-
-/** The legend as a blockquote: what each glyph means and which target is the baseline. */
-function renderLegend(baseline: string): string {
-  return `> ${legendGlosses()} — candidates are judged against ${variantName(baseline)}`;
+/**
+ * The footer: how each verdict was decided when verbose, and — either way — the
+ * hint telling the reader when more samples would buy a statistical verdict.
+ */
+function renderMethodFooter(result: ComparisonResult, verbose: boolean): string[] {
+  return [
+    ...(verbose ? methodFooterLines(result.metrics) : []),
+    ...hintFooterLines(result.metrics, (hint) => `> *Hint: ${hint}*`),
+  ];
 }
 
 /** Summary lines — one per candidate for multi, one total for single. */
@@ -348,17 +350,16 @@ function renderTable(result: ComparisonResult): string[] {
  * table follows, with within-noise rows collapsed in a `<details>` block.
  * No ANSI codes — glyphs are plain text.
  */
-export function renderMarkdown(result: ComparisonResult): string {
+export function renderMarkdown(result: ComparisonResult, options: ReportOptions = {}): string {
   const display = withDisplayLabels(result);
   const lines = [...renderSummaryLines(display), ""];
 
   const highlights = renderHighlightLines(display);
   if (highlights.length > 0) lines.push(...highlights, "");
 
-  lines.push(...renderTable(display), "");
-  lines.push(renderLegend(display.baselineLabel));
+  lines.push(...renderTable(display));
 
-  const methodLines = renderMethodFooter(display);
+  const methodLines = renderMethodFooter(display, options.verbose ?? false);
   if (methodLines.length > 0) lines.push("", ...methodLines);
 
   return lines.join("\n");

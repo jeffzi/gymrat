@@ -165,8 +165,7 @@ describe("renderReport", () => {
         .soft(cellsOf(headerLine).map((cell) => cell.trim()))
         .toStrictEqual(["metric", '"main"', '"perf/faster-decode"', "vs main"]);
       expect.soft(output).toContain("gymrat compare");
-      expect.soft(output).toContain("geomean");
-      expect(output).toContain("legend:");
+      expect(output).toContain("geomean");
     });
   });
 
@@ -910,19 +909,62 @@ describe("renderReport", () => {
     });
   });
 
-  describe("when rendering the legend", () => {
-    it("explains every glyph and names the baseline", () => {
+  describe("when closing the report", () => {
+    it.each([
+      { mode: "plain", options: {} },
+      { mode: "verbose", options: { verbose: true } },
+    ])(
+      "spells out no legend in $mode mode, leaving the summary line to do that job",
+      ({ options }) => {
+        const result = createComparisonResult({
+          metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -10 }) },
+        });
+
+        const output = renderReport(result, options);
+
+        expect.soft(output).not.toContain("legend:");
+        expect(output).not.toContain("candidates are judged against");
+      },
+    );
+  });
+
+  describe("when the report is not verbose", () => {
+    it("stops after the highlights, naming no verdict method", () => {
       const result = createComparisonResult({
-        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -10 }) },
+        metrics: {
+          "a/time": signedRankMetric({ verdict: "improved", delta: -10 }),
+          "b/time": bandMetric({ verdict: "improved", delta: -5, n: 10, usableN: 3 }),
+        },
       });
 
-      const legend = lineStartingWith(renderReport(result), "legend:");
+      const output = renderReport(result);
 
-      expect.soft(legend).toContain("✓ improved");
-      expect.soft(legend).toContain("✗ regressed");
-      expect.soft(legend).toContain("≈ unstable");
-      expect.soft(legend).toContain("~ within noise");
-      expect(legend).toContain("candidates are judged against main");
+      expect.soft(output).not.toContain("Wilcoxon");
+      expect(output).not.toContain("noise band");
+    });
+
+    it("still hints at more samples when a metric ran short of pairs", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5, n: 4 }) },
+      });
+
+      const output = renderReport(result);
+
+      expect.soft(output).not.toContain("noise band");
+      expect(output).toContain("Hint: re-run with --samples 6 or more for statistical verdicts");
+    });
+
+    it("keeps the worktree footer below the hint", () => {
+      const result = createComparisonResult({
+        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5, n: 4 }) },
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [],
+      });
+
+      const lines = renderReport(result).split("\n");
+
+      expect.soft(lines.at(-2)).toContain("Hint:");
+      expect(lines.at(-1)).toBe("1 worktree removed · 0 left behind");
     });
   });
 
@@ -935,7 +977,7 @@ describe("renderReport", () => {
         },
       });
 
-      const output = renderReport(result);
+      const output = renderReport(result, { verbose: true });
 
       expect.soft(output).toContain("Wilcoxon signed-rank");
       expect(output).toContain("n=10 ≥ 6");
@@ -946,7 +988,7 @@ describe("renderReport", () => {
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
 
-      const output = renderReport(result);
+      const output = renderReport(result, { verbose: true });
 
       expect.soft(output).toContain("noise band ±(half-range × K)");
       expect.soft(output).toContain("below signed-rank floor (6 pairs)");
@@ -959,7 +1001,7 @@ describe("renderReport", () => {
         metrics: { "a/heap": exactMetric({ delta: -7.9 }) },
       });
 
-      const output = renderReport(result);
+      const output = renderReport(result, { verbose: true });
 
       expect.soft(output).not.toContain("Wilcoxon");
       expect.soft(output).not.toContain("noise band");
@@ -971,9 +1013,27 @@ describe("renderReport", () => {
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -10 }) },
       });
 
-      const output = renderReport(result);
+      const output = renderReport(result, { verbose: true });
 
       expect(output).not.toContain("Hint:");
+    });
+
+    it("gives each band fallback the phrasing its own cause earned", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "short/time": bandMetric({ verdict: "no-signal", delta: 1, n: 4 }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
+        },
+      });
+
+      const bandLines = renderReport(result, { verbose: true })
+        .split("\n")
+        .filter((line) => line.startsWith("noise band"));
+
+      expect(bandLines).toStrictEqual([
+        "noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)",
+        "noise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)",
+      ]);
     });
   });
 
@@ -995,7 +1055,7 @@ describe("renderReport", () => {
     }
 
     it("names each method present, with the pair counts that chose it", () => {
-      const report = renderReport(mixedMethodResult());
+      const report = renderReport(mixedMethodResult(), { verbose: true });
 
       const signedRankLine = lineStartingWith(report, "verdicts:");
       const bandLine = lineStartingWith(report, "noise band");
@@ -1402,35 +1462,13 @@ describe("renderReport", () => {
       expect(stylesAt(note, "unstable metrics")).toContain("2");
     });
 
-    it("dims the legend line overall", () => {
-      const legend = lineContaining(renderReport(colorfulResult()), "legend:");
-
-      expect(legend).toMatch(DIMMED_LINE);
-    });
-
-    it.each([
-      { glyph: "✓", code: "32", color: "green" },
-      { glyph: "✗", code: "31", color: "red" },
-      { glyph: "≈", code: "33", color: "yellow" },
-    ])("colors the legend $glyph glyph $color inside the dim line", ({ glyph, code }) => {
-      const legend = lineContaining(renderReport(colorfulResult()), "legend:");
-
-      expect(stylesAt(legend, glyph)).toContain(code);
-    });
-
-    it("leaves the legend ~ glyph uncolored", () => {
-      const legend = lineContaining(renderReport(colorfulResult()), "legend:");
-
-      expect(stylesAt(legend, "~")).toStrictEqual([]);
-    });
-
     it("dims the verdict method description", () => {
       const result = createComparisonResult({
         metrics: {
           "a/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
         },
       });
-      const method = lineContaining(renderReport(result), "Wilcoxon");
+      const method = lineContaining(renderReport(result, { verbose: true }), "Wilcoxon");
 
       expect(method).toMatch(DIMMED_LINE);
     });
@@ -1439,7 +1477,7 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const band = lineContaining(renderReport(result), "noise band");
+      const band = lineContaining(renderReport(result, { verbose: true }), "noise band");
 
       expect(band).toMatch(DIMMED_LINE);
     });
@@ -1497,8 +1535,9 @@ describe("renderReport", () => {
   });
 
   describe("when ordering the report sections", () => {
-    it("emits table, summary, highlights, legend and method in that order", () => {
-      const result = createComparisonResult({
+    /** A two-metric run whose only footer content is the signed-rank method line. */
+    function orderedResult(): ComparisonResult {
+      return createComparisonResult({
         baselineLabel: "main",
         metrics: {
           "metric1/time": signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
@@ -1513,8 +1552,10 @@ describe("renderReport", () => {
           createCandidate({ label: "faster", geomean: { value: -5, n: 1, excluded: [] } }),
         ],
       });
+    }
 
-      const lines = renderReport(result).split("\n");
+    it("emits table, summary and highlights in that order, and closes there", () => {
+      const lines = renderReport(orderedResult()).split("\n");
 
       // Each section's content is asserted by its own test; this pins the order.
       expect.soft(lines[0]).toContain('gymrat compare · baseline "main" ↔ "faster"');
@@ -1530,10 +1571,16 @@ describe("renderReport", () => {
       expect.soft(lines[10]).toBe("");
       expect.soft(lines[11]).toBe("highlights");
       expect.soft(lines[12]).toContain("metric1/time");
+      expect(lines).toHaveLength(13);
+    });
+
+    it("adds the method block below a blank line when verbose", () => {
+      const lines = renderReport(orderedResult(), { verbose: true }).split("\n");
+
+      expect.soft(lines[12]).toContain("metric1/time");
       expect.soft(lines[13]).toBe("");
-      expect.soft(lines[14]).toContain("legend:");
-      expect.soft(lines[15]).toContain("Wilcoxon signed-rank");
-      expect(lines).toHaveLength(16);
+      expect.soft(lines[14]).toContain("Wilcoxon signed-rank");
+      expect(lines).toHaveLength(15);
     });
   });
 
@@ -2017,7 +2064,7 @@ describe("renderReport", () => {
       );
     });
 
-    it("matches the recorded bytes for a run with two candidates", async () => {
+    it("matches the recorded bytes for a verbose run with two candidates", async () => {
       const result = createComparisonResult({
         candidates: [
           createCandidate({
@@ -2121,7 +2168,7 @@ describe("renderReport", () => {
         },
       });
 
-      await expect(renderReport(result)).toMatchFileSnapshot(
+      await expect(renderReport(result, { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates.golden.txt",
       );
     });
@@ -2155,7 +2202,7 @@ describe("renderReport", () => {
       );
     });
 
-    it("matches the recorded bytes for a degenerate colored run", async () => {
+    it("matches the recorded bytes for a verbose degenerate colored run", async () => {
       vi.stubEnv("FORCE_COLOR", "1");
 
       const result = createComparisonResult({
@@ -2226,12 +2273,12 @@ describe("renderReport", () => {
         worktreePruneError: "could not lock config file",
       });
 
-      await expect(renderReport(result)).toMatchFileSnapshot(
+      await expect(renderReport(result, { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-degenerate-color.golden.txt",
       );
     });
 
-    it("matches the recorded bytes for a two-candidate colored run", async () => {
+    it("matches the recorded bytes for a verbose two-candidate colored run", async () => {
       vi.stubEnv("FORCE_COLOR", "1");
 
       const result = createComparisonResult({
@@ -2292,7 +2339,7 @@ describe("renderReport", () => {
         },
       });
 
-      await expect(renderReport(result)).toMatchFileSnapshot(
+      await expect(renderReport(result, { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates-color.golden.txt",
       );
     });
