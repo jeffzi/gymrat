@@ -217,8 +217,9 @@ export function formatVerdictDelta(verdict: MetricVerdict): string {
  * The display classes whose rows carry no news worth keeping above the fold.
  *
  * Shared by every renderer: a metric that sat within the noise, measured
- * identical, or was too jittery to judge, is dimmed (text) or collapsed into a
- * `<details>` block (markdown) rather than competing with the rows that moved.
+ * identical, or was too jittery to judge, has its verdict styled to recede
+ * (text) or is collapsed into a `<details>` block (markdown) rather than
+ * competing with the rows that moved.
  */
 export const QUIET_VERDICTS: ReadonlySet<DisplayClass> = new Set([
   "within-noise",
@@ -608,31 +609,29 @@ export function formatHintLabel(stream?: NodeJS.WriteStream): string {
 }
 
 /**
- * The color each display class wears on a table row.
+ * The color each display class wears wherever the report states a verdict.
  *
- * A metric that carries no news — within noise, identical, or too unstable to
- * call — has its whole row dimmed by the renderer, so those classes ask for no
- * color of their own and `unstable` asks only for amber: the row's dim is what
- * makes it read as dim amber. Nesting a second dim inside the row's would close
- * it at the glyph and leave the rest of the row bright.
+ * Every style here is worn by the verdict itself — a glyph, a delta, a tally —
+ * never by the row or the values around it, so a class that recedes has to say
+ * so in its own color: within noise dims, identical reads cyan for "measured
+ * the same", and unstable keeps its amber warning.
  */
 export const VERDICT_STYLES: Record<DisplayClass, Style> = {
   improved: ["green"],
   regressed: ["red"],
   unstable: ["yellow"],
-  identical: [],
-  "within-noise": [],
+  identical: ["cyan"],
+  "within-noise": ["dim"],
 };
 
 /**
- * The color each display class wears in the verdict summary line.
+ * The glyph styles the legend paints — every class style but a dim one.
  *
- * Identical is the one class the summary paints differently from a row: on a
- * row it rides the row's dim, but the summary line is bright, so a color of its
- * own is what separates "measured the same" from the within-noise tally beside
- * it.
+ * The legend line is dimmed whole, and a nested dim closes at the same reset
+ * that would have ended the outer one, leaving the rest of the line bright. A
+ * class that reads dim already wears the line's, so it asks for nothing here.
  */
-const SUMMARY_STYLES: Record<DisplayClass, Style> = { ...VERDICT_STYLES, identical: ["cyan"] };
+const LEGEND_STYLES: Record<DisplayClass, Style> = { ...VERDICT_STYLES, "within-noise": [] };
 
 /**
  * Style `marker` where it sits inside an already-padded cell.
@@ -706,10 +705,10 @@ function displayCounts(
  * Renderers join these with their own separator — `"   "` for aligned text
  * columns, `" · "` for inline markdown.
  *
- * Non-zero improved/regressed/unstable/identical parts carry their class color
- * and zero-count parts are dimmed. The `within noise` segment is always dimmed
- * regardless of count — it carries no news worth highlighting. Color is
- * governed by `styleText` auto-detection.
+ * Each part carries its class color, and a part counting nothing is dimmed
+ * whatever its class — a zero is not news either way. `within noise` reads dim
+ * at any count, its class color being dim. Color is governed by `styleText`
+ * auto-detection.
  */
 export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
   const counts = displayCounts(metrics, candidateIndex);
@@ -717,7 +716,7 @@ export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: 
   const stylePart = (shown: DisplayClass): string => {
     const count = counts[shown];
     const text = `${getGlyph(shown)} ${count} ${VERDICT_GLOSSES[shown]}`;
-    const style: Style = shown === "within-noise" || count === 0 ? ["dim"] : SUMMARY_STYLES[shown];
+    const style: Style = count === 0 ? ["dim"] : VERDICT_STYLES[shown];
     return formatLabel(text, style);
   };
 
@@ -816,21 +815,16 @@ export function methodFooterLines(
  * Renderers wrap this into their own format (plain text prefix, blockquote,
  * etc.) and append the baseline attribution.
  *
- * Each glyph is painted in its verdict class color via `styleText`
- * auto-detection. The `~` glyph has no color of its own — it stays the color
- * of whatever wraps the line (typically dim).
+ * Each glyph is painted in its {@link LEGEND_STYLES} color via `styleText`
+ * auto-detection. The `~` glyph takes none of its own — it stays the color of
+ * whatever wraps the line (typically dim).
  */
 export function legendGlosses(): string {
   const glosses: readonly DisplayClass[] = ["improved", "regressed", "unstable", "within-noise"];
   return glosses
     .map((shown) => {
-      const glyph = formatLabel(getGlyph(shown), VERDICT_STYLES[shown]);
+      const glyph = formatLabel(getGlyph(shown), LEGEND_STYLES[shown]);
       return `${glyph} ${VERDICT_GLOSSES[shown]}`;
     })
     .join(" · ");
-}
-
-/** Paint a display class's glyph in the color of its class, inside an already-padded cell. */
-export function styleGlyph(cell: string, shown: DisplayClass): string {
-  return styleWithin(cell, GLYPHS[shown], VERDICT_STYLES[shown]);
 }

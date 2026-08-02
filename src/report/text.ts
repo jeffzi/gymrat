@@ -20,7 +20,6 @@ import {
   geomeanParts,
   getGlyph,
   hasUnstableHighlight,
-  isQuietRow,
   legendGlosses,
   type MetricCellParts,
   methodFooterLines,
@@ -31,7 +30,6 @@ import {
   QUIET_VERDICTS,
   selectHighlights,
   SPREAD_SEPARATOR,
-  styleGlyph,
   type Style,
   styleWithin,
   UNSTABLE_FUTILITY_NOTE,
@@ -306,9 +304,9 @@ function styleGeomeanCell(cell: string, geomean: GeomeanCell): string {
 /**
  * Style a verdict cell's glyph, and its delta when it has one, the same way.
  *
- * Shared by the multi-candidate table's bright cells and the highlights list:
- * both style a glyph and its trailing delta identically, whether that is the
- * verdict's own class color or a shared dim for a quiet cell on a bright row.
+ * Shared by every place a verdict is stated in full — the table rows, the
+ * candidate columns, the highlights list — so one verdict reads the same
+ * wherever the report repeats it.
  */
 function styleGlyphAndDelta(
   cell: string,
@@ -350,26 +348,29 @@ function styleVerdictCell(style: (cell: string) => string): CellStyler {
 /**
  * A metric row, painted by the verdict it reports.
  *
- * The glyph carries the color, and a row with no news to carry is dimmed whole.
- * Both styles land on the finished line, so the column widths behind them were
+ * Only the verdict is painted: the metric name and both figures are the row's
+ * evidence, and they read the same whichever way the verdict went. The glyph
+ * carries its class color and the noise band behind it is dim, while a quiet
+ * class — within noise, identical, unstable — carries its color across the
+ * delta as well, since a delta at full brightness is what a reader scanning the
+ * column stops on and those rows have nothing to stop for.
+ *
+ * Every style lands on the finished line, so the column widths behind them were
  * measured on plain text.
  */
 function formatMetricRow(row: MetricRow, widths: Widths): string {
   if (row.verdict === undefined) return formatRow(row.cells, widths);
 
   const outcome = displayClass(row.verdict);
-  const line = formatRow(
+  const delta = QUIET_VERDICTS.has(outcome) ? formatVerdictDelta(row.verdict) : "";
+  return formatRow(
     row.cells,
     widths,
     styleVerdictCell((cell) => {
-      let styled = styleGlyph(cell, outcome);
-      if (!QUIET_VERDICTS.has(outcome) && row.band !== "") {
-        styled = styleWithin(styled, row.band, ["dim"]);
-      }
-      return styled;
+      const styled = styleGlyphAndDelta(cell, outcome, delta, VERDICT_STYLES[outcome]);
+      return row.band === "" ? styled : styleWithin(styled, row.band, ["dim"]);
     }),
   );
-  return QUIET_VERDICTS.has(outcome) ? formatLabel(line, ["dim"]) : line;
 }
 
 /**
@@ -542,9 +543,9 @@ interface ComparisonGrid {
 /**
  * Build the table's contents in both orientations in one pass.
  *
- * Width is a property of a column and dimming a property of a row, so the layout
- * has to read the grid both ways round. Filling both here — rather than
- * transposing one into the other later — keeps every later read a plain
+ * Width is a property of a column and a rendered line a property of a row, so
+ * the layout has to read the grid both ways round. Filling both here — rather
+ * than transposing one into the other later — keeps every later read a plain
  * iteration, with nothing indexing one array by another array's position and
  * defaulting a miss that cannot happen.
  *
@@ -666,9 +667,8 @@ function renderComparisonTable(result: ComparisonResult): string[] {
       styleCell,
     );
 
-  const metricRows = rows.map((row) => {
-    const rowIsQuiet = isQuietRow(row.candidates.map((cell) => cell.outcome));
-    const rendered = line(
+  const metricRows = rows.map((row) =>
+    line(
       row.name,
       row.baselineCell,
       row.candidates.map((cell) => cell.text),
@@ -676,21 +676,10 @@ function renderComparisonTable(result: ComparisonResult): string[] {
         const candidateCell = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET];
         const outcome = candidateCell?.outcome;
         if (candidateCell === undefined || outcome === undefined) return cell;
-
-        if (!QUIET_VERDICTS.has(outcome)) {
-          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, VERDICT_STYLES[outcome]);
-        }
-
-        // Quiet cell on a bright row: dim glyph and delta individually.
-        if (!rowIsQuiet && candidateCell.verdict !== undefined) {
-          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, ["dim"]);
-        }
-
-        return styleGlyph(cell, outcome);
+        return styleGlyphAndDelta(cell, outcome, candidateCell.delta, VERDICT_STYLES[outcome]);
       },
-    );
-    return rowIsQuiet ? formatLabel(rendered, ["dim"]) : rendered;
-  });
+    ),
+  );
 
   const rule = formatTableRule(widths);
   const headers = columns.map((column) => column.header);

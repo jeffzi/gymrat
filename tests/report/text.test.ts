@@ -57,6 +57,22 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[\d+m/g, "");
 }
 
+/**
+ * The part of `cell` ahead of its verdict `glyph` — the value and its padding.
+ *
+ * A candidate column packs a value and a verdict into one cell, so this is the
+ * half that carries no verdict of its own and must stay unstyled. The escape
+ * sequences opening the verdict's own style sit right in front of the glyph, so
+ * they are trimmed off the tail rather than counted against the value.
+ */
+function valuePartOf(cell: string, glyph: string): string {
+  const index = cell.indexOf(glyph);
+  if (index === -1) {
+    throw new Error(`no ${glyph} in cell: ${JSON.stringify(cell)}`);
+  }
+  return cell.slice(0, index).replace(/(?:\x1b\[\d+m)*$/, "");
+}
+
 /** Matches a line dimmed end-to-end: opens with SGR 2, closes with SGR 22. */
 const DIMMED_LINE = /^\x1b\[2m.*\x1b\[22m$/;
 
@@ -1122,6 +1138,7 @@ describe("renderReport", () => {
           "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5, unit: "ns" }),
           "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
           "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
+          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
           "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
         },
         candidates: [
@@ -1204,25 +1221,34 @@ describe("renderReport", () => {
       expect(stylesAt(row, glyph)).toContain(code);
     });
 
-    it("paints the no-signal glyph with no color of its own", () => {
-      const row = lineContaining(renderReport(colorfulResult()), "flat/time");
+    it.each([
+      { verdict: "within noise", metric: "flat/time", glyph: "~", code: "2", color: "dim" },
+      { verdict: "identical", metric: "tied/heap", glyph: "=", code: "36", color: "cyan" },
+      { verdict: "unstable", metric: "jittery/time", glyph: "≈", code: "33", color: "amber" },
+    ])("paints the $verdict verdict $color on its row", ({ metric, glyph, code }) => {
+      const row = lineContaining(renderReport(colorfulResult()), metric);
 
-      expect(stylesAt(row, "~")).toStrictEqual([]);
+      expect(stylesAt(row, glyph)).toContain(code);
     });
 
     it.each([
       { verdict: "within noise", metric: "flat/time" },
+      { verdict: "identical", metric: "tied/heap" },
       { verdict: "unstable", metric: "jittery/time" },
-    ])("dims the whole $verdict row", ({ metric }) => {
+    ])("leaves the name and value cells of a $verdict row unstyled", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult()), metric);
 
-      expect(row).toMatch(DIMMED_LINE);
+      // Every cell but the last: the metric name and the two value columns.
+      expect(cellsOf(row).slice(0, -1).join("│")).not.toContain("\x1b[");
     });
 
     it.each([
       { verdict: "improved", metric: "faster/time" },
       { verdict: "regressed", metric: "slower/time" },
-    ])("leaves the $verdict row at full brightness", ({ metric }) => {
+      { verdict: "within noise", metric: "flat/time" },
+      { verdict: "identical", metric: "tied/heap" },
+      { verdict: "unstable", metric: "jittery/time" },
+    ])("leaves the $verdict row without an end-to-end dim", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult()), metric);
 
       expect(row).not.toMatch(DIMMED_LINE);
@@ -1296,17 +1322,6 @@ describe("renderReport", () => {
       const summary = lineContaining(renderReport(result), "identical");
 
       expect(stylesAt(summary, "=")).toContain("36");
-    });
-
-    it("paints the identical glyph on its row with no color of its own", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 3 }),
-        },
-      });
-      const row = lineContaining(renderReport(result), "tied/heap");
-
-      expect(stylesAt(row, "=")).toStrictEqual([]);
     });
 
     it("dims the within-noise segment regardless of count in the verdict summary", () => {
@@ -1724,11 +1739,46 @@ describe("renderReport", () => {
         vi.stubEnv("FORCE_COLOR", "1");
       });
 
-      it("dims a row only once every candidate on it stayed flat or unstable", () => {
-        const report = renderReport(dimmingResult());
+      it.each([{ row: "flat/time" }, { row: "mixed/time" }])(
+        "leaves the $row row without an end-to-end dim, quiet cells and all",
+        ({ row }) => {
+          expect(lineContaining(renderReport(dimmingResult()), row)).not.toMatch(DIMMED_LINE);
+        },
+      );
 
-        expect.soft(lineContaining(report, "flat/time")).toMatch(DIMMED_LINE);
-        expect(lineContaining(report, "mixed/time")).not.toMatch(DIMMED_LINE);
+      it("styles each cell's verdict by that cell's own verdict on an all-quiet row", () => {
+        const row = lineContaining(renderReport(dimmingResult()), "flat/time");
+
+        expect.soft(stylesAt(row, "~")).toContain("2");
+        expect(stylesAt(row, "≈")).toContain("33");
+      });
+
+      it("leaves the name and the values on an all-quiet row unstyled", () => {
+        const cells = cellsOf(lineContaining(renderReport(dimmingResult()), "flat/time"));
+
+        expect.soft(cells.slice(0, 2).join("│")).not.toContain("\x1b[");
+        expect.soft(valuePartOf(cells[2] ?? "", "~")).not.toContain("\x1b[");
+        expect(valuePartOf(cells[3] ?? "", "≈")).not.toContain("\x1b[");
+      });
+
+      it.each([
+        { verdict: "improved", column: 2, glyph: "✓" },
+        { verdict: "regressed", column: 3, glyph: "✗" },
+        { verdict: "unstable", column: 4, glyph: "≈" },
+      ])(
+        "leaves the $verdict cell's value plain beside its neighbors' verdicts",
+        ({ column, glyph }) => {
+          const row = lineContaining(renderReport(multiCandidateResult()), "decode/time");
+
+          expect(valuePartOf(cellsOf(row)[column] ?? "", glyph)).not.toContain("\x1b[");
+        },
+      );
+
+      it("paints an unstable N-way cell's verdict amber, as an unstable row is painted", () => {
+        const row = lineContaining(renderReport(multiCandidateResult()), "decode/time");
+
+        expect.soft(stylesAt(row, "≈")).toContain("33");
+        expect(stylesAt(row, "unstable")).toContain("33");
       });
 
       it("pads on the plain text, so the colored columns line up once the styles are stripped", () => {
