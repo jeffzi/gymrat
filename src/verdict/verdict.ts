@@ -169,9 +169,6 @@ function determineVerdict(delta: number, direction: "lower" | "higher"): Verdict
  * Pair sample windows by index for a single metric, dropping windows where
  * either side is missing it.
  *
- * @param metric Metric name to pair
- * @param samplesA Array of metric maps from the first sample set
- * @param samplesB Array of metric maps from the second sample set
  * @returns Paired values, one array per side, growing together
  */
 function pairSamples(
@@ -197,13 +194,6 @@ function pairSamples(
 
 /**
  * Compute the exact-path verdict: any difference between medians is a signal.
- *
- * @param medianA Median of sample A
- * @param medianB Median of sample B
- * @param delta Delta percentage already computed
- * @param direction "lower" or "higher"
- * @param n Number of paired samples
- * @returns A verdict from the exact method
  */
 function computeExactVerdict(
   medianA: number,
@@ -254,7 +244,6 @@ function computeExactVerdict(
  *
  * @param samplesA Array of metric maps from the first sample set (e.g., baseline)
  * @param samplesB Array of metric maps from the second sample set (e.g., candidate)
- * @param metricMeta Metadata per metric name
  * @param unstableNoisePct Noise band width, in percent, above which a metric is
  *   unstable. Compared strictly, so a metric sitting exactly on the threshold
  *   still gets a normal verdict.
@@ -310,13 +299,6 @@ export function computeVerdicts(
  *
  * Tied pairs carry no rank information, so `wilcoxonSignedRank` drops them — a
  * long but mostly identical run falls back to the band just as a short one does.
- *
- * @param pairedA Array of values from sample A
- * @param pairedB Array of values from sample B
- * @param delta Delta percentage already computed
- * @param direction "lower" or "higher"
- * @param unstableNoisePct Noise band width above which the verdict is "unstable"
- * @returns Verdict from either the signed-rank or band method
  */
 function computeApproximateVerdict(
   pairedA: readonly number[],
@@ -398,8 +380,6 @@ type Noise = {
  * contribution to the percentage is treated as 0. The absolute form divides by
  * nothing, so it stays meaningful for such a metric.
  *
- * @param pairedA Array of values from sample A
- * @param pairedB Array of values from sample B
  * @returns The noise as a percentage (never below the floor) and in raw units
  */
 function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): Noise {
@@ -425,10 +405,6 @@ function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): N
  * |delta%| > band%; no-signal when |delta%| ≤ band%, or when fewer than
  * `MIN_BAND_N` pairs make the band meaningless.
  *
- * @param pairedA Array of values from sample A
- * @param pairedB Array of values from sample B
- * @param delta Delta percentage already computed
- * @param direction "lower" or "higher"
  * @param usableN Pairs with a non-zero difference, as counted by `wilcoxonSignedRank`
  * @returns A band verdict whose `band` and `noisePct` hold the same value — the
  *   band a delta is judged against *is* the metric's own noise.
@@ -524,8 +500,6 @@ function collectNormalizedRhos(
  * - Single gating metric: geomean = that metric's ρ
  *
  * @param verdicts Verdict record from computeVerdicts
- * @param metricMeta Metadata per metric name
- * @returns Geomean result with value, count, and exclusion list
  */
 export function computeGeomean(
   verdicts: Record<string, MetricVerdict>,

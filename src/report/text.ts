@@ -474,9 +474,12 @@ function renderTable(
     if (index === 1 || index === 2) {
       return styleWithin(cell, headers[index], VARIANT_NAME_STYLE);
     }
-    // The marker is the bare baseline name, not the whole `vs …` header: the
-    // emphasis belongs to the name, and `vs` is prose around it.
-    return index === VERDICT_COLUMN ? styleWithin(cell, baseline, VARIANT_NAME_STYLE) : cell;
+    if (index === VERDICT_COLUMN) {
+      // The marker is the bare baseline name, not the whole `vs …` header: the
+      // emphasis belongs to the name, and `vs` is prose around it.
+      return styleWithin(cell, baseline, VARIANT_NAME_STYLE);
+    }
+    return cell;
   };
 
   return [

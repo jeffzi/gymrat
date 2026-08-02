@@ -1490,40 +1490,38 @@ describe("renderReport", () => {
       expect(method).toMatch(DIMMED_LINE);
     });
 
-    it("dims the noise-band description", () => {
-      const result = createComparisonResult({
+    /** A single no-signal metric that fell back to the band, so the hint and its footer render. */
+    function bandFallbackResult(): ComparisonResult {
+      return createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
       });
-      const band = lineContaining(renderReport(result, { verbose: true }), "noise band");
+    }
+
+    it("dims the noise-band description", () => {
+      const band = lineContaining(
+        renderReport(bandFallbackResult(), { verbose: true }),
+        "noise band",
+      );
 
       expect(band).toMatch(DIMMED_LINE);
     });
 
     it("styles the Hint word yellow and underlined", () => {
-      const result = createComparisonResult({
-        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
-      });
-      const hint = lineContaining(renderReport(result), "Hint");
+      const hint = lineContaining(renderReport(bandFallbackResult()), "Hint");
 
       expect.soft(stylesAt(hint, "Hint")).toContain("33");
       expect(stylesAt(hint, "Hint")).toContain("4");
     });
 
     it("styles the hint label colon yellow without underlining it", () => {
-      const result = createComparisonResult({
-        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
-      });
-      const hint = lineContaining(renderReport(result), "Hint");
+      const hint = lineContaining(renderReport(bandFallbackResult()), "Hint");
 
       expect.soft(stylesAt(hint, ":")).toContain("33");
       expect(stylesAt(hint, ":")).not.toContain("4");
     });
 
     it("renders the hint sentence text plain in colored mode", () => {
-      const result = createComparisonResult({
-        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
-      });
-      const hint = lineContaining(renderReport(result), "Hint");
+      const hint = lineContaining(renderReport(bandFallbackResult()), "Hint");
       const afterLabel = hint.slice(hint.indexOf("re-run"));
 
       expect(afterLabel).not.toContain("\x1b[2m");
@@ -1533,10 +1531,7 @@ describe("renderReport", () => {
       vi.stubEnv("FORCE_COLOR", undefined);
       vi.stubEnv("NO_COLOR", "1");
 
-      const result = createComparisonResult({
-        metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5 }) },
-      });
-      const hint = lineContaining(renderReport(result), "Hint:");
+      const hint = lineContaining(renderReport(bandFallbackResult()), "Hint:");
 
       expect(hint).not.toContain("\x1b[");
     });

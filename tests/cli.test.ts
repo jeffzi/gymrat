@@ -1670,7 +1670,7 @@ describe("formatCliError", () => {
     expect(rendered).not.toContain("Hint:");
   });
 
-  it("styles the Hint: label with ANSI yellow+underline when color is forced", () => {
+  it("styles the Hint label with ANSI yellow+underline when color is forced", () => {
     // Arrange
     vi.stubEnv("FORCE_COLOR", "1");
     const error = createCommandError("ref");
