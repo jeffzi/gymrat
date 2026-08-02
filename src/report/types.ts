@@ -74,4 +74,14 @@ export interface ReportOptions {
    * method only matters once a reader questions a verdict.
    */
   verbose?: boolean;
+
+  /**
+   * Force ANSI color on (`true`) or off (`false`) rather than detecting it.
+   *
+   * Left unset, the renderers fall back to `styleText`'s own detection: color
+   * when the stream is a TTY and the environment does not forbid it. `false`
+   * gives plain text a pipe or a file can hold verbatim; `true` keeps the color
+   * through a pager that would otherwise look like a non-TTY.
+   */
+  color?: boolean;
 }

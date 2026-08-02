@@ -62,12 +62,6 @@ export const PLUS_MINUS = "±";
  */
 export const SPREAD_SEPARATOR = ` ${PLUS_MINUS} `;
 
-/** The `± N%` suffix that follows a value, or nothing when the spread is unknown. */
-export function formatSpread(spread?: number): string {
-  if (spread === undefined) return "";
-  return `${SPREAD_SEPARATOR}${spread.toFixed(0)}%`;
-}
-
 /**
  * The scatter, relative to the median, past which a percentage stops informing.
  *
@@ -158,22 +152,26 @@ export type DisplayClass = "improved" | "regressed" | "unstable" | "identical" |
 /**
  * Which display class a verdict reads as.
  *
- * A band verdict with enough pairs for the signed-rank test but too few usable
- * ones fell back because tied pairs zeroed the differences out — the two sides
- * measured the same, which `identical` says and `within noise` does not. An
+ * `usableN` counts pairs, not a proportion of them: a band verdict with enough
+ * pairs for the signed-rank test reads `identical` only when every one of them
+ * tied (`usableN === 0`), which is the one case where the two sides truly
+ * measured the same. Anywhere `usableN` sits between `0` and `MIN_WILCOXON_N`,
+ * some pairs did differ — there was signal, just not enough of it for a
+ * statistical verdict — so that reads `within-noise` instead. An
  * `ExactVerdict` carries no `usableN`, so an exact no-signal always reads
  * `within-noise`.
  */
 export function displayClass(verdict: MetricVerdict): DisplayClass {
   if (verdict.verdict !== "no-signal") return verdict.verdict;
-  if (
-    verdict.method === "band" &&
-    verdict.n >= MIN_WILCOXON_N &&
-    verdict.usableN < MIN_WILCOXON_N
-  ) {
+  if (verdict.method === "band" && verdict.n >= MIN_WILCOXON_N && verdict.usableN === 0) {
     return "identical";
   }
   return "within-noise";
+}
+
+/** `displayClass`, or `undefined` when there is no verdict to show one for. */
+export function shownClass(verdict: MetricVerdict | undefined): DisplayClass | undefined {
+  return verdict === undefined ? undefined : displayClass(verdict);
 }
 
 const GLYPHS: Record<DisplayClass, string> = {
@@ -440,6 +438,12 @@ export function hasUnstableHighlight(highlights: readonly MetricHighlight[]): bo
   return highlights.some(({ candidate }) => displayClass(candidate.verdict) === "unstable");
 }
 
+/** One candidate's highlight entries, and whether the noise swamped any of them. */
+export interface HighlightBlock {
+  readonly entries: string[];
+  readonly unstable: boolean;
+}
+
 /**
  * Width a column needs to hold its header and every cell, never below `minWidth`.
  *
@@ -493,6 +497,39 @@ export type Style = Parameters<typeof styleText>[0];
  */
 export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteStream): string {
   return stream !== undefined ? styleText(style, label, { stream }) : styleText(style, label);
+}
+
+/** Set `name`, or unset it when `value` is `undefined` — assigning `undefined` would store the string. */
+function setEnvVar(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
+/**
+ * Run `fn` with the environment `styleText` reads pinned to `color`.
+ *
+ * `styleText` consults `FORCE_COLOR`, `NO_COLOR` and the stream's TTY-ness on
+ * every call, so an explicit color choice can only reach it through the
+ * environment. `undefined` leaves both variables alone — no choice was made, and
+ * auto-detection is what `styleText` already does. Either variable is restored
+ * afterwards, so a render cannot leak its choice into whatever runs next.
+ */
+export function withColor<T>(color: boolean | undefined, fn: () => T): T {
+  if (color === undefined) return fn();
+
+  const force = process.env.FORCE_COLOR;
+  const no = process.env.NO_COLOR;
+  try {
+    setEnvVar("FORCE_COLOR", color ? "1" : undefined);
+    setEnvVar("NO_COLOR", color ? undefined : "1");
+    return fn();
+  } finally {
+    setEnvVar("FORCE_COLOR", force);
+    setEnvVar("NO_COLOR", no);
+  }
 }
 
 /**
@@ -567,24 +604,9 @@ export function withDisplayLabels(result: ComparisonResult): ComparisonResult {
 /** The style a variant name wears where the report names it as a name. */
 export const VARIANT_NAME_STYLE: Style = ["bold", "underline"];
 
-/**
- * A variant name as it prints before {@link VARIANT_NAME_STYLE} wraps it.
- *
- * Always the bare label — emphasis (bold+underline when styling is active)
- * separates a branch name from the prose around it, and width stays the same
- * either way so column geometry is identical across modes.
- *
- * Callers padding a cell need this plain form for the width, then apply
- * {@link VARIANT_NAME_STYLE} to the padded cell; callers writing prose can take
- * {@link formatVariantName} instead.
- */
-export function variantName(label: string): string {
-  return label;
-}
-
 /** A variant name, styled — for the unpadded prose of the run header. */
 export function formatVariantName(label: string, stream?: NodeJS.WriteStream): string {
-  return formatLabel(variantName(label), VARIANT_NAME_STYLE, stream);
+  return formatLabel(label, VARIANT_NAME_STYLE, stream);
 }
 
 /** The style the word `Hint` wears — the only part of the label the underline reaches. */
@@ -815,4 +837,20 @@ export function hintFooterLines(
   formatHint: (hint: string) => string,
 ): string[] {
   return bandFallbacks(metrics).shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
+}
+
+/**
+ * The footer: how each verdict was decided when verbose, and — either way — the
+ * hint telling the reader when more samples would buy a statistical verdict.
+ *
+ * Shared by every renderer, which differ only in how they format the hint line:
+ * the text renderer prepends a styled label, the markdown renderer wraps it in
+ * a blockquote.
+ */
+export function footerLines(
+  metrics: MetricComparisons,
+  verbose: boolean,
+  formatHint: (hint: string) => string,
+): string[] {
+  return [...(verbose ? methodFooterLines(metrics) : []), ...hintFooterLines(metrics, formatHint)];
 }
