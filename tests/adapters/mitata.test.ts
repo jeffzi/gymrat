@@ -604,27 +604,43 @@ describe("mitata adapter", () => {
 
   describe("defaults()", () => {
     it.each([
-      ["test/time", { direction: "lower", unit: "ns" }],
-      ["encode/time", { direction: "lower", unit: "ns" }],
-      ["decode/x=1/time", { direction: "lower", unit: "ns" }],
-      ["complex/a=1/b=2/time", { direction: "lower", unit: "ns" }],
-    ])("returns direction: lower with ns unit for /time metric %s", (metricName, expected) => {
-      const result = mitataAdapter.defaults(metricName);
-      expect(result).toStrictEqual(expected);
-    });
+      { metricName: "test/time", shortName: "test" },
+      { metricName: "encode/time", shortName: "encode" },
+      { metricName: "decode/x=1/time", shortName: "decode/x=1" },
+      { metricName: "complex/a=1/b=2/time", shortName: "complex/a=1/b=2" },
+    ])(
+      "describes $metricName as a lower-is-better time metric shown as $shortName",
+      ({ metricName, shortName }) => {
+        const result = mitataAdapter.defaults(metricName);
+        expect(result).toStrictEqual({
+          direction: "lower",
+          unit: "ns",
+          kind: "time",
+          shortName,
+        });
+      },
+    );
 
     it.each([
-      ["test/heap", { direction: "lower", unit: "bytes" }],
-      ["encode/heap", { direction: "lower", unit: "bytes" }],
-      ["decode/x=1/heap", { direction: "lower", unit: "bytes" }],
-      ["complex/a=1/b=2/heap", { direction: "lower", unit: "bytes" }],
-    ])("returns direction: lower with bytes unit for /heap metric %s", (metricName, expected) => {
-      const result = mitataAdapter.defaults(metricName);
-      expect(result).toStrictEqual(expected);
-    });
+      { metricName: "test/heap", shortName: "test" },
+      { metricName: "encode/heap", shortName: "encode" },
+      { metricName: "decode/x=1/heap", shortName: "decode/x=1" },
+      { metricName: "complex/a=1/b=2/heap", shortName: "complex/a=1/b=2" },
+    ])(
+      "describes $metricName as a lower-is-better memory metric shown as $shortName",
+      ({ metricName, shortName }) => {
+        const result = mitataAdapter.defaults(metricName);
+        expect(result).toStrictEqual({
+          direction: "lower",
+          unit: "bytes",
+          kind: "memory",
+          shortName,
+        });
+      },
+    );
 
     it.each(["custom_metric", "test", "test/throughput", "test/ops"])(
-      "does not include unit for metric %s",
+      "omits unit, kind, and shortName for unrecognized metric %s",
       (metricName) => {
         const result = mitataAdapter.defaults(metricName);
         expect(result).toStrictEqual({ direction: "lower" });

@@ -142,27 +142,32 @@ function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, num
   return found;
 }
 
-/**
- * Reads mitata's JSON output — the shape `mitata --json` writes, with a
- * `benchmarks` array whose entries carry an `alias` and a list of `runs`.
- *
- * The JSON is located by slicing between the first `{` and the last `}` so that
- * banner text mitata prints around it does not have to be stripped by the user.
- *
- * Each run yields `<alias>/time` from `stats.p50` and, when mitata measured it,
- * `<alias>/heap` from `stats.heap.avg`. For parameterized benchmarks the `$name`
- * placeholders in the alias are substituted with `name=value`, so one mitata
- * benchmark becomes one metric per argument combination rather than collapsing
- * them all onto the same name.
- *
- * Runs that errored are skipped rather than failing the parse — a single bad
- * argument combination should not discard the rest of the run — but a parse that
- * finds no usable run at all raises {@link AdapterError}. Two runs landing on
- * one metric name warn on stderr; the last one still wins.
- */
+const METRIC_SUFFIXES = [
+  { suffix: "/time", unit: "ns", kind: "time" },
+  { suffix: "/heap", unit: "bytes", kind: "memory" },
+] as const satisfies readonly { suffix: string; unit: MetricDefaults["unit"]; kind: string }[];
+
 const mitataAdapter: Adapter = {
   name: "mitata",
 
+  /**
+   * Reads mitata's JSON output — the shape `mitata --json` writes, with a
+   * `benchmarks` array whose entries carry an `alias` and a list of `runs`.
+   *
+   * The JSON is located by slicing between the first `{` and the last `}` so that
+   * banner text mitata prints around it does not have to be stripped by the user.
+   *
+   * Each run yields `<alias>/time` from `stats.p50` and, when mitata measured it,
+   * `<alias>/heap` from `stats.heap.avg`. For parameterized benchmarks the `$name`
+   * placeholders in the alias are substituted with `name=value`, so one mitata
+   * benchmark becomes one metric per argument combination rather than collapsing
+   * them all onto the same name.
+   *
+   * Runs that errored are skipped rather than failing the parse — a single bad
+   * argument combination should not discard the rest of the run — but a parse that
+   * finds no usable run at all raises {@link AdapterError}. Two runs landing on
+   * one metric name warn on stderr; the last one still wins.
+   */
   parse(stdout: string): Record<string, number> {
     const json = extractJson(stdout);
     const benchmarks = parseBenchmarks(json);
@@ -183,12 +188,15 @@ const mitataAdapter: Adapter = {
   },
 
   defaults(metricName: string): MetricDefaults {
-    if (metricName.endsWith("/time")) {
-      return { direction: "lower", unit: "ns" };
-    }
-
-    if (metricName.endsWith("/heap")) {
-      return { direction: "lower", unit: "bytes" };
+    for (const { suffix, unit, kind } of METRIC_SUFFIXES) {
+      if (metricName.endsWith(suffix)) {
+        return {
+          direction: "lower",
+          unit,
+          kind,
+          shortName: metricName.slice(0, -suffix.length),
+        };
+      }
     }
 
     return { direction: "lower" };

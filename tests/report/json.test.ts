@@ -6,6 +6,7 @@ import { renderJson } from "../../src/report/json.js";
 import {
   createCandidate,
   createComparisonResult,
+  metricMeta,
   signedRankMetric,
   bandMetric,
   exactMetric,
@@ -249,7 +250,7 @@ describe("renderJson", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("sparse/time", { unit: "ns" }),
           },
         },
       });
@@ -288,7 +289,7 @@ describe("renderJson", () => {
                 // No data for beta
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/time", { unit: "ns" }),
           },
         },
       });
@@ -331,7 +332,7 @@ describe("renderJson", () => {
               // Measured on every round, but never paired with the baseline.
               { median: 95, spread: 3 },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/time", { unit: "ns" }),
           },
         },
       });

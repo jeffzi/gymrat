@@ -7,6 +7,7 @@ import type { ComparisonResult } from "../../src/report/types.js";
 import {
   createCandidate,
   createComparisonResult,
+  metricMeta,
   multiCandidateResult,
   signedRankMetric,
   bandMetric,
@@ -242,7 +243,7 @@ describe("renderReport", () => {
             baselineMedian: 2048,
             baselineSpread: 2,
             candidates: [{}],
-            meta: { direction: "lower", gating: false, exact: false, unit: "ns" },
+            meta: metricMeta("old-only/time", { gating: false, unit: "ns" }),
           },
         },
       });
@@ -265,7 +266,7 @@ describe("renderReport", () => {
                 verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 10 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: true },
+            meta: metricMeta("nan-delta/count", { exact: true }),
           },
         },
       });
@@ -454,7 +455,7 @@ describe("renderReport", () => {
             candidates: [
               { median: 120, verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 10 } },
             ],
-            meta: { direction: "lower", gating: true, exact: true },
+            meta: metricMeta("second/metric", { exact: true }),
           },
         }),
       );
@@ -570,7 +571,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/time", { unit: "ns" }),
           },
           "encode/time": {
             baselineMedian: 914,
@@ -603,7 +604,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("encode/time", { unit: "ns" }),
           },
         },
       });
@@ -850,7 +851,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("tied/time", { unit: "ns" }),
           },
         },
       });
@@ -1931,7 +1932,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/text=digits/time", { unit: "ns" }),
           },
           "decode/text=words/time": {
             baselineMedian: 3065,
@@ -1951,7 +1952,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/text=words/time", { unit: "ns" }),
           },
           "encode/time": {
             baselineMedian: 914,
@@ -1971,7 +1972,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("encode/time", { unit: "ns" }),
           },
           "encode/heap": {
             baselineMedian: 49152,
@@ -1983,7 +1984,7 @@ describe("renderReport", () => {
                 verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: true, unit: "bytes" },
+            meta: metricMeta("encode/heap", { exact: true, unit: "bytes" }),
           },
         },
         candidates: [createCandidate({ geomean: { value: -6, n: 4, excluded: [] } })],
@@ -2009,7 +2010,7 @@ describe("renderReport", () => {
                 verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: true, unit: "ns" },
+            meta: metricMeta("zero-median/time", { exact: true, unit: "ns" }),
           },
           "nan-delta/count": {
             baselineMedian: 0,
@@ -2019,13 +2020,13 @@ describe("renderReport", () => {
                 verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: true },
+            meta: metricMeta("nan-delta/count", { exact: true }),
           },
           "old-side-only/time": {
             baselineMedian: 2048,
             baselineSpread: 2,
             candidates: [{}],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("old-side-only/time", { unit: "ns" }),
           },
           "throughput/ops": {
             baselineMedian: 1200,
@@ -2046,7 +2047,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "higher", gating: false, exact: false },
+            meta: metricMeta("throughput/ops", { direction: "higher", gating: false }),
           },
         },
         candidates: [
@@ -2118,7 +2119,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/text=digits/time", { unit: "ns" }),
           },
           "encode/time": {
             baselineMedian: 914,
@@ -2155,7 +2156,7 @@ describe("renderReport", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("encode/time", { unit: "ns" }),
           },
           "encode/heap": {
             baselineMedian: 49152,
@@ -2169,7 +2170,7 @@ describe("renderReport", () => {
               },
               {},
             ],
-            meta: { direction: "lower", gating: true, exact: true, unit: "bytes" },
+            meta: metricMeta("encode/heap", { exact: true, unit: "bytes" }),
           },
         },
       });

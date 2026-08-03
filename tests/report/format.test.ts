@@ -62,7 +62,7 @@ function metricFor(
         noiseAbs: noisePct,
       },
     })),
-    meta: { direction, gating: true, exact: false },
+    meta: { direction, gating: true, exact: false, kind: "other", shortName: "time" },
   };
 }
 
@@ -117,7 +117,7 @@ function oneSidedMetric(): MetricEntry {
     baselineMedian: 100,
     baselineSpread: 1,
     candidates: [{}],
-    meta: { direction: "lower", gating: false, exact: false },
+    meta: { direction: "lower", gating: false, exact: false, kind: "other", shortName: "time" },
   };
 }
 

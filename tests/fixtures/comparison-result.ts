@@ -8,6 +8,21 @@ import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
 export type Metrics = ComparisonResult["metrics"];
 export type MetricEntry = Metrics[string];
 
+/** A `MetricEntry["meta"]` block, defaulting to a lower-is-better, gating, non-exact "other" metric. */
+export function metricMeta(
+  shortName: string,
+  overrides: Partial<MetricEntry["meta"]> = {},
+): MetricEntry["meta"] {
+  return {
+    direction: "lower",
+    gating: true,
+    exact: false,
+    kind: "other",
+    shortName,
+    ...overrides,
+  };
+}
+
 /**
  * One candidate's run-level results, judged against the shared baseline.
  *
@@ -86,7 +101,7 @@ export function signedRankMetric(options: {
         verdict: { verdict, method: "signed-rank", delta, n, p, noisePct, noiseAbs },
       },
     ],
-    meta: { direction: "lower", gating, exact: false, unit },
+    meta: { direction: "lower", gating, exact: false, unit, kind: "other", shortName: "time" },
   };
 }
 
@@ -134,7 +149,7 @@ export function bandMetric(
         },
       },
     ],
-    meta: { direction, gating: true, exact: false },
+    meta: { direction, gating: true, exact: false, kind: "other", shortName: "time" },
   };
 }
 
@@ -161,7 +176,7 @@ export function exactMetric(options: {
         verdict: { verdict: delta < 0 ? "improved" : "regressed", method: "exact", delta, n },
       },
     ],
-    meta: { direction: "lower", gating: true, exact: true, unit },
+    meta: { direction: "lower", gating: true, exact: true, unit, kind: "other", shortName: "heap" },
   };
 }
 
@@ -186,7 +201,14 @@ export function nWayMetric(
     baselineMedian: 100,
     baselineSpread: 1,
     candidates: entries,
-    meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+    meta: {
+      direction: "lower",
+      gating: true,
+      exact: false,
+      unit: "ns",
+      kind: "other",
+      shortName: "time",
+    },
   };
 }
 
@@ -259,7 +281,14 @@ export function multiCandidateResult(candidateCount: 2 | 3 = 3): ComparisonResul
         baselineMedian: 100,
         baselineSpread: 1,
         candidates: metricCandidates,
-        meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+        meta: {
+          direction: "lower",
+          gating: true,
+          exact: false,
+          unit: "ns",
+          kind: "other",
+          shortName: "decode/time",
+        },
       },
     },
   });

@@ -30,7 +30,12 @@ describe("getAdapter registry", () => {
       }),
       parseExpected: metricRecord({ "test/time": 42 }),
       defaultsInput: "test/time",
-      defaultsExpected: { direction: "lower", unit: "ns" },
+      defaultsExpected: {
+        direction: "lower",
+        unit: "ns",
+        kind: "time",
+        shortName: "test",
+      },
     },
   ];
 

@@ -5,6 +5,7 @@ import type { ComparisonResult } from "../../src/report/types.js";
 import {
   createCandidate,
   createComparisonResult,
+  metricMeta,
   multiCandidateResult,
   signedRankMetric,
   bandMetric,
@@ -186,7 +187,7 @@ describe("renderMarkdown", () => {
               },
               { median: 950, spread: 3 },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/time", { unit: "ns" }),
           },
         },
       });
@@ -230,7 +231,7 @@ describe("renderMarkdown", () => {
               },
               {},
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("decode/time", { unit: "ns" }),
           },
         },
       });
@@ -588,7 +589,7 @@ describe("renderMarkdown", () => {
                 },
               },
             ],
-            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+            meta: metricMeta("jittery/time", { unit: "ns" }),
           },
         },
       });

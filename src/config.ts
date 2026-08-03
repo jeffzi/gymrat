@@ -4,7 +4,7 @@ import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 
-import type { Adapter } from "./adapters/types.js";
+import type { Adapter, MetricDefaults } from "./adapters/types.js";
 import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
@@ -33,6 +33,14 @@ const metricEntrySchema = Type.Object(
  */
 const metricsSchema = Type.Record(Type.String(), metricEntrySchema, expected("an object"));
 
+const kindEntrySchema = Type.Object(
+  { gating: Type.Optional(Type.Boolean(expected("a boolean"))) },
+  strictObjectOptions,
+);
+
+/** Kind names come from the adapter, so — like metric names — any string key is accepted. */
+const kindsSchema = Type.Record(Type.String(), kindEntrySchema, expected("an object"));
+
 /** The `gymrat.json` schema — every field optional, since flags can supply any of them. */
 const configFileSchema = Type.Object(
   {
@@ -46,6 +54,7 @@ const configFileSchema = Type.Object(
       Type.Number({ ...expected("a positive number"), exclusiveMinimum: 0 }),
     ),
     metrics: Type.Optional(metricsSchema),
+    kinds: Type.Optional(kindsSchema),
   },
   strictObjectOptions,
 );
@@ -56,6 +65,8 @@ const configFileValidator = compile(configFileSchema);
 export type ConfigFile = Static<typeof configFileSchema>;
 /** A string-keyed record of per-metric overrides (direction, gating, exact), derived from the config file's `metrics` section. */
 export type ConfigMetrics = Static<typeof metricsSchema>;
+/** A kind-keyed record of overrides that apply to every metric of that kind, derived from the config file's `kinds` section. */
+export type ConfigKinds = Static<typeof kindsSchema>;
 
 /** Command-line overrides, named after the flags rather than the config keys. */
 export interface CliFlags {
@@ -76,14 +87,17 @@ export interface ResolvedConfig {
   timeoutSeconds: number;
   unstableNoisePct: number;
   metrics?: ConfigMetrics;
+  kinds?: ConfigKinds;
 }
 
 /** One metric's settled metadata, after adapter defaults and config overrides are merged. */
 export type ResolvedMetricMeta = {
-  direction: "lower" | "higher";
+  direction: MetricDefaults["direction"];
   gating: boolean;
   exact: boolean;
-  unit?: "ns" | "bytes";
+  kind: string;
+  shortName: string;
+  unit?: MetricDefaults["unit"];
 };
 
 /**
@@ -188,6 +202,7 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
   const timeoutSeconds = flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds;
   const unstableNoisePct = configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct;
   const metrics = configFile.metrics ? metricRecord(Object.entries(configFile.metrics)) : undefined;
+  const kinds = configFile.kinds ? metricRecord(Object.entries(configFile.kinds)) : undefined;
 
   if (!bench) {
     throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
@@ -201,38 +216,51 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
     unstableNoisePct,
     ...(prepare !== undefined && { prepare }),
     ...(metrics !== undefined && { metrics }),
+    ...(kinds !== undefined && { kinds }),
   };
 }
+
+/** The kind an adapter's metric falls under when it reports none. */
+const DEFAULT_METRIC_KIND = "other";
 
 function resolveOneMetric(
   metricName: string,
   configMetrics: ConfigFile["metrics"],
   adapter: Adapter,
+  configKinds: ConfigFile["kinds"],
 ): ResolvedMetricMeta {
   const adapterDefaults = adapter.defaults(metricName);
   const configEntry = configMetrics?.[metricName];
+  const kind = adapterDefaults.kind ?? DEFAULT_METRIC_KIND;
 
   return {
     direction: configEntry?.direction ?? adapterDefaults.direction,
-    gating: configEntry?.gating ?? true,
+    gating: configEntry?.gating ?? configKinds?.[kind]?.gating ?? true,
     exact: configEntry?.exact ?? false,
+    kind,
+    shortName: adapterDefaults.shortName ?? metricName,
     ...(adapterDefaults.unit !== undefined && { unit: adapterDefaults.unit }),
   };
 }
 
 /**
  * Resolve per-metric metadata by merging adapter defaults with config overrides.
- * Config entries for metrics not in metricNames are silently ignored.
+ *
+ * Gating is settled by the narrowest source that names the metric: an exact
+ * `metrics` entry, then the `kinds` entry for the kind the adapter reports, then
+ * gating on. Config entries — metric or kind — that nothing in the run matches
+ * are silently ignored.
  */
 export function resolveMetricMeta(
   metricNames: readonly string[],
   configMetrics: ConfigFile["metrics"],
   adapter: Adapter,
+  configKinds?: ConfigFile["kinds"],
 ): Record<string, ResolvedMetricMeta> {
   return metricRecord(
     metricNames.map((name): [string, ResolvedMetricMeta] => [
       name,
-      resolveOneMetric(name, configMetrics, adapter),
+      resolveOneMetric(name, configMetrics, adapter, configKinds),
     ]),
   );
 }

@@ -26,7 +26,11 @@ import { renderJson } from "../src/report/json.js";
 import { renderMarkdown } from "../src/report/markdown.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
-import { createCandidate, createComparisonResult } from "./fixtures/comparison-result.js";
+import {
+  createCandidate,
+  createComparisonResult,
+  metricMeta,
+} from "./fixtures/comparison-result.js";
 
 // `...actual` is spread so CommandError passes through unmocked and tests can construct real instances.
 vi.mock("../src/compare.js", async (importOriginal) => {
@@ -227,7 +231,7 @@ function createColorSensitiveResult(): ComparisonResult {
             },
           },
         ],
-        meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+        meta: metricMeta("decode/time", { unit: "ns" }),
       },
     },
   });
@@ -1260,7 +1264,7 @@ describe("createProgram", () => {
                     },
                   },
                 ],
-                meta: { direction: "lower", gating: true, exact: false },
+                meta: metricMeta("decode/time"),
               },
             },
           });
@@ -1554,7 +1558,7 @@ describe("createProgram", () => {
                   },
                 },
               ],
-              meta: { direction: "lower", gating, exact: false },
+              meta: metricMeta("decode/time", { gating }),
             },
           },
         });

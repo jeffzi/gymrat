@@ -21,10 +21,18 @@ export interface Adapter {
  *
  * `unit` is omitted when the adapter cannot tell, in which case the report
  * prints the raw value rather than scaling it.
+ *
+ * `kind` groups metrics an adapter emits for the same benchmark under one label
+ * (mitata emits both a `time` and a `memory` metric per benchmark), and
+ * `shortName` is that benchmark's name with the kind suffix stripped. Both are
+ * omitted when the adapter cannot tell, leaving the full metric name as the only
+ * thing the report can show.
  */
 export interface MetricDefaults {
   direction: "lower" | "higher";
   unit?: "ns" | "bytes";
+  kind?: string;
+  shortName?: string;
 }
 
 /**

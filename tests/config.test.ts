@@ -315,6 +315,65 @@ describe("loadConfigFile", () => {
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency\.threshold/);
     });
   });
+
+  describe("when the config file has a kinds section", () => {
+    it("returns the parsed per-kind overrides", () => {
+      const config = { kinds: { memory: { gating: false }, time: {} } };
+      tmpdir = createConfigFile(config);
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual(config);
+    });
+  });
+
+  describe("when kinds is not an object", () => {
+    it.each([
+      { description: "an array", value: [] },
+      { description: "a string", value: "memory" },
+      { description: "a number", value: 3 },
+      { description: "null", value: null },
+    ])("throws naming kinds when it is $description", ({ value }) => {
+      tmpdir = createConfigFile({ kinds: value });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/kinds.*object/);
+    });
+  });
+
+  describe("when a kinds entry is not an object", () => {
+    it("throws naming the offending kind", () => {
+      tmpdir = createConfigFile({ kinds: { memory: false } });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/kinds\.memory.*object/);
+    });
+  });
+
+  describe("when a kinds entry has a non-boolean gating flag", () => {
+    it.each([
+      { description: "a string", value: "yes" },
+      { description: "a number", value: 1 },
+      { description: "null", value: null },
+    ])("throws naming kinds.memory.gating when it is $description", ({ value }) => {
+      tmpdir = createConfigFile({ kinds: { memory: { gating: value } } });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(/kinds\.memory\.gating.*boolean/);
+    });
+  });
+
+  describe("when a kinds entry contains an unknown key", () => {
+    it("throws an error that names the offending key by its dotted path", () => {
+      tmpdir = createConfigFile({ kinds: { memory: { gating: false, threshold: 5 } } });
+      const configPath = path.join(tmpdir, "gymrat.json");
+
+      expect(() => loadConfigFile(configPath)).toThrow(
+        /Unknown config key: kinds\.memory\.threshold/,
+      );
+    });
+  });
 });
 
 describe("resolveConfig", () => {
@@ -487,6 +546,25 @@ describe("resolveConfig", () => {
     });
   });
 
+  describe("when the config file has a kinds section", () => {
+    it("propagates the per-kind overrides to the resolved config", () => {
+      const kinds = { memory: { gating: false } };
+      tmpdir = createConfigFile({ bench: "config-bench", kinds });
+      process.chdir(tmpdir);
+
+      const result = resolveConfig({});
+
+      expect(result).toStrictEqual({
+        bench: "config-bench",
+        adapter: "metric-lines",
+        samples: 10,
+        timeoutSeconds: 1800,
+        unstableNoisePct: 200,
+        kinds: metricRecord(kinds),
+      });
+    });
+  });
+
   describe("when the config file has no metrics section", () => {
     it("omits metrics from the resolved config", () => {
       tmpdir = createConfigFile({ bench: "config-bench" });
@@ -515,7 +593,7 @@ describe("resolveConfig", () => {
 
 describe("resolveMetricMeta", () => {
   describe("when configMetrics is undefined and adapter returns direction only", () => {
-    it("resolves to adapter direction with gating true and exact false, no unit", () => {
+    it("defaults gating true, exact false, kind other, and shortName to the metric name", () => {
       const mockAdapter = createMockAdapter();
 
       const result = resolveMetricMeta(["response-time"], undefined, mockAdapter);
@@ -526,6 +604,8 @@ describe("resolveMetricMeta", () => {
             direction: "lower",
             gating: true,
             exact: false,
+            kind: "other",
+            shortName: "response-time",
           },
         }),
       );
@@ -548,6 +628,32 @@ describe("resolveMetricMeta", () => {
             unit: "ns",
             gating: true,
             exact: false,
+            kind: "other",
+            shortName: "response-time",
+          },
+        }),
+      );
+    });
+  });
+
+  describe("when adapter reports a kind and a short name", () => {
+    it("carries both onto the resolved metadata", () => {
+      const mockAdapter = createMockAdapter(() => ({
+        direction: "lower" as const,
+        kind: "memory",
+        shortName: "heap",
+      }));
+
+      const result = resolveMetricMeta(["bench-a/heap"], undefined, mockAdapter);
+
+      expect(result).toStrictEqual(
+        metricRecord({
+          "bench-a/heap": {
+            direction: "lower",
+            gating: true,
+            exact: false,
+            kind: "memory",
+            shortName: "heap",
           },
         }),
       );
@@ -569,6 +675,8 @@ describe("resolveMetricMeta", () => {
             direction: "higher",
             gating: true,
             exact: false,
+            kind: "other",
+            shortName: "throughput",
           },
         }),
       );
@@ -590,6 +698,8 @@ describe("resolveMetricMeta", () => {
             direction: "lower",
             gating: false,
             exact: false,
+            kind: "other",
+            shortName: "response-time",
           },
         }),
       );
@@ -611,6 +721,8 @@ describe("resolveMetricMeta", () => {
             direction: "lower",
             gating: true,
             exact: true,
+            kind: "other",
+            shortName: "response-time",
           },
         }),
       );
@@ -636,6 +748,8 @@ describe("resolveMetricMeta", () => {
             unit: "bytes",
             gating: false,
             exact: false,
+            kind: "other",
+            shortName: "memory-usage",
           },
         }),
       );
@@ -663,11 +777,15 @@ describe("resolveMetricMeta", () => {
             unit: "ns",
             gating: false,
             exact: false,
+            kind: "other",
+            shortName: "response-time",
           },
           throughput: {
             direction: "higher",
             gating: true,
             exact: true,
+            kind: "other",
+            shortName: "throughput",
           },
         }),
       );
@@ -690,6 +808,108 @@ describe("resolveMetricMeta", () => {
             direction: "lower",
             gating: false,
             exact: false,
+            kind: "other",
+            shortName: "response-time",
+          },
+        }),
+      );
+    });
+  });
+
+  describe("when a kind sets gating", () => {
+    it("applies that gating only to the metrics reporting that kind", () => {
+      const mockAdapter = createMockAdapter((name: string) =>
+        name.endsWith("/heap")
+          ? { direction: "lower" as const, kind: "memory", shortName: "heap" }
+          : { direction: "lower" as const, kind: "time", shortName: "time" },
+      );
+      const configKinds = { memory: { gating: false } };
+
+      const result = resolveMetricMeta(
+        ["bench-a/heap", "bench-a/time"],
+        undefined,
+        mockAdapter,
+        configKinds,
+      );
+
+      expect(result).toStrictEqual(
+        metricRecord({
+          "bench-a/heap": {
+            direction: "lower",
+            gating: false,
+            exact: false,
+            kind: "memory",
+            shortName: "heap",
+          },
+          "bench-a/time": {
+            direction: "lower",
+            gating: true,
+            exact: false,
+            kind: "time",
+            shortName: "time",
+          },
+        }),
+      );
+    });
+  });
+
+  describe("when a kind entry names a kind no metric reports", () => {
+    it("ignores the entry", () => {
+      const mockAdapter = createMockAdapter(() => ({
+        direction: "lower" as const,
+        kind: "memory",
+        shortName: "heap",
+      }));
+      const configKinds = { io: { gating: false } };
+
+      const result = resolveMetricMeta(["bench-a/heap"], undefined, mockAdapter, configKinds);
+
+      expect(result).toStrictEqual(
+        metricRecord({
+          "bench-a/heap": {
+            direction: "lower",
+            gating: true,
+            exact: false,
+            kind: "memory",
+            shortName: "heap",
+          },
+        }),
+      );
+    });
+  });
+
+  describe("when a metric entry and its kind disagree about gating", () => {
+    it("lets the exact metric name win over the kind", () => {
+      const mockAdapter = createMockAdapter((name: string) => ({
+        direction: "lower" as const,
+        kind: "memory",
+        shortName: name.split("/").at(-1) ?? name,
+      }));
+      const configMetrics = { "bench-a/heap": { gating: true } };
+      const configKinds = { memory: { gating: false } };
+
+      const result = resolveMetricMeta(
+        ["bench-a/heap", "bench-a/rss"],
+        configMetrics,
+        mockAdapter,
+        configKinds,
+      );
+
+      expect(result).toStrictEqual(
+        metricRecord({
+          "bench-a/heap": {
+            direction: "lower",
+            gating: true,
+            exact: false,
+            kind: "memory",
+            shortName: "heap",
+          },
+          "bench-a/rss": {
+            direction: "lower",
+            gating: false,
+            exact: false,
+            kind: "memory",
+            shortName: "rss",
           },
         }),
       );
