@@ -27,14 +27,37 @@ import type { ComparisonResult, MetricComparisons } from "./report/types.js";
  */
 function parsePositional(positional: string): TargetSpec {
   const eqIndex = positional.indexOf("=");
-  if (eqIndex === -1) {
-    return { label: undefined, target: positional };
+  const label = eqIndex === -1 ? undefined : positional.slice(0, eqIndex);
+  const target = eqIndex === -1 ? positional : positional.slice(eqIndex + 1);
+
+  /*
+   * An empty half is always a typo, and both halves fail silently rather than
+   * loudly: an empty target resolves to the working directory, so `old=` would
+   * benchmark whatever the user happens to have checked out, and an empty label
+   * leaves the report's header cells holding nothing but ANSI escapes.
+   */
+  if (label === "") {
+    throw new InvalidArgumentError(
+      'the label before "=" is empty; write the positional as "label=<ref|dir>" or drop the "=".',
+    );
   }
-  return { label: positional.slice(0, eqIndex), target: positional.slice(eqIndex + 1) };
+  if (target === "") {
+    throw new InvalidArgumentError(
+      'the target is empty; write the positional as "[label=]<ref|dir>".',
+    );
+  }
+
+  return { label, target };
+}
+
+/** Accumulate parsed candidate positionals as Commander walks the variadic argument. */
+function collectPositional(value: string, previous: readonly TargetSpec[]): TargetSpec[] {
+  return [...previous, parsePositional(value)];
 }
 
 /**
- * Coerce a numeric flag value to a positive integer, rejecting anything else.
+ * Build a coercer for a numeric flag value, rejecting anything that is not a
+ * positive integer at or below `max`.
  *
  * `parseInt` is too permissive for flag values: it returns `NaN` for
  * non-numeric input and silently truncates trailing garbage (`"10abc"` → `10`).
@@ -44,16 +67,41 @@ function parsePositional(positional: string): TargetSpec {
  * Throwing `InvalidArgumentError` lets Commander render a usage error naming
  * the offending flag and value.
  */
-function parsePositiveInteger(value: string): number {
-  const parsed = Number(value);
-  if (!/^\d+$/.test(value) || parsed <= 0) {
-    throw new InvalidArgumentError("must be a positive integer.");
-  }
-  return parsed;
+function parsePositiveIntegerUpTo(max: number): (value: string) => number {
+  return (value: string): number => {
+    const parsed = Number(value);
+    if (!/^\d+$/.test(value) || parsed <= 0) {
+      throw new InvalidArgumentError("must be a positive integer.");
+    }
+    if (parsed > max) {
+      throw new InvalidArgumentError(`must be a positive integer no greater than ${max}.`);
+    }
+    return parsed;
+  };
 }
+
+/** The largest delay `setTimeout` can hold: milliseconds in a signed 32-bit integer. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * A timeout is expanded to milliseconds before it reaches `setTimeout`, which
+ * silently fires immediately once the delay overflows {@link MAX_TIMER_MS} —
+ * turning an over-large timeout into no timeout at all.
+ */
+const MAX_TIMEOUT_SECONDS = Math.floor(MAX_TIMER_MS / 1000);
 
 /** A parsed `--fail-on` condition: either a `regressed` check or a geomean threshold. */
 type FailOnCondition = { kind: "regressed" } | { kind: "geomean"; pct: number };
+
+/**
+ * Matches the percentage of a `geomean:<pct>` condition.
+ *
+ * The percentage is pinned to plain decimal notation because `Number` is far
+ * looser than the grammar this flag documents: it reads `""` and `" "` as 0 and
+ * `"0x10"` as 16, so a truncated or mistyped threshold would silently become a
+ * gate the user never asked for.
+ */
+const GEOMEAN_CONDITION_RE = /^geomean:(-?\d+(?:\.\d+)?)$/;
 
 /**
  * Accepts `regressed` or `geomean:<number>`. Throws `InvalidArgumentError`
@@ -65,7 +113,7 @@ function parseFailOn(value: string, previous: FailOnCondition[]): FailOnConditio
     return previous;
   }
 
-  const match = /^geomean:(.+)$/.exec(value);
+  const match = GEOMEAN_CONDITION_RE.exec(value);
   const pct = match ? Number(match[1]) : NaN;
   if (Number.isFinite(pct)) {
     previous.push({ kind: "geomean", pct });
@@ -85,7 +133,17 @@ function gatingMetrics(metrics: MetricComparisons): MetricComparisons {
   return Object.fromEntries(Object.entries(metrics).filter(([, metric]) => metric.meta.gating));
 }
 
-/** Returns `true` when any condition trips — meaning the process should exit 1. */
+/**
+ * Returns `true` when any condition trips — meaning the process should exit 1.
+ *
+ * A geomean threshold is inclusive: `geomean:2` trips at exactly +2.0%, matching
+ * the "at or worse" contract the README states.
+ *
+ * A candidate whose geomean aggregated nothing (`n === 0`) can never trip the
+ * geomean gate. Its `value` is a placeholder 0, so comparing it against a
+ * threshold of 0 or less would report a regression nobody measured;
+ * {@link warnEmptyGeomeanGates} tells the user the gate was vacuous instead.
+ */
 function shouldFailGate(conditions: readonly FailOnCondition[], result: ComparisonResult): boolean {
   if (conditions.length === 0) return false;
 
@@ -96,11 +154,36 @@ function shouldFailGate(conditions: readonly FailOnCondition[], result: Comparis
       case "regressed":
         return result.candidates.some((_, i) => countVerdicts(gating, i).regressed > 0);
       case "geomean":
-        return result.candidates.some((candidate) => candidate.geomean.value > condition.pct);
+        return result.candidates.some(
+          (candidate) => candidate.geomean.n > 0 && candidate.geomean.value >= condition.pct,
+        );
       default:
         return assertNever(condition);
     }
   });
+}
+
+/**
+ * Warn once per candidate whose geomean gate has nothing to judge.
+ *
+ * Every gating metric being excluded — all unstable, or all turned off in the
+ * config — leaves a geomean gate that can never trip. Passing silently would
+ * read as "the threshold held"; the warning distinguishes that from a gate that
+ * was never evaluated.
+ */
+function warnEmptyGeomeanGates(
+  conditions: readonly FailOnCondition[],
+  result: ComparisonResult,
+): void {
+  if (!conditions.some((condition) => condition.kind === "geomean")) return;
+
+  for (const candidate of result.candidates) {
+    if (candidate.geomean.n === 0) {
+      process.stderr.write(
+        `warning: geomean gate for "${candidate.label}" had no stable gating metrics to measure\n`,
+      );
+    }
+  }
 }
 
 /**
@@ -388,13 +471,26 @@ export function createProgram(): Command {
   const compareCmd = program
     .command("compare")
     .description("Compare one baseline revision against one or more candidates")
-    .argument("<baseline>", "[label=]<ref|dir> to measure against")
-    .argument("<candidates...>", "[label=]<ref|dir>, each judged against the baseline")
+    .argument("<baseline>", "[label=]<ref|dir> to measure against", parsePositional)
+    .argument(
+      "<candidates...>",
+      "[label=]<ref|dir>, each judged against the baseline",
+      collectPositional,
+      [] as TargetSpec[],
+    )
     .option("--bench <cmd>", "bench command")
     .option("--prepare <script>", "preparation script to run before each revision")
     .option("--adapter <type>", "adapter type for parsing benchmark output")
-    .option("--samples <number>", "paired samples per target", parsePositiveInteger)
-    .option("--timeout <number>", "timeout in seconds", parsePositiveInteger)
+    .option(
+      "--samples <number>",
+      "paired samples per target",
+      parsePositiveIntegerUpTo(Number.MAX_SAFE_INTEGER),
+    )
+    .option(
+      "--timeout <number>",
+      "timeout in seconds",
+      parsePositiveIntegerUpTo(MAX_TIMEOUT_SECONDS),
+    )
     .option("--config <file>", "configuration file path")
     .option("--no-color", "print the report without ANSI styles")
     .option("--verbose", "name the statistical method behind each verdict", false)
@@ -410,7 +506,7 @@ export function createProgram(): Command {
       [] as FailOnCondition[],
     )
     .configureHelp(createHelpConfig())
-    .action(async (baselineArg: string, candidateArgs: string[], options: CompareFlags) => {
+    .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
       let result: ComparisonResult;
 
       if (!options.color) {
@@ -419,7 +515,7 @@ export function createProgram(): Command {
 
       const tty = isTerminal(process.stderr);
       const colorSuppressed = process.env.NO_COLOR !== undefined;
-      const targetCount = 1 + candidateArgs.length;
+      const targetCount = 1 + candidates.length;
       const progress = createProgressReporter(tty && !colorSuppressed, tty, targetCount);
 
       try {
@@ -433,8 +529,8 @@ export function createProgram(): Command {
         });
 
         const compareOptions: CompareOptions = {
-          baseline: parsePositional(baselineArg),
-          candidates: candidateArgs.map((arg) => parsePositional(arg)),
+          baseline,
+          candidates,
           bench: config.bench,
           prepare: config.prepare,
           adapter: config.adapter,
@@ -475,6 +571,8 @@ export function createProgram(): Command {
       }
 
       process.stdout.write(output + "\n");
+
+      warnEmptyGeomeanGates(options.failOn, result);
 
       if (shouldFailGate(options.failOn, result)) {
         process.exit(1);

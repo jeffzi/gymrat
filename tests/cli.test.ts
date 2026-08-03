@@ -377,6 +377,35 @@ describe("createProgram", () => {
       );
     });
 
+    describe("when a positional has an empty label or target", () => {
+      it.each([
+        {
+          form: "an empty label",
+          positionals: ["=main", "branch"],
+          expected: /label.*empty|empty.*label/i,
+        },
+        {
+          form: "an empty target",
+          positionals: ["main", "old="],
+          expected: /target.*empty|empty.*target/i,
+        },
+      ])("rejects $form with a usage error", async ({ positionals, expected }) => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+        for (const command of [program, ...program.commands]) {
+          command.configureOutput({ writeErr: () => {} });
+        }
+        await setupMocks();
+        mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(compareArgv(...positionals));
+
+        // Assert
+        await expect(parsing).rejects.toThrow(expected);
+      });
+    });
+
     describe("when flags provided", () => {
       it.each([
         { flag: "--bench", value: "my-bench", expected: { bench: "my-bench" } },
@@ -460,6 +489,57 @@ describe("createProgram", () => {
         await expect(parsing).rejects.toThrow(
           new RegExp(`option '${flag}[^']*'.*is invalid\\..*positive integer`),
         );
+      });
+    });
+
+    describe("when a numeric flag exceeds the range its consumer can represent", () => {
+      it.each([
+        {
+          flag: "--timeout",
+          value: "2147484",
+          why: "its millisecond expansion overflows the 32-bit timer limit",
+          bound: "2147483",
+        },
+        {
+          flag: "--samples",
+          value: "9007199254740992",
+          why: "it leaves the safe integer range",
+          bound: "9007199254740991",
+        },
+      ])("rejects $flag $value because $why", async ({ flag, value, bound }) => {
+        // Arrange
+        const program = createProgram();
+        for (const command of [program, ...program.commands]) {
+          command.exitOverride();
+          command.configureOutput({ writeErr: () => {} });
+        }
+
+        // Act
+        const parsing = program.parseAsync(compareArgv("main", "branch", flag, value));
+
+        // Assert - Commander renders the flag, and the reason names the bound
+        await expect(parsing).rejects.toThrow(
+          new RegExp(`option '${flag}[^']*' argument '${value}' is invalid\\..*${bound}`),
+        );
+      });
+
+      it.each([
+        { flag: "--timeout", value: "2147483", expected: { timeout: 2_147_483 } },
+        {
+          flag: "--samples",
+          value: "9007199254740991",
+          expected: { samples: 9_007_199_254_740_991 },
+        },
+      ])("accepts $flag at its maximum $value", async ({ flag, value, expected }) => {
+        // Arrange
+        const program = createRunnableProgram();
+        const { resolveConfigMock } = await setupMocks();
+
+        // Act
+        await program.parseAsync(compareArgv("main", "branch", flag, value));
+
+        // Assert
+        expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
       });
     });
 
@@ -1437,7 +1517,11 @@ describe("createProgram", () => {
        */
       function createGatingResult(
         verdict: "regressed" | "improved" | "no-signal" | "unstable",
-        { gating = true, geomeanValue = -5.0 }: { gating?: boolean; geomeanValue?: number } = {},
+        {
+          gating = true,
+          geomeanValue = -5.0,
+          geomeanN = 10,
+        }: { gating?: boolean; geomeanValue?: number; geomeanN?: number } = {},
       ): ComparisonResult {
         const deltaByVerdict: Record<typeof verdict, number> = {
           regressed: 8,
@@ -1449,7 +1533,7 @@ describe("createProgram", () => {
         return createComparisonResult({
           candidates: [
             createCandidate({
-              geomean: { value: geomeanValue, n: 10, excluded: [] },
+              geomean: { value: geomeanValue, n: geomeanN, excluded: [] },
             }),
           ],
           metrics: {
@@ -1486,14 +1570,15 @@ describe("createProgram", () => {
       async function setupFailOnTest(compareMockReturn: ComparisonResult | Error): Promise<{
         program: Command;
         stdoutSpy: ReturnType<typeof vi.spyOn>;
+        stderrSpy: ReturnType<typeof vi.spyOn>;
         exitSpy: ReturnType<typeof vi.spyOn>;
       }> {
         const program = createProgramWithSubcommandOverrides();
         await setupMocks(compareMockReturn);
         const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
         const exitSpy = mockProcessExit();
-        return { program, stdoutSpy, exitSpy };
+        return { program, stdoutSpy, stderrSpy, exitSpy };
       }
 
       it("exits 1 when a gating metric has a regressed verdict", async () => {
@@ -1546,6 +1631,61 @@ describe("createProgram", () => {
         expect(stdoutSpy).toHaveBeenCalled();
       });
 
+      it("exits 1 when the geomean delta sits exactly on the threshold", async () => {
+        // Arrange - geomean +2.0% is "at or worse than" the 2% gate
+        const { program, stdoutSpy } = await setupFailOnTest(
+          createGatingResult("no-signal", { geomeanValue: 2.0 }),
+        );
+
+        // Act & Assert
+        await expect(
+          program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
+        ).rejects.toHaveProperty("exitCode", 1);
+        // The report must be written — distinguishes a gate trip from a parse error
+        expect(stdoutSpy).toHaveBeenCalled();
+      });
+
+      describe("when a candidate's geomean covers no stable gating metrics", () => {
+        /** A candidate whose geomean aggregated nothing, gated on the most permissive threshold. */
+        async function setupEmptyGeomeanGate(): Promise<
+          Awaited<ReturnType<typeof setupFailOnTest>>
+        > {
+          vi.stubEnv("FORCE_COLOR", undefined);
+          vi.stubEnv("NO_COLOR", "1");
+          return setupFailOnTest(createGatingResult("unstable", { geomeanValue: 0, geomeanN: 0 }));
+        }
+
+        it("warns on stderr that the gate had nothing to measure", async () => {
+          // Arrange
+          const { program, stderrSpy } = await setupEmptyGeomeanGate();
+          const { label } = createCandidate();
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:0"));
+
+          // Assert
+          const warning = stderrWrites(stderrSpy)
+            .map((write) => String(write))
+            .find((write) => write.includes("geomean gate"));
+          expect(warning).toMatch(
+            new RegExp(
+              `warning: geomean gate for "${label}" had no stable gating metrics to measure`,
+            ),
+          );
+        });
+
+        it("does not trip the gate", async () => {
+          // Arrange - a geomean of 0 would otherwise sit exactly on the 0% threshold
+          const { program, exitSpy } = await setupEmptyGeomeanGate();
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:0"));
+
+          // Assert
+          expect(exitSpy).not.toHaveBeenCalled();
+        });
+      });
+
       it("trips when any of multiple conditions matches", async () => {
         // Arrange - no regression verdict, but geomean +5.0% exceeds the 2% gate
         const { program, stdoutSpy } = await setupFailOnTest(
@@ -1574,6 +1714,26 @@ describe("createProgram", () => {
         await expect(
           program.parseAsync(compareArgv("main", "branch", "--fail-on", "bogus")),
         ).rejects.toThrow(/regressed.*geomean|geomean.*regressed/);
+      });
+
+      it.each([
+        { form: "an empty percentage", value: "geomean:" },
+        { form: "a whitespace percentage", value: "geomean: " },
+        { form: "a hexadecimal percentage", value: "geomean:0x10" },
+      ])("rejects geomean with $form", async ({ value }) => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+        for (const cmd of [program, ...program.commands]) {
+          cmd.configureOutput({ writeErr: () => {} });
+        }
+        await setupMocks();
+        mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(compareArgv("main", "branch", "--fail-on", value));
+
+        // Assert
+        await expect(parsing).rejects.toThrow(/regressed.*geomean|geomean.*regressed/);
       });
 
       it("prints the report to stdout before exiting 1 on gate trip", async () => {

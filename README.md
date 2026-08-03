@@ -99,8 +99,10 @@ through the shell with the working directory set to the target's directory.
 
 - `regressed` — trips when any gating metric has a `regressed` verdict on any candidate. Unstable
   and non-gating metrics never trip this gate.
-- `geomean:<pct>` — trips when any candidate's geomean delta is worse than `<pct>` percent in the
-  costly direction (e.g. `geomean:2` trips at +2.0% or worse for lower-is-better metrics).
+- `geomean:<pct>` — trips when any candidate's geomean delta reaches `<pct>` percent in the costly
+  direction (e.g. `geomean:2` trips at +2.0% or worse for lower-is-better metrics). A candidate
+  whose geomean covers no stable gating metrics cannot trip this gate; gymrat warns on stderr
+  instead.
 
 ```sh
 # Block on any regression
