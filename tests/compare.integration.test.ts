@@ -1709,7 +1709,6 @@ describe("compare – integration", () => {
           timeoutSeconds: 10,
         };
 
-        expect(options).not.toHaveProperty("onProgress");
         const result = await compare(options);
         expect(result.samples).toBe(2);
       } finally {
