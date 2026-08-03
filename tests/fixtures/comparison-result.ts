@@ -3,7 +3,7 @@ import type {
   CandidateMetric,
   ComparisonResult,
 } from "../../src/report/types.js";
-import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
+import type { ApproximateVerdictValue, GeomeanResult } from "../../src/verdict/verdict.js";
 
 export type Metrics = ComparisonResult["metrics"];
 export type MetricEntry = Metrics[string];
@@ -26,17 +26,30 @@ export function metricMeta(
 /**
  * One candidate's run-level results, judged against the shared baseline.
  *
- * A test that only cares about the geomean can override that field alone.
+ * A test that only cares about the geomean can override that field alone, and
+ * within it only the parts it asserts on — the rest of `GeomeanResult` comes
+ * from the defaults here, so a new field on that type lands in one place.
+ *
+ * `kinds` defaults to empty: the renderers that read it are covered by tests
+ * that pass their own aggregates, so a fixture kind would only be noise.
  */
-export function createCandidate(overrides: Partial<CandidateComparison> = {}): CandidateComparison {
+export function createCandidate(
+  overrides: Partial<Omit<CandidateComparison, "geomean">> & {
+    geomean?: Partial<GeomeanResult>;
+  } = {},
+): CandidateComparison {
+  const { geomean, ...rest } = overrides;
   return {
     label: "perf/faster-decode",
+    kinds: [],
+    ...rest,
     geomean: {
       value: -5.8,
       n: 10,
       excluded: [],
+      band: 0,
+      ...geomean,
     },
-    ...overrides,
   };
 }
 

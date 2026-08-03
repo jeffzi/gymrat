@@ -1,5 +1,6 @@
 import type { ResolvedMetricMeta } from "../config.js";
 import type { WorktreeRemovalFailure } from "../targets.js";
+import type { KindAggregate } from "../verdict/aggregate.js";
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 
 /** One candidate's side of a metric, and the verdict it earned against the baseline. */
@@ -28,7 +29,12 @@ export type MetricComparisons = Record<string, MetricComparison>;
 /** One candidate's run-level results, judged against the shared baseline. */
 export interface CandidateComparison {
   label: string;
+
+  /** Blended across every gating metric of the run, whatever kind it belongs to. */
   geomean: GeomeanResult;
+
+  /** One entry per kind the run reported, in first-appearance order. */
+  kinds: readonly KindAggregate[];
 }
 
 /**

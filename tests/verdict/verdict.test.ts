@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 
-import type { BandVerdict, MetricVerdict, SignedRankVerdict } from "../../src/verdict/verdict.js";
+import type {
+  BandVerdict,
+  MetricMetadata,
+  MetricVerdict,
+  SignedRankVerdict,
+} from "../../src/verdict/verdict.js";
 import { computeGeomean, computeVerdicts } from "../../src/verdict/verdict.js";
 import { metricRecord } from "../fixtures/metrics.js";
 
@@ -825,14 +830,51 @@ describe("computeVerdicts", () => {
   });
 });
 
+/**
+ * Gating verdicts keyed `metric1`…`metricN`, one per entry of `noise`.
+ *
+ * A number becomes a band verdict carrying that `noisePct`; `null` becomes an
+ * exact verdict, which carries no noise figure at all. Every verdict is
+ * judgeable and has a usable ratio, so the geomean includes all of them.
+ */
+function gatingVerdictsWithNoise(noise: readonly (number | null)[]): {
+  verdicts: Record<string, MetricVerdict>;
+  metricMeta: Record<string, MetricMetadata>;
+} {
+  const verdicts: Record<string, MetricVerdict> = {};
+  const metricMeta: Record<string, MetricMetadata> = {};
+
+  noise.forEach((noisePct, index) => {
+    const key = `metric${index + 1}`;
+    verdicts[key] =
+      noisePct === null
+        ? { verdict: "improved", method: "exact", delta: -50, n: 4 }
+        : {
+            verdict: "improved",
+            method: "band",
+            delta: -50,
+            n: 4,
+            usableN: 4,
+            band: noisePct,
+            noisePct,
+            noiseAbs: noisePct / 2,
+          };
+    metricMeta[key] = { direction: "lower", gating: true, exact: noisePct === null };
+  });
+
+  return { verdicts, metricMeta };
+}
+
 describe("computeGeomean", () => {
   describe("empty and exclusion cases", () => {
-    it("returns { value: 0, n: 0, excluded: [] } when no metrics in verdicts", () => {
+    it("returns a zeroed result when no metrics in verdicts", () => {
       const result = computeGeomean({}, {});
-      expect(result).toStrictEqual({ value: 0, n: 0, excluded: [] });
+      expect(result).toStrictEqual({ value: 0, n: 0, excluded: [], band: 0 });
     });
 
-    it("returns { value: 0, n: 0, excluded: [] } when no gating metrics", () => {
+    it("aggregates a non-gating metric like any other, leaving subset choice to the caller", () => {
+      // Which metrics belong in a geomean is decided before the call — the
+      // aggregate layer hands over exactly the subset it wants averaged.
       const verdicts = {
         metric1: {
           verdict: "improved" as const,
@@ -845,7 +887,8 @@ describe("computeGeomean", () => {
         metric1: { direction: "lower" as const, gating: false, exact: true },
       };
       const result = computeGeomean(verdicts, metricMeta);
-      expect(result).toStrictEqual({ value: 0, n: 0, excluded: [] });
+      expect(result.n).toBe(1);
+      expect(result.value).toBeCloseTo(-5, 5);
     });
 
     it.each([
@@ -989,33 +1032,6 @@ describe("computeGeomean", () => {
       expect(result.n).toBe(2);
       expect(result.excluded).toStrictEqual([]);
       expect(result.value).toBeCloseTo(-9.55, 0);
-    });
-
-    it("excludes non-gating metrics from geomean calculation", () => {
-      // Only metric1 is gating
-      const verdicts = {
-        metric1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -5,
-          n: 1,
-        },
-        metric2: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -10,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-        metric2: { direction: "lower" as const, gating: false, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.n).toBe(1);
-      expect(result.excluded).toStrictEqual([]);
-      // geomean = 0.95, value ≈ -5
-      expect(result.value).toBeCloseTo(-5, 5);
     });
 
     it.each([
@@ -1201,7 +1217,62 @@ describe("computeGeomean", () => {
         value: 0,
         n: 0,
         excluded: [{ metric: "noisy", reason: "unstable" }],
+        band: 0,
       });
+    });
+  });
+
+  describe("propagated noise band", () => {
+    it.each([
+      { noise: [4], expected: 4, formula: "√(4²) ÷ 1" },
+      { noise: [3, 4], expected: 2.5, formula: "√(3² + 4²) ÷ 2" },
+      {
+        noise: [null, 6],
+        expected: 3,
+        formula: "√(0² + 6²) ÷ 2, the exact metric adding no noise",
+      },
+    ])("reports band = $formula", ({ noise, expected }) => {
+      const { verdicts, metricMeta } = gatingVerdictsWithNoise(noise);
+
+      const result = computeGeomean(verdicts, metricMeta);
+
+      expect(result.band).toBeCloseTo(expected, 10);
+    });
+
+    it("leaves an excluded metric's noise out of the band", () => {
+      // noisy is unjudgeable, so neither its ratio nor its 250% noise counts;
+      // steady alone drives the band: √(4²) ÷ 1 = 4
+      const verdicts = {
+        noisy: {
+          verdict: "unstable" as const,
+          method: "band" as const,
+          delta: -50,
+          n: 4,
+          usableN: 4,
+          band: 250,
+          noisePct: 250,
+          noiseAbs: 25,
+        },
+        steady: {
+          verdict: "improved" as const,
+          method: "band" as const,
+          delta: -50,
+          n: 4,
+          usableN: 4,
+          band: 4,
+          noisePct: 4,
+          noiseAbs: 2,
+        },
+      };
+      const metricMeta = {
+        noisy: { direction: "lower" as const, gating: true, exact: false },
+        steady: { direction: "lower" as const, gating: true, exact: false },
+      };
+
+      const result = computeGeomean(verdicts, metricMeta);
+
+      expect(result.n).toBe(1);
+      expect(result.band).toBeCloseTo(4, 10);
     });
   });
 });

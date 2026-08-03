@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { getAdapter, AdapterError } from "./adapters/index.js";
 import type { Adapter } from "./adapters/types.js";
-import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
+import { resolveMetricMeta, type ConfigKinds, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import { computeHalfRange, computeMedian } from "./math.js";
@@ -12,6 +12,7 @@ import type { ComparisonResult, MetricComparison } from "./report/types.js";
 import { installTerminationCleanup } from "./signals.js";
 import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
+import { computeKindAggregates } from "./verdict/aggregate.js";
 import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
 
 /** A prepare step about to run for a target with a prepare script. */
@@ -177,6 +178,7 @@ export interface CompareOptions {
    */
   unstableNoisePct?: number;
   configMetrics?: ConfigMetrics;
+  configKinds?: ConfigKinds;
   /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
   onProgress?: (step: ProgressStep) => void;
 }
@@ -366,6 +368,7 @@ function buildComparisonResult(
     candidates: candidates.map((candidate) => ({
       label: candidate.label,
       geomean: candidate.geomean,
+      kinds: candidate.kinds,
     })),
     samples: options.samples,
     adapter: options.adapter,
@@ -428,6 +431,7 @@ interface CandidateMeasurement {
   samples: Record<string, number>[];
   verdicts: ReturnType<typeof computeVerdicts>;
   geomean: ReturnType<typeof computeGeomean>;
+  kinds: ReturnType<typeof computeKindAggregates>;
 }
 
 /**
@@ -447,9 +451,19 @@ function measureCandidates(
   metricMeta: ReturnType<typeof resolveMetricMeta>,
   unstableNoisePct: number | undefined,
 ): CandidateMeasurement[] {
+  // computeGeomean averages whatever its metadata names, so the blended figure
+  // is selected here rather than filtered there.
+  const gatingMeta = metricRecord(Object.entries(metricMeta).filter(([, meta]) => meta.gating));
+
   return candidates.map(({ ctx, samples }) => {
     const verdicts = computeVerdicts(baselineSamples, samples, metricMeta, unstableNoisePct);
-    return { label: ctx.label, samples, verdicts, geomean: computeGeomean(verdicts, metricMeta) };
+    return {
+      label: ctx.label,
+      samples,
+      verdicts,
+      geomean: computeGeomean(verdicts, gatingMeta),
+      kinds: computeKindAggregates(verdicts, metricMeta),
+    };
   });
 }
 
@@ -578,7 +592,12 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         throw new GymratError("No metrics found in benchmark output");
       }
 
-      const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
+      const metricMeta = resolveMetricMeta(
+        Array.from(metricNames),
+        options.configMetrics,
+        adapter,
+        options.configKinds,
+      );
 
       measurement = {
         baselineLabel: collected.baseline.ctx.label,

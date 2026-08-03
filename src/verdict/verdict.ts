@@ -158,6 +158,16 @@ export type GeomeanResult = {
   n: number;
   /** Gating metrics excluded, each with its reason */
   excluded: GeomeanExclusion[];
+  /**
+   * Noise of the included metrics propagated onto `value`, in percentage points:
+   * √(Σ noisePctᵢ²) ÷ n.
+   *
+   * Each metric's noise enters the geomean divided by n, so the independent
+   * contributions add in quadrature and shrink as more metrics join. Exact
+   * metrics carry no noise and contribute nothing; with nothing included the
+   * band is 0.
+   */
+  band: number;
 };
 
 /**
@@ -455,16 +465,17 @@ function computeNormalizedRho(delta: number, direction: "lower" | "higher"): Rho
   return { rho };
 }
 
+/** A metric the geomean kept: its ρ, paired with the noise it brings along. */
+type IncludedMetric = { rho: number; noisePct: number };
+
 function collectNormalizedRhos(
   verdicts: Record<string, MetricVerdict>,
   metricMeta: Record<string, MetricMetadata>,
-): { included: number[]; excluded: GeomeanExclusion[] } {
-  const included: number[] = [];
+): { included: IncludedMetric[]; excluded: GeomeanExclusion[] } {
+  const included: IncludedMetric[] = [];
   const excluded: GeomeanExclusion[] = [];
 
   for (const [metric, meta] of Object.entries(metricMeta)) {
-    if (!meta.gating) continue;
-
     const verdict = verdicts[metric];
     if (!verdict) continue;
 
@@ -475,7 +486,10 @@ function collectNormalizedRhos(
 
     const outcome = computeNormalizedRho(verdict.delta, meta.direction);
     if ("rho" in outcome) {
-      included.push(outcome.rho);
+      included.push({
+        rho: outcome.rho,
+        noisePct: verdict.method === "exact" ? 0 : verdict.noisePct,
+      });
     } else {
       excluded.push({ metric, reason: outcome.reason });
     }
@@ -485,14 +499,20 @@ function collectNormalizedRhos(
 }
 
 /**
- * Compute geometric mean of direction-normalized ratios across gating metrics.
+ * Compute geometric mean of direction-normalized ratios across a set of metrics.
+ *
+ * Which metrics belong in the average is the caller's decision: every metric
+ * `metricMeta` names participates, whatever its `gating` flag, and `verdicts`
+ * may carry more than that. Restricting `metricMeta` is therefore how a subset
+ * is selected — see `computeKindAggregates`, which slices a run by kind, by
+ * group, and by gating that way.
  *
  * Direction-normalized ratio ρ:
  * - For direction="lower": ρ = 1 + delta/100 (ρ < 1 means improvement)
  * - For direction="higher": ρ = 1 / (1 + delta/100) (ρ < 1 means improvement)
  *
- * Exclusion logic — only gating metrics participate, and each exclusion carries
- * the reason it happened, decided in this order:
+ * Exclusion logic — each exclusion carries the reason it happened, decided in
+ * this order:
  * - Metrics whose verdict is "unstable" are excluded, however usable their ρ
  *   would have been: the geomean must agree with the per-row verdicts, so a
  *   metric too noisy to judge cannot move the headline number
@@ -502,13 +522,15 @@ function collectNormalizedRhos(
  * Return value:
  * - value = (geomean(ρ) − 1) × 100 (percentage change)
  * - n = count of included metrics
- * - excluded = excluded gating metrics, each with its reason
+ * - excluded = excluded metrics, each with its reason
+ * - band = √(Σ noisePctᵢ²) ÷ n over the included metrics, the noise of `value`
  *
  * Edge cases:
- * - No gating metrics or all excluded: returns { value: 0, n: 0, excluded: [...] }
- * - Single gating metric: geomean = that metric's ρ
+ * - No metrics or all excluded: returns { value: 0, n: 0, band: 0, excluded: [...] }
+ * - Single metric: geomean = that metric's ρ, band = its own noise
  *
  * @param verdicts Verdict record from computeVerdicts
+ * @param metricMeta Metadata for exactly the metrics to average
  */
 export function computeGeomean(
   verdicts: Record<string, MetricVerdict>,
@@ -517,12 +539,14 @@ export function computeGeomean(
   const { included, excluded } = collectNormalizedRhos(verdicts, metricMeta);
 
   if (included.length === 0) {
-    return { value: 0, n: 0, excluded };
+    return { value: 0, n: 0, excluded, band: 0 };
   }
 
   let sumLnRho = 0;
-  for (const rho of included) {
+  let sumSquaredNoise = 0;
+  for (const { rho, noisePct } of included) {
     sumLnRho += Math.log(rho);
+    sumSquaredNoise += noisePct * noisePct;
   }
   const geomean = Math.exp(sumLnRho / included.length);
 
@@ -530,5 +554,6 @@ export function computeGeomean(
     value: (geomean - 1) * 100,
     n: included.length,
     excluded,
+    band: Math.sqrt(sumSquaredNoise) / included.length,
   };
 }

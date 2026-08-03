@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 import { compare, CommandError } from "../src/compare.js";
 import type {
@@ -12,17 +12,26 @@ import type {
   TimeoutFailure,
 } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
+import type { ComparisonResult } from "../src/report/types.js";
 import type { InPlaceTarget, RefTarget } from "../src/targets.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
 
-// The bundled adapters raise AdapterError when a bench emits nothing parseable,
-// so compare()'s own empty-metrics guard is only reachable behind an adapter
-// that parses successfully into no metrics at all.
+/**
+ * What every `parse` call hands back, whichever target produced the output.
+ *
+ * The bundled adapters raise AdapterError when a bench emits nothing parseable,
+ * so compare()'s own empty-metrics guard is only reachable behind an adapter
+ * that parses successfully into no metrics at all — hence the empty default.
+ * Both sides of a run see the same map, so every delta is 0 and the shape of
+ * the aggregation is what a test can read off the result.
+ */
+const parsed = vi.hoisted((): { metrics: Record<string, number> } => ({ metrics: {} }));
+
 vi.mock("../src/adapters/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/adapters/index.js")>();
   return {
     ...actual,
-    getAdapter: (name: string) => ({ ...actual.getAdapter(name), parse: () => ({}) }),
+    getAdapter: (name: string) => ({ ...actual.getAdapter(name), parse: () => parsed.metrics }),
   };
 });
 
@@ -278,32 +287,91 @@ function createInPlaceDirs(): { root: string; cleanup: () => void } {
   };
 }
 
+/**
+ * Run a whole comparison over two throwaway in-place directories.
+ *
+ * The directories are cleaned up and the working directory restored whether the
+ * run settles or throws, so a caller may `.catch()` the rejection and assert on
+ * it without a try/finally of its own.
+ */
+async function runCompare(overrides: Partial<CompareOptions> = {}): Promise<ComparisonResult> {
+  const dirs = createInPlaceDirs();
+  const savedCwd = process.cwd();
+
+  try {
+    process.chdir(dirs.root);
+
+    const options: CompareOptions = {
+      baseline: { target: "old" },
+      candidates: [{ target: "new" }],
+      bench: "echo benched",
+      adapter: "metric-lines",
+      samples: 1,
+      timeoutSeconds: 10,
+      ...overrides,
+    };
+
+    return await compare(options);
+  } finally {
+    process.chdir(savedCwd);
+    dirs.cleanup();
+  }
+}
+
+/** The sole candidate of a comparison, or a failure. */
+function onlyCandidate(result: ComparisonResult): ComparisonResult["candidates"][number] {
+  const [candidate] = result.candidates;
+  if (!candidate) throw new Error("expected one candidate in the comparison result");
+  return candidate;
+}
+
 describe("compare", () => {
+  afterEach(() => {
+    parsed.metrics = {};
+  });
+
   describe("when the run produces no metrics at all", () => {
     it("rejects with a GymratError so the CLI reports it as a gymrat failure", async () => {
-      const dirs = createInPlaceDirs();
-      const savedCwd = process.cwd();
+      const error = await runCompare().catch((cause: unknown) => cause);
 
-      try {
-        process.chdir(dirs.root);
+      expect.soft(error).toBeInstanceOf(GymratError);
+      expect(error).toHaveProperty("message", "No metrics found in benchmark output");
+    });
+  });
 
-        const options: CompareOptions = {
-          baseline: { target: "old" },
-          candidates: [{ target: "new" }],
-          bench: "echo benched",
-          adapter: "metric-lines",
-          samples: 1,
-          timeoutSeconds: 10,
-        };
+  describe("when metric names carry a dotted prefix", () => {
+    beforeEach(() => {
+      // metric-lines reports no kind, so every metric lands in "other" and the
+      // group is whatever precedes the first dot of the metric's own name.
+      parsed.metrics = { "decode.time": 100, "decode.alloc": 50, warmup: 10 };
+    });
 
-        const error = await compare(options).catch((cause: unknown) => cause);
+    it("gives the candidate one aggregate per kind, grouped by the dotted prefix", async () => {
+      const candidate = onlyCandidate(await runCompare());
 
-        expect.soft(error).toBeInstanceOf(GymratError);
-        expect(error).toHaveProperty("message", "No metrics found in benchmark output");
-      } finally {
-        process.chdir(savedCwd);
-        dirs.cleanup();
-      }
+      expect.soft(candidate.kinds.map((kind) => kind.kind)).toStrictEqual(["other"]);
+      expect.soft(candidate.kinds[0]?.groups.map((group) => group.group)).toStrictEqual(["decode"]);
+      expect.soft(candidate.kinds[0]?.geomean.n).toBe(3);
+      expect(candidate.kinds[0]?.groups[0]?.geomean.n).toBe(2);
+    });
+
+    describe("and the config turns gating off for their kind", () => {
+      it("reports the kind as non-gating with no gated geomean", async () => {
+        const candidate = onlyCandidate(
+          await runCompare({ configKinds: { other: { gating: false } } }),
+        );
+
+        expect.soft(candidate.kinds[0]?.hasGating).toBe(false);
+        expect(candidate.kinds[0]?.gatedGeomean).toBeUndefined();
+      });
+
+      it("leaves the blended geomean with no metric to aggregate", async () => {
+        const candidate = onlyCandidate(
+          await runCompare({ configKinds: { other: { gating: false } } }),
+        );
+
+        expect(candidate.geomean.n).toBe(0);
+      });
     });
   });
 });

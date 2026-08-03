@@ -559,6 +559,7 @@ export function createProgram(): Command {
           timeoutSeconds: config.timeoutSeconds,
           unstableNoisePct: config.unstableNoisePct,
           configMetrics: config.metrics,
+          configKinds: config.kinds,
           onProgress: (step) => {
             progress.emit(step);
           },
