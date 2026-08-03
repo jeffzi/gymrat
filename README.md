@@ -91,7 +91,7 @@ through the shell with the working directory set to the target's directory.
 - `2`: an operational error (unresolvable target, nonzero bench/prepare exit, timeout, zero metrics
   parsed, config error, or invalid usage). gymrat surfaces the captured command output so you can
   see what went wrong.
-- `130` / `143`: interrupted by `SIGINT` or `SIGTERM`. No report is produced.
+- `129` / `130` / `143`: interrupted by `SIGHUP`, `SIGINT`, or `SIGTERM`. No report is produced.
 
 #### `--fail-on` conditions
 
