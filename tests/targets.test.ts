@@ -104,6 +104,23 @@ function listWorktreeDirs(repoDir: string): string[] {
     .map((line) => line.slice("worktree ".length));
 }
 
+/**
+ * Register a worktree of `repoDir` the way a user would, then delete its directory.
+ *
+ * Stands in for a worktree of the user's own that is only temporarily absent — a
+ * removable volume, a directory moved aside. Git keeps listing it until something
+ * runs `git worktree prune`, which makes its entry the probe for whether a sweep
+ * pruned. It sits inside the repo so the scratch repo's teardown takes it along.
+ *
+ * Returns the resolved path git lists the worktree under.
+ */
+function registerAbsentWorktree(repoDir: string): string {
+  const dir = path.join(fs.realpathSync(repoDir), "absent-user-worktree");
+  execSync(`git worktree add --detach "${dir}" HEAD`, { cwd: repoDir, stdio: "pipe" });
+  fs.rmSync(dir, { recursive: true, force: true });
+  return dir;
+}
+
 describe("resolveTarget", () => {
   describe("when input is an existing directory", () => {
     it("returns InPlaceTarget with dir set to absolute path", () => {
@@ -319,6 +336,19 @@ describe("cleanupWorktrees", () => {
     });
   });
 
+  describe("when every worktree removal succeeds", () => {
+    it("leaves the registry entries of worktrees it was not asked about", () => {
+      repo = createScratchRepo();
+      const absent = registerAbsentWorktree(repo.dir);
+      const worktree = createHeadWorktree(repo.dir);
+
+      const result = cleanupWorktrees([worktree], repo.dir);
+
+      expect.soft(result.removed).toBe(1);
+      expect(listWorktreeDirs(repo.dir)).toContain(absent);
+    });
+  });
+
   describe("when a worktree directory no longer exists", () => {
     it("prunes the registry entry git still lists for it", () => {
       repo = createScratchRepo();
@@ -355,6 +385,17 @@ describe("cleanupWorktrees", () => {
       expect(result.failures.map((failure) => failure.dir)).toStrictEqual([stray.dir]);
       expect(result.failures[0]?.error).toContain("is not a working tree");
       expect(result.failures[0]?.error).not.toContain("Command failed");
+    });
+
+    it("prunes the registry entries of worktrees whose directories have vanished", () => {
+      repo = createScratchRepo();
+      const absent = registerAbsentWorktree(repo.dir);
+      const stray = createStrayWorktree();
+
+      const result = cleanupWorktrees([stray], repo.dir);
+
+      expect.soft(result.failures).toHaveLength(1);
+      expect(listWorktreeDirs(repo.dir)).not.toContain(absent);
     });
 
     it("still removes the worktrees listed after the failing one", () => {

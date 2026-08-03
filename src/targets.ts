@@ -203,9 +203,17 @@ function removeWorktreeIfExists(
   return { dir: worktree.dir, error };
 }
 
-// No ref targets → no git worktrees → no reason to prune (repoDir may not even be a git repo).
-function pruneIfNeeded(worktreeCount: number, repoDir: string): string | undefined {
-  if (worktreeCount === 0) return undefined;
+/**
+ * Prune only when the sweep could have left a registry entry without a directory.
+ *
+ * `git worktree remove` clears the entry it removes, so a sweep whose removals all
+ * succeeded — or that had nothing to remove, in a `repoDir` that may not even be a
+ * git repo — has no stale entry to collect. Pruning anyway would reach past this
+ * run's worktrees and deregister worktrees of the user's own that are only
+ * temporarily absent: an unmounted volume, a directory moved aside.
+ */
+function pruneIfNeeded(mayHaveStaleEntry: boolean, repoDir: string): string | undefined {
+  if (!mayHaveStaleEntry) return undefined;
   return tryGitCommand(["worktree", "prune"], repoDir);
 }
 
@@ -223,15 +231,21 @@ export function cleanupWorktrees(
 ): CleanupResult {
   const failures: WorktreeRemovalFailure[] = [];
   let removed = 0;
+  // A worktree git may still list without a directory backing it: gone before the
+  // sweep reached it, or still there because its removal failed.
+  let mayHaveStaleEntry = false;
 
   for (const worktree of worktrees) {
     const outcome = removeWorktreeIfExists(worktree, repoDir);
     if (outcome === "removed") {
       removed += 1;
-    } else if (typeof outcome === "object") {
+    } else if (outcome === "absent") {
+      mayHaveStaleEntry = true;
+    } else {
       failures.push(outcome);
+      mayHaveStaleEntry = true;
     }
   }
 
-  return { removed, failures, pruneError: pruneIfNeeded(worktrees.length, repoDir) };
+  return { removed, failures, pruneError: pruneIfNeeded(mayHaveStaleEntry, repoDir) };
 }

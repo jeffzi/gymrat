@@ -147,9 +147,9 @@ function listTempWorktreeDirs(): string[] {
     .toSorted();
 }
 
-type SignalName = "SIGINT" | "SIGTERM";
+const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
-const TERMINATION_SIGNALS: readonly SignalName[] = ["SIGINT", "SIGTERM"];
+type SignalName = (typeof TERMINATION_SIGNALS)[number];
 
 /** Thrown by the stubbed `process.exit` so a handler unwinds where it really would. */
 class ProcessExited extends Error {
@@ -167,6 +167,7 @@ function signalListenerCounts(): Record<SignalName, number> {
   return {
     SIGINT: process.listeners("SIGINT").length,
     SIGTERM: process.listeners("SIGTERM").length,
+    SIGHUP: process.listeners("SIGHUP").length,
   };
 }
 
@@ -1249,6 +1250,7 @@ describe("compare – integration", () => {
       listenersBefore = {
         SIGINT: process.listeners("SIGINT"),
         SIGTERM: process.listeners("SIGTERM"),
+        SIGHUP: process.listeners("SIGHUP"),
       };
       vi.spyOn(process, "exit").mockImplementation((code) => {
         throw new ProcessExited(code);
@@ -1282,6 +1284,7 @@ describe("compare – integration", () => {
     it.each<{ signal: SignalName; expectedCode: number }>([
       { signal: "SIGINT", expectedCode: 130 },
       { signal: "SIGTERM", expectedCode: 143 },
+      { signal: "SIGHUP", expectedCode: 129 },
     ])(
       "exits with $expectedCode on $signal",
       async ({ signal, expectedCode }) => {
@@ -1393,6 +1396,7 @@ describe("compare – integration", () => {
           expect(duringRun).toStrictEqual({
             SIGINT: before.SIGINT + 1,
             SIGTERM: before.SIGTERM + 1,
+            SIGHUP: before.SIGHUP + 1,
           });
           expect(signalListenerCounts()).toStrictEqual(before);
         } finally {
