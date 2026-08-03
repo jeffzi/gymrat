@@ -482,7 +482,7 @@ describe("resolveConfig", () => {
         samples: 10,
         timeoutSeconds: 1800,
         unstableNoisePct: 200,
-        metrics,
+        metrics: metricRecord(metrics),
       });
     });
   });

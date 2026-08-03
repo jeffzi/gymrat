@@ -187,7 +187,7 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
   const samples = flags.samples ?? configFile.samples ?? DEFAULTS.samples;
   const timeoutSeconds = flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds;
   const unstableNoisePct = configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct;
-  const metrics = configFile.metrics;
+  const metrics = configFile.metrics ? metricRecord(Object.entries(configFile.metrics)) : undefined;
 
   if (!bench) {
     throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
