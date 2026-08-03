@@ -5,6 +5,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 
 import type { Adapter } from "./adapters/types.js";
+import { GymratError } from "./errors.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
 import { DEFAULT_UNSTABLE_NOISE_PCT } from "./verdict/verdict.js";
 
@@ -122,7 +123,7 @@ function readConfigContent(configPath: string, required: boolean): string | unde
   } catch (err) {
     if (isFileNotFoundError(err)) {
       if (required) {
-        throw new Error(`Config file not found at ${configPath}`, { cause: err });
+        throw new GymratError(`Config file not found at ${configPath}`, undefined, { cause: err });
       }
       return undefined;
     }
@@ -131,11 +132,15 @@ function readConfigContent(configPath: string, required: boolean): string | unde
 }
 
 function parseJsonContent(content: string, configPath: string): unknown {
+  // A UTF-8 BOM survives decoding as U+FEFF, and JSON.parse rejects it as an
+  // unexpected token — strip it so BOM-prefixed files read the same as plain ones.
+  const json = content.startsWith("\u{FEFF}") ? content.slice(1) : content;
   try {
-    return JSON.parse(content);
+    return JSON.parse(json);
   } catch (err) {
-    throw new Error(
+    throw new GymratError(
       `Failed to parse config file at ${configPath}: ${err instanceof Error ? err.message : "unknown error"}`,
+      undefined,
       { cause: err },
     );
   }
@@ -184,7 +189,7 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
   const metrics = configFile.metrics;
 
   if (!bench) {
-    throw new Error("bench is required. Provide it via --bench flag or in config file.");
+    throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
   }
 
   return {

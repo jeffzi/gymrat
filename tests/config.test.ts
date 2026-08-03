@@ -6,6 +6,10 @@ import { describe, it, expect, afterEach } from "vitest";
 
 import type { Adapter } from "../src/adapters/types.js";
 import { loadConfigFile, resolveConfig, resolveMetricMeta } from "../src/config.js";
+import { GymratError } from "../src/errors.js";
+
+/** Byte-order mark that editors on Windows prepend to UTF-8 files: `EF BB BF`. */
+const UTF8_BOM = "\u{FEFF}";
 
 function createConfigFile(content: Record<string, unknown>, filename = "gymrat.json"): string {
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
@@ -42,10 +46,14 @@ describe("loadConfigFile", () => {
   });
 
   describe("when the config file does not exist and the caller requires it", () => {
-    it("throws an error naming the missing path", () => {
+    it("throws a GymratError naming the missing path", () => {
       const nonexistentPath = path.join(os.tmpdir(), `nonexistent-${Date.now()}.json`);
+      const act = (): void => {
+        loadConfigFile(nonexistentPath, { required: true });
+      };
 
-      expect(() => loadConfigFile(nonexistentPath, { required: true })).toThrow(nonexistentPath);
+      expect(act).toThrow(GymratError);
+      expect(act).toThrow(nonexistentPath);
     });
   });
 
@@ -112,12 +120,29 @@ describe("loadConfigFile", () => {
   });
 
   describe("when the config file contains invalid JSON", () => {
-    it("throws an error that includes the file path", () => {
+    it("throws a GymratError that includes the file path", () => {
       tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
       const configPath = path.join(tmpdir, "gymrat.json");
       fs.writeFileSync(configPath, "{ invalid json }");
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
 
-      expect(() => loadConfigFile(configPath)).toThrow(configPath);
+      expect(act).toThrow(GymratError);
+      expect(act).toThrow(configPath);
+    });
+  });
+
+  describe("when the config file is prefixed with a UTF-8 BOM", () => {
+    it("parses the config as if the BOM were absent", () => {
+      const config = { bench: "bom-bench", samples: 5 };
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      const configPath = path.join(tmpdir, "gymrat.json");
+      fs.writeFileSync(configPath, `${UTF8_BOM}${JSON.stringify(config)}`);
+
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual(config);
     });
   });
 
@@ -393,6 +418,13 @@ describe("resolveConfig", () => {
       process.chdir(tmpdir);
 
       expect(() => resolveConfig({})).toThrow(pattern);
+    });
+
+    it("throws a GymratError", () => {
+      tmpdir = createConfigFile({});
+      process.chdir(tmpdir);
+
+      expect(() => resolveConfig({})).toThrow(GymratError);
     });
   });
 
