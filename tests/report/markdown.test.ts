@@ -868,6 +868,53 @@ describe("renderMarkdown", () => {
     });
   });
 
+  describe("when a name collides with the table's own syntax", () => {
+    /**
+     * The cells of a GFM row, split on the pipes that delimit columns.
+     *
+     * A backslash-escaped pipe is cell content rather than a delimiter, so a row
+     * that escapes properly keeps the header's cell count however many pipes its
+     * text contains.
+     */
+    function gfmCells(row: string): string[] {
+      return row.split(/(?<!\\)\|/).map((cell) => cell.trim());
+    }
+
+    /** A one-metric result whose metric name and candidate label are the test's own. */
+    function namedResult(metricName: string, label: string): ComparisonResult {
+      return createComparisonResult({
+        candidates: [createCandidate({ label })],
+        metrics: {
+          [metricName]: signedRankMetric({ verdict: "improved", delta: -10, unit: "ns" }),
+        },
+      });
+    }
+
+    it("escapes a pipe in a metric name, so the row keeps the header's columns", () => {
+      const rows = tableRows(renderMarkdown(namedResult("decode|encode/time", "candidate")));
+      const dataRow = rows.find((row) => row.includes("decode"))!;
+
+      expect.soft(gfmCells(dataRow)).toHaveLength(gfmCells(rows[0]!).length);
+      expect(gfmCells(dataRow)[1]).toBe("decode\\|encode/time");
+    });
+
+    it("escapes a pipe inside the code span quoting a label", () => {
+      const header = tableRows(renderMarkdown(namedResult("decode/time", "perf|lut")))[0]!;
+
+      // Metric, baseline, candidate and delta, between a leading and a trailing pipe.
+      expect.soft(gfmCells(header)).toHaveLength(6);
+      expect(gfmCells(header)).toContain("`perf\\|lut`");
+    });
+
+    it("widens the code-span fence around a label carrying a backtick", () => {
+      const header = tableRows(renderMarkdown(namedResult("decode/time", "perf/`lut`")))[0]!;
+
+      // One backtick more than the longest run inside, padded so the label's own
+      // trailing backtick cannot close the span.
+      expect(header).toContain("`` perf/`lut` ``");
+    });
+  });
+
   describe("when rendering the method footer", () => {
     /** A run whose only metric fell back to the band for want of samples. */
     function bandOnlyResult(): ComparisonResult {

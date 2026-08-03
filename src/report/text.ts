@@ -981,9 +981,16 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
     const candidateNames = display.candidates
       .map((candidate) => formatVariantName(candidate.label))
       .join(", ");
-    let header = `gymrat compare ${HEADER_SEPARATOR} baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames} ${HEADER_SEPARATOR} ${display.samples} paired samples ${HEADER_SEPARATOR} adapter: ${display.adapter}`;
-    header = styleWithin(header, "gymrat compare", ["bold"]);
-    header = header.replaceAll(HEADER_SEPARATOR, formatLabel(HEADER_SEPARATOR, ["dim"]));
+    // Joined from its parts rather than rewritten once styled: a `·` is legal in
+    // a branch name and in an adapter name, and replacing every one of them in
+    // the finished line would splice dim codes into the middle of a name's own
+    // style span.
+    const header = [
+      formatLabel("gymrat compare", ["bold"]),
+      `baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames}`,
+      `${display.samples} paired samples`,
+      `adapter: ${display.adapter}`,
+    ].join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
     const lines = [header];
 
     if (display.candidates.length > 1) {

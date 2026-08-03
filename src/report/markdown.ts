@@ -40,9 +40,18 @@ function renderSummary(metrics: MetricComparisons, candidateIndex: number): stri
  * Code spans are what the text report's emphasis becomes here: they set a
  * branch name apart from the prose and stop a name carrying `_` or `*` from
  * being read as markup.
+ *
+ * A backtick is legal in a branch name and in a directory name, so the fence is
+ * one backtick longer than the longest run inside the label. A label that starts
+ * or ends with one is padded with a space, which CommonMark strips back off when
+ * both ends carry it — without the padding the label's own backtick would sit
+ * against the fence and extend it.
  */
 function variantName(label: string): string {
-  return `\`${label}\``;
+  const longestRun = Math.max(0, ...[...label.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = "`".repeat(longestRun + 1);
+  const pad = label.startsWith("`") || label.endsWith("`") ? " " : "";
+  return `${fence}${pad}${label}${pad}${fence}`;
 }
 
 /** Format a single highlight entry as a markdown list item. */
@@ -154,8 +163,17 @@ function gfmSeparator(columnCount: number): string {
   return `| ${cells.join(" | ")} |`;
 }
 
+/**
+ * One table row, its cells delimited by the pipes GFM reads as column breaks.
+ *
+ * A pipe inside a cell — a metric name, or a label quoted in a code span — is
+ * escaped here rather than at each source: an unescaped one splits the cell in
+ * two and slides every column after it one place left. GFM resolves the
+ * backslash escape before it looks for code spans, so the escape is needed
+ * inside them too.
+ */
 function gfmRow(cells: readonly string[]): string {
-  return `| ${cells.join(" | ")} |`;
+  return `| ${cells.map((cell) => cell.replaceAll("|", "\\|")).join(" | ")} |`;
 }
 
 /**

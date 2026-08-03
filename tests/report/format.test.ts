@@ -132,6 +132,11 @@ describe("formatValue", () => {
       { tier: "µs", value: 26825, expected: "26.8µs" },
       { tier: "ms", value: 1_000_000, expected: "1.0ms" },
       { tier: "s", value: 2_000_000_000, expected: "2.0s" },
+      // A value that rounds up onto a tier boundary belongs to the tier above:
+      // printing it below leaves a four-digit magnitude in a three-digit column.
+      { tier: "µs", value: 999.5, expected: "1.0µs" },
+      { tier: "ms", value: 999_999.6, expected: "1.0ms" },
+      { tier: "s", value: 999_950_000, expected: "1.0s" },
     ])("scales $value to the $tier tier as $expected", ({ value, expected }) => {
       expect(formatValue(value, "ns")).toBe(expected);
     });
@@ -146,6 +151,10 @@ describe("formatValue", () => {
       { tier: "KB", value: 49152, expected: "49.2KB" },
       { tier: "MB", value: 1_000_000, expected: "1.0MB" },
       { tier: "GB", value: 2_000_000_000, expected: "2.0GB" },
+      // A value that rounds up onto a tier boundary belongs to the tier above:
+      // printing it below leaves a four-digit magnitude in a three-digit column.
+      { tier: "KB", value: 999.5, expected: "1.0KB" },
+      { tier: "MB", value: 999_950, expected: "1.0MB" },
     ])("scales $value to the $tier tier as $expected", ({ value, expected }) => {
       expect(formatValue(value, "bytes")).toBe(expected);
     });

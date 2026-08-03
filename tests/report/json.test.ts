@@ -306,6 +306,43 @@ describe("renderJson", () => {
       expect(betaCandidate.p).toBeNull();
       expect(betaCandidate.band).toBeNull();
     });
+
+    it("keeps what a candidate measured when no verdict could be reached", () => {
+      const result = createComparisonResult({
+        candidates: [createCandidate({ label: "alpha" }), createCandidate({ label: "beta" })],
+        metrics: {
+          "decode/time": {
+            baselineMedian: 100,
+            baselineSpread: 1,
+            candidates: [
+              {
+                median: 90,
+                spread: 1,
+                verdict: {
+                  verdict: "improved",
+                  method: "signed-rank",
+                  delta: -10,
+                  n: 10,
+                  p: 0.01,
+                  noisePct: 2.5,
+                  noiseAbs: 3.5,
+                },
+              },
+              // Measured on every round, but never paired with the baseline.
+              { median: 95, spread: 3 },
+            ],
+            meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+          },
+        },
+      });
+
+      const json = JSON.parse(renderJson(result));
+      const betaCandidate = json.metrics["decode/time"].candidates[1];
+
+      expect.soft(betaCandidate.median).toBe(95);
+      expect.soft(betaCandidate.spreadPct).toBe(3);
+      expect(betaCandidate.verdict).toBeNull();
+    });
   });
 
   describe("worktrees section", () => {

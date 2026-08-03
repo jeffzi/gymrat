@@ -35,9 +35,21 @@ const TIER_MAP: Record<"ns" | "bytes", readonly Tier[]> = {
   bytes: BYTE_TIERS,
 };
 
+/**
+ * The tier a value prints in, chosen on the figure as rounded rather than as
+ * measured.
+ *
+ * A value just under a threshold rounds up onto it — 999.5 bytes to `1000B`,
+ * 999999.6ns to `1000.0µs` — which is a four-digit magnitude in a column sized
+ * for three. Promoting it to the tier above keeps every cell inside the width
+ * its tier is measured for.
+ */
 function scaleTier(value: number, tiers: readonly Tier[]): string {
   if (!Number.isFinite(value)) return value.toString();
-  const tier = tiers.find(([threshold]) => value < threshold)!;
+  const tier = tiers.find(
+    ([threshold, divisor, , decimals]) =>
+      Number((value / divisor).toFixed(decimals)) * divisor < threshold,
+  )!;
   const [, divisor, suffix, decimals] = tier;
   return `${(value / divisor).toFixed(decimals)}${suffix}`;
 }
@@ -811,9 +823,11 @@ function bandFallbacks(metrics: MetricComparisons): BandFallbacks {
  * The verbose method lines naming how each verdict was decided.
  *
  * A band fallback gets one line per cause, because the counts that explain a
- * short run and a tie-starved one are different numbers: the worst total pair
- * count for a shortage, the worst usable pair count for ties. A run that hit
- * both causes on different metrics gets both lines.
+ * short run and a tie-starved one are different numbers, and each is picked so
+ * the line stays true of every metric behind it: the highest total pair count
+ * for a shortage — even the best-off metric fell this far short — and the lowest
+ * usable pair count for ties. A run that hit both causes on different metrics
+ * gets both lines.
  *
  * Every line is dimmed via `styleText` auto-detection.
  */

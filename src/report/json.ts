@@ -48,13 +48,20 @@ interface JsonReport {
   worktrees: JsonWorktrees;
 }
 
+/**
+ * One candidate's figures for a metric, verdict included when there is one.
+ *
+ * A candidate can be measured without being judged — the metric may have paired
+ * on no round at all — so what it measured is serialized either way, and only
+ * the verdict fields go null.
+ */
 function serializeCandidateMetric(candidate: CandidateMetric, label: string): JsonCandidateMetric {
   const verdict = candidate.verdict;
   if (verdict === undefined) {
     return {
       label,
-      median: null,
-      spreadPct: null,
+      median: candidate.median ?? null,
+      spreadPct: candidate.spread ?? null,
       verdict: null,
       method: null,
       delta: null,

@@ -1435,6 +1435,35 @@ describe("renderReport", () => {
       expect(stylesAt(header, "·")).toContain("2");
     });
 
+    /**
+     * The guard against dimming separators by rewriting the finished header.
+     *
+     * A `·` is legal in a branch name and in an adapter name, so a pass that
+     * replaces every `·` in the styled line splices dim codes into the middle of
+     * a variant name's own style span.
+     */
+    it("leaves a · inside a variant name out of the separator dimming", () => {
+      const result = createComparisonResult({
+        baselineLabel: "main·1",
+        candidates: [createCandidate({ label: "perf·2" })],
+      });
+
+      const header = lineContaining(renderReport(result), "gymrat compare");
+
+      // cspell:disable-next-line — ANSI escape digits abut the branch name
+      expect.soft(header).toContain("\x1b[1m\x1b[4mmain·1\x1b[24m\x1b[22m");
+      // cspell:disable-next-line
+      expect(header).toContain("\x1b[1m\x1b[4mperf·2\x1b[24m\x1b[22m");
+    });
+
+    it("leaves a · inside the adapter name out of the separator dimming", () => {
+      const result = createComparisonResult({ adapter: "metric·lines" });
+
+      const header = lineContaining(renderReport(result), "gymrat compare");
+
+      expect(header).toContain("adapter: metric·lines");
+    });
+
     it.each([
       { label: "improved", glyph: "✓", code: "32", color: "green" },
       { label: "regressed", glyph: "✗", code: "31", color: "red" },

@@ -1208,6 +1208,48 @@ describe("compare – integration", () => {
     });
   });
 
+  describe("when the run took a single sample", () => {
+    it("prints each median alone, claiming no spread from one observation", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        // In-place targets: a single sample per side is the whole run, so no
+        // worktree is created and nothing has to be cleaned up afterwards.
+        for (const [name, latency] of [
+          ["old-single", 100],
+          ["new-single", 90],
+        ] as const) {
+          fs.mkdirSync(path.join(repo.dir, name));
+          const script = path.join(repo.dir, name, "bench.sh");
+          fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
+          fs.chmodSync(script, 0o755);
+        }
+
+        const options: CompareOptions = {
+          baseline: { target: "old-single" },
+          candidates: [{ target: "new-single" }],
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 1,
+          timeoutSeconds: 10,
+        };
+
+        const result = await compare(options);
+        const cells = findLine(renderReport(result), (line) => line.startsWith("latency")).split(
+          "│",
+        );
+
+        expect.soft(result.metrics["latency"]?.baselineSpread).toBeUndefined();
+        expect.soft(cells[1]?.trim()).toBe("100");
+        expect(cells[2]?.trim()).toBe("90");
+      } finally {
+        repo.cleanup();
+      }
+    });
+  });
+
   describe("when bench script produces no metrics", () => {
     it("raises an AdapterError so the CLI blames the bench script", async () => {
       const repo = createScratchRepo();

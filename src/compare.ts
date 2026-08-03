@@ -187,11 +187,14 @@ export interface CompareOptions {
  * Half-range rather than full range so the figure reads as "± this much" either
  * side of the median, which is how the report prints it. A zero median has no
  * scale to be a percentage of, so it contributes no spread at all.
+ *
+ * A single observation has no run-to-run jitter to report: its range is zero
+ * only because nothing was ever compared against it, and `± 0%` would state
+ * that as a measured result. Such a side has no spread at all.
  */
-function computeSpread(values: readonly number[]): number {
-  /* v8 ignore if -- defensive check; never called with empty array */
-  if (values.length === 0) {
-    return 0;
+function computeSpread(values: readonly number[]): number | undefined {
+  if (values.length < 2) {
+    return undefined;
   }
 
   const median = computeMedian(values);
