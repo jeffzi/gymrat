@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 
 import type { ExecOptions, ExecResult, ExecTimeoutError } from "../src/exec.js";
 import { exec } from "../src/exec.js";
@@ -100,6 +100,24 @@ describe("exec", () => {
       expect(result.stdout).toBe("");
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain("ENOENT");
+    });
+
+    it("resolves with an ExecResult when spawn throws synchronously", async () => {
+      // A regular file as cwd fails the lookup before the child exists, so Node
+      // throws out of spawn() instead of emitting an "error" event.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-exec-sync-"));
+      onTestFinished(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      });
+      const filePath = path.join(tmpDir, "not-a-directory");
+      fs.writeFileSync(filePath, "");
+
+      const result = await exec("echo hello", { cwd: filePath });
+      assertIsExecResult(result);
+
+      expect(result.stdout).toBe("");
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("ENOTDIR");
     });
   });
 
