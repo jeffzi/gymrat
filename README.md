@@ -276,10 +276,13 @@ METRIC <name>=<value>
   Similarly, `METRIC decode time=1.4` yields a metric named `decode time`. Check the report's metric
   column when a name looks wrong.
 - The right side goes through JavaScript's `Number()`, which accepts more than decimal notation
-  (`0x1f` parses as 31); only non-finite results are rejected.
+  (`0x1f` parses as 31); non-finite results are rejected.
+- An **empty right side** (`METRIC name=`, the shape an unset shell variable produces) is skipped,
+  not read as `0`, so a missing measurement never enters the median as a real reading. A right side
+  of only whitespace is the same case.
 - Every non-matching line is **ignored**, so gymrat tolerates arbitrary surrounding output. A line
-  starting with `METRIC` whose remainder has no `=`, has an empty name, or has a non-finite value
-  emits a warning on gymrat's stderr without failing the run.
+  starting with `METRIC` whose remainder has no `=`, has an empty name, or has an empty or
+  non-finite value emits a warning on gymrat's stderr without failing the run.
 - A **repeated name within one run** produces within-run samples: gymrat takes the median of the
   occurrences as the run's value.
 - A run in which **zero** metrics are found is an operational error (exit 2; see

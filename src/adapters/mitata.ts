@@ -61,27 +61,68 @@ function parseMitataStats(
   return { args, p50 };
 }
 
+/**
+ * Store `value` under `name`, warning when it displaces an earlier reading.
+ *
+ * A collision means two runs resolved to one metric name — an alias missing the
+ * `$placeholder` for the argument that varies, or two benchmarks sharing an
+ * alias — so the report would silently show only the last run's numbers.
+ */
+function recordMetric(metrics: Record<string, number>, name: string, value: number): void {
+  if (Object.hasOwn(metrics, name)) {
+    console.warn(
+      `Duplicate metric name: ${name} (keeping the last value; give the benchmark aliases distinct $placeholders to separate the runs)`,
+    );
+  }
+  metrics[name] = value;
+}
+
 function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, number>): boolean {
   const parsed = parseMitataStats(run);
   if (parsed === undefined) return false;
 
   const prefix = buildMetricNamePrefix(alias, parsed.args);
-  metrics[`${prefix}/time`] = parsed.p50;
+  recordMetric(metrics, `${prefix}/time`, parsed.p50);
 
   if (parsed.heapAvg !== undefined) {
-    metrics[`${prefix}/heap`] = parsed.heapAvg;
+    recordMetric(metrics, `${prefix}/heap`, parsed.heapAvg);
   }
 
   return true;
 }
 
+/**
+ * Substitute each `$key` in `alias` with `key=value`, scanning the alias once.
+ *
+ * Both the scan and the literal splice are deliberate. `String.replace` reads
+ * `$&`, `` $` ``, `$'` and `$<n>` in its replacement argument as patterns, and
+ * an argument value is user data that may contain them. Repeated passes would
+ * be just as wrong the other way: an earlier value containing `$b` would be
+ * eaten by the pass for key `b`. Substituted text is written straight to the
+ * output, so it is never scanned again.
+ *
+ * Keys are matched longest-first, so an alias of `$ab` picks the argument `ab`
+ * over the argument `a`.
+ */
 function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): string {
-  let result = alias;
-  const entries = Object.entries(args).toSorted(([a], [b]) => b.length - a.length);
-  for (const [key, value] of entries) {
-    result = result.replaceAll(`$${key}`, `${key}=${String(value)}`);
+  const keys = Object.keys(args).toSorted((a, b) => b.length - a.length);
+
+  let result = "";
+  let cursor = 0;
+  let dollar = alias.indexOf("$");
+  while (dollar !== -1) {
+    const key = keys.find((candidate) => alias.startsWith(candidate, dollar + 1));
+    if (key === undefined) {
+      result += alias.slice(cursor, dollar + 1);
+      cursor = dollar + 1;
+    } else {
+      result += alias.slice(cursor, dollar) + `${key}=${String(args[key])}`;
+      cursor = dollar + 1 + key.length;
+    }
+    dollar = alias.indexOf("$", cursor);
   }
-  return result;
+
+  return result + alias.slice(cursor);
 }
 
 function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): boolean {
@@ -115,7 +156,8 @@ function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, num
  *
  * Runs that errored are skipped rather than failing the parse — a single bad
  * argument combination should not discard the rest of the run — but a parse that
- * finds no usable run at all raises {@link AdapterError}.
+ * finds no usable run at all raises {@link AdapterError}. Two runs landing on
+ * one metric name warn on stderr; the last one still wins.
  */
 const mitataAdapter: Adapter = {
   name: "mitata",

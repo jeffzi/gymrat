@@ -16,8 +16,11 @@ function parseMetricLine(line: string): { name: string; value: number } | null {
     return null;
   }
 
-  const value = Number(afterMetric.slice(lastEqIndex + 1));
-  if (!Number.isFinite(value)) {
+  // `Number("")` and `Number("   ")` are 0, so an unset shell variable would
+  // otherwise be recorded as a genuine zero reading and pull the median down.
+  const rawValue = afterMetric.slice(lastEqIndex + 1);
+  const value = Number(rawValue);
+  if (rawValue.trim() === "" || !Number.isFinite(value)) {
     console.warn(`Failed to parse METRIC line: ${trimmed}`);
     return null;
   }

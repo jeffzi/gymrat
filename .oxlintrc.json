@@ -8,7 +8,7 @@
   "ignorePatterns": ["dist", "coverage", "node_modules", ".claude", ".agent"],
   "overrides": [
     {
-      "files": ["src/adapters/metric-lines.ts"],
+      "files": ["src/adapters/metric-lines.ts", "src/adapters/mitata.ts"],
       "rules": {
         "no-console": "off"
       }

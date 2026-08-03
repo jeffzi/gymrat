@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import mitataAdapter from "../../src/adapters/mitata.js";
 import { AdapterError } from "../../src/adapters/types.js";
+import { captureStderr } from "../fixtures/console.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("mitata adapter", () => {
   describe("parse()", () => {
@@ -88,6 +93,109 @@ describe("mitata adapter", () => {
         });
         const result = mitataAdapter.parse(stdout);
         expect(result).toStrictEqual({ "test/x=1/sep/x=1/time": 99 });
+      });
+    });
+
+    describe("alias substitution with hostile argument values", () => {
+      it.each([
+        ["whole-match reference", "a$&b"],
+        ["prefix reference", "a$`b"],
+        ["suffix reference", "a$'b"],
+        ["escaped dollar", "a$$b"],
+      ])("keeps a %s in an argument value literal", (_, value) => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "decode/$text",
+              runs: [
+                {
+                  name: "decode/hostile",
+                  args: { text: value },
+                  stats: { p50: 42 },
+                },
+              ],
+            },
+          ],
+        });
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual({ [`decode/text=${value}/time`]: 42 });
+      });
+
+      it("does not substitute a placeholder introduced by an earlier argument value", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "op/$a/$b",
+              runs: [
+                {
+                  name: "op",
+                  args: { a: "$b", b: "y" },
+                  stats: { p50: 7 },
+                },
+              ],
+            },
+          ],
+        });
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual({ "op/a=$b/b=y/time": 7 });
+      });
+    });
+
+    describe("metric name collisions", () => {
+      const aliasMissingPlaceholder = JSON.stringify({
+        benchmarks: [
+          {
+            alias: "decode",
+            runs: [
+              {
+                name: "decode/digits",
+                args: { text: "digits" },
+                stats: { p50: 10 },
+              },
+              {
+                name: "decode/words",
+                args: { text: "words" },
+                stats: { p50: 20 },
+              },
+            ],
+          },
+        ],
+      });
+
+      it("warns naming the metric two runs of one benchmark collide on", () => {
+        const stderr = captureStderr(() => {
+          mitataAdapter.parse(aliasMissingPlaceholder);
+        });
+
+        expect(stderr).toContain("Duplicate metric name: decode/time");
+      });
+
+      it("keeps the last value written for a colliding metric", () => {
+        captureStderr(() => {
+          const result = mitataAdapter.parse(aliasMissingPlaceholder);
+          expect(result).toStrictEqual({ "decode/time": 20 });
+        });
+      });
+
+      it("warns when two benchmarks share an alias", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "encode",
+              runs: [{ name: "encode", args: {}, stats: { p50: 1 } }],
+            },
+            {
+              alias: "encode",
+              runs: [{ name: "encode", args: {}, stats: { p50: 2 } }],
+            },
+          ],
+        });
+
+        const stderr = captureStderr(() => {
+          mitataAdapter.parse(stdout);
+        });
+
+        expect(stderr).toContain("Duplicate metric name: encode/time");
       });
     });
 

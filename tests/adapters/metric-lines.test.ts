@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import metricLinesAdapter from "../../src/adapters/metric-lines.js";
 import { AdapterError } from "../../src/adapters/types.js";
+import { captureStderr } from "../fixtures/console.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -73,6 +74,7 @@ describe("metric-lines adapter", () => {
         { description: "without value", offending: "METRIC foo" },
         { description: "with only =", offending: "METRIC =5" },
         { description: "with non-numeric value", offending: "METRIC foo=bar" },
+        { description: "with empty value", offending: "METRIC foo=" },
         { description: "NaN value", offending: "METRIC foo=NaN" },
         { description: "Infinity value", offending: "METRIC foo=Infinity" },
         { description: "negative Infinity value", offending: "METRIC foo=-Infinity" },
@@ -82,6 +84,16 @@ describe("metric-lines adapter", () => {
         });
 
         expect(stderr).toContain(`Failed to parse METRIC line: ${offending}`);
+      });
+
+      it.each([
+        ["empty value", "METRIC x=1\nMETRIC x=\nMETRIC x=3"],
+        ["whitespace-only value", "METRIC x=1\nMETRIC x=   \nMETRIC x=3"],
+      ])("excludes a %s from the metric's samples instead of reading it as zero", (_, stdout) => {
+        captureStderr(() => {
+          const result = metricLinesAdapter.parse(stdout);
+          expect(result).toStrictEqual({ x: 2 });
+        });
       });
 
       it("continues parsing after malformed line", () => {
@@ -149,17 +161,3 @@ describe("metric-lines adapter", () => {
     );
   });
 });
-
-/**
- * Run `fn` with console.warn spied out and return everything it warned.
- *
- * The spy is restored by the suite-level `afterEach`, so an early return or
- * throw inside `fn` cannot leak the patched console into the next test.
- */
-function captureStderr(fn: () => void): string {
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-  fn();
-
-  return warnSpy.mock.calls.map((args) => args.join(" ")).join("");
-}
