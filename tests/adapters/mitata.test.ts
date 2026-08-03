@@ -469,6 +469,7 @@ describe("mitata adapter", () => {
         const stdout = JSON.stringify({
           benchmarks: [
             { alias: 42, runs: [] },
+            { alias: "orphan" },
             { runs: [{ args: {}, stats: { p50: 1 } }] },
             {
               alias: "valid",
