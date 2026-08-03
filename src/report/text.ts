@@ -1,6 +1,8 @@
 import type { WorktreeRemovalFailure } from "../targets.js";
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
+  baselineCellParts,
+  candidateCellParts,
   type CellStyler,
   computeColumnWidth,
   displayClass,
@@ -10,7 +12,6 @@ import {
   formatEvidence,
   formatHintLabel,
   formatLabel,
-  formatMetricCellParts,
   formatNoiseBandValue,
   formatPairCount,
   formatTableLine,
@@ -414,12 +415,8 @@ function renderTable(
     const side = metric.candidates[candidateIndex];
     return {
       name,
-      baseline: formatMetricCellParts(
-        metric.baselineMedian,
-        metric.baselineSpread,
-        metric.meta.unit,
-      ),
-      candidate: formatMetricCellParts(side?.median, side?.spread, metric.meta.unit),
+      baseline: baselineCellParts(metric),
+      candidate: candidateCellParts(side, metric.meta.unit),
       verdict: side?.verdict,
       parts:
         side?.verdict === undefined ? undefined : verdictParts(side.verdict, result.samples, true),
@@ -585,7 +582,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
     for (const [index, column] of columns.entries()) {
       const side = metric.candidates[index];
       const cell: CandidateCell = {
-        value: formatMetricCellParts(side?.median, side?.spread, metric.meta.unit),
+        value: candidateCellParts(side, metric.meta.unit),
         verdict: formatCandidateVerdict(side?.verdict, result.samples),
         delta: side?.verdict ? formatVerdictDelta(side.verdict) : "",
         outcome: shownClass(side?.verdict),
@@ -596,11 +593,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
     }
     rows.push({
       name,
-      baseline: formatMetricCellParts(
-        metric.baselineMedian,
-        metric.baselineSpread,
-        metric.meta.unit,
-      ),
+      baseline: baselineCellParts(metric),
       baselineCell: "",
       candidates,
     });

@@ -40,24 +40,39 @@ function createBranch(
   });
 
   fs.writeFileSync(path.join(repo.dir, "bench.sh"), setup.benchScript);
+  const scripts = ["bench.sh"];
 
   if (setup.prepareScript) {
     fs.writeFileSync(path.join(repo.dir, "prepare.sh"), setup.prepareScript);
-    execSync("chmod +x prepare.sh bench.sh && git add prepare.sh bench.sh", {
-      cwd: repo.dir,
-      stdio: "pipe",
-    });
-  } else {
-    execSync("chmod +x bench.sh && git add bench.sh", {
-      cwd: repo.dir,
-      stdio: "pipe",
-    });
+    scripts.push("prepare.sh");
   }
+
+  execSync(`chmod +x ${scripts.join(" ")} && git add ${scripts.join(" ")}`, {
+    cwd: repo.dir,
+    stdio: "pipe",
+  });
 
   execSync(`git commit -m '${setup.name}'`, {
     cwd: repo.dir,
     stdio: "pipe",
   });
+}
+
+/**
+ * Create an untracked subdirectory of the repo with its own executable `bench.sh`.
+ *
+ * `resolveTarget` sees a plain directory and returns an in-place target, so
+ * benching it never creates a worktree.
+ */
+function createInPlaceTarget(
+  repo: ReturnType<typeof createScratchRepo>,
+  name: string,
+  benchScript: string,
+) {
+  fs.mkdirSync(path.join(repo.dir, name));
+  const script = path.join(repo.dir, name, "bench.sh");
+  fs.writeFileSync(script, benchScript);
+  fs.chmodSync(script, 0o755);
 }
 
 /**
@@ -126,9 +141,6 @@ function removeStrandedWorktrees(repo: ReturnType<typeof createScratchRepo>) {
   }
 }
 
-/**
- * Verify all worktrees except the main repo dir have been cleaned up.
- */
 function assertWorktreesCleanedUp(repo: ReturnType<typeof createScratchRepo>) {
   expect(listWorktreeDirs(repo)).toStrictEqual([]);
 }
@@ -169,6 +181,23 @@ function signalListenerCounts(): Record<SignalName, number> {
     SIGTERM: process.listeners("SIGTERM").length,
     SIGHUP: process.listeners("SIGHUP").length,
   };
+}
+
+/**
+ * Remove every listener on `signal` that was not already present `before`.
+ *
+ * Reports whether it found (and removed) one, so a caller can name every
+ * signal that still had a handler installed after a run had settled.
+ */
+function removeLeakedListeners(signal: SignalName, before: readonly unknown[]): boolean {
+  let leaked = false;
+  for (const listener of process.listeners(signal)) {
+    if (!before.includes(listener) && isSignalListener(listener)) {
+      process.removeListener(signal, listener);
+      leaked = true;
+    }
+  }
+  return leaked;
 }
 
 /**
@@ -328,6 +357,9 @@ async function cleanupInFlightRun(
   repo.cleanup();
 }
 
+/** Generous timeout for tests whose run creates worktrees and spawns real bench processes. */
+const LONG_RUN_TIMEOUT_MS = 60_000;
+
 describe("compare – integration", () => {
   let originalCwd: string;
 
@@ -420,7 +452,7 @@ describe("compare – integration", () => {
 
       result = await compare(options);
       benchOrder = fs.readFileSync(log, "utf-8").trim().split("\n");
-    }, 60_000);
+    }, LONG_RUN_TIMEOUT_MS);
 
     afterAll(() => {
       process.chdir(savedCwd);
@@ -471,46 +503,50 @@ describe("compare – integration", () => {
   });
 
   describe("when a candidate's bench fails in a three-target run", () => {
-    it("removes the worktree of every target the run created", async () => {
-      const repo = createScratchRepo();
+    it(
+      "removes the worktree of every target the run created",
+      async () => {
+        const repo = createScratchRepo();
 
-      try {
-        process.chdir(repo.dir);
+        try {
+          process.chdir(repo.dir);
 
-        createBranch(repo, {
-          name: "base-fail3",
-          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
-        });
-        createBranch(repo, {
-          name: "candidate-ok3",
-          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
-        });
-        createBranch(repo, {
-          name: "candidate-bad3",
-          benchScript: '#!/bin/sh\necho "boom" >&2\nexit 1',
-        });
+          createBranch(repo, {
+            name: "base-fail3",
+            benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+          });
+          createBranch(repo, {
+            name: "candidate-ok3",
+            benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+          });
+          createBranch(repo, {
+            name: "candidate-bad3",
+            benchScript: '#!/bin/sh\necho "boom" >&2\nexit 1',
+          });
 
-        const options: CompareOptions = {
-          baseline: { target: "base-fail3" },
-          candidates: [{ target: "candidate-ok3" }, { target: "candidate-bad3" }],
-          bench: "./bench.sh",
-          adapter: "metric-lines",
-          samples: 3,
-          timeoutSeconds: 10,
-        };
+          const options: CompareOptions = {
+            baseline: { target: "base-fail3" },
+            candidates: [{ target: "candidate-ok3" }, { target: "candidate-bad3" }],
+            bench: "./bench.sh",
+            adapter: "metric-lines",
+            samples: 3,
+            timeoutSeconds: 10,
+          };
 
-        const failure = await captureRejection(compare(options));
+          const failure = await captureRejection(compare(options));
 
-        assertCommandError(failure);
-        expect.soft(failure.label).toBe("candidate-bad3");
-        expect.soft(failure.message).toContain("boom");
-        expect.soft(failure.message).not.toContain("left behind");
-        assertWorktreesCleanedUp(repo);
-      } finally {
-        removeStrandedWorktrees(repo);
-        repo.cleanup();
-      }
-    }, 60_000);
+          assertCommandError(failure);
+          expect.soft(failure.label).toBe("candidate-bad3");
+          expect.soft(failure.message).toContain("boom");
+          expect.soft(failure.message).not.toContain("left behind");
+          assertWorktreesCleanedUp(repo);
+        } finally {
+          removeStrandedWorktrees(repo);
+          repo.cleanup();
+        }
+      },
+      LONG_RUN_TIMEOUT_MS,
+    );
   });
 
   describe("when targets are plain directories rather than refs", () => {
@@ -524,16 +560,11 @@ describe("compare – integration", () => {
       repo = createScratchRepo();
       process.chdir(repo.dir);
 
-      // Untracked subdirectories of the repo: resolveTarget sees a directory
-      // and returns an in-place target, so no worktree is ever created.
       for (const [name, latency] of [
         ["old-dir", 100],
         ["new-dir", 90],
       ] as const) {
-        fs.mkdirSync(path.join(repo.dir, name));
-        const script = path.join(repo.dir, name, "bench.sh");
-        fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
-        fs.chmodSync(script, 0o755);
+        createInPlaceTarget(repo, name, `#!/bin/sh\necho "METRIC latency=${latency}"`);
       }
 
       const options: CompareOptions = {
@@ -547,7 +578,7 @@ describe("compare – integration", () => {
 
       result = await compare(options);
       report = renderReport(result);
-    }, 60_000);
+    }, LONG_RUN_TIMEOUT_MS);
 
     afterAll(() => {
       process.chdir(savedCwd);
@@ -988,10 +1019,7 @@ describe("compare – integration", () => {
           ["old-dir-fail", '#!/bin/sh\necho "dir bench failed" >&2\nexit 1'],
           ["new-dir-fail", '#!/bin/sh\necho "METRIC latency=90"'],
         ] as const) {
-          fs.mkdirSync(path.join(repo.dir, name));
-          const benchPath = path.join(repo.dir, name, "bench.sh");
-          fs.writeFileSync(benchPath, script);
-          fs.chmodSync(benchPath, 0o755);
+          createInPlaceTarget(repo, name, script);
         }
 
         const options: CompareOptions = {
@@ -1221,10 +1249,7 @@ describe("compare – integration", () => {
           ["old-single", 100],
           ["new-single", 90],
         ] as const) {
-          fs.mkdirSync(path.join(repo.dir, name));
-          const script = path.join(repo.dir, name, "bench.sh");
-          fs.writeFileSync(script, `#!/bin/sh\necho "METRIC latency=${latency}"`);
-          fs.chmodSync(script, 0o755);
+          createInPlaceTarget(repo, name, `#!/bin/sh\necho "METRIC latency=${latency}"`);
         }
 
         const options: CompareOptions = {
@@ -1308,15 +1333,9 @@ describe("compare – integration", () => {
       // the run could settle — and it asserts rather than scrubbing silently,
       // because a handler surviving a settled run is the exact regression the
       // sibling listener-count test exists to catch.
-      const leaked: SignalName[] = [];
-      for (const signal of TERMINATION_SIGNALS) {
-        for (const listener of process.listeners(signal)) {
-          if (!listenersBefore[signal].includes(listener) && isSignalListener(listener)) {
-            process.removeListener(signal, listener);
-            leaked.push(signal);
-          }
-        }
-      }
+      const leaked = TERMINATION_SIGNALS.filter((signal) =>
+        removeLeakedListeners(signal, listenersBefore[signal]),
+      );
 
       if (leaked.length > 0) {
         throw new Error(`compare() left ${leaked.join(", ")} handler(s) installed after settling`);
@@ -1344,7 +1363,7 @@ describe("compare – integration", () => {
           await cleanupInFlightRun(repo, run);
         }
       },
-      60_000,
+      LONG_RUN_TIMEOUT_MS,
     );
 
     describe("once SIGINT interrupts an in-flight run", () => {
@@ -1373,7 +1392,7 @@ describe("compare – integration", () => {
         }
 
         raiseSignal("SIGINT", signalListenersBefore.SIGINT);
-      }, 60_000);
+      }, LONG_RUN_TIMEOUT_MS);
 
       afterAll(async () => {
         vi.restoreAllMocks();
@@ -1446,7 +1465,7 @@ describe("compare – integration", () => {
           repo.cleanup();
         }
       },
-      60_000,
+      LONG_RUN_TIMEOUT_MS,
     );
   });
 

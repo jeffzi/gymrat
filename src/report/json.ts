@@ -56,12 +56,15 @@ interface JsonReport {
  * the verdict fields go null.
  */
 function serializeCandidateMetric(candidate: CandidateMetric, label: string): JsonCandidateMetric {
+  const measured = {
+    label,
+    median: candidate.median ?? null,
+    spreadPct: candidate.spread ?? null,
+  };
   const verdict = candidate.verdict;
   if (verdict === undefined) {
     return {
-      label,
-      median: candidate.median ?? null,
-      spreadPct: candidate.spread ?? null,
+      ...measured,
       verdict: null,
       method: null,
       delta: null,
@@ -71,9 +74,7 @@ function serializeCandidateMetric(candidate: CandidateMetric, label: string): Js
     };
   }
   return {
-    label,
-    median: candidate.median ?? null,
-    spreadPct: candidate.spread ?? null,
+    ...measured,
     verdict: verdict.verdict,
     method: verdict.method,
     delta: verdict.delta,

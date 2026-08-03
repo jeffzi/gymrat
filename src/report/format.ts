@@ -129,6 +129,49 @@ export function formatMetricCell(median?: number, spread?: number, unit?: "ns" |
 }
 
 /**
+ * A metric's own baseline figure, as the joined value cell {@link formatMetricCell}
+ * builds.
+ *
+ * Every renderer reads a metric's baseline off the same three fields, so this
+ * is where that reading lives instead of being repeated at each call site.
+ */
+export function formatBaselineCell(metric: MetricComparison): string {
+  return formatMetricCell(metric.baselineMedian, metric.baselineSpread, metric.meta.unit);
+}
+
+/**
+ * A metric's own baseline figure, taken apart the way {@link formatMetricCellParts}
+ * does — for a table that pads the magnitude and the spread into columns of
+ * their own rather than joining them inline.
+ */
+export function baselineCellParts(metric: MetricComparison): MetricCellParts {
+  return formatMetricCellParts(metric.baselineMedian, metric.baselineSpread, metric.meta.unit);
+}
+
+/**
+ * One candidate's side of a metric, as the joined value cell {@link formatMetricCell}
+ * builds — empty when that candidate never reported the metric.
+ */
+export function formatCandidateCell(
+  side: CandidateMetric | undefined,
+  unit?: "ns" | "bytes",
+): string {
+  return formatMetricCell(side?.median, side?.spread, unit);
+}
+
+/**
+ * One candidate's side of a metric, taken apart the way {@link formatMetricCellParts}
+ * does, for a table that pads the magnitude and the spread into columns of
+ * their own.
+ */
+export function candidateCellParts(
+  side: CandidateMetric | undefined,
+  unit?: "ns" | "bytes",
+): MetricCellParts {
+  return formatMetricCellParts(side?.median, side?.spread, unit);
+}
+
+/**
  * A signed percentage, or nothing when the delta is not a number.
  *
  * A delta that rounds to zero prints as an unsigned `0.0%`: at display

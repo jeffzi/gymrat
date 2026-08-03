@@ -3,8 +3,9 @@ import {
   displayClass,
   type DisplayClass,
   footerLines,
+  formatBaselineCell,
+  formatCandidateCell,
   formatEvidence,
-  formatMetricCell,
   formatVerdictDelta,
   GEOMEAN_LABEL,
   geomeanLabel,
@@ -54,7 +55,6 @@ function variantName(label: string): string {
   return `${fence}${pad}${label}${pad}${fence}`;
 }
 
-/** Format a single highlight entry as a markdown list item. */
 function formatHighlightEntry(
   name: string,
   metric: MetricComparison,
@@ -67,7 +67,6 @@ function formatHighlightEntry(
   return `- ${glyph} ${name}  ${delta}${suffix}`;
 }
 
-/** Render highlights for a single candidate as markdown list items. */
 function renderHighlightEntries(
   metrics: MetricComparisons,
   candidateIndex: number,
@@ -121,11 +120,6 @@ interface QuietCounts {
   unstable: number;
 }
 
-/**
- * Wrap quiet rows in a `<details>` block with a summary labelling how many are
- * within noise, identical, or unstable. Returns an empty array when there are no
- * quiet rows.
- */
 function renderQuietBlock(
   header: string,
   separator: string,
@@ -249,12 +243,8 @@ function renderSingleCandidateTable(
 
   for (const [name, metric] of Object.entries(result.metrics)) {
     const side = metric.candidates[candidateIndex];
-    const baselineCell = formatMetricCell(
-      metric.baselineMedian,
-      metric.baselineSpread,
-      metric.meta.unit,
-    );
-    const candidateCell = formatMetricCell(side?.median, side?.spread, metric.meta.unit);
+    const baselineCell = formatBaselineCell(metric);
+    const candidateCell = formatCandidateCell(side, metric.meta.unit);
     const verdictCell = formatVerdictPart(side?.verdict);
     const row = gfmRow([name, baselineCell, candidateCell, verdictCell]);
 
@@ -276,7 +266,7 @@ function formatMultiCandidateCell(
   side: { median?: number; spread?: number; verdict?: MetricVerdict } | undefined,
   unit?: "ns" | "bytes",
 ): string {
-  const value = formatMetricCell(side?.median, side?.spread, unit);
+  const value = formatCandidateCell(side, unit);
   const verdictPart = formatVerdictPart(side?.verdict);
   if (value === "" && verdictPart === "") return "";
   if (verdictPart === "") return value;
@@ -300,11 +290,7 @@ function renderMultiCandidateTable(result: ComparisonResult): string[] {
   const quietCounts: QuietCounts = { identical: 0, unstable: 0 };
 
   for (const [name, metric] of Object.entries(result.metrics)) {
-    const baselineCell = formatMetricCell(
-      metric.baselineMedian,
-      metric.baselineSpread,
-      metric.meta.unit,
-    );
+    const baselineCell = formatBaselineCell(metric);
     const candidateCells = result.candidates.map((_, index) =>
       formatMultiCandidateCell(metric.candidates[index], metric.meta.unit),
     );
