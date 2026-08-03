@@ -33,7 +33,9 @@ async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | typ
 /** A bare shell writes its pid promptly; this only has to outlast process startup. */
 const PID_WAIT_MS = 3000;
 
-describe("exec", () => {
+// exec uses POSIX process groups (kill(-pid, SIGKILL)) and the tests drive
+// sh-only constructs ($$, >&2, for/do/done). Neither works under cmd.exe.
+describe.skipIf(process.platform === "win32")("exec", () => {
   const runInTmpdir = (command: string, options: Omit<ExecOptions, "cwd"> = {}) =>
     exec(command, { cwd: os.tmpdir(), ...options });
 
