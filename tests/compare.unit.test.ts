@@ -1,9 +1,30 @@
-import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { CommandError } from "../src/compare.js";
-import type { CommandErrorContext, ExitFailure, TimeoutFailure } from "../src/compare.js";
+import { describe, it, expect, vi } from "vitest";
+
+import { compare, CommandError } from "../src/compare.js";
+import type {
+  CommandErrorContext,
+  CompareOptions,
+  ExitFailure,
+  TimeoutFailure,
+} from "../src/compare.js";
+import { GymratError } from "../src/errors.js";
 import type { InPlaceTarget, RefTarget } from "../src/targets.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
+
+// The bundled adapters raise AdapterError when a bench emits nothing parseable,
+// so compare()'s own empty-metrics guard is only reachable behind an adapter
+// that parses successfully into no metrics at all.
+vi.mock("../src/adapters/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/adapters/index.js")>();
+  return {
+    ...actual,
+    getAdapter: (name: string) => ({ ...actual.getAdapter(name), parse: () => ({}) }),
+  };
+});
 
 function createRefTarget(ref = "abc123", resolvedSha = "def456"): RefTarget {
   return { kind: "ref", ref, resolvedSha };
@@ -235,6 +256,54 @@ describe("CommandError", () => {
 
       expect(error.message).not.toContain("--- stderr ---");
       expect(error.message).not.toContain("--- stdout ---");
+    });
+  });
+});
+
+/**
+ * Two sibling directories holding no files, usable as in-place targets.
+ *
+ * In-place targets need not live in a git repository, so a bare temp tree is
+ * enough to drive a whole comparison run.
+ */
+function createInPlaceDirs(): { root: string; cleanup: () => void } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-unit-"));
+  fs.mkdirSync(path.join(root, "old"));
+  fs.mkdirSync(path.join(root, "new"));
+  return {
+    root,
+    cleanup: () => {
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("compare", () => {
+  describe("when the run produces no metrics at all", () => {
+    it("rejects with a GymratError so the CLI reports it as a gymrat failure", async () => {
+      const dirs = createInPlaceDirs();
+      const savedCwd = process.cwd();
+
+      try {
+        process.chdir(dirs.root);
+
+        const options: CompareOptions = {
+          baseline: { target: "old" },
+          candidates: [{ target: "new" }],
+          bench: "echo benched",
+          adapter: "metric-lines",
+          samples: 1,
+          timeoutSeconds: 10,
+        };
+
+        const error = await compare(options).catch((cause: unknown) => cause);
+
+        expect.soft(error).toBeInstanceOf(GymratError);
+        expect(error).toHaveProperty("message", "No metrics found in benchmark output");
+      } finally {
+        process.chdir(savedCwd);
+        dirs.cleanup();
+      }
     });
   });
 });

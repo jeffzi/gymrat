@@ -571,7 +571,7 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
 
       /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
       if (metricNames.size === 0) {
-        throw new Error("No metrics found in benchmark output");
+        throw new GymratError("No metrics found in benchmark output");
       }
 
       const metricMeta = resolveMetricMeta(Array.from(metricNames), options.configMetrics, adapter);
