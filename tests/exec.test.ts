@@ -71,6 +71,38 @@ describe("exec", () => {
     });
   });
 
+  describe("when a descendant writes after the shell exits", () => {
+    it("captures output flushed once the shell has already returned", async () => {
+      const result = await runInTmpdir("(sleep 0.2; echo METRIC) &");
+
+      expect(result).toStrictEqual({ stdout: "METRIC\n", stderr: "", exitCode: 0 });
+    });
+  });
+
+  describe("when a multi-byte character is split across pipe reads", () => {
+    it("decodes the halves as a single character", async () => {
+      // The two bytes of U+00B5 are flushed by separate printf processes, so
+      // they land in separate pipe reads.
+      const result = await runInTmpdir("printf '\\302'; sleep 0.2; printf '\\265'");
+
+      expect(result).toStrictEqual({ stdout: "µ", stderr: "", exitCode: 0 });
+    });
+  });
+
+  describe("when the shell cannot be spawned", () => {
+    it("reports the spawn failure on stderr", async () => {
+      const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-exec-gone-"));
+      fs.rmSync(missingDir, { recursive: true });
+
+      const result = await exec("echo hello", { cwd: missingDir });
+      assertIsExecResult(result);
+
+      expect(result.stdout).toBe("");
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("ENOENT");
+    });
+  });
+
   describe("when working directory is specified", () => {
     it("runs the command in the given directory", async () => {
       const result = await runInTmpdir("pwd");

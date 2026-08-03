@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 /** Shape returned when the command runs to completion, whether it exits cleanly or is aborted. */
 export interface ExecResult {
@@ -21,6 +22,9 @@ export interface ExecOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
 }
+
+/** Reported when the child has no exit status of its own: killed, or never started. */
+const FAILURE_EXIT_CODE = 1;
 
 function killProcessGroup(pid: number): void {
   try {
@@ -46,6 +50,12 @@ function killProcessGroup(pid: number): void {
  * Aborting `options.signal` kills that same process group. Unlike a timeout, an abort
  * resolves with an ExecResult holding the output captured so far, so callers can tell a
  * caller-initiated cancellation apart from a timeout.
+ *
+ * A run that ends on its own is snapshotted when the child's stdio closes rather than when
+ * the shell exits, so a line a background job writes after the shell returns is still
+ * captured. A descendant that keeps the pipe open therefore holds the call open too:
+ * `timeoutMs` is what bounds it. Timeout and abort snapshot the output received so far
+ * instead, so neither can be held open by a descendant that survived the group kill.
  *
  * @param command - The shell command to execute
  * @param options - Execution options (working directory, optional timeout in ms, optional
@@ -73,78 +83,86 @@ export async function exec(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    // Decoders rather than a per-chunk toString(): a multi-byte character can
+    // straddle two pipe reads, and decoding each read on its own would turn the
+    // halves into replacement characters.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let resolved = false;
 
-    child.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += stdoutDecoder.write(chunk);
     });
 
-    child.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += stderrDecoder.write(chunk);
     });
 
-    const cleanup = () => {
+    function settle(result: ExecResult | ExecTimeoutError): void {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutHandle);
+      options.signal?.removeEventListener("abort", onAbort);
+
+      // "close", "error", the timeout and the abort can all fire for one run;
+      // `resolved` keeps the first of them the only one.
+      // oxlint-disable-next-line promise/no-multiple-resolved
+      resolve(result);
+    }
+
+    function killGroup(): void {
       /* v8 ignore if -- pid is always set when stdio is "pipe" */
       if (!child.pid) {
         return;
       }
       killProcessGroup(child.pid);
-    };
+    }
 
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    let resolved = false;
+    function onAbort(): void {
+      killGroup();
+      // Snapshot rather than wait for "close": the caller asked to stop now, and a
+      // descendant that outlived the group kill would still be holding the pipe.
+      settle({ stdout, stderr, exitCode: FAILURE_EXIT_CODE });
+    }
 
-    const handleCompletion = (exitCode: number | null) => {
-      /* v8 ignore if -- double-fire guard; see comment on child.on("exit") */
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timeoutHandle);
-      options.signal?.removeEventListener("abort", cleanup);
-
-      const result: ExecResult | ExecTimeoutError = timedOut
-        ? {
-            kind: "timeout",
-            stdout,
-            stderr,
-            timeoutMs: options.timeoutMs!,
-          }
-        : {
-            stdout,
-            stderr,
-            // null when the child was killed by a signal, which is how an abort ends.
-            exitCode: exitCode ?? 1,
-          };
-
-      // Both "exit" and "error" can fire on spawn failure; the `resolved` guard above
-      // prevents double-resolution at runtime.
-      // oxlint-disable-next-line promise/no-multiple-resolved
-      resolve(result);
-    };
-
-    if (options.timeoutMs) {
+    const { timeoutMs } = options;
+    if (timeoutMs) {
       timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        cleanup();
-      }, options.timeoutMs);
+        killGroup();
+        settle({ kind: "timeout", stdout, stderr, timeoutMs });
+      }, timeoutMs);
     }
 
     // A signal aborted before this call never dispatches to a listener added after
     // the fact, so an already-aborted signal must clean up directly instead of
     // relying on the "abort" event.
     if (options.signal?.aborted) {
-      cleanup();
+      onAbort();
     } else {
-      options.signal?.addEventListener("abort", cleanup, { once: true });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
     }
 
-    child.on("exit", (code) => {
-      handleCompletion(code);
+    // "close", not "exit": it waits for the stdio pipes, which the shell's
+    // descendants can still be writing to after the shell itself is gone.
+    child.on("close", (code) => {
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      settle({
+        stdout,
+        stderr,
+        // null when the child was killed by a signal, which is how an abort ends.
+        exitCode: code ?? FAILURE_EXIT_CODE,
+      });
     });
-    child.on("error", () => {
-      /* v8 ignore next -- only fires when the shell binary itself can't be spawned */
-      handleCompletion(1);
+
+    // A child that never started has nothing to say on its own stderr, so the
+    // spawn failure only reaches the caller if it is written there. Node emits
+    // this before any "close", so the cause survives the single-resolution guard.
+    child.on("error", (err: Error) => {
+      settle({ stdout, stderr: `${stderr + err.message}\n`, exitCode: FAILURE_EXIT_CODE });
     });
   });
 }
