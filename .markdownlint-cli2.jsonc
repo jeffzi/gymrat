@@ -9,11 +9,13 @@
     "MD060": false,
   },
   "ignores": [
-    "LICENSE",
-    "CHANGELOG.md",
-    "node_modules/**",
-    ".research/**",
+    ".agents/**",
+    ".claude/**",
     ".planning/**",
+    ".research/**",
     ".stryker-tmp/**",
+    "CHANGELOG.md",
+    "LICENSE",
+    "node_modules/**",
   ],
 }
