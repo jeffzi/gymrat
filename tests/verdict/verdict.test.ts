@@ -294,12 +294,40 @@ describe("computeVerdicts", () => {
       expect(getVerdict(result, "metric").delta).toBeNaN();
     });
 
-    it("handles negative metric values", () => {
-      const result = computeVerdicts([{ metric: -100 }], [{ metric: -95 }], METRIC_EXACT_LOWER);
+    it.each([
+      {
+        movement: "rises toward zero",
+        medianA: -100,
+        medianB: -95,
+        // (−95 − (−100)) / |−100| × 100 = 5
+        expectedDelta: 5,
+        expectedVerdict: "regressed",
+      },
+      {
+        movement: "falls further below zero",
+        medianA: -1,
+        medianB: -2,
+        // (−2 − (−1)) / |−1| × 100 = −100
+        expectedDelta: -100,
+        expectedVerdict: "improved",
+      },
+    ])(
+      "signs the delta by the way a negative value moved when it $movement",
+      ({ medianA, medianB, expectedDelta, expectedVerdict }) => {
+        // Normalizing by the magnitude of the baseline median keeps the delta's sign
+        // tied to the direction the value actually moved, so `direction: lower` still
+        // reads a drop as an improvement below zero.
+        const result = computeVerdicts(
+          [{ metric: medianA }],
+          [{ metric: medianB }],
+          METRIC_EXACT_LOWER,
+        );
 
-      // (-95 - (-100)) / (-100) * 100 = -5
-      expect(getVerdict(result, "metric").delta).toBeCloseTo(-5, 5);
-    });
+        const verdict = getVerdict(result, "metric");
+        expect(verdict.delta).toBeCloseTo(expectedDelta, 5);
+        expect(verdict.verdict).toBe(expectedVerdict);
+      },
+    );
 
     it("handles many paired windows correctly", () => {
       const samplesA = createSamples(100, 100);
@@ -341,6 +369,21 @@ describe("computeVerdicts", () => {
 
       const verdict = getSignedRankVerdict(result, "metric");
       expect(verdict.p).toBeGreaterThanOrEqual(0.05);
+      expect(verdict.verdict).toBe("no-signal");
+    });
+
+    it("returns no-signal when the delta is NaN", () => {
+      // Every baseline window is 0, so the delta has no magnitude to normalize against
+      // and the metric offers nothing to compare — even though the six identical,
+      // non-zero diffs make the signed-rank test itself significant.
+      const samplesA = createSamples(6, 0);
+      const samplesB = createSamples(6, 5);
+
+      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
+
+      const verdict = getSignedRankVerdict(result, "metric");
+      expect(verdict.p).toBeLessThan(0.05);
+      expect(verdict.delta).toBeNaN();
       expect(verdict.verdict).toBe("no-signal");
     });
 
@@ -494,6 +537,20 @@ describe("computeVerdicts", () => {
       },
     );
 
+    it("measures the band against the magnitude of a negative median", () => {
+      // samplesA: [-60, -40] → median = -50, halfRange = 10 → 10 / |−50| = 0.2
+      // samplesB: [-50, -50] → median = -50, halfRange = 0 → 0
+      // band = max(1.5 * 100 * 0.2, 0.5) = 30
+      const samplesA = [{ metric: -60 }, { metric: -40 }];
+      const samplesB = [{ metric: -50 }, { metric: -50 }];
+
+      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
+
+      const verdict = getBandVerdict(result, "metric");
+      expect(verdict.band).toBeCloseTo(30, 5);
+      expect(verdict.noisePct).toBeCloseTo(30, 5);
+    });
+
     it("treats spread as 0 when median is 0 (band = floor)", () => {
       // When medianA or medianB is 0, halfRange/median is undefined
       // Should treat spread as 0 and use floor
@@ -634,6 +691,34 @@ describe("computeVerdicts", () => {
 
       const verdict = getSignedRankVerdict(result, "metric");
       expect(verdict.noisePct).toBeCloseTo(0.5, 5);
+    });
+
+    it("measures noisePct against the magnitude of a negative median under signed-rank", () => {
+      // pairedA: [-60, -55, -50, -50, -45, -40] → median = -50, halfRange = 10 → 10 / |−50| = 0.2
+      // pairedB: every value 1 lower → median = -51, halfRange = 10 → 10 / |−51| ≈ 0.196
+      // every diff is non-zero, so n = 6 keeps this on the signed-rank path
+      // noisePct = max(1.5 * 100 * 0.2, 0.5) = 30
+      const samplesA = [
+        { metric: -60 },
+        { metric: -55 },
+        { metric: -50 },
+        { metric: -50 },
+        { metric: -45 },
+        { metric: -40 },
+      ];
+      const samplesB = [
+        { metric: -61 },
+        { metric: -56 },
+        { metric: -51 },
+        { metric: -51 },
+        { metric: -46 },
+        { metric: -41 },
+      ];
+
+      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
+
+      const verdict = getSignedRankVerdict(result, "metric");
+      expect(verdict.noisePct).toBeCloseTo(30, 5);
     });
 
     it.each([

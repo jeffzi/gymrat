@@ -159,8 +159,14 @@ export type GeomeanResult = {
   excluded: GeomeanExclusion[];
 };
 
-// delta may be NaN for undefined ratios
+/**
+ * A NaN delta (the ratio is undefined, because the baseline median is 0) has no
+ * direction to read, so it reports no signal rather than falling through to
+ * "regressed" — every comparison against NaN is false.
+ */
 function determineVerdict(delta: number, direction: "lower" | "higher"): Verdict {
+  if (Number.isNaN(delta)) return "no-signal";
+
   const isImproved = direction === "lower" ? delta < 0 : delta > 0;
   return isImproved ? "improved" : "regressed";
 }
@@ -202,10 +208,9 @@ function computeExactVerdict(
   direction: "lower" | "higher",
   n: number,
 ): ExactVerdict {
-  // Equal medians, and a NaN delta (medianA=0, medianB≠0, so the ratio is
-  // undefined), both lack a meaningful signal direction.
-  const verdict: Verdict =
-    medianA === medianB || Number.isNaN(delta) ? "no-signal" : determineVerdict(delta, direction);
+  // Equal medians lack a signal direction; an undefined ratio is caught by
+  // `determineVerdict`.
+  const verdict: Verdict = medianA === medianB ? "no-signal" : determineVerdict(delta, direction);
 
   return { verdict, method: "exact", delta, n };
 }
@@ -219,8 +224,10 @@ function computeExactVerdict(
  * - Metrics present on only one side across all windows are skipped
  *
  * Delta:
- * - delta% = 100 × (median(B) − median(A)) / median(A)
+ * - delta% = 100 × (median(B) − median(A)) / |median(A)|
  * - Computed from per-run medians of paired windows
+ * - Normalized by the magnitude of median(A), so the sign always follows the
+ *   direction the value moved, even for a metric whose medians are negative
  * - Always reported, even for "no-signal" verdicts
  *
  * Exact path:
@@ -281,7 +288,10 @@ export function computeVerdicts(
     } else if (medianA === 0) {
       delta = Number.NaN;
     } else {
-      delta = ((medianB - medianA) / medianA) * 100;
+      // Normalizing by the magnitude keeps the sign of the delta tied to the
+      // direction the value moved: a negative-median metric dropping further
+      // below zero is a decrease, not an increase.
+      delta = ((medianB - medianA) / Math.abs(medianA)) * 100;
     }
 
     result[metric] = meta.exact
@@ -368,8 +378,11 @@ type Noise = {
 /**
  * Compute the measurement noise of a metric.
  *
- * Percentage form: max(K × 100 × max(halfRange(A)/median(A), halfRange(B)/median(B)), floor%)
+ * Percentage form: max(K × 100 × max(halfRange(A)/|median(A)|, halfRange(B)/|median(B)|), floor%)
  * where K = 1.5 and floor = 0.5%. Absolute form: K × max(halfRange(A), halfRange(B)).
+ *
+ * The magnitude of the median is the denominator, so a metric centered on a
+ * negative value gets the same spread as its positive mirror image.
  *
  * When a median is 0, halfRange/median is undefined; that side's spread
  * contribution to the percentage is treated as 0. The absolute form divides by
@@ -383,8 +396,8 @@ function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): N
   const halfRangeA = computeHalfRange(pairedA);
   const halfRangeB = computeHalfRange(pairedB);
 
-  const spreadA = medianA === 0 ? 0 : halfRangeA / medianA;
-  const spreadB = medianB === 0 ? 0 : halfRangeB / medianB;
+  const spreadA = medianA === 0 ? 0 : halfRangeA / Math.abs(medianA);
+  const spreadB = medianB === 0 ? 0 : halfRangeB / Math.abs(medianB);
   const maxSpread = Math.max(spreadA, spreadB);
 
   return {
