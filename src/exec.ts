@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
 /** Shape returned when the command runs to completion, whether it exits cleanly or is aborted. */
@@ -76,12 +77,25 @@ export async function exec(
   options: ExecOptions,
 ): Promise<ExecResult | ExecTimeoutError> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
-      shell: true,
-      cwd: options.cwd,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // Some spawn failures are raised here rather than on the "error" event —
+    // ENOTDIR from a cwd that is not a directory is one. Both paths report the
+    // same way, so a caller never has to handle a rejection as well as a result.
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn(command, {
+        shell: true,
+        cwd: options.cwd,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      resolve({
+        stdout: "",
+        stderr: `${err instanceof Error ? err.message : String(err)}\n`,
+        exitCode: FAILURE_EXIT_CODE,
+      });
+      return;
+    }
 
     // Decoders rather than a per-chunk toString(): a multi-byte character can
     // straddle two pipe reads, and decoding each read on its own would turn the
