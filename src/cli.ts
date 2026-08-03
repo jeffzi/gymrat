@@ -234,6 +234,26 @@ export function formatCliError(error: unknown): string {
   return output;
 }
 
+/**
+ * Write to a stream and resolve once the data has left the internal buffer.
+ *
+ * `process.exit` drops whatever is still queued, so a report larger than the
+ * pipe buffer (64 KiB on most systems) is truncated when an immediate exit
+ * follows the write. A `false` return means the data was buffered; `drain`
+ * fires once it has been flushed.
+ */
+function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (stream.write(data)) {
+      resolve();
+      return;
+    }
+    stream.once("drain", () => {
+      resolve();
+    });
+  });
+}
+
 /** Print a formatted error to stderr and exit 2, the convention for tool failures. */
 function exitWithError(error: unknown): never {
   process.stderr.write(`${formatCliError(error)}\n`);
@@ -570,7 +590,7 @@ export function createProgram(): Command {
           assertNever(options.format);
       }
 
-      process.stdout.write(output + "\n");
+      await writeAndDrain(process.stdout, output + "\n");
 
       warnEmptyGeomeanGates(options.failOn, result);
 
@@ -594,18 +614,26 @@ export function createProgram(): Command {
   return program;
 }
 
+/*
+ * `node -e` and the REPL leave argv[1] unset, so the path check has to come
+ * before `realpathSync` — importing this module must never throw on the way in.
+ */
+const entryPath = process.argv[1];
+const isEntryPoint =
+  entryPath !== undefined && import.meta.url === pathToFileURL(realpathSync(entryPath)).href;
+
 /* v8 ignore next 13 -- entry point. The "executes CLI when invoked through symlink"
    test in tests/cli.test.ts does run this block, but it spawns a child process, and
    in-process v8 coverage cannot attribute execution that happens outside the worker. */
-if (import.meta.url === pathToFileURL(realpathSync(process.argv[1]!)).href) {
+if (isEntryPoint) {
   try {
     const program = createProgram();
     await program.parseAsync(process.argv);
     process.exit(0);
   } catch (error) {
-    /* --help and --version throw CommanderError with exitCode 0 after output */
-    if (error instanceof CommanderError && error.exitCode === 0) {
-      process.exit(0);
+    /* Commander already wrote help, the version, or the usage error to its stream. */
+    if (error instanceof CommanderError) {
+      process.exit(error.exitCode);
     }
     exitWithError(error);
   }

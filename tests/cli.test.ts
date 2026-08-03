@@ -8,7 +8,6 @@ import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 
 import { Command } from "commander";
 import { afterEach, describe, expect, it, type MockInstance, vi } from "vitest";
@@ -1768,6 +1767,30 @@ describe("createProgram", () => {
         expect(stdoutSpy).toHaveBeenCalled();
       });
 
+      describe("when stdout applies backpressure", () => {
+        it("waits for the report to flush before exiting", async () => {
+          // Arrange - a write returning false means the pipe buffer is full and
+          // the data is queued; exiting now would truncate the report.
+          const { program, stdoutSpy, exitSpy } = await setupFailOnTest(
+            createGatingResult("regressed"),
+          );
+          stdoutSpy.mockReturnValue(false);
+
+          // Act
+          const parsing = program
+            .parseAsync(compareArgv("main", "branch", "--fail-on", "regressed"))
+            .catch((e: unknown) => e);
+          await vi.waitFor(() => {
+            expect(stdoutSpy).toHaveBeenCalled();
+          });
+
+          // Assert - the exit is held until the stream drains
+          expect(exitSpy).not.toHaveBeenCalled();
+          process.stdout.emit("drain");
+          await expect(parsing).resolves.toHaveProperty("exitCode", 1);
+        });
+      });
+
       it("exits 2 for Commander usage errors", async () => {
         // Arrange - use createProgram() directly so the production exitOverride
         // (which sets exit code 2) is not replaced by the test helper's plain one
@@ -1864,6 +1887,39 @@ describe("formatCliError", () => {
   });
 });
 
+interface CliProcessResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run a CLI entry file in a child process and collect its exit code and streams.
+ *
+ * The entry-point block only runs when the file is the process entry, so these
+ * behaviors are unreachable in-process. The child also yields the real exit code
+ * and the raw stderr text, both of which the assertions inspect.
+ */
+function runCliProcess(entry: string, args: string[]): Promise<CliProcessResult> {
+  return new Promise<CliProcessResult>((settle) => {
+    execFile(
+      process.execPath,
+      ["--import", "tsx", entry, ...args],
+      {
+        timeout: 10000,
+        env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: "1" },
+      },
+      (error, stdout, stderr) => {
+        settle({
+          exitCode: typeof error?.code === "number" ? error.code : 0,
+          stdout,
+          stderr,
+        });
+      },
+    );
+  });
+}
+
 describe("entry point", () => {
   it("executes CLI when invoked through symlink", async () => {
     // Arrange
@@ -1875,20 +1931,49 @@ describe("entry point", () => {
       symlinkSync(cliPath, symlinkPath);
 
       // Act
-      const execFileAsync = promisify(execFile);
-      const { stdout } = await execFileAsync(
-        process.execPath,
-        ["--import", "tsx", symlinkPath, "compare", "--help"],
-        {
-          timeout: 10000,
-          env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: "1" },
-        },
-      );
+      const { stdout } = await runCliProcess(symlinkPath, ["compare", "--help"]);
 
       // Assert
       expect(stdout).toContain("Usage: gymrat compare");
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  }, 20_000);
+
+  describe("when Commander rejects the arguments", () => {
+    it("reports the usage error on stderr exactly once", async () => {
+      // Act - Commander writes the error itself before the entry point sees it
+      const { exitCode, stderr } = await runCliProcess(resolve("src/cli.ts"), [
+        "compare",
+        "main",
+        "branch",
+        "--bogus",
+      ]);
+
+      // Assert
+      expect.soft(exitCode).toBe(2);
+      expect(stderr.match(/unknown option '--bogus'/g) ?? []).toHaveLength(1);
+    }, 20_000);
+  });
+
+  describe("when the process has no entry-path argument", () => {
+    const originalArgv = process.argv;
+
+    afterEach(() => {
+      process.argv = originalArgv;
+      vi.resetModules();
+    });
+
+    it("imports without probing the filesystem for the entry path", async () => {
+      // Arrange - `node -e` and the REPL both leave process.argv[1] undefined
+      vi.resetModules();
+      process.argv = [process.execPath];
+
+      // Act
+      const loading = import("../src/cli.js");
+
+      // Assert
+      await expect(loading).resolves.toHaveProperty("createProgram");
+    });
   });
 });
