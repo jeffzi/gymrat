@@ -13,6 +13,7 @@ import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
+import { metricRecord } from "./metric-record.js";
 import { countVerdicts, formatHintLabel, formatLabel } from "./report/format.js";
 import { renderJson } from "./report/json.js";
 import { renderMarkdown } from "./report/markdown.js";
@@ -130,7 +131,7 @@ function parseFailOn(value: string, previous: FailOnCondition[]): FailOnConditio
  * are informational and must not trip an exit-code gate.
  */
 function gatingMetrics(metrics: MetricComparisons): MetricComparisons {
-  return Object.fromEntries(Object.entries(metrics).filter(([, metric]) => metric.meta.gating));
+  return metricRecord(Object.entries(metrics).filter(([, metric]) => metric.meta.gating));
 }
 
 /**

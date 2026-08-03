@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { AdapterError, getAdapter } from "../../src/adapters/index.js";
+import { metricRecord } from "../fixtures/metrics.js";
 
 describe("getAdapter registry", () => {
   const testAdapters = [
     {
       name: "metric-lines",
       parseInput: "METRIC foo=42",
-      parseExpected: { foo: 42 },
+      parseExpected: metricRecord({ foo: 42 }),
       defaultsInput: "test_metric",
       defaultsExpected: { direction: "lower" },
     },
@@ -27,7 +28,7 @@ describe("getAdapter registry", () => {
           },
         ],
       }),
-      parseExpected: { "test/time": 42 },
+      parseExpected: metricRecord({ "test/time": 42 }),
       defaultsInput: "test/time",
       defaultsExpected: { direction: "lower", unit: "ns" },
     },

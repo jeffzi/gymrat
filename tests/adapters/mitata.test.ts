@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import mitataAdapter from "../../src/adapters/mitata.js";
 import { AdapterError } from "../../src/adapters/types.js";
 import { captureStderr } from "../fixtures/console.js";
+import { metricRecord } from "../fixtures/metrics.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -33,7 +34,7 @@ describe("mitata adapter", () => {
         ["preamble and trailer", `preamble\n${JSON.stringify(jsonFixture)}\ntrailer`],
       ])("parses JSON with %s", (_, stdout) => {
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "encode/time": 42 });
+        expect(result).toStrictEqual(metricRecord({ "encode/time": 42 }));
       });
     });
 
@@ -54,7 +55,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "decode/text=digits/time": 42 });
+        expect(result).toStrictEqual(metricRecord({ "decode/text=digits/time": 42 }));
       });
 
       it("handles multiple parameters", () => {
@@ -73,7 +74,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "op/a=x/b=y/time": 50 });
+        expect(result).toStrictEqual(metricRecord({ "op/a=x/b=y/time": 50 }));
       });
 
       it("replaces multiple occurrences of same parameter", () => {
@@ -92,7 +93,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/x=1/sep/x=1/time": 99 });
+        expect(result).toStrictEqual(metricRecord({ "test/x=1/sep/x=1/time": 99 }));
       });
     });
 
@@ -118,7 +119,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ [`decode/text=${value}/time`]: 42 });
+        expect(result).toStrictEqual(metricRecord({ [`decode/text=${value}/time`]: 42 }));
       });
 
       it("does not substitute a placeholder introduced by an earlier argument value", () => {
@@ -137,7 +138,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "op/a=$b/b=y/time": 7 });
+        expect(result).toStrictEqual(metricRecord({ "op/a=$b/b=y/time": 7 }));
       });
     });
 
@@ -173,7 +174,7 @@ describe("mitata adapter", () => {
       it("keeps the last value written for a colliding metric", () => {
         captureStderr(() => {
           const result = mitataAdapter.parse(aliasMissingPlaceholder);
-          expect(result).toStrictEqual({ "decode/time": 20 });
+          expect(result).toStrictEqual(metricRecord({ "decode/time": 20 }));
         });
       });
 
@@ -219,7 +220,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": p50 });
+        expect(result).toStrictEqual(metricRecord({ "test/time": p50 }));
       });
     });
 
@@ -243,10 +244,12 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({
-          "test/time": 42,
-          "test/heap": 1024,
-        });
+        expect(result).toStrictEqual(
+          metricRecord({
+            "test/time": 42,
+            "test/heap": 1024,
+          }),
+        );
       });
 
       it("emits heap metric for parameterized benchmark", () => {
@@ -268,10 +271,12 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({
-          "decode/text=digits/time": 10,
-          "decode/text=digits/heap": 256,
-        });
+        expect(result).toStrictEqual(
+          metricRecord({
+            "decode/text=digits/time": 10,
+            "decode/text=digits/heap": 256,
+          }),
+        );
       });
 
       it("skips heap metric when avg is missing", () => {
@@ -293,7 +298,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 42 });
+        expect(result).toStrictEqual(metricRecord({ "test/time": 42 }));
       });
     });
 
@@ -319,10 +324,12 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({
-          "decode/text=digits/time": 10,
-          "decode/text=words/time": 20,
-        });
+        expect(result).toStrictEqual(
+          metricRecord({
+            "decode/text=digits/time": 10,
+            "decode/text=words/time": 20,
+          }),
+        );
       });
 
       it("emits heap metrics for each run", () => {
@@ -346,12 +353,14 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({
-          "decode/text=digits/time": 10,
-          "decode/text=digits/heap": 256,
-          "decode/text=words/time": 20,
-          "decode/text=words/heap": 512,
-        });
+        expect(result).toStrictEqual(
+          metricRecord({
+            "decode/text=digits/time": 10,
+            "decode/text=digits/heap": 256,
+            "decode/text=words/time": 20,
+            "decode/text=words/heap": 512,
+          }),
+        );
       });
     });
 
@@ -382,10 +391,12 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({
-          "encode/time": 42,
-          "decode/time": 100,
-        });
+        expect(result).toStrictEqual(
+          metricRecord({
+            "encode/time": 42,
+            "decode/time": 100,
+          }),
+        );
       });
     });
 
@@ -451,7 +462,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "valid/time": 1 });
+        expect(result).toStrictEqual(metricRecord({ "valid/time": 1 }));
       });
 
       it("skips benchmarks with non-string alias or missing runs", () => {
@@ -466,7 +477,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "valid/time": 1 });
+        expect(result).toStrictEqual(metricRecord({ "valid/time": 1 }));
       });
 
       it("skips runs with non-object args or stats", () => {
@@ -483,7 +494,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 1 });
+        expect(result).toStrictEqual(metricRecord({ "test/time": 1 }));
       });
 
       it("skips non-object runs", () => {
@@ -496,7 +507,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 1 });
+        expect(result).toStrictEqual(metricRecord({ "test/time": 1 }));
       });
     });
 
@@ -523,7 +534,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/x=b/time": 20 });
+        expect(result).toStrictEqual(metricRecord({ "test/x=b/time": 20 }));
       });
 
       it("throws AdapterError if all runs have errors", () => {
@@ -564,7 +575,7 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual({ "test/time": 10 });
+        expect(result).toStrictEqual(metricRecord({ "test/time": 10 }));
       });
     });
 
@@ -576,14 +587,16 @@ describe("mitata adapter", () => {
         const fixtureJson = fixtureModule.default;
         const result = mitataAdapter.parse(JSON.stringify(fixtureJson));
 
-        expect(result).toStrictEqual({
-          "decode/text=digits/time": 4.0791015625,
-          "decode/text=digits/heap": 0.13420623129857714,
-          "decode/text=words/time": 7.8125,
-          "decode/text=words/heap": 0.14746411878141288,
-          "encode/time": 42.66357421875,
-          "encode/heap": 80.1967411655276,
-        });
+        expect(result).toStrictEqual(
+          metricRecord({
+            "decode/text=digits/time": 4.0791015625,
+            "decode/text=digits/heap": 0.13420623129857714,
+            "decode/text=words/time": 7.8125,
+            "decode/text=words/heap": 0.14746411878141288,
+            "encode/time": 42.66357421875,
+            "encode/heap": 80.1967411655276,
+          }),
+        );
       });
     });
   });

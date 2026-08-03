@@ -3,6 +3,7 @@
  */
 
 import { computeHalfRange, computeMedian } from "../math.js";
+import { metricRecord } from "../metric-record.js";
 import { wilcoxonSignedRank } from "./wilcoxon.js";
 
 /**
@@ -265,7 +266,7 @@ export function computeVerdicts(
   metricMeta: Record<string, MetricMetadata>,
   unstableNoisePct: number = DEFAULT_UNSTABLE_NOISE_PCT,
 ): Record<string, MetricVerdict> {
-  const result: Record<string, MetricVerdict> = {};
+  const result = metricRecord<MetricVerdict>();
 
   const allMetrics = new Set(Object.keys(metricMeta));
 

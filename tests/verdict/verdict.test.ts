@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import type { BandVerdict, MetricVerdict, SignedRankVerdict } from "../../src/verdict/verdict.js";
 import { computeGeomean, computeVerdicts } from "../../src/verdict/verdict.js";
+import { metricRecord } from "../fixtures/metrics.js";
 
 function getVerdict(result: Record<string, MetricVerdict>, key: string): MetricVerdict {
   const verdict = result[key];
@@ -240,7 +241,7 @@ describe("computeVerdicts", () => {
         metricB: { direction: "lower", gating: true, exact: true },
       });
 
-      expect(result).toStrictEqual({});
+      expect(result).toStrictEqual(metricRecord({}));
     });
 
     it("keeps metrics with at least one paired window", () => {
@@ -251,6 +252,24 @@ describe("computeVerdicts", () => {
       );
 
       expect(result).toHaveProperty("metric");
+    });
+  });
+
+  describe("when a metric is named after an Object.prototype member", () => {
+    // A plain object literal would read `__proto__` as its prototype rather than
+    // as a metric name, so the key reaches the samples through a variable.
+    const PROTO = "__proto__";
+
+    it("keeps the verdict for a metric named __proto__", () => {
+      const result = computeVerdicts([{ [PROTO]: 100 }], [{ [PROTO]: 95 }], {
+        [PROTO]: { direction: "lower" as const, gating: true, exact: true },
+      });
+
+      // Read through entries: the verdict has to be an own key of the record,
+      // not something a prototype hands back.
+      expect(Object.entries(result)).toStrictEqual([
+        [PROTO, { verdict: "improved", method: "exact", delta: -5, n: 1 }],
+      ]);
     });
   });
 

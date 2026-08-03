@@ -1,3 +1,4 @@
+import { metricRecord } from "../metric-record.js";
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import { countVerdicts, type VerdictCounts } from "./format.js";
 import type { CandidateMetric, ComparisonResult, MetricComparisons } from "./types.js";
@@ -103,7 +104,7 @@ function serializeMetrics(
   metrics: MetricComparisons,
   candidateLabels: string[],
 ): Record<string, JsonMetric> {
-  const result: Record<string, JsonMetric> = {};
+  const result = metricRecord<JsonMetric>();
   for (const [name, metric] of Object.entries(metrics)) {
     result[name] = {
       unit: metric.meta.unit ?? null,

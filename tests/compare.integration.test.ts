@@ -686,6 +686,45 @@ describe("compare – integration", () => {
     });
   });
 
+  describe("when a metric is named after an Object.prototype member", () => {
+    it("renders a baseline-only toString metric as a one-sided row", async () => {
+      const repo = createScratchRepo();
+
+      try {
+        process.chdir(repo.dir);
+
+        // In-place targets keep the run to the two benches: no worktree is created.
+        createInPlaceTarget(
+          repo,
+          "old-proto",
+          '#!/bin/sh\necho "METRIC toString=100"\necho "METRIC latency=100"',
+        );
+        createInPlaceTarget(repo, "new-proto", '#!/bin/sh\necho "METRIC latency=90"');
+
+        const options: CompareOptions = {
+          baseline: { target: "old-proto" },
+          candidates: [{ target: "new-proto" }],
+          bench: "./bench.sh",
+          adapter: "metric-lines",
+          samples: 3,
+          timeoutSeconds: 10,
+        };
+
+        const report = renderReport(await compare(options));
+
+        // The candidate bench never emitted toString, so its cell has to be empty —
+        // a trailing separator means the candidate and verdict cells were trimmed
+        // away. Reading the name off Object.prototype instead would fill them with
+        // a value no bench produced.
+        const toStringRow = findLine(report, (line) => line.startsWith("toString"));
+        expect.soft(toStringRow).toContain("100");
+        expect(toStringRow.endsWith("│")).toBe(true);
+      } finally {
+        repo.cleanup();
+      }
+    });
+  });
+
   describe("when using mitata adapter with fixture replay", () => {
     let repo: ReturnType<typeof createScratchRepo>;
     let savedCwd: string;

@@ -1,4 +1,5 @@
 import { computeMedian } from "../math.js";
+import { metricRecord } from "../metric-record.js";
 import type { Adapter, MetricDefaults } from "./types.js";
 import { AdapterError } from "./types.js";
 
@@ -53,9 +54,11 @@ const metricLinesAdapter: Adapter = {
       metrics.get(name)!.push(value);
     }
 
-    return Object.fromEntries(
-      [...metrics.entries()].map(([name, values]) => [name, computeMedian(values)]),
-    );
+    const medians = metricRecord<number>();
+    for (const [name, values] of metrics) {
+      medians[name] = computeMedian(values);
+    }
+    return medians;
   },
 
   defaults(_metricName: string): MetricDefaults {

@@ -7,6 +7,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import type { Adapter } from "../src/adapters/types.js";
 import { loadConfigFile, resolveConfig, resolveMetricMeta } from "../src/config.js";
 import { GymratError } from "../src/errors.js";
+import { metricRecord } from "./fixtures/metrics.js";
 
 /** Byte-order mark that editors on Windows prepend to UTF-8 files: `EF BB BF`. */
 const UTF8_BOM = "\u{FEFF}";
@@ -519,13 +520,15 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time"], undefined, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "response-time": {
-          direction: "lower",
-          gating: true,
-          exact: false,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "response-time": {
+            direction: "lower",
+            gating: true,
+            exact: false,
+          },
+        }),
+      );
     });
   });
 
@@ -538,14 +541,16 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time"], undefined, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "response-time": {
-          direction: "lower",
-          unit: "ns",
-          gating: true,
-          exact: false,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "response-time": {
+            direction: "lower",
+            unit: "ns",
+            gating: true,
+            exact: false,
+          },
+        }),
+      );
     });
   });
 
@@ -558,13 +563,15 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["throughput"], configMetrics, mockAdapter);
 
-      expect(result).toStrictEqual({
-        throughput: {
-          direction: "higher",
-          gating: true,
-          exact: false,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          throughput: {
+            direction: "higher",
+            gating: true,
+            exact: false,
+          },
+        }),
+      );
     });
   });
 
@@ -577,13 +584,15 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time"], configMetrics, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "response-time": {
-          direction: "lower",
-          gating: false,
-          exact: false,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "response-time": {
+            direction: "lower",
+            gating: false,
+            exact: false,
+          },
+        }),
+      );
     });
   });
 
@@ -596,13 +605,15 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time"], configMetrics, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "response-time": {
-          direction: "lower",
-          gating: true,
-          exact: true,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "response-time": {
+            direction: "lower",
+            gating: true,
+            exact: true,
+          },
+        }),
+      );
     });
   });
 
@@ -618,14 +629,16 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["memory-usage"], configMetrics, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "memory-usage": {
-          direction: "lower",
-          unit: "bytes",
-          gating: false,
-          exact: false,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "memory-usage": {
+            direction: "lower",
+            unit: "bytes",
+            gating: false,
+            exact: false,
+          },
+        }),
+      );
     });
   });
 
@@ -643,19 +656,21 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time", "throughput"], configMetrics, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "response-time": {
-          direction: "lower",
-          unit: "ns",
-          gating: false,
-          exact: false,
-        },
-        throughput: {
-          direction: "higher",
-          gating: true,
-          exact: true,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "response-time": {
+            direction: "lower",
+            unit: "ns",
+            gating: false,
+            exact: false,
+          },
+          throughput: {
+            direction: "higher",
+            gating: true,
+            exact: true,
+          },
+        }),
+      );
     });
   });
 
@@ -669,13 +684,15 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time"], configMetrics, mockAdapter);
 
-      expect(result).toStrictEqual({
-        "response-time": {
-          direction: "lower",
-          gating: false,
-          exact: false,
-        },
-      });
+      expect(result).toStrictEqual(
+        metricRecord({
+          "response-time": {
+            direction: "lower",
+            gating: false,
+            exact: false,
+          },
+        }),
+      );
     });
   });
 });

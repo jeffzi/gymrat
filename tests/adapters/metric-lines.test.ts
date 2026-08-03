@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import metricLinesAdapter from "../../src/adapters/metric-lines.js";
 import { AdapterError } from "../../src/adapters/types.js";
 import { captureStderr } from "../fixtures/console.js";
+import { metricRecord } from "../fixtures/metrics.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -12,11 +13,11 @@ describe("metric-lines adapter", () => {
   describe("parse()", () => {
     describe("basic parsing", () => {
       it.each([
-        ["integer", "METRIC foo=42", { foo: 42 }],
-        ["decimal", "METRIC bar=3.14", { bar: 3.14 }],
-        ["leading whitespace", "  METRIC foo=42", { foo: 42 }],
-        ["trailing whitespace", "METRIC foo=42  ", { foo: 42 }],
-        ["leading and trailing whitespace", "  METRIC foo=42  ", { foo: 42 }],
+        ["integer", "METRIC foo=42", metricRecord({ foo: 42 })],
+        ["decimal", "METRIC bar=3.14", metricRecord({ bar: 3.14 })],
+        ["leading whitespace", "  METRIC foo=42", metricRecord({ foo: 42 })],
+        ["trailing whitespace", "METRIC foo=42  ", metricRecord({ foo: 42 })],
+        ["leading and trailing whitespace", "  METRIC foo=42  ", metricRecord({ foo: 42 })],
       ])("parses METRIC line with %s", (_, stdout, expected) => {
         const result = metricLinesAdapter.parse(stdout);
         expect(result).toStrictEqual(expected);
@@ -25,8 +26,8 @@ describe("metric-lines adapter", () => {
 
     describe("last-= split", () => {
       it.each([
-        ["two equals", "METRIC k=v=3.14", { "k=v": 3.14 }],
-        ["multiple equals", "METRIC a=b=c=d=5", { "a=b=c=d": 5 }],
+        ["two equals", "METRIC k=v=3.14", metricRecord({ "k=v": 3.14 })],
+        ["multiple equals", "METRIC a=b=c=d=5", metricRecord({ "a=b=c=d": 5 })],
       ])("splits at LAST = with %s", (_, stdout, expected) => {
         const result = metricLinesAdapter.parse(stdout);
         expect(result).toStrictEqual(expected);
@@ -35,14 +36,14 @@ describe("metric-lines adapter", () => {
 
     describe("number grammar", () => {
       it.each([
-        ["negative integer", "METRIC val=-12", { val: -12 }],
-        ["negative decimal", "METRIC val=-3.14", { val: -3.14 }],
-        ["positive sign", "METRIC val=+5", { val: 5 }],
-        ["positive decimal with sign", "METRIC val=+5.0", { val: 5.0 }],
-        ["small decimal", "METRIC val=0.001", { val: 0.001 }],
-        ["scientific notation (negative exponent)", "METRIC val=1e-9", { val: 1e-9 }],
-        ["scientific notation (positive exponent)", "METRIC val=1e9", { val: 1e9 }],
-        ["scientific notation (uppercase E)", "METRIC val=1E-9", { val: 1e-9 }],
+        ["negative integer", "METRIC val=-12", metricRecord({ val: -12 })],
+        ["negative decimal", "METRIC val=-3.14", metricRecord({ val: -3.14 })],
+        ["positive sign", "METRIC val=+5", metricRecord({ val: 5 })],
+        ["positive decimal with sign", "METRIC val=+5.0", metricRecord({ val: 5.0 })],
+        ["small decimal", "METRIC val=0.001", metricRecord({ val: 0.001 })],
+        ["scientific notation (negative exponent)", "METRIC val=1e-9", metricRecord({ val: 1e-9 })],
+        ["scientific notation (positive exponent)", "METRIC val=1e9", metricRecord({ val: 1e9 })],
+        ["scientific notation (uppercase E)", "METRIC val=1E-9", metricRecord({ val: 1e-9 })],
       ])("parses %s", (_, stdout, expected) => {
         const result = metricLinesAdapter.parse(stdout);
         expect(result).toStrictEqual(expected);
@@ -53,19 +54,19 @@ describe("metric-lines adapter", () => {
       it("ignores lines without METRIC prefix", () => {
         const stdout = "some other output\nMETRIC valid=1\nother log line";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ valid: 1 });
+        expect(result).toStrictEqual(metricRecord({ valid: 1 }));
       });
 
       it("ignores lines that don't start with METRIC (case-sensitive)", () => {
         const stdout = "metric foo=42\nMetric bar=3.14\nMETRIC valid=1";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ valid: 1 });
+        expect(result).toStrictEqual(metricRecord({ valid: 1 }));
       });
 
       it("extracts METRIC lines from mixed output", () => {
         const stdout = "Starting benchmark...\nMETRIC foo=42\nRunning test\nMETRIC bar=3.14\nDone";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ foo: 42, bar: 3.14 });
+        expect(result).toStrictEqual(metricRecord({ foo: 42, bar: 3.14 }));
       });
     });
 
@@ -92,7 +93,7 @@ describe("metric-lines adapter", () => {
       ])("excludes a %s from the metric's samples instead of reading it as zero", (_, stdout) => {
         captureStderr(() => {
           const result = metricLinesAdapter.parse(stdout);
-          expect(result).toStrictEqual({ x: 2 });
+          expect(result).toStrictEqual(metricRecord({ x: 2 }));
         });
       });
 
@@ -100,7 +101,7 @@ describe("metric-lines adapter", () => {
         const stdout = "METRIC foo=bar\nMETRIC valid=42";
         captureStderr(() => {
           const result = metricLinesAdapter.parse(stdout);
-          expect(result).toStrictEqual({ valid: 42 });
+          expect(result).toStrictEqual(metricRecord({ valid: 42 }));
         });
       });
     });
@@ -109,32 +110,49 @@ describe("metric-lines adapter", () => {
       it("returns median for odd count of values", () => {
         const stdout = "METRIC x=1\nMETRIC x=3\nMETRIC x=2";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ x: 2 });
+        expect(result).toStrictEqual(metricRecord({ x: 2 }));
       });
 
       it("returns average of two middle values for even count", () => {
         const stdout = "METRIC x=1\nMETRIC x=2\nMETRIC x=3\nMETRIC x=4";
         const result = metricLinesAdapter.parse(stdout);
         // sorted: [1, 2, 3, 4], median = (2 + 3) / 2 = 2.5
-        expect(result).toStrictEqual({ x: 2.5 });
+        expect(result).toStrictEqual(metricRecord({ x: 2.5 }));
       });
 
       it("returns single value for one occurrence", () => {
         const stdout = "METRIC x=42";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ x: 42 });
+        expect(result).toStrictEqual(metricRecord({ x: 42 }));
       });
 
       it("computes median separately for each metric name", () => {
         const stdout = "METRIC x=1\nMETRIC x=3\nMETRIC y=10\nMETRIC y=20\nMETRIC y=30";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ x: 2, y: 20 });
+        expect(result).toStrictEqual(metricRecord({ x: 2, y: 20 }));
       });
 
       it("handles repeated metrics with decimal values", () => {
         const stdout = "METRIC x=1.5\nMETRIC x=2.5\nMETRIC x=3.5";
         const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual({ x: 2.5 });
+        expect(result).toStrictEqual(metricRecord({ x: 2.5 }));
+      });
+    });
+
+    describe("metric names that collide with Object.prototype", () => {
+      it.each(["toString", "constructor", "valueOf", "hasOwnProperty"])(
+        "leaves %s absent when the bench never emitted it",
+        (inherited) => {
+          const result = metricLinesAdapter.parse("METRIC foo=42");
+
+          expect(result[inherited]).toBeUndefined();
+        },
+      );
+
+      it("parses a metric named __proto__ as an ordinary metric", () => {
+        const result = metricLinesAdapter.parse("METRIC __proto__=1\nMETRIC __proto__=3");
+
+        expect(Object.entries(result)).toStrictEqual([["__proto__", 2]]);
       });
     });
 

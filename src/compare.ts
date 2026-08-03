@@ -6,8 +6,9 @@ import { resolveMetricMeta, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import { computeHalfRange, computeMedian } from "./math.js";
+import { metricRecord } from "./metric-record.js";
 import { formatCleanupFailures } from "./report/text.js";
-import type { ComparisonResult } from "./report/types.js";
+import type { ComparisonResult, MetricComparison } from "./report/types.js";
 import { installTerminationCleanup } from "./signals.js";
 import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
@@ -368,7 +369,7 @@ function buildComparisonResult(
     })),
     samples: options.samples,
     adapter: options.adapter,
-    metrics: {},
+    metrics: metricRecord<MetricComparison>(),
     worktreesRemoved: cleanup.removed,
     worktreesLeftBehind: cleanup.failures,
     worktreePruneError: cleanup.pruneError,

@@ -1,4 +1,5 @@
 import { messageOf } from "../errors.js";
+import { metricRecord } from "../metric-record.js";
 import type { Adapter, MetricDefaults } from "./types.js";
 import { AdapterError } from "./types.js";
 
@@ -165,7 +166,7 @@ const mitataAdapter: Adapter = {
   parse(stdout: string): Record<string, number> {
     const json = extractJson(stdout);
     const benchmarks = parseBenchmarks(json);
-    const metrics: Record<string, number> = {};
+    const metrics = metricRecord<number>();
     let found = false;
 
     for (const benchmark of benchmarks) {

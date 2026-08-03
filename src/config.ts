@@ -6,6 +6,7 @@ import type { Static } from "@sinclair/typebox";
 
 import type { Adapter } from "./adapters/types.js";
 import { GymratError } from "./errors.js";
+import { metricRecord } from "./metric-record.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
 import { DEFAULT_UNSTABLE_NOISE_PCT } from "./verdict/verdict.js";
 
@@ -228,7 +229,10 @@ export function resolveMetricMeta(
   configMetrics: ConfigFile["metrics"],
   adapter: Adapter,
 ): Record<string, ResolvedMetricMeta> {
-  return Object.fromEntries(
-    metricNames.map((name) => [name, resolveOneMetric(name, configMetrics, adapter)]),
+  return metricRecord(
+    metricNames.map((name): [string, ResolvedMetricMeta] => [
+      name,
+      resolveOneMetric(name, configMetrics, adapter),
+    ]),
   );
 }
