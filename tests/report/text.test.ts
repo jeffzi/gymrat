@@ -7,6 +7,7 @@ import type { ComparisonResult } from "../../src/report/types.js";
 import {
   createCandidate,
   createComparisonResult,
+  multiCandidateResult,
   signedRankMetric,
   bandMetric,
   exactMetric,
@@ -128,73 +129,6 @@ describe("renderReport", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
-
-  /**
-   * One baseline and three candidates whose verdicts on the same metric disagree.
-   *
-   * Every candidate was judged against the same baseline samples, so a renderer
-   * that reused one candidate's verdict for the next would collapse the three
-   * columns, summaries and highlight subsections into one.
-   */
-  function multiCandidateResult(): ComparisonResult {
-    return createComparisonResult({
-      baselineLabel: "main",
-      candidates: [
-        createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
-        createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
-        createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
-      ],
-      metrics: {
-        "decode/time": {
-          baselineMedian: 100,
-          baselineSpread: 1,
-          candidates: [
-            {
-              median: 90,
-              spread: 1,
-              verdict: {
-                verdict: "improved",
-                method: "signed-rank",
-                delta: -10,
-                n: 10,
-                p: 0.002,
-                noisePct: 2.5,
-                noiseAbs: 2.5,
-              },
-            },
-            {
-              median: 104,
-              spread: 1,
-              verdict: {
-                verdict: "regressed",
-                method: "signed-rank",
-                delta: 4,
-                n: 10,
-                p: 0.002,
-                noisePct: 2.5,
-                noiseAbs: 2.5,
-              },
-            },
-            {
-              median: 150,
-              spread: 3,
-              verdict: {
-                verdict: "unstable",
-                method: "band",
-                delta: 50,
-                n: 10,
-                usableN: 3,
-                band: 30,
-                noisePct: 30,
-                noiseAbs: 30,
-              },
-            },
-          ],
-          meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
-        },
-      },
-    });
-  }
 
   describe("when rendering the run header", () => {
     it("names the baseline's role, both variants, the sample count and the adapter", () => {

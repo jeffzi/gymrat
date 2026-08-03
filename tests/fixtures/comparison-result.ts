@@ -1,4 +1,8 @@
-import type { CandidateComparison, ComparisonResult } from "../../src/report/types.js";
+import type {
+  CandidateComparison,
+  CandidateMetric,
+  ComparisonResult,
+} from "../../src/report/types.js";
 import type { ApproximateVerdictValue } from "../../src/verdict/verdict.js";
 
 export type Metrics = ComparisonResult["metrics"];
@@ -184,4 +188,79 @@ export function nWayMetric(
     candidates: entries,
     meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
   };
+}
+
+/**
+ * A multi-candidate comparison with one metric ("decode/time") judged per candidate.
+ *
+ * With 3 candidates (default): candidate-a improved, candidate-b regressed,
+ * candidate-c unstable (band method). With 2: the first two only.
+ */
+export function multiCandidateResult(candidateCount: 2 | 3 = 3): ComparisonResult {
+  const candidates: CandidateComparison[] = [
+    createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
+    createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
+  ];
+
+  const metricCandidates: CandidateMetric[] = [
+    {
+      median: 90,
+      spread: 1,
+      verdict: {
+        verdict: "improved",
+        method: "signed-rank",
+        delta: -10,
+        n: 10,
+        p: 0.002,
+        noisePct: 2.5,
+        noiseAbs: 2.5,
+      },
+    },
+    {
+      median: 104,
+      spread: 1,
+      verdict: {
+        verdict: "regressed",
+        method: "signed-rank",
+        delta: 4,
+        n: 10,
+        p: 0.002,
+        noisePct: 2.5,
+        noiseAbs: 2.5,
+      },
+    },
+  ];
+
+  if (candidateCount === 3) {
+    candidates.push(
+      createCandidate({ label: "candidate-c", geomean: { value: 0, n: 1, excluded: [] } }),
+    );
+    metricCandidates.push({
+      median: 150,
+      spread: 3,
+      verdict: {
+        verdict: "unstable",
+        method: "band",
+        delta: 50,
+        n: 10,
+        usableN: 3,
+        band: 30,
+        noisePct: 30,
+        noiseAbs: 30,
+      },
+    });
+  }
+
+  return createComparisonResult({
+    baselineLabel: "main",
+    candidates,
+    metrics: {
+      "decode/time": {
+        baselineMedian: 100,
+        baselineSpread: 1,
+        candidates: metricCandidates,
+        meta: { direction: "lower", gating: true, exact: false, unit: "ns" },
+      },
+    },
+  });
 }

@@ -5,6 +5,7 @@ import type { ComparisonResult } from "../../src/report/types.js";
 import {
   createCandidate,
   createComparisonResult,
+  multiCandidateResult,
   signedRankMetric,
   bandMetric,
   exactMetric,
@@ -104,24 +105,8 @@ describe("renderMarkdown", () => {
   });
 
   describe("when rendering a multi-candidate report", () => {
-    function multiCandidateResult(): ComparisonResult {
-      return createComparisonResult({
-        baselineLabel: "main",
-        candidates: [
-          createCandidate({ label: "candidate-a", geomean: { value: -10, n: 1, excluded: [] } }),
-          createCandidate({ label: "candidate-b", geomean: { value: 4, n: 1, excluded: [] } }),
-        ],
-        metrics: {
-          "decode/time": nWayMetric([
-            { verdict: "improved", delta: -10, median: 90 },
-            { verdict: "regressed", delta: 4, median: 104 },
-          ]),
-        },
-      });
-    }
-
     it("produces per-candidate summary lines prefixed with the label", () => {
-      const output = renderMarkdown(multiCandidateResult());
+      const output = renderMarkdown(multiCandidateResult(2));
 
       const lines = output.split("\n");
       const candidateALine = lines.find((l) => l.includes("candidate-a") && l.includes("improved"));
@@ -134,7 +119,7 @@ describe("renderMarkdown", () => {
     });
 
     it("groups highlights by candidate under sub-headers", () => {
-      const output = renderMarkdown(multiCandidateResult());
+      const output = renderMarkdown(multiCandidateResult(2));
 
       expect(output).toContain("**`candidate-a`**");
       expect(output).toContain("**`candidate-b`**");
@@ -147,7 +132,7 @@ describe("renderMarkdown", () => {
     });
 
     it("heads each candidate column with the label alone, in backticks", () => {
-      const header = tableRows(renderMarkdown(multiCandidateResult()))[0]!;
+      const header = tableRows(renderMarkdown(multiCandidateResult(2)))[0]!;
 
       expect.soft(header).toContain("`candidate-a`");
       expect.soft(header).toContain("`candidate-b`");
@@ -155,7 +140,7 @@ describe("renderMarkdown", () => {
     });
 
     it("wraps the candidate label in backticks in each summary line", () => {
-      const summary = renderMarkdown(multiCandidateResult())
+      const summary = renderMarkdown(multiCandidateResult(2))
         .split("\n")
         .find((line) => line.includes("candidate-a") && line.includes("improved"));
 
@@ -163,7 +148,7 @@ describe("renderMarkdown", () => {
     });
 
     it("renders multi-candidate table with combined value+verdict cells", () => {
-      const output = renderMarkdown(multiCandidateResult());
+      const output = renderMarkdown(multiCandidateResult(2));
       const rows = tableRows(output);
 
       // Data row should have combined value+verdict cells
