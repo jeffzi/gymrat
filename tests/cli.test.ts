@@ -292,6 +292,45 @@ describe("createProgram", () => {
     expect(reportedVersion).toBe(declaredVersion);
   });
 
+  describe("when the package manifest has no string version field", () => {
+    afterEach(() => {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    });
+
+    it("throws a GymratError", async () => {
+      // Arrange - reload the CLI against a manifest stripped of its version field
+      vi.resetModules();
+      vi.doMock("node:fs", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:fs")>();
+        function readFileSyncWithoutVersion(
+          ...args: Parameters<typeof actual.readFileSync>
+        ): string | Buffer {
+          const [path] = args;
+          return String(path).endsWith("package.json")
+            ? JSON.stringify({ name: "gymrat" })
+            : actual.readFileSync(...args);
+        }
+        return {
+          ...actual,
+          default: { ...actual, readFileSync: readFileSyncWithoutVersion },
+          readFileSync: readFileSyncWithoutVersion,
+        };
+      });
+      const [
+        { createProgram: createProgramWithBrokenManifest },
+        { GymratError: FreshGymratError },
+      ] = await Promise.all([import("../src/cli.js"), import("../src/errors.js")]);
+      const act = (): void => {
+        createProgramWithBrokenManifest();
+      };
+
+      // Act + Assert
+      expect(act).toThrow(FreshGymratError);
+      expect(act).toThrow("package.json has no string version field");
+    });
+  });
+
   describe("compare command", () => {
     describe("when valid positional arguments provided", () => {
       it.each([

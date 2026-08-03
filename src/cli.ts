@@ -364,7 +364,7 @@ function readPackageVersion(): string {
     !("version" in manifest) ||
     typeof manifest.version !== "string"
   ) {
-    throw new Error("package.json has no string version field");
+    throw new GymratError("package.json has no string version field");
   }
 
   return manifest.version;
