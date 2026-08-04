@@ -39,14 +39,18 @@ export function createScratchRepo(): ScratchRepo {
     execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "pipe" });
     execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: dir, stdio: "pipe" });
   } catch (error) {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     throw error;
   }
 
   return {
     dir,
     cleanup: () => {
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+      // Windows cannot delete a directory that is a process's CWD.
+      if (process.cwd().startsWith(dir)) {
+        process.chdir(os.tmpdir());
+      }
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },
   };
 }

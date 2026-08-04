@@ -382,10 +382,10 @@ describe("resolveConfig", () => {
   const originalCwd = process.cwd();
 
   afterEach(() => {
+    process.chdir(originalCwd);
     if (tmpdir && fs.existsSync(tmpdir)) {
       fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
     }
-    process.chdir(originalCwd);
   });
 
   describe("when flags and config are empty", () => {
