@@ -1,7 +1,13 @@
 import { metricRecord } from "../metric-record.js";
+import { inferGroup } from "../verdict/aggregate.js";
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import { countVerdicts, type VerdictCounts } from "./format.js";
-import type { CandidateMetric, ComparisonResult, MetricComparisons } from "./types.js";
+import type {
+  CandidateComparison,
+  CandidateMetric,
+  ComparisonResult,
+  MetricComparisons,
+} from "./types.js";
 
 interface JsonCandidateMetric {
   label: string;
@@ -19,6 +25,10 @@ interface JsonMetric {
   unit: string | null;
   direction: "lower" | "higher";
   gating: boolean;
+  /** The kind the metric aggregates under — `perCandidate[].kinds[].kind` keys on this. */
+  kind: string;
+  /** The group its short name puts it in, `null` when the name names none. */
+  group: string | null;
   baseline: {
     median: number | null;
     spreadPct: number | null;
@@ -26,9 +36,36 @@ interface JsonMetric {
   candidates: JsonCandidateMetric[];
 }
 
+/** One group's geomean within a kind, named by the prefix its metrics share. */
+interface JsonGroupAggregate {
+  group: string;
+  geomean: GeomeanResult;
+}
+
+/**
+ * One kind's aggregation for a candidate.
+ *
+ * `geomean` covers every metric of the kind and `gatedGeomean` only the gating
+ * ones, so a consumer can read what the whole section did next to what the run
+ * is judged on. `gatedGeomean` is `null` exactly when `hasGating` is false.
+ */
+interface JsonKindAggregate {
+  kind: string;
+  hasGating: boolean;
+  geomean: GeomeanResult;
+  groups: JsonGroupAggregate[];
+  gatedGeomean: GeomeanResult | null;
+}
+
 interface JsonPerCandidate {
   label: string;
-  geomean: GeomeanResult;
+  /**
+   * One entry per kind the run reported, in first-appearance order.
+   *
+   * A run whose adapter names no kind reports one entry, so a consumer reads
+   * single-kind and multi-kind runs through the same shape.
+   */
+  kinds: JsonKindAggregate[];
   verdictCounts: VerdictCounts;
 }
 
@@ -39,7 +76,7 @@ interface JsonWorktrees {
 }
 
 interface JsonReport {
-  schemaVersion: 1;
+  schemaVersion: 2;
   baseline: string;
   candidates: string[];
   samples: number;
@@ -110,6 +147,8 @@ function serializeMetrics(
       unit: metric.meta.unit ?? null,
       direction: metric.meta.direction,
       gating: metric.meta.gating,
+      kind: metric.meta.kind,
+      group: inferGroup(metric.meta.shortName) ?? null,
       baseline: {
         median: metric.baselineMedian ?? null,
         spreadPct: metric.baselineSpread ?? null,
@@ -122,10 +161,27 @@ function serializeMetrics(
   return result;
 }
 
+/**
+ * One candidate's kind aggregates, each stated in full.
+ *
+ * Assembles a `JsonKindAggregate` per kind from the internal per-candidate
+ * aggregates, null-coalescing `gatedGeomean` to `null` for kinds that don't
+ * gate (it's `undefined` on the internal aggregate in that case).
+ */
+function serializeKinds(candidate: CandidateComparison): JsonKindAggregate[] {
+  return candidate.kinds.map((aggregate) => ({
+    kind: aggregate.kind,
+    hasGating: aggregate.hasGating,
+    geomean: aggregate.geomean,
+    groups: aggregate.groups.map((group) => ({ group: group.group, geomean: group.geomean })),
+    gatedGeomean: aggregate.gatedGeomean ?? null,
+  }));
+}
+
 function serializePerCandidate(result: ComparisonResult): JsonPerCandidate[] {
   return result.candidates.map((candidate, i) => ({
     label: candidate.label,
-    geomean: candidate.geomean,
+    kinds: serializeKinds(candidate),
     verdictCounts: countVerdicts(result.metrics, i),
   }));
 }
@@ -152,7 +208,7 @@ export function renderJson(result: ComparisonResult): string {
   const candidateLabels = result.candidates.map((c) => c.label);
 
   const report: JsonReport = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     baseline: result.baselineLabel,
     candidates: candidateLabels,
     samples: result.samples,

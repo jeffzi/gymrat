@@ -2,6 +2,7 @@ import { styleText } from "node:util";
 
 import { assertNever } from "../errors.js";
 import {
+  MIN_BAND_N,
   MIN_WILCOXON_N,
   type GeomeanResult,
   type Method,
@@ -49,7 +50,8 @@ function scaleTier(value: number, tiers: readonly Tier[]): string {
   const tier = tiers.find(
     ([threshold, divisor, , decimals]) =>
       Number((value / divisor).toFixed(decimals)) * divisor < threshold,
-  )!;
+  );
+  if (tier === undefined) return value.toString();
   const [, divisor, suffix, decimals] = tier;
   return `${(value / divisor).toFixed(decimals)}${suffix}`;
 }
@@ -110,53 +112,21 @@ export function formatMetricCellParts(
   const magnitude = formatValue(median, unit);
   if (spread === undefined) return { magnitude, spread: "" };
   if (spread > RELATIVE_SPREAD_CAP_PCT) {
-    return { magnitude, spread: formatValue((median * spread) / 100, unit) };
+    return { magnitude, spread: formatValue(Math.abs((median * spread) / 100), unit) };
   }
   return { magnitude, spread: `${spread.toFixed(0)}%` };
-}
-
-/**
- * A value cell as one string, or nothing when unmeasured.
- *
- * The fields are joined by a single space either side of the `±`: this is the
- * form markdown embeds in its cells, where the renderer does no padding of its
- * own. The text table pads {@link formatMetricCellParts} instead.
- */
-export function formatMetricCell(median?: number, spread?: number, unit?: "ns" | "bytes"): string {
-  const { magnitude, spread: scatter } = formatMetricCellParts(median, spread, unit);
-  if (magnitude === "" || scatter === "") return magnitude;
-  return `${magnitude}${SPREAD_SEPARATOR}${scatter}`;
-}
-
-/**
- * A metric's own baseline figure, as the joined value cell {@link formatMetricCell}
- * builds.
- *
- * Every renderer reads a metric's baseline off the same three fields, so this
- * is where that reading lives instead of being repeated at each call site.
- */
-export function formatBaselineCell(metric: MetricComparison): string {
-  return formatMetricCell(metric.baselineMedian, metric.baselineSpread, metric.meta.unit);
 }
 
 /**
  * A metric's own baseline figure, taken apart the way {@link formatMetricCellParts}
  * does — for a table that pads the magnitude and the spread into columns of
  * their own rather than joining them inline.
+ *
+ * Every renderer reads a metric's baseline off the same three fields, so this
+ * is where that reading lives instead of being repeated at each call site.
  */
 export function baselineCellParts(metric: MetricComparison): MetricCellParts {
   return formatMetricCellParts(metric.baselineMedian, metric.baselineSpread, metric.meta.unit);
-}
-
-/**
- * One candidate's side of a metric, as the joined value cell {@link formatMetricCell}
- * builds — empty when that candidate never reported the metric.
- */
-export function formatCandidateCell(
-  side: CandidateMetric | undefined,
-  unit?: "ns" | "bytes",
-): string {
-  return formatMetricCell(side?.median, side?.spread, unit);
 }
 
 /**
@@ -187,16 +157,29 @@ export function formatDelta(delta: number): string {
 /**
  * How a verdict presents itself in the report.
  *
- * `no-signal` splits in two here: a metric whose two sides measured close enough
- * to identical to starve the signed-rank test reads `identical`, and every other
- * no-signal verdict reads `within-noise`. The split is presentation only — the
- * stored verdict stays `no-signal`, so geomean gating, `--fail-on` and the JSON
- * report see one class where the report shows two.
+ * `no-signal` splits in three here: a metric resting on too few pairs for the
+ * band method to report a signal reads `inconclusive`, one whose two sides
+ * measured close enough to identical to starve the signed-rank test reads
+ * `identical`, and every other no-signal verdict reads `within-noise`. The split
+ * is presentation only — the stored verdict stays `no-signal`, so geomean
+ * gating, `--fail-on` and the JSON report see one class where the report shows
+ * three.
  */
-export type DisplayClass = "improved" | "regressed" | "unstable" | "identical" | "within-noise";
+export type DisplayClass =
+  | "improved"
+  | "regressed"
+  | "unstable"
+  | "identical"
+  | "within-noise"
+  | "inconclusive";
 
 /**
  * Which display class a verdict reads as.
+ *
+ * The pair count is read before anything else about a band verdict: below
+ * `MIN_BAND_N` the band is the noise floor constant rather than a measurement,
+ * so neither the delta measured against it nor a tie between the two readings
+ * carries the news its glyph would claim. That reads `inconclusive`.
  *
  * `usableN` counts pairs, not a proportion of them: a band verdict with enough
  * pairs for the signed-rank test reads `identical` only when every one of them
@@ -208,6 +191,7 @@ export type DisplayClass = "improved" | "regressed" | "unstable" | "identical" |
  * `within-noise`.
  */
 export function displayClass(verdict: MetricVerdict): DisplayClass {
+  if (verdict.method === "band" && verdict.n < MIN_BAND_N) return "inconclusive";
   if (verdict.verdict !== "no-signal") return verdict.verdict;
   if (verdict.method === "band" && verdict.n >= MIN_WILCOXON_N && verdict.usableN === 0) {
     return "identical";
@@ -226,11 +210,12 @@ const GLYPHS: Record<DisplayClass, string> = {
   unstable: "≈",
   identical: "=",
   "within-noise": "~",
+  inconclusive: "?",
 };
 
 /**
- * ✓ improved, ✗ regressed, ≈ unstable, = identical, ~ within noise — the glyphs
- * the report's rows and legend are written in.
+ * ✓ improved, ✗ regressed, ≈ unstable, = identical, ~ within noise,
+ * ? inconclusive — the glyphs the report's rows and legend are written in.
  */
 export function getGlyph(shown: DisplayClass): string {
   return GLYPHS[shown];
@@ -250,6 +235,7 @@ export const VERDICT_GLOSSES: Record<DisplayClass, string> = {
   unstable: "unstable",
   identical: "identical",
   "within-noise": "within noise",
+  inconclusive: "inconclusive",
 };
 
 /** The delta cell: the word `unstable` for a verdict too noisy to trust, otherwise the signed percentage. */
@@ -260,14 +246,14 @@ export function formatVerdictDelta(verdict: MetricVerdict): string {
 /**
  * The display classes whose rows carry no news worth keeping above the fold.
  *
- * Shared by every renderer: a metric that sat within the noise, measured
- * identical, or was too jittery to judge, has its verdict styled to recede
- * (text) or is collapsed into a `<details>` block (markdown) rather than
- * competing with the rows that moved.
+ * A metric that sat within the noise, measured identical, rested on too few
+ * pairs to judge, or was too jittery to judge, has its verdict styled to recede
+ * rather than competing with the rows that moved.
  */
 export const QUIET_VERDICTS: ReadonlySet<DisplayClass> = new Set([
   "within-noise",
   "identical",
+  "inconclusive",
   "unstable",
 ]);
 
@@ -290,6 +276,44 @@ function stableMetrics(n: number): string {
  */
 export function geomeanLabel(n: number): string {
   return n === 0 ? GEOMEAN_LABEL : `${GEOMEAN_LABEL} (${stableMetrics(n)})`;
+}
+
+/** The scope separator inside a sectioned table's aggregate labels. */
+export const SCOPE_SEPARATOR = "·";
+
+/**
+ * The label of an aggregate row covering one scope of a sectioned table — a
+ * group or a kind.
+ *
+ * A sectioned table repeats the geomean row per scope, so each one names what it
+ * covers; the flat table has a single geomean and takes {@link geomeanLabel}.
+ */
+export function geomeanScopeLabel(scope: string): string {
+  return `${GEOMEAN_LABEL} ${SCOPE_SEPARATOR} ${scope}`;
+}
+
+/**
+ * How many of the scope's metrics stand behind its figure: `(n)` when they all
+ * do, `(n/m)` when exclusions thinned them.
+ *
+ * The count alone would read as the size of the scope, which it is only when
+ * nothing was excluded — and a reader comparing `geomean · memory (13/14)`
+ * with the section above it can see at a glance that a metric dropped out.
+ */
+function geomeanProvenance(geomean: GeomeanResult): string {
+  const total = geomean.n + geomean.excluded.length;
+  return total === geomean.n ? `(${geomean.n})` : `(${geomean.n}/${total})`;
+}
+
+/**
+ * A sectioned table's aggregate label with the provenance behind its figure.
+ *
+ * The single-candidate table has one count per row and names it here, which is
+ * what leaves its cell holding the figure alone — the same division of labor
+ * {@link geomeanLabel} makes in the flat table.
+ */
+export function scopedGeomeanLabel(scope: string, geomean: GeomeanResult): string {
+  return `${geomeanScopeLabel(scope)} ${geomeanProvenance(geomean)}`;
 }
 
 /** The figure standing in for a geomean with nothing to aggregate. */
@@ -323,9 +347,9 @@ export function formatEvidence(
 ): string {
   if (verdict.method === "exact") return "(exact)";
   if (verdict.verdict !== "unstable") return "";
-  if (verdict.noisePct > RELATIVE_SPREAD_CAP_PCT) {
+  if (verdict.noisePct > RELATIVE_SPREAD_CAP_PCT && baselineMedian !== undefined) {
     const noise = formatValue(verdict.noiseAbs, unit);
-    return `±${noise} noise on a ${formatValue(baselineMedian!, unit)} median`;
+    return `±${noise} noise on a ${formatValue(baselineMedian, unit)} median`;
   }
   return `noise ${formatNoiseBand(verdict.noisePct)}`;
 }
@@ -433,6 +457,7 @@ const HIGHLIGHT_RANK: Record<DisplayClass, number | undefined> = {
   unstable: 2,
   identical: undefined,
   "within-noise": undefined,
+  inconclusive: undefined,
 };
 
 /**
@@ -477,6 +502,21 @@ export function selectHighlights(
   }
   ranked.sort((a, b) => a.rank - b.rank || b.weight - a.weight);
   return ranked.map(({ highlight }) => highlight);
+}
+
+/**
+ * The name a highlight is reported under, its kind named ahead of it when the
+ * run spans several.
+ *
+ * The highlights sit below the table, away from the section titles that told the
+ * reader which kind a row belonged to, so a multi-kind run has to carry the kind
+ * on the line itself. A single-kind run would say the same word on every line,
+ * which tells the reader nothing and only pushes the deltas right.
+ */
+export function highlightLabel(highlight: MetricHighlight, qualify: boolean): string {
+  return qualify
+    ? `${highlight.metric.meta.kind} ${SCOPE_SEPARATOR} ${highlight.metric.meta.shortName}`
+    : highlight.name;
 }
 
 /** Whether any of these highlights is one the noise swamped, and so carries no usable delta. */
@@ -543,6 +583,18 @@ export type Style = Parameters<typeof styleText>[0];
  */
 export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteStream): string {
   return stream !== undefined ? styleText(style, label, { stream }) : styleText(style, label);
+}
+
+/**
+ * Wear `style` on each cell of a row rather than on the finished line.
+ *
+ * The column separators frame the table instead of belonging to any one row, so
+ * a style laid over the whole line would tint them along with the text it was
+ * meant for. Styling cell by cell leaves every `│` in the default color, which
+ * is what keeps the frame reading as one whatever the rows inside it wear.
+ */
+export function styleEveryCell(style: Style, styleCell: CellStyler = (cell) => cell): CellStyler {
+  return (cell, index) => formatLabel(styleCell(cell, index), style);
 }
 
 /** Set `name`, or unset it when `value` is `undefined` — assigning `undefined` would store the string. */
@@ -676,8 +728,8 @@ export function formatHintLabel(stream?: NodeJS.WriteStream): string {
  *
  * Every style here is worn by the verdict itself — a glyph, a delta, a tally —
  * never by the row or the values around it, so a class that recedes has to say
- * so in its own color: within noise dims, identical reads cyan for "measured
- * the same", and unstable keeps its amber warning.
+ * so in its own color: within noise and inconclusive dim, identical reads cyan
+ * for "measured the same", and unstable keeps its amber warning.
  */
 export const VERDICT_STYLES: Record<DisplayClass, Style> = {
   improved: ["green"],
@@ -685,6 +737,7 @@ export const VERDICT_STYLES: Record<DisplayClass, Style> = {
   unstable: ["yellow"],
   identical: ["cyan"],
   "within-noise": ["dim"],
+  inconclusive: ["dim"],
 };
 
 /** Which occurrence of the marker `styleWithin` reaches for. */
@@ -728,31 +781,71 @@ export function styleWithin(
 export interface GeomeanParts {
   readonly delta: string;
   readonly provenance: string;
+  /**
+   * The propagated band's figure, without the `±` a column pins in front of it,
+   * and empty where the metrics behind the figure left it nothing to state.
+   */
+  readonly band: string;
 }
 
 /**
- * The geomean's delta and how many metrics stand behind it, or `null` when
- * nothing survived to aggregate.
+ * The geomean's delta, the band propagated from the metrics behind it, and how
+ * many those are, or `null` when nothing survived to aggregate.
  *
  * The metrics left out are named nowhere near the figure: an unstable metric is
  * already tallied in the verdict summary and flagged in the highlights, so
  * restating the exclusions here spent the row's width on news the reader has.
  *
- * Shared by every renderer: each wraps the parts into its own cell shape, and
- * an empty geomean into {@link NO_GEOMEAN_CELL}.
+ * The renderer wraps the parts into its own cell shape, and an empty geomean
+ * into {@link NO_GEOMEAN_CELL}.
  */
 export function geomeanParts(geomean: GeomeanResult): GeomeanParts | null {
   if (geomean.n === 0) return null;
-  return { delta: formatDelta(geomean.value), provenance: stableMetrics(geomean.n) };
+  // A band of zero is what an aggregate over exact-only metrics propagates:
+  // there is no noise to state, and `±0.0%` would read as a measurement.
+  return {
+    delta: formatDelta(geomean.value),
+    provenance: stableMetrics(geomean.n),
+    band: geomean.band > 0 ? formatNoiseBandValue(geomean.band) : "",
+  };
+}
+
+/**
+ * How a geomean's figure is styled: emboldened always, and colored only once it
+ * clears the noise band propagated from the metrics behind it — and only when
+ * one of those metrics reported something.
+ *
+ * The figure is an average of ratios, so it moves whether or not anything did.
+ * Coloring it by sign alone would call a run green on a drift smaller than the
+ * noise its own metrics carry; a value inside the band is emboldened and left
+ * uncolored, which reads as "measured, nothing to conclude". A geomean with
+ * nothing to aggregate has a `NaN` value, and both comparisons below leave it
+ * uncolored.
+ *
+ * The band is not the whole guard, because it is propagated from each metric's
+ * own noise and shrinks as metrics are averaged: a run where every metric came
+ * back quiet can still produce a figure outside it. Coloring that green would
+ * announce a win the rows beneath it all decline to claim, so `outcomes` — the
+ * display class of each metric the figure covers, one per metric — vetoes the
+ * color when every one of them is quiet. Passing none leaves the band deciding
+ * alone, for callers holding a figure with no verdicts behind it.
+ */
+export function geomeanValueStyle(
+  geomean: GeomeanResult,
+  outcomes: ReadonlyArray<DisplayClass | undefined> = [],
+): Style {
+  if (isQuietRow(outcomes)) return ["bold"];
+  if (geomean.value < -geomean.band) return ["bold", "green"];
+  if (geomean.value > geomean.band) return ["bold", "red"];
+  return ["bold"];
 }
 
 /**
  * Whether every defined display class in a row belongs to
  * {@link QUIET_VERDICTS}.
  *
- * Shared by every renderer to decide whether a row carries no news worth
- * keeping above the fold. A row with no verdicts at all is left alone rather
- * than counted as quiet.
+ * Used to decide whether a row carries no news worth keeping above the fold.
+ * A row with no verdicts at all is left alone rather than counted as quiet.
  */
 export function isQuietRow(outcomes: ReadonlyArray<DisplayClass | undefined>): boolean {
   const defined = outcomes.flatMap((outcome) => (outcome === undefined ? [] : [outcome]));
@@ -770,6 +863,7 @@ function displayCounts(
     unstable: 0,
     identical: 0,
     "within-noise": 0,
+    inconclusive: 0,
   };
   for (const metric of Object.values(metrics)) {
     const verdict = metric.candidates[candidateIndex]?.verdict;
@@ -786,18 +880,18 @@ const DISPLAY_CLASS_ORDER: readonly DisplayClass[] = [
   "unstable",
   "identical",
   "within-noise",
+  "inconclusive",
 ];
 
 /**
  * One tally part per display class, in the order the report legend lists them.
  *
- * Renderers join these with their own separator — `"   "` for aligned text
- * columns, `" · "` for inline markdown.
+ * The text renderer joins these with `"   "` for aligned columns.
  *
  * Each part carries its class color, and a part counting nothing is dimmed
- * whatever its class — a zero is not news either way. `within noise` reads dim
- * at any count, its class color being dim. Color is governed by `styleText`
- * auto-detection.
+ * whatever its class — a zero is not news either way. `within noise` and
+ * `inconclusive` read dim at any count, their class color being dim. Color is
+ * governed by `styleText` auto-detection.
  */
 export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: number): string[] {
   const counts = displayCounts(metrics, candidateIndex);
@@ -902,10 +996,9 @@ export function methodFooterLines(metrics: MetricComparisons): string[] {
  * The other cause of a band fallback, tied pairs, gets no hint: more samples
  * cannot help it, and the `=` glyph on those rows already reports what happened.
  *
- * `formatHint` turns the shared hint string into a format-appropriate line: the
- * text renderer prepends a styled label, the markdown renderer wraps it in a
- * blockquote with italic emphasis. The line is left unstyled here — its label
- * carries its own color through `formatHint`.
+ * `formatHint` turns the shared hint string into a format-appropriate line —
+ * the text renderer prepends a styled label. The line is left unstyled here —
+ * its label carries its own color through `formatHint`.
  */
 export function hintFooterLines(
   metrics: MetricComparisons,
@@ -918,9 +1011,8 @@ export function hintFooterLines(
  * The footer: how each verdict was decided when verbose, and — either way — the
  * hint telling the reader when more samples would buy a statistical verdict.
  *
- * Shared by every renderer, which differ only in how they format the hint line:
- * the text renderer prepends a styled label, the markdown renderer wraps it in
- * a blockquote.
+ * Renderers differ only in how they format the hint line, which `formatHint`
+ * owns: the text renderer prepends a styled label.
  */
 export function footerLines(
   metrics: MetricComparisons,

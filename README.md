@@ -69,7 +69,7 @@ gymrat compare main my-branch \
 | `--samples <number>`    | `10`            | Paired samples per target                                                 |
 | `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare` and per bench run                        |
 | `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                           |
-| `--format <value>`      | `text`          | Output format: `text`, `markdown`, or `json`                              |
+| `--format <value>`      | `text`          | Output format: `text` or `json`                                           |
 | `--no-color`            | auto            | Print the report without ANSI styles                                      |
 | `--verbose`             | off             | Name the statistical method behind each verdict in the footer             |
 | `--fail-on <condition>` | none            | Exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
@@ -99,10 +99,12 @@ through the shell with the working directory set to the target's directory.
 
 - `regressed` — trips when any gating metric has a `regressed` verdict on any candidate. Unstable
   and non-gating metrics never trip this gate.
-- `geomean:<pct>` — trips when any candidate's geomean delta reaches `<pct>` percent in the costly
-  direction (e.g. `geomean:2` trips at +2.0% or worse for lower-is-better metrics). A candidate
-  whose geomean covers no stable gating metrics cannot trip this gate; gymrat warns on stderr
-  instead.
+- `geomean:<pct>` — trips when any candidate's gated geomean, on any gating **kind** (the class an
+  adapter assigns a metric, such as `time` or `memory`; see [Reading the report](#reading-the-report)
+  for the full explanation), reaches `<pct>` percent in the costly direction (e.g. `geomean:2` trips
+  at +2.0% or worse for lower-is-better metrics). Each kind is evaluated independently: a non-gating
+  kind can never trip this gate regardless of its value. A candidate whose gating kinds all have
+  zero stable metrics cannot trip this gate; gymrat warns on stderr instead.
 
 ```sh
 # Block on any regression
@@ -122,19 +124,19 @@ worktrees, and exits.
 ## Reading the report
 
 ```sh
-gymrat compare main perf/faster-decode --bench "node bench.js" --adapter mitata --samples 10
+gymrat compare main perf/faster-decode --bench "node bench.js" --adapter metric-lines --samples 10
 ```
 
 With a `gymrat.json` marking `encode/heap` as an exact metric, that prints:
 
 ```text
-gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
+gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
 metric                      │        main │ perf/faster-decode │ vs main
 ────────────────────────────┼─────────────┼────────────────────┼──────────────────
-decode/text=digits/time     │  1.7µs ± 1% │         1.4µs ± 1% │ ✓  -17.9%  ±2.5%
-decode/text=words/time      │  3.1µs ± 1% │         3.1µs ± 3% │ ~   +0.9%  ±2.5%
-encode/time                 │  914ns ± 1% │         934ns ± 1% │ ✗   +2.2%  ±2.5%
-encode/heap                 │ 49.2KB ± 0% │        45.3KB ± 0% │ ✓   -7.9%
+decode/text=digits/time     │   1700 ± 1% │          1400 ± 1% │ ✓  -17.9%  ±2.5%
+decode/text=words/time      │   3100 ± 1% │          3100 ± 3% │ ~   +0.9%  ±2.5%
+encode/time                 │    914 ± 1% │           934 ± 1% │ ✗   +2.2%  ±2.5%
+encode/heap                 │  49200 ± 0% │         45300 ± 0% │ ✓   -7.9%
 ────────────────────────────┼─────────────┼────────────────────┼──────────────────
 geomean (4 stable metrics)  │             │                    │     -6.0%
                             │        main │ perf/faster-decode │ vs main
@@ -158,17 +160,22 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 - The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class at a glance,
   and doubles as the legend for the glyphs used throughout the report.
 - The **highlights** block lists regressions first, then improvements, with the delta and method
-  evidence. Exact metrics show `(exact)`. Metrics marked `≈ unstable` (noise band wider than
-  `unstableNoisePct`) show the noise in the metric's own units (`±<noise> noise on a <median>
-median`) at default thresholds; the `noise ±N%` form appears only when the relative spread stays
-  below 100%. Unstable metrics are too jittery to judge and are excluded from the geomean.
-  A candidate with an unstable metric closes the block with a note that unstable metrics won't
-  stabilize with more samples.
-- The **`±` noise band** in the verdict column is the half-range-derived spread both approximate
-  methods compute. The band decides the verdict only on the band path; signed-rank decides on `p`.
-  It appears only for approximate metrics in the single-candidate table — multi-candidate tables
-  drop the band from cells to save width. Unstable metrics omit the band (the word `unstable`
-  replaces it).
+  evidence. Exact metrics show `(exact)`.
+- Metrics marked `≈ unstable` (noise band wider than `unstableNoisePct`) show the noise in the
+  metric's own units (`±<noise> noise on a <median> median`); the `noise ±N%` form appears only
+  when the relative spread stays below 100%. Unstable metrics are too jittery to judge and are
+  excluded from the geomean. A candidate with an unstable metric closes the block with a note that
+  unstable metrics won't stabilize with more samples.
+- In a multi-kind run, each highlight is prefixed with its kind (`✗ time · encode  +2.2%`);
+  single-kind runs omit the prefix.
+- When `--fail-on geomean:<pct>` would trip, the highlights close with a **gate-trip echo** per
+  tripping kind (`⚑ time geomean +3.1% exceeded --fail-on geomean:2`), so the reader sees why the
+  run will exit 1 without cross-referencing the gate conditions.
+- The **`±` noise band** in the verdict column is the half-range-derived spread the signed-rank and
+  noise-band methods both compute. The band decides the verdict only on the band path; signed-rank
+  decides on `p`. It appears only for non-exact metrics in the single-candidate table —
+  multi-candidate tables drop the band from cells to save width. Unstable metrics omit the band
+  (the word `unstable` replaces it).
 - The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
   hidden.
 - The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
@@ -182,16 +189,68 @@ median`) at default thresholds; the `noise ±N%` form appears only when the rela
   two sets can differ.
 - Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
   `metric-lines` values carry no unit and are rounded to the nearest integer.
-- The **geomean** (geometric mean) row aggregates gating metrics only. Unstable metrics are excluded
-  automatically, and the label reports how many stable metrics remain (e.g. `geomean (4 stable
-metrics)`). All metrics are gating by default; disable per metric in the config file.
+- When a run produces metrics of more than one **kind** (e.g. `time` and `memory` from `mitata`),
+  the report renders a section per kind: a kind heading, group sub-headers for dotted metric names,
+  a per-group geomean, and a per-kind geomean at the bottom of each section. A kind with no gating
+  metric carries an `informational — gating off` tag on its heading; when a `kinds` entry in the
+  config file switched the kind off wholesale, the tag also names the key, e.g.
+  `informational — gating off (config: kinds.memory.gating = false)`. Single-kind runs keep the flat
+  layout unchanged.
+- The **geomean** row in each kind section aggregates all of that kind's metrics. Unstable metrics
+  are excluded automatically. All metrics are gating by default; disable per metric or per kind in
+  the config file. The `--fail-on geomean:<pct>` gate evaluates a separate gated geomean per kind
+  that covers only gating metrics — there is no cross-kind blended geomean. When every constituent
+  metric is within noise, the geomean renders bold-only (no green/red coloring) regardless of its
+  propagated value.
+- A single-kind run closes with one `geomean (4 stable metrics)` row naming how many stable metrics
+  remain. A multi-kind run closes each section with a `geomean · <kind> (n)` row instead, where `n`
+  is the count of stable metrics that stood behind the figure, or `geomean · <kind> (n/m)` when
+  exclusions thinned `m` metrics down to `n`.
+
+A `mitata` run reporting both `time` and `memory` metrics, with `kinds.memory.gating` set to
+`false`, sections the report like this:
+
+```text
+gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
+
+──────────────────────┬────────────┬────────────────────┬──────────────────
+time                  │       main │ perf/faster-decode │ vs main
+──────────────────────┼────────────┼────────────────────┼──────────────────
+entity                │            │                    │
+  alive_check         │ 100ns ± 1% │          90ns ± 1% │ ✓  -10.0%  ±2.5%
+  spawn               │ 100ns ± 1% │         104ns ± 1% │ ✗   +4.0%  ±2.5%
+geomean · entity (2)  │            │                    │     -3.1%
+
+warmup                │ 100ns ± 1% │         100ns ± 1% │ ~   +0.3%  ±2.5%
+──────────────────────┼────────────┼────────────────────┼──────────────────
+geomean · time (3)    │            │                    │     -3.2%
+                      │       main │ perf/faster-decode │ vs main
+
+informational — gating off (config: kinds.memory.gating = false)
+──────────────────────┬────────────┬────────────────────┬──────────────────
+memory                │       main │ perf/faster-decode │ vs main
+──────────────────────┼────────────┼────────────────────┼──────────────────
+encode                │  100B ± 1% │           93B ± 1% │ ✓   -7.0%  ±2.5%
+──────────────────────┼────────────┼────────────────────┼──────────────────
+geomean · memory (1)  │            │                    │     -7.0%
+                      │       main │ perf/faster-decode │ vs main
+
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise
+
+highlights
+  ✗ time · entity.spawn/time         +4.0%
+  ✓ time · entity.alive_check/time  -10.0%
+  ✓ memory · encode/heap             -7.0%
+```
+
 - A metric present on only one side renders one-sided: its value in the present column, a blank cell
   on the other, and no verdict.
 - The **`Hint:` line** prints regardless of `--verbose`, and only when a metric fell back to the
   noise band for want of samples.
 - **Display-width limitation:** column alignment assumes one character equals one display column.
-  CJK or other wide characters in metric names or labels may misalign columns; label truncation
-  can split a multi-byte character. A display-width dependency is not planned.
+  Chinese, Japanese, Korean (CJK) or other wide characters in metric names or labels may
+  misalign columns; label truncation can split a multi-byte character. A display-width
+  dependency is not planned.
 
 ### How verdicts are decided
 
@@ -213,8 +272,7 @@ from the per-side medians.
 
 ### GitHub Actions
 
-Use `--fail-on` to gate CI on regressions, and `--format json` or `--format markdown` for
-machine-readable output:
+Use `--fail-on` to gate CI on regressions, and `--format json` for machine-readable output:
 
 ```yaml
 - name: Benchmark comparison
@@ -227,32 +285,33 @@ machine-readable output:
       > bench-report.json
 ```
 
-Post the markdown report as a PR comment:
-
-```yaml
-- name: Comment benchmark results
-  run: |
-    gymrat compare main ${{ github.head_ref }} \
-      --bench "npm run bench" \
-      --format markdown \
-      > bench-report.md
-    gh pr comment ${{ github.event.number }} --body-file bench-report.md
-```
-
 ### JSON schema
 
-`--format json` produces a stable JSON structure (currently `schemaVersion: 1`). Top-level fields:
+`--format json` produces a stable JSON structure (currently `schemaVersion: 2`). Top-level fields:
 
-| Field           | Description                                                             |
-| --------------- | ----------------------------------------------------------------------- |
-| `schemaVersion` | Always `1`; will increment on breaking changes.                         |
-| `baseline`      | Baseline label.                                                         |
-| `candidates`    | Ordered array of candidate labels.                                      |
-| `samples`       | Number of paired samples.                                               |
-| `adapter`       | Adapter used (`metric-lines` or `mitata`).                              |
-| `metrics`       | Per-metric object: baseline medians, per-candidate verdicts and deltas. |
-| `perCandidate`  | Per-candidate geomean (value, exclusions) and verdict counts.           |
-| `worktrees`     | Cleanup state: removed count, left-behind paths, prune errors.          |
+| Field           | Description                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `schemaVersion` | Currently `2`; increments on breaking changes.                                           |
+| `baseline`      | Baseline label.                                                                          |
+| `candidates`    | Ordered array of candidate labels.                                                       |
+| `samples`       | Number of paired samples.                                                                |
+| `adapter`       | Adapter used (`metric-lines` or `mitata`).                                               |
+| `metrics`       | Per-metric object: baseline medians, per-candidate verdicts and deltas.                  |
+| `perCandidate`  | Per-candidate `kinds` array (section geomean, groups, gated geomean) and verdict counts. |
+| `worktrees`     | Cleanup state: removed count, left-behind paths, prune errors.                           |
+
+Each metric entry carries `kind` (adapter-supplied, e.g. `"time"`, `"memory"`, or `"other"`) and
+`group` (the dotted-name prefix, or `null` for ungrouped metrics).
+
+Each candidate's `kinds` array contains one aggregate object per kind, with fields:
+
+- `kind` — the kind name.
+- `hasGating` — whether at least one metric of the kind counts toward `--fail-on geomean:<pct>`.
+- `geomean` — over all of the kind's metrics: `value`, `n` (metrics included), `band` (propagated
+  noise), and `excluded` (excluded metrics with their reasons).
+- `groups` — one `{ group, geomean }` entry per dotted-name prefix, `geomean` shaped as above.
+- `gatedGeomean` — the same shape as `geomean` but over gating metrics only; `null` when `hasGating`
+  is `false`.
 
 Each candidate's verdict includes `method` (`signed-rank`, `band`, or `exact`), `delta`, `p` (for
 signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a method are `null`.
@@ -306,7 +365,8 @@ The `mitata` adapter parses the JSON that [mitata](https://github.com/evanwasher
 its JSON mode, flattening each benchmark to `<alias>/time` (from `stats.p50`) and `<alias>/heap`
 (from `stats.heap.avg`, when mitata measured it). For parameterized benchmarks, `$name` placeholders
 in the alias are replaced with `name=value`, so an alias of `decode/$text` becomes
-`decode/text=digits/time`.
+`decode/text=digits/time`. `/time` metrics report under the `time` kind and `/heap` metrics under
+`memory`; `metric-lines` names no kind, so all its metrics report under `other`.
 
 ## Configuration
 
@@ -324,6 +384,9 @@ an error, to catch typos.
   "unstableNoisePct": 200,
   "metrics": {
     "decode/time": { "direction": "lower", "gating": true, "exact": false }
+  },
+  "kinds": {
+    "memory": { "gating": false }
   }
 }
 ```
@@ -336,11 +399,20 @@ an error, to catch typos.
   the config file or leave the default.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
   - `direction`: `"lower"` or `"higher"` (which way is better).
-  - `gating`: whether the metric counts toward the geomean. Defaults to `true`.
+  - `gating`: whether the metric counts toward the geomean and the `--fail-on` gate. Defaults to
+    `true`. A per-metric `gating` entry takes precedence over the kind-level setting.
   - `exact`: when `true`, any median difference is a signal and a single sample suffices.
 - A `metrics` key that matches no metric the run produced is ignored without a warning, unlike an
   unknown top-level key. When an override seems to do nothing, check the spelling against the
   report's metric column.
+- `kinds` keys are kind names reported by the adapter (`time`, `memory` for `mitata`; `other` for
+  `metric-lines`). Each entry accepts:
+  - `gating`: whether every metric of this kind counts toward the geomean and the `--fail-on` gate.
+    Defaults to `true`. A per-metric `gating` entry in `metrics` overrides the kind-level setting.
+- A `kinds` key that matches no kind the run produced is silently ignored, the same as an unmatched
+  `metrics` key.
+- An unknown sub-key inside a `metrics` or `kinds` entry is an error, the same as an unknown
+  top-level key.
 
 ## License
 

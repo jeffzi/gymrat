@@ -85,7 +85,7 @@ function mixedGatingKind(): ReturnType<typeof buildInputs> {
 }
 
 describe("computeKindAggregates", () => {
-  describe("aggregate shape", () => {
+  describe("when aggregating a kind's metrics", () => {
     it("carries exactly the kind, its gating flag, its geomean and its groups", () => {
       const { verdicts, metricMeta } = buildInputs([
         { name: "warmup", shortName: "warmup", gating: false, delta: 0 },
@@ -109,7 +109,7 @@ describe("computeKindAggregates", () => {
     });
   });
 
-  describe("group inference", () => {
+  describe("when short names contain dots", () => {
     it("groups a kind's metrics by the text before the first dot of their short names", () => {
       const { verdicts, metricMeta } = buildInputs([
         { name: "m1", shortName: "decode.time", delta: -10 },
@@ -176,7 +176,7 @@ describe("computeKindAggregates", () => {
     });
   });
 
-  describe("ordering", () => {
+  describe("when multiple kinds and groups appear", () => {
     it("orders kinds and groups by the first metric that mentions them", () => {
       const { verdicts, metricMeta } = buildInputs([
         { name: "m1", kind: "time", shortName: "encode.time", delta: -10 },
@@ -194,7 +194,7 @@ describe("computeKindAggregates", () => {
     });
   });
 
-  describe("the kind geomean", () => {
+  describe("when computing the kind's geomean", () => {
     it("covers the kind's gating and non-gating metrics alike", () => {
       const { verdicts, metricMeta } = mixedGatingKind();
 

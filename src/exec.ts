@@ -2,6 +2,8 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
+import { messageOf } from "./errors.js";
+
 /** Shape returned when the command runs to completion, whether it exits cleanly or is aborted. */
 export interface ExecResult {
   stdout: string;
@@ -91,7 +93,7 @@ export async function exec(
     } catch (err) {
       resolve({
         stdout: "",
-        stderr: `${err instanceof Error ? err.message : String(err)}\n`,
+        stderr: `${messageOf(err)}\n`,
         exitCode: FAILURE_EXIT_CODE,
       });
       return;
@@ -176,7 +178,7 @@ export async function exec(
     // spawn failure only reaches the caller if it is written there. Node emits
     // this before any "close", so the cause survives the single-resolution guard.
     child.on("error", (err: Error) => {
-      settle({ stdout, stderr: `${stderr + err.message}\n`, exitCode: FAILURE_EXIT_CODE });
+      settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
     });
   });
 }

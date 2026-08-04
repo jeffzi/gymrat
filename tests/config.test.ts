@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 
 import type { Adapter } from "../src/adapters/types.js";
+import type { ResolvedConfig } from "../src/config.js";
 import { loadConfigFile, resolveConfig, resolveMetricMeta } from "../src/config.js";
 import { GymratError } from "../src/errors.js";
 import { metricRecord } from "./fixtures/metrics.js";
@@ -470,21 +471,14 @@ describe("resolveConfig", () => {
   });
 
   describe("when bench is missing from both flags and config", () => {
-    it.each([
-      { pattern: /--bench/, description: "mentions --bench" },
-      { pattern: /config file/, description: "mentions config file" },
-    ])("throws an error that $description", ({ pattern }) => {
+    it("throws a GymratError that mentions --bench and the config file", () => {
       tmpdir = createConfigFile({});
       process.chdir(tmpdir);
+      const act = (): ResolvedConfig => resolveConfig({});
 
-      expect(() => resolveConfig({})).toThrow(pattern);
-    });
-
-    it("throws a GymratError", () => {
-      tmpdir = createConfigFile({});
-      process.chdir(tmpdir);
-
-      expect(() => resolveConfig({})).toThrow(GymratError);
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/--bench/);
+      expect(act).toThrow(/config file/);
     });
   });
 

@@ -9,7 +9,7 @@ encode/heap                 │ 49.2KB ± 0% │        45.3KB ± 0% │ ✓   -
 geomean (4 stable metrics)  │             │                    │     -6.0%
                             │        main │ perf/faster-decode │ vs main
 
-✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 
 highlights
   ✗ encode/time               +2.2%

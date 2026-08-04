@@ -1,3 +1,5 @@
+import type { ConfigKinds } from "../config.js";
+import { assertNever } from "../errors.js";
 import type { WorktreeRemovalFailure } from "../targets.js";
 import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
 import {
@@ -20,19 +22,24 @@ import {
   GEOMEAN_LABEL,
   geomeanLabel,
   geomeanParts,
+  geomeanScopeLabel,
+  geomeanValueStyle,
   getGlyph,
   hasUnstableHighlight,
   type HighlightBlock,
+  highlightLabel,
   type MetricCellParts,
   NO_GEOMEAN_CELL,
   NO_GEOMEAN_FIGURE,
   NO_STABLE_METRICS,
   PLUS_MINUS,
   QUIET_VERDICTS,
+  scopedGeomeanLabel,
   selectHighlights,
   shownClass,
   SPREAD_SEPARATOR,
   type Style,
+  styleEveryCell,
   styleWithin,
   UNSTABLE_FUTILITY_NOTE,
   VARIANT_NAME_STYLE,
@@ -42,9 +49,21 @@ import {
   withColor,
   withDisplayLabels,
 } from "./format.js";
+import {
+  flatGeomeanOf,
+  groupGeomeanOf,
+  informationalTag,
+  kindGeomeanOf,
+  planSections,
+  sectionLabel,
+  type SectionLayout,
+  type SectionPlan,
+  spansManyKinds,
+} from "./sections.js";
 import type {
   CandidateComparison,
   ComparisonResult,
+  FailOnCondition,
   MetricComparisons,
   ReportOptions,
 } from "./types.js";
@@ -63,9 +82,37 @@ interface MetricRow {
   readonly band: string;
 }
 
+/** Fields shared by every row that names a metric in either table layout. */
+interface MetricRowBase {
+  /** The full metric name, which the flat table shows and every other output keys on. */
+  readonly name: string;
+  /** The short name a section shows the row under, group prefix stripped and indented. */
+  readonly label: string;
+  readonly gating: boolean;
+}
+
+/**
+ * One metric of the single-candidate table, measured but not yet padded.
+ *
+ * The fields every cell pads to are properties of the whole column, so a row is
+ * held apart from its widths until every row exists.
+ */
+interface MeasuredRow extends MetricRowBase {
+  readonly baseline: MetricCellParts;
+  readonly candidate: MetricCellParts;
+  readonly verdict: MetricVerdict | undefined;
+  readonly parts: VerdictParts | undefined;
+}
+
+/** The metric-name column's header text, and its fallback when a section carries no title. */
+const METRIC_COLUMN_HEADER = "metric";
+
 const METRIC_COLUMN_MIN = 16;
 const VALUE_COLUMN_MIN = 12;
 const VERDICT_COLUMN_MIN = 12;
+
+/** Index of the label cell — the first column of both tables, whatever the row states. */
+const LABEL_COLUMN = 0;
 
 /** Index of the verdict cell in a {@link Row} — the only cell styled from within. */
 const VERDICT_COLUMN = 3;
@@ -154,7 +201,8 @@ function joinValueCell(parts: MetricCellParts, widths: ValueWidths): string {
  * reader who wants it.
  *
  * The noise band appears only for the two approximate methods: an exact
- * verdict carries no `noisePct`, so its cell ends at the delta.
+ * verdict carries no `noisePct`, so its cell ends at the delta. So does an
+ * inconclusive one, whose band is the floor constant rather than a measurement.
  *
  * Pairing drops the rounds where either side lacks the metric, so a metric can
  * rest on fewer pairs than the run's sample count. The count is printed exactly
@@ -180,10 +228,13 @@ interface VerdictParts {
  * same fields with that one left empty.
  */
 function verdictParts(verdict: MetricVerdict, samples: number, withBand: boolean): VerdictParts {
+  const shown = displayClass(verdict);
   const unstable = verdict.verdict === "unstable";
-  const banded = withBand && !unstable && "noisePct" in verdict;
+  // An inconclusive verdict's band is the noise floor constant, not a width
+  // anything was measured against, so the row states the delta and stops.
+  const banded = withBand && !unstable && shown !== "inconclusive" && "noisePct" in verdict;
   return {
-    glyph: getGlyph(displayClass(verdict)),
+    glyph: getGlyph(shown),
     delta: unstable ? "" : formatDelta(verdict.delta),
     word: unstable ? VERDICT_GLOSSES.unstable : "",
     band: banded ? formatNoiseBandValue(verdict.noisePct) : "",
@@ -239,16 +290,39 @@ function joinVerdictCell(parts: VerdictParts, widths: VerdictWidths): string {
     .trimEnd();
 }
 
-/** The geomean's aggregate and the fields a cell holding it is styled by. */
-interface GeomeanCell {
-  /** The aggregate itself, or the dash standing in for one. */
-  readonly figure: string;
-  /** How many metrics stand behind the figure, where the cell rather than the label carries it. */
-  readonly provenance: string;
-  /** Whether anything survived to aggregate. */
-  readonly aggregated: boolean;
-  /** The finished cell of a candidate column in the multi-candidate table. */
+/** A span of an already-padded cell, and the style it carries. */
+interface StyledSpan {
   readonly text: string;
+  readonly style: Style;
+}
+
+/**
+ * Style each span where it sits inside a finished cell.
+ *
+ * A span is found by its own text, so the spans of one cell have to be distinct
+ * strings — a cell repeating one span's text would style the first occurrence
+ * twice and leave the second bare.
+ */
+function styleSpans(cell: string, spans: readonly StyledSpan[]): string {
+  let styled = cell;
+  for (const span of spans) {
+    styled = styleWithin(styled, span.text, span.style);
+  }
+  return styled;
+}
+
+/** The dash and the phrase standing in for an aggregate that has nothing behind it. */
+function emptyGeomeanSpans(): StyledSpan[] {
+  return [
+    { text: NO_GEOMEAN_FIGURE, style: ["bold"] },
+    { text: NO_STABLE_METRICS, style: ["dim"] },
+  ];
+}
+
+/** One candidate column's aggregate cell in the multi-candidate table. */
+interface AggregateColumnCell {
+  readonly text: string;
+  readonly spans: readonly StyledSpan[];
 }
 
 /**
@@ -259,61 +333,95 @@ interface GeomeanCell {
  * count per column and carries each beside its own figure. The single-candidate
  * table has one count for the whole row and names it in the label instead,
  * which is what leaves its cell holding the figure alone.
+ *
+ * `outcomes` are that column's own verdicts on the metrics the figure covers,
+ * which is what leaves a quiet column uncolored beside a colored one.
  */
-function formatGeomeanCell(geomean: GeomeanResult): GeomeanCell {
+function geomeanColumnCell(
+  geomean: GeomeanResult,
+  outcomes: ReadonlyArray<DisplayClass | undefined>,
+): AggregateColumnCell {
   const parts = geomeanParts(geomean);
   if (parts === null) {
-    return {
-      figure: NO_GEOMEAN_FIGURE,
-      provenance: NO_STABLE_METRICS,
-      aggregated: false,
-      text: NO_GEOMEAN_CELL,
-    };
+    return { text: NO_GEOMEAN_CELL, spans: emptyGeomeanSpans() };
   }
   return {
-    figure: parts.delta,
-    provenance: parts.provenance,
-    aggregated: true,
     text: `${parts.delta} · ${parts.provenance}`,
+    spans: [
+      { text: parts.delta, style: geomeanValueStyle(geomean, outcomes) },
+      { text: parts.provenance, style: ["dim"] },
+    ],
   };
 }
 
 /**
- * The blank the geomean leaves where a metric row carries its glyph.
+ * The blank an aggregate row leaves where a metric row carries its glyph.
  *
  * The row reports an aggregate, not a verdict, so it has no glyph to show;
  * holding the slot open is what seats its figure under the deltas above.
  */
 const GEOMEAN_GLYPH_SLOT = " ";
 
-/**
- * The geomean as the single-candidate table's verdict cell: the aggregate
- * alone, in the delta field of the column it closes.
- *
- * Reading down the delta column and landing on the run's one aggregate is the
- * comparison the row is there to make, so the figure sits where the deltas sit
- * rather than at the head of the cell.
- */
-function geomeanVerdictParts(geomean: GeomeanCell): VerdictParts {
-  return {
-    glyph: geomean.aggregated ? GEOMEAN_GLYPH_SLOT : geomean.figure,
-    delta: geomean.aggregated ? geomean.figure : "",
-    word: geomean.aggregated ? "" : geomean.provenance,
-    band: "",
-    pairs: "",
-  };
+/** An aggregate row's verdict cell in the single-candidate table. */
+interface AggregateCell {
+  readonly parts: VerdictParts;
+  readonly spans: readonly StyledSpan[];
 }
 
 /**
- * Style a geomean cell's aggregate bold and its provenance dim — the styling
- * both the single- and multi-candidate tables apply to their geomean row.
- *
- * A cell whose count rides in the row's label shows no provenance, and styling
- * text a cell does not hold changes nothing.
+ * An aggregate cell holding a delta and the band it was judged against: the
+ * blank glyph slot, no word or pairs of its own, and spans carrying whatever
+ * color the delta earns.
  */
-function styleGeomeanCell(cell: string, geomean: GeomeanCell): string {
-  const styled = styleWithin(cell, geomean.figure, ["bold"]);
-  return styleWithin(styled, geomean.provenance, ["dim"]);
+function aggregateDeltaCell(
+  delta: string,
+  band: string,
+  spans: readonly StyledSpan[],
+): AggregateCell {
+  return { parts: { glyph: GEOMEAN_GLYPH_SLOT, delta, word: "", band, pairs: "" }, spans };
+}
+
+/**
+ * The single-candidate table's aggregate cell: the figure and its band, in the
+ * delta and band fields of the column it closes.
+ *
+ * Reading down the delta column and landing on an aggregate is the comparison
+ * the row is there to make, so the figure sits where the deltas sit rather than
+ * at the head of the cell, and the band it was judged against sits under the
+ * rows' own bands — the figure is colored by that band, so a reader asking why
+ * it stayed plain finds the width beside it.
+ */
+function geomeanVerdictCell(
+  geomean: GeomeanResult,
+  outcomes: ReadonlyArray<DisplayClass | undefined>,
+): AggregateCell {
+  const parts = geomeanParts(geomean);
+  if (parts === null) {
+    return {
+      parts: { glyph: NO_GEOMEAN_FIGURE, delta: "", word: NO_STABLE_METRICS, band: "", pairs: "" },
+      spans: emptyGeomeanSpans(),
+    };
+  }
+  return aggregateDeltaCell(parts.delta, parts.band, [
+    { text: parts.delta, style: geomeanValueStyle(geomean, outcomes) },
+  ]);
+}
+
+/**
+ * An aggregate cell's spans, its band among them.
+ *
+ * The band prints right-aligned behind a pinned `±`, so the text a span has to
+ * match only exists once the column has settled on a width — which is why the
+ * cell carries the band as a figure and the span is built here.
+ */
+function aggregateSpans(cell: AggregateCell, widths: VerdictWidths): readonly StyledSpan[] {
+  const band = bandField(cell.parts.band, widths.band);
+  return band === "" ? cell.spans : [...cell.spans, { text: band, style: ["dim"] }];
+}
+
+/** The display class each of `metrics` landed in, in the order the rows are drawn. */
+function measuredOutcomes(metrics: readonly MeasuredRow[]): (DisplayClass | undefined)[] {
+  return metrics.map((row) => shownClass(row.verdict));
 }
 
 /**
@@ -333,18 +441,183 @@ function styleGlyphAndDelta(
   return delta === "" ? styled : styleWithin(styled, delta, style);
 }
 
-/** Width the metric-name column needs: the widest metric name or the geomean row's label. */
-function computeMetricColumnWidth(metricNameLengths: readonly number[], label: string): number {
-  return computeColumnWidth(
-    "metric".length,
-    [...metricNameLengths, label.length],
-    METRIC_COLUMN_MIN,
+/** Width the metric-name column needs: the widest label any of its rows carries. */
+function computeMetricColumnWidth(headerLabel: string, labelLengths: number[]): number {
+  return computeColumnWidth(headerLabel.length, labelLengths, METRIC_COLUMN_MIN);
+}
+
+/** Indent a metric row carries under the group sub-header above it. */
+const GROUP_INDENT = "  ";
+
+/** A metric's name cell inside a section: its short name, indented under its group. */
+function indentedSectionLabel(shortName: string, group: string | undefined): string {
+  const label = sectionLabel(shortName, group);
+  return group === undefined ? label : `${GROUP_INDENT}${label}`;
+}
+
+/**
+ * A section's title: the kind, and — where none of its metrics gates — the tag
+ * saying so and the config key that decided it.
+ */
+function sectionAnnotation<Metric>(
+  section: SectionPlan<Metric>,
+  configKinds: ConfigKinds | undefined,
+): string | undefined {
+  if (section.hasGating) return undefined;
+  return formatLabel(informationalTag(section.kind, configKinds), ["dim"]);
+}
+
+/** An aggregate row: what it covers, and what it states for each candidate column. */
+interface AggregateRow<Cell> {
+  readonly label: string;
+  readonly cell: Cell;
+}
+
+/** A line of a table body, held until the column widths that render it are known. */
+type BodyLine<Metric, Cell> =
+  | { readonly type: "title"; readonly text: string }
+  | { readonly type: "blank" }
+  | { readonly type: "header"; readonly title?: string }
+  | { readonly type: "rule" }
+  | { readonly type: "border" }
+  | { readonly type: "echo" }
+  | { readonly type: "group"; readonly label: string }
+  | { readonly type: "metric"; readonly row: Metric }
+  | ({ readonly type: "aggregate" } & AggregateRow<Cell>);
+
+/**
+ * The aggregate rows a table fills its body with — the half that differs between
+ * the two tables.
+ *
+ * Each builder is handed the metric rows its figure covers, in the order the
+ * section drew them, so a row that reads the verdicts behind an aggregate reads
+ * exactly the rows the reader sees above it.
+ */
+interface AggregateRows<Metric, Cell> {
+  group(kind: string, group: string, metrics: readonly Metric[]): AggregateRow<Cell>;
+  kind(kind: string, metrics: readonly Metric[]): AggregateRow<Cell>;
+  flat(metrics: readonly Metric[]): AggregateRow<Cell>;
+}
+
+/** Every metric row a section holds, its group blocks flattened back into row order. */
+function sectionMetrics<Metric>(section: SectionPlan<Metric>): Metric[] {
+  return section.blocks.flatMap((block) =>
+    block.type === "group" ? block.metrics : [block.metric],
   );
+}
+
+/** The lines one section's blocks produce: groups, standalone metrics, and sub-geomeans. */
+function planBlocks<Metric, Cell>(
+  section: SectionPlan<Metric>,
+  rows: AggregateRows<Metric, Cell>,
+): BodyLine<Metric, Cell>[] {
+  const lines: BodyLine<Metric, Cell>[] = [];
+  for (const [blockIndex, block] of section.blocks.entries()) {
+    const previous = section.blocks[blockIndex - 1];
+    if (previous !== undefined && (previous.type === "group" || block.type === "group")) {
+      lines.push({ type: "blank" });
+    }
+
+    if (block.type === "metric") {
+      lines.push({ type: "metric", row: block.metric });
+      continue;
+    }
+    lines.push({ type: "group", label: block.group });
+    for (const metric of block.metrics) lines.push({ type: "metric", row: metric });
+    lines.push({ type: "aggregate", ...rows.group(section.kind, block.group, block.metrics) });
+  }
+  return lines;
+}
+
+/**
+ * The body of a table: its header, its metric rows, and the aggregate closing
+ * whatever each of them belongs to.
+ *
+ * A run reporting one kind — every run of an adapter that names none — draws the
+ * flat table it always did: one header, the metric rows under it, one geomean.
+ * A run reporting several draws a section per kind, each repeating the header so
+ * the reader never scrolls back to learn which column is which, and each closed
+ * by its own kind's geomean.
+ *
+ * A repeated header is a landmark rather than a first line, so it is boxed
+ * between a top border and a column rule instead of resting on one, which keeps
+ * the eye from reading the header as one more row of the section above it.
+ *
+ * Every table closes on an echo of its header labels, so the reader leaving the
+ * last row still has the columns named beside them. In a sectioned run each
+ * section earns its own echo, which doubles as the section's visual closure.
+ *
+ * Every gap is a true blank line, at both scales: the one parting two groups
+ * inside a section as much as the one parting two sections, or the first section
+ * from the banner.
+ */
+function planBody<Metric, Cell>(
+  layout: SectionLayout<Metric>,
+  rows: AggregateRows<Metric, Cell>,
+  annotation: (section: SectionPlan<Metric>) => string | undefined,
+): BodyLine<Metric, Cell>[] {
+  if (layout.sections.length <= 1) {
+    return [
+      { type: "header" },
+      { type: "rule" },
+      ...layout.ordered.map((row) => ({ type: "metric" as const, row })),
+      { type: "rule" },
+      { type: "aggregate", ...rows.flat(layout.ordered) },
+      { type: "echo" },
+    ];
+  }
+
+  const lines: BodyLine<Metric, Cell>[] = [];
+  for (const section of layout.sections) {
+    lines.push({ type: "blank" });
+
+    const tag = annotation(section);
+    if (tag !== undefined) lines.push({ type: "title", text: tag });
+    lines.push({ type: "border" }, { type: "header", title: section.kind }, { type: "rule" });
+    lines.push(...planBlocks(section, rows));
+    lines.push(
+      { type: "rule" },
+      { type: "aggregate", ...rows.kind(section.kind, sectionMetrics(section)) },
+      { type: "echo" },
+    );
+  }
+
+  return lines;
+}
+
+/** The labels of every row that is not a metric — what the name column widens for. */
+function aggregateLabelLengths<Metric, Cell>(body: readonly BodyLine<Metric, Cell>[]): number[] {
+  return body.flatMap((line) =>
+    line.type === "group" || line.type === "aggregate" ? [line.label.length] : [],
+  );
+}
+
+function widestHeaderLabel<Metric, Cell>(body: readonly BodyLine<Metric, Cell>[]): string {
+  const labels = body.flatMap((line) =>
+    line.type === "header" ? [line.title ?? METRIC_COLUMN_HEADER] : [],
+  );
+  return labels.reduce(
+    (widest, label) => (label.length > widest.length ? label : widest),
+    METRIC_COLUMN_HEADER,
+  );
+}
+
+/** One dash span per column width, joined by `separator`. */
+function formatHorizontalLine(widths: readonly number[], separator: string): string {
+  return widths.map((width) => "─".repeat(width)).join(separator);
 }
 
 /** The rule row separating a table's header (or body) from what follows. */
 function formatTableRule(widths: readonly number[]): string {
-  return widths.map((width) => "─".repeat(width)).join("┼");
+  return formatHorizontalLine(widths, "┼");
+}
+
+/**
+ * The line opening a section — the top of its box, meeting each column at a
+ * top-T junction so the border joins the separators of the header below it.
+ */
+function formatTableBorder(widths: readonly number[]): string {
+  return formatHorizontalLine(widths, "┬");
 }
 
 function formatRow(row: Row, widths: Widths, styleCell?: CellStyler): string {
@@ -358,6 +631,57 @@ function formatRow(row: Row, widths: Widths, styleCell?: CellStyler): string {
 /** Style the verdict cell of a row, leaving every other cell as it was padded. */
 function styleVerdictCell(style: (cell: string) => string): CellStyler {
   return (cell, index) => (index === VERDICT_COLUMN ? style(cell) : cell);
+}
+
+/**
+ * The style a group sub-header wears.
+ *
+ * The row names the block beneath it rather than reporting a measurement, and
+ * no verdict color is free for that job — every one of them already means an
+ * outcome. Blue is the one hue the verdicts leave unclaimed, so a scan down the
+ * name column reads the structure without mistaking it for a result.
+ */
+const GROUP_LABEL_STYLE: Style = ["blue"];
+
+/**
+ * The style every geomean label wears, at whatever scope it closes.
+ *
+ * The figure beside it is already emboldened, so emboldening the label keeps the
+ * row reading as one statement and sets it apart from the metric rows it sums.
+ */
+const AGGREGATE_LABEL_STYLE: Style = ["bold"];
+
+/**
+ * Style a row's own label where it sits in the padded label cell, falling
+ * through to `rest` for every other cell.
+ *
+ * An aggregate row styles its label one way and its verdict cell another, so
+ * threading both through `rest` is what lets it still hand the table a single
+ * styler function.
+ */
+function styleLabelCell(
+  label: string,
+  style: Style,
+  rest: CellStyler = (cell) => cell,
+): CellStyler {
+  return (cell, index) =>
+    index === LABEL_COLUMN ? styleWithin(cell, label, style) : rest(cell, index);
+}
+
+/**
+ * A header row's label cell: bold when the row carries a section title,
+ * otherwise styled like every other cell in the header.
+ *
+ * A sectioned run repeats the header once per kind, and each repeat doubles
+ * as that section's own title; a flat run's single header carries no title
+ * and leaves every column, including the label, to `styleVariantCells`.
+ */
+function styleHeaderCell(
+  label: string,
+  hasTitle: boolean,
+  styleVariantCells: CellStyler,
+): CellStyler {
+  return hasTitle ? styleLabelCell(label, ["bold"], styleVariantCells) : styleVariantCells;
 }
 
 /**
@@ -403,49 +727,124 @@ function formatMetricRow(row: MetricRow, widths: Widths): string {
  * so it reads as the frame closing rather than as one more row of data, and its
  * name cell stays blank: `metric` heads that column, it does not label the echo.
  */
+/** The row-assembly callbacks a table supplies for the lines whose shape is table-specific. */
+interface BodyLineRenderers<Metric, Cell> {
+  header(label: string, hasTitle: boolean): string;
+  echo(): string;
+  group(label: string): string;
+  metric(row: Metric): string;
+  aggregate(row: AggregateRow<Cell>): string;
+}
+
+/**
+ * One line of a table body rendered to text.
+ *
+ * The four constant cases — `title`, `blank`, `rule`, `border` — and exhaustiveness checking
+ * are shared here; the two tables differ only in how they assemble the remaining five, which
+ * they supply through `renderers`.
+ */
+function renderBodyLine<Metric, Cell>(
+  bodyLine: BodyLine<Metric, Cell>,
+  rule: string,
+  border: string,
+  renderers: BodyLineRenderers<Metric, Cell>,
+): string {
+  switch (bodyLine.type) {
+    case "title":
+      return bodyLine.text;
+    case "blank":
+      return "";
+    case "header":
+      return renderers.header(bodyLine.title ?? METRIC_COLUMN_HEADER, bodyLine.title !== undefined);
+    case "rule":
+      return rule;
+    case "border":
+      return border;
+    case "echo":
+      return renderers.echo();
+    case "group":
+      return renderers.group(bodyLine.label);
+    case "metric":
+      return renderers.metric(bodyLine.row);
+    case "aggregate":
+      return renderers.aggregate(bodyLine);
+    default:
+      return assertNever(bodyLine);
+  }
+}
+
 function renderTable(
   result: ComparisonResult,
   candidate: CandidateComparison,
   candidateIndex: number,
 ): string[] {
   const baseline = result.baselineLabel;
-  const headers: Row = ["metric", baseline, candidate.label, `vs ${baseline}`];
+  const headers: Row = [METRIC_COLUMN_HEADER, baseline, candidate.label, `vs ${baseline}`];
 
-  const measured = Object.entries(result.metrics).map(([name, metric]) => {
+  const layout = planSections<MeasuredRow>(result.metrics, (name, group, metric) => {
     const side = metric.candidates[candidateIndex];
     return {
       name,
+      label: indentedSectionLabel(metric.meta.shortName, group),
       baseline: baselineCellParts(metric),
       candidate: candidateCellParts(side, metric.meta.unit),
       verdict: side?.verdict,
       parts:
         side?.verdict === undefined ? undefined : verdictParts(side.verdict, result.samples, true),
+      gating: metric.meta.gating,
     };
   });
+  const sectioned = layout.sections.length > 1;
 
-  const baselineFields = valueWidths(measured.map((row) => row.baseline));
-  const candidateFields = valueWidths(measured.map((row) => row.candidate));
+  const baselineFields = valueWidths(layout.ordered.map((row) => row.baseline));
+  const candidateFields = valueWidths(layout.ordered.map((row) => row.candidate));
   const verdictFields = verdictWidths(
-    measured.map((row) => row.parts).filter((parts) => parts !== undefined),
+    layout.ordered.map((row) => row.parts).filter((parts) => parts !== undefined),
   );
 
-  const rows: MetricRow[] = measured.map((row) => ({
+  const toMetricRow = (row: MeasuredRow): MetricRow => ({
     cells: [
-      row.name,
+      sectioned ? row.label : row.name,
       joinValueCell(row.baseline, baselineFields),
       joinValueCell(row.candidate, candidateFields),
       row.parts === undefined ? "" : joinVerdictCell(row.parts, verdictFields),
     ],
     verdict: row.verdict,
     band: row.parts === undefined ? "" : bandField(row.parts.band, verdictFields.band),
-  }));
+  });
 
-  const label = geomeanLabel(candidate.geomean.n);
+  const scopedRow = (
+    scope: string,
+    geomean: GeomeanResult,
+    metrics: readonly MeasuredRow[],
+  ): AggregateRow<AggregateCell> => ({
+    label: scopedGeomeanLabel(scope, geomean),
+    cell: geomeanVerdictCell(geomean, measuredOutcomes(metrics)),
+  });
+
+  const body = planBody<MeasuredRow, AggregateCell>(
+    layout,
+    {
+      group: (kind, group, metrics) =>
+        scopedRow(group, groupGeomeanOf(candidate, kind, group), metrics),
+      kind: (kind, metrics) => scopedRow(kind, kindGeomeanOf(candidate, kind), metrics),
+      flat: (metrics) => {
+        const geomean = flatGeomeanOf(candidate);
+        return {
+          label: geomeanLabel(geomean.n),
+          cell: geomeanVerdictCell(geomean, measuredOutcomes(metrics.filter((row) => row.gating))),
+        };
+      },
+    },
+    (section) => sectionAnnotation(section, result.configKinds),
+  );
+
+  const rows = layout.ordered.map(toMetricRow);
   const widths: Widths = [
-    computeMetricColumnWidth(
-      rows.map((row) => row.cells[0].length),
-      label,
-    ),
+    computeMetricColumnWidth(widestHeaderLabel(body), [
+      ...rows.map((row) => row.cells[0].length),
+      ...aggregateLabelLengths(body),
+    ]),
     computeColumnWidth(
       headers[1].length,
       rows.map((row) => row.cells[1].length),
@@ -464,13 +863,7 @@ function renderTable(
   ];
 
   const rule = formatTableRule(widths);
-  const geomeanCell = formatGeomeanCell(candidate.geomean);
-  const geomean: Row = [
-    label,
-    "",
-    "",
-    joinVerdictCell(geomeanVerdictParts(geomeanCell), verdictFields),
-  ];
+  const border = formatTableBorder(widths);
   const styleVariantCells: CellStyler = (cell, index) => {
     if (index === 1 || index === 2) {
       return styleWithin(cell, headers[index], VARIANT_NAME_STYLE);
@@ -485,18 +878,33 @@ function renderTable(
     return cell;
   };
 
-  return [
-    formatRow(headers, widths, styleVariantCells),
-    rule,
-    ...rows.map((row) => formatMetricRow(row, widths)),
-    rule,
-    formatRow(geomean, widths, (cell, index) =>
-      index === VERDICT_COLUMN ? styleGeomeanCell(cell, geomeanCell) : cell,
-    ),
-    formatLabel(formatRow(["", headers[1], headers[2], headers[3]], widths, styleVariantCells), [
-      "dim",
-    ]),
-  ];
+  const renderers: BodyLineRenderers<MeasuredRow, AggregateCell> = {
+    header: (label, hasTitle) => {
+      const headerRow: Row = [label, headers[1], headers[2], headers[3]];
+      return formatRow(headerRow, widths, styleHeaderCell(label, hasTitle, styleVariantCells));
+    },
+    echo: () =>
+      formatRow(
+        ["", headers[1], headers[2], headers[3]],
+        widths,
+        styleEveryCell(["dim"], styleVariantCells),
+      ),
+    group: (label) =>
+      formatRow([label, "", "", ""], widths, styleLabelCell(label, GROUP_LABEL_STYLE)),
+    metric: (row) => formatMetricRow(toMetricRow(row), widths),
+    aggregate: ({ label, cell }) =>
+      formatRow(
+        [label, "", "", joinVerdictCell(cell.parts, verdictFields)],
+        widths,
+        styleLabelCell(label, AGGREGATE_LABEL_STYLE, (styledCell, index) =>
+          index === VERDICT_COLUMN
+            ? styleSpans(styledCell, aggregateSpans(cell, verdictFields))
+            : styledCell,
+        ),
+      ),
+  };
+
+  return body.map((bodyLine) => renderBodyLine(bodyLine, rule, border, renderers));
 }
 
 /**
@@ -535,25 +943,22 @@ interface CandidateCell {
 }
 
 /** One metric across every candidate, in the multi-candidate table's column order. */
-interface ComparisonRow {
-  readonly name: string;
+interface ComparisonRow extends MetricRowBase {
   readonly baseline: MetricCellParts;
   /** Filled during layout, like {@link CandidateCell.text}: the baseline figure, padded. */
   baselineCell: string;
   readonly candidates: readonly CandidateCell[];
 }
 
-/** One candidate's column, from the header down to the geomean under the rule. */
+/** One candidate's column of cells, in row order. */
 interface CandidateColumn {
   readonly header: string;
-  readonly geomean: GeomeanCell;
-  /** This candidate's cell in each metric row, in row order. */
   readonly cells: CandidateCell[];
 }
 
 /** The multi-candidate table's contents, held both ways round. */
 interface ComparisonGrid {
-  readonly rows: readonly ComparisonRow[];
+  readonly layout: SectionLayout<ComparisonRow>;
   readonly columns: readonly CandidateColumn[];
 }
 
@@ -572,12 +977,10 @@ interface ComparisonGrid {
 function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
   const columns: CandidateColumn[] = result.candidates.map((candidate) => ({
     header: candidate.label,
-    geomean: formatGeomeanCell(candidate.geomean),
     cells: [],
   }));
 
-  const rows: ComparisonRow[] = [];
-  for (const [name, metric] of Object.entries(result.metrics)) {
+  const layout = planSections<ComparisonRow>(result.metrics, (name, group, metric) => {
     const candidates: CandidateCell[] = [];
     for (const [index, column] of columns.entries()) {
       const side = metric.candidates[index];
@@ -591,15 +994,17 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
       candidates.push(cell);
       column.cells.push(cell);
     }
-    rows.push({
+    return {
       name,
+      label: indentedSectionLabel(metric.meta.shortName, group),
       baseline: baselineCellParts(metric),
       baselineCell: "",
       candidates,
-    });
-  }
+      gating: metric.meta.gating,
+    };
+  });
 
-  return { rows, columns };
+  return { layout, columns };
 }
 
 /**
@@ -636,8 +1041,9 @@ function joinCandidateCell(
  * one — see {@link renderTable}.
  */
 function renderComparisonTable(result: ComparisonResult): string[] {
-  const baseline = result.baselineLabel;
-  const { rows, columns } = buildComparisonGrid(result);
+  const baselineHeader = result.baselineLabel;
+  const { layout, columns } = buildComparisonGrid(result);
+  const sectioned = layout.sections.length > 1;
 
   for (const column of columns) {
     const values = valueWidths(column.cells.map((cell) => cell.value));
@@ -647,23 +1053,67 @@ function renderComparisonTable(result: ComparisonResult): string[] {
     for (const cell of column.cells) cell.text = joinCandidateCell(cell, values, verdicts);
   }
 
-  const baselineFields = valueWidths(rows.map((row) => row.baseline));
-  for (const row of rows) row.baselineCell = joinValueCell(row.baseline, baselineFields);
+  const baselineFields = valueWidths(layout.ordered.map((row) => row.baseline));
+  for (const row of layout.ordered) row.baselineCell = joinValueCell(row.baseline, baselineFields);
 
-  const baselineHeader = baseline;
-  const metricWidth = computeMetricColumnWidth(
-    rows.map((row) => row.name.length),
-    GEOMEAN_LABEL,
+  /**
+   * One aggregate row's cells: the same geomean read off each candidate in turn,
+   * each beside the verdicts that candidate's own column reported on `metrics`.
+   */
+  const columnCells = (
+    geomeanOf: (candidate: CandidateComparison) => GeomeanResult,
+    metrics: readonly ComparisonRow[],
+  ): AggregateColumnCell[] =>
+    result.candidates.map((candidate, index) =>
+      geomeanColumnCell(
+        geomeanOf(candidate),
+        metrics.map((row) => row.candidates[index]?.outcome),
+      ),
+    );
+
+  const body = planBody<ComparisonRow, readonly AggregateColumnCell[]>(
+    layout,
+    {
+      group: (kind, group, metrics) => ({
+        label: geomeanScopeLabel(group),
+        cell: columnCells((candidate) => groupGeomeanOf(candidate, kind, group), metrics),
+      }),
+      kind: (kind, metrics) => ({
+        label: geomeanScopeLabel(kind),
+        cell: columnCells((candidate) => kindGeomeanOf(candidate, kind), metrics),
+      }),
+      flat: (metrics) => ({
+        label: GEOMEAN_LABEL,
+        cell: columnCells(
+          flatGeomeanOf,
+          metrics.filter((row) => row.gating),
+        ),
+      }),
+    },
+    (section) => sectionAnnotation(section, result.configKinds),
   );
+
+  const aggregateCells = body.flatMap((line) => (line.type === "aggregate" ? [line.cell] : []));
+  const metricWidth = computeMetricColumnWidth(widestHeaderLabel(body), [
+    ...layout.ordered.map((row) => (sectioned ? row.label.length : row.name.length)),
+    ...aggregateLabelLengths(body),
+  ]);
   const baselineWidth = computeColumnWidth(
     baselineHeader.length,
-    rows.map((row) => row.baselineCell.length),
+    layout.ordered.map((row) => row.baselineCell.length),
     VALUE_COLUMN_MIN,
   );
   const lastColumn = columns.length - 1;
   const candidateWidths = columns.map((column, index) => {
     const contents = column.cells.map((cell) => cell.text.length);
-    if (index !== lastColumn) contents.push(column.geomean.text.length);
+    if (index !== lastColumn) {
+      contents.push(
+        ...aggregateCells.flatMap((cells) => {
+          const cell = cells[index];
+          return cell === undefined ? [] : [cell.text.length];
+        }),
+      );
+    }
     return computeColumnWidth(column.header.length, contents, VALUE_COLUMN_MIN);
   });
   const widths = [metricWidth, baselineWidth, ...candidateWidths];
@@ -680,22 +1130,11 @@ function renderComparisonTable(result: ComparisonResult): string[] {
       styleCell,
     );
 
-  const metricRows = rows.map((row) =>
-    line(
-      row.name,
-      row.baselineCell,
-      row.candidates.map((cell) => cell.text),
-      (cell, columnIndex) => {
-        const candidateCell = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET];
-        const outcome = candidateCell?.outcome;
-        if (candidateCell === undefined || outcome === undefined) return cell;
-        return styleGlyphAndDelta(cell, outcome, candidateCell.delta, VERDICT_STYLES[outcome]);
-      },
-    ),
-  );
-
   const rule = formatTableRule(widths);
+  const border = formatTableBorder(widths);
   const headers = columns.map((column) => column.header);
+  /** One blank cell per candidate column — what a group row leaves for its candidates. */
+  const blankCandidateCells = columns.map(() => "");
   const styleVariantCells: CellStyler = (cell, columnIndex) => {
     if (columnIndex === 0) return cell;
     if (columnIndex === 1) return styleWithin(cell, baselineHeader, VARIANT_NAME_STYLE);
@@ -703,22 +1142,37 @@ function renderComparisonTable(result: ComparisonResult): string[] {
     return column === undefined ? cell : styleWithin(cell, column.header, VARIANT_NAME_STYLE);
   };
 
-  return [
-    line("metric", baselineHeader, headers, styleVariantCells),
-    rule,
-    ...metricRows,
-    rule,
-    line(
-      GEOMEAN_LABEL,
-      "",
-      columns.map((column) => column.geomean.text),
-      (cell, columnIndex) => {
-        const column = columns[columnIndex - CANDIDATE_COLUMN_OFFSET];
-        return column === undefined ? cell : styleGeomeanCell(cell, column.geomean);
-      },
-    ),
-    formatLabel(line("", baselineHeader, headers, styleVariantCells), ["dim"]),
-  ];
+  const renderers: BodyLineRenderers<ComparisonRow, readonly AggregateColumnCell[]> = {
+    header: (label, hasTitle) =>
+      line(label, baselineHeader, headers, styleHeaderCell(label, hasTitle, styleVariantCells)),
+    echo: () => line("", baselineHeader, headers, styleEveryCell(["dim"], styleVariantCells)),
+    group: (label) =>
+      line(label, "", blankCandidateCells, styleLabelCell(label, GROUP_LABEL_STYLE)),
+    metric: (row) =>
+      line(
+        sectioned ? row.label : row.name,
+        row.baselineCell,
+        row.candidates.map((cell) => cell.text),
+        (cell, columnIndex) => {
+          const candidateCell = row.candidates[columnIndex - CANDIDATE_COLUMN_OFFSET];
+          const outcome = candidateCell?.outcome;
+          if (candidateCell === undefined || outcome === undefined) return cell;
+          return styleGlyphAndDelta(cell, outcome, candidateCell.delta, VERDICT_STYLES[outcome]);
+        },
+      ),
+    aggregate: ({ label, cell }) =>
+      line(
+        label,
+        "",
+        cell.map((columnCell) => columnCell.text),
+        styleLabelCell(label, AGGREGATE_LABEL_STYLE, (styledCell, columnIndex) => {
+          const aggregate = cell[columnIndex - CANDIDATE_COLUMN_OFFSET];
+          return aggregate === undefined ? styledCell : styleSpans(styledCell, aggregate.spans);
+        }),
+      ),
+  };
+
+  return body.map((bodyLine) => renderBodyLine(bodyLine, rule, border, renderers));
 }
 
 /** One line tallying every verdict class one candidate earned. */
@@ -743,18 +1197,21 @@ function highlightEntries(metrics: MetricComparisons, candidateIndex: number): H
   const highlights = selectHighlights(metrics, candidateIndex);
   if (highlights.length === 0) return { entries: [], unstable: false };
 
-  const nameWidth =
-    Math.max(...highlights.map((highlight) => highlight.name.length)) + HIGHLIGHT_NAME_GUTTER;
+  const qualify = spansManyKinds(metrics);
+  const labeled = highlights.map((highlight) => ({
+    highlight,
+    label: highlightLabel(highlight, qualify),
+  }));
+  const nameWidth = Math.max(...labeled.map(({ label }) => label.length)) + HIGHLIGHT_NAME_GUTTER;
 
-  const entries = highlights.map(({ name, metric, candidate }) => {
+  const entries = labeled.map(({ highlight: { metric, candidate }, label }) => {
     const verdict = candidate.verdict;
     const shown = displayClass(verdict);
     const delta = formatVerdictDelta(verdict);
     const evidence = formatEvidence(verdict, metric.meta.unit, metric.baselineMedian);
     const suffix = evidence === "" ? "" : `  ${evidence}`;
 
-    // Pad on plain text, then style the glyph+delta and dim evidence.
-    const plain = `  ${getGlyph(shown)} ${name.padEnd(nameWidth)}${delta.padStart(
+    const plain = `  ${getGlyph(shown)} ${label.padEnd(nameWidth)}${delta.padStart(
       HIGHLIGHT_DELTA_WIDTH,
     )}${suffix}`;
 
@@ -774,42 +1231,114 @@ function futilityLine(): string {
   return `  ${formatLabel(UNSTABLE_FUTILITY_NOTE, ["dim"])}`;
 }
 
-function renderHighlights(metrics: MetricComparisons, candidateIndex: number): string[] {
-  const { entries, unstable } = highlightEntries(metrics, candidateIndex);
-  if (entries.length === 0) return [];
-  const lines = [formatLabel(HIGHLIGHTS_HEADING, ["bold"]), ...entries];
-  if (unstable) lines.push(futilityLine());
-  return lines;
+/** The glyph flagging a gate the run's own `--fail-on` conditions would trip. */
+const GATE_TRIP_GLYPH = "⚑";
+
+/**
+ * One line per gating kind whose geomean is at or past a `--fail-on geomean`
+ * threshold, naming the kind, its figure and the condition it answered to.
+ *
+ * A regressed condition earns no line: the metrics that would trip it already
+ * carry their own `✗` entries above, and repeating them here would say the same
+ * thing twice.
+ *
+ * The check is display-only, but it reads exactly what the gate that sets the
+ * exit code reads: the gated geomean of a kind that gates at all. An
+ * informational kind never trips the gate, so flagging one here would announce
+ * a failure the run does not have.
+ */
+function gateTripLines(
+  candidate: CandidateComparison,
+  conditions: readonly FailOnCondition[],
+): string[] {
+  const thresholds = conditions.flatMap((condition) =>
+    condition.kind === "geomean" ? [condition.pct] : [],
+  );
+
+  return candidate.kinds.flatMap((kind) => {
+    if (!kind.hasGating) return [];
+
+    const geomean = kind.gatedGeomean;
+    if (geomean === undefined || geomean.n === 0) return [];
+
+    const delta = formatDelta(geomean.value);
+    const style = VERDICT_STYLES.regressed;
+    return thresholds
+      .filter((pct) => geomean.value >= pct)
+      .map((pct) => {
+        const plain = `  ${GATE_TRIP_GLYPH} ${kind.kind} ${GEOMEAN_LABEL} ${delta} exceeded --fail-on geomean:${pct}`;
+        return styleSpans(plain, [
+          { text: GATE_TRIP_GLYPH, style },
+          { text: delta, style },
+        ]);
+      });
+  });
+}
+
+/** One highlights subsection: entries with an optional label heading over them. */
+interface HighlightSectionBlock {
+  readonly label?: string;
+  readonly entries: readonly string[];
+  readonly unstable: boolean;
 }
 
 /**
- * The highlights of every candidate, one subsection apiece under a single
- * heading.
+ * Renders the highlights section from one or more assembled blocks.
  *
- * A candidate whose metrics all sat still contributes no subsection: an empty
- * one under its label reads as a rendering fault rather than as good news.
+ * A block whose metrics all sat still contributes no subsection: an empty
+ * one under its label (or under the bare heading) reads as a rendering fault
+ * rather than as good news. The whole section disappears once every block is
+ * empty.
+ *
+ * A labeled block gets its own indented subsection heading, with its entries
+ * indented one level further; a label-less block's entries sit directly under
+ * the section heading.
  *
  * The futility note closes the whole section rather than each subsection —
  * it says the same thing about every unstable metric on the page.
  */
-function renderCandidateHighlights(result: ComparisonResult): string[] {
-  const blocks = result.candidates
-    .map((candidate, index) => ({
-      label: candidate.label,
-      ...highlightEntries(result.metrics, index),
-    }))
-    .filter((block) => block.entries.length > 0);
-  if (blocks.length === 0) return [];
+function highlightSection(blocks: readonly HighlightSectionBlock[]): string[] {
+  const nonEmpty = blocks.filter((block) => block.entries.length > 0);
+  if (nonEmpty.length === 0) return [];
 
   const lines = [formatLabel(HIGHLIGHTS_HEADING, ["bold"])];
-  for (const block of blocks) {
-    lines.push(
-      `  ${formatLabel(block.label, ["bold"])}`,
-      ...block.entries.map((entry) => `  ${entry}`),
-    );
+  for (const block of nonEmpty) {
+    if (block.label === undefined) {
+      lines.push(...block.entries);
+    } else {
+      lines.push(
+        `  ${formatLabel(block.label, ["bold"])}`,
+        ...block.entries.map((entry) => `  ${entry}`),
+      );
+    }
   }
-  if (blocks.some((block) => block.unstable)) lines.push(futilityLine());
+  if (nonEmpty.some((block) => block.unstable)) lines.push(futilityLine());
   return lines;
+}
+
+function renderHighlights(
+  metrics: MetricComparisons,
+  candidateIndex: number,
+  gateTrips: readonly string[],
+): string[] {
+  const { entries, unstable } = highlightEntries(metrics, candidateIndex);
+  return highlightSection([{ entries: [...entries, ...gateTrips], unstable }]);
+}
+
+/** The highlights of every candidate, one subsection apiece under a single heading. */
+function renderCandidateHighlights(
+  result: ComparisonResult,
+  conditions: readonly FailOnCondition[],
+): string[] {
+  const blocks = result.candidates.map((candidate, index) => {
+    const { entries, unstable } = highlightEntries(result.metrics, index);
+    return {
+      label: candidate.label,
+      entries: [...entries, ...gateTripLines(candidate, conditions)],
+      unstable,
+    };
+  });
+  return highlightSection(blocks);
 }
 
 /**
@@ -837,10 +1366,13 @@ function renderSummaries(result: ComparisonResult): string[] {
  * candidates off one row is the comparison the run was for, and a table apiece
  * would leave the reader aligning columns by eye.
  */
-function renderComparison(result: ComparisonResult): string[] {
+function renderComparison(
+  result: ComparisonResult,
+  conditions: readonly FailOnCondition[],
+): string[] {
   const lines = [...renderComparisonTable(result), "", ...renderSummaries(result)];
 
-  const highlights = renderCandidateHighlights(result);
+  const highlights = renderCandidateHighlights(result, conditions);
   if (highlights.length > 0) {
     lines.push("", ...highlights);
   }
@@ -935,6 +1467,7 @@ function renderCandidate(
   result: ComparisonResult,
   candidate: CandidateComparison,
   candidateIndex: number,
+  conditions: readonly FailOnCondition[],
 ): string[] {
   const lines = [
     ...renderTable(result, candidate, candidateIndex),
@@ -942,12 +1475,21 @@ function renderCandidate(
     renderSummary(result.metrics, candidateIndex),
   ];
 
-  const highlights = renderHighlights(result.metrics, candidateIndex);
+  const highlights = renderHighlights(
+    result.metrics,
+    candidateIndex,
+    gateTripLines(candidate, conditions),
+  );
   if (highlights.length > 0) {
     lines.push("", ...highlights);
   }
 
   return lines;
+}
+
+/** How many rounds paired, as the header states it. */
+function pairedSamples(samples: number): string {
+  return `${samples} paired sample${samples === 1 ? "" : "s"}`;
 }
 
 /**
@@ -981,16 +1523,17 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
     const header = [
       formatLabel("gymrat compare", ["bold"]),
       `baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames}`,
-      `${display.samples} paired samples`,
+      pairedSamples(display.samples),
       `adapter: ${display.adapter}`,
     ].join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
     const lines = [header];
 
+    const conditions = options.failOn ?? [];
     if (display.candidates.length > 1) {
-      lines.push(...renderComparison(display));
+      lines.push(...renderComparison(display, conditions));
     } else {
       for (const [index, candidate] of display.candidates.entries()) {
-        lines.push(...renderCandidate(display, candidate, index));
+        lines.push(...renderCandidate(display, candidate, index, conditions));
       }
     }
 

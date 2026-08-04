@@ -1,0 +1,30 @@
+gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
+
+──────────────────────┬────────────┬────────────────────┬──────────────────
+time                  │       main │ perf/faster-decode │ vs main
+──────────────────────┼────────────┼────────────────────┼──────────────────
+entity                │            │                    │
+  alive_check         │ 100ns ± 1% │          90ns ± 1% │ ✓  -10.0%  ±2.5%
+  spawn               │ 100ns ± 1% │         104ns ± 1% │ ✗   +4.0%  ±2.5%
+geomean · entity (2)  │            │                    │     -3.1%  ±1.5%
+
+warmup                │ 100ns ± 1% │         100ns ± 1% │ ~   +0.3%  ±2.5%
+──────────────────────┼────────────┼────────────────────┼──────────────────
+geomean · time (3)    │            │                    │     -3.2%  ±2.0%
+                      │       main │ perf/faster-decode │ vs main
+
+informational — gating off (config: kinds.memory.gating = false)
+──────────────────────┬────────────┬────────────────────┬──────────────────
+memory                │       main │ perf/faster-decode │ vs main
+──────────────────────┼────────────┼────────────────────┼──────────────────
+encode                │  100B ± 1% │           93B ± 1% │ ✓   -7.0%  ±2.5%
+──────────────────────┼────────────┼────────────────────┼──────────────────
+geomean · memory (1)  │            │                    │     -7.0%
+                      │       main │ perf/faster-decode │ vs main
+
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
+
+highlights
+  ✗ time · entity.spawn         +4.0%
+  ✓ time · entity.alive_check  -10.0%
+  ✓ memory · encode             -7.0%

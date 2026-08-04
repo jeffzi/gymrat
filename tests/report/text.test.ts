@@ -3,17 +3,36 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderReport } from "../../src/report/text.js";
-import type { ComparisonResult } from "../../src/report/types.js";
+import type { ComparisonResult, ReportOptions } from "../../src/report/types.js";
 import {
   createCandidate,
   createComparisonResult,
+  geomeanOf,
+  groupedComparison,
+  kindMetric,
+  memoryKind,
   metricMeta,
   multiCandidateResult,
+  nWayKindMetric,
   signedRankMetric,
   bandMetric,
   exactMetric,
   nWayMetric,
+  otherKind,
+  singleSampleResult,
+  timeKind,
+  twoKindMetrics,
+  twoKindResult,
 } from "../fixtures/comparison-result.js";
+
+/** Character offsets of every occurrence of `glyph` in a rendered table line. */
+function offsetsOf(line: string, glyph: string): number[] {
+  const offsets: number[] = [];
+  for (let i = line.indexOf(glyph); i !== -1; i = line.indexOf(glyph, i + 1)) {
+    offsets.push(i);
+  }
+  return offsets;
+}
 
 /**
  * Character offsets of every column separator in a rendered table line.
@@ -21,11 +40,7 @@ import {
  * Two lines whose separators sit at the same offsets have aligned columns.
  */
 function separatorOffsets(line: string): number[] {
-  const offsets: number[] = [];
-  for (let i = line.indexOf("│"); i !== -1; i = line.indexOf("│", i + 1)) {
-    offsets.push(i);
-  }
-  return offsets;
+  return offsetsOf(line, "│");
 }
 
 /** The cells of a rendered table line, padding included. */
@@ -99,19 +114,83 @@ function stylesAt(line: string, marker: string): string[] {
   return [...opened.matchAll(/\x1b\[(\d+)m/g)].map((match) => match[1] ?? "");
 }
 
+/** For each SGR parameter that closes a style, the parameters it closes. */
+const SGR_CLOSERS: Readonly<Record<string, RegExp>> = {
+  "0": /^\d+$/,
+  "22": /^[12]$/,
+  "23": /^3$/,
+  "24": /^4$/,
+  "39": /^(?:3[0-7]|9[0-7])$/,
+  "49": /^(?:4[0-7]|10[0-7])$/,
+};
+
 /**
- * The row echoing the header labels at the foot of the table.
+ * The SGR parameters still open at each column separator of `line`.
  *
- * It is the line below the geomean row, which is the last row carrying data.
+ * A separator that inherits its row's style reports that style here; one left
+ * in the terminal's default color reports nothing.
  */
+function separatorStyles(line: string): string[][] {
+  let open: string[] = [];
+  const styles: string[][] = [];
+  for (const token of line.matchAll(/\x1b\[(\d+)m|│/g)) {
+    const parameter = token[1];
+    if (parameter === undefined) {
+      styles.push(open);
+      continue;
+    }
+    const closes = SGR_CLOSERS[parameter];
+    open = closes === undefined ? [...open, parameter] : open.filter((p) => !closes.test(p));
+  }
+  return styles;
+}
+
+/** Every row echoing the header labels, one per section, in report order. */
+function echoRows(report: string): string[] {
+  return report.split("\n").filter((line) => {
+    const bare = stripAnsi(line);
+    return bare.includes("│") && cellsOf(bare)[0]?.trim() === "";
+  });
+}
+
+/** The row echoing the header labels at the foot of a single-section table. */
 function echoRow(report: string): string {
-  const lines = report.split("\n");
-  const geomean = lines.findIndex((line) => stripAnsi(line).startsWith("geomean"));
-  const echo = geomean === -1 ? undefined : lines[geomean + 1];
+  const echo = echoRows(report)[0];
   if (echo === undefined) {
-    throw new Error(`no row below the geomean row in report:\n${report}`);
+    throw new Error(`no row echoing the header in report:\n${report}`);
   }
   return echo;
+}
+
+/**
+ * One entry per report line, coarse enough to read as a layout.
+ *
+ * A table row collapses to its first cell, a column rule and the closing header
+ * echo collapse to markers, and every other line stays as its plain text. A
+ * section's top border joins its columns with top-T junctions rather than the
+ * crossings of a rule, so it gets its own marker.
+ */
+function tableShape(report: string): string[] {
+  return report.split("\n").map((line) => {
+    const bare = stripAnsi(line);
+    if (/^─+┼/.test(bare)) {
+      return "<rule>";
+    }
+    if (/^[─┬]+$/.test(bare)) {
+      return "<border>";
+    }
+    if (!bare.includes("│")) {
+      return bare.trimEnd();
+    }
+    const label = cellsOf(bare)[0]?.trim() ?? "";
+    return label === "" ? "<echo>" : label;
+  });
+}
+
+/** The table region of a report: everything down to the last section's header echo. */
+function tableRegion(report: string): string[] {
+  const shape = tableShape(report);
+  return shape.slice(0, shape.lastIndexOf("<echo>") + 1);
 }
 
 /** The lines of the `highlights` block, its heading excluded. */
@@ -145,6 +224,15 @@ describe("renderReport", () => {
       expect(output).toContain(
         "gymrat compare · baseline main ↔ experiment · 10 paired samples · adapter: mitata",
       );
+    });
+
+    it.each([
+      { samples: 1, expected: "· 1 paired sample ·" },
+      { samples: 2, expected: "· 2 paired samples ·" },
+    ])("matches the sample noun to a count of $samples", ({ samples, expected }) => {
+      const output = renderReport(createComparisonResult({ samples }));
+
+      expect(output).toContain(expected);
     });
 
     it("lists every candidate against the one baseline", () => {
@@ -364,7 +452,11 @@ describe("renderReport", () => {
             unit: "ns",
           }),
         },
-        candidates: [createCandidate({ geomean: { value: -5, n: 2, excluded: [] } })],
+        candidates: [
+          createCandidate({
+            kinds: [otherKind(-5, 2)],
+          }),
+        ],
       });
 
       const report = renderReport(result);
@@ -610,65 +702,53 @@ describe("renderReport", () => {
       });
     }
 
-    it("stacks the value and verdict sub-fields within each candidate column", () => {
-      const report = renderReport(twoColumnResult());
+    it.each([{ color: false }, { color: true }])(
+      "stacks the value and verdict sub-fields within each candidate column (color: $color)",
+      ({ color }) => {
+        if (color) {
+          vi.stubEnv("FORCE_COLOR", "1");
+        }
 
-      const decode = cellsOf(lineStartingWith(report, "decode/time")).map((cell) => cell.trim());
-      const encode = cellsOf(lineStartingWith(report, "encode/time")).map((cell) => cell.trim());
+        const report = stripAnsi(renderReport(twoColumnResult()));
 
-      expect
-        .soft(decode.slice(2))
-        .toStrictEqual(["1.4µs ± 1%  ✓  -10.0%", "1.7µs ±  2%  ≈  unstable"]);
-      expect(encode.slice(2)).toStrictEqual(["934ns ± 1%  ✗   +2.2%", "1.2ms ± 12%  ~  -2.1%"]);
-    });
+        const decode = cellsOf(lineStartingWith(report, "decode/time")).map((cell) => cell.trim());
+        const encode = cellsOf(lineStartingWith(report, "encode/time")).map((cell) => cell.trim());
 
-    it("measures the candidate sub-fields on the plain text, so colored cells stack the same", () => {
-      vi.stubEnv("FORCE_COLOR", "1");
-
-      const bare = stripAnsi(renderReport(twoColumnResult()));
-
-      const decode = cellsOf(lineStartingWith(bare, "decode/time")).map((cell) => cell.trim());
-      const encode = cellsOf(lineStartingWith(bare, "encode/time")).map((cell) => cell.trim());
-
-      expect
-        .soft(decode.slice(2))
-        .toStrictEqual(["1.4µs ± 1%  ✓  -10.0%", "1.7µs ±  2%  ≈  unstable"]);
-      expect(encode.slice(2)).toStrictEqual(["934ns ± 1%  ✗   +2.2%", "1.2ms ± 12%  ~  -2.1%"]);
-    });
+        expect
+          .soft(decode.slice(2))
+          .toStrictEqual(["1.4µs ± 1%  ✓  -10.0%", "1.7µs ±  2%  ≈  unstable"]);
+        expect(encode.slice(2)).toStrictEqual(["934ns ± 1%  ✗   +2.2%", "1.2ms ± 12%  ~  -2.1%"]);
+      },
+    );
   });
 
   describe("when rendering the geomean row", () => {
-    it("reduces to a counted label and the delta alone", () => {
+    it.each([
+      { n: 4, expectedLabel: "geomean (4 stable metrics)" },
+      { n: 1, expectedLabel: "geomean (1 stable metric)" },
+    ])("renders the label as '$expectedLabel' when n=$n", ({ n, expectedLabel }) => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
-        candidates: [createCandidate({ geomean: { value: -5.8, n: 4, excluded: [] } })],
+        candidates: [
+          createCandidate({
+            kinds: [otherKind(-5.8, n)],
+          }),
+        ],
       });
 
       const row = lineStartingWith(renderReport(result), "geomean");
 
-      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
-        "geomean (4 stable metrics)",
-        "",
-        "",
-        "-5.8%",
-      ]);
-    });
-
-    it("counts a lone stable metric in the singular", () => {
-      const result = createComparisonResult({
-        metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
-        candidates: [createCandidate({ geomean: { value: -5.8, n: 1, excluded: [] } })],
-      });
-
-      const row = lineStartingWith(renderReport(result), "geomean");
-
-      expect(cellsOf(row)[0]?.trim()).toBe("geomean (1 stable metric)");
+      expect(cellsOf(row)[0]?.trim()).toBe(expectedLabel);
     });
 
     it("aligns its delta with the delta column above", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -17.9 }) },
-        candidates: [createCandidate({ geomean: { value: -6, n: 1, excluded: [] } })],
+        candidates: [
+          createCandidate({
+            kinds: [otherKind(-6, 1)],
+          }),
+        ],
       });
 
       const report = renderReport(result);
@@ -686,11 +766,11 @@ describe("renderReport", () => {
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
         candidates: [
           createCandidate({
-            geomean: {
-              value: 0,
-              n: 1,
-              excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
-            },
+            kinds: [
+              otherKind(0, 1, {
+                excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
+              }),
+            ],
           }),
         ],
       });
@@ -705,11 +785,11 @@ describe("renderReport", () => {
         metrics: { "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50 }) },
         candidates: [
           createCandidate({
-            geomean: {
-              value: Number.NaN,
-              n: 0,
-              excluded: [{ metric: "jittery/time", reason: "unstable" }],
-            },
+            kinds: [
+              otherKind(Number.NaN, 0, {
+                excluded: [{ metric: "jittery/time", reason: "unstable" }],
+              }),
+            ],
           }),
         ],
       });
@@ -721,6 +801,74 @@ describe("renderReport", () => {
         "",
         "",
         "—  no stable metrics",
+      ]);
+    });
+  });
+
+  describe("when an aggregate carries a noise band", () => {
+    it.each([
+      { level: "group", label: "geomean · entity", expected: "-3.1%  ±1.5%" },
+      { level: "kind", label: "geomean · time", expected: "-3.2%  ±2.0%" },
+    ])("states the $level geomean's band behind its delta", ({ label, expected }) => {
+      const row = lineStartingWith(renderReport(twoKindResult()), label);
+
+      expect(deltaCellOf(row).trim()).toBe(expected);
+    });
+
+    it("states the flat table's geomean band behind its delta", () => {
+      const result = createComparisonResult({
+        metrics: { "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5 }) },
+        candidates: [createCandidate({ kinds: [otherKind(-5.8, 1, { band: 1.2 })] })],
+      });
+
+      const row = lineStartingWith(renderReport(result), "geomean");
+
+      expect(deltaCellOf(row).trim()).toBe("-5.8%  ±1.2%");
+    });
+
+    it("prints the delta alone when the aggregate has no band of its own", () => {
+      const row = lineStartingWith(renderReport(twoKindResult()), "geomean · memory");
+
+      expect(deltaCellOf(row).trim()).toBe("-7.0%");
+    });
+
+    it("lines the aggregate band up with the metric rows' band column", () => {
+      const report = renderReport(twoKindResult());
+
+      expect(deltaCellOf(lineStartingWith(report, "geomean · time")).indexOf("±")).toBe(
+        deltaCellOf(lineStartingWith(report, "  alive_check")).indexOf("±"),
+      );
+    });
+
+    it("dims the aggregate band, as it dims the bands on the metric rows", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      const line = lineContaining(renderReport(twoKindResult()), "geomean · time");
+
+      expect(stylesAt(line, "±2.0%")).toContain("2");
+    });
+
+    it("leaves the compact multi-candidate aggregate cells band-free", () => {
+      const result = createComparisonResult({
+        candidates: [
+          createCandidate({ label: "candidate-a", kinds: [otherKind(-10, 1, { band: 3 })] }),
+          createCandidate({ label: "candidate-b", kinds: [otherKind(4, 1, { band: 3 })] }),
+        ],
+        metrics: {
+          "decode/time": nWayMetric([
+            { verdict: "improved", delta: -10, median: 90 },
+            { verdict: "regressed", delta: 4, median: 104 },
+          ]),
+        },
+      });
+
+      const row = lineStartingWith(renderReport(result), "geomean");
+
+      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
+        "geomean",
+        "",
+        "-10.0% · 1 stable metric",
+        "+4.0% · 1 stable metric",
       ]);
     });
   });
@@ -771,7 +919,7 @@ describe("renderReport", () => {
       const report = renderReport(result);
 
       expect(lineStartingWith(report, "✓ 2 improved")).toBe(
-        "✓ 2 improved   ✗ 1 regressed   ≈ 1 unstable   = 0 identical   ~ 1 within noise",
+        "✓ 2 improved   ✗ 1 regressed   ≈ 1 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive",
       );
     });
   });
@@ -798,7 +946,7 @@ describe("renderReport", () => {
       const report = renderReport(identicalResult());
 
       expect(lineStartingWith(report, "✓ 1 improved")).toBe(
-        "✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 1 identical   ~ 0 within noise",
+        "✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 1 identical   ~ 0 within noise   ? 0 inconclusive",
       );
     });
 
@@ -867,6 +1015,28 @@ describe("renderReport", () => {
     });
   });
 
+  describe("when every verdict rests on a single pair", () => {
+    it("marks the row inconclusive and drops the floor band behind it", () => {
+      const row = lineStartingWith(renderReport(singleSampleResult()), "decode/time");
+
+      expect(cellsOf(row).at(-1)?.trim()).toBe("?  -0.4%");
+    });
+
+    it("tallies the metrics in their own bucket rather than within noise", () => {
+      const report = renderReport(singleSampleResult());
+
+      expect(lineStartingWith(report, "✓ 0 improved")).toBe(
+        "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 2 inconclusive",
+      );
+    });
+
+    it("still hints at the longer run that would settle the question", () => {
+      expect(renderReport(singleSampleResult())).toContain(
+        "Hint: re-run with --samples 6 or more for statistical verdicts",
+      );
+    });
+  });
+
   describe("when rendering the highlights block", () => {
     it("carries the glyph, the delta and the evidence for each highlighted metric", () => {
       const result = createComparisonResult({
@@ -914,6 +1084,125 @@ describe("renderReport", () => {
       const output = renderReport(result);
 
       expect(output).not.toContain("highlights");
+    });
+  });
+
+  describe("when a --fail-on geomean condition would trip", () => {
+    /** A two-kind run whose gating `time` kind regressed past a 2% threshold. */
+    function trippingResult(): ComparisonResult {
+      return twoKindResult({
+        candidates: [
+          createCandidate({
+            kinds: [
+              timeKind({ geomean: geomeanOf(3.1, 3), gatedGeomean: geomeanOf(3.1, 3) }),
+              memoryKind(),
+            ],
+          }),
+        ],
+      });
+    }
+
+    it("echoes the tripped kind, its geomean and the condition below the metric highlights", () => {
+      const highlights = highlightLines(
+        renderReport(trippingResult(), { failOn: [{ kind: "geomean", pct: 2 }] }),
+      ).map((line) => line.trim());
+
+      expect(highlights).toStrictEqual([
+        "✗ time · entity.spawn         +4.0%",
+        "✓ time · entity.alive_check  -10.0%",
+        "✓ memory · encode             -7.0%",
+        "⚑ time geomean +3.1% exceeded --fail-on geomean:2",
+      ]);
+    });
+
+    it.each<{ when: string; options: ReportOptions }>([
+      { when: "no conditions reached the renderer", options: {} },
+      {
+        when: "the threshold sits beyond the gated geomean",
+        options: { failOn: [{ kind: "geomean", pct: 10 }] },
+      },
+      {
+        when: "only the regressed condition was given",
+        options: { failOn: [{ kind: "regressed" }] },
+      },
+    ])("says nothing about a gate when $when", ({ options }) => {
+      const report = renderReport(trippingResult(), options);
+
+      expect(report).not.toContain("⚑");
+    });
+
+    it("says nothing about a gate for an informational kind past the threshold", () => {
+      const result = twoKindResult({
+        candidates: [
+          createCandidate({
+            kinds: [timeKind(), otherKind(9, 1, {}, { hasGating: false, gatedGeomean: undefined })],
+          }),
+        ],
+      });
+
+      const report = renderReport(result, { failOn: [{ kind: "geomean", pct: 2 }] });
+
+      expect(report).not.toContain("⚑");
+    });
+
+    it.each([
+      {
+        when: "the overall geomean trips but the gated one does not",
+        geomean: 5,
+        gated: 1,
+        expected: [],
+      },
+      {
+        when: "the gated geomean trips but the overall one does not",
+        geomean: 1,
+        gated: 5,
+        expected: ["⚑ time geomean +5.0% exceeded --fail-on geomean:2"],
+      },
+    ])("judges the gate on the gated geomean when $when", ({ geomean, gated, expected }) => {
+      const result = twoKindResult({
+        candidates: [
+          createCandidate({
+            kinds: [
+              timeKind({ geomean: geomeanOf(geomean, 3), gatedGeomean: geomeanOf(gated, 3) }),
+              memoryKind(),
+            ],
+          }),
+        ],
+      });
+
+      const highlights = highlightLines(
+        renderReport(result, { failOn: [{ kind: "geomean", pct: 2 }] }),
+      ).map((line) => line.trim());
+
+      expect(highlights.filter((line) => line.startsWith("⚑"))).toStrictEqual(expected);
+    });
+
+    it("flags only the candidates whose own gated geomean exceeded the threshold", () => {
+      const highlights = highlightLines(
+        renderReport(groupedComparison(), { failOn: [{ kind: "geomean", pct: 2 }] }),
+      );
+
+      expect(highlights).toStrictEqual([
+        "  candidate-a",
+        "    ✓ time · entity.alive_check  -10.0%",
+        "    ✓ memory · encode             -7.0%",
+        "  candidate-b",
+        "    ✗ time · entity.alive_check   +4.0%",
+        "    ✓ memory · encode             -2.0%",
+        "    ⚑ time geomean +4.0% exceeded --fail-on geomean:2",
+      ]);
+    });
+
+    it("paints the gate-trip glyph and delta red, as the regression they are", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      const line = lineContaining(
+        renderReport(trippingResult(), { failOn: [{ kind: "geomean", pct: 2 }] }),
+        "⚑",
+      );
+
+      expect.soft(stylesAt(line, "⚑")).toContain("31");
+      expect(stylesAt(line, "+3.1%")).toContain("31");
     });
   });
 
@@ -1207,15 +1496,16 @@ describe("renderReport", () => {
           "slower/time": signedRankMetric({ verdict: "regressed", delta: 2.4, unit: "ns" }),
           "flat/time": signedRankMetric({ verdict: "no-signal", delta: 0.3, unit: "ns" }),
           "tied/heap": bandMetric({ verdict: "no-signal", delta: -0.5, n: 10, usableN: 0 }),
+          "single-pair/time": bandMetric({ delta: -0.4, noisePct: 0.5, n: 1, unit: "ns" }),
           "jittery/time": signedRankMetric({ verdict: "unstable", delta: -50, noisePct: 30 }),
         },
         candidates: [
           createCandidate({
-            geomean: {
-              value: -5.8,
-              n: 3,
-              excluded: [{ metric: "jittery/time", reason: "unstable" }],
-            },
+            kinds: [
+              otherKind(-5.8, 3, {
+                excluded: [{ metric: "jittery/time", reason: "unstable" }],
+              }),
+            ],
           }),
         ],
         worktreesRemoved: 1,
@@ -1285,6 +1575,7 @@ describe("renderReport", () => {
       { verdict: "unstable", metric: "jittery/time", glyph: "≈", color: "yellow", code: "33" },
       { verdict: "identical", metric: "tied/heap", glyph: "=", color: "cyan", code: "36" },
       { verdict: "within noise", metric: "flat/time", glyph: "~", color: "dim", code: "2" },
+      { verdict: "inconclusive", metric: "single-pair/time", glyph: "?", color: "dim", code: "2" },
     ])("paints the $verdict verdict $color on its row", ({ metric, glyph, code }) => {
       const row = lineContaining(renderReport(colorfulResult()), metric);
 
@@ -1294,6 +1585,7 @@ describe("renderReport", () => {
     it.each([
       { verdict: "within noise", metric: "flat/time" },
       { verdict: "identical", metric: "tied/heap" },
+      { verdict: "inconclusive", metric: "single-pair/time" },
       { verdict: "unstable", metric: "jittery/time" },
     ])("leaves the name and value cells of a $verdict row unstyled", ({ metric }) => {
       const row = lineContaining(renderReport(colorfulResult()), metric);
@@ -1576,6 +1868,14 @@ describe("renderReport", () => {
       expect(stylesAt(lineContaining(report, "slower/time"), "±2.5%")).toContain("2");
     });
 
+    // The band behind a single pair is the noise floor constant, so a styled
+    // report has no more business printing it than a plain one does.
+    it("leaves the floor band off an inconclusive row", () => {
+      const row = lineContaining(renderReport(colorfulResult()), "single-pair/time");
+
+      expect(stripAnsi(cellsOf(row).at(-1) ?? "")).not.toContain("±");
+    });
+
     it("dims the echo row closing the table", () => {
       expect(echoRow(renderReport(colorfulResult()))).toMatch(DIMMED_LINE);
     });
@@ -1621,7 +1921,10 @@ describe("renderReport", () => {
           }),
         },
         candidates: [
-          createCandidate({ label: "faster", geomean: { value: -5, n: 1, excluded: [] } }),
+          createCandidate({
+            label: "faster",
+            kinds: [otherKind(-5, 1)],
+          }),
         ],
       });
     }
@@ -1721,9 +2024,9 @@ describe("renderReport", () => {
         .filter((line) => /✓ \d+ improved/.test(line));
 
       expect(summaries).toStrictEqual([
-        "candidate-a  ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise",
-        "candidate-b  ✓ 0 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise",
-        "candidate-c  ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   = 0 identical   ~ 0 within noise",
+        "candidate-a  ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive",
+        "candidate-b  ✓ 0 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive",
+        "candidate-c  ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive",
       ]);
     });
 
@@ -1786,7 +2089,7 @@ describe("renderReport", () => {
       });
     }
 
-    describe("color styling", () => {
+    describe("when color styling is applied", () => {
       beforeEach(() => {
         vi.stubEnv("FORCE_COLOR", "1");
       });
@@ -1897,6 +2200,591 @@ describe("renderReport", () => {
     });
   });
 
+  describe("when the run spans more than one metric kind", () => {
+    it("gives each kind its own titled section, closed by that kind's geomean", () => {
+      expect(tableRegion(renderReport(twoKindResult()))).toStrictEqual([
+        "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
+        "",
+        "<border>",
+        "time",
+        "<rule>",
+        "entity",
+        "alive_check",
+        "spawn",
+        "geomean · entity (2)",
+        "",
+        "warmup",
+        "<rule>",
+        "geomean · time (3)",
+        "<echo>",
+        "",
+        "informational — gating off (config: kinds.memory.gating = false)",
+        "<border>",
+        "memory",
+        "<rule>",
+        "encode",
+        "<rule>",
+        "geomean · memory (1)",
+        "<echo>",
+      ]);
+    });
+
+    it("echoes the header labels at the foot of every section", () => {
+      const rows = echoRows(renderReport(twoKindResult()));
+
+      expect(rows.map((row) => cellsOf(row).map((cell) => cell.trim()))).toStrictEqual([
+        ["", "main", "perf/faster-decode", "vs main"],
+        ["", "main", "perf/faster-decode", "vs main"],
+      ]);
+    });
+
+    it("spans a section's top border across the full table width", () => {
+      const report = stripAnsi(renderReport(twoKindResult()));
+      const lines = report.split("\n");
+      const header = lineStartingWith(report, "time");
+      const headerIndex = lines.indexOf(header);
+      const border = lines[headerIndex - 1];
+      const rule = lines[headerIndex + 1];
+      if (border === undefined || rule === undefined) {
+        throw new Error(`no border or rule around section header in report:\n${report}`);
+      }
+
+      expect.soft(border).not.toContain("┼");
+      expect(border).toHaveLength(rule.length);
+    });
+
+    it("joins a section's top border to the header's columns", () => {
+      const report = stripAnsi(renderReport(twoKindResult()));
+      const lines = report.split("\n");
+      const header = lineStartingWith(report, "time");
+      const headerIndex = lines.indexOf(header);
+      const border = lines[headerIndex - 1];
+      if (border === undefined) {
+        throw new Error(`no border above section header in report:\n${report}`);
+      }
+
+      expect(offsetsOf(border, "┬")).toStrictEqual(separatorOffsets(header));
+    });
+
+    it("lines every section's columns up with the first section's header", () => {
+      const report = renderReport(twoKindResult());
+      const bare = stripAnsi(report);
+      const timeHeader = lineStartingWith(bare, "time");
+      const memoryHeader = lineStartingWith(bare, "memory");
+      const offsets = separatorOffsets(timeHeader);
+
+      expect.soft(separatorOffsets(memoryHeader)).toStrictEqual(offsets);
+      expect
+        .soft(separatorOffsets(lineStartingWith(report, "  alive_check")))
+        .toStrictEqual(offsets);
+      expect.soft(separatorOffsets(lineStartingWith(report, "entity "))).toStrictEqual(offsets);
+      expect(separatorOffsets(lineStartingWith(report, "geomean · memory"))).toStrictEqual(offsets);
+    });
+
+    it.each([
+      {
+        source: "the kind-level config entry",
+        configKinds: { memory: { gating: false } },
+        expected: "informational — gating off (config: kinds.memory.gating = false)",
+      },
+      {
+        source: "per-metric overrides alone",
+        configKinds: undefined,
+        expected: "informational — gating off",
+      },
+    ])("credits $source for a non-gating kind's informational tag", ({ configKinds, expected }) => {
+      const report = renderReport(twoKindResult({ configKinds }));
+
+      expect(lineContaining(report, "informational")).toBe(expected);
+    });
+
+    it.each([
+      { placement: "indented under its group, stripped of the group prefix", row: "  alive_check" },
+      { placement: "at the margin under its bare short name", row: "warmup" },
+    ])("names a metric row $placement", ({ row }) => {
+      const line = lineStartingWith(renderReport(twoKindResult()), row);
+
+      expect(cellsOf(line)[0]?.trimEnd()).toBe(row);
+    });
+
+    it("names each highlight by kind and short metric, padded to keep the deltas aligned", () => {
+      const highlights = highlightLines(renderReport(twoKindResult())).map((line) => line.trim());
+
+      expect(highlights).toStrictEqual([
+        "✗ time · entity.spawn         +4.0%",
+        "✓ time · entity.alive_check  -10.0%",
+        "✓ memory · encode             -7.0%",
+      ]);
+    });
+
+    it("prefixes the kind inside every candidate's highlight subsection", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "entity.alive_check/time": nWayKindMetric({
+            kind: "time",
+            shortName: "entity.alive_check",
+            candidates: [
+              { verdict: "improved", delta: -10, median: 90 },
+              { verdict: "regressed", delta: 4, median: 104 },
+            ],
+          }),
+          "encode/heap": nWayKindMetric({
+            kind: "memory",
+            shortName: "encode",
+            gating: false,
+            candidates: [
+              { verdict: "improved", delta: -7, median: 93 },
+              { verdict: "improved", delta: -2, median: 98 },
+            ],
+          }),
+        },
+        candidates: [
+          createCandidate({
+            label: "candidate-a",
+            kinds: [timeKind({ geomean: geomeanOf(-10, 1), groups: [] }), memoryKind()],
+          }),
+          createCandidate({
+            label: "candidate-b",
+            kinds: [
+              timeKind({ geomean: geomeanOf(4, 1), groups: [] }),
+              memoryKind({ geomean: geomeanOf(-2, 1) }),
+            ],
+          }),
+        ],
+        configKinds: { memory: { gating: false } },
+      });
+
+      expect(highlightLines(renderReport(result))).toStrictEqual([
+        "  candidate-a",
+        "    ✓ time · entity.alive_check  -10.0%",
+        "    ✓ memory · encode             -7.0%",
+        "  candidate-b",
+        "    ✗ time · entity.alive_check   +4.0%",
+        "    ✓ memory · encode             -2.0%",
+      ]);
+    });
+
+    it("counts the excluded metrics into a geomean label's provenance", () => {
+      const result = twoKindResult({
+        candidates: [
+          createCandidate({
+            kinds: [
+              timeKind({
+                geomean: geomeanOf(-3.2, 2, {
+                  excluded: [{ metric: "warmup/time", reason: "unstable" }],
+                }),
+              }),
+              memoryKind(),
+            ],
+          }),
+        ],
+      });
+
+      const row = lineStartingWith(renderReport(result), "geomean · time");
+
+      expect(cellsOf(row)[0]?.trim()).toBe("geomean · time (2/3)");
+    });
+
+    it.each([
+      {
+        gating: "one kind gates",
+        makeResult: (): ComparisonResult => twoKindResult(),
+      },
+      {
+        gating: "several kinds gate",
+        makeResult: (): ComparisonResult =>
+          twoKindResult({
+            metrics: twoKindMetrics({ memoryGates: true }),
+            candidates: [
+              createCandidate({
+                kinds: [
+                  timeKind(),
+                  memoryKind({ hasGating: true, gatedGeomean: geomeanOf(6.1, 1) }),
+                ],
+              }),
+            ],
+            configKinds: undefined,
+          }),
+      },
+      {
+        gating: "no kind gates",
+        makeResult: (): ComparisonResult =>
+          twoKindResult({
+            metrics: twoKindMetrics({ timeGates: false }),
+            candidates: [
+              createCandidate({
+                kinds: [timeKind({ hasGating: false, gatedGeomean: undefined }), memoryKind()],
+              }),
+            ],
+          }),
+      },
+    ])(
+      "closes the table on the last kind's geomean, with no gated row, when $gating",
+      ({ makeResult }) => {
+        const report = renderReport(makeResult());
+
+        expect
+          .soft(tableRegion(report).slice(-2))
+          .toStrictEqual(["geomean · memory (1)", "<echo>"]);
+        expect(report).not.toContain("geomean · gated");
+      },
+    );
+
+    it("carries one figure per candidate column on every aggregate row", () => {
+      const report = renderReport(groupedComparison());
+      const cellsAt = (label: string): string[] =>
+        cellsOf(lineStartingWith(report, label)).map((cell) => cell.trim());
+
+      expect
+        .soft(cellsAt("geomean · entity"))
+        .toStrictEqual([
+          "geomean · entity",
+          "",
+          "-10.0% · 1 stable metric",
+          "+4.0% · 1 stable metric",
+        ]);
+      expect
+        .soft(cellsAt("geomean · time"))
+        .toStrictEqual([
+          "geomean · time",
+          "",
+          "-10.0% · 1 stable metric",
+          "+4.0% · 1 stable metric",
+        ]);
+      expect(tableRegion(report).slice(-2)).toStrictEqual(["geomean · memory", "<echo>"]);
+    });
+
+    describe("when color styling is applied", () => {
+      beforeEach(() => {
+        vi.stubEnv("FORCE_COLOR", "1");
+      });
+
+      it.each([
+        { row: "sub-geomean", label: "geomean · entity", value: "-3.1%" },
+        { row: "kind geomean", label: "geomean · time", value: "-3.2%" },
+      ])("paints an improving $row value green once it clears its band", ({ label, value }) => {
+        const line = lineContaining(renderReport(twoKindResult()), label);
+
+        expect(stylesAt(line, value)).toStrictEqual(["1", "32"]);
+      });
+
+      it("emboldens the kind name in the section header and dims the informational tag", () => {
+        const report = renderReport(twoKindResult());
+        const header = report
+          .split("\n")
+          .find((line) => line.includes("│") && stripAnsi(line).trimStart().startsWith("memory"));
+        if (header === undefined) {
+          throw new Error("no memory header in report");
+        }
+        const tag = lineContaining(report, "informational");
+
+        expect.soft(stylesAt(header, "memory")).toStrictEqual(["1"]);
+        expect(stylesAt(tag, "informational")).toStrictEqual(["2"]);
+      });
+
+      it("leaves every column separator in the default color, whatever style its row carries", () => {
+        const rows = renderReport(twoKindResult())
+          .split("\n")
+          .filter((line) => line.includes("│"));
+
+        const inherited = rows.filter((row) =>
+          separatorStyles(row).some((styles) => styles.length > 0),
+        );
+
+        expect(inherited).toStrictEqual([]);
+      });
+    });
+  });
+
+  describe("when every metric shares one kind", () => {
+    /** A single gating kind whose two metrics share a group. */
+    function oneKindResult(overrides: Partial<ComparisonResult> = {}): ComparisonResult {
+      return createComparisonResult({
+        metrics: {
+          "entity.alive_check/time": kindMetric({
+            kind: "time",
+            shortName: "entity.alive_check",
+            verdict: "improved",
+            delta: -10,
+          }),
+          "entity.spawn/time": kindMetric({
+            kind: "time",
+            shortName: "entity.spawn",
+            verdict: "regressed",
+            delta: 4,
+          }),
+        },
+        candidates: [
+          createCandidate({
+            kinds: [
+              {
+                kind: "time",
+                hasGating: true,
+                geomean: geomeanOf(-3.2, 2),
+                groups: [{ group: "entity", geomean: geomeanOf(-3.2, 2) }],
+                gatedGeomean: geomeanOf(-3.2, 2),
+              },
+            ],
+          }),
+        ],
+        ...overrides,
+      });
+    }
+
+    it("keeps the flat layout, full metric names and one geomean row", () => {
+      expect(tableRegion(renderReport(oneKindResult()))).toStrictEqual([
+        "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
+        "metric",
+        "<rule>",
+        "entity.alive_check/time",
+        "entity.spawn/time",
+        "<rule>",
+        "geomean (2 stable metrics)",
+        "<echo>",
+      ]);
+    });
+
+    it("reports no stable metrics when that kind does not gate", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "warmup/time": kindMetric({
+            kind: "time",
+            shortName: "warmup",
+            verdict: "improved",
+            delta: -10,
+            gating: false,
+          }),
+        },
+        candidates: [
+          createCandidate({
+            kinds: [{ kind: "time", hasGating: false, geomean: geomeanOf(-10, 1), groups: [] }],
+          }),
+        ],
+      });
+
+      const row = lineStartingWith(renderReport(result), "geomean");
+
+      expect(cellsOf(row).map((cell) => cell.trim())).toStrictEqual([
+        "geomean",
+        "",
+        "",
+        "—  no stable metrics",
+      ]);
+    });
+
+    it("paints the flat geomean value by its own band, color on", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+      const result = oneKindResult({
+        candidates: [
+          createCandidate({
+            kinds: [
+              {
+                kind: "time",
+                hasGating: true,
+                geomean: geomeanOf(-3.2, 2),
+                groups: [],
+                gatedGeomean: geomeanOf(-3.2, 2, { band: 1 }),
+              },
+            ],
+          }),
+        ],
+      });
+
+      const line = lineContaining(renderReport(result), "geomean");
+
+      expect(stylesAt(line, "-3.2%")).toStrictEqual(["1", "32"]);
+    });
+  });
+
+  describe("when labelling the group and geomean rows", () => {
+    /** A single-candidate run of one kind, whose table closes on a flat geomean row. */
+    function flatResult(): ComparisonResult {
+      return createComparisonResult({
+        metrics: { "faster/time": signedRankMetric({ verdict: "improved", delta: -17.5 }) },
+      });
+    }
+
+    describe("when color is on", () => {
+      beforeEach(() => {
+        vi.stubEnv("FORCE_COLOR", "1");
+      });
+
+      it.each([
+        { table: "single-candidate", makeResult: twoKindResult },
+        { table: "multi-candidate", makeResult: groupedComparison },
+      ])("paints the group sub-header blue in the $table table", ({ makeResult }) => {
+        const row = lineContaining(renderReport(makeResult()), "entity");
+
+        expect(stylesAt(row, "entity")).toStrictEqual(["34"]);
+      });
+
+      it.each([
+        {
+          level: "group",
+          table: "single-candidate",
+          label: "geomean · entity",
+          makeResult: twoKindResult,
+        },
+        {
+          level: "kind",
+          table: "single-candidate",
+          label: "geomean · time",
+          makeResult: twoKindResult,
+        },
+        { level: "flat", table: "single-candidate", label: "geomean", makeResult: flatResult },
+        {
+          level: "group",
+          table: "multi-candidate",
+          label: "geomean · entity",
+          makeResult: groupedComparison,
+        },
+        {
+          level: "kind",
+          table: "multi-candidate",
+          label: "geomean · time",
+          makeResult: groupedComparison,
+        },
+        {
+          level: "flat",
+          table: "multi-candidate",
+          label: "geomean",
+          makeResult: multiCandidateResult,
+        },
+      ])("emboldens the $level geomean label in the $table table", ({ label, makeResult }) => {
+        const row = lineContaining(renderReport(makeResult()), label);
+
+        expect(stylesAt(row, label)).toStrictEqual(["1"]);
+      });
+    });
+  });
+
+  describe("when every metric behind a geomean landed within noise", () => {
+    /**
+     * A two-kind run whose every metric landed within noise.
+     *
+     * Each geomean figure sits far outside its own band, so a rule that reads
+     * the band alone would paint all of them green.
+     */
+    function quietTwoKindResult(): ComparisonResult {
+      return createComparisonResult({
+        metrics: {
+          "entity.alive_check/time": kindMetric({
+            kind: "time",
+            shortName: "entity.alive_check",
+            verdict: "no-signal",
+            delta: -9,
+          }),
+          "entity.spawn/time": kindMetric({
+            kind: "time",
+            shortName: "entity.spawn",
+            verdict: "no-signal",
+            delta: -8,
+          }),
+          "encode/heap": kindMetric({
+            kind: "memory",
+            shortName: "encode",
+            verdict: "no-signal",
+            delta: -7,
+            gating: false,
+            unit: "bytes",
+          }),
+        },
+        candidates: [
+          createCandidate({
+            kinds: [
+              timeKind({
+                geomean: geomeanOf(-8.5, 2),
+                groups: [{ group: "entity", geomean: geomeanOf(-8.6, 2) }],
+                gatedGeomean: geomeanOf(-8.5, 2),
+              }),
+              memoryKind({ geomean: geomeanOf(-7, 1) }),
+            ],
+          }),
+        ],
+        configKinds: { memory: { gating: false } },
+      });
+    }
+
+    describe("when color is on", () => {
+      beforeEach(() => {
+        vi.stubEnv("FORCE_COLOR", "1");
+      });
+
+      it.each([
+        { level: "group", label: "geomean · entity", value: "-8.6%" },
+        { level: "kind", label: "geomean · time", value: "-8.5%" },
+      ])("leaves the $level geomean value emboldened and uncolored", ({ label, value }) => {
+        const line = lineContaining(renderReport(quietTwoKindResult()), label);
+
+        expect(stylesAt(line, value)).toStrictEqual(["1"]);
+      });
+
+      it("leaves the flat geomean value emboldened and uncolored", () => {
+        const result = createComparisonResult({
+          metrics: { "faster/time": signedRankMetric({ verdict: "no-signal", delta: -0.5 }) },
+        });
+
+        const line = lineContaining(renderReport(result), "geomean");
+
+        expect(stylesAt(line, "-5.8%")).toStrictEqual(["1"]);
+      });
+
+      it("judges each candidate column by that column's own verdicts", () => {
+        const result = createComparisonResult({
+          metrics: {
+            "entity.alive_check/time": nWayKindMetric({
+              kind: "time",
+              shortName: "entity.alive_check",
+              candidates: [
+                { verdict: "no-signal", delta: -9, median: 91 },
+                { verdict: "improved", delta: -12, median: 88 },
+              ],
+            }),
+            "encode/heap": nWayKindMetric({
+              kind: "memory",
+              shortName: "encode",
+              gating: false,
+              candidates: [
+                { verdict: "no-signal", delta: -1, median: 99 },
+                { verdict: "improved", delta: -2, median: 98 },
+              ],
+            }),
+          },
+          candidates: [
+            createCandidate({
+              label: "candidate-a",
+              kinds: [
+                timeKind({
+                  geomean: geomeanOf(-9, 1),
+                  groups: [{ group: "entity", geomean: geomeanOf(-9, 1) }],
+                  gatedGeomean: geomeanOf(-9, 1),
+                }),
+                memoryKind({ geomean: geomeanOf(-1, 1) }),
+              ],
+            }),
+            createCandidate({
+              label: "candidate-b",
+              kinds: [
+                timeKind({
+                  geomean: geomeanOf(-12, 1),
+                  groups: [{ group: "entity", geomean: geomeanOf(-12, 1) }],
+                  gatedGeomean: geomeanOf(-12, 1),
+                }),
+                memoryKind({ geomean: geomeanOf(-2, 1) }),
+              ],
+            }),
+          ],
+          configKinds: { memory: { gating: false } },
+        });
+
+        const line = lineContaining(renderReport(result), "geomean · time");
+
+        expect.soft(stylesAt(line, "-9.0%")).toStrictEqual(["1"]);
+        expect(stylesAt(line, "-12.0%")).toStrictEqual(["1", "32"]);
+      });
+    });
+  });
+
   /**
    * Byte-level pins on the whole rendered report.
    *
@@ -1987,7 +2875,11 @@ describe("renderReport", () => {
             meta: metricMeta("encode/heap", { exact: true, unit: "bytes" }),
           },
         },
-        candidates: [createCandidate({ geomean: { value: -6, n: 4, excluded: [] } })],
+        candidates: [
+          createCandidate({
+            kinds: [otherKind(-6, 4)],
+          }),
+        ],
       });
 
       await expect(renderReport(result)).toMatchFileSnapshot(
@@ -2052,11 +2944,11 @@ describe("renderReport", () => {
         },
         candidates: [
           createCandidate({
-            geomean: {
-              value: 0,
-              n: 1,
-              excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
-            },
+            kinds: [
+              otherKind(0, 1, {
+                excluded: [{ metric: "nan-delta/count", reason: "undefined-ratio" }],
+              }),
+            ],
           }),
         ],
         worktreesRemoved: 1,
@@ -2076,15 +2968,18 @@ describe("renderReport", () => {
         candidates: [
           createCandidate({
             label: "perf/simd-decode",
-            geomean: { value: -12.4, n: 3, excluded: [] },
+            // Both geomeans sit inside their noise band, so the colored twin of
+            // this golden pins the styling of a geomean that stays there.
+            kinds: [otherKind(-12.4, 3, { band: 30 })],
           }),
           createCandidate({
             label: "perf/lut-decode",
-            geomean: {
-              value: 1.2,
-              n: 2,
-              excluded: [{ metric: "encode/time", reason: "unstable" }],
-            },
+            kinds: [
+              otherKind(1.2, 2, {
+                excluded: [{ metric: "encode/time", reason: "unstable" }],
+                band: 30,
+              }),
+            ],
           }),
         ],
         metrics: {
@@ -2182,6 +3077,26 @@ describe("renderReport", () => {
       );
     });
 
+    it("matches the recorded bytes for a run split into kind sections", async () => {
+      await expect(renderReport(twoKindResult())).toMatchFileSnapshot(
+        "../fixtures/report-sectioned.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a run of one paired sample", async () => {
+      await expect(renderReport(singleSampleResult())).toMatchFileSnapshot(
+        "../fixtures/report-single-sample.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a colored run of one paired sample", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      await expect(renderReport(singleSampleResult())).toMatchFileSnapshot(
+        "../fixtures/report-single-sample-color.golden.txt",
+      );
+    });
+
     it("matches the recorded bytes for a representative colored run", async () => {
       vi.stubEnv("FORCE_COLOR", "1");
 
@@ -2194,11 +3109,14 @@ describe("renderReport", () => {
         },
         candidates: [
           createCandidate({
-            geomean: {
-              value: -5.8,
-              n: 3,
-              excluded: [{ metric: "jittery/time", reason: "unstable" }],
-            },
+            // Inside its noise band, so this golden pins the styling of a
+            // geomean that never crosses it.
+            kinds: [
+              otherKind(-5.8, 3, {
+                excluded: [{ metric: "jittery/time", reason: "unstable" }],
+                band: 30,
+              }),
+            ],
           }),
         ],
         worktreesRemoved: 1,
@@ -2224,6 +3142,14 @@ describe("renderReport", () => {
 
       await expect(renderReport(twoCandidateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates-color.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a colored run split into kind sections", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      await expect(renderReport(twoKindResult())).toMatchFileSnapshot(
+        "../fixtures/report-sectioned-color.golden.txt",
       );
     });
   });

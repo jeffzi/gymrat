@@ -16,9 +16,15 @@ import { EtaTracker, formatEta } from "./eta.js";
 import { metricRecord } from "./metric-record.js";
 import { countVerdicts, formatHintLabel, formatLabel } from "./report/format.js";
 import { renderJson } from "./report/json.js";
-import { renderMarkdown } from "./report/markdown.js";
 import { renderReport } from "./report/text.js";
-import type { ComparisonResult, MetricComparisons } from "./report/types.js";
+import type {
+  CandidateComparison,
+  ComparisonResult,
+  FailOnCondition,
+  MetricComparisons,
+} from "./report/types.js";
+import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
+import type { GeomeanResult } from "./verdict/verdict.js";
 
 /**
  * Parse the `label=target` syntax of a positional argument, baseline or candidate.
@@ -81,19 +87,6 @@ function parsePositiveIntegerUpTo(max: number): (value: string) => number {
   };
 }
 
-/** The largest delay `setTimeout` can hold: milliseconds in a signed 32-bit integer. */
-const MAX_TIMER_MS = 2_147_483_647;
-
-/**
- * A timeout is expanded to milliseconds before it reaches `setTimeout`, which
- * silently fires immediately once the delay overflows {@link MAX_TIMER_MS} —
- * turning an over-large timeout into no timeout at all.
- */
-const MAX_TIMEOUT_SECONDS = Math.floor(MAX_TIMER_MS / 1000);
-
-/** A parsed `--fail-on` condition: either a `regressed` check or a geomean threshold. */
-type FailOnCondition = { kind: "regressed" } | { kind: "geomean"; pct: number };
-
 /**
  * Matches the percentage of a `geomean:<pct>` condition.
  *
@@ -135,15 +128,26 @@ function gatingMetrics(metrics: MetricComparisons): MetricComparisons {
 }
 
 /**
+ * The gated geomean of every kind that gates, one entry per such kind.
+ *
+ * Each kind is judged independently so the gate never mixes units across kinds
+ * and an informational kind cannot move a number the user asked to be judged on.
+ */
+function gatedGeomeansOf(candidate: CandidateComparison): readonly GeomeanResult[] {
+  return candidate.kinds.flatMap((kind) => (kind.gatedGeomean ? [kind.gatedGeomean] : []));
+}
+
+/**
  * Returns `true` when any condition trips — meaning the process should exit 1.
  *
  * A geomean threshold is inclusive: `geomean:2` trips at exactly +2.0%, matching
- * the "at or worse" contract the README states.
+ * the "at or worse" contract the README states. It is evaluated per gating kind,
+ * so any one kind crossing the threshold trips the gate.
  *
- * A candidate whose geomean aggregated nothing (`n === 0`) can never trip the
- * geomean gate. Its `value` is a placeholder 0, so comparing it against a
- * threshold of 0 or less would report a regression nobody measured;
- * {@link warnEmptyGeomeanGates} tells the user the gate was vacuous instead.
+ * A gated geomean that aggregated nothing (`n === 0`) can never trip. Its `value`
+ * is a placeholder 0, so comparing it against a threshold of 0 or less would
+ * report a regression nobody measured; {@link warnEmptyGeomeanGates} tells the
+ * user the gate was vacuous instead.
  */
 function shouldFailGate(conditions: readonly FailOnCondition[], result: ComparisonResult): boolean {
   if (conditions.length === 0) return false;
@@ -155,8 +159,10 @@ function shouldFailGate(conditions: readonly FailOnCondition[], result: Comparis
       case "regressed":
         return result.candidates.some((_, i) => countVerdicts(gating, i).regressed > 0);
       case "geomean":
-        return result.candidates.some(
-          (candidate) => candidate.geomean.n > 0 && candidate.geomean.value >= condition.pct,
+        return result.candidates.some((candidate) =>
+          gatedGeomeansOf(candidate).some(
+            (geomean) => geomean.n > 0 && geomean.value >= condition.pct,
+          ),
         );
       default:
         return assertNever(condition);
@@ -171,6 +177,9 @@ function shouldFailGate(conditions: readonly FailOnCondition[], result: Comparis
  * config — leaves a geomean gate that can never trip. Passing silently would
  * read as "the threshold held"; the warning distinguishes that from a gate that
  * was never evaluated.
+ *
+ * A candidate with no gating kind at all is vacuous by the same measure: nothing
+ * it ran is judged, so `every` over the empty list warns.
  */
 function warnEmptyGeomeanGates(
   conditions: readonly FailOnCondition[],
@@ -179,7 +188,7 @@ function warnEmptyGeomeanGates(
   if (!conditions.some((condition) => condition.kind === "geomean")) return;
 
   for (const candidate of result.candidates) {
-    if (candidate.geomean.n === 0) {
+    if (gatedGeomeansOf(candidate).every((geomean) => geomean.n === 0)) {
       process.stderr.write(
         `warning: geomean gate for "${candidate.label}" had no stable gating metrics to measure\n`,
       );
@@ -244,14 +253,28 @@ export function formatCliError(error: unknown): string {
  * fires once it has been flushed.
  */
 function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> {
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      stream.removeListener("error", onError);
+      stream.removeListener("drain", onDrain);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onDrain = (): void => {
+      cleanup();
+      resolve();
+    };
+
+    stream.once("error", onError);
+
     if (stream.write(data)) {
+      cleanup();
       resolve();
       return;
     }
-    stream.once("drain", () => {
-      resolve();
-    });
+    stream.once("drain", onDrain);
   });
 }
 
@@ -299,10 +322,41 @@ function buildProgressLineParts(step: ProgressStep, etaMs?: number): ProgressLin
   }
 }
 
-/** Join a step word with its optional counter and label, `·`-separated. */
 function joinStepLine(stepWord: string, counter: string | undefined, label: string): string {
   return counter === undefined ? `${stepWord} · ${label}` : `${stepWord} ${counter} · ${label}`;
 }
+
+/** Per-field presentation applied by {@link renderProgressLine}: identity for plain text, ANSI styling for the spinner. */
+interface ProgressLineStyle {
+  readonly label: (text: string) => string;
+  readonly counter: (text: string) => string;
+  readonly eta: (text: string) => string;
+}
+
+/**
+ * Assemble a progress line from its parts, applying `style` to the label,
+ * counter, and ETA suffix. `formatProgressLine` and `styleProgressLine` share
+ * this so their output only differs in presentation, never in structure.
+ */
+function renderProgressLine(
+  step: ProgressStep,
+  etaMs: number | undefined,
+  style: ProgressLineStyle,
+): string {
+  const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
+  const styledCounter = counter === undefined ? undefined : style.counter(counter);
+  let line = joinStepLine(stepWord, styledCounter, style.label(label));
+  if (etaSuffix !== undefined) {
+    line += style.eta(` · ${etaSuffix}`);
+  }
+  return line;
+}
+
+const IDENTITY_PROGRESS_LINE_STYLE: ProgressLineStyle = {
+  label: (text) => text,
+  counter: (text) => text,
+  eta: (text) => text,
+};
 
 /**
  * Each line names the target so the user can tell which one is running;
@@ -310,12 +364,7 @@ function joinStepLine(stepWord: string, counter: string | undefined, label: stri
  * When an ETA estimate is available, it is appended as plain text.
  */
 function formatProgressLine(step: ProgressStep, etaMs?: number): string {
-  const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
-  let line = joinStepLine(stepWord, counter, label);
-  if (etaSuffix !== undefined) {
-    line += ` · ${etaSuffix}`;
-  }
-  return line;
+  return renderProgressLine(step, etaMs, IDENTITY_PROGRESS_LINE_STYLE);
 }
 
 /**
@@ -325,15 +374,11 @@ function formatProgressLine(step: ProgressStep, etaMs?: number): string {
  * When no ETA is available for a sample step, a dim placeholder is shown.
  */
 function styleProgressLine(step: ProgressStep, etaMs?: number): string {
-  const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
-  const styledLabel = formatLabel(label, "cyan", process.stderr);
-  const styledCounter =
-    counter === undefined ? undefined : formatLabel(counter, "bold", process.stderr);
-  let line = joinStepLine(stepWord, styledCounter, styledLabel);
-  if (etaSuffix !== undefined) {
-    line += formatLabel(` · ${etaSuffix}`, "dim", process.stderr);
-  }
-  return line;
+  return renderProgressLine(step, etaMs, {
+    label: (text) => formatLabel(text, "cyan", process.stderr),
+    counter: (text) => formatLabel(text, "bold", process.stderr),
+    eta: (text) => formatLabel(text, "dim", process.stderr),
+  });
 }
 
 /** Carriage-return + clear-to-EOL: rewinds the cursor and erases the line it lands on. */
@@ -438,8 +483,8 @@ function createProgressReporter(
 interface CompareFlags extends CliFlags {
   /** Commander's `--no-color` counterpart: true unless the flag was passed. */
   color: boolean;
-  /** Output format — `text` produces the ANSI-styled table, others produce plain output. */
-  format: "text" | "markdown" | "json";
+  /** Output format — `text` produces the ANSI-styled table, `json` produces plain output. */
+  format: "text" | "json";
   /** Gate conditions that cause exit 1 when any trips. Empty when `--fail-on` is not used. */
   failOn: FailOnCondition[];
   /** Name the statistical method behind each verdict in the report footer. */
@@ -516,9 +561,7 @@ export function createProgram(): Command {
     .option("--no-color", "print the report without ANSI styles")
     .option("--verbose", "name the statistical method behind each verdict", false)
     .addOption(
-      new Option("--format <value>", "output format")
-        .choices(["text", "markdown", "json"])
-        .default("text"),
+      new Option("--format <value>", "output format").choices(["text", "json"]).default("text"),
     )
     .option(
       "--fail-on <condition>",
@@ -578,15 +621,16 @@ export function createProgram(): Command {
 
       let output: string;
       switch (options.format) {
-        case "markdown":
-          output = renderMarkdown(result, { verbose: options.verbose, color });
-          break;
         case "json":
           // Machine-readable output stays byte-identical whatever --verbose says.
           output = renderJson(result);
           break;
         case "text":
-          output = renderReport(result, { verbose: options.verbose, color });
+          output = renderReport(result, {
+            verbose: options.verbose,
+            color,
+            failOn: options.failOn,
+          });
           break;
         default:
           assertNever(options.format);

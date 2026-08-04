@@ -23,12 +23,16 @@ import {
 } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
 import { renderJson } from "../src/report/json.js";
-import { renderMarkdown } from "../src/report/markdown.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
+import type { KindAggregate } from "../src/verdict/aggregate.js";
+import type { GeomeanResult } from "../src/verdict/verdict.js";
 import {
   createCandidate,
   createComparisonResult,
+  geomeanOf,
+  kindMetric,
+  type Metrics,
   metricMeta,
 } from "./fixtures/comparison-result.js";
 
@@ -43,10 +47,6 @@ vi.mock("../src/compare.js", async (importOriginal) => {
 
 vi.mock("../src/config.js", () => ({
   resolveConfig: vi.fn(),
-}));
-
-vi.mock("../src/report/markdown.js", () => ({
-  renderMarkdown: vi.fn().mockReturnValue("# Markdown Report"),
 }));
 
 vi.mock("../src/report/json.js", () => ({
@@ -130,10 +130,20 @@ async function setupMocks(
  * manifest — which is the whole point of the check.
  */
 function readDeclaredVersion(): string {
-  const { version } = JSON.parse(
+  const manifest: unknown = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ) as { version: string };
-  return version;
+  );
+
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    !("version" in manifest) ||
+    typeof manifest.version !== "string"
+  ) {
+    throw new Error("package.json has no string version field");
+  }
+
+  return manifest.version;
 }
 
 /**
@@ -650,30 +660,6 @@ describe("createProgram", () => {
         // Assert
         expect(process.env.NO_COLOR).toBe("1");
       });
-
-      it.each([
-        { flags: ["--no-color"], when: "--no-color is passed", expected: false },
-        { flags: [], when: "no color flag is passed", expected: undefined },
-      ])(
-        "hands the renderer color $expected in its report options when $when",
-        async ({ flags, expected }) => {
-          // Arrange
-          vi.stubEnv("NO_COLOR", undefined);
-          process.stdout.isTTY = true;
-
-          // Act
-          await runCompareCapturingStdout(
-            createComparisonResult(),
-            "--format",
-            "markdown",
-            ...flags,
-          );
-
-          // Assert
-          const renderOptions = vi.mocked(renderMarkdown).mock.calls[0]?.[1];
-          expect(renderOptions?.color).toBe(expected);
-        },
-      );
     });
 
     describe("when --format flag provided", () => {
@@ -688,18 +674,6 @@ describe("createProgram", () => {
         expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
       });
 
-      it("routes to renderMarkdown for --format markdown", async () => {
-        // Arrange
-        const result = createComparisonResult();
-
-        // Act
-        const writeSpy = await runCompareCapturingStdout(result, "--format", "markdown");
-
-        // Assert
-        expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result, { verbose: false });
-        expect(writeSpy).toHaveBeenCalledWith("# Markdown Report\n");
-      });
-
       it("routes to renderJson for --format json", async () => {
         // Arrange
         const result = createComparisonResult();
@@ -712,24 +686,32 @@ describe("createProgram", () => {
         expect(writeSpy).toHaveBeenCalledWith('{"report": true}\n');
       });
 
-      it("rejects an invalid format value with Commander's invalid-argument error", async () => {
-        // Arrange
-        const program = createProgramWithSubcommandOverrides();
-        for (const command of [program, ...program.commands]) {
-          command.configureOutput({ writeErr: () => {} });
-        }
+      it.each([
+        { desc: "a format that never existed", value: "csv" },
+        { desc: "a format that no longer exists", value: "markdown" },
+      ])(
+        "rejects $desc with Commander's invalid-argument error naming the surviving choices",
+        async ({ value }) => {
+          // Arrange
+          const program = createProgramWithSubcommandOverrides();
+          for (const command of [program, ...program.commands]) {
+            command.configureOutput({ writeErr: () => {} });
+          }
 
-        // Act
-        const parsing = program.parseAsync(compareArgv("main", "branch", "--format", "csv"));
+          // Act
+          const parsing = program.parseAsync(compareArgv("main", "branch", "--format", value));
 
-        // Assert
-        await expect(parsing).rejects.toThrow(
-          /option '--format <value>' argument 'csv' is invalid\. Allowed choices are text, markdown, json\./,
-        );
-      });
+          // Assert
+          await expect(parsing).rejects.toThrow(
+            new RegExp(
+              `option '--format <value>' argument '${value}' is invalid\\. Allowed choices are text, json\\.`,
+            ),
+          );
+        },
+      );
     });
 
-    describe("--verbose", () => {
+    describe("when --verbose is passed", () => {
       /** Runs `compare` over a signed-rank result and returns what reached stdout. */
       async function renderWith(...extraArgs: string[]): Promise<string> {
         const writeSpy = await runCompareCapturingStdout(
@@ -753,17 +735,6 @@ describe("createProgram", () => {
 
         // Assert
         expect(output).not.toContain("Wilcoxon signed-rank");
-      });
-
-      it("passes the flag through to the markdown renderer", async () => {
-        // Arrange
-        const result = createComparisonResult();
-
-        // Act
-        await runCompareCapturingStdout(result, "--format", "markdown", "--verbose");
-
-        // Assert
-        expect(vi.mocked(renderMarkdown)).toHaveBeenCalledWith(result, { verbose: true });
       });
 
       it("leaves the JSON renderer untouched", async () => {
@@ -1367,8 +1338,7 @@ describe("createProgram", () => {
           const parsePromise = program.parseAsync(compareArgv("main", "branch"));
           await vi.advanceTimersByTimeAsync(1000);
 
-          // Assert — formatEta called with the decremented value, spinner text updated
-          expect(mockFormatEta).toHaveBeenCalledWith(129_000);
+          // Assert — spinner text reflects the decremented ETA
           expect(mockSpinnerInstance.text).toContain("~129s left");
 
           // Cleanup
@@ -1445,12 +1415,8 @@ describe("createProgram", () => {
 
           // Act
           const parsePromise = program.parseAsync(compareArgv("main", "branch"));
-          // Advance 1s — countdown fires, proving interval is active
-          await vi.advanceTimersByTimeAsync(1000);
-          expect(mockSpinnerInstance.text).toContain("~129s left");
-
-          // Advance 1s more — second emit fires with undefined ETA
-          await vi.advanceTimersByTimeAsync(1000);
+          // Advance 2s — the second emit fires with undefined ETA, clearing the interval
+          await vi.advanceTimersByTimeAsync(2000);
           const textAfterUndefinedEta = mockSpinnerInstance.text;
 
           // Advance 2s more — if interval were still active, spinner text would keep changing
@@ -1533,10 +1499,19 @@ describe("createProgram", () => {
           unstable: 0.2,
         };
         const delta = deltaByVerdict[verdict];
+        const aggregate = geomeanOf(geomeanValue, geomeanN);
         return createComparisonResult({
           candidates: [
             createCandidate({
-              geomean: { value: geomeanValue, n: geomeanN, excluded: [] },
+              kinds: [
+                {
+                  kind: "other",
+                  hasGating: gating,
+                  geomean: aggregate,
+                  groups: [],
+                  ...(gating ? { gatedGeomean: aggregate } : {}),
+                },
+              ],
             }),
           ],
           metrics: {
@@ -1582,6 +1557,19 @@ describe("createProgram", () => {
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
         const exitSpy = mockProcessExit();
         return { program, stdoutSpy, stderrSpy, exitSpy };
+      }
+
+      /** The stderr line warning that a geomean gate had no stable metrics to measure, if any. */
+      function geomeanGateWarning(stderrSpy: ReturnType<typeof vi.spyOn>): string | undefined {
+        return stderrWrites(stderrSpy)
+          .map((write) => String(write))
+          .find((write) => write.includes("geomean gate"));
+      }
+
+      /** Forces plain (uncolored) output regardless of the ambient environment. */
+      function disableColor(): void {
+        vi.stubEnv("FORCE_COLOR", undefined);
+        vi.stubEnv("NO_COLOR", "1");
       }
 
       it("exits 1 when a gating metric has a regressed verdict", async () => {
@@ -1653,8 +1641,7 @@ describe("createProgram", () => {
         async function setupEmptyGeomeanGate(): Promise<
           Awaited<ReturnType<typeof setupFailOnTest>>
         > {
-          vi.stubEnv("FORCE_COLOR", undefined);
-          vi.stubEnv("NO_COLOR", "1");
+          disableColor();
           return setupFailOnTest(createGatingResult("unstable", { geomeanValue: 0, geomeanN: 0 }));
         }
 
@@ -1667,10 +1654,7 @@ describe("createProgram", () => {
           await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:0"));
 
           // Assert
-          const warning = stderrWrites(stderrSpy)
-            .map((write) => String(write))
-            .find((write) => write.includes("geomean gate"));
-          expect(warning).toMatch(
+          expect(geomeanGateWarning(stderrSpy)).toMatch(
             new RegExp(
               `warning: geomean gate for "${label}" had no stable gating metrics to measure`,
             ),
@@ -1687,6 +1671,145 @@ describe("createProgram", () => {
           // Assert
           expect(exitSpy).not.toHaveBeenCalled();
         });
+      });
+
+      describe("when a candidate spans several metric kinds", () => {
+        /** A kind whose metrics gate, aggregating to `gated` both overall and when gated. */
+        function gatingKind(kind: string, gated: GeomeanResult): KindAggregate {
+          return { kind, hasGating: true, geomean: gated, groups: [], gatedGeomean: gated };
+        }
+
+        /** An informational kind: it aggregates a geomean but nothing of it gates. */
+        function informationalKind(kind: string, geomean: GeomeanResult): KindAggregate {
+          return { kind, hasGating: false, geomean, groups: [] };
+        }
+
+        /**
+         * A one-candidate result with the given kind aggregates and one metric
+         * per kind so the rendered report and the aggregates describe the same run.
+         */
+        function createKindGatingResult(kinds: readonly KindAggregate[]): ComparisonResult {
+          const metrics: Metrics = Object.fromEntries(
+            kinds.map((aggregate) => [
+              `decode/${aggregate.kind}`,
+              kindMetric({
+                kind: aggregate.kind,
+                shortName: "decode",
+                verdict: "no-signal",
+                delta: 0.2,
+                gating: aggregate.hasGating,
+              }),
+            ]),
+          );
+          return createComparisonResult({
+            candidates: [createCandidate({ kinds })],
+            metrics,
+          });
+        }
+
+        it.each([
+          {
+            shape: "a gating kind is at or worse than the threshold",
+            kinds: [
+              gatingKind("time", geomeanOf(5, 1)),
+              informationalKind("memory", geomeanOf(-5, 1)),
+            ],
+          },
+          {
+            shape: "the gating kind with data when another gating kind has none",
+            kinds: [gatingKind("time", geomeanOf(0, 0)), gatingKind("cpu", geomeanOf(5, 2))],
+          },
+        ])("exits 1 when $shape", async ({ kinds }) => {
+          const { program } = await setupFailOnTest(createKindGatingResult(kinds));
+
+          // Act & Assert
+          await expect(
+            program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
+          ).rejects.toHaveProperty("exitCode", 1);
+        });
+
+        it("does not trip on a non-gating kind's geomean", async () => {
+          const { program, exitSpy } = await setupFailOnTest(
+            createKindGatingResult([
+              gatingKind("time", geomeanOf(-1, 1)),
+              informationalKind("memory", geomeanOf(11, 1)),
+            ]),
+          );
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2"));
+
+          // Assert
+          expect(exitSpy).not.toHaveBeenCalled();
+        });
+
+        describe("when no gating kind measured a stable metric", () => {
+          const vacuousKinds: readonly KindAggregate[] = [
+            gatingKind("time", geomeanOf(0, 0)),
+            informationalKind("memory", geomeanOf(-5, 1)),
+          ];
+
+          it.each([
+            { shape: "every gating kind measured nothing", kinds: vacuousKinds },
+            {
+              shape: "no kind gates at all",
+              kinds: [
+                informationalKind("memory", geomeanOf(-5, 1)),
+                informationalKind("other", geomeanOf(1, 1)),
+              ],
+            },
+          ])("warns on stderr when $shape", async ({ kinds }) => {
+            disableColor();
+            const { program, stderrSpy } = await setupFailOnTest(createKindGatingResult(kinds));
+            const { label } = createCandidate();
+
+            // Act
+            await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:0"));
+
+            // Assert
+            expect(geomeanGateWarning(stderrSpy)).toContain(
+              `warning: geomean gate for "${label}" had no stable gating metrics to measure`,
+            );
+          });
+        });
+      });
+
+      it("hands the conditions to the renderer, so the report echoes the tripped gate", async () => {
+        // Arrange - a gating "time" kind at +5.0%, well past the 2% gate
+        disableColor();
+        const gated = geomeanOf(5, 1);
+        const { program, stdoutSpy } = await setupFailOnTest(
+          createComparisonResult({
+            candidates: [
+              createCandidate({
+                kinds: [
+                  {
+                    kind: "time",
+                    hasGating: true,
+                    geomean: gated,
+                    groups: [],
+                    gatedGeomean: gated,
+                  },
+                ],
+              }),
+            ],
+            metrics: {
+              "decode/time": kindMetric({
+                kind: "time",
+                shortName: "decode",
+                verdict: "regressed",
+                delta: 5,
+              }),
+            },
+          }),
+        );
+
+        // Act & Assert
+        await expect(
+          program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
+        ).rejects.toHaveProperty("exitCode", 1);
+        const report = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+        expect(report).toContain("⚑ time geomean +5.0% exceeded --fail-on geomean:2");
       });
 
       it("trips when any of multiple conditions matches", async () => {
@@ -1968,7 +2091,7 @@ describe("entry point", () => {
       vi.resetModules();
     });
 
-    it("imports without probing the filesystem for the entry path", async () => {
+    it("imports cleanly when process.argv has no entry path", async () => {
       // Arrange - `node -e` and the REPL both leave process.argv[1] undefined
       vi.resetModules();
       process.argv = [process.execPath];

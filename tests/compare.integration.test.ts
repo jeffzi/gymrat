@@ -491,8 +491,8 @@ describe("compare – integration", () => {
       expect
         .soft(latency?.candidates.map((candidate) => candidate.verdict?.verdict))
         .toStrictEqual(["improved", "regressed"]);
-      expect.soft(result.candidates[0]?.geomean.value).toBeLessThan(0);
-      expect(result.candidates[1]?.geomean.value).toBeGreaterThan(0);
+      expect.soft(result.candidates[0]?.kinds[0]?.geomean.value).toBeLessThan(0);
+      expect(result.candidates[1]?.kinds[0]?.geomean.value).toBeGreaterThan(0);
     });
 
     it("creates and removes one worktree per ref target", () => {
@@ -718,7 +718,7 @@ describe("compare – integration", () => {
         // a value no bench produced.
         const toStringRow = findLine(report, (line) => line.startsWith("toString"));
         expect.soft(toStringRow).toContain("100");
-        expect(toStringRow.endsWith("│")).toBe(true);
+        expect(toStringRow).toMatch(/│$/);
       } finally {
         repo.cleanup();
       }

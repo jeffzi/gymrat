@@ -46,7 +46,7 @@ const NOISE_FLOOR_PCT = 0.5;
  * observation whose spread is simply unknown. Two pairs already yield a real
  * half-range, so the guard stops there.
  */
-const MIN_BAND_N = 2;
+export const MIN_BAND_N = 2;
 
 /**
  * Noise band width, in percent, above which a metric is reported "unstable".
@@ -118,6 +118,15 @@ export type MetricVerdict = SignedRankVerdict | BandVerdict | ExactVerdict;
 export type Method = MetricVerdict["method"];
 
 /**
+ * Unit a metric's values carry, when the adapter could tell.
+ *
+ * `"bytes"` marks a metric quantized to whole bytes, whose noise can never be
+ * finer than one byte; `"ns"` marks an averaged duration, which carries no such
+ * bound.
+ */
+type MetricUnit = "ns" | "bytes";
+
+/**
  * Settled per-metric metadata the engine consumes, produced by `resolveMetricMeta`
  * in `config.ts` from adapter defaults merged with the user's config overrides.
  */
@@ -128,11 +137,15 @@ export type MetricMetadata = {
   gating: boolean;
   /** Whether to use the exact path (any difference = signal) */
   exact: boolean;
+  /** Unit of the metric's values; absent when the adapter could not tell */
+  unit?: MetricUnit;
 };
 
 /**
  * Why a gating metric was left out of the geomean.
  *
+ * - `"no-verdict"` — only one target reported the metric, so there are no paired
+ *   samples to compare and no verdict was ever produced
  * - `"unstable"` — the metric's verdict is `"unstable"`, so it is unjudgeable
  *   and cannot be allowed to move the headline number
  * - `"undefined-ratio"` — the delta is NaN (median A was zero, median B was
@@ -140,7 +153,7 @@ export type MetricMetadata = {
  * - `"infinite-rho"` — ρ is non-positive or non-finite, so its logarithm is not
  *   a real number
  */
-export type GeomeanExclusionReason = "unstable" | "undefined-ratio" | "infinite-rho";
+export type GeomeanExclusionReason = "no-verdict" | "unstable" | "undefined-ratio" | "infinite-rho";
 
 /** A gating metric the geomean skipped, paired with the reason it was skipped. */
 export type GeomeanExclusion = {
@@ -156,7 +169,7 @@ export type GeomeanResult = {
   value: number;
   /** Number of gating metrics included in the geomean */
   n: number;
-  /** Gating metrics excluded, each with its reason */
+  /** Metrics excluded, each with its reason */
   excluded: GeomeanExclusion[];
   /**
    * Noise of the included metrics propagated onto `value`, in percentage points:
@@ -307,7 +320,14 @@ export function computeVerdicts(
 
     result[metric] = meta.exact
       ? computeExactVerdict(medianA, medianB, delta, meta.direction, pairedA.length)
-      : computeApproximateVerdict(pairedA, pairedB, delta, meta.direction, unstableNoisePct);
+      : computeApproximateVerdict(
+          pairedA,
+          pairedB,
+          delta,
+          meta.direction,
+          unstableNoisePct,
+          meta.unit,
+        );
   }
 
   return result;
@@ -327,13 +347,14 @@ function computeApproximateVerdict(
   delta: number,
   direction: "lower" | "higher",
   unstableNoisePct: number,
+  unit: MetricUnit | undefined,
 ): SignedRankVerdict | BandVerdict {
   const pairs = pairedA.map((a, i): readonly [number, number] => [a, pairedB[i]!]);
   const wilcoxonResult = wilcoxonSignedRank(pairs);
 
   if (wilcoxonResult.n < MIN_WILCOXON_N) {
     return applyUnstableOverride(
-      computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n),
+      computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n, unit),
       unstableNoisePct,
     );
   }
@@ -341,7 +362,7 @@ function computeApproximateVerdict(
   const verdict: Verdict =
     wilcoxonResult.p < P_VALUE_THRESHOLD ? determineVerdict(delta, direction) : "no-signal";
 
-  const noise = computeNoise(pairedA, pairedB);
+  const noise = computeNoise(pairedA, pairedB, unit);
 
   return applyUnstableOverride(
     {
@@ -387,6 +408,17 @@ type Noise = {
 };
 
 /**
+ * One byte expressed as a percentage of a median, or 0 when there is no
+ * magnitude to divide by.
+ *
+ * Each side contributes its own term, so a side that measured 0 drops out
+ * instead of making the whole floor infinite.
+ */
+function quantizationPct(median: number): number {
+  return median === 0 ? 0 : 100 / Math.abs(median);
+}
+
+/**
  * Compute the measurement noise of a metric.
  *
  * Percentage form: max(K × 100 × max(halfRange(A)/|median(A)|, halfRange(B)/|median(B)|), floor%)
@@ -399,9 +431,20 @@ type Noise = {
  * contribution to the percentage is treated as 0. The absolute form divides by
  * nothing, so it stays meaningful for such a metric.
  *
+ * A byte-valued metric takes a further percentage floor of one byte against each
+ * median. Such a metric is quantized to whole bytes, so a 4B → 3B move is one
+ * step of resolution rather than a 25% win — however many times it is measured,
+ * and however tight its spread. K does not apply: the resolution is a hard bound
+ * on what the numbers can express, not an estimate of their scatter. Averaged
+ * units such as `ns` carry no such bound and keep the plain floor.
+ *
  * @returns The noise as a percentage (never below the floor) and in raw units
  */
-function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): Noise {
+function computeNoise(
+  pairedA: readonly number[],
+  pairedB: readonly number[],
+  unit: MetricUnit | undefined,
+): Noise {
   const medianA = computeMedian(pairedA);
   const medianB = computeMedian(pairedB);
   const halfRangeA = computeHalfRange(pairedA);
@@ -411,8 +454,11 @@ function computeNoise(pairedA: readonly number[], pairedB: readonly number[]): N
   const spreadB = medianB === 0 ? 0 : halfRangeB / Math.abs(medianB);
   const maxSpread = Math.max(spreadA, spreadB);
 
+  const byteFloorPct =
+    unit === "bytes" ? Math.max(quantizationPct(medianA), quantizationPct(medianB)) : 0;
+
   return {
-    pct: Math.max(NOISE_K * 100 * maxSpread, NOISE_FLOOR_PCT),
+    pct: Math.max(NOISE_K * 100 * maxSpread, NOISE_FLOOR_PCT, byteFloorPct),
     abs: NOISE_K * Math.max(halfRangeA, halfRangeB),
   };
 }
@@ -434,8 +480,9 @@ function computeBandMethod(
   delta: number,
   direction: "lower" | "higher",
   usableN: number,
+  unit: MetricUnit | undefined,
 ): BandVerdict {
-  const noise = computeNoise(pairedA, pairedB);
+  const noise = computeNoise(pairedA, pairedB, unit);
 
   const absDelta = Math.abs(delta);
   const hasSignal = pairedA.length >= MIN_BAND_N && absDelta > noise.pct;
@@ -454,7 +501,9 @@ function computeBandMethod(
 }
 
 /** Either a usable ρ, or the reason the delta yields none. */
-type RhoOutcome = { rho: number } | { reason: Exclude<GeomeanExclusionReason, "unstable"> };
+type RhoOutcome =
+  | { rho: number }
+  | { reason: Exclude<GeomeanExclusionReason, "unstable" | "no-verdict"> };
 
 function computeNormalizedRho(delta: number, direction: "lower" | "higher"): RhoOutcome {
   if (Number.isNaN(delta)) return { reason: "undefined-ratio" };
@@ -477,7 +526,10 @@ function collectNormalizedRhos(
 
   for (const [metric, meta] of Object.entries(metricMeta)) {
     const verdict = verdicts[metric];
-    if (!verdict) continue;
+    if (!verdict) {
+      excluded.push({ metric, reason: "no-verdict" });
+      continue;
+    }
 
     if (verdict.verdict === "unstable") {
       excluded.push({ metric, reason: "unstable" });
@@ -513,6 +565,8 @@ function collectNormalizedRhos(
  *
  * Exclusion logic — each exclusion carries the reason it happened, decided in
  * this order:
+ * - Metrics `metricMeta` names that `verdicts` has no entry for are excluded:
+ *   only one target reported them, so there was never anything to compare
  * - Metrics whose verdict is "unstable" are excluded, however usable their ρ
  *   would have been: the geomean must agree with the per-row verdicts, so a
  *   metric too noisy to judge cannot move the headline number

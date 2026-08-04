@@ -1,0 +1,12 @@
+[1mgymrat compare[22m [2m·[22m baseline [1m[4mmain[24m[22m ↔ [1m[4mperf/faster-decode[24m[22m [2m·[22m 1 paired sample [2m·[22m adapter: mitata
+metric                      │       [1m[4mmain[24m[22m │ [1m[4mperf/faster-decode[24m[22m │ vs [1m[4mmain[24m[22m
+────────────────────────────┼────────────┼────────────────────┼────────────
+decode/time                 │ 100ns ± 5% │         100ns ± 4% │ [2m?[22m  [2m-0.4%[22m
+encode/time                 │ 100ns ± 5% │         100ns ± 4% │ [2m?[22m  [2m+0.2%[22m
+────────────────────────────┼────────────┼────────────────────┼────────────
+[1mgeomean (2 stable metrics)[22m  │            │                    │    [1m-0.1%[22m
+[2m                            [22m│[2m       [1m[4mmain[24m[22m[2m [22m│[2m [1m[4mperf/faster-decode[24m[22m[2m [22m│[2m vs [1m[4mmain[24m[22m[22m
+
+[2m✓ 0 improved[22m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m   [2m? 2 inconclusive[22m
+
+[33m[4mHint[24m[39m[33m:[39m re-run with --samples 6 or more for statistical verdicts

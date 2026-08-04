@@ -364,14 +364,6 @@ describe("compare", () => {
         expect.soft(candidate.kinds[0]?.hasGating).toBe(false);
         expect(candidate.kinds[0]?.gatedGeomean).toBeUndefined();
       });
-
-      it("leaves the blended geomean with no metric to aggregate", async () => {
-        const candidate = onlyCandidate(
-          await runCompare({ configKinds: { other: { gating: false } } }),
-        );
-
-        expect(candidate.geomean.n).toBe(0);
-      });
     });
   });
 });

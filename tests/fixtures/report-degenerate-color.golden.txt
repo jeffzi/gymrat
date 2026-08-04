@@ -6,10 +6,10 @@ nan-delta/count            │     0      │           120      │ [2m~[22m
 old-side-only/time         │ 2.0µs ± 2% │                    │
 throughput/ops             │  1200 ± 5% │          1560 ± 4% │ [32m✓[39m  +30.0%  [2m±2.5%[22m
 ───────────────────────────┼────────────┼────────────────────┼──────────────────
-geomean (1 stable metric)  │            │                    │      [1m0.0%[22m
-[2m                           │       [1m[4mmain[24m[22m[2m │ [1m[4mperf/faster-decode[24m[22m[2m │ vs [1m[4mmain[24m[22m[22m
+[1mgeomean (1 stable metric)[22m  │            │                    │      [1m0.0%[22m
+[2m                           [22m│[2m       [1m[4mmain[24m[22m[2m [22m│[2m [1m[4mperf/faster-decode[24m[22m[2m [22m│[2m vs [1m[4mmain[24m[22m[22m
 
-[32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 2 within noise[22m
+[32m✓ 1 improved[39m   [2m✗ 0 regressed[22m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 2 within noise[22m   [2m? 0 inconclusive[22m
 
 [1mhighlights[22m
   [32m✓[39m throughput/ops  [32m+30.0%[39m

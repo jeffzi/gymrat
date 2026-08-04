@@ -1,7 +1,7 @@
-import type { ResolvedMetricMeta } from "../config.js";
+import type { ConfigKinds, ResolvedMetricMeta } from "../config.js";
 import type { WorktreeRemovalFailure } from "../targets.js";
 import type { KindAggregate } from "../verdict/aggregate.js";
-import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
+import type { MetricVerdict } from "../verdict/verdict.js";
 
 /** One candidate's side of a metric, and the verdict it earned against the baseline. */
 export interface CandidateMetric {
@@ -30,9 +30,6 @@ export type MetricComparisons = Record<string, MetricComparison>;
 export interface CandidateComparison {
   label: string;
 
-  /** Blended across every gating metric of the run, whatever kind it belongs to. */
-  geomean: GeomeanResult;
-
   /** One entry per kind the run reported, in first-appearance order. */
   kinds: readonly KindAggregate[];
 }
@@ -57,6 +54,17 @@ export interface ComparisonResult {
   samples: number;
   adapter: string;
   metrics: MetricComparisons;
+
+  /**
+   * The `kinds` section of the config the run resolved, when it had one.
+   *
+   * Gating is resolved per metric, which loses where the decision was made. A
+   * report that tells the reader a whole section is informational is telling
+   * them a config line did it, so it needs the config to name that line rather
+   * than guess between a kind-level entry and per-metric overrides.
+   */
+  configKinds?: ConfigKinds;
+
   worktreesRemoved: number;
 
   /** Worktrees cleanup could not remove, each with the reason git gave. */
@@ -65,6 +73,14 @@ export interface ComparisonResult {
   /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
   worktreePruneError: string | undefined;
 }
+
+/**
+ * A parsed `--fail-on` condition: either a `regressed` check or a geomean threshold.
+ *
+ * Shared by the gate that decides the exit code and the report that echoes which
+ * gate a candidate tripped, so both read the same conditions the user wrote.
+ */
+export type FailOnCondition = { kind: "regressed" } | { kind: "geomean"; pct: number };
 
 /**
  * What the human-readable renderers print beyond the report itself.
@@ -90,4 +106,13 @@ export interface ReportOptions {
    * through a pager that would otherwise look like a non-TTY.
    */
   color?: boolean;
+
+  /**
+   * The `--fail-on` conditions the run is gated on, so the report can say which
+   * gate a candidate tripped rather than leaving the exit code to explain itself.
+   *
+   * Display only. The renderer re-derives the check from the same aggregates the
+   * table already shows; the exit code remains the caller's decision alone.
+   */
+  failOn?: readonly FailOnCondition[];
 }

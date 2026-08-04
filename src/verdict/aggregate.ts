@@ -53,8 +53,12 @@ interface KindBucket {
  * Only the first dot divides: `decode.utf8.time` belongs to `decode`, so a suite
  * reads as one group however deeply its own benchmark names nest. A leading dot
  * would name an empty group, which is no grouping at all.
+ *
+ * Exported so a renderer laying out group blocks sorts its rows by the same rule
+ * the aggregates were computed under — a second rule would put a metric in one
+ * group and its geomean in another.
  */
-function inferGroup(shortName: string): string | undefined {
+export function inferGroup(shortName: string): string | undefined {
   const dot = shortName.indexOf(".");
   return dot > 0 ? shortName.slice(0, dot) : undefined;
 }
@@ -128,10 +132,11 @@ export function computeKindAggregates(
 ): KindAggregate[] {
   return Array.from(bucketByKind(metricMeta).values(), (bucket) => {
     const gating = bucket.metrics.filter(([, meta]) => meta.gating);
+    const hasGating = gating.length > 0;
 
     const aggregate: KindAggregate = {
       kind: bucket.kind,
-      hasGating: gating.length > 0,
+      hasGating,
       geomean: geomeanOver(bucket.metrics, verdicts),
       groups: Array.from(bucket.groups, ([group, members]) => ({
         group,
@@ -139,7 +144,7 @@ export function computeKindAggregates(
       })),
     };
 
-    if (gating.length > 0) {
+    if (hasGating) {
       aggregate.gatedGeomean = geomeanOver(gating, verdicts);
     }
 

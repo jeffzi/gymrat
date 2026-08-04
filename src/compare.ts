@@ -13,7 +13,7 @@ import { installTerminationCleanup } from "./signals.js";
 import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeKindAggregates } from "./verdict/aggregate.js";
-import { computeVerdicts, computeGeomean } from "./verdict/verdict.js";
+import { computeVerdicts } from "./verdict/verdict.js";
 
 /** A prepare step about to run for a target with a prepare script. */
 export interface PrepareProgressStep {
@@ -358,7 +358,7 @@ function computeMetricStats(
 
 function buildComparisonResult(
   measurement: Measurement,
-  options: Pick<CompareOptions, "samples" | "adapter">,
+  options: Pick<CompareOptions, "samples" | "adapter" | "configKinds">,
   cleanup: CleanupResult,
 ): ComparisonResult {
   const { baselineLabel, baselineSamples, candidates, metricNames, metricMeta } = measurement;
@@ -367,11 +367,11 @@ function buildComparisonResult(
     baselineLabel,
     candidates: candidates.map((candidate) => ({
       label: candidate.label,
-      geomean: candidate.geomean,
       kinds: candidate.kinds,
     })),
     samples: options.samples,
     adapter: options.adapter,
+    configKinds: options.configKinds,
     metrics: metricRecord<MetricComparison>(),
     worktreesRemoved: cleanup.removed,
     worktreesLeftBehind: cleanup.failures,
@@ -430,7 +430,6 @@ interface CandidateMeasurement {
   label: string;
   samples: Record<string, number>[];
   verdicts: ReturnType<typeof computeVerdicts>;
-  geomean: ReturnType<typeof computeGeomean>;
   kinds: ReturnType<typeof computeKindAggregates>;
 }
 
@@ -451,17 +450,12 @@ function measureCandidates(
   metricMeta: ReturnType<typeof resolveMetricMeta>,
   unstableNoisePct: number | undefined,
 ): CandidateMeasurement[] {
-  // computeGeomean averages whatever its metadata names, so the blended figure
-  // is selected here rather than filtered there.
-  const gatingMeta = metricRecord(Object.entries(metricMeta).filter(([, meta]) => meta.gating));
-
   return candidates.map(({ ctx, samples }) => {
     const verdicts = computeVerdicts(baselineSamples, samples, metricMeta, unstableNoisePct);
     return {
       label: ctx.label,
       samples,
       verdicts,
-      geomean: computeGeomean(verdicts, gatingMeta),
       kinds: computeKindAggregates(verdicts, metricMeta),
     };
   });

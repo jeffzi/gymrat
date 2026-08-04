@@ -1,0 +1,12 @@
+gymrat compare · baseline main ↔ perf/faster-decode · 1 paired sample · adapter: mitata
+metric                      │       main │ perf/faster-decode │ vs main
+────────────────────────────┼────────────┼────────────────────┼────────────
+decode/time                 │ 100ns ± 5% │         100ns ± 4% │ ?  -0.4%
+encode/time                 │ 100ns ± 5% │         100ns ± 4% │ ?  +0.2%
+────────────────────────────┼────────────┼────────────────────┼────────────
+geomean (2 stable metrics)  │            │                    │    -0.1%
+                            │       main │ perf/faster-decode │ vs main
+
+✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 2 inconclusive
+
+Hint: re-run with --samples 6 or more for statistical verdicts

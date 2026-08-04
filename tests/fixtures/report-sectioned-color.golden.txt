@@ -1,0 +1,30 @@
+[1mgymrat compare[22m [2m·[22m baseline [1m[4mmain[24m[22m ↔ [1m[4mperf/faster-decode[24m[22m [2m·[22m 10 paired samples [2m·[22m adapter: mitata
+
+──────────────────────┬────────────┬────────────────────┬──────────────────
+[1mtime[22m                  │       [1m[4mmain[24m[22m │ [1m[4mperf/faster-decode[24m[22m │ vs [1m[4mmain[24m[22m
+──────────────────────┼────────────┼────────────────────┼──────────────────
+[34mentity[39m                │            │                    │
+  alive_check         │ 100ns ± 1% │          90ns ± 1% │ [32m✓[39m  -10.0%  [2m±2.5%[22m
+  spawn               │ 100ns ± 1% │         104ns ± 1% │ [31m✗[39m   +4.0%  [2m±2.5%[22m
+[1mgeomean · entity (2)[22m  │            │                    │     [1m[32m-3.1%[39m[22m  [2m±1.5%[22m
+
+warmup                │ 100ns ± 1% │         100ns ± 1% │ [2m~[22m   [2m+0.3%[22m  [2m±2.5%[22m
+──────────────────────┼────────────┼────────────────────┼──────────────────
+[1mgeomean · time (3)[22m    │            │                    │     [1m[32m-3.2%[39m[22m  [2m±2.0%[22m
+[2m                      [22m│[2m       [1m[4mmain[24m[22m[2m [22m│[2m [1m[4mperf/faster-decode[24m[22m[2m [22m│[2m vs [1m[4mmain[24m[22m[22m
+
+[2minformational — gating off (config: kinds.memory.gating = false)[22m
+──────────────────────┬────────────┬────────────────────┬──────────────────
+[1mmemory[22m                │       [1m[4mmain[24m[22m │ [1m[4mperf/faster-decode[24m[22m │ vs [1m[4mmain[24m[22m
+──────────────────────┼────────────┼────────────────────┼──────────────────
+encode                │  100B ± 1% │           93B ± 1% │ [32m✓[39m   -7.0%  [2m±2.5%[22m
+──────────────────────┼────────────┼────────────────────┼──────────────────
+[1mgeomean · memory (1)[22m  │            │                    │     [1m[32m-7.0%[39m[22m
+[2m                      [22m│[2m       [1m[4mmain[24m[22m[2m [22m│[2m [1m[4mperf/faster-decode[24m[22m[2m [22m│[2m vs [1m[4mmain[24m[22m[22m
+
+[32m✓ 2 improved[39m   [31m✗ 1 regressed[39m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 1 within noise[22m   [2m? 0 inconclusive[22m
+
+[1mhighlights[22m
+  [31m✗[39m time · entity.spawn         [31m+4.0%[39m
+  [32m✓[39m time · entity.alive_check  [32m-10.0%[39m
+  [32m✓[39m memory · encode             [32m-7.0%[39m

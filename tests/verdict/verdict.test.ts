@@ -62,6 +62,9 @@ const METRIC_EXACT_LOWER = { metric: { direction: "lower" as const, gating: true
 const METRIC_EXACT_HIGHER = { metric: { direction: "higher" as const, gating: true, exact: true } };
 
 const METRIC_APPROX_LOWER = { metric: { direction: "lower" as const, gating: true, exact: false } };
+const METRIC_BYTES_LOWER = {
+  metric: { direction: "lower" as const, gating: true, exact: false, unit: "bytes" as const },
+};
 const METRIC_APPROX_HIGHER = {
   metric: { direction: "higher" as const, gating: true, exact: false },
 };
@@ -777,6 +780,82 @@ describe("computeVerdicts", () => {
     );
   });
 
+  describe("when the metric is measured in whole bytes", () => {
+    it.each([{ pairs: 2 }, { pairs: 5 }])(
+      "reads a 4B against 3B move as no-signal from $pairs paired windows",
+      ({ pairs }) => {
+        // Both sides are perfectly stable, so nothing but the one-byte resolution
+        // sets the band: max(100 / 4, 100 / 3) = 33.3%, and the −25% delta is a
+        // single byte of quantization rather than a measured improvement.
+        const result = computeVerdicts(
+          createSamples(pairs, 4),
+          createSamples(pairs, 3),
+          METRIC_BYTES_LOWER,
+        );
+
+        const verdict = getBandVerdict(result, "metric");
+        expect.soft(verdict.delta).toBeCloseTo(-25, 5);
+        expect.soft(verdict.noisePct).toBeCloseTo(100 / 3, 5);
+        expect(verdict.verdict).toBe("no-signal");
+      },
+    );
+
+    it("leaves a zero median out of the byte floor instead of dividing by it", () => {
+      // medianB = 0 contributes nothing, so medianA alone sets the floor at 100 / 4 = 25%
+      // — a per-side term, not 100 / min(medians), which would be infinite here.
+      const result = computeVerdicts(createSamples(2, 4), createSamples(2, 0), METRIC_BYTES_LOWER);
+
+      const verdict = getBandVerdict(result, "metric");
+      expect.soft(verdict.noisePct).toBeCloseTo(25, 5);
+      // delta = −100%, still well clear of the 25% band
+      expect(verdict.verdict).toBe("improved");
+    });
+
+    it.each([
+      // halfRange = 50 around 1_000_050 → 1.5 × 100 × 5e-5 = 0.0075%, under the floor
+      { spread: "stable", valuesB: [1_000_000, 1_000_100], expectedBand: 0.5 },
+      // halfRange = 200_000 around 1_000_000 → 1.5 × 100 × 0.2 = 30%
+      { spread: "wide", valuesB: [800_000, 1_200_000], expectedBand: 30 },
+    ])(
+      "keeps the band at $expectedBand% for a $spread megabyte-scale metric",
+      ({ valuesB, expectedBand }) => {
+        // One byte against a megabyte is 0.0001% — negligible beside both the 0.5%
+        // floor and any measured spread.
+        const result = computeVerdicts(
+          createSamples(2, 1_000_000),
+          valuesB.map((metric) => ({ metric })),
+          METRIC_BYTES_LOWER,
+        );
+
+        expect(getBandVerdict(result, "metric").band).toBeCloseTo(expectedBand, 5);
+      },
+    );
+
+    it.each([
+      {
+        unit: "ns",
+        meta: {
+          direction: "lower" as const,
+          gating: true,
+          exact: false,
+          unit: "ns" as const,
+        },
+      },
+      {
+        unit: "none",
+        meta: { direction: "lower" as const, gating: true, exact: false },
+      },
+    ])("keeps the 0.5% floor for a 4 against 3 move when unit is $unit", ({ meta }) => {
+      // Averaged values are not quantized to whole units, so the same numbers that
+      // read as one byte of noise stay a genuine −25% improvement here.
+      const result = computeVerdicts(createSamples(2, 4), createSamples(2, 3), { metric: meta });
+
+      const verdict = getBandVerdict(result, "metric");
+      expect.soft(verdict.band).toBeCloseTo(0.5, 5);
+      expect(verdict.verdict).toBe("improved");
+    });
+  });
+
   describe("when noisePct exceeds the unstable threshold", () => {
     it.each([
       { method: "signed-rank", unstableNoisePct: 20, expected: "unstable" },
@@ -889,6 +968,24 @@ describe("computeGeomean", () => {
       const result = computeGeomean(verdicts, metricMeta);
       expect(result.n).toBe(1);
       expect(result.value).toBeCloseTo(-5, 5);
+    });
+
+    it("excludes a one-sided metric as no-verdict, keeping it in the geomean's scope", () => {
+      // metric2 was reported by only one target, so no paired samples ever produced
+      // a verdict for it. It still belongs to the scope the geomean was asked to
+      // cover, so n + excluded.length has to add up to both metrics.
+      const verdicts = {
+        metric1: { verdict: "improved" as const, method: "exact" as const, delta: -5, n: 1 },
+      };
+      const metricMeta = {
+        metric1: { direction: "lower" as const, gating: true, exact: true },
+        metric2: { direction: "lower" as const, gating: true, exact: false },
+      };
+
+      const result = computeGeomean(verdicts, metricMeta);
+
+      expect(result.n).toBe(1);
+      expect(result.excluded).toStrictEqual([{ metric: "metric2", reason: "no-verdict" }]);
     });
 
     it.each([
@@ -1237,6 +1334,22 @@ describe("computeGeomean", () => {
       const result = computeGeomean(verdicts, metricMeta);
 
       expect(result.band).toBeCloseTo(expected, 10);
+    });
+
+    it("carries a byte metric's quantization noise into the band", () => {
+      // 4B against 3B is one byte of resolution: ρ = 0.75 drags the geomean to −25%,
+      // and the band it is judged against reflects that same byte — √(33.3²) ÷ 1.
+      const verdicts = computeVerdicts(
+        createSamples(2, 4),
+        createSamples(2, 3),
+        METRIC_BYTES_LOWER,
+      );
+
+      const result = computeGeomean(verdicts, METRIC_BYTES_LOWER);
+
+      expect.soft(result.n).toBe(1);
+      expect.soft(result.value).toBeCloseTo(-25, 5);
+      expect(result.band).toBeCloseTo(100 / 3, 5);
     });
 
     it("leaves an excluded metric's noise out of the band", () => {

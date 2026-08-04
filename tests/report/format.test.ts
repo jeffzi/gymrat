@@ -7,13 +7,14 @@ import {
   formatDelta,
   formatEvidence,
   formatLabel,
-  formatMetricCell,
   formatNoiseBand,
   formatTableLine,
   formatValue,
+  geomeanValueStyle,
   getGlyph,
   hintFooterLines,
   methodFooterLines,
+  scopedGeomeanLabel,
   selectHighlights,
   styleWithin,
   truncateLabels,
@@ -25,9 +26,15 @@ import type {
   ApproximateVerdictValue,
   BandVerdict,
   ExactVerdict,
+  GeomeanResult,
   SignedRankVerdict,
 } from "../../src/verdict/verdict.js";
-import { bandMetric, type Metrics, type MetricEntry } from "../fixtures/comparison-result.js";
+import {
+  bandMetric,
+  geomeanOf,
+  type Metrics,
+  type MetricEntry,
+} from "../fixtures/comparison-result.js";
 
 /** One candidate's signed-rank outcome against the shared baseline. */
 interface CandidateSpec {
@@ -171,30 +178,6 @@ describe("formatValue", () => {
   });
 });
 
-describe("formatMetricCell", () => {
-  describe("when the spread stays within the median", () => {
-    it.each([
-      { desc: "an ordinary spread", median: 5, spread: 12, expected: "5B ± 12%" },
-      { desc: "a spread at the cap", median: 5, spread: 100, expected: "5B ± 100%" },
-    ])("keeps $desc relative", ({ median, spread, expected }) => {
-      expect(formatMetricCell(median, spread, "bytes")).toBe(expected);
-    });
-  });
-
-  describe("when the spread outgrows the median", () => {
-    it.each([
-      { unit: "bytes" as const, median: 5, spread: 7620, expected: "5B ± 381B" },
-      { unit: "ns" as const, median: 1735, spread: 200, expected: "1.7µs ± 3.5µs" },
-      { unit: undefined, median: 1200, spread: 150, expected: "1200 ± 1800" },
-    ])(
-      "restates a $spread% spread in $unit units as '$expected'",
-      ({ median, spread, unit, expected }) => {
-        expect(formatMetricCell(median, spread, unit)).toBe(expected);
-      },
-    );
-  });
-});
-
 describe("formatEvidence", () => {
   it("marks a counted verdict as exact", () => {
     expect(formatEvidence(exactVerdict({ verdict: "improved", delta: -7.9 }))).toBe("(exact)");
@@ -275,6 +258,22 @@ describe("displayClass", () => {
       expected: "within-noise",
     },
     {
+      desc: "one pair left the band nothing but its own floor to judge against",
+      verdict: bandVerdict({ n: 1, usableN: 1 }),
+      expected: "inconclusive",
+    },
+    {
+      // Two identical readings are worth a `=`; one reading is worth nothing.
+      desc: "the run's single pair was a tie",
+      verdict: bandVerdict({ n: 1, usableN: 0 }),
+      expected: "inconclusive",
+    },
+    {
+      desc: "a second pair gave the band a spread to measure",
+      verdict: bandVerdict({ n: 2, usableN: 2 }),
+      expected: "within-noise",
+    },
+    {
       desc: "the band found an improvement despite the ties",
       verdict: bandVerdict({ verdict: "improved", delta: -10, n: 10, usableN: 3 }),
       expected: "improved",
@@ -306,6 +305,7 @@ describe("getGlyph", () => {
     { displayClass: "unstable" as const, expected: "≈" },
     { displayClass: "identical" as const, expected: "=" },
     { displayClass: "within-noise" as const, expected: "~" },
+    { displayClass: "inconclusive" as const, expected: "?" },
   ])("marks $displayClass with $expected", ({ displayClass: shown, expected }) => {
     expect(getGlyph(shown)).toBe(expected);
   });
@@ -412,6 +412,17 @@ describe("selectHighlights", () => {
     expect(highlights.map((highlight) => highlight.name)).toStrictEqual(["faster/time"]);
   });
 
+  it("leaves metrics resting on a single pair out, the way it leaves within-noise ones out", () => {
+    const metrics: Metrics = {
+      "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
+      "single-pair/time": bandMetric({ n: 1, noisePct: 0.5 }),
+    };
+
+    const highlights = selectHighlights(metrics, 0);
+
+    expect(highlights.map((highlight) => highlight.name)).toStrictEqual(["faster/time"]);
+  });
+
   it("keeps declaration order for metrics of equal magnitude", () => {
     const metrics: Metrics = {
       "second-listed/ops": approximateMetric({
@@ -473,6 +484,87 @@ describe("selectHighlights", () => {
       ).toStrictEqual(expected);
     },
   );
+});
+
+/** Shorthand matching the local convention: default value=0, n=2, no band. */
+const geomeanResult = (overrides: Partial<GeomeanResult> = {}): GeomeanResult =>
+  geomeanOf(0, 2, overrides);
+
+describe("scopedGeomeanLabel", () => {
+  it.each([
+    {
+      desc: "nothing was excluded",
+      scope: "entity",
+      geomean: geomeanResult({ n: 1 }),
+      expected: "geomean · entity (1)",
+    },
+    {
+      desc: "the subset lost a metric to an exclusion",
+      scope: "entity",
+      geomean: geomeanResult({
+        n: 1,
+        excluded: [{ metric: "entity.spawn/time", reason: "unstable" }],
+      }),
+      expected: "geomean · entity (1/2)",
+    },
+    {
+      desc: "the subset lost several metrics",
+      scope: "memory",
+      geomean: geomeanResult({
+        n: 13,
+        excluded: [
+          { metric: "a/heap", reason: "unstable" },
+          { metric: "b/heap", reason: "undefined-ratio" },
+        ],
+      }),
+      expected: "geomean · memory (13/15)",
+    },
+  ])("counts the subset behind the scope when $desc", ({ scope, geomean, expected }) => {
+    expect(scopedGeomeanLabel(scope, geomean)).toBe(expected);
+  });
+});
+
+describe("geomeanValueStyle", () => {
+  it.each([
+    {
+      desc: "an improvement past the band",
+      geomean: geomeanResult({ value: -6, band: 5 }),
+      expected: ["bold", "green"],
+    },
+    {
+      desc: "a regression past the band",
+      geomean: geomeanResult({ value: 6, band: 5 }),
+      expected: ["bold", "red"],
+    },
+    {
+      desc: "an improvement inside the band",
+      geomean: geomeanResult({ value: -4, band: 5 }),
+      expected: ["bold"],
+    },
+    {
+      desc: "a regression inside the band",
+      geomean: geomeanResult({ value: 4, band: 5 }),
+      expected: ["bold"],
+    },
+    {
+      // The band is the width of the noise, so a value level with it is noise.
+      desc: "a value level with the band",
+      geomean: geomeanResult({ value: -5, band: 5 }),
+      expected: ["bold"],
+    },
+    {
+      desc: "an improvement over a run with no band at all",
+      geomean: geomeanResult({ value: -0.2, band: 0 }),
+      expected: ["bold", "green"],
+    },
+    {
+      desc: "a geomean with no stable metrics behind it",
+      geomean: geomeanResult({ value: Number.NaN, n: 0 }),
+      expected: ["bold"],
+    },
+  ])("styles $desc", ({ geomean, expected }) => {
+    expect(geomeanValueStyle(geomean)).toStrictEqual(expected);
+  });
 });
 
 describe("computeColumnWidth", () => {
@@ -640,6 +732,7 @@ describe("verdictSummaryParts", () => {
     "jittery/time": approximateMetric({ verdict: "unstable", delta: 5, noisePct: 300 }),
     "flat/time": approximateMetric({ verdict: "no-signal", delta: 0.2 }),
     "tied/heap": bandMetric({ n: 10, usableN: 0 }),
+    "single-pair/time": bandMetric({ n: 1, noisePct: 0.5 }),
   };
 
   it("returns parts with no ANSI escapes when color is suppressed", () => {
@@ -656,6 +749,15 @@ describe("verdictSummaryParts", () => {
     const parts = verdictSummaryParts(mixed, 0);
 
     expect.soft(parts.find((p) => p.includes("identical"))).toBe("= 1 identical");
+    expect(parts.find((p) => p.includes("within noise"))).toBe("~ 1 within noise");
+  });
+
+  it("tallies metrics resting on a single pair apart from the ones within noise", () => {
+    vi.stubEnv("FORCE_COLOR", undefined);
+    vi.stubEnv("NO_COLOR", "1");
+    const parts = verdictSummaryParts(mixed, 0);
+
+    expect.soft(parts.find((p) => p.includes("inconclusive"))).toBe("? 1 inconclusive");
     expect(parts.find((p) => p.includes("within noise"))).toBe("~ 1 within noise");
   });
 

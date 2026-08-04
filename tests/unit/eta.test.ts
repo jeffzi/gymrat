@@ -23,23 +23,15 @@ function clockSequence(...times: readonly number[]): () => number {
 
 describe("EtaTracker", () => {
   describe("record", () => {
-    it("returns undefined for a prepare step", () => {
+    it.each([
+      { desc: "a prepare step", step: prepare("A") },
+      { desc: "the very first sample step (no gap measured)", step: sample(1, 3, "A") },
+    ])("returns undefined for $desc", ({ step }) => {
       // Arrange
       const tracker = new EtaTracker(1, clockSequence(0));
 
       // Act
-      const result = tracker.record(prepare("A"));
-
-      // Assert
-      expect(result).toBeUndefined();
-    });
-
-    it("returns undefined for the very first sample step (no gap measured)", () => {
-      // Arrange
-      const tracker = new EtaTracker(1, clockSequence(0));
-
-      // Act
-      const result = tracker.record(sample(1, 3, "A"));
+      const result = tracker.record(step);
 
       // Assert
       expect(result).toBeUndefined();

@@ -8,6 +8,7 @@ import type { Adapter, MetricDefaults } from "./adapters/types.js";
 import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
+import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import { DEFAULT_UNSTABLE_NOISE_PCT } from "./verdict/verdict.js";
 
 /** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
@@ -48,7 +49,13 @@ const configFileSchema = Type.Object(
     prepare: Type.Optional(Type.String(expected("a string"))),
     adapter: Type.Optional(Type.String(expected("a string"))),
     samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
-    timeoutSeconds: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
+    timeoutSeconds: Type.Optional(
+      Type.Integer({
+        ...expected("a positive integer"),
+        minimum: 1,
+        maximum: MAX_TIMEOUT_SECONDS,
+      }),
+    ),
     // A noise threshold is a percentage, not a count, so fractional values are allowed.
     unstableNoisePct: Type.Optional(
       Type.Number({ ...expected("a positive number"), exclusiveMinimum: 0 }),

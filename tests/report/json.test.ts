@@ -1,21 +1,78 @@
 /* eslint-disable typescript/no-unsafe-assignment -- JSON.parse returns any; deep member access is the test's purpose */
 /* eslint-disable typescript/no-unsafe-member-access -- see above */
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 import { renderJson } from "../../src/report/json.js";
+import type { ComparisonResult } from "../../src/report/types.js";
 import {
   createCandidate,
   createComparisonResult,
+  geomeanOf,
+  kindMetric,
   metricMeta,
+  otherKind,
   signedRankMetric,
   bandMetric,
   exactMetric,
   nWayMetric,
+  singleSampleResult,
 } from "../fixtures/comparison-result.js";
 
+/**
+ * A run spanning a gating `time` kind and an informational `memory` kind.
+ *
+ * `time` holds a grouped metric and lost two metrics to exclusion rules, so its
+ * aggregate exercises groups and exclusions at once; `memory` holds one
+ * ungrouped metric and gates nothing, so it pins the no-groups, no-gated case.
+ */
+function twoKindWithExclusions(): ComparisonResult {
+  return createComparisonResult({
+    candidates: [
+      createCandidate({
+        label: "experiment",
+        kinds: [
+          {
+            kind: "time",
+            hasGating: true,
+            geomean: geomeanOf(-3.2, 2, {
+              excluded: [
+                { metric: "jittery/time", reason: "unstable" },
+                { metric: "broken/ratio", reason: "undefined-ratio" },
+              ],
+            }),
+            groups: [{ group: "entity", geomean: geomeanOf(-3.1, 2) }],
+            gatedGeomean: geomeanOf(-3.2, 2),
+          },
+          { kind: "memory", hasGating: false, geomean: geomeanOf(-7, 1), groups: [] },
+        ],
+      }),
+    ],
+    metrics: {
+      "entity.alive_check/time": kindMetric({
+        kind: "time",
+        shortName: "entity.alive_check",
+        verdict: "improved",
+        delta: -10,
+      }),
+      "encode/heap": kindMetric({
+        kind: "memory",
+        shortName: "encode",
+        verdict: "improved",
+        delta: -7,
+        gating: false,
+        unit: "bytes",
+      }),
+    },
+  });
+}
+
 describe("renderJson", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe("schema shape", () => {
-    it("produces correct schema shape with schemaVersion 1 for a single-candidate report", () => {
+    it("produces correct schema shape with schemaVersion 2 for a single-candidate report", () => {
       const result = createComparisonResult({
         baselineLabel: "main",
         candidates: [createCandidate({ label: "experiment" })],
@@ -28,7 +85,7 @@ describe("renderJson", () => {
 
       const json = JSON.parse(renderJson(result));
 
-      expect(json.schemaVersion).toBe(1);
+      expect(json.schemaVersion).toBe(2);
       expect(json.baseline).toBe("main");
       expect(json.candidates).toStrictEqual(["experiment"]);
       expect(json.samples).toBe(10);
@@ -95,6 +152,18 @@ describe("renderJson", () => {
       expect(candidate.method).toBe("band");
       expect(candidate.band).toBe(3.5);
       expect(candidate.p).toBeNull();
+    });
+
+    // The text report calls a single-pair verdict inconclusive, which is a
+    // display decision: what the engine computed is what gets serialized.
+    it("stores a single-pair verdict as the no-signal band verdict it is", () => {
+      const json = JSON.parse(renderJson(singleSampleResult()));
+      const candidate = json.metrics["decode/time"].candidates[0];
+
+      expect.soft(candidate.verdict).toBe("no-signal");
+      expect.soft(candidate.method).toBe("band");
+      expect.soft(candidate.noisePct).toBe(0.5);
+      expect(candidate.band).toBe(0.5);
     });
 
     it("has noisePct, p, and band all as null for exact verdicts", () => {
@@ -173,33 +242,89 @@ describe("renderJson", () => {
     });
   });
 
-  describe("geomean exclusions", () => {
-    it("carries exclusion reasons", () => {
+  describe("when a candidate spans several kinds", () => {
+    it("carries one entry per kind, with its groups, section geomean and gated geomean", () => {
+      const json = JSON.parse(renderJson(twoKindWithExclusions()));
+
+      expect(json.perCandidate[0].kinds).toStrictEqual([
+        {
+          kind: "time",
+          hasGating: true,
+          geomean: {
+            value: -3.2,
+            n: 2,
+            excluded: [
+              { metric: "jittery/time", reason: "unstable" },
+              { metric: "broken/ratio", reason: "undefined-ratio" },
+            ],
+            band: 0,
+          },
+          groups: [{ group: "entity", geomean: { value: -3.1, n: 2, excluded: [], band: 0 } }],
+          gatedGeomean: { value: -3.2, n: 2, excluded: [], band: 0 },
+        },
+        {
+          kind: "memory",
+          hasGating: false,
+          geomean: { value: -7, n: 1, excluded: [], band: 0 },
+          groups: [],
+          gatedGeomean: null,
+        },
+      ]);
+    });
+
+    it("leaves no blended geomean beside the kinds", () => {
+      const json = JSON.parse(renderJson(twoKindWithExclusions()));
+
+      expect(json.perCandidate[0]).not.toHaveProperty("geomean");
+    });
+
+    it("serializes a single-kind run through the same shape, with one entry", () => {
       const result = createComparisonResult({
         candidates: [
           createCandidate({
             label: "experiment",
-            geomean: {
-              value: -3.2,
-              n: 8,
-              excluded: [
-                { metric: "jittery/time", reason: "unstable" },
-                { metric: "broken/ratio", reason: "undefined-ratio" },
-              ],
-            },
+            kinds: [otherKind(-3.2, 2)],
           }),
         ],
+        metrics: { "decode/time": signedRankMetric({ verdict: "improved", delta: -10 }) },
       });
 
       const json = JSON.parse(renderJson(result));
-      const perCandidate = json.perCandidate[0];
 
-      expect(perCandidate.geomean.excluded).toStrictEqual([
-        { metric: "jittery/time", reason: "unstable" },
-        { metric: "broken/ratio", reason: "undefined-ratio" },
+      expect(json.perCandidate[0].kinds).toStrictEqual([
+        {
+          kind: "other",
+          hasGating: true,
+          geomean: { value: -3.2, n: 2, excluded: [], band: 0 },
+          groups: [],
+          gatedGeomean: { value: -3.2, n: 2, excluded: [], band: 0 },
+        },
       ]);
-      expect(perCandidate.geomean.value).toBe(-3.2);
-      expect(perCandidate.geomean.n).toBe(8);
+    });
+  });
+
+  describe("when reporting a metric's kind and group", () => {
+    it.each([
+      {
+        shape: "a grouped metric",
+        metric: "entity.alive_check/time",
+        kind: "time",
+        group: "entity",
+      },
+      { shape: "an ungrouped metric", metric: "encode/heap", kind: "memory", group: null },
+    ])("reports the kind and group of $shape", ({ metric, kind, group }) => {
+      const json = JSON.parse(renderJson(twoKindWithExclusions()));
+
+      expect.soft(json.metrics[metric].kind).toBe(kind);
+      expect(json.metrics[metric].group).toBe(group);
+    });
+  });
+
+  describe("when the ambient environment forces color", () => {
+    it("emits no ANSI escape sequences, however the ambient environment forces color", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      expect(renderJson(twoKindWithExclusions())).not.toMatch(/\x1b\[/);
     });
   });
 
