@@ -136,7 +136,7 @@ export function resolveTarget(input: string, repoDir: string): Target {
  */
 export function planWorktree(ref: RefTarget): WorktreeInfo {
   return {
-    dir: path.join(os.tmpdir(), `gymrat-wt-${crypto.randomUUID()}`),
+    dir: path.join(fs.realpathSync.native(os.tmpdir()), `gymrat-wt-${crypto.randomUUID()}`),
     sha: ref.resolvedSha,
   };
 }

@@ -29,9 +29,11 @@ export interface ExecOptions {
 /** Reported when the child has no exit status of its own: killed, or never started. */
 const FAILURE_EXIT_CODE = 1;
 
-function killProcessGroup(pid: number): void {
+function killTree(pid: number): void {
   try {
-    process.kill(-pid, "SIGKILL");
+    // Windows has no process groups; kill the root process directly.
+    // POSIX kills the whole group via the negative-PID convention.
+    process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
     /* v8 ignore start -- ESRCH race and EPERM require conditions the test harness cannot reproduce */
   } catch (err) {
     // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
@@ -87,7 +89,11 @@ export async function exec(
       child = spawn(command, {
         shell: true,
         cwd: options.cwd,
-        detached: true,
+        // POSIX: detach into its own process group so killTree can SIGKILL
+        // the whole group via negative PID. Windows has no process groups,
+        // and detached: true there allocates a new console that breaks
+        // stdio pipes — stdout/stderr go to the console instead of the pipe.
+        detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
@@ -134,7 +140,7 @@ export async function exec(
       if (!child.pid) {
         return;
       }
-      killProcessGroup(child.pid);
+      killTree(child.pid);
     }
 
     function onAbort(): void {

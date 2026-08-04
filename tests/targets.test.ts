@@ -221,7 +221,7 @@ describe("planWorktree", () => {
       const worktree = planWorktree(refTarget);
 
       expect(worktree.sha).toBe(UNKNOWN_SHA);
-      expect(path.dirname(worktree.dir)).toBe(os.tmpdir());
+      expect(path.dirname(worktree.dir)).toBe(fs.realpathSync.native(os.tmpdir()));
       expect(fs.existsSync(worktree.dir)).toBe(false);
     });
   });
