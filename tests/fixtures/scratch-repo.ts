@@ -16,7 +16,9 @@ export interface ScratchRepo {
  * The caller must invoke `.cleanup()` when done.
  */
 export function createScratchRepo(): ScratchRepo {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-test-"));
+  // realpathSync.native resolves Windows 8.3 short names to their long form
+  // so the path matches what git reports in `worktree list`.
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-test-")));
 
   try {
     // -b main pins the initial branch: without it the name comes from the
@@ -27,6 +29,7 @@ export function createScratchRepo(): ScratchRepo {
       ["user.name", "Test User"],
       ["user.email", "test@example.com"],
       ["commit.gpgsign", "false"],
+      ["core.autocrlf", "false"],
     ];
     for (const [key, value] of configs) {
       execFileSync("git", ["config", key, value], { cwd: dir, stdio: "pipe" });
@@ -36,14 +39,14 @@ export function createScratchRepo(): ScratchRepo {
     execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "pipe" });
     execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: dir, stdio: "pipe" });
   } catch (error) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
     throw error;
   }
 
   return {
     dir,
     cleanup: () => {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
     },
   };
 }

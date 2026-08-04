@@ -34,7 +34,7 @@ describe("loadConfigFile", () => {
 
   afterEach(() => {
     if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true });
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 
@@ -383,7 +383,7 @@ describe("resolveConfig", () => {
 
   afterEach(() => {
     if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true });
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
     }
     process.chdir(originalCwd);
   });

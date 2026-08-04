@@ -68,7 +68,7 @@ function leaveInterruptedWorktree(repoDir: string): WorktreeInfo {
   if (failed && fs.existsSync(worktree.dir)) {
     return worktree;
   }
-  fs.rmSync(worktree.dir, { recursive: true, force: true });
+  fs.rmSync(worktree.dir, { recursive: true, force: true, maxRetries: 3 });
   throw new Error(`expected an interrupted worktree left at ${worktree.dir}`);
 }
 
@@ -101,7 +101,7 @@ function listWorktreeDirs(repoDir: string): string[] {
   })
     .split("\n")
     .filter((line) => line.startsWith("worktree "))
-    .map((line) => line.slice("worktree ".length));
+    .map((line) => path.normalize(line.slice("worktree ".length)));
 }
 
 /**
@@ -117,7 +117,7 @@ function listWorktreeDirs(repoDir: string): string[] {
 function registerAbsentWorktree(repoDir: string): string {
   const dir = path.join(fs.realpathSync(repoDir), "absent-user-worktree");
   execSync(`git worktree add --detach "${dir}" HEAD`, { cwd: repoDir, stdio: "pipe" });
-  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   return dir;
 }
 
@@ -134,7 +134,7 @@ describe("resolveTarget", () => {
           dir: fs.realpathSync(tempDir),
         } satisfies InPlaceTarget);
       } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 3 });
       }
     });
 
@@ -154,7 +154,7 @@ describe("resolveTarget", () => {
         } satisfies InPlaceTarget);
       } finally {
         process.chdir(cwd);
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 3 });
       }
     });
   });
@@ -291,7 +291,7 @@ describe("cleanupWorktrees", () => {
 
     afterEach(() => {
       if (nonRepoDir !== undefined) {
-        fs.rmSync(nonRepoDir, { recursive: true, force: true });
+        fs.rmSync(nonRepoDir, { recursive: true, force: true, maxRetries: 3 });
         nonRepoDir = undefined;
       }
     });
@@ -309,17 +309,22 @@ describe("cleanupWorktrees", () => {
     });
   });
 
-  describe("when git worktree add was killed after creating the worktree", () => {
-    it("removes it like a worktree whose add returned normally", () => {
-      repo = createScratchRepo();
-      const worktree = leaveInterruptedWorktree(repo.dir);
+  // killGitDuringWorktreeAdd sends POSIX signal 9 via a post-checkout hook;
+  // Windows cannot deliver that signal to the git parent process.
+  describe.skipIf(process.platform === "win32")(
+    "when git worktree add was killed after creating the worktree",
+    () => {
+      it("removes it like a worktree whose add returned normally", () => {
+        repo = createScratchRepo();
+        const worktree = leaveInterruptedWorktree(repo.dir);
 
-      const result = cleanupWorktrees([worktree], repo.dir);
+        const result = cleanupWorktrees([worktree], repo.dir);
 
-      expect(result.removed).toBe(1);
-      expect(fs.existsSync(worktree.dir)).toBe(false);
-    });
-  });
+        expect(result.removed).toBe(1);
+        expect(fs.existsSync(worktree.dir)).toBe(false);
+      });
+    },
+  );
 
   describe("when git worktree add left nothing on disk", () => {
     it("counts the planned worktree as neither removed nor left behind", () => {
@@ -353,7 +358,7 @@ describe("cleanupWorktrees", () => {
     it("prunes the registry entry git still lists for it", () => {
       repo = createScratchRepo();
       const worktree = createHeadWorktree(repo.dir);
-      fs.rmSync(worktree.dir, { recursive: true, force: true });
+      fs.rmSync(worktree.dir, { recursive: true, force: true, maxRetries: 3 });
 
       cleanupWorktrees([worktree], repo.dir);
 
@@ -366,7 +371,7 @@ describe("cleanupWorktrees", () => {
 
     afterEach(() => {
       if (strayDir !== undefined) {
-        fs.rmSync(strayDir, { recursive: true, force: true });
+        fs.rmSync(strayDir, { recursive: true, force: true, maxRetries: 3 });
         strayDir = undefined;
       }
     });
@@ -415,7 +420,7 @@ describe("cleanupWorktrees", () => {
 
     afterEach(() => {
       if (nonRepoDir !== undefined) {
-        fs.rmSync(nonRepoDir, { recursive: true, force: true });
+        fs.rmSync(nonRepoDir, { recursive: true, force: true, maxRetries: 3 });
         nonRepoDir = undefined;
       }
     });
