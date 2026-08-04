@@ -15,6 +15,11 @@ import { REF_TARGET_HINT } from "./fixtures/constants.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
 import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
 
+/** Convert a path to forward slashes so it can be embedded in a shell script on any platform. */
+function toShellPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
 function assertCommandError(error: Error): asserts error is CommandError {
   expect(error).toBeInstanceOf(CommandError);
 }
@@ -47,7 +52,7 @@ function createBranch(
     scripts.push("prepare.sh");
   }
 
-  execSync(`chmod +x ${scripts.join(" ")} && git add ${scripts.join(" ")}`, {
+  execSync(`git add ${scripts.join(" ")}`, {
     cwd: repo.dir,
     stdio: "pipe",
   });
@@ -72,7 +77,6 @@ function createInPlaceTarget(
   fs.mkdirSync(path.join(repo.dir, name));
   const script = path.join(repo.dir, name, "bench.sh");
   fs.writeFileSync(script, benchScript);
-  fs.chmodSync(script, 0o755);
 }
 
 /**
@@ -126,6 +130,7 @@ function listWorktreeDirs(repo: ReturnType<typeof createScratchRepo>): string[] 
   return worktreeList
     .split("\n")
     .flatMap((line) => /^(\S+)\s/.exec(line)?.[1] ?? [])
+    .map((dir) => path.normalize(dir))
     .filter((dir) => dir !== mainDir);
 }
 
@@ -137,7 +142,7 @@ function listWorktreeDirs(repo: ReturnType<typeof createScratchRepo>): string[] 
  */
 function removeStrandedWorktrees(repo: ReturnType<typeof createScratchRepo>) {
   for (const dir of listWorktreeDirs(repo)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -307,7 +312,7 @@ async function startInFlightRun(repo: ReturnType<typeof createScratchRepo>): Pro
 
   createBranch(repo, {
     name: "old-signal",
-    benchScript: `#!/bin/sh\nsleep 30 &\necho $! > "${pidFile}"\nwait`,
+    benchScript: `#!/bin/sh\nsleep 30 &\necho $! > "${toShellPath(pidFile)}"\nwait`,
   });
   createBranch(repo, {
     name: "new-signal",
@@ -317,7 +322,7 @@ async function startInFlightRun(repo: ReturnType<typeof createScratchRepo>): Pro
   const options: CompareOptions = {
     baseline: { target: "old-signal" },
     candidates: [{ target: "new-signal" }],
-    bench: "./bench.sh",
+    bench: "sh bench.sh",
     adapter: "metric-lines",
     samples: 3,
     timeoutSeconds: 20,
@@ -385,21 +390,21 @@ describe("compare – integration", () => {
 
         createBranch(repo, {
           name: "old-prep",
-          benchScript: `#!/bin/sh\necho bench >> "${oldLog}"\necho "METRIC latency=100"`,
-          prepareScript: `#!/bin/sh\necho prepare >> "${oldLog}"`,
+          benchScript: `#!/bin/sh\necho bench >> "${toShellPath(oldLog)}"\necho "METRIC latency=100"`,
+          prepareScript: `#!/bin/sh\necho prepare >> "${toShellPath(oldLog)}"`,
         });
 
         createBranch(repo, {
           name: "new-prep",
-          benchScript: `#!/bin/sh\necho bench >> "${newLog}"\necho "METRIC latency=90"`,
-          prepareScript: `#!/bin/sh\necho prepare >> "${newLog}"`,
+          benchScript: `#!/bin/sh\necho bench >> "${toShellPath(newLog)}"\necho "METRIC latency=90"`,
+          prepareScript: `#!/bin/sh\necho prepare >> "${toShellPath(newLog)}"`,
         });
 
         const options: CompareOptions = {
           baseline: { target: "old-prep" },
           candidates: [{ target: "new-prep" }],
-          bench: "./bench.sh",
-          prepare: "./prepare.sh",
+          bench: "sh bench.sh",
+          prepare: "sh prepare.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -437,14 +442,14 @@ describe("compare – integration", () => {
       ] as const) {
         createBranch(repo, {
           name,
-          benchScript: `#!/bin/sh\necho ${name} >> "${log}"\necho "METRIC latency=${latency}"`,
+          benchScript: `#!/bin/sh\necho ${name} >> "${toShellPath(log)}"\necho "METRIC latency=${latency}"`,
         });
       }
 
       const options: CompareOptions = {
         baseline: { target: "base3" },
         candidates: [{ target: "candidate-a" }, { target: "candidate-b" }],
-        bench: "./bench.sh",
+        bench: "sh bench.sh",
         adapter: "metric-lines",
         samples: 3,
         timeoutSeconds: 10,
@@ -527,7 +532,7 @@ describe("compare – integration", () => {
           const options: CompareOptions = {
             baseline: { target: "base-fail3" },
             candidates: [{ target: "candidate-ok3" }, { target: "candidate-bad3" }],
-            bench: "./bench.sh",
+            bench: "sh bench.sh",
             adapter: "metric-lines",
             samples: 3,
             timeoutSeconds: 10,
@@ -570,7 +575,7 @@ describe("compare – integration", () => {
       const options: CompareOptions = {
         baseline: { target: "old-dir" },
         candidates: [{ target: "new-dir" }],
-        bench: "./bench.sh",
+        bench: "sh bench.sh",
         adapter: "metric-lines",
         samples: 3,
         timeoutSeconds: 10,
@@ -626,7 +631,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-labelled", label: "baseline" },
           candidates: [{ target: "new-labelled", label: "candidate" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -665,7 +670,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-branch" },
           candidates: [{ target: "new-branch" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -704,7 +709,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-proto" },
           candidates: [{ target: "new-proto" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -736,14 +741,14 @@ describe("compare – integration", () => {
       process.chdir(repo.dir);
 
       const fixturePath = path.resolve(savedCwd, "tests/fixtures/mitata.json");
-      const mitataBenchScript = `#!/bin/sh\ncat "${fixturePath}"`;
+      const mitataBenchScript = `#!/bin/sh\ncat "${toShellPath(fixturePath)}"`;
       createBranch(repo, { name: "mitata-branch", benchScript: mitataBenchScript });
       createBranch(repo, { name: "mitata-branch-2", benchScript: mitataBenchScript });
 
       const options: CompareOptions = {
         baseline: { target: "mitata-branch" },
         candidates: [{ target: "mitata-branch-2" }],
-        bench: "./bench.sh",
+        bench: "sh bench.sh",
         adapter: "mitata",
         samples: 3,
         timeoutSeconds: 10,
@@ -805,7 +810,7 @@ describe("compare – integration", () => {
           const options: CompareOptions = {
             baseline: { target: `old-${samples}` },
             candidates: [{ target: `new-${samples}` }],
-            bench: "./bench.sh",
+            bench: "sh bench.sh",
             adapter: "metric-lines",
             samples,
             timeoutSeconds: 10,
@@ -830,13 +835,15 @@ describe("compare – integration", () => {
      * the spread works out to a noise band of 30%: median 50, half-range 10,
      * 1.5 × 100 × (10 / 50).
      */
-    const noisyBenchScript = (counterFile: string) =>
-      [
+    const noisyBenchScript = (counterFile: string) => {
+      const p = toShellPath(counterFile);
+      return [
         "#!/bin/sh",
-        `echo x >> "${counterFile}"`,
-        `n=$(wc -l < "${counterFile}" | tr -d ' ')`,
+        `echo x >> "${p}"`,
+        `n=$(wc -l < "${p}" | tr -d ' ')`,
         'echo "METRIC latency=$((30 + 10 * n))"',
       ].join("\n");
+    };
 
     it.each([
       {
@@ -866,7 +873,7 @@ describe("compare – integration", () => {
           const options: CompareOptions = {
             baseline: { target: `old-noisy-${unstableNoisePct}` },
             candidates: [{ target: `new-noisy-${unstableNoisePct}` }],
-            bench: "./bench.sh",
+            bench: "sh bench.sh",
             adapter: "metric-lines",
             samples: 3,
             timeoutSeconds: 10,
@@ -899,7 +906,7 @@ describe("compare – integration", () => {
         oldBranch: { name: `old-fail-${side}`, benchScript: oldBench },
         newBranch: { name: `new-fail-${side}`, benchScript: newBench },
         options: {
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -910,7 +917,7 @@ describe("compare – integration", () => {
         expect.soft(error().phase).toBe("bench");
         expect.soft(error().position).toBe(side);
         expect.soft(error().label).toBe(`${side}-fail-${side}`);
-        expect.soft(error().command).toBe("./bench.sh");
+        expect.soft(error().command).toBe("sh bench.sh");
         expect.soft(error().exitCode).toBe(1);
         expect.soft(error().sample).toBe(1);
         expect(error().target).toStrictEqual(
@@ -935,7 +942,7 @@ describe("compare – integration", () => {
       oldBranch: { name: "old-slow", benchScript: "#!/bin/sh\nsleep 10" },
       newBranch: { name: "new-slow", benchScript: '#!/bin/sh\necho "METRIC latency=90"' },
       options: {
-        bench: "./bench.sh",
+        bench: "sh bench.sh",
         adapter: "metric-lines",
         samples: 3,
         // Fractional seconds keep the test near half a second; the sleep is
@@ -948,7 +955,7 @@ describe("compare – integration", () => {
       expect.soft(error().phase).toBe("bench");
       expect.soft(error().position).toBe("old");
       expect.soft(error().label).toBe("old-slow");
-      expect.soft(error().command).toBe("./bench.sh");
+      expect.soft(error().command).toBe("sh bench.sh");
       expect.soft(error().timeoutMs).toBe(500);
       expect.soft(error().exitCode).toBeUndefined();
       expect
@@ -976,8 +983,8 @@ describe("compare – integration", () => {
         prepareScript: "#!/bin/sh\nexit 0",
       },
       options: {
-        bench: "./bench.sh",
-        prepare: "./prepare.sh",
+        bench: "sh bench.sh",
+        prepare: "sh prepare.sh",
         adapter: "metric-lines",
         samples: 3,
         timeoutSeconds: 10,
@@ -988,7 +995,7 @@ describe("compare – integration", () => {
       expect.soft(error().phase).toBe("prepare");
       expect.soft(error().position).toBe("old");
       expect.soft(error().label).toBe("old-prep-fail");
-      expect.soft(error().command).toBe("./prepare.sh");
+      expect.soft(error().command).toBe("sh prepare.sh");
       expect.soft(error().exitCode).toBe(1);
       expect.soft(error().sample).toBeUndefined();
       expect(error().target).toStrictEqual(
@@ -1020,8 +1027,8 @@ describe("compare – integration", () => {
         prepareScript: "#!/bin/sh\nexit 0",
       },
       options: {
-        bench: "./bench.sh",
-        prepare: "./prepare.sh",
+        bench: "sh bench.sh",
+        prepare: "sh prepare.sh",
         adapter: "metric-lines",
         samples: 3,
         timeoutSeconds: 0.5,
@@ -1032,7 +1039,7 @@ describe("compare – integration", () => {
       expect.soft(error().phase).toBe("prepare");
       expect.soft(error().position).toBe("old");
       expect.soft(error().label).toBe("old-prep-slow");
-      expect.soft(error().command).toBe("./prepare.sh");
+      expect.soft(error().command).toBe("sh prepare.sh");
       expect.soft(error().timeoutMs).toBe(500);
       expect.soft(error().exitCode).toBeUndefined();
       expect
@@ -1064,7 +1071,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-dir-fail" },
           candidates: [{ target: "new-dir-fail" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -1078,7 +1085,7 @@ describe("compare – integration", () => {
         expect.soft(error.phase).toBe("bench");
         expect.soft(error.position).toBe("old");
         expect.soft(error.label).toBe("old-dir-fail");
-        expect.soft(error.command).toBe("./bench.sh");
+        expect.soft(error.command).toBe("sh bench.sh");
         expect.soft(error.exitCode).toBe(1);
         expect.soft(error.sample).toBe(1);
         expect(error.target.kind).toBe("in-place");
@@ -1117,7 +1124,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-unremovable" },
           candidates: [{ target: "new-unremovable" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -1131,60 +1138,65 @@ describe("compare – integration", () => {
         expect(leftBehindDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual(leftBehindDirs);
       } finally {
         for (const dir of leftBehindDirs) {
-          fs.rmSync(dir, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
         }
         repo.cleanup();
       }
     });
   });
 
-  describe("when git worktree add is killed after creating the worktree", () => {
-    it("sweeps the directory it left behind instead of stranding it", async () => {
-      const repo = createScratchRepo();
-      const strandedBefore = listTempWorktreeDirs();
+  // killGitDuringWorktreeAdd sends POSIX signal 9 via a post-checkout hook;
+  // Windows cannot deliver that signal to the git parent process.
+  describe.skipIf(process.platform === "win32")(
+    "when git worktree add is killed after creating the worktree",
+    () => {
+      it("sweeps the directory it left behind instead of stranding it", async () => {
+        const repo = createScratchRepo();
+        const strandedBefore = listTempWorktreeDirs();
 
-      try {
-        process.chdir(repo.dir);
+        try {
+          process.chdir(repo.dir);
 
-        createBranch(repo, {
-          name: "old-interrupted",
-          benchScript: '#!/bin/sh\necho "METRIC latency=100"',
-        });
+          createBranch(repo, {
+            name: "old-interrupted",
+            benchScript: '#!/bin/sh\necho "METRIC latency=100"',
+          });
 
-        createBranch(repo, {
-          name: "new-interrupted",
-          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
-        });
+          createBranch(repo, {
+            name: "new-interrupted",
+            benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+          });
 
-        // Installed last so the branch checkouts above survive it.
-        killGitDuringWorktreeAdd(repo.dir);
+          // Installed last so the branch checkouts above survive it.
+          killGitDuringWorktreeAdd(repo.dir);
 
-        const options: CompareOptions = {
-          baseline: { target: "old-interrupted" },
-          candidates: [{ target: "new-interrupted" }],
-          bench: "./bench.sh",
-          adapter: "metric-lines",
-          samples: 3,
-          timeoutSeconds: 10,
-        };
+          const options: CompareOptions = {
+            baseline: { target: "old-interrupted" },
+            candidates: [{ target: "new-interrupted" }],
+            bench: "sh bench.sh",
+            adapter: "metric-lines",
+            samples: 3,
+            timeoutSeconds: 10,
+          };
 
-        const failure = await captureRejection(compare(options));
+          const failure = await captureRejection(compare(options));
 
-        // The run fails because `git worktree add` did, not because cleanup left
-        // anything behind — `withCleanupFailures` appends "left behind" only when
-        // cleanup actually stranded something.
-        expect(failure.message).toContain("worktree add");
-        expect(failure.message).not.toContain("left behind");
-        // The registry going empty says git removed its entry; only the temp dir
-        // itself says the directory is gone, and that is the leak under test.
-        expect(listTempWorktreeDirs()).toStrictEqual(strandedBefore);
-        assertWorktreesCleanedUp(repo);
-      } finally {
-        removeStrandedWorktrees(repo);
-        repo.cleanup();
-      }
-    });
-  });
+          // The run fails because `git worktree add` did, not because cleanup left
+          // anything behind — `withCleanupFailures` appends "left behind" only when
+          // cleanup actually stranded something.
+          expect(failure.message).toContain("worktree add");
+          expect(failure.message).not.toContain("left behind");
+          // The registry going empty says git removed its entry; only the temp dir
+          // itself says the directory is gone, and that is the leak under test.
+          expect(listTempWorktreeDirs()).toStrictEqual(strandedBefore);
+          assertWorktreesCleanedUp(repo);
+        } finally {
+          removeStrandedWorktrees(repo);
+          repo.cleanup();
+        }
+      });
+    },
+  );
 
   describe("when the bench fails and git cannot remove a worktree", () => {
     it("throws an error naming the stranded worktree alongside the original failure", async () => {
@@ -1212,7 +1224,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-fail-unremovable" },
           candidates: [{ target: "new-fail-unremovable" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -1231,7 +1243,7 @@ describe("compare – integration", () => {
         expect(failure.hint).toBe(REF_TARGET_HINT);
       } finally {
         for (const dir of leftBehindDirs) {
-          fs.rmSync(dir, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
         }
         removeStrandedWorktrees(repo);
         repo.cleanup();
@@ -1259,7 +1271,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-zero" },
           candidates: [{ target: "new-zero" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -1294,7 +1306,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-single" },
           candidates: [{ target: "new-single" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 1,
           timeoutSeconds: 10,
@@ -1334,7 +1346,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-empty" },
           candidates: [{ target: "new-empty" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -1349,7 +1361,9 @@ describe("compare – integration", () => {
     });
   });
 
-  describe("when a termination signal arrives mid-run", () => {
+  // The bench spawns a background process via `sleep 30 &` and writes its PID;
+  // Git for Windows' sh reports PIDs from its own process namespace that Node cannot signal.
+  describe.skipIf(process.platform === "win32")("when a termination signal arrives mid-run", () => {
     let listenersBefore: Record<SignalName, readonly unknown[]>;
 
     beforeEach(() => {
@@ -1478,7 +1492,7 @@ describe("compare – integration", () => {
           const options: CompareOptions = {
             baseline: { target: "old-settled" },
             candidates: [{ target: "new-settled" }],
-            bench: "./bench.sh",
+            bench: "sh bench.sh",
             adapter: "metric-lines",
             samples: 3,
             timeoutSeconds: 20,
@@ -1538,7 +1552,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-progress" },
           candidates: [{ target: "new-progress" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 3,
           timeoutSeconds: 10,
@@ -1582,8 +1596,8 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-prep-progress" },
           candidates: [{ target: "new-prep-progress" }],
-          bench: "./bench.sh",
-          prepare: "./prepare.sh",
+          bench: "sh bench.sh",
+          prepare: "sh prepare.sh",
           adapter: "metric-lines",
           samples: 2,
           timeoutSeconds: 10,
@@ -1625,7 +1639,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-labelled-progress", label: "baseline" },
           candidates: [{ target: "new-labelled-progress", label: "candidate" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 2,
           timeoutSeconds: 10,
@@ -1662,7 +1676,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "base-progress-3" },
           candidates: [{ target: "cand-a-progress" }, { target: "cand-b-progress" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 2,
           timeoutSeconds: 10,
@@ -1703,7 +1717,7 @@ describe("compare – integration", () => {
         const options: CompareOptions = {
           baseline: { target: "old-no-progress" },
           candidates: [{ target: "new-no-progress" }],
-          bench: "./bench.sh",
+          bench: "sh bench.sh",
           adapter: "metric-lines",
           samples: 2,
           timeoutSeconds: 10,

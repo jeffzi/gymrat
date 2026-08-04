@@ -34,7 +34,7 @@ describe("loadConfigFile", () => {
 
   afterEach(() => {
     if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true });
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 
@@ -382,10 +382,10 @@ describe("resolveConfig", () => {
   const originalCwd = process.cwd();
 
   afterEach(() => {
-    if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true });
-    }
     process.chdir(originalCwd);
+    if (tmpdir && fs.existsSync(tmpdir)) {
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 
   describe("when flags and config are empty", () => {
