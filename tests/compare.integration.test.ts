@@ -700,6 +700,33 @@ describe("compare – integration", () => {
     });
   });
 
+  describe("when a warn sink is supplied and the bench emits a malformed METRIC line", () => {
+    it("delivers the adapter's warning to the sink", async () => {
+      await withScratchRepo(async (repo) => {
+        createInPlaceTargetDir(
+          repo,
+          "old-warn",
+          '#!/bin/sh\necho "METRIC foo=bar"\necho "METRIC latency=100"',
+        );
+        createInPlaceTargetDir(repo, "new-warn", '#!/bin/sh\necho "METRIC latency=90"');
+        const warnings: string[] = [];
+
+        await compare(
+          compareOptions({
+            baseline: { target: "old-warn" },
+            candidates: [{ target: "new-warn" }],
+            samples: 1,
+            warn: (message) => {
+              warnings.push(message);
+            },
+          }),
+        );
+
+        expect(warnings).toStrictEqual(["Failed to parse METRIC line: METRIC foo=bar"]);
+      });
+    });
+  });
+
   describe("when using mitata adapter with fixture replay", () => {
     let repo: ReturnType<typeof createScratchRepo>;
     let savedCwd: string;

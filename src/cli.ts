@@ -404,9 +404,26 @@ function clearProgress(tty: boolean): void {
   }
 }
 
+/**
+ * One warning line on stderr.
+ *
+ * Written through the same stream as the progress line rather than `console`, so
+ * the clear/warn/redraw sequence cannot be reordered by a different writer.
+ */
+function writeWarning(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
 /** Single-use: `stop()` must be called exactly once, after the run completes or fails. */
 interface ProgressReporter {
   emit(step: ProgressStep): void;
+  /**
+   * Print `message` on a row of its own, giving the progress line back afterwards.
+   *
+   * A warning written while an in-place progress line is on screen would
+   * otherwise be spliced into it, leaving both unreadable.
+   */
+  warn(message: string): void;
   /** Stop the spinner or erase the in-place line so the next output starts clean. */
   stop(): void;
 }
@@ -430,6 +447,8 @@ function createProgressReporter(
     : undefined;
   const eta = new EtaTracker(targetCount);
   let countdownInterval: ReturnType<typeof setInterval> | undefined;
+  /** The step the in-place line currently shows, so `warn` can put it back. */
+  let drawnStep: { step: ProgressStep; etaMs?: number } | undefined;
 
   function clearCountdown(): void {
     if (countdownInterval !== undefined) {
@@ -455,6 +474,7 @@ function createProgressReporter(
     emit(step: ProgressStep): void {
       const etaMs = eta.record(step);
       if (!spinner) {
+        drawnStep = tty ? { step, etaMs } : undefined;
         writeProgress(formatProgressLine(step, etaMs), tty);
         return;
       }
@@ -468,8 +488,27 @@ function createProgressReporter(
         startCountdown(spinner, step, etaMs);
       }
     },
+    warn(message: string): void {
+      if (spinner) {
+        // The spinner redraws itself on its next frame, so erasing the current
+        // one is all it takes to hand the row over.
+        spinner.clear();
+        writeWarning(message);
+        return;
+      }
+
+      if (!drawnStep) {
+        writeWarning(message);
+        return;
+      }
+
+      clearProgress(tty);
+      writeWarning(message);
+      writeProgress(formatProgressLine(drawnStep.step, drawnStep.etaMs), tty);
+    },
     stop(): void {
       clearCountdown();
+      drawnStep = undefined;
       if (spinner) {
         spinner.stop();
       } else {
@@ -608,6 +647,9 @@ export function createProgram(): Command {
           configKinds: config.kinds,
           onProgress: (step) => {
             progress.emit(step);
+          },
+          warn: (message) => {
+            progress.warn(message);
           },
         };
 

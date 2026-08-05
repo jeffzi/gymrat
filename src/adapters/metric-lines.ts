@@ -1,15 +1,19 @@
 import { computeMedian } from "../math.js";
 import { metricRecord } from "../metric-record.js";
-import type { Adapter, MetricDefaults } from "./types.js";
+import type { Adapter, MetricDefaults, WarnSink } from "./types.js";
 import { AdapterError } from "./types.js";
 
 const METRIC_PREFIX = "METRIC";
 
-function parseMetricLine(line: string): { name: string; value: number } | null {
+const warnToStderr: WarnSink = (message) => {
+  console.warn(message);
+};
+
+function parseMetricLine(line: string, warn: WarnSink): { name: string; value: number } | null {
   const trimmed = line.trim();
 
   const reject = (): null => {
-    console.warn(`Failed to parse METRIC line: ${trimmed}`);
+    warn(`Failed to parse METRIC line: ${trimmed}`);
     return null;
   };
 
@@ -47,10 +51,10 @@ function parseMetricLine(line: string): { name: string; value: number } | null {
 const metricLinesAdapter: Adapter = {
   name: "metric-lines",
 
-  parse(stdout: string): Record<string, number> {
+  parse(stdout: string, warn: WarnSink = warnToStderr): Record<string, number> {
     const parsed = stdout
       .split("\n")
-      .map(parseMetricLine)
+      .map((line) => parseMetricLine(line, warn))
       .filter((r) => r !== null);
 
     if (parsed.length === 0) {

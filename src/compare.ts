@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { getAdapter, AdapterError } from "./adapters/index.js";
-import type { Adapter } from "./adapters/types.js";
+import type { Adapter, WarnSink } from "./adapters/types.js";
 import { resolveMetricMeta, type ConfigKinds, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
@@ -142,6 +142,11 @@ export interface CompareOptions {
   configKinds?: ConfigKinds;
   /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
   onProgress?: (step: ProgressStep) => void;
+  /**
+   * Where the adapter's complaints about unreadable bench output go. Omitted,
+   * the adapter falls back to stderr.
+   */
+  warn?: WarnSink;
 }
 
 /**
@@ -240,7 +245,10 @@ async function collectSamples(
   adapter: Adapter,
   baseline: TargetContext,
   candidates: readonly TargetContext[],
-  options: Pick<CompareOptions, "bench" | "prepare" | "samples" | "timeoutSeconds" | "onProgress">,
+  options: Pick<
+    CompareOptions,
+    "bench" | "prepare" | "samples" | "timeoutSeconds" | "onProgress" | "warn"
+  >,
   signal: AbortSignal,
 ): Promise<RunSamples> {
   const timeoutMs = options.timeoutSeconds * 1000;
@@ -264,7 +272,7 @@ async function collectSamples(
         label: ctx.label,
       });
       const stdout = await runCommand("bench", ctx, options.bench, timeoutMs, signal, round + 1);
-      samples.push(adapter.parse(stdout));
+      samples.push(adapter.parse(stdout, options.warn));
     }
   }
 

@@ -779,14 +779,18 @@ describe("createProgram", () => {
       async function setupProgressMocks(
         steps: ProgressStep[],
         mockReturn?: ComparisonResult | Error,
+        duringRun?: (opts: CompareOptions) => void,
       ): Promise<{ stderrSpy: ReturnType<typeof vi.spyOn> }> {
         const { compareMock } = await setupMocks(mockReturn);
 
         // Progress steps fire before compare settles, mirroring the real onProgress timing.
+        // `duringRun` then runs with the progress line already on screen, which is
+        // where a real adapter warning would land.
         vi.mocked(compareMock).mockImplementation((opts: CompareOptions) => {
           for (const step of steps) {
             opts.onProgress?.(step);
           }
+          duringRun?.(opts);
           return mockReturn instanceof Error
             ? Promise.reject(mockReturn)
             : Promise.resolve(mockReturn ?? createComparisonResult());
@@ -1080,6 +1084,77 @@ describe("createProgram", () => {
           expect(progressWrite).toBeDefined();
           expect(progressWrite).toContain("sample 3/10 · baseline · estimating time left…");
           expect(progressWrite).not.toContain("\x1b[2m");
+        });
+      });
+
+      describe("adapter warnings raised mid-run", () => {
+        const WARNING = "Failed to parse METRIC line: METRIC foo=bar";
+        const SAMPLE_STEP: ProgressStep = { kind: "sample", index: 1, total: 5, label: "baseline" };
+        const SAMPLE_LINE = "sample 1/5 · baseline";
+
+        /** Index of the stderr write carrying the adapter warning, or -1. */
+        function warningWriteIndex(stderrSpy: ReturnType<typeof vi.spyOn>): number {
+          return stderrWrites(stderrSpy).findIndex(
+            (write) => typeof write === "string" && write.includes(WARNING),
+          );
+        }
+
+        it("clears the overwritten progress line before the warning and redraws it after", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useNoColorTty();
+          const { stderrSpy } = await setupProgressMocks([SAMPLE_STEP], undefined, (opts) => {
+            opts.warn?.(WARNING);
+          });
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — the warning owns a clean line: cleared before, progress redrawn after
+          const writes = stderrWrites(stderrSpy).map((write) => String(write));
+          const warnIndex = warningWriteIndex(stderrSpy);
+          expect.soft(warnIndex).toBeGreaterThan(0);
+          expect.soft(writes[warnIndex - 1]).toBe("\r\x1b[K");
+          expect(writes.slice(warnIndex + 1)).toContainEqual(expect.stringContaining(SAMPLE_LINE));
+        });
+
+        it("clears the spinner before the warning when the spinner owns the line", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useColorTty();
+          mockSpinnerInstance.isSpinning = true;
+          const { stderrSpy } = await setupProgressMocks([SAMPLE_STEP], undefined, (opts) => {
+            opts.warn?.(WARNING);
+          });
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — spinner.clear() precedes the warning write
+          const warnIndex = warningWriteIndex(stderrSpy);
+          expect.soft(warnIndex).toBeGreaterThanOrEqual(0);
+          const clearOrder = mockSpinnerInstance.clear.mock.invocationCallOrder.at(0) ?? Infinity;
+          const warnOrder = stderrSpy.mock.invocationCallOrder[warnIndex] ?? -Infinity;
+          expect(clearOrder).toBeLessThan(warnOrder);
+        });
+
+        it("prints the warning untouched when no progress line is on screen", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          process.stderr.isTTY = false;
+          const { stderrSpy } = await setupProgressMocks([SAMPLE_STEP], undefined, (opts) => {
+            opts.warn?.(WARNING);
+          });
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — nothing is cleared or redrawn around a warning with no line to protect
+          const writes = stderrWrites(stderrSpy).map((write) => String(write));
+          const warnIndex = warningWriteIndex(stderrSpy);
+          expect.soft(warnIndex).toBeGreaterThanOrEqual(0);
+          expect.soft(writes[warnIndex]).toBe(`${WARNING}\n`);
+          expect(writes).not.toContainEqual("\r\x1b[K");
         });
       });
 

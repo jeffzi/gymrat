@@ -139,6 +139,21 @@ describe("metric-lines adapter", () => {
       });
     });
 
+    describe("injected warning sink", () => {
+      it("hands the warning to the sink and leaves stderr untouched", () => {
+        const warnings: string[] = [];
+
+        const stderr = captureStderr(() => {
+          metricLinesAdapter.parse("METRIC foo=bar\nMETRIC valid=1", (message) => {
+            warnings.push(message);
+          });
+        });
+
+        expect.soft(warnings).toStrictEqual(["Failed to parse METRIC line: METRIC foo=bar"]);
+        expect(stderr).toBe("");
+      });
+    });
+
     describe("repeated metric name → median", () => {
       it("returns median for odd count of values", () => {
         const stdout = "METRIC x=1\nMETRIC x=3\nMETRIC x=2";
