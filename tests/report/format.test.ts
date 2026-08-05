@@ -22,19 +22,27 @@ import {
   withColor,
 } from "../../src/report/format.js";
 import type { ReportOptions } from "../../src/report/types.js";
-import type {
-  ApproximateVerdictValue,
-  BandVerdict,
-  ExactVerdict,
-  GeomeanResult,
-  SignedRankVerdict,
-} from "../../src/verdict/verdict.js";
+import type { ApproximateVerdictValue, GeomeanResult } from "../../src/verdict/verdict.js";
 import {
   bandMetric,
+  bandVerdict,
+  exactVerdict,
   geomeanOf,
+  signedRankVerdict,
   type Metrics,
   type MetricEntry,
 } from "../fixtures/comparison-result.js";
+
+/** Stubs the environment so `styleText` emits ANSI codes. */
+function forceColor(): void {
+  vi.stubEnv("FORCE_COLOR", "1");
+}
+
+/** Stubs the environment so `styleText` never emits ANSI codes. */
+function suppressColor(): void {
+  vi.stubEnv("FORCE_COLOR", undefined);
+  vi.stubEnv("NO_COLOR", "1");
+}
 
 /** One candidate's signed-rank outcome against the shared baseline. */
 interface CandidateSpec {
@@ -82,40 +90,6 @@ function approximateMetric(options: {
 }): MetricEntry {
   const { direction = "lower", ...candidate } = options;
   return metricFor([candidate], direction);
-}
-
-/** A noise-band verdict, tied pairs and all. */
-function bandVerdict(overrides: Partial<BandVerdict> = {}): BandVerdict {
-  return {
-    verdict: "no-signal",
-    method: "band",
-    delta: -0.5,
-    n: 10,
-    usableN: 3,
-    band: 2.5,
-    noisePct: 2.5,
-    noiseAbs: 2.5,
-    ...overrides,
-  };
-}
-
-/** A verdict the Wilcoxon signed-rank test produced. */
-function signedRankVerdict(overrides: Partial<SignedRankVerdict> = {}): SignedRankVerdict {
-  return {
-    verdict: "no-signal",
-    method: "signed-rank",
-    delta: 0.2,
-    n: 10,
-    p: 0.49,
-    noisePct: 2.5,
-    noiseAbs: 2.5,
-    ...overrides,
-  };
-}
-
-/** A verdict read straight off a counted metric, with no statistics behind it. */
-function exactVerdict(overrides: Partial<ExactVerdict> = {}): ExactVerdict {
-  return { verdict: "no-signal", method: "exact", delta: 0, n: 10, ...overrides };
 }
 
 /** A metric the candidate never reported, so no verdict could be computed. */
@@ -650,7 +624,7 @@ describe("formatLabel", () => {
   });
 
   it("wraps the label in ANSI codes for the requested styles when color is forced", () => {
-    vi.stubEnv("FORCE_COLOR", "1");
+    forceColor();
 
     const styled = formatLabel("Hint:", ["yellow", "underline"]);
 
@@ -661,8 +635,7 @@ describe("formatLabel", () => {
   });
 
   it("returns the bare label when color is suppressed", () => {
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("NO_COLOR", "1");
+    suppressColor();
     expect(formatLabel("Hint:", ["yellow", "underline"])).toBe("Hint:");
   });
 });
@@ -690,7 +663,7 @@ describe("styleWithin", () => {
         expected: "vs \x1b[1mvs\x1b[22m",
       },
     ])("$desc", ({ options, expected }) => {
-      vi.stubEnv("FORCE_COLOR", "1");
+      forceColor();
 
       expect(styleWithin("vs vs", "vs", ["bold"], options)).toBe(expected);
     });
@@ -706,7 +679,7 @@ describe("styleWithin", () => {
       { desc: "a capture group", pattern: "$1" },
       { desc: "an escaped dollar", pattern: "$$" },
     ])("styles $pattern, which means $desc, as the literal text it is", ({ pattern }) => {
-      vi.stubEnv("FORCE_COLOR", "1");
+      forceColor();
 
       expect(styleWithin(`cost ${pattern} up`, pattern, ["bold"])).toBe(
         `cost \x1b[1m${pattern}\x1b[22m up`,
@@ -715,7 +688,7 @@ describe("styleWithin", () => {
   });
 
   it("returns the cell unchanged when the marker is absent", () => {
-    vi.stubEnv("FORCE_COLOR", "1");
+    forceColor();
 
     expect(styleWithin("vs main", "absent", ["bold"])).toBe("vs main");
   });
@@ -736,27 +709,17 @@ describe("verdictSummaryParts", () => {
   };
 
   it("returns parts with no ANSI escapes when color is suppressed", () => {
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("NO_COLOR", "1");
+    suppressColor();
     const parts = verdictSummaryParts(mixed, 0);
 
     expect(parts.join("")).not.toContain("\x1b[");
   });
 
-  it("tallies identical metrics apart from the ones within noise", () => {
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("NO_COLOR", "1");
+  it("tallies identical and single-pair metrics apart from the ones within noise", () => {
+    suppressColor();
     const parts = verdictSummaryParts(mixed, 0);
 
     expect.soft(parts.find((p) => p.includes("identical"))).toBe("= 1 identical");
-    expect(parts.find((p) => p.includes("within noise"))).toBe("~ 1 within noise");
-  });
-
-  it("tallies metrics resting on a single pair apart from the ones within noise", () => {
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("NO_COLOR", "1");
-    const parts = verdictSummaryParts(mixed, 0);
-
     expect.soft(parts.find((p) => p.includes("inconclusive"))).toBe("? 1 inconclusive");
     expect(parts.find((p) => p.includes("within noise"))).toBe("~ 1 within noise");
   });
@@ -767,7 +730,7 @@ describe("verdictSummaryParts", () => {
     { label: "unstable", code: "33", color: "yellow" },
     { label: "identical", code: "36", color: "cyan" },
   ])("styles the non-zero $label part $color when color is forced", ({ label, code }) => {
-    vi.stubEnv("FORCE_COLOR", "1");
+    forceColor();
 
     const parts = verdictSummaryParts(mixed, 0);
     const part = parts.find((p) => p.includes(label));
@@ -778,7 +741,7 @@ describe("verdictSummaryParts", () => {
   it.each([{ label: "regressed" }, { label: "identical" }])(
     "dims the zero-count $label part when color is forced",
     ({ label }) => {
-      vi.stubEnv("FORCE_COLOR", "1");
+      forceColor();
 
       const onlyImproved: Metrics = {
         "faster/time": approximateMetric({ verdict: "improved", delta: -10 }),
@@ -792,7 +755,7 @@ describe("verdictSummaryParts", () => {
   );
 
   it("dims the within-noise part regardless of count when color is forced", () => {
-    vi.stubEnv("FORCE_COLOR", "1");
+    forceColor();
 
     const parts = verdictSummaryParts(mixed, 0);
     const noisePart = parts.find((p) => p.includes("within noise"));
@@ -812,8 +775,7 @@ describe("methodFooterLines", () => {
   });
 
   it("returns lines with no ANSI escapes when color is suppressed", () => {
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("NO_COLOR", "1");
+    suppressColor();
     const metrics: Metrics = {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
@@ -826,7 +788,7 @@ describe("methodFooterLines", () => {
   });
 
   it("dims the descriptive verdict line when color is forced", () => {
-    vi.stubEnv("FORCE_COLOR", "1");
+    forceColor();
 
     const metrics: Metrics = {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
@@ -875,8 +837,7 @@ describe("methodFooterLines", () => {
   ];
 
   it.each(bandCases)("phrases the band line by cause when $cause", ({ metrics, expected }) => {
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("NO_COLOR", "1");
+    suppressColor();
     expect(bandLinesFor(metrics)).toStrictEqual(expected);
   });
 });
@@ -889,7 +850,7 @@ describe("hintFooterLines", () => {
   });
 
   it("does not dim the hint line when color is forced", () => {
-    vi.stubEnv("FORCE_COLOR", "1");
+    forceColor();
 
     const metrics: Metrics = { "a/time": bandMetric({ n: 4 }) };
 

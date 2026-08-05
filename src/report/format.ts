@@ -1,9 +1,9 @@
 import { styleText } from "node:util";
 
-import { assertNever } from "../errors.js";
 import {
   MIN_BAND_N,
   MIN_WILCOXON_N,
+  type ApproximateVerdictValue,
   type GeomeanResult,
   type Method,
   type MetricVerdict,
@@ -395,6 +395,20 @@ export interface VerdictCounts {
 }
 
 /**
+ * Maps a verdict's outcome to its {@link VerdictCounts} field.
+ *
+ * A `Record` over the full {@link ApproximateVerdictValue} union keeps this
+ * exhaustive at compile time: a new verdict variant fails to type-check here
+ * until this map accounts for it.
+ */
+const COUNT_KEY: Record<ApproximateVerdictValue, keyof VerdictCounts> = {
+  improved: "improved",
+  regressed: "regressed",
+  unstable: "unstable",
+  "no-signal": "noSignal",
+};
+
+/**
  * Tally the stored verdict classes one candidate earned against the baseline.
  *
  * These are the verdicts as decided, not as displayed — the JSON report is
@@ -411,23 +425,7 @@ export function countVerdicts(metrics: MetricComparisons, candidateIndex: number
   for (const metric of Object.values(metrics)) {
     const verdict = metric.candidates[candidateIndex]?.verdict;
     if (verdict === undefined) continue;
-    const outcome = verdict.verdict;
-    switch (outcome) {
-      case "improved":
-        counts.improved += 1;
-        break;
-      case "regressed":
-        counts.regressed += 1;
-        break;
-      case "unstable":
-        counts.unstable += 1;
-        break;
-      case "no-signal":
-        counts.noSignal += 1;
-        break;
-      default:
-        assertNever(outcome);
-    }
+    counts[COUNT_KEY[verdict.verdict]] += 1;
   }
   return counts;
 }
@@ -968,9 +966,12 @@ function bandFallbacks(metrics: MetricComparisons): BandFallbacks {
  *
  * Every line is dimmed via `styleText` auto-detection.
  */
-export function methodFooterLines(metrics: MetricComparisons): string[] {
+export function methodFooterLines(
+  metrics: MetricComparisons,
+  fallbacks: BandFallbacks = bandFallbacks(metrics),
+): string[] {
   const signedRank = pairCounts(metrics, "signed-rank");
-  const { shortage, ties } = bandFallbacks(metrics);
+  const { shortage, ties } = fallbacks;
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
@@ -1003,8 +1004,9 @@ export function methodFooterLines(metrics: MetricComparisons): string[] {
 export function hintFooterLines(
   metrics: MetricComparisons,
   formatHint: (hint: string) => string,
+  fallbacks: BandFallbacks = bandFallbacks(metrics),
 ): string[] {
-  return bandFallbacks(metrics).shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
+  return fallbacks.shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
 }
 
 /**
@@ -1019,5 +1021,9 @@ export function footerLines(
   verbose: boolean,
   formatHint: (hint: string) => string,
 ): string[] {
-  return [...(verbose ? methodFooterLines(metrics) : []), ...hintFooterLines(metrics, formatHint)];
+  const fallbacks = bandFallbacks(metrics);
+  return [
+    ...(verbose ? methodFooterLines(metrics, fallbacks) : []),
+    ...hintFooterLines(metrics, formatHint, fallbacks),
+  ];
 }

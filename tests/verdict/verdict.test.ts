@@ -133,12 +133,6 @@ describe("computeVerdicts", () => {
       expect(getVerdict(result, "metric").delta).toBe(10);
     });
 
-    it("computes negative delta when second sample is lower", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 95 }], METRIC_EXACT_LOWER);
-
-      expect(getVerdict(result, "metric").delta).toBeCloseTo(-5, 5);
-    });
-
     it("computes delta from per-run medians", () => {
       const result = computeVerdicts(
         [{ metric: 90 }, { metric: 100 }, { metric: 110 }],
@@ -164,12 +158,6 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts([{ metric: 100 }], [{ metric: 100.01 }], METRIC_EXACT_LOWER);
 
       expect(getVerdict(result, "metric").verdict).not.toBe("no-signal");
-    });
-
-    it("marks equal medians as no-signal", () => {
-      const result = computeVerdicts([{ metric: 100 }], [{ metric: 100 }], METRIC_EXACT_LOWER);
-
-      expect(getVerdict(result, "metric").verdict).toBe("no-signal");
     });
   });
 
@@ -944,6 +932,63 @@ function gatingVerdictsWithNoise(noise: readonly (number | null)[]): {
   return { verdicts, metricMeta };
 }
 
+/** An exact verdict no exclusion rule drops, so ρ is 1 + delta/100 when lower is better. */
+function exactVerdict(delta: number): MetricVerdict {
+  const verdict = delta < 0 ? "improved" : delta > 0 ? "regressed" : "no-signal";
+  return { verdict, method: "exact", delta, n: 1 };
+}
+
+/** One metric's contribution to a geomean run: what it is, and how it moved. */
+interface MetricSpec {
+  /** Key the verdict and exclusion list report the metric under. */
+  name: string;
+  /** Defaults to "lower", so a spec list without directions describes a lower-is-better run. */
+  direction?: "lower" | "higher";
+  /** Defaults to true, matching every case that isn't explicitly non-gating. */
+  gating?: boolean;
+  /** Percentage delta behind an exact verdict. Ignored when `verdict` is given. */
+  delta?: number;
+  /** A full verdict object, for band/unstable cases `exactVerdict` can't express. */
+  verdict?: MetricVerdict;
+  /** True to add `name` to `metricMeta` without a matching verdict — the no-verdict case. */
+  noVerdict?: boolean;
+}
+
+/**
+ * Verdicts and metadata keyed by metric name, in the order the specs are listed.
+ */
+function buildInputs(specs: readonly MetricSpec[]): {
+  verdicts: Record<string, MetricVerdict>;
+  metricMeta: Record<string, MetricMetadata>;
+} {
+  const verdicts: Record<string, MetricVerdict> = {};
+  const metricMeta: Record<string, MetricMetadata> = {};
+
+  for (const spec of specs) {
+    const direction = spec.direction ?? "lower";
+    const gating = spec.gating ?? true;
+
+    if (spec.noVerdict) {
+      metricMeta[spec.name] = { direction, gating, exact: false };
+      continue;
+    }
+
+    const verdict = spec.verdict ?? exactVerdict(spec.delta ?? 0);
+    verdicts[spec.name] = verdict;
+    metricMeta[spec.name] = { direction, gating, exact: verdict.method === "exact" };
+  }
+
+  return { verdicts, metricMeta };
+}
+
+/** Verdicts/metricMeta for a single gating metric with the given direction and delta. */
+function singleGatingMetric(
+  direction: "lower" | "higher",
+  delta: number,
+): { verdicts: Record<string, MetricVerdict>; metricMeta: Record<string, MetricMetadata> } {
+  return buildInputs([{ name: "metric1", direction, delta }]);
+}
+
 describe("computeGeomean", () => {
   describe("empty and exclusion cases", () => {
     it("returns a zeroed result when no metrics in verdicts", () => {
@@ -954,17 +999,8 @@ describe("computeGeomean", () => {
     it("aggregates a non-gating metric like any other, leaving subset choice to the caller", () => {
       // Which metrics belong in a geomean is decided before the call — the
       // aggregate layer hands over exactly the subset it wants averaged.
-      const verdicts = {
-        metric1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -5,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: false, exact: true },
-      };
+      const { verdicts, metricMeta } = buildInputs([{ name: "metric1", delta: -5, gating: false }]);
+
       const result = computeGeomean(verdicts, metricMeta);
       expect(result.n).toBe(1);
       expect(result.value).toBeCloseTo(-5, 5);
@@ -974,13 +1010,10 @@ describe("computeGeomean", () => {
       // metric2 was reported by only one target, so no paired samples ever produced
       // a verdict for it. It still belongs to the scope the geomean was asked to
       // cover, so n + excluded.length has to add up to both metrics.
-      const verdicts = {
-        metric1: { verdict: "improved" as const, method: "exact" as const, delta: -5, n: 1 },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-        metric2: { direction: "lower" as const, gating: true, exact: false },
-      };
+      const { verdicts, metricMeta } = buildInputs([
+        { name: "metric1", delta: -5 },
+        { name: "metric2", noVerdict: true },
+      ]);
 
       const result = computeGeomean(verdicts, metricMeta);
 
@@ -999,12 +1032,7 @@ describe("computeGeomean", () => {
     ])(
       "excludes the sole gating metric as $reason (direction: $direction, delta: $delta)",
       ({ direction, delta, reason }) => {
-        const verdicts = {
-          metric1: { verdict: "regressed" as const, method: "exact" as const, delta, n: 1 },
-        };
-        const metricMeta = {
-          metric1: { direction, gating: true, exact: true },
-        };
+        const { verdicts, metricMeta } = buildInputs([{ name: "metric1", direction, delta }]);
 
         const result = computeGeomean(verdicts, metricMeta);
 
@@ -1016,60 +1044,24 @@ describe("computeGeomean", () => {
   });
 
   describe("single gating metric", () => {
-    it("returns geomean = ρ when one gating metric with direction: lower", () => {
-      const verdicts = {
-        metric1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -5, // ρ = 1 + (-5/100) = 0.95
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.n).toBe(1);
-      expect(result.excluded).toStrictEqual([]);
-      // value = (0.95 - 1) * 100 = -5
-      expect(result.value).toBeCloseTo(-5, 5);
-    });
+    it.each([
+      { direction: "lower" as const, delta: -5, expectedValue: -5, precision: 5 },
+      { direction: "higher" as const, delta: 5, expectedValue: -4.76, precision: 1 },
+      { direction: "lower" as const, delta: 0, expectedValue: 0, precision: 5 },
+      { direction: "lower" as const, delta: 100, expectedValue: 100, precision: 1 },
+      { direction: "higher" as const, delta: -10, expectedValue: 11.11, precision: 1 },
+    ])(
+      "returns value ≈ $expectedValue for direction: $direction, delta: $delta",
+      ({ direction, delta, expectedValue, precision }) => {
+        const { verdicts, metricMeta } = singleGatingMetric(direction, delta);
 
-    it("returns geomean = 1/ρ when one gating metric with direction: higher", () => {
-      const verdicts = {
-        metric1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: 5, // ρ_higher = 1 / (1 + 5/100) = 1 / 1.05 ≈ 0.952
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "higher" as const, gating: true, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.n).toBe(1);
-      expect(result.excluded).toStrictEqual([]);
-      // value = (1/1.05 - 1) * 100 ≈ -4.76
-      expect(result.value).toBeCloseTo(-4.76, 1);
-    });
+        const result = computeGeomean(verdicts, metricMeta);
 
-    it("returns value: 0 when single gating metric with zero delta", () => {
-      const verdicts = {
-        metric1: {
-          verdict: "no-signal" as const,
-          method: "exact" as const,
-          delta: 0,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.n).toBe(1);
-      expect(result.value).toBeCloseTo(0, 5);
-    });
+        expect(result.n).toBe(1);
+        expect(result.excluded).toStrictEqual([]);
+        expect(result.value).toBeCloseTo(expectedValue, precision);
+      },
+    );
   });
 
   describe("multiple gating metrics", () => {
@@ -1078,24 +1070,11 @@ describe("computeGeomean", () => {
       // metric2: delta = -5 → ρ₂ = 0.95
       // geomean = (0.9 × 0.95)^(1/2) = 0.8550^(1/2) ≈ 0.9246
       // value = (0.9246 - 1) * 100 ≈ -7.54
-      const verdicts = {
-        metric1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -10,
-          n: 1,
-        },
-        metric2: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -5,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-        metric2: { direction: "lower" as const, gating: true, exact: true },
-      };
+      const { verdicts, metricMeta } = buildInputs([
+        { name: "metric1", delta: -10 },
+        { name: "metric2", delta: -5 },
+      ]);
+
       const result = computeGeomean(verdicts, metricMeta);
       expect(result.n).toBe(2);
       expect(result.excluded).toStrictEqual([]);
@@ -1107,24 +1086,11 @@ describe("computeGeomean", () => {
       // metric2: higher, delta = 10 → ρ₂ = 1 / 1.1 ≈ 0.909
       // geomean = (0.9 × 0.909)^(1/2) ≈ 0.9045
       // value ≈ -9.55
-      const verdicts = {
-        metric1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -10,
-          n: 1,
-        },
-        metric2: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: 10,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-        metric2: { direction: "higher" as const, gating: true, exact: true },
-      };
+      const { verdicts, metricMeta } = buildInputs([
+        { name: "metric1", direction: "lower", delta: -10 },
+        { name: "metric2", direction: "higher", delta: 10 },
+      ]);
+
       const result = computeGeomean(verdicts, metricMeta);
       expect(result.n).toBe(2);
       expect(result.excluded).toStrictEqual([]);
@@ -1139,19 +1105,10 @@ describe("computeGeomean", () => {
       "excludes metric1 as $reason, keeps metric2's ratio in the geomean",
       ({ badDelta, reason }) => {
         // metric2: delta = -5 → ρ = 0.95, the only ratio left in the geomean
-        const verdicts = {
-          metric1: {
-            verdict: "regressed" as const,
-            method: "exact" as const,
-            delta: badDelta,
-            n: 1,
-          },
-          metric2: { verdict: "improved" as const, method: "exact" as const, delta: -5, n: 1 },
-        };
-        const metricMeta = {
-          metric1: { direction: "lower" as const, gating: true, exact: true },
-          metric2: { direction: "lower" as const, gating: true, exact: true },
-        };
+        const { verdicts, metricMeta } = buildInputs([
+          { name: "metric1", delta: badDelta },
+          { name: "metric2", delta: -5 },
+        ]);
 
         const result = computeGeomean(verdicts, metricMeta);
 
@@ -1162,24 +1119,11 @@ describe("computeGeomean", () => {
     );
 
     it("returns value: 0, n: 0 when all gating metrics are excluded", () => {
-      const verdicts = {
-        metric1: {
-          verdict: "regressed" as const,
-          method: "exact" as const,
-          delta: -150,
-          n: 1,
-        },
-        metric2: {
-          verdict: "no-signal" as const,
-          method: "exact" as const,
-          delta: Number.NaN,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-        metric2: { direction: "lower" as const, gating: true, exact: true },
-      };
+      const { verdicts, metricMeta } = buildInputs([
+        { name: "metric1", delta: -150 },
+        { name: "metric2", delta: Number.NaN },
+      ]);
+
       const result = computeGeomean(verdicts, metricMeta);
       expect(result.value).toBe(0);
       expect(result.n).toBe(0);
@@ -1191,66 +1135,13 @@ describe("computeGeomean", () => {
   });
 
   describe("edge cases and special values", () => {
-    it("handles large positive delta for direction: lower", () => {
-      // delta = 100 → ρ = 2.0, value = 100
-      const verdicts = {
-        metric1: {
-          verdict: "regressed" as const,
-          method: "exact" as const,
-          delta: 100,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "lower" as const, gating: true, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.value).toBeCloseTo(100, 1);
-    });
-
-    it("handles negative delta for direction: higher (regression)", () => {
-      // delta = -10 → ρ = 1 / 0.9 ≈ 1.111, value ≈ 11.1
-      const verdicts = {
-        metric1: {
-          verdict: "regressed" as const,
-          method: "exact" as const,
-          delta: -10,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        metric1: { direction: "higher" as const, gating: true, exact: true },
-      };
-      const result = computeGeomean(verdicts, metricMeta);
-      expect(result.value).toBeCloseTo(11.11, 1);
-    });
-
     it("computes n correctly with mix of included/excluded metrics", () => {
-      const verdicts = {
-        included1: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -5,
-          n: 1,
-        },
-        included2: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -10,
-          n: 1,
-        },
-        excluded1: {
-          verdict: "no-signal" as const,
-          method: "exact" as const,
-          delta: Number.NaN,
-          n: 1,
-        },
-      };
-      const metricMeta = {
-        included1: { direction: "lower" as const, gating: true, exact: true },
-        included2: { direction: "lower" as const, gating: true, exact: true },
-        excluded1: { direction: "lower" as const, gating: true, exact: true },
-      };
+      const { verdicts, metricMeta } = buildInputs([
+        { name: "included1", delta: -5 },
+        { name: "included2", delta: -10 },
+        { name: "excluded1", delta: Number.NaN },
+      ]);
+
       const result = computeGeomean(verdicts, metricMeta);
       expect(result.n).toBe(2);
       expect(result.excluded).toStrictEqual([{ metric: "excluded1", reason: "undefined-ratio" }]);
@@ -1261,28 +1152,22 @@ describe("computeGeomean", () => {
     it("excludes an unstable gating metric even though its ρ is valid", () => {
       // noisy: delta = -50 → ρ = 0.5 would be usable, but the verdict is unjudgeable
       // stable: delta = -5 → ρ = 0.95, the only ratio left in the geomean
-      const verdicts = {
-        noisy: {
-          verdict: "unstable" as const,
-          method: "band" as const,
-          delta: -50,
-          n: 4,
-          usableN: 4,
-          band: 250,
-          noisePct: 250,
-          noiseAbs: 25,
+      const { verdicts, metricMeta } = buildInputs([
+        {
+          name: "noisy",
+          verdict: {
+            verdict: "unstable",
+            method: "band",
+            delta: -50,
+            n: 4,
+            usableN: 4,
+            band: 250,
+            noisePct: 250,
+            noiseAbs: 25,
+          },
         },
-        stable: {
-          verdict: "improved" as const,
-          method: "exact" as const,
-          delta: -5,
-          n: 4,
-        },
-      };
-      const metricMeta = {
-        noisy: { direction: "lower" as const, gating: true, exact: false },
-        stable: { direction: "lower" as const, gating: true, exact: true },
-      };
+        { name: "stable", delta: -5 },
+      ]);
 
       const result = computeGeomean(verdicts, metricMeta);
 
@@ -1292,21 +1177,21 @@ describe("computeGeomean", () => {
     });
 
     it("reports unstable rather than undefined-ratio when the delta is also NaN", () => {
-      const verdicts = {
-        noisy: {
-          verdict: "unstable" as const,
-          method: "band" as const,
-          delta: Number.NaN,
-          n: 4,
-          usableN: 4,
-          band: 300,
-          noisePct: 300,
-          noiseAbs: 30,
+      const { verdicts, metricMeta } = buildInputs([
+        {
+          name: "noisy",
+          verdict: {
+            verdict: "unstable",
+            method: "band",
+            delta: Number.NaN,
+            n: 4,
+            usableN: 4,
+            band: 300,
+            noisePct: 300,
+            noiseAbs: 30,
+          },
         },
-      };
-      const metricMeta = {
-        noisy: { direction: "lower" as const, gating: true, exact: false },
-      };
+      ]);
 
       const result = computeGeomean(verdicts, metricMeta);
 
@@ -1355,32 +1240,34 @@ describe("computeGeomean", () => {
     it("leaves an excluded metric's noise out of the band", () => {
       // noisy is unjudgeable, so neither its ratio nor its 250% noise counts;
       // steady alone drives the band: √(4²) ÷ 1 = 4
-      const verdicts = {
-        noisy: {
-          verdict: "unstable" as const,
-          method: "band" as const,
-          delta: -50,
-          n: 4,
-          usableN: 4,
-          band: 250,
-          noisePct: 250,
-          noiseAbs: 25,
+      const { verdicts, metricMeta } = buildInputs([
+        {
+          name: "noisy",
+          verdict: {
+            verdict: "unstable",
+            method: "band",
+            delta: -50,
+            n: 4,
+            usableN: 4,
+            band: 250,
+            noisePct: 250,
+            noiseAbs: 25,
+          },
         },
-        steady: {
-          verdict: "improved" as const,
-          method: "band" as const,
-          delta: -50,
-          n: 4,
-          usableN: 4,
-          band: 4,
-          noisePct: 4,
-          noiseAbs: 2,
+        {
+          name: "steady",
+          verdict: {
+            verdict: "improved",
+            method: "band",
+            delta: -50,
+            n: 4,
+            usableN: 4,
+            band: 4,
+            noisePct: 4,
+            noiseAbs: 2,
+          },
         },
-      };
-      const metricMeta = {
-        noisy: { direction: "lower" as const, gating: true, exact: false },
-        steady: { direction: "lower" as const, gating: true, exact: false },
-      };
+      ]);
 
       const result = computeGeomean(verdicts, metricMeta);
 

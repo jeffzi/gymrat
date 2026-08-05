@@ -17,7 +17,7 @@ function extractJson(stdout: string): Record<string, unknown> {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stdout.slice(startIdx, endIdx + 1)) as unknown;
+    parsed = JSON.parse(stdout.slice(startIdx, endIdx + 1));
   } catch (err) {
     throw new AdapterError(`Failed to parse JSON: ${messageOf(err)}`);
   }

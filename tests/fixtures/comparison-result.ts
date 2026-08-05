@@ -4,7 +4,13 @@ import type {
   ComparisonResult,
 } from "../../src/report/types.js";
 import type { KindAggregate } from "../../src/verdict/aggregate.js";
-import type { ApproximateVerdictValue, GeomeanResult } from "../../src/verdict/verdict.js";
+import type {
+  ApproximateVerdictValue,
+  BandVerdict,
+  ExactVerdict,
+  GeomeanResult,
+  SignedRankVerdict,
+} from "../../src/verdict/verdict.js";
 
 /** The name-keyed map of all metrics compared in a run. */
 export type Metrics = ComparisonResult["metrics"];
@@ -200,6 +206,40 @@ export function exactMetric(options: {
     ],
     meta: { direction: "lower", gating: true, exact: true, unit, kind: "other", shortName: "heap" },
   };
+}
+
+/** A noise-band verdict, tied pairs and all. */
+export function bandVerdict(overrides: Partial<BandVerdict> = {}): BandVerdict {
+  return {
+    verdict: "no-signal",
+    method: "band",
+    delta: -0.5,
+    n: 10,
+    usableN: 3,
+    band: 2.5,
+    noisePct: 2.5,
+    noiseAbs: 2.5,
+    ...overrides,
+  };
+}
+
+/** A verdict the Wilcoxon signed-rank test produced. */
+export function signedRankVerdict(overrides: Partial<SignedRankVerdict> = {}): SignedRankVerdict {
+  return {
+    verdict: "no-signal",
+    method: "signed-rank",
+    delta: 0.2,
+    n: 10,
+    p: 0.49,
+    noisePct: 2.5,
+    noiseAbs: 2.5,
+    ...overrides,
+  };
+}
+
+/** A verdict read straight off a counted metric, with no statistics behind it. */
+export function exactVerdict(overrides: Partial<ExactVerdict> = {}): ExactVerdict {
+  return { verdict: "no-signal", method: "exact", delta: 0, n: 10, ...overrides };
 }
 
 /** One metric judged for several candidates against a single shared baseline. */

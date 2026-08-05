@@ -5,8 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderReport } from "../../src/report/text.js";
 import type { ComparisonResult, ReportOptions } from "../../src/report/types.js";
 import {
+  bandMetric,
+  bandVerdict,
   createCandidate,
   createComparisonResult,
+  exactMetric,
+  exactVerdict,
   geomeanOf,
   groupedComparison,
   kindMetric,
@@ -14,11 +18,10 @@ import {
   metricMeta,
   multiCandidateResult,
   nWayKindMetric,
-  signedRankMetric,
-  bandMetric,
-  exactMetric,
   nWayMetric,
   otherKind,
+  signedRankMetric,
+  signedRankVerdict,
   singleSampleResult,
   timeKind,
   twoKindMetrics,
@@ -351,7 +354,7 @@ describe("renderReport", () => {
             candidates: [
               {
                 median: 120,
-                verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 10 },
+                verdict: exactVerdict({ delta: Number.NaN }),
               },
             ],
             meta: metricMeta("nan-delta/count", { exact: true }),
@@ -544,9 +547,7 @@ describe("renderReport", () => {
           }),
           "second/metric": {
             baselineMedian: 120,
-            candidates: [
-              { median: 120, verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 10 } },
-            ],
+            candidates: [{ median: 120, verdict: exactVerdict() }],
             meta: metricMeta("second/metric", { exact: true }),
           },
         }),
@@ -639,28 +640,18 @@ describe("renderReport", () => {
               {
                 median: 1425,
                 spread: 1,
-                verdict: {
-                  verdict: "improved",
-                  method: "signed-rank",
-                  delta: -10,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "improved", delta: -10, p: 0.002 }),
               },
               {
                 median: 1698,
                 spread: 2,
-                verdict: {
+                verdict: signedRankVerdict({
                   verdict: "unstable",
-                  method: "signed-rank",
                   delta: -2.1,
-                  n: 10,
                   p: 0.32,
                   noisePct: 30,
                   noiseAbs: 30,
-                },
+                }),
               },
             ],
             meta: metricMeta("decode/time", { unit: "ns" }),
@@ -672,28 +663,12 @@ describe("renderReport", () => {
               {
                 median: 934,
                 spread: 1,
-                verdict: {
-                  verdict: "regressed",
-                  method: "signed-rank",
-                  delta: 2.2,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "regressed", delta: 2.2, p: 0.002 }),
               },
               {
                 median: 1200000,
                 spread: 12,
-                verdict: {
-                  verdict: "no-signal",
-                  method: "signed-rank",
-                  delta: -2.1,
-                  n: 10,
-                  p: 0.32,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ delta: -2.1, p: 0.32 }),
               },
             ],
             meta: metricMeta("encode/time", { unit: "ns" }),
@@ -974,29 +949,12 @@ describe("renderReport", () => {
               {
                 median: 100,
                 spread: 1,
-                verdict: {
-                  verdict: "no-signal",
-                  method: "band",
-                  delta: -0.5,
-                  n: 10,
-                  usableN: 0,
-                  band: 2.5,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: bandVerdict({ usableN: 0 }),
               },
               {
                 median: 90,
                 spread: 1,
-                verdict: {
-                  verdict: "improved",
-                  method: "signed-rank",
-                  delta: -10,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "improved", delta: -10, p: 0.002 }),
               },
             ],
             meta: metricMeta("tied/time", { unit: "ns" }),
@@ -2809,15 +2767,7 @@ describe("renderReport", () => {
               {
                 median: 1425,
                 spread: 1,
-                verdict: {
-                  verdict: "improved",
-                  method: "signed-rank",
-                  delta: -17.9,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "improved", delta: -17.9, p: 0.002 }),
               },
             ],
             meta: metricMeta("decode/text=digits/time", { unit: "ns" }),
@@ -2829,15 +2779,7 @@ describe("renderReport", () => {
               {
                 median: 3093,
                 spread: 3,
-                verdict: {
-                  verdict: "no-signal",
-                  method: "signed-rank",
-                  delta: 0.9,
-                  n: 10,
-                  p: 0.49,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ delta: 0.9, p: 0.49 }),
               },
             ],
             meta: metricMeta("decode/text=words/time", { unit: "ns" }),
@@ -2849,15 +2791,7 @@ describe("renderReport", () => {
               {
                 median: 934,
                 spread: 1,
-                verdict: {
-                  verdict: "regressed",
-                  method: "signed-rank",
-                  delta: 2.2,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "regressed", delta: 2.2, p: 0.002 }),
               },
             ],
             meta: metricMeta("encode/time", { unit: "ns" }),
@@ -2869,7 +2803,7 @@ describe("renderReport", () => {
               {
                 median: 45261,
                 spread: 0,
-                verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
+                verdict: exactVerdict({ verdict: "improved", delta: -7.9 }),
               },
             ],
             meta: metricMeta("encode/heap", { exact: true, unit: "bytes" }),
@@ -2899,7 +2833,7 @@ describe("renderReport", () => {
               {
                 median: 0,
                 spread: 0,
-                verdict: { verdict: "no-signal", method: "exact", delta: 0, n: 4 },
+                verdict: exactVerdict({ n: 4 }),
               },
             ],
             meta: metricMeta("zero-median/time", { exact: true, unit: "ns" }),
@@ -2909,7 +2843,7 @@ describe("renderReport", () => {
             candidates: [
               {
                 median: 120,
-                verdict: { verdict: "no-signal", method: "exact", delta: Number.NaN, n: 4 },
+                verdict: exactVerdict({ delta: Number.NaN, n: 4 }),
               },
             ],
             meta: metricMeta("nan-delta/count", { exact: true }),
@@ -2927,16 +2861,7 @@ describe("renderReport", () => {
               {
                 median: 1560,
                 spread: 4,
-                verdict: {
-                  verdict: "improved",
-                  method: "band",
-                  delta: 30,
-                  n: 4,
-                  usableN: 4,
-                  band: 2.5,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: bandVerdict({ verdict: "improved", delta: 30, n: 4, usableN: 4 }),
               },
             ],
             meta: metricMeta("throughput/ops", { direction: "higher", gating: false }),
@@ -2990,28 +2915,12 @@ describe("renderReport", () => {
               {
                 median: 1425,
                 spread: 1,
-                verdict: {
-                  verdict: "improved",
-                  method: "signed-rank",
-                  delta: -17.9,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "improved", delta: -17.9, p: 0.002 }),
               },
               {
                 median: 1698,
                 spread: 2,
-                verdict: {
-                  verdict: "no-signal",
-                  method: "signed-rank",
-                  delta: -2.1,
-                  n: 10,
-                  p: 0.32,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ delta: -2.1, p: 0.32 }),
               },
             ],
             meta: metricMeta("decode/text=digits/time", { unit: "ns" }),
@@ -3023,15 +2932,7 @@ describe("renderReport", () => {
               {
                 median: 934,
                 spread: 1,
-                verdict: {
-                  verdict: "regressed",
-                  method: "signed-rank",
-                  delta: 2.2,
-                  n: 10,
-                  p: 0.002,
-                  noisePct: 2.5,
-                  noiseAbs: 2.5,
-                },
+                verdict: signedRankVerdict({ verdict: "regressed", delta: 2.2, p: 0.002 }),
               },
               {
                 median: 1200,
@@ -3039,16 +2940,15 @@ describe("renderReport", () => {
                 // The band method only runs below six pairs, so this metric was
                 // dropped on most rounds — which also pins the n= annotation in
                 // an N-way cell.
-                verdict: {
+                verdict: bandVerdict({
                   verdict: "unstable",
-                  method: "band",
                   delta: 31.3,
                   n: 4,
                   usableN: 4,
                   band: 30,
                   noisePct: 30,
                   noiseAbs: 30,
-                },
+                }),
               },
             ],
             meta: metricMeta("encode/time", { unit: "ns" }),
@@ -3061,7 +2961,7 @@ describe("renderReport", () => {
               {
                 median: 45261,
                 spread: 0,
-                verdict: { verdict: "improved", method: "exact", delta: -7.9, n: 10 },
+                verdict: exactVerdict({ verdict: "improved", delta: -7.9 }),
               },
               {},
             ],

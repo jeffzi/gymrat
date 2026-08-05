@@ -184,28 +184,19 @@ describe("renderJson", () => {
   });
 
   describe("metric metadata", () => {
-    it("includes unit as null when the metric has no unit", () => {
+    it.each([
+      { unit: undefined, expected: null },
+      { unit: "ns", expected: "ns" },
+    ] as const)("serializes unit as $expected when unit is $unit", ({ unit, expected }) => {
       const result = createComparisonResult({
         metrics: {
-          "ops/sec": signedRankMetric({ verdict: "improved", delta: -5 }),
+          "decode/time": signedRankMetric({ verdict: "improved", delta: -5, unit }),
         },
       });
 
       const json = JSON.parse(renderJson(result));
 
-      expect(json.metrics["ops/sec"].unit).toBeNull();
-    });
-
-    it("includes unit when present", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "decode/time": signedRankMetric({ verdict: "improved", delta: -5, unit: "ns" }),
-        },
-      });
-
-      const json = JSON.parse(renderJson(result));
-
-      expect(json.metrics["decode/time"].unit).toBe("ns");
+      expect(json.metrics["decode/time"].unit).toBe(expected);
     });
 
     it("includes direction and gating from metric meta", () => {

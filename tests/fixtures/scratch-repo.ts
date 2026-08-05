@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,4 +77,35 @@ export function killGitDuringWorktreeAdd(repoDir: string): void {
   // The redirect keeps the hook from holding git's stdio open past the kill.
   fs.writeFileSync(hookPath, '#!/bin/sh\nexec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n');
   fs.chmodSync(hookPath, 0o755);
+}
+
+/**
+ * Directories git currently lists as worktrees of `repoDir`, main worktree
+ * included by default.
+ *
+ * `git worktree remove` clears a worktree's registry entry itself, so this
+ * only says something about pruning when the directory vanished behind git's
+ * back — that is the one case where a stale entry survives until `prune`
+ * runs.
+ *
+ * Pass `{ includeMain: false }` to exclude the main worktree's own
+ * directory. git prints resolved paths, so on macOS — where the scratch repo
+ * lives under `/var/...` but git reports `/private/var/...` — the main
+ * directory is matched through `realpath`.
+ */
+export function listWorktreeDirs(repoDir: string, options?: { includeMain?: boolean }): string[] {
+  const dirs = execSync("git worktree list --porcelain", {
+    cwd: repoDir,
+    stdio: "pipe",
+    encoding: "utf-8",
+  })
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => path.normalize(line.slice("worktree ".length)));
+
+  if (options?.includeMain === false) {
+    const mainDir = fs.realpathSync(repoDir);
+    return dirs.filter((dir) => dir !== mainDir);
+  }
+  return dirs;
 }

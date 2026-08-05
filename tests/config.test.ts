@@ -8,15 +8,20 @@ import type { Adapter } from "../src/adapters/types.js";
 import type { ResolvedConfig } from "../src/config.js";
 import { loadConfigFile, resolveConfig, resolveMetricMeta } from "../src/config.js";
 import { GymratError } from "../src/errors.js";
+import { metricMeta } from "./fixtures/comparison-result.js";
 import { metricRecord } from "./fixtures/metrics.js";
 
 /** Byte-order mark that editors on Windows prepend to UTF-8 files: `EF BB BF`. */
 const UTF8_BOM = "\u{FEFF}";
 
-function createConfigFile(content: Record<string, unknown>, filename = "gymrat.json"): string {
-  const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
-  fs.writeFileSync(path.join(tmpdir, filename), JSON.stringify(content));
-  return tmpdir;
+function createConfigFile(
+  content: Record<string, unknown>,
+  filename = "gymrat.json",
+): { dir: string; configPath: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+  const configPath = path.join(dir, filename);
+  fs.writeFileSync(configPath, JSON.stringify(content));
+  return { dir, configPath };
 }
 
 function createMockAdapter(
@@ -60,23 +65,20 @@ describe("loadConfigFile", () => {
   });
 
   describe("when the config path is not a readable file", () => {
-    it("propagates the filesystem error instead of returning an empty config", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+    it.each([{ options: undefined }, { options: { required: true } }])(
+      "propagates the filesystem error instead of returning an empty config (options: $options)",
+      ({ options }) => {
+        tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
 
-      expect(() => loadConfigFile(tmpdir)).toThrow(/EISDIR/);
-    });
-
-    it("propagates the filesystem error even when the caller requires the file", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
-
-      expect(() => loadConfigFile(tmpdir, { required: true })).toThrow(/EISDIR/);
-    });
+        expect(() => loadConfigFile(tmpdir, options)).toThrow(/EISDIR/);
+      },
+    );
   });
 
   describe("when the config file contains valid JSON with known keys", () => {
     it("returns the parsed config with bench key", () => {
-      tmpdir = createConfigFile({ bench: "custom-bench" });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ bench: "custom-bench" });
+      tmpdir = dir;
 
       const result = loadConfigFile(configPath);
 
@@ -97,8 +99,8 @@ describe("loadConfigFile", () => {
           metric2: { direction: "higher" as const },
         },
       };
-      tmpdir = createConfigFile(config);
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile(config);
+      tmpdir = dir;
 
       const result = loadConfigFile(configPath);
 
@@ -112,8 +114,8 @@ describe("loadConfigFile", () => {
           throughput: { gating: true },
         },
       };
-      tmpdir = createConfigFile(config);
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile(config);
+      tmpdir = dir;
 
       const result = loadConfigFile(configPath);
 
@@ -170,22 +172,22 @@ describe("loadConfigFile", () => {
 
   describe("when the config file contains unknown top-level keys", () => {
     it("throws an error that names the unknown key", () => {
-      tmpdir = createConfigFile({ unknownKey: "value" });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ unknownKey: "value" });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/unknownKey/);
     });
 
     it("throws when there is an unknown key mixed with known keys", () => {
-      tmpdir = createConfigFile({ bench: "name", badKey: "value" });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ bench: "name", badKey: "value" });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/badKey/);
     });
 
     it("reports an unknown key rather than a non-object root for an empty-string key", () => {
-      tmpdir = createConfigFile({ "": 1 });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ "": 1 });
+      tmpdir = dir;
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -197,8 +199,8 @@ describe("loadConfigFile", () => {
 
   describe("when the config file contains an empty object", () => {
     it("returns an empty config object", () => {
-      tmpdir = createConfigFile({});
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({});
+      tmpdir = dir;
 
       const result = loadConfigFile(configPath);
 
@@ -214,8 +216,8 @@ describe("loadConfigFile", () => {
       { key: "prepare", description: "an object", value: { cmd: "x" } },
       { key: "adapter", description: "null", value: null },
     ])("throws naming $key when it is $description", ({ key, value }) => {
-      tmpdir = createConfigFile({ [key]: value });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ [key]: value });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(new RegExp(`${key}.*string`));
     });
@@ -230,8 +232,8 @@ describe("loadConfigFile", () => {
       { key: "timeoutSeconds", description: "a boolean", value: true },
       { key: "timeoutSeconds", description: "null", value: null },
     ])("throws naming $key when it is $description", ({ key, value }) => {
-      tmpdir = createConfigFile({ [key]: value });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ [key]: value });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(new RegExp(`${key}.*positive integer`));
     });
@@ -245,8 +247,8 @@ describe("loadConfigFile", () => {
       { description: "a boolean", value: true },
       { description: "null", value: null },
     ])("throws naming unstableNoisePct when it is $description", ({ value }) => {
-      tmpdir = createConfigFile({ unstableNoisePct: value });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ unstableNoisePct: value });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/unstableNoisePct.*positive number/);
     });
@@ -259,8 +261,8 @@ describe("loadConfigFile", () => {
       { description: "a number", value: 3 },
       { description: "null", value: null },
     ])("throws naming metrics when it is $description", ({ value }) => {
-      tmpdir = createConfigFile({ metrics: value });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ metrics: value });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics.*object/);
     });
@@ -268,8 +270,8 @@ describe("loadConfigFile", () => {
 
   describe("when a metrics entry is not an object", () => {
     it("throws naming the offending metric", () => {
-      tmpdir = createConfigFile({ metrics: { latency: "lower" } });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ metrics: { latency: "lower" } });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency.*object/);
     });
@@ -282,8 +284,8 @@ describe("loadConfigFile", () => {
       { description: "a boolean", value: true },
       { description: "null", value: null },
     ])("throws naming metrics.latency.direction when it is $description", ({ value }) => {
-      tmpdir = createConfigFile({ metrics: { latency: { direction: value } } });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ metrics: { latency: { direction: value } } });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(
         /metrics\.latency\.direction.*"lower".*"higher"/,
@@ -297,8 +299,8 @@ describe("loadConfigFile", () => {
       { field: "gating", description: "null", value: null },
       { field: "exact", description: "a number", value: 1 },
     ])("throws naming metrics.latency.$field when it is $description", ({ field, value }) => {
-      tmpdir = createConfigFile({ metrics: { latency: { [field]: value } } });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ metrics: { latency: { [field]: value } } });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(
         new RegExp(`metrics\\.latency\\.${field}.*boolean`),
@@ -308,10 +310,10 @@ describe("loadConfigFile", () => {
 
   describe("when a metrics entry contains an unknown key", () => {
     it("throws an error that names the offending key", () => {
-      tmpdir = createConfigFile({
+      const { dir, configPath } = createConfigFile({
         metrics: { latency: { direction: "lower", threshold: "higher" } },
       });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency\.threshold/);
     });
@@ -320,8 +322,8 @@ describe("loadConfigFile", () => {
   describe("when the config file has a kinds section", () => {
     it("returns the parsed per-kind overrides", () => {
       const config = { kinds: { memory: { gating: false }, time: {} } };
-      tmpdir = createConfigFile(config);
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile(config);
+      tmpdir = dir;
 
       const result = loadConfigFile(configPath);
 
@@ -336,8 +338,8 @@ describe("loadConfigFile", () => {
       { description: "a number", value: 3 },
       { description: "null", value: null },
     ])("throws naming kinds when it is $description", ({ value }) => {
-      tmpdir = createConfigFile({ kinds: value });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ kinds: value });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/kinds.*object/);
     });
@@ -345,8 +347,8 @@ describe("loadConfigFile", () => {
 
   describe("when a kinds entry is not an object", () => {
     it("throws naming the offending kind", () => {
-      tmpdir = createConfigFile({ kinds: { memory: false } });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ kinds: { memory: false } });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/kinds\.memory.*object/);
     });
@@ -358,8 +360,8 @@ describe("loadConfigFile", () => {
       { description: "a number", value: 1 },
       { description: "null", value: null },
     ])("throws naming kinds.memory.gating when it is $description", ({ value }) => {
-      tmpdir = createConfigFile({ kinds: { memory: { gating: value } } });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({ kinds: { memory: { gating: value } } });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/kinds\.memory\.gating.*boolean/);
     });
@@ -367,8 +369,10 @@ describe("loadConfigFile", () => {
 
   describe("when a kinds entry contains an unknown key", () => {
     it("throws an error that names the offending key by its dotted path", () => {
-      tmpdir = createConfigFile({ kinds: { memory: { gating: false, threshold: 5 } } });
-      const configPath = path.join(tmpdir, "gymrat.json");
+      const { dir, configPath } = createConfigFile({
+        kinds: { memory: { gating: false, threshold: 5 } },
+      });
+      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(
         /Unknown config key: kinds\.memory\.threshold/,
@@ -415,7 +419,7 @@ describe("resolveConfig", () => {
         timeoutSeconds: 3600,
         unstableNoisePct: 150.5,
       };
-      tmpdir = createConfigFile(config);
+      tmpdir = createConfigFile(config).dir;
       process.chdir(tmpdir);
 
       const result = resolveConfig({});
@@ -430,7 +434,7 @@ describe("resolveConfig", () => {
         bench: "config-bench",
         adapter: "config-adapter",
         samples: 20,
-      });
+      }).dir;
       process.chdir(tmpdir);
 
       const result = resolveConfig({
@@ -472,7 +476,7 @@ describe("resolveConfig", () => {
 
   describe("when bench is missing from both flags and config", () => {
     it("throws a GymratError that mentions --bench and the config file", () => {
-      tmpdir = createConfigFile({});
+      tmpdir = createConfigFile({}).dir;
       process.chdir(tmpdir);
       const act = (): ResolvedConfig => resolveConfig({});
 
@@ -524,7 +528,7 @@ describe("resolveConfig", () => {
       const metrics = {
         "decode/time": { direction: "higher" as const, gating: false, exact: true },
       };
-      tmpdir = createConfigFile({ bench: "config-bench", metrics });
+      tmpdir = createConfigFile({ bench: "config-bench", metrics }).dir;
       process.chdir(tmpdir);
 
       const result = resolveConfig({});
@@ -543,7 +547,7 @@ describe("resolveConfig", () => {
   describe("when the config file has a kinds section", () => {
     it("propagates the per-kind overrides to the resolved config", () => {
       const kinds = { memory: { gating: false } };
-      tmpdir = createConfigFile({ bench: "config-bench", kinds });
+      tmpdir = createConfigFile({ bench: "config-bench", kinds }).dir;
       process.chdir(tmpdir);
 
       const result = resolveConfig({});
@@ -561,7 +565,7 @@ describe("resolveConfig", () => {
 
   describe("when the config file has no metrics section", () => {
     it("omits metrics from the resolved config", () => {
-      tmpdir = createConfigFile({ bench: "config-bench" });
+      tmpdir = createConfigFile({ bench: "config-bench" }).dir;
       process.chdir(tmpdir);
 
       const result = resolveConfig({});
@@ -572,7 +576,7 @@ describe("resolveConfig", () => {
 
   describe("when timeout flag is provided", () => {
     it("uses timeout from flags over config file value", () => {
-      tmpdir = createConfigFile({ timeoutSeconds: 3600 });
+      tmpdir = createConfigFile({ timeoutSeconds: 3600 }).dir;
       process.chdir(tmpdir);
 
       const result = resolveConfig({
@@ -592,17 +596,7 @@ describe("resolveMetricMeta", () => {
 
       const result = resolveMetricMeta(["response-time"], undefined, mockAdapter);
 
-      expect(result).toStrictEqual(
-        metricRecord({
-          "response-time": {
-            direction: "lower",
-            gating: true,
-            exact: false,
-            kind: "other",
-            shortName: "response-time",
-          },
-        }),
-      );
+      expect(result).toStrictEqual(metricRecord({ "response-time": metricMeta("response-time") }));
     });
   });
 
@@ -616,16 +610,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["response-time"], undefined, mockAdapter);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          "response-time": {
-            direction: "lower",
-            unit: "ns",
-            gating: true,
-            exact: false,
-            kind: "other",
-            shortName: "response-time",
-          },
-        }),
+        metricRecord({ "response-time": metricMeta("response-time", { unit: "ns" }) }),
       );
     });
   });
@@ -641,15 +626,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["bench-a/heap"], undefined, mockAdapter);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          "bench-a/heap": {
-            direction: "lower",
-            gating: true,
-            exact: false,
-            kind: "memory",
-            shortName: "heap",
-          },
-        }),
+        metricRecord({ "bench-a/heap": metricMeta("heap", { kind: "memory" }) }),
       );
     });
   });
@@ -664,15 +641,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["throughput"], configMetrics, mockAdapter);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          throughput: {
-            direction: "higher",
-            gating: true,
-            exact: false,
-            kind: "other",
-            shortName: "throughput",
-          },
-        }),
+        metricRecord({ throughput: metricMeta("throughput", { direction: "higher" }) }),
       );
     });
   });
@@ -687,15 +656,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["response-time"], configMetrics, mockAdapter);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          "response-time": {
-            direction: "lower",
-            gating: false,
-            exact: false,
-            kind: "other",
-            shortName: "response-time",
-          },
-        }),
+        metricRecord({ "response-time": metricMeta("response-time", { gating: false }) }),
       );
     });
   });
@@ -710,15 +671,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["response-time"], configMetrics, mockAdapter);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          "response-time": {
-            direction: "lower",
-            gating: true,
-            exact: true,
-            kind: "other",
-            shortName: "response-time",
-          },
-        }),
+        metricRecord({ "response-time": metricMeta("response-time", { exact: true }) }),
       );
     });
   });
@@ -737,14 +690,7 @@ describe("resolveMetricMeta", () => {
 
       expect(result).toStrictEqual(
         metricRecord({
-          "memory-usage": {
-            direction: "lower",
-            unit: "bytes",
-            gating: false,
-            exact: false,
-            kind: "other",
-            shortName: "memory-usage",
-          },
+          "memory-usage": metricMeta("memory-usage", { unit: "bytes", gating: false }),
         }),
       );
     });
@@ -766,21 +712,8 @@ describe("resolveMetricMeta", () => {
 
       expect(result).toStrictEqual(
         metricRecord({
-          "response-time": {
-            direction: "lower",
-            unit: "ns",
-            gating: false,
-            exact: false,
-            kind: "other",
-            shortName: "response-time",
-          },
-          throughput: {
-            direction: "higher",
-            gating: true,
-            exact: true,
-            kind: "other",
-            shortName: "throughput",
-          },
+          "response-time": metricMeta("response-time", { unit: "ns", gating: false }),
+          throughput: metricMeta("throughput", { direction: "higher", exact: true }),
         }),
       );
     });
@@ -797,15 +730,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["response-time"], configMetrics, mockAdapter);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          "response-time": {
-            direction: "lower",
-            gating: false,
-            exact: false,
-            kind: "other",
-            shortName: "response-time",
-          },
-        }),
+        metricRecord({ "response-time": metricMeta("response-time", { gating: false }) }),
       );
     });
   });
@@ -828,20 +753,8 @@ describe("resolveMetricMeta", () => {
 
       expect(result).toStrictEqual(
         metricRecord({
-          "bench-a/heap": {
-            direction: "lower",
-            gating: false,
-            exact: false,
-            kind: "memory",
-            shortName: "heap",
-          },
-          "bench-a/time": {
-            direction: "lower",
-            gating: true,
-            exact: false,
-            kind: "time",
-            shortName: "time",
-          },
+          "bench-a/heap": metricMeta("heap", { gating: false, kind: "memory" }),
+          "bench-a/time": metricMeta("time", { kind: "time" }),
         }),
       );
     });
@@ -859,15 +772,7 @@ describe("resolveMetricMeta", () => {
       const result = resolveMetricMeta(["bench-a/heap"], undefined, mockAdapter, configKinds);
 
       expect(result).toStrictEqual(
-        metricRecord({
-          "bench-a/heap": {
-            direction: "lower",
-            gating: true,
-            exact: false,
-            kind: "memory",
-            shortName: "heap",
-          },
-        }),
+        metricRecord({ "bench-a/heap": metricMeta("heap", { kind: "memory" }) }),
       );
     });
   });
@@ -891,20 +796,8 @@ describe("resolveMetricMeta", () => {
 
       expect(result).toStrictEqual(
         metricRecord({
-          "bench-a/heap": {
-            direction: "lower",
-            gating: true,
-            exact: false,
-            kind: "memory",
-            shortName: "heap",
-          },
-          "bench-a/rss": {
-            direction: "lower",
-            gating: false,
-            exact: false,
-            kind: "memory",
-            shortName: "rss",
-          },
+          "bench-a/heap": metricMeta("heap", { kind: "memory" }),
+          "bench-a/rss": metricMeta("rss", { kind: "memory", gating: false }),
         }),
       );
     });

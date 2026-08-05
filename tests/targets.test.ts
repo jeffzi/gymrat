@@ -12,7 +12,11 @@ import {
   materializeWorktree,
   cleanupWorktrees,
 } from "../src/targets.js";
-import { createScratchRepo, killGitDuringWorktreeAdd } from "./fixtures/scratch-repo.js";
+import {
+  createScratchRepo,
+  killGitDuringWorktreeAdd,
+  listWorktreeDirs,
+} from "./fixtures/scratch-repo.js";
 
 /** A sha no repository holds, so `git worktree add` rejects it outright. */
 const UNKNOWN_SHA = "0".repeat(40);
@@ -85,23 +89,6 @@ function planRejectedWorktree(repoDir: string): WorktreeInfo {
     return worktree;
   }
   throw new Error(`expected 'git worktree add' to create nothing at ${worktree.dir}`);
-}
-
-/**
- * Directories git still lists as worktrees of the repo, main worktree included.
- *
- * `git worktree remove` clears a worktree's registry entry itself, so this only
- * says something about pruning when the directory vanished behind git's back —
- * that is the one case where a stale entry survives until `prune` runs.
- */
-function listWorktreeDirs(repoDir: string): string[] {
-  return execSync("git worktree list --porcelain", {
-    cwd: repoDir,
-    encoding: "utf-8",
-  })
-    .split("\n")
-    .filter((line) => line.startsWith("worktree "))
-    .map((line) => path.normalize(line.slice("worktree ".length)));
 }
 
 /**

@@ -712,21 +712,6 @@ function formatMetricRow(row: MetricRow, widths: Widths): string {
   );
 }
 
-/**
- * The metric table: header, rule, one row per metric, rule, geomean, echo.
- *
- * Widths come from the widest cell rather than a fixed size, so a long metric
- * name or label widens the table instead of being cut. The geomean's own verdict
- * cell is left out of that measurement: it ends its line and is never padded, so
- * letting a long cell size the column would stretch the rule under every metric
- * row for nothing.
- *
- * The echo closing the table repeats the header cell for cell — same quoting,
- * same emphasis, same widths — because a table long enough to scroll leaves the
- * reader at the bottom with columns they can no longer name. It is dimmed whole
- * so it reads as the frame closing rather than as one more row of data, and its
- * name cell stays blank: `metric` heads that column, it does not label the echo.
- */
 /** The row-assembly callbacks a table supplies for the lines whose shape is table-specific. */
 interface BodyLineRenderers<Metric, Cell> {
   header(label: string, hasTitle: boolean): string;
@@ -773,6 +758,21 @@ function renderBodyLine<Metric, Cell>(
   }
 }
 
+/**
+ * The metric table: header, rule, one row per metric, rule, geomean, echo.
+ *
+ * Widths come from the widest cell rather than a fixed size, so a long metric
+ * name or label widens the table instead of being cut. The geomean's own verdict
+ * cell is left out of that measurement: it ends its line and is never padded, so
+ * letting a long cell size the column would stretch the rule under every metric
+ * row for nothing.
+ *
+ * The echo closing the table repeats the header cell for cell — same quoting,
+ * same emphasis, same widths — because a table long enough to scroll leaves the
+ * reader at the bottom with columns they can no longer name. It is dimmed whole
+ * so it reads as the frame closing rather than as one more row of data, and its
+ * name cell stays blank: `metric` heads that column, it does not label the echo.
+ */
 function renderTable(
   result: ComparisonResult,
   candidate: CandidateComparison,

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { GymratError, messageOf, assertNever } from "../../src/errors.js";
 
 describe("GymratError", () => {
-  it("constructs a base error with message, no hint, and GymratError name", () => {
-    // Arrange
+  it("exposes the message, no hint, and its own name on construction", () => {
+    // Act
     const error = new GymratError("something broke");
 
     // Assert
@@ -15,7 +15,7 @@ describe("GymratError", () => {
   });
 
   it("sets .hint when provided as second argument", () => {
-    // Arrange & Act
+    // Act
     const error = new GymratError("something broke", "try restarting");
 
     // Assert

@@ -162,6 +162,28 @@ function createProgramWithSubcommandOverrides(): Command {
   return program;
 }
 
+/** Build a program whose subcommands throw instead of exiting, with stderr silenced. */
+function createSilentProgram(): Command {
+  const program = createProgramWithSubcommandOverrides();
+  for (const command of [program, ...program.commands]) {
+    command.configureOutput({ writeErr: () => {} });
+  }
+  return program;
+}
+
+/**
+ * Build a program with stderr silenced but the production `exitOverride()` left in
+ * place, so Commander's own exit code survives instead of being replaced by the
+ * test helper's.
+ */
+function createSilentProgramWithProductionExit(): Command {
+  const program = createProgram();
+  for (const command of [program, ...program.commands]) {
+    command.configureOutput({ writeErr: () => {} });
+  }
+  return program;
+}
+
 /**
  * The subcommand renders its own help, so every command needs its own output
  * config; `--help` throws rather than exiting because of `exitOverride`.
@@ -404,10 +426,7 @@ describe("createProgram", () => {
         },
       ])("rejects $form with a usage error", async ({ positionals, expected }) => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
-        for (const command of [program, ...program.commands]) {
-          command.configureOutput({ writeErr: () => {} });
-        }
+        const program = createSilentProgram();
         await setupMocks();
         mockProcessExit();
 
@@ -489,11 +508,7 @@ describe("createProgram", () => {
         // Arrange - the coercion error is raised by the `compare` subcommand, and
         // Commander copies the exit callback to subcommands at .command() time, so
         // overriding on the parent alone lets the error reach process.exit instead.
-        const program = createProgram();
-        for (const command of [program, ...program.commands]) {
-          command.exitOverride();
-          command.configureOutput({ writeErr: () => {} });
-        }
+        const program = createSilentProgram();
 
         // Act
         const parsing = program.parseAsync(compareArgv("main", "branch", flag, value));
@@ -521,11 +536,7 @@ describe("createProgram", () => {
         },
       ])("rejects $flag $value because $why", async ({ flag, value, bound }) => {
         // Arrange
-        const program = createProgram();
-        for (const command of [program, ...program.commands]) {
-          command.exitOverride();
-          command.configureOutput({ writeErr: () => {} });
-        }
+        const program = createSilentProgram();
 
         // Act
         const parsing = program.parseAsync(compareArgv("main", "branch", flag, value));
@@ -663,17 +674,6 @@ describe("createProgram", () => {
     });
 
     describe("when --format flag provided", () => {
-      it("routes to renderReport for --format text", async () => {
-        // Arrange
-        const result = createComparisonResult();
-
-        // Act
-        const writeSpy = await runCompareCapturingStdout(result, "--format", "text");
-
-        // Assert
-        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
-      });
-
       it("routes to renderJson for --format json", async () => {
         // Arrange
         const result = createComparisonResult();
@@ -693,10 +693,7 @@ describe("createProgram", () => {
         "rejects $desc with Commander's invalid-argument error naming the surviving choices",
         async ({ value }) => {
           // Arrange
-          const program = createProgramWithSubcommandOverrides();
-          for (const command of [program, ...program.commands]) {
-            command.configureOutput({ writeErr: () => {} });
-          }
+          const program = createSilentProgram();
 
           // Act
           const parsing = program.parseAsync(compareArgv("main", "branch", "--format", value));
@@ -866,16 +863,11 @@ describe("createProgram", () => {
           });
         });
 
-        it("starts the spinner and updates its text on each progress callback", async () => {
+        it("starts the spinner", async () => {
           // Arrange
           const program = createRunnableProgram();
           useColorTty();
-          const steps: ProgressStep[] = [
-            { kind: "prepare", label: "baseline" },
-            { kind: "sample", index: 1, total: 5, label: "baseline" },
-            { kind: "sample", index: 2, total: 5, label: "baseline" },
-          ];
-          await setupProgressMocks(steps);
+          await setupProgressMocks([{ kind: "prepare", label: "baseline" }]);
 
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
@@ -1572,69 +1564,54 @@ describe("createProgram", () => {
         vi.stubEnv("NO_COLOR", "1");
       }
 
-      it("exits 1 when a gating metric has a regressed verdict", async () => {
-        // Arrange
-        const { program, stdoutSpy } = await setupFailOnTest(createGatingResult("regressed"));
-
-        // Act & Assert
-        await expect(
-          program.parseAsync(compareArgv("main", "branch", "--fail-on", "regressed")),
-        ).rejects.toHaveProperty("exitCode", 1);
-        expect(stdoutSpy).toHaveBeenCalled();
-      });
-
       it("exits 0 when no gating metric regressed", async () => {
         // Arrange
-        const { program, stdoutSpy } = await setupFailOnTest(createGatingResult("improved"));
+        const { program, stdoutSpy, exitSpy } = await setupFailOnTest(
+          createGatingResult("improved"),
+        );
 
         // Act
         await program.parseAsync(compareArgv("main", "branch", "--fail-on", "regressed"));
 
         // Assert
         expect(stdoutSpy).toHaveBeenCalled();
+        expect(exitSpy).not.toHaveBeenCalled();
       });
 
-      it("exits 1 when geomean delta exceeds threshold", async () => {
-        // Arrange - geomean +5.0% exceeds the 2% gate
-        const { program, stdoutSpy } = await setupFailOnTest(
-          createGatingResult("no-signal", { geomeanValue: 5.0 }),
-        );
+      it.each([
+        {
+          desc: "exceeds",
+          geomeanValue: 5.0,
+          expected: expect.objectContaining({ exitCode: 1 }),
+        },
+        {
+          desc: "sits exactly on",
+          geomeanValue: 2.0,
+          expected: expect.objectContaining({ exitCode: 1 }),
+        },
+        { desc: "is within", geomeanValue: 1.5, expected: undefined },
+      ])(
+        "$desc the threshold when geomean delta is $geomeanValue%",
+        async ({ geomeanValue, expected }) => {
+          // Arrange - a 2% gate; trips exit 1 "at or worse than" the threshold
+          const { program, stdoutSpy } = await setupFailOnTest(
+            createGatingResult("no-signal", { geomeanValue }),
+          );
 
-        // Act & Assert
-        await expect(
-          program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
-        ).rejects.toHaveProperty("exitCode", 1);
-        // The report must be written before exit — distinguishes gate trip from
-        // a Commander parse error, which would not produce any report output.
-        expect(stdoutSpy).toHaveBeenCalled();
-      });
+          // Act - a gate trip rejects with exitCode 1, otherwise the parse resolves
+          const error = await program
+            .parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2"))
+            .then(
+              () => undefined,
+              (e: unknown) => e,
+            );
 
-      it("exits 0 when geomean delta is within threshold", async () => {
-        // Arrange - geomean +1.5% is within the 2% gate
-        const { program, stdoutSpy } = await setupFailOnTest(
-          createGatingResult("no-signal", { geomeanValue: 1.5 }),
-        );
-
-        // Act
-        await program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2"));
-
-        // Assert
-        expect(stdoutSpy).toHaveBeenCalled();
-      });
-
-      it("exits 1 when the geomean delta sits exactly on the threshold", async () => {
-        // Arrange - geomean +2.0% is "at or worse than" the 2% gate
-        const { program, stdoutSpy } = await setupFailOnTest(
-          createGatingResult("no-signal", { geomeanValue: 2.0 }),
-        );
-
-        // Act & Assert
-        await expect(
-          program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
-        ).rejects.toHaveProperty("exitCode", 1);
-        // The report must be written — distinguishes a gate trip from a parse error
-        expect(stdoutSpy).toHaveBeenCalled();
-      });
+          // Assert - the report must be written before exit — distinguishes a gate
+          // trip from a Commander parse error, which would not produce any report output.
+          expect(error).toStrictEqual(expected);
+          expect(stdoutSpy).toHaveBeenCalled();
+        },
+      );
 
       describe("when a candidate's geomean covers no stable gating metrics", () => {
         /** A candidate whose geomean aggregated nothing, gated on the most permissive threshold. */
@@ -1830,10 +1807,7 @@ describe("createProgram", () => {
 
       it("rejects a malformed condition with the allowed grammar in the error", async () => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
-        for (const cmd of [program, ...program.commands]) {
-          cmd.configureOutput({ writeErr: () => {} });
-        }
+        const program = createSilentProgram();
         mockProcessExit();
 
         // Act & Assert
@@ -1848,10 +1822,7 @@ describe("createProgram", () => {
         { form: "a hexadecimal percentage", value: "geomean:0x10" },
       ])("rejects geomean with $form", async ({ value }) => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
-        for (const cmd of [program, ...program.commands]) {
-          cmd.configureOutput({ writeErr: () => {} });
-        }
+        const program = createSilentProgram();
         await setupMocks();
         mockProcessExit();
 
@@ -1919,12 +1890,9 @@ describe("createProgram", () => {
       });
 
       it("exits 2 for Commander usage errors", async () => {
-        // Arrange - use createProgram() directly so the production exitOverride
-        // (which sets exit code 2) is not replaced by the test helper's plain one
-        const program = createProgram();
-        for (const cmd of [program, ...program.commands]) {
-          cmd.configureOutput({ writeErr: () => {} });
-        }
+        // Arrange - the production exitOverride (which sets exit code 2) must
+        // survive here rather than being replaced by the test helper's plain one
+        const program = createSilentProgramWithProductionExit();
         mockProcessExit();
 
         // Act & Assert

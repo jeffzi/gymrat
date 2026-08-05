@@ -129,6 +129,10 @@ function kindAggregateOf(candidate: CandidateComparison, kind: string): KindAggr
   return candidate.kinds.find((aggregate) => aggregate.kind === kind);
 }
 
+/** The exclusions list for a candidate that reported no aggregate. */
+const NO_EXCLUDED: GeomeanExclusion[] = [];
+Object.freeze(NO_EXCLUDED);
+
 /**
  * The aggregate stated where a candidate reported none.
  *
@@ -136,9 +140,6 @@ function kindAggregateOf(candidate: CandidateComparison, kind: string): KindAggr
  * from, so this stands in for nothing the renderers can produce — and if one
  * ever does, the row says it aggregated nothing rather than inventing a figure.
  */
-const NO_EXCLUDED: GeomeanExclusion[] = [];
-Object.freeze(NO_EXCLUDED);
-
 export const NO_AGGREGATE: Readonly<GeomeanResult> = Object.freeze({
   value: Number.NaN,
   n: 0,

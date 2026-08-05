@@ -134,7 +134,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
   });
 
   describe("when timeout is exceeded", () => {
-    it("kills the process and returns timeout error", async () => {
+    it("returns a timeout error when the process exceeds the timeout", async () => {
       const result = await runInTmpdir("sleep 10", { timeoutMs: 500 });
 
       expect(result).toStrictEqual({

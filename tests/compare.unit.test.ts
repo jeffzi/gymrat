@@ -74,99 +74,104 @@ function createTimeoutFailure(overrides: Partial<TimeoutFailure> = {}): TimeoutF
 }
 
 describe("CommandError", () => {
-  describe("when exit code is non-zero", () => {
-    it("includes phase, position, label, ref, worktree dir, command, exit code, and stderr for a ref target", () => {
-      const ctx = createContext({ target: createRefTarget("main", "abc123") });
-      const failure = createExitFailure({
-        exitCode: 2,
-        stderr: "segfault in runner",
-      });
+  describe("when the command fails", () => {
+    it.each([
+      {
+        name: "exit code, ref target",
+        context: { target: createRefTarget("main", "abc123") },
+        failure: createExitFailure({ exitCode: 2, stderr: "segfault in runner" }),
+        expectedFragments: [
+          "bench",
+          "old",
+          "baseline",
+          "main",
+          "/tmp/worktree-abc",
+          "npm run bench",
+          "exit code: 2",
+          "segfault in runner",
+        ],
+        absentFragments: [],
+      },
+      {
+        name: "exit code, in-place target",
+        context: {
+          position: "new",
+          label: "candidate",
+          target: createInPlaceTarget("/projects/my-app"),
+          dir: "/projects/my-app",
+        },
+        failure: createExitFailure({ exitCode: 3, stderr: "module not found" }),
+        expectedFragments: [
+          "bench",
+          "new",
+          "candidate",
+          "/projects/my-app",
+          "npm run bench",
+          "exit code: 3",
+          "module not found",
+        ],
+        absentFragments: [],
+      },
+      {
+        name: "timeout, ref target",
+        context: {
+          phase: "prepare",
+          command: "npm install",
+          target: createRefTarget("feature-branch", "sha789"),
+          dir: "/tmp/worktree-feature",
+        },
+        failure: createTimeoutFailure({ timeoutMs: 60000, stderr: "still installing..." }),
+        expectedFragments: [
+          "prepare",
+          "old",
+          "baseline",
+          "feature-branch",
+          "/tmp/worktree-feature",
+          "npm install",
+          "60000",
+          "still installing...",
+        ],
+        absentFragments: ["exit code"],
+      },
+      {
+        name: "timeout, in-place target",
+        context: {
+          phase: "prepare",
+          position: "new",
+          label: "candidate",
+          command: "npm install",
+          target: createInPlaceTarget("/projects/other"),
+          dir: "/projects/other",
+        },
+        failure: createTimeoutFailure({ timeoutMs: 45000, stderr: "hanging on postinstall" }),
+        expectedFragments: [
+          "prepare",
+          "new",
+          "candidate",
+          "/projects/other",
+          "npm install",
+          "45000",
+          "hanging on postinstall",
+        ],
+        absentFragments: [],
+      },
+    ] satisfies {
+      name: string;
+      context: Partial<CommandErrorContext>;
+      failure: ExitFailure | TimeoutFailure;
+      expectedFragments: string[];
+      absentFragments: string[];
+    }[])("includes the relevant fields in the message ($name)", (testCase) => {
+      const ctx = createContext(testCase.context);
 
-      const error = new CommandError(ctx, failure);
+      const error = new CommandError(ctx, testCase.failure);
 
-      expect.soft(error.message).toContain("bench");
-      expect.soft(error.message).toContain("old");
-      expect.soft(error.message).toContain("baseline");
-      expect.soft(error.message).toContain("main");
-      expect.soft(error.message).toContain("/tmp/worktree-abc");
-      expect.soft(error.message).toContain("npm run bench");
-      expect.soft(error.message).toContain("exit code: 2");
-      expect(error.message).toContain("segfault in runner");
-    });
-
-    it("includes phase, position, label, directory, command, exit code, and stderr for an in-place target", () => {
-      const ctx = createContext({
-        position: "new",
-        label: "candidate",
-        target: createInPlaceTarget("/projects/my-app"),
-        dir: "/projects/my-app",
-      });
-      const failure = createExitFailure({
-        exitCode: 3,
-        stderr: "module not found",
-      });
-
-      const error = new CommandError(ctx, failure);
-
-      expect.soft(error.message).toContain("bench");
-      expect.soft(error.message).toContain("new");
-      expect.soft(error.message).toContain("candidate");
-      expect.soft(error.message).toContain("/projects/my-app");
-      expect.soft(error.message).toContain("npm run bench");
-      expect.soft(error.message).toContain("exit code: 3");
-      expect(error.message).toContain("module not found");
-    });
-  });
-
-  describe("when command times out", () => {
-    it("includes phase, position, label, ref, worktree dir, command, timeout duration, and stderr for a ref target", () => {
-      const ctx = createContext({
-        phase: "prepare",
-        command: "npm install",
-        target: createRefTarget("feature-branch", "sha789"),
-        dir: "/tmp/worktree-feature",
-      });
-      const failure = createTimeoutFailure({
-        timeoutMs: 60000,
-        stderr: "still installing...",
-      });
-
-      const error = new CommandError(ctx, failure);
-
-      expect.soft(error.message).toContain("prepare");
-      expect.soft(error.message).toContain("old");
-      expect.soft(error.message).toContain("baseline");
-      expect.soft(error.message).toContain("feature-branch");
-      expect.soft(error.message).toContain("/tmp/worktree-feature");
-      expect.soft(error.message).toContain("npm install");
-      expect.soft(error.message).toContain("60000");
-      expect(error.message).toContain("still installing...");
-      expect(error.message).not.toContain("exit code");
-    });
-
-    it("includes phase, position, label, directory, command, timeout duration, and stderr for an in-place target", () => {
-      const ctx = createContext({
-        phase: "prepare",
-        position: "new",
-        label: "candidate",
-        command: "npm install",
-        target: createInPlaceTarget("/projects/other"),
-        dir: "/projects/other",
-      });
-      const failure = createTimeoutFailure({
-        timeoutMs: 45000,
-        stderr: "hanging on postinstall",
-      });
-
-      const error = new CommandError(ctx, failure);
-
-      expect.soft(error.message).toContain("prepare");
-      expect.soft(error.message).toContain("new");
-      expect.soft(error.message).toContain("candidate");
-      expect.soft(error.message).toContain("/projects/other");
-      expect.soft(error.message).toContain("npm install");
-      expect.soft(error.message).toContain("45000");
-      expect(error.message).toContain("hanging on postinstall");
+      for (const fragment of testCase.expectedFragments) {
+        expect.soft(error.message).toContain(fragment);
+      }
+      for (const fragment of testCase.absentFragments) {
+        expect.soft(error.message).not.toContain(fragment);
+      }
     });
   });
 
