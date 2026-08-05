@@ -14,6 +14,19 @@ import { metricRecord } from "./fixtures/metrics.js";
 /** Byte-order mark that editors on Windows prepend to UTF-8 files: `EF BB BF`. */
 const UTF8_BOM = "\u{FEFF}";
 
+/**
+ * Characters JavaScript regexes treat as line terminators.
+ *
+ * A `^…$` key pattern stops at every one of them, so any of these embedded in a
+ * config key can smuggle the rest of the key past validation.
+ */
+const LINE_BREAKS = [
+  { description: "a line feed", char: "\n" },
+  { description: "a carriage return", char: "\r" },
+  { description: "a line separator", char: "\u{2028}" },
+  { description: "a paragraph separator", char: "\u{2029}" },
+];
+
 function createConfigFile(
   content: Record<string, unknown>,
   filename = "gymrat.json",
@@ -246,11 +259,30 @@ describe("loadConfigFile", () => {
       { description: "a negative number", value: -5 },
       { description: "a boolean", value: true },
       { description: "null", value: null },
-    ])("throws naming unstableNoisePct when it is $description", ({ value }) => {
-      const { dir, configPath } = createConfigFile({ unstableNoisePct: value });
+      { description: "below the noise floor", value: 0.25 },
+    ])(
+      "throws naming unstableNoisePct and the 0.5 noise floor when it is $description",
+      ({ value }) => {
+        const { dir, configPath } = createConfigFile({ unstableNoisePct: value });
+        tmpdir = dir;
+        const act = (): void => {
+          loadConfigFile(configPath);
+        };
+
+        expect.soft(act).toThrow(/unstableNoisePct.*0\.5/);
+        expect(act).toThrow(/noise floor/);
+      },
+    );
+  });
+
+  describe("when unstableNoisePct sits exactly on the noise floor", () => {
+    it("accepts the value", () => {
+      const { dir, configPath } = createConfigFile({ unstableNoisePct: 0.5 });
       tmpdir = dir;
 
-      expect(() => loadConfigFile(configPath)).toThrow(/unstableNoisePct.*positive number/);
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual({ unstableNoisePct: 0.5 });
     });
   });
 
@@ -316,6 +348,36 @@ describe("loadConfigFile", () => {
       tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency\.threshold/);
+    });
+  });
+
+  describe("when a metrics key embeds a line-break character", () => {
+    it.each(LINE_BREAKS)("throws naming metrics when the key embeds $description", ({ char }) => {
+      const smuggled = `latency${char}direction: 999, gating: 0`;
+      const { dir, configPath } = createConfigFile({
+        metrics: { [smuggled]: { direction: "lower" } },
+      });
+      tmpdir = dir;
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/metrics/);
+    });
+  });
+
+  describe("when a kinds key embeds a line-break character", () => {
+    it("throws naming kinds", () => {
+      const smuggled = "memory\ngating: 999";
+      const { dir, configPath } = createConfigFile({ kinds: { [smuggled]: { gating: false } } });
+      tmpdir = dir;
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/kinds/);
     });
   });
 

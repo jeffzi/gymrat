@@ -2,6 +2,8 @@ import type { SchemaOptions, Static, TSchema } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { ValueErrorType, type ValueError } from "@sinclair/typebox/errors";
 
+import { GymratError } from "./errors.js";
+
 /**
  * Schema options carrying the phrase a caller wants to see in its own error message.
  *
@@ -128,5 +130,5 @@ export function parse<T extends TSchema>(
   // check therefore always yields an error. Asserting it beats a fallback branch: this
   // module owns no wording, so it has nothing to say if the impossible happens.
   const issue = validator.firstIssue(value)!;
-  throw new Error(toMessage(issue), { cause: issue });
+  throw new GymratError(toMessage(issue), undefined, { cause: issue });
 }

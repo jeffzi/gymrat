@@ -9,7 +9,7 @@ import { GymratError, hasErrorCode } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
-import { DEFAULT_UNSTABLE_NOISE_PCT } from "./verdict/verdict.js";
+import { DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT } from "./verdict/verdict.js";
 
 /** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
 const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
@@ -26,21 +26,26 @@ const metricEntrySchema = Type.Object(
 );
 
 /**
- * Metric names are unconstrained, so any string key is accepted.
+ * Shared options for the record schemas whose keys are names supplied by an adapter.
  *
- * This compiles to `patternProperties` with `^(.*)$`, and `.` does not match a newline —
- * a metric name containing one slips through without its entry being checked. Harmless in
- * practice, since such a name cannot come out of a bench command's metric lines.
+ * `Type.Record(Type.String(), …)` compiles to `patternProperties` with `^(.*)$`, and
+ * neither `.` nor an unanchored `$` spans a line terminator — so a key containing one
+ * matches no pattern at all. Without `additionalProperties: false` such a key would be
+ * an unconstrained extra property, admitting its entry unchecked; with it, the key is
+ * rejected outright.
  */
-const metricsSchema = Type.Record(Type.String(), metricEntrySchema, expected("an object"));
+const nameKeyedRecordOptions = { ...expected("an object"), additionalProperties: false };
+
+/** Metric names are unconstrained, so any single-line string key is accepted. */
+const metricsSchema = Type.Record(Type.String(), metricEntrySchema, nameKeyedRecordOptions);
 
 const kindEntrySchema = Type.Object(
   { gating: Type.Optional(Type.Boolean(expected("a boolean"))) },
   strictObjectOptions,
 );
 
-/** Kind names come from the adapter, so — like metric names — any string key is accepted. */
-const kindsSchema = Type.Record(Type.String(), kindEntrySchema, expected("an object"));
+/** Kind names come from the adapter, so — like metric names — any single-line string key is accepted. */
+const kindsSchema = Type.Record(Type.String(), kindEntrySchema, nameKeyedRecordOptions);
 
 /** The `gymrat.json` schema — every field optional, since flags can supply any of them. */
 const configFileSchema = Type.Object(
@@ -58,7 +63,10 @@ const configFileSchema = Type.Object(
     ),
     // A noise threshold is a percentage, not a count, so fractional values are allowed.
     unstableNoisePct: Type.Optional(
-      Type.Number({ ...expected("a positive number"), exclusiveMinimum: 0 }),
+      Type.Number({
+        ...expected(`a number at or above the ${NOISE_FLOOR_PCT}% noise floor`),
+        minimum: NOISE_FLOOR_PCT,
+      }),
     ),
     metrics: Type.Optional(metricsSchema),
     kinds: Type.Optional(kindsSchema),

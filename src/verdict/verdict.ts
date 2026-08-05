@@ -36,8 +36,13 @@ export const MIN_WILCOXON_N = 6;
 /** Multiplier applied to the observed spread when sizing the noise band. */
 const NOISE_K = 1.5;
 
-/** Lower bound on the noise band, in percent, for very stable metrics. */
-const NOISE_FLOOR_PCT = 0.5;
+/**
+ * Lower bound on the noise band, in percent, for very stable metrics.
+ *
+ * Reported noise never falls below this, so an `unstableNoisePct` threshold under it
+ * would mark every metric unstable — the config schema rejects such values.
+ */
+export const NOISE_FLOOR_PCT = 0.5;
 
 /**
  * Minimum paired-sample count the band method needs to report a signal.
