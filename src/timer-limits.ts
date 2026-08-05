@@ -1,5 +1,5 @@
 /** The largest delay `setTimeout` can hold: milliseconds in a signed 32-bit integer. */
-export const MAX_TIMER_MS = 2_147_483_647;
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * A timeout is expanded to milliseconds before it reaches `setTimeout`, which

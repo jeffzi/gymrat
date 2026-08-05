@@ -13,7 +13,7 @@ import type { GeomeanExclusion, GeomeanResult } from "../verdict/verdict.js";
 import type { CandidateComparison, MetricComparison, MetricComparisons } from "./types.js";
 
 /** A group of one section's metrics, or a metric belonging to no group. */
-export type SectionBlock<Metric> =
+type SectionBlock<Metric> =
   | { readonly type: "group"; readonly group: string; readonly metrics: Metric[] }
   | { readonly type: "metric"; readonly metric: Metric };
 
@@ -140,7 +140,7 @@ Object.freeze(NO_EXCLUDED);
  * from, so this stands in for nothing the renderers can produce — and if one
  * ever does, the row says it aggregated nothing rather than inventing a figure.
  */
-export const NO_AGGREGATE: Readonly<GeomeanResult> = Object.freeze({
+const NO_AGGREGATE: Readonly<GeomeanResult> = Object.freeze({
   value: Number.NaN,
   n: 0,
   excluded: NO_EXCLUDED,

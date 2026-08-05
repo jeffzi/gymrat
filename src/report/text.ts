@@ -369,19 +369,6 @@ interface AggregateCell {
 }
 
 /**
- * An aggregate cell holding a delta and the band it was judged against: the
- * blank glyph slot, no word or pairs of its own, and spans carrying whatever
- * color the delta earns.
- */
-function aggregateDeltaCell(
-  delta: string,
-  band: string,
-  spans: readonly StyledSpan[],
-): AggregateCell {
-  return { parts: { glyph: GEOMEAN_GLYPH_SLOT, delta, word: "", band, pairs: "" }, spans };
-}
-
-/**
  * The single-candidate table's aggregate cell: the figure and its band, in the
  * delta and band fields of the column it closes.
  *
@@ -402,9 +389,10 @@ function geomeanVerdictCell(
       spans: emptyGeomeanSpans(),
     };
   }
-  return aggregateDeltaCell(parts.delta, parts.band, [
-    { text: parts.delta, style: geomeanValueStyle(geomean, outcomes) },
-  ]);
+  return {
+    parts: { glyph: GEOMEAN_GLYPH_SLOT, delta: parts.delta, word: "", band: parts.band, pairs: "" },
+    spans: [{ text: parts.delta, style: geomeanValueStyle(geomean, outcomes) }],
+  };
 }
 
 /**
@@ -908,26 +896,6 @@ function renderTable(
 }
 
 /**
- * A verdict as the tail of a candidate's cell in the multi-candidate table.
- *
- * The noise band that ends the single-candidate verdict cell is dropped here: a
- * row already spends one column per candidate, and repeating a per-candidate
- * noise figure in each of them costs the width the deltas need to stay readable.
- * What is left is what differs between candidates: the glyph, the delta, and —
- * where the metric rests on fewer pairs than the run took — how many.
- *
- * The band is not relocated. Highlights carry each verdict's own evidence, which
- * is the band only for band-method verdicts; a signed-rank or no-signal metric's
- * band does not appear anywhere in the N-way report.
- */
-function formatCandidateVerdict(
-  verdict: MetricVerdict | undefined,
-  samples: number,
-): VerdictParts | undefined {
-  return verdict === undefined ? undefined : verdictParts(verdict, samples, false);
-}
-
-/**
  * One candidate's side of a metric: what it measured, how that was judged, and
  * the two joined into a finished cell.
  *
@@ -986,7 +954,10 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
       const side = metric.candidates[index];
       const cell: CandidateCell = {
         value: candidateCellParts(side, metric.meta.unit),
-        verdict: formatCandidateVerdict(side?.verdict, result.samples),
+        verdict:
+          side?.verdict === undefined
+            ? undefined
+            : verdictParts(side.verdict, result.samples, false),
         delta: side?.verdict ? formatVerdictDelta(side.verdict) : "",
         outcome: shownClass(side?.verdict),
         text: "",
@@ -1275,13 +1246,6 @@ function gateTripLines(
   });
 }
 
-/** One highlights subsection: entries with an optional label heading over them. */
-interface HighlightSectionBlock {
-  readonly label?: string;
-  readonly entries: readonly string[];
-  readonly unstable: boolean;
-}
-
 /**
  * Renders the highlights section from one or more assembled blocks.
  *
@@ -1297,7 +1261,7 @@ interface HighlightSectionBlock {
  * The futility note closes the whole section rather than each subsection —
  * it says the same thing about every unstable metric on the page.
  */
-function highlightSection(blocks: readonly HighlightSectionBlock[]): string[] {
+function highlightSection(blocks: readonly HighlightBlock[]): string[] {
   const nonEmpty = blocks.filter((block) => block.entries.length > 0);
   if (nonEmpty.length === 0) return [];
 

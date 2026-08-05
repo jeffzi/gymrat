@@ -5,7 +5,6 @@ import {
   MIN_WILCOXON_N,
   type ApproximateVerdictValue,
   type GeomeanResult,
-  type Method,
   type MetricVerdict,
 } from "../verdict/verdict.js";
 import type {
@@ -279,7 +278,7 @@ export function geomeanLabel(n: number): string {
 }
 
 /** The scope separator inside a sectioned table's aggregate labels. */
-export const SCOPE_SEPARATOR = "·";
+const SCOPE_SEPARATOR = "·";
 
 /**
  * The label of an aggregate row covering one scope of a sectioned table — a
@@ -431,12 +430,12 @@ export function countVerdicts(metrics: MetricComparisons, candidateIndex: number
 }
 
 /** A candidate's side of a metric, known to carry a verdict. */
-export interface HighlightedCandidate extends CandidateMetric {
+interface HighlightedCandidate extends CandidateMetric {
   verdict: MetricVerdict;
 }
 
 /** A metric worth calling out for one candidate, with the name it is reported under. */
-export interface MetricHighlight {
+interface MetricHighlight {
   name: string;
   metric: MetricComparison;
   candidate: HighlightedCandidate;
@@ -524,7 +523,8 @@ export function hasUnstableHighlight(highlights: readonly MetricHighlight[]): bo
 
 /** One candidate's highlight entries, and whether the noise swamped any of them. */
 export interface HighlightBlock {
-  readonly entries: string[];
+  readonly label?: string;
+  readonly entries: readonly string[];
   readonly unstable: boolean;
 }
 
@@ -739,7 +739,7 @@ export const VERDICT_STYLES: Record<DisplayClass, Style> = {
 };
 
 /** Which occurrence of the marker `styleWithin` reaches for. */
-export interface StyleWithinOptions {
+interface StyleWithinOptions {
   /**
    * Style the last occurrence rather than the first.
    *
@@ -776,7 +776,7 @@ export function styleWithin(
 }
 
 /** The geomean's delta and the provenance describing what stands behind it. */
-export interface GeomeanParts {
+interface GeomeanParts {
   readonly delta: string;
   readonly provenance: string;
   /**
@@ -845,7 +845,7 @@ export function geomeanValueStyle(
  * Used to decide whether a row carries no news worth keeping above the fold.
  * A row with no verdicts at all is left alone rather than counted as quiet.
  */
-export function isQuietRow(outcomes: ReadonlyArray<DisplayClass | undefined>): boolean {
+function isQuietRow(outcomes: ReadonlyArray<DisplayClass | undefined>): boolean {
   const defined = outcomes.flatMap((outcome) => (outcome === undefined ? [] : [outcome]));
   return defined.length > 0 && defined.every((outcome) => QUIET_VERDICTS.has(outcome));
 }
@@ -902,56 +902,45 @@ export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: 
   });
 }
 
-/**
- * The pair counts behind every verdict a given method decided, across every
- * candidate.
- */
-function pairCounts(metrics: MetricComparisons, method: Method): number[] {
-  const counts: number[] = [];
-  for (const metric of Object.values(metrics)) {
-    for (const { verdict } of metric.candidates) {
-      if (verdict?.method === method) counts.push(verdict.n);
-    }
-  }
-  return counts;
-}
-
 const SAMPLES_HINT = `re-run with --samples ${MIN_WILCOXON_N} or more for statistical verdicts`;
 
 /** How the band method names itself wherever the footer describes a fallback. */
 const BAND_METHOD = "noise band ±(half-range × K)";
 
 /**
- * Why the band method decided a verdict the signed-rank test would otherwise
- * have owned.
+ * Everything the footer needs from the verdicts, collected in one pass.
  *
- * `shortage` counts the total pairs of every metric that never reached the
- * signed-rank floor; `ties` counts the surviving pairs of every metric that
- * reached it but had too many of them tied away. A run can hit both across
- * different metrics.
+ * `signedRank` carries the pair counts of every signed-rank verdict.
+ * `shortage` and `ties` sort the band-method verdicts by the cause that
+ * forced the fallback: too few total pairs, or too many of them tied away.
  */
-interface BandFallbacks {
+interface FooterData {
+  signedRank: number[];
   shortage: number[];
   ties: number[];
 }
 
-/** Sorts every band-method verdict into the cause that forced the fallback. */
-function bandFallbacks(metrics: MetricComparisons): BandFallbacks {
+function collectFooterData(metrics: MetricComparisons): FooterData {
+  const signedRank: number[] = [];
   const shortage: number[] = [];
   const ties: number[] = [];
 
   for (const metric of Object.values(metrics)) {
     for (const { verdict } of metric.candidates) {
-      if (verdict?.method !== "band") continue;
-      if (verdict.n < MIN_WILCOXON_N) {
-        shortage.push(verdict.n);
-      } else {
-        ties.push(verdict.usableN);
+      if (verdict === undefined) continue;
+      if (verdict.method === "signed-rank") {
+        signedRank.push(verdict.n);
+      } else if (verdict.method === "band") {
+        if (verdict.n < MIN_WILCOXON_N) {
+          shortage.push(verdict.n);
+        } else {
+          ties.push(verdict.usableN);
+        }
       }
     }
   }
 
-  return { shortage, ties };
+  return { signedRank, shortage, ties };
 }
 
 /**
@@ -966,12 +955,8 @@ function bandFallbacks(metrics: MetricComparisons): BandFallbacks {
  *
  * Every line is dimmed via `styleText` auto-detection.
  */
-export function methodFooterLines(
-  metrics: MetricComparisons,
-  fallbacks: BandFallbacks = bandFallbacks(metrics),
-): string[] {
-  const signedRank = pairCounts(metrics, "signed-rank");
-  const { shortage, ties } = fallbacks;
+export function methodFooterLines(metrics: MetricComparisons): string[] {
+  const { signedRank, shortage, ties } = collectFooterData(metrics);
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
@@ -1004,9 +989,8 @@ export function methodFooterLines(
 export function hintFooterLines(
   metrics: MetricComparisons,
   formatHint: (hint: string) => string,
-  fallbacks: BandFallbacks = bandFallbacks(metrics),
 ): string[] {
-  return fallbacks.shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
+  return collectFooterData(metrics).shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
 }
 
 /**
@@ -1021,9 +1005,5 @@ export function footerLines(
   verbose: boolean,
   formatHint: (hint: string) => string,
 ): string[] {
-  const fallbacks = bandFallbacks(metrics);
-  return [
-    ...(verbose ? methodFooterLines(metrics, fallbacks) : []),
-    ...hintFooterLines(metrics, formatHint, fallbacks),
-  ];
+  return [...(verbose ? methodFooterLines(metrics) : []), ...hintFooterLines(metrics, formatHint)];
 }

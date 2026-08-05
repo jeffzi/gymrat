@@ -2,6 +2,7 @@
  * Verdict engine core: pairing, delta computation, and verdict determination.
  */
 
+import type { ResolvedMetricMeta } from "../config.js";
 import { computeHalfRange, computeMedian } from "../math.js";
 import { metricRecord } from "../metric-record.js";
 import { wilcoxonSignedRank } from "./wilcoxon.js";
@@ -118,28 +119,10 @@ export type MetricVerdict = SignedRankVerdict | BandVerdict | ExactVerdict;
 export type Method = MetricVerdict["method"];
 
 /**
- * Unit a metric's values carry, when the adapter could tell.
- *
- * `"bytes"` marks a metric quantized to whole bytes, whose noise can never be
- * finer than one byte; `"ns"` marks an averaged duration, which carries no such
- * bound.
- */
-type MetricUnit = "ns" | "bytes";
-
-/**
  * Settled per-metric metadata the engine consumes, produced by `resolveMetricMeta`
  * in `config.ts` from adapter defaults merged with the user's config overrides.
  */
-export type MetricMetadata = {
-  /** "lower" = smaller values are better; "higher" = larger values are better */
-  direction: "lower" | "higher";
-  /** Whether this metric participates in geomean aggregation */
-  gating: boolean;
-  /** Whether to use the exact path (any difference = signal) */
-  exact: boolean;
-  /** Unit of the metric's values; absent when the adapter could not tell */
-  unit?: MetricUnit;
-};
+export type MetricMetadata = Pick<ResolvedMetricMeta, "direction" | "gating" | "exact" | "unit">;
 
 /**
  * Why a gating metric was left out of the geomean.
@@ -356,7 +339,7 @@ function computeApproximateVerdict(
   delta: number,
   direction: "lower" | "higher",
   unstableNoisePct: number,
-  unit: MetricUnit | undefined,
+  unit: ResolvedMetricMeta["unit"],
 ): SignedRankVerdict | BandVerdict {
   const wilcoxonResult = wilcoxonSignedRank(pairedA, pairedB);
 
@@ -455,7 +438,7 @@ function relativeSpread(halfRange: number, median: number): number {
 function computeNoise(
   pairedA: readonly number[],
   pairedB: readonly number[],
-  unit: MetricUnit | undefined,
+  unit: ResolvedMetricMeta["unit"],
 ): Noise {
   const medianA = computeMedian(pairedA);
   const medianB = computeMedian(pairedB);
@@ -492,7 +475,7 @@ function computeBandMethod(
   delta: number,
   direction: "lower" | "higher",
   usableN: number,
-  unit: MetricUnit | undefined,
+  unit: ResolvedMetricMeta["unit"],
 ): BandVerdict {
   const noise = computeNoise(pairedA, pairedB, unit);
 

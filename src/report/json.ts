@@ -1,6 +1,6 @@
 import { metricRecord } from "../metric-record.js";
 import { inferGroup } from "../verdict/aggregate.js";
-import type { GeomeanResult, MetricVerdict } from "../verdict/verdict.js";
+import type { GeomeanResult } from "../verdict/verdict.js";
 import { countVerdicts, type VerdictCounts } from "./format.js";
 import type {
   CandidateComparison,
@@ -116,25 +116,10 @@ function serializeCandidateMetric(candidate: CandidateMetric, label: string): Js
     verdict: verdict.verdict,
     method: verdict.method,
     delta: verdict.delta,
-    noisePct: extractNoisePct(verdict),
-    p: extractP(verdict),
-    band: extractBand(verdict),
+    noisePct: verdict.method === "exact" ? null : verdict.noisePct,
+    p: verdict.method === "signed-rank" ? verdict.p : null,
+    band: verdict.method === "band" ? verdict.band : null,
   };
-}
-
-function extractNoisePct(verdict: MetricVerdict): number | null {
-  if (verdict.method === "exact") return null;
-  return verdict.noisePct;
-}
-
-function extractP(verdict: MetricVerdict): number | null {
-  if (verdict.method === "signed-rank") return verdict.p;
-  return null;
-}
-
-function extractBand(verdict: MetricVerdict): number | null {
-  if (verdict.method === "band") return verdict.band;
-  return null;
 }
 
 function serializeMetrics(
