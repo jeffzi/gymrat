@@ -542,7 +542,7 @@ describe("compare – integration", () => {
           );
 
           assertCommandError(failure);
-          expect.soft(failure.label).toBe("candidate-bad3");
+          expect.soft(failure.message).toContain("candidate-bad3");
           expect.soft(failure.message).toContain("boom");
           expect.soft(failure.message).not.toContain("left behind");
           assertWorktreesCleanedUp(repo);
@@ -861,15 +861,12 @@ describe("compare – integration", () => {
       });
 
       it("throws a CommandError with structured context", () => {
-        expect.soft(error().phase).toBe("bench");
-        expect.soft(error().position).toBe(side);
-        expect.soft(error().label).toBe(`${side}-fail-${side}`);
-        expect.soft(error().command).toBe("sh bench.sh");
-        expect.soft(error().exitCode).toBe(1);
-        expect.soft(error().sample).toBe(1);
-        expect(error().target).toStrictEqual(
-          expect.objectContaining({ kind: "ref", ref: `${side}-fail-${side}` }),
-        );
+        expect.soft(error().message).toContain("bench");
+        expect.soft(error().message).toContain(side);
+        expect.soft(error().message).toContain(`${side}-fail-${side}`);
+        expect.soft(error().message).toContain("sh bench.sh");
+        expect.soft(error().message).toContain("exit code: 1");
+        expect.soft(error().message).toContain("sample 1");
 
         expect(error().message).toContain("stderr output");
         expect(error().message).toMatch(/worktree:\s+\S/);
@@ -894,15 +891,12 @@ describe("compare – integration", () => {
     });
 
     it("throws a CommandError with timeout context", () => {
-      expect.soft(error().phase).toBe("bench");
-      expect.soft(error().position).toBe("old");
-      expect.soft(error().label).toBe("old-slow");
-      expect.soft(error().command).toBe("sh bench.sh");
-      expect.soft(error().timeoutMs).toBe(500);
-      expect.soft(error().exitCode).toBeUndefined();
-      expect
-        .soft(error().target)
-        .toStrictEqual(expect.objectContaining({ kind: "ref", ref: "old-slow" }));
+      expect.soft(error().message).toContain("bench");
+      expect.soft(error().message).toContain("old");
+      expect.soft(error().message).toContain("old-slow");
+      expect.soft(error().message).toContain("sh bench.sh");
+      expect.soft(error().message).toContain("500ms");
+      expect.soft(error().message).not.toContain("exit code");
       expect(error().message).toMatch(/timed out/);
       expect(error().message).not.toContain("left behind");
     });
@@ -928,15 +922,12 @@ describe("compare – integration", () => {
     });
 
     it("throws a CommandError with prepare context", () => {
-      expect.soft(error().phase).toBe("prepare");
-      expect.soft(error().position).toBe("old");
-      expect.soft(error().label).toBe("old-prep-fail");
-      expect.soft(error().command).toBe("sh prepare.sh");
-      expect.soft(error().exitCode).toBe(1);
-      expect.soft(error().sample).toBeUndefined();
-      expect(error().target).toStrictEqual(
-        expect.objectContaining({ kind: "ref", ref: "old-prep-fail" }),
-      );
+      expect.soft(error().message).toContain("prepare");
+      expect.soft(error().message).toContain("old");
+      expect.soft(error().message).toContain("old-prep-fail");
+      expect.soft(error().message).toContain("sh prepare.sh");
+      expect.soft(error().message).toContain("exit code: 1");
+      expect.soft(error().message).not.toContain("sample ");
 
       expect(error().message).toContain("prep failed");
       expect(error().message).toMatch(/worktree:\s+\S/);
@@ -966,15 +957,12 @@ describe("compare – integration", () => {
     });
 
     it("throws a CommandError with prepare timeout context", () => {
-      expect.soft(error().phase).toBe("prepare");
-      expect.soft(error().position).toBe("old");
-      expect.soft(error().label).toBe("old-prep-slow");
-      expect.soft(error().command).toBe("sh prepare.sh");
-      expect.soft(error().timeoutMs).toBe(500);
-      expect.soft(error().exitCode).toBeUndefined();
-      expect
-        .soft(error().target)
-        .toStrictEqual(expect.objectContaining({ kind: "ref", ref: "old-prep-slow" }));
+      expect.soft(error().message).toContain("prepare");
+      expect.soft(error().message).toContain("old");
+      expect.soft(error().message).toContain("old-prep-slow");
+      expect.soft(error().message).toContain("sh prepare.sh");
+      expect.soft(error().message).toContain("500ms");
+      expect.soft(error().message).not.toContain("exit code");
       expect(error().message).toMatch(/timed out/);
       expect(error().message).not.toContain("left behind");
     });
@@ -1004,21 +992,18 @@ describe("compare – integration", () => {
         );
 
         assertCommandError(failure);
-        const error = failure;
 
-        expect.soft(error.phase).toBe("bench");
-        expect.soft(error.position).toBe("old");
-        expect.soft(error.label).toBe("old-dir-fail");
-        expect.soft(error.command).toBe("sh bench.sh");
-        expect.soft(error.exitCode).toBe(1);
-        expect.soft(error.sample).toBe(1);
-        expect(error.target.kind).toBe("in-place");
-        expect(error.dir).toContain("old-dir-fail");
+        expect.soft(failure.message).toContain("bench");
+        expect.soft(failure.message).toContain("old");
+        expect.soft(failure.message).toContain("old-dir-fail");
+        expect.soft(failure.message).toContain("sh bench.sh");
+        expect.soft(failure.message).toContain("exit code: 1");
+        expect.soft(failure.message).toContain("sample 1");
 
-        expect(error.message).toContain("dir bench failed");
-        expect(error.message).toMatch(/dir:\s+\S/);
-        expect(error.hint).toBeUndefined();
-        expect(error.message).not.toContain("worktree:");
+        expect(failure.message).toContain("dir bench failed");
+        expect(failure.message).toMatch(/dir:\s+\S/);
+        expect(failure.hint).toBeUndefined();
+        expect(failure.message).not.toContain("worktree:");
       });
     });
   });

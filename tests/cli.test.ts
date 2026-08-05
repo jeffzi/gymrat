@@ -18,10 +18,10 @@ import {
   CommandError,
   type CommandErrorContext,
   type CompareOptions,
-  type ExitFailure,
   type ProgressStep,
 } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
+import type { ExecResult } from "../src/exec.js";
 import { renderJson } from "../src/report/json.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
@@ -223,7 +223,7 @@ function createCommandError(targetKind: "ref" | "in-place"): CommandError {
         : { kind: "in-place", dir: "/tmp/test" },
     dir: "/tmp/test",
   };
-  const failure: ExitFailure = { exitCode: 1, stderr: "failed", stdout: "" };
+  const failure: ExecResult = { exitCode: 1, stderr: "failed", stdout: "" };
   return new CommandError(context, failure);
 }
 

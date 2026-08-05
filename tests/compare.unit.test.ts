@@ -5,13 +5,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 import { compare, CommandError } from "../src/compare.js";
-import type {
-  CommandErrorContext,
-  CompareOptions,
-  ExitFailure,
-  TimeoutFailure,
-} from "../src/compare.js";
+import type { CommandErrorContext, CompareOptions } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
+import type { ExecResult, ExecTimeoutError } from "../src/exec.js";
 import type { ComparisonResult } from "../src/report/types.js";
 import type { InPlaceTarget, RefTarget } from "../src/targets.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
@@ -55,7 +51,7 @@ function createContext(overrides: Partial<CommandErrorContext> = {}): CommandErr
   };
 }
 
-function createExitFailure(overrides: Partial<ExitFailure> = {}): ExitFailure {
+function createExecResult(overrides: Partial<ExecResult> = {}): ExecResult {
   return {
     exitCode: 1,
     stderr: "Error: benchmark crashed",
@@ -64,8 +60,9 @@ function createExitFailure(overrides: Partial<ExitFailure> = {}): ExitFailure {
   };
 }
 
-function createTimeoutFailure(overrides: Partial<TimeoutFailure> = {}): TimeoutFailure {
+function createExecTimeout(overrides: Partial<ExecTimeoutError> = {}): ExecTimeoutError {
   return {
+    kind: "timeout",
     timeoutMs: 30000,
     stderr: "partial output before timeout",
     stdout: "",
@@ -79,7 +76,7 @@ describe("CommandError", () => {
       {
         name: "exit code, ref target",
         context: { target: createRefTarget("main", "abc123") },
-        failure: createExitFailure({ exitCode: 2, stderr: "segfault in runner" }),
+        failure: createExecResult({ exitCode: 2, stderr: "segfault in runner" }),
         expectedFragments: [
           "bench",
           "old",
@@ -100,7 +97,7 @@ describe("CommandError", () => {
           target: createInPlaceTarget("/projects/my-app"),
           dir: "/projects/my-app",
         },
-        failure: createExitFailure({ exitCode: 3, stderr: "module not found" }),
+        failure: createExecResult({ exitCode: 3, stderr: "module not found" }),
         expectedFragments: [
           "bench",
           "new",
@@ -120,7 +117,7 @@ describe("CommandError", () => {
           target: createRefTarget("feature-branch", "sha789"),
           dir: "/tmp/worktree-feature",
         },
-        failure: createTimeoutFailure({ timeoutMs: 60000, stderr: "still installing..." }),
+        failure: createExecTimeout({ timeoutMs: 60000, stderr: "still installing..." }),
         expectedFragments: [
           "prepare",
           "old",
@@ -143,7 +140,7 @@ describe("CommandError", () => {
           target: createInPlaceTarget("/projects/other"),
           dir: "/projects/other",
         },
-        failure: createTimeoutFailure({ timeoutMs: 45000, stderr: "hanging on postinstall" }),
+        failure: createExecTimeout({ timeoutMs: 45000, stderr: "hanging on postinstall" }),
         expectedFragments: [
           "prepare",
           "new",
@@ -158,7 +155,7 @@ describe("CommandError", () => {
     ] satisfies {
       name: string;
       context: Partial<CommandErrorContext>;
-      failure: ExitFailure | TimeoutFailure;
+      failure: ExecResult | ExecTimeoutError;
       expectedFragments: string[];
       absentFragments: string[];
     }[])("includes the relevant fields in the message ($name)", (testCase) => {
@@ -178,7 +175,7 @@ describe("CommandError", () => {
   describe("when phase is bench", () => {
     it("includes the 1-indexed sample number in the message", () => {
       const ctx = createContext({ sample: 3 });
-      const failure = createExitFailure();
+      const failure = createExecResult();
 
       const error = new CommandError(ctx, failure);
 
@@ -189,44 +186,31 @@ describe("CommandError", () => {
   describe("when target is a ref", () => {
     it("does not include the hint text in the message", () => {
       const ctx = createContext();
-      const failure = createExitFailure();
+      const failure = createExecResult();
 
       const error = new CommandError(ctx, failure);
 
       expect(error.message).not.toContain("hint:");
       expect(error.message).not.toContain("the worktree only contains files tracked at this ref");
     });
-  });
 
-  describe("when accessed via property getters", () => {
-    it("exposes context and exit failure fields for programmatic access", () => {
-      const target = createRefTarget("v1.0", "sha-abc");
-      const ctx = createContext({ target, dir: "/tmp/worktree", sample: 2 });
-      const failure = createExitFailure({ exitCode: 5 });
+    it("carries the worktree hint", () => {
+      const ctx = createContext({ target: createRefTarget() });
+      const failure = createExecResult();
 
       const error = new CommandError(ctx, failure);
 
-      expect.soft(error.phase).toBe("bench");
-      expect.soft(error.position).toBe("old");
-      expect.soft(error.label).toBe("baseline");
-      expect.soft(error.command).toBe("npm run bench");
-      expect.soft(error.target).toStrictEqual(target);
-      expect.soft(error.dir).toBe("/tmp/worktree");
-      expect.soft(error.sample).toBe(2);
-      expect.soft(error.exitCode).toBe(5);
-      expect.soft(error.timeoutMs).toBeUndefined();
       expect(error.hint).toBe(REF_TARGET_HINT);
     });
+  });
 
-    it("exposes context and timeout failure fields for programmatic access", () => {
+  describe("when target is in-place", () => {
+    it("carries no hint", () => {
       const ctx = createContext({ target: createInPlaceTarget() });
-      const failure = createTimeoutFailure({ timeoutMs: 10000 });
+      const failure = createExecResult();
 
       const error = new CommandError(ctx, failure);
 
-      expect.soft(error.exitCode).toBeUndefined();
-      expect.soft(error.timeoutMs).toBe(10000);
-      expect.soft(error.sample).toBeUndefined();
       expect(error.hint).toBeUndefined();
     });
   });
@@ -234,7 +218,7 @@ describe("CommandError", () => {
   describe("when stderr and stdout are both non-empty", () => {
     it("shows both under labeled separators", () => {
       const ctx = createContext();
-      const failure = createExitFailure({
+      const failure = createExecResult({
         stderr: "error output here",
         stdout: "normal output here",
       });
@@ -251,7 +235,7 @@ describe("CommandError", () => {
   describe("when only stdout is non-empty", () => {
     it("shows stdout without separators", () => {
       const ctx = createContext();
-      const failure = createExitFailure({ stderr: "", stdout: "bench output here" });
+      const failure = createExecResult({ stderr: "", stdout: "bench output here" });
 
       const error = new CommandError(ctx, failure);
 
@@ -264,7 +248,7 @@ describe("CommandError", () => {
   describe("when stderr and stdout are both empty", () => {
     it("does not include any output separator or body", () => {
       const ctx = createContext();
-      const failure = createExitFailure({ stderr: "", stdout: "" });
+      const failure = createExecResult({ stderr: "", stdout: "" });
 
       const error = new CommandError(ctx, failure);
 

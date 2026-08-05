@@ -5,6 +5,7 @@ import type { Adapter } from "./adapters/types.js";
 import { resolveMetricMeta, type ConfigKinds, type ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
+import type { ExecResult, ExecTimeoutError } from "./exec.js";
 import { computeHalfRange, computeMedian } from "./math.js";
 import { metricRecord } from "./metric-record.js";
 import { formatCleanupFailures } from "./report/text.js";
@@ -43,30 +44,11 @@ export interface CommandErrorContext {
   sample?: number;
 }
 
-interface CommandOutput {
-  stderr: string;
-  stdout: string;
-}
-
-/** A command that terminated with a non-zero exit code. */
-export interface ExitFailure extends CommandOutput {
-  exitCode: number;
-}
-
-/** A command that was killed after exceeding its timeout. */
-export interface TimeoutFailure extends CommandOutput {
-  timeoutMs: number;
-}
-
-function isTimeoutFailure(failure: ExitFailure | TimeoutFailure): failure is TimeoutFailure {
-  return "timeoutMs" in failure;
-}
-
 function formatCommandError(
   context: CommandErrorContext,
-  failure: ExitFailure | TimeoutFailure,
+  failure: ExecResult | ExecTimeoutError,
 ): string {
-  const isTimeout = isTimeoutFailure(failure);
+  const isTimeout = "kind" in failure;
   const verb = isTimeout ? "timed out" : "failed";
 
   const samplePart = context.sample !== undefined ? `, sample ${context.sample}` : "";
@@ -83,7 +65,7 @@ function formatCommandError(
 
   lines.push(`  command:   ${context.command}`);
 
-  if (isTimeout) {
+  if ("kind" in failure) {
     lines.push(`  timeout:   ${failure.timeoutMs}ms`);
   } else {
     lines.push(`  exit code: ${failure.exitCode}`);
@@ -111,33 +93,12 @@ function formatCommandError(
  * failures append a hint about the ref possibly lacking the files the command needs.
  */
 export class CommandError extends GymratError {
-  readonly phase: "prepare" | "bench";
-  readonly position: "old" | "new";
-  readonly label: string;
-  readonly command: string;
-  readonly target: Target;
-  readonly dir: string;
-  readonly sample: number | undefined;
-  readonly exitCode: number | undefined;
-  readonly timeoutMs: number | undefined;
-
-  constructor(context: CommandErrorContext, failure: ExitFailure | TimeoutFailure) {
+  constructor(context: CommandErrorContext, failure: ExecResult | ExecTimeoutError) {
     const hint =
       context.target.kind === "ref"
         ? "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent"
         : undefined;
     super(formatCommandError(context, failure), hint);
-
-    this.phase = context.phase;
-    this.position = context.position;
-    this.label = context.label;
-    this.command = context.command;
-    this.target = context.target;
-    this.dir = context.dir;
-    this.sample = context.sample;
-    const isTimeout = isTimeoutFailure(failure);
-    this.exitCode = isTimeout ? undefined : failure.exitCode;
-    this.timeoutMs = isTimeout ? failure.timeoutMs : undefined;
   }
 }
 
@@ -195,12 +156,11 @@ export interface CompareOptions {
  * only because nothing was ever compared against it, and `± 0%` would state
  * that as a measured result. Such a side has no spread at all.
  */
-function computeSpread(values: readonly number[]): number | undefined {
+function computeSpread(values: readonly number[], median: number): number | undefined {
   if (values.length < 2) {
     return undefined;
   }
 
-  const median = computeMedian(values);
   if (median === 0) {
     return 0;
   }
@@ -254,19 +214,11 @@ async function runCommand(
   const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
 
   if ("kind" in result) {
-    throw new CommandError(context, {
-      timeoutMs: result.timeoutMs,
-      stderr: result.stderr,
-      stdout: result.stdout,
-    });
+    throw new CommandError(context, result);
   }
 
   if (result.exitCode !== 0) {
-    throw new CommandError(context, {
-      exitCode: result.exitCode,
-      stderr: result.stderr,
-      stdout: result.stdout,
-    });
+    throw new CommandError(context, result);
   }
 
   return result.stdout;
@@ -347,9 +299,10 @@ function resolveLabel(explicit: string | undefined, resolved: Target): string {
 /** A side's median and spread over the given values, or both undefined when there are none. */
 function computeMetricStats(values: readonly number[]): { median?: number; spread?: number } {
   if (values.length === 0) {
-    return { median: undefined, spread: undefined };
+    return {};
   }
-  return { median: computeMedian(values), spread: computeSpread(values) };
+  const median = computeMedian(values);
+  return { median, spread: computeSpread(values, median) };
 }
 
 /** Every value a side reported for a metric, regardless of what the other side has. */
@@ -453,15 +406,7 @@ function buildComparisonResult(
 
 /** Every metric name any target reported, so a one-sided metric still gets a row. */
 function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
-  const names = new Set<string>();
-  for (const samples of sampleSets) {
-    for (const sample of samples) {
-      for (const name of Object.keys(sample)) {
-        names.add(name);
-      }
-    }
-  }
-  return names;
+  return new Set(sampleSets.flat().flatMap(Object.keys));
 }
 
 /**
@@ -533,15 +478,11 @@ function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
 
   const combinedMessage = [messageOf(error), "", "cleanup did not finish:", ...details].join("\n");
 
-  if (error instanceof CommandError && error.hint !== undefined) {
-    return new GymratError(combinedMessage, error.hint, { cause: error });
-  }
+  const hint = error instanceof GymratError ? error.hint : undefined;
 
-  if (error instanceof AdapterError) {
-    return new AdapterError(combinedMessage, undefined, { cause: error });
-  }
-
-  return new GymratError(combinedMessage, undefined, { cause: error });
+  return error instanceof AdapterError
+    ? new AdapterError(combinedMessage, undefined, { cause: error })
+    : new GymratError(combinedMessage, hint, { cause: error });
 }
 
 /**
