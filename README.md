@@ -141,7 +141,7 @@ encode/heap                 │  49200 ± 0% │         45300 ± 0% │ ✓   -
 geomean (4 stable metrics)  │             │                    │     -6.0%
                             │        main │ perf/faster-decode │ vs main
 
-✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 
 highlights
   ✗ encode/time               +2.2%
@@ -205,7 +205,8 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 - A single-kind run closes with one `geomean (4 stable metrics)` row naming how many stable metrics
   remain. A multi-kind run closes each section with a `geomean · <kind> (n)` row instead, where `n`
   is the count of stable metrics that stood behind the figure, or `geomean · <kind> (n/m)` when
-  exclusions thinned `m` metrics down to `n`.
+  exclusions thinned `m` metrics down to `n`. The geomean cell shows `±<band>%` — the propagated
+  noise — when the aggregate band is nonzero. A band of zero (all-exact metrics) omits it.
 
 A `mitata` run reporting both `time` and `memory` metrics, with `kinds.memory.gating` set to
 `false`, sections the report like this:
@@ -235,7 +236,7 @@ encode                │  100B ± 1% │           93B ± 1% │ ✓   -7.0%  �
 geomean · memory (1)  │            │                    │     -7.0%
                       │       main │ perf/faster-decode │ vs main
 
-✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise
+✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 
 highlights
   ✗ time · entity.spawn/time         +4.0%
@@ -260,11 +261,14 @@ from the per-side medians.
 - **Signed-rank** (≥ 6 nonzero differences): a two-sided Wilcoxon signed-rank test. Signal when
   `p < 0.05`.
 - **Noise band** (fewer than 6 nonzero differences): the band is
-  `max(150 × max(halfRange/median over both sides), 0.5%)`, and `|delta%|` must exceed it to
-  count as signal. With fewer than 2 pairs, every non-exact metric is no-signal regardless of
-  delta — the band has no observable spread to measure against. Rendered as e.g.
-  `~  -1.9%  ±3.0%  n=4` (glyph, delta, band, and pair count when it differs from `--samples`).
-  Runs of 6 or more samples land here too when ties leave fewer than 6 nonzero differences.
+  `max(150% × max(halfRange/median over both sides), 0.5%, byteFloorPct)`, and `|delta%|` must
+  exceed it to count as signal. `byteFloorPct` applies only to byte-valued metrics (`bytes` unit):
+  it is the percentage one byte represents against each side's median, ensuring a one-step
+  quantization move is never called a signal. With fewer than 2 pairs, the band is meaningless and
+  the metric reads _inconclusive_ regardless of delta — the band has no observable spread to measure
+  against. Rendered as e.g. `~  -1.9%  ±3.0%  n=4` (glyph, delta, band, and pair count when it
+  differs from `--samples`). Runs of 6 or more samples land here too when ties leave fewer than 6
+  nonzero differences.
 - **Exact metrics** (config-flagged, e.g. binary size): any difference between medians is a signal;
   a single sample suffices.
 
@@ -327,13 +331,14 @@ benchmark library required. gymrat scans bench **stdout** (never stderr) for lin
 METRIC <name>=<value>
 ```
 
-- gymrat trims each line and keeps the ones starting with `METRIC`. Everything after that prefix is
-  trimmed and split at its **last** `=`, so metric names may themselves contain `=` (e.g.
-  `decode/text=digits`).
-- The left side becomes the metric name verbatim, whitespace included. Nothing separates the prefix
-  from the name, so a typo like `METRICS foo=1` silently parses as a metric named `S foo`.
-  Similarly, `METRIC decode time=1.4` yields a metric named `decode time`. Check the report's metric
-  column when a name looks wrong.
+- gymrat trims each line and keeps the ones starting with `METRIC` (note the mandatory space after
+  the prefix). Everything after the prefix is trimmed and split at its **last** `=`, so metric names
+  may themselves contain `=` (e.g. `decode/text=digits`).
+- The left side becomes the metric name verbatim, whitespace included. `METRIC decode time=1.4`
+  yields a metric named `decode time`. Check the report's metric column when a name looks wrong.
+- A line starting with `METRIC` but missing the separating space — `METRICS foo=1`,
+  `METRICbar=2`, `METRIC_foo=1` — produces a warning on gymrat's stderr, since it looks like a
+  near-miss. Completely unrelated lines are silently ignored.
 - The right side goes through JavaScript's `Number()`, which accepts more than decimal notation
   (`0x1f` parses as 31); non-finite results are rejected.
 - An **empty right side** (`METRIC name=`, the shape an unset shell variable produces) is skipped,
@@ -392,11 +397,12 @@ an error, to catch typos.
 ```
 
 - `bench`, `prepare`, `adapter`, `samples`, `timeoutSeconds` mirror the command-line options.
-- `unstableNoisePct` (default `200`, any positive number) is the noise band width, in percent, above
-  which a metric is too noisy to judge: its verdict becomes `unstable` (tallied under `≈` in the
-  summary, serialized as `"unstable"` in JSON) and it drops out of the geomean. The comparison is
-  strict — a metric sitting exactly on the threshold keeps its verdict. It has no flag — set it in
-  the config file or leave the default.
+- `unstableNoisePct` (default `200`, minimum `0.5`) is the noise band width, in percent, above which
+  a metric is too noisy to judge: its verdict becomes `unstable` (tallied under `≈` in the summary,
+  serialized as `"unstable"` in JSON) and it drops out of the geomean. The comparison is strict — a
+  metric sitting exactly on the threshold keeps its verdict. Values below `0.5` are rejected because
+  the noise band is floored at 0.5%, so a lower threshold would mark every metric unstable. It has no
+  flag — set it in the config file or leave the default.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
   - `direction`: `"lower"` or `"higher"` (which way is better).
   - `gating`: whether the metric counts toward the geomean and the `--fail-on` gate. Defaults to
