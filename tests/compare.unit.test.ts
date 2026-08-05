@@ -31,6 +31,18 @@ vi.mock("../src/adapters/index.js", async (importOriginal) => {
   };
 });
 
+const cleanupSpy = vi.hoisted(() => vi.fn());
+vi.mock("../src/targets.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/targets.js")>();
+  return {
+    ...actual,
+    cleanupWorktrees: (...args: Parameters<typeof actual.cleanupWorktrees>) => {
+      cleanupSpy(...args);
+      return actual.cleanupWorktrees(...args);
+    },
+  };
+});
+
 function createRefTarget(ref = "abc123", resolvedSha = "def456"): RefTarget {
   return { kind: "ref", ref, resolvedSha };
 }
@@ -353,6 +365,17 @@ describe("compare", () => {
         expect.soft(candidate.kinds[0]?.hasGating).toBe(false);
         expect(candidate.kinds[0]?.gatedGeomean).toBeUndefined();
       });
+    });
+  });
+
+  describe("cleanup sweep", () => {
+    it("calls cleanupWorktrees exactly once on the success path", async () => {
+      parsed.metrics = { latency: 100 };
+      cleanupSpy.mockClear();
+
+      await runCompare();
+
+      expect(cleanupSpy).toHaveBeenCalledOnce();
     });
   });
 });

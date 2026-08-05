@@ -1467,6 +1467,26 @@ describe("createProgram", () => {
 
         expect(stderrWrites(stderrSpy)).toContainEqual(expect.stringContaining("Compare failed"));
       });
+
+      it("waits for stderr to drain before exiting", async () => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+        await setupMocks(new Error("Compare failed"));
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(false);
+        const exitSpy = mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(compareArgv("main", "branch")).catch((e: unknown) => e);
+        await vi.waitFor(() => {
+          expect(stderrSpy).toHaveBeenCalled();
+        });
+
+        // Assert — exit is held until stderr drains
+        expect(exitSpy).not.toHaveBeenCalled();
+        process.stderr.emit("drain");
+        await expect(parsing).resolves.toHaveProperty("exitCode", 2);
+      });
     });
 
     describe("--fail-on", () => {

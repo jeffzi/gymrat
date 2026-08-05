@@ -1134,6 +1134,45 @@ describe("compare – integration", () => {
     });
   });
 
+  describe("when the adapter throws and cleanup leaves a worktree behind", () => {
+    it("re-wraps the AdapterError with the cleanup failure details", async () => {
+      await withScratchRepo(async (repo) => {
+        const leftBehindDirs: string[] = [];
+
+        try {
+          createBranch(repo, {
+            name: "old-adapter-fail",
+            benchScript: '#!/bin/sh\nrm -f .git\necho "no metrics"',
+          });
+
+          createBranch(repo, {
+            name: "new-adapter-fail",
+            benchScript: '#!/bin/sh\necho "no metrics either"',
+          });
+
+          const failure = await captureRejection(
+            compare(
+              compareOptions({
+                baseline: { target: "old-adapter-fail" },
+                candidates: [{ target: "new-adapter-fail" }],
+              }),
+            ),
+          );
+
+          leftBehindDirs.push(...parseLeftBehindDirs(failure.message));
+          expect(failure).toBeInstanceOf(AdapterError);
+          expect(failure.message).toContain("METRIC");
+          expect(failure.message).toContain("cleanup did not finish");
+          expect(failure.cause).toBeInstanceOf(AdapterError);
+        } finally {
+          for (const dir of leftBehindDirs) {
+            fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+          }
+        }
+      });
+    });
+  });
+
   describe("when metric values are zero", () => {
     it("renders a zero median as 0 ± 0% and a 0.0% delta rather than NaN", async () => {
       await withScratchRepo(async (repo) => {

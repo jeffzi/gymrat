@@ -63,6 +63,12 @@ describe("metric-lines adapter", () => {
         expect(result).toStrictEqual(metricRecord({ valid: 1 }));
       });
 
+      it("requires a space after METRIC — METRICfoo=42 is not a metric line", () => {
+        const stdout = "METRICfoo=42\nMETRIC valid=1";
+        const result = metricLinesAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ valid: 1 }));
+      });
+
       it("extracts METRIC lines from mixed output", () => {
         const stdout = "Starting benchmark...\nMETRIC foo=42\nRunning test\nMETRIC bar=3.14\nDone";
         const result = metricLinesAdapter.parse(stdout);
