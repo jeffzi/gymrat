@@ -20,22 +20,27 @@ const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
  * stale cleanup is the only cost of leaving one attached.
  */
 export function installTerminationCleanup(cleanup: () => void): () => void {
-  const uninstallers = TERMINATION_SIGNALS.map((signal) => {
+  const handlers = TERMINATION_SIGNALS.map((signal) => {
+    const exitCode = 128 + os.constants.signals[signal];
+
     const handler = () => {
       cleanup();
-      process.exit(128 + os.constants.signals[signal]);
+      process.exit(exitCode);
     };
 
     process.on(signal, handler);
 
-    return () => {
-      process.removeListener(signal, handler);
-    };
+    return { signal, handler, exitCode };
   });
 
   return () => {
-    for (const uninstall of uninstallers) {
-      uninstall();
+    for (const { signal, handler, exitCode } of handlers) {
+      process.removeListener(signal, handler);
+
+      const exitOnly = () => {
+        process.exit(exitCode);
+      };
+      process.on(signal, exitOnly);
     }
   };
 }

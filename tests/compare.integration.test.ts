@@ -1302,18 +1302,11 @@ describe("compare – integration", () => {
     afterEach(() => {
       vi.restoreAllMocks();
 
-      // On every passing path `compare()` has already uninstalled its own
-      // handlers by the time the test's `finally` awaits the run's settlement,
-      // so this normally finds nothing. It fires only when setup threw before
-      // the run could settle — and it asserts rather than scrubbing silently,
-      // because a handler surviving a settled run is the exact regression the
-      // sibling listener-count test exists to catch.
-      const leaked = TERMINATION_SIGNALS.filter((signal) =>
-        removeLeakedListeners(signal, listenersBefore[signal]),
-      );
-
-      if (leaked.length > 0) {
-        throw new Error(`compare() left ${leaked.join(", ")} handler(s) installed after settling`);
+      // Uninstall swaps cleanup handlers for exit-only handlers that catch
+      // signals queued during a blocking call — those are expected to survive
+      // settlement.  Remove them here for test-suite hygiene.
+      for (const signal of TERMINATION_SIGNALS) {
+        removeLeakedListeners(signal, listenersBefore[signal]);
       }
     });
 
@@ -1428,7 +1421,13 @@ describe("compare – integration", () => {
             SIGTERM: before.SIGTERM + 1,
             SIGHUP: before.SIGHUP + 1,
           });
-          expect(signalListenerCounts()).toStrictEqual(before);
+          // Uninstall swaps cleanup handlers for exit-only handlers, so each
+          // signal keeps one listener (the exit-only replacement).
+          expect(signalListenerCounts()).toStrictEqual({
+            SIGINT: before.SIGINT + 1,
+            SIGTERM: before.SIGTERM + 1,
+            SIGHUP: before.SIGHUP + 1,
+          });
         });
       },
       LONG_RUN_TIMEOUT_MS,
