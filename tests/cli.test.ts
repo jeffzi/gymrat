@@ -1158,6 +1158,81 @@ describe("createProgram", () => {
         });
       });
 
+      describe("when the progress line is wider than the terminal", () => {
+        const NARROW_COLUMNS = 30;
+        const LONG_LABEL = "baseline-with-a-very-long-target-name-that-never-fits";
+        const LONG_SAMPLE_STEP: ProgressStep = {
+          kind: "sample",
+          index: 1,
+          total: 5,
+          label: LONG_LABEL,
+        };
+        const WARNING = "Failed to parse METRIC line: METRIC foo=bar";
+
+        const originalColumns = Object.getOwnPropertyDescriptor(process.stderr, "columns");
+
+        afterEach(() => {
+          if (originalColumns) {
+            Object.defineProperty(process.stderr, "columns", originalColumns);
+          } else {
+            Reflect.deleteProperty(process.stderr, "columns");
+          }
+        });
+
+        /** Pins the terminal width; `process.stderr.columns` is absent on a non-TTY stream. */
+        function useTerminalWidth(columns: number): void {
+          Object.defineProperty(process.stderr, "columns", {
+            value: columns,
+            configurable: true,
+            writable: true,
+          });
+        }
+
+        /**
+         * Drop the `\r\x1b[K` overwrite prefix so only the displayed characters are
+         * measured — the escape sequence occupies no columns.
+         */
+        function displayedWidth(write: unknown): number {
+          return String(write).replace(/^\r\x1b\[K/, "").length;
+        }
+
+        it("truncates the progress line to the terminal width", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useNoColorTty();
+          useTerminalWidth(NARROW_COLUMNS);
+          const { stderrSpy } = await setupProgressMocks([LONG_SAMPLE_STEP]);
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — the line fits on one row, so \r\x1b[K erases all of it
+          const progressWrite = findStderrWrite(stderrSpy, "sample 1/5");
+          expect(progressWrite).toBeDefined();
+          expect(displayedWidth(progressWrite)).toBeLessThanOrEqual(NARROW_COLUMNS);
+        });
+
+        it("truncates the progress line redrawn after a warning", async () => {
+          // Arrange
+          const program = createRunnableProgram();
+          useNoColorTty();
+          useTerminalWidth(NARROW_COLUMNS);
+          const { stderrSpy } = await setupProgressMocks([LONG_SAMPLE_STEP], undefined, (opts) => {
+            opts.warn?.(WARNING);
+          });
+
+          // Act
+          await program.parseAsync(compareArgv("main", "branch"));
+
+          // Assert — the redraw after the warning is truncated like the first write
+          const writes = stderrWrites(stderrSpy).map((write) => String(write));
+          const warnIndex = writes.findIndex((write) => write.includes(WARNING));
+          const redraw = writes.slice(warnIndex + 1).find((write) => write.includes("sample 1/5"));
+          expect(redraw).toBeDefined();
+          expect(displayedWidth(redraw)).toBeLessThanOrEqual(NARROW_COLUMNS);
+        });
+      });
+
       describe("when stderr is not a TTY", () => {
         it("does not construct a spinner", async () => {
           // Arrange

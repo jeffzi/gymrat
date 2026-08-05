@@ -385,11 +385,30 @@ function styleProgressLine(step: ProgressStep, etaMs?: number): string {
 const CLEAR_LINE = "\r\x1b[K";
 
 /**
+ * Cut `line` down to a single terminal row.
+ *
+ * {@link CLEAR_LINE} erases the row the cursor lands on and nothing else, so a
+ * line that wrapped leaves its first rows on screen as stale fragments. Stopping
+ * one column short of the width keeps terminals that wrap as soon as the last
+ * column is written from spilling onto a second row.
+ *
+ * `@types/node` declares `columns` as a number, but node defines it only on a
+ * TTY; elsewhere it is `undefined` — and a non-TTY stream has no width to fit.
+ */
+function fitToTerminalWidth(line: string): string {
+  const columns = process.stderr.columns as number | undefined;
+  if (columns === undefined) {
+    return line;
+  }
+  return line.slice(0, Math.max(0, columns - 1));
+}
+
+/**
  * Non-TTY output must stay free of ANSI escapes; TTY output overwrites in
  * place using {@link CLEAR_LINE} so only one progress line is ever visible.
  */
 function writeProgress(line: string, tty: boolean): void {
-  process.stderr.write(tty ? `${CLEAR_LINE}${line}` : `${line}\n`);
+  process.stderr.write(tty ? `${CLEAR_LINE}${fitToTerminalWidth(line)}` : `${line}\n`);
 }
 
 /**
