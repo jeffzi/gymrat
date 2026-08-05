@@ -1,6 +1,5 @@
 import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
 
 import { messageOf } from "./errors.js";
 
@@ -117,22 +116,21 @@ export async function exec(
       return;
     }
 
-    // Decoders rather than a per-chunk toString(): a multi-byte character can
-    // straddle two pipe reads, and decoding each read on its own would turn the
-    // halves into replacement characters.
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
+    // setEncoding handles multi-byte characters that straddle pipe reads and
+    // flushes any partial sequence when the stream ends.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     let stdout = "";
     let stderr = "";
     let timeoutHandle: NodeJS.Timeout | undefined;
     let resolved = false;
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += stdoutDecoder.write(chunk);
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
     });
 
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += stderrDecoder.write(chunk);
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
     });
 
     function settle(result: ExecResult | ExecTimeoutError): void {
@@ -182,8 +180,6 @@ export async function exec(
     // "close", not "exit": it waits for the stdio pipes, which the shell's
     // descendants can still be writing to after the shell itself is gone.
     child.on("close", (code) => {
-      stdout += stdoutDecoder.end();
-      stderr += stderrDecoder.end();
       settle({
         stdout,
         stderr,
