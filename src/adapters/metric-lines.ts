@@ -7,12 +7,18 @@ const METRIC_PREFIX = "METRIC";
 
 function parseMetricLine(line: string): { name: string; value: number } | null {
   const trimmed = line.trim();
-  if (!trimmed.startsWith(`${METRIC_PREFIX} `)) return null;
 
   const reject = (): null => {
     console.warn(`Failed to parse METRIC line: ${trimmed}`);
     return null;
   };
+
+  if (!trimmed.startsWith(`${METRIC_PREFIX} `)) {
+    // A line starting with METRIC but missing the separating space
+    // (`METRICfoo=1`, `METRIC_foo=1`, `METRICS foo=1`) is a typo in the bench
+    // script, not ordinary output, so it is reported rather than dropped.
+    return trimmed.startsWith(METRIC_PREFIX) ? reject() : null;
+  }
 
   const afterMetric = trimmed.slice(METRIC_PREFIX.length).trim();
   const lastEqIndex = afterMetric.lastIndexOf("=");

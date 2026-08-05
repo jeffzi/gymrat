@@ -65,8 +65,10 @@ describe("metric-lines adapter", () => {
 
       it("requires a space after METRIC — METRICfoo=42 is not a metric line", () => {
         const stdout = "METRICfoo=42\nMETRIC valid=1";
-        const result = metricLinesAdapter.parse(stdout);
-        expect(result).toStrictEqual(metricRecord({ valid: 1 }));
+        captureStderr(() => {
+          const result = metricLinesAdapter.parse(stdout);
+          expect(result).toStrictEqual(metricRecord({ valid: 1 }));
+        });
       });
 
       it("extracts METRIC lines from mixed output", () => {
@@ -74,6 +76,31 @@ describe("metric-lines adapter", () => {
         const result = metricLinesAdapter.parse(stdout);
         expect(result).toStrictEqual(metricRecord({ foo: 42, bar: 3.14 }));
       });
+    });
+
+    describe("near-miss METRIC prefix warning", () => {
+      it.each([
+        { description: "no space after METRIC", offending: "METRICfoo=42" },
+        { description: "a longer word starting with METRIC", offending: "METRICS foo=1" },
+        { description: "an underscore instead of a space", offending: "METRIC_foo=1" },
+      ])("warns about a line with $description", ({ offending }) => {
+        const stderr = captureStderr(() => {
+          metricLinesAdapter.parse(`${offending}\nMETRIC valid=1`);
+        });
+
+        expect(stderr).toContain(`Failed to parse METRIC line: ${offending}`);
+      });
+
+      it.each(["some other output", "Starting benchmark...", "metric foo=42"])(
+        "stays silent for the unrelated line %s",
+        (unrelated) => {
+          const stderr = captureStderr(() => {
+            metricLinesAdapter.parse(`${unrelated}\nMETRIC valid=1`);
+          });
+
+          expect(stderr).toBe("");
+        },
+      );
     });
 
     describe("malformed METRIC warning", () => {
@@ -168,9 +195,11 @@ describe("metric-lines adapter", () => {
         ["empty string", ""],
         ["only malformed METRIC lines present", "METRIC foo\nMETRIC bar=baz"],
       ])("throws AdapterError when %s", (_description, stdout) => {
-        const parse = () => metricLinesAdapter.parse(stdout);
-        expect(parse).toThrow(AdapterError);
-        expect(parse).toThrow(/^No valid METRIC lines found$/);
+        captureStderr(() => {
+          const parse = () => metricLinesAdapter.parse(stdout);
+          expect(parse).toThrow(AdapterError);
+          expect(parse).toThrow(/^No valid METRIC lines found$/);
+        });
       });
     });
   });
