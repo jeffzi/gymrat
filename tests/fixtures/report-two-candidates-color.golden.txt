@@ -6,7 +6,6 @@ encode/time              │  914ns ± 1% │  934ns ± 1%  [31m✗[39m   [31
 encode/heap              │ 49.2KB ± 0% │ 45.3KB ± 0%  [32m✓[39m   [32m-7.9%[39m    │
 ─────────────────────────┼─────────────┼───────────────────────────┼───────────────────────────────
 [1mgeomean[22m                  │             │ [1m-12.4%[22m · [2m3 stable metrics[22m │ [1m+1.2%[22m · [2m2 stable metrics[22m
-[2m                         [22m│[2m        [1m[4mmain[24m[22m[2m [22m│[2m [1m[4mperf/simd-decode[24m[22m[2m          [22m│[2m [1m[4mperf/lut-decode[24m[22m[22m
 
 [1mperf/simd-decode[22m  [32m✓ 2 improved[39m   [31m✗ 1 regressed[39m   [2m≈ 0 unstable[22m   [2m= 0 identical[22m   [2m~ 0 within noise[22m   [2m? 0 inconclusive[22m
 [1mperf/lut-decode [22m  [2m✓ 0 improved[22m   [2m✗ 0 regressed[22m   [33m≈ 1 unstable[39m   [2m= 0 identical[22m   [2m~ 1 within noise[22m   [2m? 0 inconclusive[22m

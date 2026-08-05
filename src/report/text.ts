@@ -39,7 +39,6 @@ import {
   shownClass,
   SPREAD_SEPARATOR,
   type Style,
-  styleEveryCell,
   styleWithin,
   UNSTABLE_FUTILITY_NOTE,
   VARIANT_NAME_STYLE,
@@ -468,7 +467,6 @@ type BodyLine<Metric, Cell> =
   | { readonly type: "header"; readonly title?: string }
   | { readonly type: "rule" }
   | { readonly type: "border" }
-  | { readonly type: "echo" }
   | { readonly type: "group"; readonly label: string }
   | { readonly type: "metric"; readonly row: Metric }
   | ({ readonly type: "aggregate" } & AggregateRow<Cell>);
@@ -531,10 +529,6 @@ function planBlocks<Metric, Cell>(
  * between a top border and a column rule instead of resting on one, which keeps
  * the eye from reading the header as one more row of the section above it.
  *
- * Every table closes on an echo of its header labels, so the reader leaving the
- * last row still has the columns named beside them. In a sectioned run each
- * section earns its own echo, which doubles as the section's visual closure.
- *
  * Every gap is a true blank line, at both scales: the one parting two groups
  * inside a section as much as the one parting two sections, or the first section
  * from the banner.
@@ -551,7 +545,6 @@ function planBody<Metric, Cell>(
       ...layout.ordered.map((row) => ({ type: "metric" as const, row })),
       { type: "rule" },
       { type: "aggregate", ...rows.flat(layout.ordered) },
-      { type: "echo" },
     ];
   }
 
@@ -566,7 +559,6 @@ function planBody<Metric, Cell>(
     lines.push(
       { type: "rule" },
       { type: "aggregate", ...rows.kind(section.kind, sectionMetrics(section)) },
-      { type: "echo" },
     );
   }
 
@@ -703,7 +695,6 @@ function formatMetricRow(row: MetricRow, widths: Widths): string {
 /** The row-assembly callbacks a table supplies for the lines whose shape is table-specific. */
 interface BodyLineRenderers<Metric, Cell> {
   header(label: string, hasTitle: boolean): string;
-  echo(): string;
   group(label: string): string;
   metric(row: Metric): string;
   aggregate(row: AggregateRow<Cell>): string;
@@ -713,7 +704,7 @@ interface BodyLineRenderers<Metric, Cell> {
  * One line of a table body rendered to text.
  *
  * The four constant cases — `title`, `blank`, `rule`, `border` — and exhaustiveness checking
- * are shared here; the two tables differ only in how they assemble the remaining five, which
+ * are shared here; the two tables differ only in how they assemble the remaining four, which
  * they supply through `renderers`.
  */
 function renderBodyLine<Metric, Cell>(
@@ -733,8 +724,6 @@ function renderBodyLine<Metric, Cell>(
       return rule;
     case "border":
       return border;
-    case "echo":
-      return renderers.echo();
     case "group":
       return renderers.group(bodyLine.label);
     case "metric":
@@ -880,12 +869,6 @@ function renderTable(
       const headerRow: Row = [label, headers[1], headers[2], headers[3]];
       return formatRow(headerRow, widths, styleHeaderCell(label, hasTitle, styleVariantCells));
     },
-    echo: () =>
-      formatRow(
-        ["", headers[1], headers[2], headers[3]],
-        widths,
-        styleEveryCell(["dim"], styleVariantCells),
-      ),
     group: (label) =>
       formatRow([label, "", "", ""], widths, styleLabelCell(label, GROUP_LABEL_STYLE)),
     metric: (row) => formatMetricRow(toMetricRow(row), widths),
@@ -1017,9 +1000,6 @@ function joinCandidateCell(
  * instead would stretch the rule under every metric row for one cell's sake.
  * The single-candidate table states that count in its label rather than its
  * cell, which is what leaves its aggregate narrow enough to measure.
- *
- * The table closes on the same dimmed echo of its header as the single-candidate
- * one — see {@link renderTable}.
  */
 function renderComparisonTable(result: ComparisonResult): string[] {
   const baselineHeader = result.baselineLabel;
@@ -1126,7 +1106,6 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   const renderers: BodyLineRenderers<ComparisonRow, readonly AggregateColumnCell[]> = {
     header: (label, hasTitle) =>
       line(label, baselineHeader, headers, styleHeaderCell(label, hasTitle, styleVariantCells)),
-    echo: () => line("", baselineHeader, headers, styleEveryCell(["dim"], styleVariantCells)),
     group: (label) =>
       line(label, "", blankCandidateCells, styleLabelCell(label, GROUP_LABEL_STYLE)),
     metric: (row) =>

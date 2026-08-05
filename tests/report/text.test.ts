@@ -148,21 +148,21 @@ function separatorStyles(line: string): string[][] {
   return styles;
 }
 
-/** Every row echoing the header labels, one per section, in report order. */
-function echoRows(report: string): string[] {
-  return report.split("\n").filter((line) => {
-    const bare = stripAnsi(line);
-    return bare.includes("│") && cellsOf(bare)[0]?.trim() === "";
-  });
+/** Every rendered table row of a report, styling stripped, in report order. */
+function tableRows(report: string): string[] {
+  return report
+    .split("\n")
+    .map((line) => stripAnsi(line))
+    .filter((line) => line.includes("│"));
 }
 
-/** The row echoing the header labels at the foot of a single-section table. */
-function echoRow(report: string): string {
-  const echo = echoRows(report)[0];
-  if (echo === undefined) {
-    throw new Error(`no row echoing the header in report:\n${report}`);
+/** The last rendered table row of a report — the row the table closes on. */
+function lastTableRow(report: string): string {
+  const row = tableRows(report).at(-1);
+  if (row === undefined) {
+    throw new Error(`no table rows in report:\n${report}`);
   }
-  return echo;
+  return row;
 }
 
 /**
@@ -182,10 +182,10 @@ function columnRule(report: string): string {
 /**
  * One entry per report line, coarse enough to read as a layout.
  *
- * A table row collapses to its first cell, a column rule and the closing header
- * echo collapse to markers, and every other line stays as its plain text. A
- * section's top border joins its columns with top-T junctions rather than the
- * crossings of a rule, so it gets its own marker.
+ * A table row collapses to its first cell, a column rule collapses to a marker,
+ * and every other line stays as its plain text. A section's top border joins its
+ * columns with top-T junctions rather than the crossings of a rule, so it gets
+ * its own marker.
  */
 function tableShape(report: string): string[] {
   return report.split("\n").map((line) => {
@@ -199,15 +199,22 @@ function tableShape(report: string): string[] {
     if (!bare.includes("│")) {
       return bare.trimEnd();
     }
-    const label = cellsOf(bare)[0]?.trim() ?? "";
-    return label === "" ? "<echo>" : label;
+    return cellsOf(bare)[0]?.trim() ?? "";
   });
 }
 
-/** The table region of a report: everything down to the last section's header echo. */
+/** The table region of a report: everything down to the last table row. */
 function tableRegion(report: string): string[] {
   const shape = tableShape(report);
-  return shape.slice(0, shape.lastIndexOf("<echo>") + 1);
+  const lines = report.split("\n");
+  const last = lines.reduce(
+    (found, line, index) => (stripAnsi(line).includes("│") ? index : found),
+    -1,
+  );
+  if (last === -1) {
+    throw new Error(`no table rows in report:\n${report}`);
+  }
+  return shape.slice(0, last + 1);
 }
 
 /** The lines of the `highlights` block, its heading excluded. */
@@ -878,34 +885,15 @@ describe("renderReport", () => {
     });
   });
 
-  describe("when closing the table with an echo of the header", () => {
-    it("repeats the header labels on the line below the geomean row", () => {
+  describe("when closing the table", () => {
+    it("ends on the geomean row", () => {
       const result = createComparisonResult({
         metrics: { "a/time": signedRankMetric({ verdict: "improved", delta: -6 }) },
       });
 
-      const echo = echoRow(renderReport(result));
+      const row = lastTableRow(renderReport(result));
 
-      expect(cellsOf(echo).map((cell) => cell.trim())).toStrictEqual([
-        "",
-        "main",
-        "perf/faster-decode",
-        "vs main",
-      ]);
-    });
-
-    it("lines its columns up with the header", () => {
-      const result = createComparisonResult({
-        metrics: {
-          "a-much-longer-metric/time": signedRankMetric({ verdict: "improved", delta: -6 }),
-        },
-      });
-
-      const report = renderReport(result);
-
-      expect(separatorOffsets(echoRow(report))).toStrictEqual(
-        separatorOffsets(lineStartingWith(report, "metric")),
-      );
+      expect(cellsOf(row)[0]?.trim()).toBe("geomean (10 stable metrics)");
     });
   });
 
@@ -1864,18 +1852,6 @@ describe("renderReport", () => {
       expect(stripAnsi(cellsOf(row).at(-1) ?? "")).not.toContain("±");
     });
 
-    it("dims the echo row closing the table", () => {
-      expect(echoRow(renderReport(colorfulResult()))).toMatch(DIMMED_LINE);
-    });
-
-    it("keeps the echoed columns aligned with the header once the styles are stripped", () => {
-      const bare = stripAnsi(renderReport(colorfulResult()));
-
-      expect(separatorOffsets(echoRow(bare))).toStrictEqual(
-        separatorOffsets(lineStartingWith(bare, "metric")),
-      );
-    });
-
     describe("when the color option overrides the environment", () => {
       it("leaves the report unstyled when color is false, despite FORCE_COLOR", () => {
         const output = renderReport(colorfulResult(), { color: false });
@@ -1928,22 +1904,21 @@ describe("renderReport", () => {
       expect.soft(lines[4]).toContain("metric2/time");
       expect.soft(lines[5]).toMatch(/^─+┼/);
       expect.soft(lines[6]).toContain("geomean");
-      expect.soft(lines[7]).toContain("faster");
-      expect.soft(lines[8]).toBe("");
-      expect.soft(lines[9]).toContain("✓ 1 improved");
-      expect.soft(lines[10]).toBe("");
-      expect.soft(lines[11]).toBe("highlights");
-      expect.soft(lines[12]).toContain("metric1/time");
-      expect(lines).toHaveLength(13);
+      expect.soft(lines[7]).toBe("");
+      expect.soft(lines[8]).toContain("✓ 1 improved");
+      expect.soft(lines[9]).toBe("");
+      expect.soft(lines[10]).toBe("highlights");
+      expect.soft(lines[11]).toContain("metric1/time");
+      expect(lines).toHaveLength(12);
     });
 
     it("adds the method block below a blank line when verbose", () => {
       const lines = renderReport(orderedResult(), { verbose: true }).split("\n");
 
-      expect.soft(lines[12]).toContain("metric1/time");
-      expect.soft(lines[13]).toBe("");
-      expect.soft(lines[14]).toContain("Wilcoxon signed-rank");
-      expect(lines).toHaveLength(15);
+      expect.soft(lines[11]).toContain("metric1/time");
+      expect.soft(lines[12]).toBe("");
+      expect.soft(lines[13]).toContain("Wilcoxon signed-rank");
+      expect(lines).toHaveLength(14);
     });
   });
 
@@ -1984,16 +1959,10 @@ describe("renderReport", () => {
       ]);
     });
 
-    it("echoes one header label per column below the geomean row", () => {
-      const echo = echoRow(renderReport(multiCandidateResult()));
+    it("closes the table on the geomean row", () => {
+      const row = lastTableRow(renderReport(multiCandidateResult()));
 
-      expect(cellsOf(echo).map((cell) => cell.trim())).toStrictEqual([
-        "",
-        "main",
-        "candidate-a",
-        "candidate-b",
-        "candidate-c",
-      ]);
+      expect(cellsOf(row)[0]?.trim()).toBe("geomean");
     });
 
     it("lines the column separators up across header, metric rows and geomean", () => {
@@ -2181,10 +2150,6 @@ describe("renderReport", () => {
 
         expect(stylesAt(geomean, "1 stable metric")).toContain("2");
       });
-
-      it("dims the echo row closing an N-way table", () => {
-        expect(echoRow(renderReport(multiCandidateResult()))).toMatch(DIMMED_LINE);
-      });
     });
   });
 
@@ -2204,7 +2169,6 @@ describe("renderReport", () => {
         "warmup",
         "<rule>",
         "geomean · time (3)",
-        "<echo>",
         "",
         "informational — gating off (config: kinds.memory.gating = false)",
         "<border>",
@@ -2213,16 +2177,6 @@ describe("renderReport", () => {
         "encode",
         "<rule>",
         "geomean · memory (1)",
-        "<echo>",
-      ]);
-    });
-
-    it("echoes the header labels at the foot of every section", () => {
-      const rows = echoRows(renderReport(twoKindResult()));
-
-      expect(rows.map((row) => cellsOf(row).map((cell) => cell.trim()))).toStrictEqual([
-        ["", "main", "perf/faster-decode", "vs main"],
-        ["", "main", "perf/faster-decode", "vs main"],
       ]);
     });
 
@@ -2411,9 +2365,7 @@ describe("renderReport", () => {
       ({ makeResult }) => {
         const report = renderReport(makeResult());
 
-        expect
-          .soft(tableRegion(report).slice(-2))
-          .toStrictEqual(["geomean · memory (1)", "<echo>"]);
+        expect.soft(tableRegion(report).at(-1)).toBe("geomean · memory (1)");
         expect(report).not.toContain("geomean · gated");
       },
     );
@@ -2439,7 +2391,7 @@ describe("renderReport", () => {
           "-10.0% · 1 stable metric",
           "+4.0% · 1 stable metric",
         ]);
-      expect(tableRegion(report).slice(-2)).toStrictEqual(["geomean · memory", "<echo>"]);
+      expect(tableRegion(report).at(-1)).toBe("geomean · memory");
     });
 
     describe("when color styling is applied", () => {
@@ -2528,7 +2480,6 @@ describe("renderReport", () => {
         "entity.spawn/time",
         "<rule>",
         "geomean (2 stable metrics)",
-        "<echo>",
       ]);
     });
 

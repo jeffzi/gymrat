@@ -583,18 +583,6 @@ export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteSt
   return stream !== undefined ? styleText(style, label, { stream }) : styleText(style, label);
 }
 
-/**
- * Wear `style` on each cell of a row rather than on the finished line.
- *
- * The column separators frame the table instead of belonging to any one row, so
- * a style laid over the whole line would tint them along with the text it was
- * meant for. Styling cell by cell leaves every `│` in the default color, which
- * is what keeps the frame reading as one whatever the rows inside it wear.
- */
-export function styleEveryCell(style: Style, styleCell: CellStyler = (cell) => cell): CellStyler {
-  return (cell, index) => formatLabel(styleCell(cell, index), style);
-}
-
 /** Set `name`, or unset it when `value` is `undefined` — assigning `undefined` would store the string. */
 function setEnvVar(name: string, value: string | undefined): void {
   if (value === undefined) {

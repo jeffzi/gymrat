@@ -11,7 +11,6 @@ geomean · entity (2)  │            │                    │     -3.1%  ±1.
 warmup                │ 100ns ± 1% │         100ns ± 1% │ ~   +0.3%  ±2.5%
 ──────────────────────┼────────────┼────────────────────┼──────────────────
 geomean · time (3)    │            │                    │     -3.2%  ±2.0%
-                      │       main │ perf/faster-decode │ vs main
 
 informational — gating off (config: kinds.memory.gating = false)
 ──────────────────────┬────────────┬────────────────────┬──────────────────
@@ -20,7 +19,6 @@ memory                │       main │ perf/faster-decode │ vs main
 encode                │  100B ± 1% │           93B ± 1% │ ✓   -7.0%  ±2.5%
 ──────────────────────┼────────────┼────────────────────┼──────────────────
 geomean · memory (1)  │            │                    │     -7.0%
-                      │       main │ perf/faster-decode │ vs main
 
 ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 

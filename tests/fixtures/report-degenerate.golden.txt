@@ -7,7 +7,6 @@ old-side-only/time         │ 2.0µs ± 2% │                    │
 throughput/ops             │  1200 ± 5% │          1560 ± 4% │ ✓  +30.0%  ±2.5%
 ───────────────────────────┼────────────┼────────────────────┼──────────────────
 geomean (1 stable metric)  │            │                    │      0.0%
-                           │       main │ perf/faster-decode │ vs main
 
 ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 2 within noise   ? 0 inconclusive
 

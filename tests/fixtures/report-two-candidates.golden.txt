@@ -6,7 +6,6 @@ encode/time              │  914ns ± 1% │  934ns ± 1%  ✗   +2.2%    │ 1
 encode/heap              │ 49.2KB ± 0% │ 45.3KB ± 0%  ✓   -7.9%    │
 ─────────────────────────┼─────────────┼───────────────────────────┼───────────────────────────────
 geomean                  │             │ -12.4% · 3 stable metrics │ +1.2% · 2 stable metrics
-                         │        main │ perf/simd-decode          │ perf/lut-decode
 
 perf/simd-decode  ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive
 perf/lut-decode   ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
