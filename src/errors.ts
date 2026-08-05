@@ -16,6 +16,17 @@ export class GymratError extends Error {
 }
 
 /**
+ * Whether an unknown thrown value is an `Error` whose `.code` matches `code`.
+ *
+ * Node's filesystem and process errors carry a string `.code` that is not part
+ * of the base `Error` type, so the probe narrows through `instanceof` and an
+ * `in` check before reading the property.
+ */
+export function hasErrorCode(err: unknown, code: string): boolean {
+  return err instanceof Error && "code" in err && err.code === code;
+}
+
+/**
  * Extract a human-readable message from an unknown thrown value.
  *
  * Returns `error.message` when the value is an `Error`, otherwise falls back

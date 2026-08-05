@@ -5,7 +5,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 
 import type { Adapter, MetricDefaults } from "./adapters/types.js";
-import { GymratError } from "./errors.js";
+import { GymratError, hasErrorCode } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import { compile, expected, parse, type SchemaIssue } from "./schema.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
@@ -136,7 +136,7 @@ const DEFAULTS = {
 } as const;
 
 function isFileNotFoundError(err: unknown): boolean {
-  return err instanceof Error && "code" in err && err.code === "ENOENT";
+  return hasErrorCode(err, "ENOENT");
 }
 
 function readConfigContent(configPath: string, required: boolean): string | undefined {

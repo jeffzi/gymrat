@@ -1,7 +1,7 @@
 import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
-import { messageOf } from "./errors.js";
+import { hasErrorCode, messageOf } from "./errors.js";
 
 /** Shape returned when the command runs to completion, whether it exits cleanly or is aborted. */
 export interface ExecResult {
@@ -48,7 +48,7 @@ function killTree(pid: number): void {
     const alreadyGone =
       process.platform === "win32"
         ? err instanceof Error && "status" in err && typeof err.status === "number"
-        : err instanceof Error && "code" in err && err.code === "ESRCH";
+        : hasErrorCode(err, "ESRCH");
     if (!alreadyGone) {
       process.emitWarning(err instanceof Error ? err : String(err));
     }
