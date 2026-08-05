@@ -45,16 +45,12 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           pipx install zizmor==1.27.0
 
-      - name: Check
-        if: runner.os == 'Linux'
-        run: npm run check:static
-
       - name: Build
         run: npm run build
 
       - name: Test
         run: npm test
 
-      - name: Quality
+      - name: Check
         if: runner.os == 'Linux'
-        run: npm run check:quality
+        run: npm run check

@@ -8,14 +8,5 @@
     "MD033": false,
     "MD060": false,
   },
-  "ignores": [
-    ".agents/**",
-    ".claude/**",
-    ".planning/**",
-    ".research/**",
-    ".stryker-tmp/**",
-    "CHANGELOG.md",
-    "LICENSE",
-    "node_modules/**",
-  ],
+  "ignores": [".claude/**", ".planning/**", "CHANGELOG.md", "LICENSE", "node_modules/**"],
 }

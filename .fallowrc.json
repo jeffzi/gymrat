@@ -11,7 +11,5 @@
     "oxlint",
     "oxlint-tsgolint",
     "tsx"
-  ],
-  "duplicates": { "ignore": ["tests/**"] },
-  "rules": { "duplicate-exports": "off" }
+  ]
 }
