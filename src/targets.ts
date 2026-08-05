@@ -77,23 +77,12 @@ function runGitCommand(args: readonly string[], repoDir: string): string {
 
 /** Attempt directory resolution; returns `undefined` to fall through to ref resolution. */
 function tryResolveDirectory(absolutePath: string): InPlaceTarget | undefined {
-  try {
-    const stats = fs.statSync(absolutePath);
-    if (stats.isDirectory()) {
-      return {
-        kind: "in-place",
-        dir: fs.realpathSync(absolutePath),
-      };
-    }
-  } catch (error) {
-    const isMissingDirectory =
-      error instanceof Error &&
-      "code" in error &&
-      (error.code === "ENOENT" || error.code === "ENOTDIR");
-    /* v8 ignore if -- non-ENOENT/ENOTDIR errors from statSync are not reproducible in tests */
-    if (!isMissingDirectory) {
-      throw error;
-    }
+  const stats = fs.statSync(absolutePath, { throwIfNoEntry: false });
+  if (stats?.isDirectory()) {
+    return {
+      kind: "in-place",
+      dir: fs.realpathSync(absolutePath),
+    };
   }
   return undefined;
 }
