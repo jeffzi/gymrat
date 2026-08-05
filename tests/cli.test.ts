@@ -1637,6 +1637,25 @@ describe("createProgram", () => {
         process.stderr.emit("drain");
         await expect(parsing).resolves.toHaveProperty("exitCode", 2);
       });
+
+      it("still exits 2 when stderr fails while printing the error", async () => {
+        // Arrange - a closed pipe makes the write throw outright; the exit code
+        // contract reserves 1 for a gate trip, so a failed diagnostic must not
+        // downgrade the error exit to an unhandled-rejection 1.
+        const program = createProgramWithSubcommandOverrides();
+        await setupMocks(new Error("Compare failed"));
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        vi.spyOn(process.stderr, "write").mockImplementation(() => {
+          throw new Error("EPIPE: broken pipe");
+        });
+        mockProcessExit();
+
+        // Act & Assert
+        await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+          "exitCode",
+          2,
+        );
+      });
     });
 
     describe("--fail-on", () => {
@@ -2233,6 +2252,27 @@ describe("entry point", () => {
       // Arrange - `node -e` and the REPL both leave process.argv[1] undefined
       vi.resetModules();
       process.argv = [process.execPath];
+
+      // Act
+      const loading = import("../src/cli.js");
+
+      // Assert
+      await expect(loading).resolves.toHaveProperty("createProgram");
+    });
+  });
+
+  describe("when the entry path does not exist", () => {
+    const originalArgv = process.argv;
+
+    afterEach(() => {
+      process.argv = originalArgv;
+      vi.resetModules();
+    });
+
+    it("imports cleanly when process.argv points at a missing entry path", async () => {
+      // Arrange - a deleted or not-yet-written entry path must not make import throw
+      vi.resetModules();
+      process.argv = [process.execPath, join(tmpdir(), "gymrat-missing-entry-a1b2c3.ts")];
 
       // Act
       const loading = import("../src/cli.js");

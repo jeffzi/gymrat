@@ -280,7 +280,16 @@ function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> 
 
 /** Print a formatted error to stderr and exit 2, the convention for tool failures. */
 async function exitWithError(error: unknown): Promise<never> {
-  await writeAndDrain(process.stderr, `${formatCliError(error)}\n`);
+  try {
+    await writeAndDrain(process.stderr, `${formatCliError(error)}\n`);
+  } catch {
+    /*
+     * stderr is the reporting channel, so a write failure (closed pipe, EPIPE)
+     * has nowhere to be reported. Swallow it rather than let it escape as an
+     * unhandled rejection, which would exit 1 — the code reserved for a gate
+     * trip — instead of the 2 this failure means.
+     */
+  }
   process.exit(2);
 }
 
@@ -725,13 +734,26 @@ export function createProgram(): Command {
   return program;
 }
 
-/*
- * `node -e` and the REPL leave argv[1] unset, so the path check has to come
- * before `realpathSync` — importing this module must never throw on the way in.
+/**
+ * Resolve argv[1] to a canonical file URL, or `undefined` when it names nothing.
+ *
+ * Importing this module must never throw on the way in, and argv[1] is not
+ * guaranteed to be a live path: `node -e` and the REPL leave it unset, and it
+ * can point at a file that no longer exists. Neither case is this module being
+ * the entry point, so both resolve to `undefined` rather than propagating.
  */
-const entryPath = process.argv[1];
-const isEntryPoint =
-  entryPath !== undefined && import.meta.url === pathToFileURL(realpathSync(entryPath)).href;
+function resolveEntryUrl(entryPath: string | undefined): string | undefined {
+  if (entryPath === undefined) {
+    return undefined;
+  }
+  try {
+    return pathToFileURL(realpathSync(entryPath)).href;
+  } catch {
+    return undefined;
+  }
+}
+
+const isEntryPoint = resolveEntryUrl(process.argv[1]) === import.meta.url;
 
 /* v8 ignore next 13 -- entry point. The "executes CLI when invoked through symlink"
    test in tests/cli.test.ts does run this block, but it spawns a child process, and
