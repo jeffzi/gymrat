@@ -199,9 +199,15 @@ function determineVerdict(delta: number, direction: "lower" | "higher"): Verdict
  * Pair sample windows by index for a single metric, dropping windows where
  * either side is missing it.
  *
+ * Exported so callers displaying a metric's median/spread (e.g. the report
+ * builder in `compare.ts`) can draw on the same paired windows this module
+ * uses to compute a verdict's delta — otherwise a displayed median computed
+ * over every sample disagrees with a delta computed over paired samples only,
+ * whenever a metric is missing in some rounds.
+ *
  * @returns Paired values, one array per side, growing together
  */
-function pairSamples(
+export function pairSamples(
   metric: string,
   samplesA: ReadonlyArray<Record<string, number>>,
   samplesB: ReadonlyArray<Record<string, number>>,
@@ -280,6 +286,24 @@ function computeExactVerdict(
  *   still gets a normal verdict.
  * @returns Record mapping metric names to verdicts (only metrics with verdicts)
  */
+/**
+ * Percentage delta between two medians, normalized by the magnitude of `medianA`.
+ *
+ * Normalizing by the magnitude keeps the sign of the delta tied to the
+ * direction the value moved: a negative-median metric dropping further below
+ * zero is a decrease, not an increase. When `medianA` is 0, the ratio is
+ * undefined; the result is 0 if both medians are 0, and `NaN` otherwise.
+ */
+function computeDelta(medianA: number, medianB: number): number {
+  if (medianA === 0 && medianB === 0) {
+    return 0;
+  }
+  if (medianA === 0) {
+    return Number.NaN;
+  }
+  return ((medianB - medianA) / Math.abs(medianA)) * 100;
+}
+
 // Pairing, delta, and method dispatch are one pass over each metric; splitting
 // them would mean re-walking the samples.
 // fallow-ignore-next-line complexity
@@ -305,18 +329,7 @@ export function computeVerdicts(
 
     const medianA = computeMedian(pairedA);
     const medianB = computeMedian(pairedB);
-
-    let delta: number;
-    if (medianA === 0 && medianB === 0) {
-      delta = 0;
-    } else if (medianA === 0) {
-      delta = Number.NaN;
-    } else {
-      // Normalizing by the magnitude keeps the sign of the delta tied to the
-      // direction the value moved: a negative-median metric dropping further
-      // below zero is a decrease, not an increase.
-      delta = ((medianB - medianA) / Math.abs(medianA)) * 100;
-    }
+    const delta = computeDelta(medianA, medianB);
 
     result[metric] = meta.exact
       ? computeExactVerdict(medianA, medianB, delta, meta.direction, pairedA.length)
@@ -419,6 +432,14 @@ function quantizationPct(median: number): number {
 }
 
 /**
+ * A half-range expressed as a fraction of a median's magnitude, or 0 when
+ * there is no magnitude to divide by.
+ */
+function relativeSpread(halfRange: number, median: number): number {
+  return median === 0 ? 0 : halfRange / Math.abs(median);
+}
+
+/**
  * Compute the measurement noise of a metric.
  *
  * Percentage form: max(K × 100 × max(halfRange(A)/|median(A)|, halfRange(B)/|median(B)|), floor%)
@@ -450,8 +471,8 @@ function computeNoise(
   const halfRangeA = computeHalfRange(pairedA);
   const halfRangeB = computeHalfRange(pairedB);
 
-  const spreadA = medianA === 0 ? 0 : halfRangeA / Math.abs(medianA);
-  const spreadB = medianB === 0 ? 0 : halfRangeB / Math.abs(medianB);
+  const spreadA = relativeSpread(halfRangeA, medianA);
+  const spreadB = relativeSpread(halfRangeB, medianB);
   const maxSpread = Math.max(spreadA, spreadB);
 
   const byteFloorPct =

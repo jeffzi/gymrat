@@ -13,7 +13,7 @@ import { installTerminationCleanup } from "./signals.js";
 import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 import { computeKindAggregates } from "./verdict/aggregate.js";
-import { computeVerdicts } from "./verdict/verdict.js";
+import { computeVerdicts, pairSamples } from "./verdict/verdict.js";
 
 /** A prepare step about to run for a target with a prepare script. */
 export interface PrepareProgressStep {
@@ -344,16 +344,63 @@ function resolveLabel(explicit: string | undefined, resolved: Target): string {
   return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
 }
 
-/** One target's median and spread for a metric, or both undefined when it never reported it. */
-function computeMetricStats(
-  samples: readonly Record<string, number>[],
-  metricName: string,
-): { median?: number; spread?: number } {
-  const values = samples.map((sample) => sample[metricName]).filter((v) => v !== undefined);
+/** A side's median and spread over the given values, or both undefined when there are none. */
+function computeMetricStats(values: readonly number[]): { median?: number; spread?: number } {
   if (values.length === 0) {
     return { median: undefined, spread: undefined };
   }
   return { median: computeMedian(values), spread: computeSpread(values) };
+}
+
+/** Every value a side reported for a metric, regardless of what the other side has. */
+function ownValues(samples: readonly Record<string, number>[], metricName: string): number[] {
+  return samples.map((sample) => sample[metricName]).filter((v) => v !== undefined);
+}
+
+/**
+ * The baseline's values for a metric, restricted to rounds where at least one
+ * candidate also reported it — the same rounds `pairSamples` can draw a
+ * verdict's delta from for at least one candidate.
+ *
+ * Falls back to every round the baseline reported the metric in when no
+ * candidate ever did: a baseline-only metric has no verdict to stay
+ * consistent with, so its displayed median is the baseline's own, unpaired.
+ */
+function baselinePairableValues(
+  baselineSamples: readonly Record<string, number>[],
+  candidateSampleSets: readonly (readonly Record<string, number>[])[],
+  metricName: string,
+): number[] {
+  const paired: number[] = [];
+  for (const [i, sample] of baselineSamples.entries()) {
+    const value = sample[metricName];
+    if (value === undefined) continue;
+    const isPairable = candidateSampleSets.some(
+      (samples) => samples[i]?.[metricName] !== undefined,
+    );
+    if (isPairable) {
+      paired.push(value);
+    }
+  }
+  return paired.length > 0 ? paired : ownValues(baselineSamples, metricName);
+}
+
+/**
+ * A candidate's values for a metric, restricted to the same rounds
+ * `computeVerdicts` pairs against the baseline — so the displayed median
+ * matches the median the candidate's verdict delta was computed from.
+ *
+ * Falls back to every round the candidate reported the metric in when the
+ * baseline never did: a candidate-only metric has no verdict to stay
+ * consistent with, so its displayed median is the candidate's own, unpaired.
+ */
+function candidatePairableValues(
+  baselineSamples: readonly Record<string, number>[],
+  candidateSamples: readonly Record<string, number>[],
+  metricName: string,
+): number[] {
+  const { pairedB } = pairSamples(metricName, baselineSamples, candidateSamples);
+  return pairedB.length > 0 ? pairedB : ownValues(candidateSamples, metricName);
 }
 
 function buildComparisonResult(
@@ -378,13 +425,19 @@ function buildComparisonResult(
     worktreePruneError: cleanup.pruneError,
   };
 
+  const candidateSampleSets = candidates.map((candidate) => candidate.samples);
+
   for (const metricName of metricNames) {
-    const baseline = computeMetricStats(baselineSamples, metricName);
+    const baseline = computeMetricStats(
+      baselinePairableValues(baselineSamples, candidateSampleSets, metricName),
+    );
     result.metrics[metricName] = {
       baselineMedian: baseline.median,
       baselineSpread: baseline.spread,
       candidates: candidates.map((candidate) => {
-        const stats = computeMetricStats(candidate.samples, metricName);
+        const stats = computeMetricStats(
+          candidatePairableValues(baselineSamples, candidate.samples, metricName),
+        );
         return {
           median: stats.median,
           spread: stats.spread,
