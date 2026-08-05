@@ -747,19 +747,12 @@ function renderBodyLine<Metric, Cell>(
 }
 
 /**
- * The metric table: header, rule, one row per metric, rule, geomean, echo.
+ * The metric table: header, rule, one row per metric, rule, geomean.
  *
  * Widths come from the widest cell rather than a fixed size, so a long metric
- * name or label widens the table instead of being cut. The geomean's own verdict
- * cell is left out of that measurement: it ends its line and is never padded, so
- * letting a long cell size the column would stretch the rule under every metric
- * row for nothing.
- *
- * The echo closing the table repeats the header cell for cell — same quoting,
- * same emphasis, same widths — because a table long enough to scroll leaves the
- * reader at the bottom with columns they can no longer name. It is dimmed whole
- * so it reads as the frame closing rather than as one more row of data, and its
- * name cell stays blank: `metric` heads that column, it does not label the echo.
+ * name or label widens the table instead of being cut. The verdict column
+ * measures both metric-row and aggregate cells so a geomean band that is wider
+ * than any metric band still fits inside the rule.
  */
 function renderTable(
   result: ComparisonResult,
@@ -786,20 +779,6 @@ function renderTable(
 
   const baselineFields = valueWidths(layout.ordered.map((row) => row.baseline));
   const candidateFields = valueWidths(layout.ordered.map((row) => row.candidate));
-  const verdictFields = verdictWidths(
-    layout.ordered.map((row) => row.parts).filter((parts) => parts !== undefined),
-  );
-
-  const toMetricRow = (row: MeasuredRow): MetricRow => ({
-    cells: [
-      sectioned ? row.label : row.name,
-      joinValueCell(row.baseline, baselineFields),
-      joinValueCell(row.candidate, candidateFields),
-      row.parts === undefined ? "" : joinVerdictCell(row.parts, verdictFields),
-    ],
-    verdict: row.verdict,
-    band: row.parts === undefined ? "" : bandField(row.parts.band, verdictFields.band),
-  });
 
   const scopedRow = (
     scope: string,
@@ -827,6 +806,33 @@ function renderTable(
     (section) => sectionAnnotation(section, result.configKinds),
   );
 
+  /**
+   * Every aggregate cell the body holds, in the fields they will print in.
+   *
+   * An aggregate states the band its figure was judged against even when every
+   * metric behind it was too short to state one of its own, so the column has to
+   * be measured on the aggregates as well as the rows: sized on the rows alone,
+   * the band would print past the rule those same widths draw.
+   */
+  const aggregateParts = body.flatMap((line) =>
+    line.type === "aggregate" ? [line.cell.parts] : [],
+  );
+  const verdictFields = verdictWidths([
+    ...layout.ordered.map((row) => row.parts).filter((parts) => parts !== undefined),
+    ...aggregateParts,
+  ]);
+
+  const toMetricRow = (row: MeasuredRow): MetricRow => ({
+    cells: [
+      sectioned ? row.label : row.name,
+      joinValueCell(row.baseline, baselineFields),
+      joinValueCell(row.candidate, candidateFields),
+      row.parts === undefined ? "" : joinVerdictCell(row.parts, verdictFields),
+    ],
+    verdict: row.verdict,
+    band: row.parts === undefined ? "" : bandField(row.parts.band, verdictFields.band),
+  });
+
   const rows = layout.ordered.map(toMetricRow);
   const widths: Widths = [
     computeMetricColumnWidth(widestHeaderLabel(body), [
@@ -845,7 +851,10 @@ function renderTable(
     ),
     computeColumnWidth(
       headers[3].length,
-      rows.map((row) => row.cells[3].length),
+      [
+        ...rows.map((row) => row.cells[3].length),
+        ...aggregateParts.map((parts) => joinVerdictCell(parts, verdictFields).length),
+      ],
       VERDICT_COLUMN_MIN,
     ),
   ];
@@ -1004,9 +1013,10 @@ function joinCandidateCell(
  * Every width is measured on plain text and taken from the widest cell the
  * column holds. The geomean cell counts towards that width in every candidate
  * column but the last, which is the one place it can overflow harmlessly: it
- * ends the line there, exactly as it does in the single-candidate table, and
- * letting the count behind a figure size the column instead would stretch the
- * rule under every metric row for one cell's sake.
+ * ends the line there, and letting the count behind each figure size the column
+ * instead would stretch the rule under every metric row for one cell's sake.
+ * The single-candidate table states that count in its label rather than its
+ * cell, which is what leaves its aggregate narrow enough to measure.
  *
  * The table closes on the same dimmed echo of its header as the single-candidate
  * one — see {@link renderTable}.

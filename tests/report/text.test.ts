@@ -166,6 +166,20 @@ function echoRow(report: string): string {
 }
 
 /**
+ * The rule under a table header, drawn to the full width of the columns.
+ *
+ * Every row of the table is laid out from the same widths, so the rule is the
+ * width a correctly sized row cannot exceed.
+ */
+function columnRule(report: string): string {
+  const rule = report.split("\n").find((line) => /^─+┼/.test(stripAnsi(line)));
+  if (rule === undefined) {
+    throw new Error(`no column rule in report:\n${report}`);
+  }
+  return stripAnsi(rule);
+}
+
+/**
  * One entry per report line, coarse enough to read as a layout.
  *
  * A table row collapses to its first cell, a column rule and the closing header
@@ -805,6 +819,22 @@ describe("renderReport", () => {
       const row = lineStartingWith(renderReport(twoKindResult()), "geomean · memory");
 
       expect(deltaCellOf(row).trim()).toBe("-7.0%");
+    });
+
+    it("widens the verdict column for a band no metric row of its own carries", () => {
+      const result = createComparisonResult({
+        samples: 1,
+        metrics: { "decode/time": bandMetric({ delta: -0.4, noisePct: 0.5, n: 1, unit: "ns" }) },
+        candidates: [createCandidate({ kinds: [otherKind(-0.1, 1, { band: 0.5 })] })],
+      });
+
+      const report = renderReport(result);
+      const row = lineStartingWith(report, "geomean");
+
+      // A single pair leaves the metric row inconclusive and without a band, so
+      // the propagated aggregate band is the only band the column has to hold.
+      expect.soft(deltaCellOf(row).trim()).toBe("-0.1%  ±0.5%");
+      expect(stripAnsi(row).trimEnd().length).toBeLessThanOrEqual(columnRule(report).length);
     });
 
     it("lines the aggregate band up with the metric rows' band column", () => {
