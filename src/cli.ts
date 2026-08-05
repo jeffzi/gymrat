@@ -279,8 +279,8 @@ function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> 
 }
 
 /** Print a formatted error to stderr and exit 2, the convention for tool failures. */
-function exitWithError(error: unknown): never {
-  process.stderr.write(`${formatCliError(error)}\n`);
+async function exitWithError(error: unknown): Promise<never> {
+  await writeAndDrain(process.stderr, `${formatCliError(error)}\n`);
   process.exit(2);
 }
 
@@ -527,6 +527,9 @@ function readPackageVersion(): string {
  * `package.json` off disk even before any command executes.
  */
 export function createProgram(): Command {
+  const noTargets: TargetSpec[] = [];
+  const noFailOnConditions: FailOnCondition[] = [];
+
   const program = new Command();
 
   program
@@ -542,7 +545,7 @@ export function createProgram(): Command {
       "<candidates...>",
       "[label=]<ref|dir>, each judged against the baseline",
       collectPositional,
-      [] as TargetSpec[],
+      noTargets,
     )
     .option("--bench <cmd>", "bench command")
     .option("--prepare <script>", "preparation script to run before each revision")
@@ -567,7 +570,7 @@ export function createProgram(): Command {
       "--fail-on <condition>",
       'exit 1 when a condition trips (repeatable: "regressed", "geomean:<pct>")',
       parseFailOn,
-      [] as FailOnCondition[],
+      noFailOnConditions,
     )
     .configureHelp(createHelpConfig())
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
@@ -612,7 +615,8 @@ export function createProgram(): Command {
         progress.stop();
       } catch (error) {
         progress.stop();
-        exitWithError(error);
+        await exitWithError(error);
+        return;
       }
 
       // `--no-color` is a veto, never a force: left unset, each renderer keeps
@@ -681,6 +685,6 @@ if (isEntryPoint) {
     if (error instanceof CommanderError) {
       process.exit(error.exitCode);
     }
-    exitWithError(error);
+    await exitWithError(error);
   }
 }
