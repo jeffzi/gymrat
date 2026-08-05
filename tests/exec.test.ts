@@ -1,3 +1,4 @@
+import { execFileSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { getEventListeners } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +10,24 @@ import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 
 import type { ExecOptions, ExecResult, ExecTimeoutError } from "../src/exec.js";
 import { exec } from "../src/exec.js";
 import { isAlive, readPid, waitForPid } from "./fixtures/process-probe.js";
+
+/** Every child `exec` has spawned, so a test can reach into its stdio pipes. */
+const spawnedChildren = vi.hoisted((): ChildProcess[] => []);
+
+// `spawn` stays real — only the Windows-only `execFileSync("taskkill", ...)` is
+// faked, because it is the call whose failure modes are under test.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: vi.fn(),
+    spawn: (command: string, options: SpawnOptions): ChildProcess => {
+      const child = actual.spawn(command, options);
+      spawnedChildren.push(child);
+      return child;
+    },
+  };
+});
 
 const PENDING = Symbol("pending");
 
@@ -32,6 +51,41 @@ async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | typ
 
 /** A bare shell writes its pid promptly; this only has to outlast process startup. */
 const PID_WAIT_MS = 3000;
+
+/** The most recent child `exec` spawned, once the spawn has happened. */
+async function waitForSpawnedChild(): Promise<ChildProcess> {
+  return await vi.waitFor(
+    () => {
+      const [child] = spawnedChildren;
+      if (child === undefined) {
+        throw new Error("exec() has not spawned a child yet");
+      }
+      return child;
+    },
+    { timeout: PID_WAIT_MS, interval: 25 },
+  );
+}
+
+/**
+ * Reap the children of tests that deliberately stop `exec` from killing its own
+ * process group. Signal only a group whose leader is still alive, so a pid the
+ * OS has already recycled is never signalled.
+ */
+function killSpawnedChildren(): void {
+  for (const { pid } of spawnedChildren) {
+    if (pid !== undefined && isAlive(pid)) {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // Raced: the group exited between the liveness check and the kill.
+      }
+    }
+  }
+}
+
+function taskkillFailure(status: number): Error {
+  return Object.assign(new Error(`taskkill exited with ${status}`), { status });
+}
 
 // exec uses POSIX process groups (kill(-pid, SIGKILL)) and the tests drive
 // sh-only constructs ($$, >&2, for/do/done). Neither works under cmd.exe.
@@ -262,5 +316,93 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
       expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
     });
+  });
+
+  describe("when taskkill fails on Windows", () => {
+    const realPlatform = process.platform;
+
+    const setPlatform = (value: NodeJS.Platform) => {
+      Object.defineProperty(process, "platform", { value, configurable: true });
+    };
+
+    /**
+     * Drives one abort through the Windows kill path with a taskkill that fails.
+     *
+     * `process.platform` is stubbed after the spawn, not before: `spawn` reads it
+     * too, and a win32 platform at spawn time would send Node looking for
+     * cmd.exe instead of the sh this suite needs. `killTree` reads it later, when
+     * the abort lands, which is the only read this test wants to redirect.
+     */
+    const abortWithFailingTaskkill = async (failure: Error) => {
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw failure;
+      });
+      const controller = new AbortController();
+      const running = runInTmpdir("sleep 0.5", { signal: controller.signal });
+      await waitForSpawnedChild();
+
+      setPlatform("win32");
+      controller.abort();
+      await running;
+    };
+
+    beforeEach(() => {
+      spawnedChildren.length = 0;
+    });
+
+    afterEach(() => {
+      setPlatform(realPlatform);
+      killSpawnedChildren();
+      vi.restoreAllMocks();
+    });
+
+    it("stays silent when taskkill reports that the process is gone", async () => {
+      const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+      const failure = taskkillFailure(128);
+
+      await abortWithFailingTaskkill(failure);
+
+      expect(emitWarning).not.toHaveBeenCalledWith(failure);
+    });
+
+    it("warns when taskkill fails for any other reason", async () => {
+      const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+      const failure = taskkillFailure(5);
+
+      await abortWithFailingTaskkill(failure);
+
+      expect(emitWarning).toHaveBeenCalledWith(failure);
+    });
+  });
+
+  describe("when a stdio stream emits an error", () => {
+    beforeEach(() => {
+      spawnedChildren.length = 0;
+    });
+
+    afterEach(() => {
+      killSpawnedChildren();
+    });
+
+    it.each([{ stream: "stdout" as const }, { stream: "stderr" as const }])(
+      "settles as a failed run when $stream errors",
+      async ({ stream }) => {
+        const running = runInTmpdir("sleep 0.5");
+        const child = await waitForSpawnedChild();
+        const pipe = stream === "stdout" ? child.stdout : child.stderr;
+        if (pipe === null) {
+          throw new Error(`child was spawned without a ${stream} pipe`);
+        }
+
+        pipe.emit("error", new Error("stream exploded"));
+
+        const settled = await settleWithin(running, 3000);
+        expect(settled).toStrictEqual({
+          stdout: "",
+          stderr: "stream exploded\n",
+          exitCode: 1,
+        });
+      },
+    );
   });
 });

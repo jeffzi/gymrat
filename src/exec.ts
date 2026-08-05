@@ -28,6 +28,9 @@ export interface ExecOptions {
 /** Reported when the child has no exit status of its own: killed, or never started. */
 const FAILURE_EXIT_CODE = 1;
 
+/** The status taskkill exits with when no process carries the given pid. */
+const TASKKILL_NOT_FOUND_STATUS = 128;
+
 function killTree(pid: number): void {
   try {
     if (process.platform === "win32") {
@@ -37,23 +40,23 @@ function killTree(pid: number): void {
     } else {
       process.kill(-pid, "SIGKILL");
     }
-    /* v8 ignore start -- ESRCH race and EPERM require conditions the test harness cannot reproduce */
   } catch (err) {
     // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
     // where a throw becomes an uncaught exception.
     //
     // "Process already gone" surfaces differently per platform: POSIX process.kill
-    // throws with code "ESRCH", while Windows execFileSync("taskkill", ...) throws
-    // with a non-zero `status` (taskkill has no dedicated exit code for "not found").
+    // throws with code "ESRCH", while Windows taskkill exits with
+    // TASKKILL_NOT_FOUND_STATUS. Every other taskkill status is a genuine failure
+    // — access denied is 5 — and has to reach the caller as a warning.
     const alreadyGone =
       process.platform === "win32"
-        ? err instanceof Error && "status" in err && typeof err.status === "number"
-        : hasErrorCode(err, "ESRCH");
+        ? err instanceof Error && "status" in err && err.status === TASKKILL_NOT_FOUND_STATUS
+        : /* v8 ignore next -- ESRCH and EPERM need a group that dies between the kill and here */
+          hasErrorCode(err, "ESRCH");
     if (!alreadyGone) {
       process.emitWarning(err instanceof Error ? err : String(err));
     }
   }
-  /* v8 ignore stop */
 }
 
 /**
@@ -194,5 +197,15 @@ export async function exec(
     child.on("error", (err: Error) => {
       settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
     });
+
+    // A pipe read can fail on its own (EIO on a closing pty, for one). Without a
+    // listener that is an unhandled "error" event, which takes the whole process
+    // down instead of failing the one call that owns the pipe.
+    function onStreamError(err: Error): void {
+      settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
+    }
+
+    child.stdout.on("error", onStreamError);
+    child.stderr.on("error", onStreamError);
   });
 }
