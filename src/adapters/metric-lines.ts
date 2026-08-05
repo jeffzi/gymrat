@@ -45,21 +45,16 @@ const metricLinesAdapter: Adapter = {
     const parsed = stdout
       .split("\n")
       .map(parseMetricLine)
-      .filter((r): r is { name: string; value: number } => r !== null);
+      .filter((r) => r !== null);
 
     if (parsed.length === 0) {
       throw new AdapterError("No valid METRIC lines found");
     }
 
-    const metrics = new Map<string, number[]>();
-    for (const { name, value } of parsed) {
-      if (!metrics.has(name)) metrics.set(name, []);
-      metrics.get(name)!.push(value);
-    }
-
+    const grouped = Map.groupBy(parsed, ({ name }) => name);
     const medians = metricRecord<number>();
-    for (const [name, values] of metrics) {
-      medians[name] = computeMedian(values);
+    for (const [name, values] of grouped) {
+      medians[name] = computeMedian(values.map((v) => v.value));
     }
     return medians;
   },

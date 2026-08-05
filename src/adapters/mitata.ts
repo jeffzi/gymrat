@@ -78,9 +78,9 @@ function recordMetric(metrics: Record<string, number>, name: string, value: numb
   metrics[name] = value;
 }
 
-function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, number>): boolean {
+function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, number>): void {
   const parsed = parseMitataStats(run);
-  if (parsed === undefined) return false;
+  if (parsed === undefined) return;
 
   const prefix = buildMetricNamePrefix(alias, parsed.args);
   recordMetric(metrics, `${prefix}/time`, parsed.p50);
@@ -88,8 +88,6 @@ function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, 
   if (parsed.heapAvg !== undefined) {
     recordMetric(metrics, `${prefix}/heap`, parsed.heapAvg);
   }
-
-  return true;
 }
 
 /**
@@ -126,20 +124,16 @@ function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): st
   return result + alias.slice(cursor);
 }
 
-function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): boolean {
-  if (!isRecord(benchmark)) return false;
+function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): void {
+  if (!isRecord(benchmark)) return;
 
   const alias = benchmark.alias;
   const runs = benchmark.runs;
-  if (typeof alias !== "string" || !Array.isArray(runs)) return false;
+  if (typeof alias !== "string" || !Array.isArray(runs)) return;
 
-  let found = false;
   for (const run of runs) {
-    if (extractRunMetrics(run, alias, metrics)) {
-      found = true;
-    }
+    extractRunMetrics(run, alias, metrics);
   }
-  return found;
 }
 
 const METRIC_SUFFIXES = [
@@ -172,15 +166,11 @@ const mitataAdapter: Adapter = {
     const json = extractJson(stdout);
     const benchmarks = parseBenchmarks(json);
     const metrics = metricRecord<number>();
-    let found = false;
-
     for (const benchmark of benchmarks) {
-      if (extractBenchmarkMetrics(benchmark, metrics)) {
-        found = true;
-      }
+      extractBenchmarkMetrics(benchmark, metrics);
     }
 
-    if (!found) {
+    if (Object.keys(metrics).length === 0) {
       throw new AdapterError("No valid benchmark runs found");
     }
 
