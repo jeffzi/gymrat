@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { describe, it, expect, afterEach } from "vitest";
 
+import { GymratError, messageOf } from "../src/errors.js";
 import type { CleanupResult, InPlaceTarget, RefTarget, WorktreeInfo } from "../src/targets.js";
 import {
   resolveTarget,
@@ -26,6 +27,16 @@ function getHeadSha(repoDir: string): string {
     cwd: repoDir,
     encoding: "utf-8",
   }).trim();
+}
+
+/** Run `act` and hand back the error it threw, failing the test if it threw none. */
+function captureThrown(act: () => unknown): unknown {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the call to throw");
 }
 
 function createRefTarget(ref: string, resolvedSha: string): RefTarget {
@@ -200,6 +211,38 @@ describe("resolveTarget", () => {
         /Cannot resolve target 'nonexistent-ref-xyz'/,
       );
     });
+
+    it("carries git's own error text so the reason is not lost", () => {
+      repo = createScratchRepo();
+
+      const error = captureThrown(() => resolveTarget("definitely-not-a-ref", repo!.dir));
+
+      expect.soft(error).toBeInstanceOf(GymratError);
+      // git words the failure differently depending on the flags rev-parse is
+      // given, so match only the `fatal:` prefix every wording carries.
+      expect(messageOf(error)).toMatch(/fatal:/);
+    });
+  });
+
+  describe("when input is the sha of a non-commit object", () => {
+    let repo: ReturnType<typeof createScratchRepo> | undefined;
+
+    afterEach(() => {
+      repo?.cleanup();
+    });
+
+    it.each([
+      { objectKind: "tree", rev: "HEAD^{tree}" },
+      { objectKind: "blob", rev: "HEAD:README.md" },
+    ])("rejects a $objectKind sha", ({ rev }) => {
+      repo = createScratchRepo();
+      const sha = execFileSync("git", ["rev-parse", rev], {
+        cwd: repo.dir,
+        encoding: "utf-8",
+      }).trim();
+
+      expect(() => resolveTarget(sha, repo!.dir)).toThrow(/Cannot resolve target/);
+    });
   });
 });
 
@@ -332,6 +375,17 @@ describe("cleanupWorktrees", () => {
         failures: [],
         pruneError: undefined,
       } satisfies CleanupResult);
+    });
+
+    it("leaves the registry entries of worktrees that vanished behind git's back", () => {
+      repo = createScratchRepo();
+      const absent = registerAbsentWorktree(repo.dir);
+      const worktree = planRejectedWorktree(repo.dir);
+
+      const result = cleanupWorktrees([worktree], repo.dir);
+
+      expect.soft(result.removed).toBe(0);
+      expect(listWorktreeDirs(repo.dir)).toContain(absent);
     });
   });
 

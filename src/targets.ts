@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { messageOf } from "./errors.js";
+import { GymratError, messageOf } from "./errors.js";
 
 /** A directory benchmarked where it sits, with no worktree of its own. */
 export interface InPlaceTarget {
@@ -32,6 +32,18 @@ export type Target = InPlaceTarget | RefTarget;
 export interface WorktreeInfo {
   dir: string;
   sha: string;
+  /**
+   * Whether `git worktree add` ever put this directory on disk.
+   *
+   * `planWorktree` starts it at `false` and `materializeWorktree` raises it once
+   * the add leaves something behind, which is what lets cleanup tell a worktree
+   * that was never created from one that was created and has since vanished.
+   * Only the latter can leave a registry entry needing a prune.
+   *
+   * Omit it on a hand-built `WorktreeInfo` to mean "assume it was created":
+   * pruning a live entry is impossible, while missing a stale one is not.
+   */
+  created?: boolean;
 }
 
 /**
@@ -104,15 +116,21 @@ export function resolveTarget(input: string, repoDir: string): Target {
   }
 
   try {
-    const resolvedSha = runGitCommand(["rev-parse", "--verify", input], repoDir).trim();
+    // `^{commit}` peels the ref, so a tag resolves to the commit it points at and
+    // a tree or blob sha fails instead of yielding a sha no worktree can check out.
+    const resolvedSha = runGitCommand(
+      ["rev-parse", "--verify", `${input}^{commit}`],
+      repoDir,
+    ).trim();
     return {
       kind: "ref",
       ref: input,
       resolvedSha,
     };
   } catch (error) {
-    throw new Error(
-      `Cannot resolve target '${input}': not an existing directory or valid git ref`,
+    throw new GymratError(
+      `Cannot resolve target '${input}': ${gitErrorText(error)}`,
+      "Pass an existing directory, or a git ref that resolves to a commit.",
       { cause: error },
     );
   }
@@ -130,17 +148,29 @@ export function planWorktree(ref: RefTarget): WorktreeInfo {
   return {
     dir: path.join(fs.realpathSync.native(os.tmpdir()), `gymrat-wt-${crypto.randomUUID()}`),
     sha: ref.resolvedSha,
+    created: false,
   };
 }
 
 /**
  * Check a planned worktree out into its directory, detached at its pinned SHA.
  *
+ * Records on `worktree` whether anything reached disk. Callers register the
+ * planned worktree before this runs, so marking the object they already hold is
+ * what carries the fact through to cleanup.
+ *
  * @throws when `git worktree add` fails — the planned directory may exist anyway,
  * so callers must hand it to `cleanupWorktrees` regardless of the outcome.
  */
 export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): void {
-  runGitCommand(["worktree", "add", "--detach", worktree.dir, worktree.sha], repoDir);
+  try {
+    runGitCommand(["worktree", "add", "--detach", worktree.dir, worktree.sha], repoDir);
+  } finally {
+    // git registers the worktree before the command returns, and the add can be
+    // killed in between, so what landed on disk — not whether git exited zero —
+    // is what says a registry entry may exist.
+    worktree.created = fs.existsSync(worktree.dir);
+  }
 }
 
 /**
@@ -232,7 +262,10 @@ export function cleanupWorktrees(
     if (outcome === "removed") {
       removed += 1;
     } else if (outcome === "absent") {
-      mayHaveStaleEntry = true;
+      // A worktree git never created has no entry to collect, so its absence is
+      // no reason to sweep the whole repo and deregister worktrees of the user's
+      // own that are only temporarily gone.
+      mayHaveStaleEntry ||= worktree.created ?? true;
     } else {
       failures.push(outcome);
       mayHaveStaleEntry = true;
