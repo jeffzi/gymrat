@@ -12,5 +12,5 @@ export function captureStderr(fn: () => void): string {
 
   fn();
 
-  return warnSpy.mock.calls.map((args) => args.join(" ")).join("");
+  return warnSpy.mock.calls.map((args) => args.join(" ")).join("\n");
 }

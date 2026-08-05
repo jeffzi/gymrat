@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -44,7 +44,7 @@ function createBranch(
   setup: BranchSetup,
   baseRef = "main",
 ) {
-  execSync(`git checkout -b ${setup.name} ${baseRef}`, {
+  execFileSync("git", ["checkout", "-b", setup.name, baseRef], {
     cwd: repo.dir,
     stdio: "pipe",
   });
@@ -57,12 +57,12 @@ function createBranch(
     scripts.push("prepare.sh");
   }
 
-  execSync(`git add ${scripts.join(" ")}`, {
+  execFileSync("git", ["add", ...scripts], {
     cwd: repo.dir,
     stdio: "pipe",
   });
 
-  execSync(`git commit -m '${setup.name}'`, {
+  execFileSync("git", ["commit", "-m", setup.name], {
     cwd: repo.dir,
     stdio: "pipe",
   });

@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -94,7 +94,7 @@ export function killGitDuringWorktreeAdd(repoDir: string): void {
  * directory is matched through `realpath`.
  */
 export function listWorktreeDirs(repoDir: string, options?: { includeMain?: boolean }): string[] {
-  const dirs = execSync("git worktree list --porcelain", {
+  const dirs = execFileSync("git", ["worktree", "list", "--porcelain"], {
     cwd: repoDir,
     stdio: "pipe",
     encoding: "utf-8",

@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,7 +22,7 @@ import {
 const UNKNOWN_SHA = "0".repeat(40);
 
 function getHeadSha(repoDir: string): string {
-  return execSync("git rev-parse HEAD", {
+  return execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: repoDir,
     encoding: "utf-8",
   }).trim();
@@ -103,7 +103,10 @@ function planRejectedWorktree(repoDir: string): WorktreeInfo {
  */
 function registerAbsentWorktree(repoDir: string): string {
   const dir = path.join(fs.realpathSync(repoDir), "absent-user-worktree");
-  execSync(`git worktree add --detach "${dir}" HEAD`, { cwd: repoDir, stdio: "pipe" });
+  execFileSync("git", ["worktree", "add", "--detach", dir, "HEAD"], {
+    cwd: repoDir,
+    stdio: "pipe",
+  });
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   return dir;
 }
@@ -175,7 +178,7 @@ describe("resolveTarget", () => {
       repo = createScratchRepo();
       const sha = getHeadSha(repo.dir);
 
-      execSync("git tag v1.0.0", { cwd: repo.dir, stdio: "pipe" });
+      execFileSync("git", ["tag", "v1.0.0"], { cwd: repo.dir, stdio: "pipe" });
 
       const result = resolveTarget("v1.0.0", repo.dir);
 
@@ -305,10 +308,14 @@ describe("cleanupWorktrees", () => {
         repo = createScratchRepo();
         const worktree = leaveInterruptedWorktree(repo.dir);
 
-        const result = cleanupWorktrees([worktree], repo.dir);
+        try {
+          const result = cleanupWorktrees([worktree], repo.dir);
 
-        expect(result.removed).toBe(1);
-        expect(fs.existsSync(worktree.dir)).toBe(false);
+          expect(result.removed).toBe(1);
+          expect(fs.existsSync(worktree.dir)).toBe(false);
+        } finally {
+          fs.rmSync(worktree.dir, { recursive: true, force: true, maxRetries: 3 });
+        }
       });
     },
   );
