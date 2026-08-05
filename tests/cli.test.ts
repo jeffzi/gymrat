@@ -1189,12 +1189,15 @@ describe("createProgram", () => {
         }
 
         /**
-         * Drop the `\r\x1b[K` overwrite prefix so only the displayed characters are
-         * measured — the escape sequence occupies no columns.
+         * Drop the `\r\x1b[K` overwrite prefix so only the displayed characters
+         * remain — the escape sequence occupies no columns.
          */
-        function displayedWidth(write: unknown): number {
-          return String(write).replace(/^\r\x1b\[K/, "").length;
+        function displayedLine(write: unknown): string {
+          return String(write).replace(/^\r\x1b\[K/, "");
         }
+
+        /** Step counter at the front, a middle ellipsis, then the tail of the full line. */
+        const MIDDLE_ELLIPSIS_SHAPE = /^sample 1\/5 .*…/u;
 
         it("truncates the progress line to the terminal width", async () => {
           // Arrange
@@ -1207,9 +1210,9 @@ describe("createProgram", () => {
           await program.parseAsync(compareArgv("main", "branch"));
 
           // Assert — the line fits on one row, so \r\x1b[K erases all of it
-          const progressWrite = findStderrWrite(stderrSpy, "sample 1/5");
-          expect(progressWrite).toBeDefined();
-          expect(displayedWidth(progressWrite)).toBeLessThanOrEqual(NARROW_COLUMNS);
+          const displayed = displayedLine(findStderrWrite(stderrSpy, "sample 1/5"));
+          expect.soft(displayed.length).toBeLessThanOrEqual(NARROW_COLUMNS);
+          expect(displayed).toMatch(MIDDLE_ELLIPSIS_SHAPE);
         });
 
         it("truncates the progress line redrawn after a warning", async () => {
@@ -1228,8 +1231,9 @@ describe("createProgram", () => {
           const writes = stderrWrites(stderrSpy).map((write) => String(write));
           const warnIndex = writes.findIndex((write) => write.includes(WARNING));
           const redraw = writes.slice(warnIndex + 1).find((write) => write.includes("sample 1/5"));
-          expect(redraw).toBeDefined();
-          expect(displayedWidth(redraw)).toBeLessThanOrEqual(NARROW_COLUMNS);
+          const displayed = displayedLine(redraw);
+          expect.soft(displayed.length).toBeLessThanOrEqual(NARROW_COLUMNS);
+          expect(displayed).toMatch(MIDDLE_ELLIPSIS_SHAPE);
         });
       });
 

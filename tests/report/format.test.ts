@@ -14,6 +14,7 @@ import {
   getGlyph,
   hintFooterLines,
   methodFooterLines,
+  shortenLabel,
   scopedGeomeanLabel,
   selectHighlights,
   styleWithin,
@@ -584,6 +585,48 @@ describe("formatTableLine", () => {
   });
 });
 
+describe("shortenLabel", () => {
+  const TEXT = "abcdefghijklmnop";
+
+  describe("when the text already fits the width", () => {
+    it.each([
+      { desc: "is shorter than the width", maxWidth: 20 },
+      { desc: "is exactly the width", maxWidth: TEXT.length },
+    ])("returns it verbatim when the text $desc", ({ maxWidth }) => {
+      expect(shortenLabel(TEXT, maxWidth)).toBe(TEXT);
+    });
+  });
+
+  describe("when the text overflows the width", () => {
+    it.each([
+      // cspell:disable-next-line — synthetic test string, not a real word
+      { desc: "splits the budget evenly on an odd width", maxWidth: 9, expected: "abcd…mnop" },
+      {
+        desc: "gives the extra character to the head on an even width",
+        maxWidth: 8,
+        expected: "abcd…nop",
+      },
+      {
+        desc: "keeps a single leading character once the tail is squeezed out",
+        maxWidth: 2,
+        expected: "a…",
+      },
+      { desc: "collapses to the ellipsis alone at a width of one", maxWidth: 1, expected: "…" },
+    ])("$desc", ({ maxWidth, expected }) => {
+      expect(shortenLabel(TEXT, maxWidth)).toBe(expected);
+    });
+  });
+
+  describe("when the width leaves no room at all", () => {
+    it.each([
+      { desc: "zero", maxWidth: 0 },
+      { desc: "negative", maxWidth: -5 },
+    ])("returns an empty string for a $desc width", ({ maxWidth }) => {
+      expect(shortenLabel(TEXT, maxWidth)).toBe("");
+    });
+  });
+});
+
 describe("truncateLabels", () => {
   describe("when every label fits the display width", () => {
     it("returns each one verbatim", () => {
@@ -614,6 +657,27 @@ describe("truncateLabels", () => {
       ]);
 
       expect(truncated).toStrictEqual(["feature/ex…e-fastpath", "feature/ex…o-fastpath"]);
+    });
+  });
+
+  describe("when disambiguation widens past a label that already fits the wider budget", () => {
+    it("never lengthens that label", () => {
+      // The colliding pair forces the budget out to 21 chars; the 21-char label
+      // is already within it and must not gain an ellipsis.
+      const shortEnough = "release/candidate-2.1";
+      expect.soft(shortEnough).toHaveLength(21);
+
+      const truncated = truncateLabels([
+        "feature/experiment-one-fastpath",
+        "feature/exploration-two-fastpath",
+        shortEnough,
+      ]);
+
+      expect(truncated).toStrictEqual([
+        "feature/ex…e-fastpath",
+        "feature/ex…o-fastpath",
+        shortEnough,
+      ]);
     });
   });
 });

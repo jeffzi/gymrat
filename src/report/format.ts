@@ -628,6 +628,33 @@ export function withColor<T>(color: boolean | undefined, fn: () => T): T {
   }
 }
 
+/** U+2026, one character wide — three periods would cost two more columns. */
+const ELLIPSIS = "…";
+
+/**
+ * `text` fitted into `maxWidth` characters, keeping both of its ends.
+ *
+ * The ends carry the identity: branch names that share a prefix differ in their
+ * tail, and a progress line names its step at the front and its target at the
+ * back. Cutting from the middle keeps both, where a plain slice would drop
+ * whichever end runs past the budget.
+ *
+ * Text already inside the budget comes back untouched, so widening the budget
+ * can never lengthen the result.
+ */
+export function shortenLabel(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  if (text.length <= maxWidth) return text;
+
+  const kept = maxWidth - ELLIPSIS.length;
+  if (kept <= 0) return ELLIPSIS;
+
+  const head = Math.ceil(kept / 2);
+  const tail = kept - head;
+  // Index the tail from the front: `slice(-0)` would return the whole string.
+  return `${text.slice(0, head)}${ELLIPSIS}${text.slice(text.length - tail)}`;
+}
+
 /**
  * Widest a variant label prints, ellipsis included.
  *
@@ -637,30 +664,16 @@ export function withColor<T>(color: boolean | undefined, fn: () => T): T {
  */
 const LABEL_DISPLAY_WIDTH = 20;
 
-/** U+2026, one character wide — three periods would cost two more columns. */
-const ELLIPSIS = "…";
-
-/** Characters kept from the head of an overlong label. */
-const LABEL_HEAD_WIDTH = Math.ceil((LABEL_DISPLAY_WIDTH - ELLIPSIS.length) / 2);
-
-/** Characters kept from the tail of an overlong label before collisions widen it. */
-const LABEL_TAIL_WIDTH = LABEL_DISPLAY_WIDTH - ELLIPSIS.length - LABEL_HEAD_WIDTH;
-
-/** One label under the name it prints, keeping `tail` of its trailing characters. */
-function shortenLabel(label: string, tail: number): string {
-  if (label.length <= LABEL_DISPLAY_WIDTH) return label;
-  return `${label.slice(0, LABEL_HEAD_WIDTH)}${ELLIPSIS}${label.slice(-tail)}`;
-}
-
 /**
  * Every variant label under the name the report prints for it.
  *
- * Labels are shortened as a set rather than one at a time because the tail is
- * what tells sibling branches apart: `feature/experiment-one-fastpath` and
- * `feature/exploration-two-fastpath` share both ends, so the shortest tail that
- * keeps them distinct is the one worth keeping. The tail grows until the
- * displayed names are as distinct as the labels were — two candidates named
- * identically stay that way, which is the run's own doing, not the display's.
+ * Labels are shortened as a set rather than one at a time because the ends are
+ * what tell sibling branches apart: `feature/experiment-one-fastpath` and
+ * `feature/exploration-two-fastpath` share both of theirs, so the narrowest
+ * width that keeps them distinct is the one worth spending. The width grows
+ * until the displayed names are as distinct as the labels were — two candidates
+ * named identically stay that way, which is the run's own doing, not the
+ * display's.
  *
  * Truncation is display-only: `label=` parsing, the config, and the JSON
  * renderer all keep the full label.
@@ -668,8 +681,8 @@ function shortenLabel(label: string, tail: number): string {
 export function truncateLabels(labels: readonly string[]): string[] {
   const longest = Math.max(0, ...labels.map((label) => label.length));
   const distinct = new Set(labels).size;
-  for (let tail = LABEL_TAIL_WIDTH; tail < longest; tail++) {
-    const shortened = labels.map((label) => shortenLabel(label, tail));
+  for (let maxWidth = LABEL_DISPLAY_WIDTH; maxWidth < longest; maxWidth++) {
+    const shortened = labels.map((label) => shortenLabel(label, maxWidth));
     if (new Set(shortened).size === distinct) return shortened;
   }
   return [...labels];

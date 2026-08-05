@@ -14,7 +14,7 @@ import { resolveConfig, type CliFlags } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { metricRecord } from "./metric-record.js";
-import { countVerdicts, formatHintLabel, formatLabel } from "./report/format.js";
+import { countVerdicts, formatHintLabel, formatLabel, shortenLabel } from "./report/format.js";
 import { renderJson } from "./report/json.js";
 import { renderReport } from "./report/text.js";
 import type {
@@ -401,6 +401,8 @@ const CLEAR_LINE = "\r\x1b[K";
  * one column short of the width keeps terminals that wrap as soon as the last
  * column is written from spilling onto a second row.
  *
+ * The cut takes the middle so both ends of the line survive a narrow terminal.
+ *
  * `@types/node` declares `columns` as a number, but node defines it only on a
  * TTY; elsewhere it is `undefined` — and a non-TTY stream has no width to fit.
  */
@@ -409,7 +411,7 @@ function fitToTerminalWidth(line: string): string {
   if (columns === undefined) {
     return line;
   }
-  return line.slice(0, Math.max(0, columns - 1));
+  return shortenLabel(line, columns - 1);
 }
 
 /**
