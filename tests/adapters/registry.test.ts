@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { AdapterError, getAdapter } from "../../src/adapters/index.js";
+import { getAdapter } from "../../src/adapters/index.js";
+import { GymratError } from "../../src/errors.js";
 import { metricRecord } from "../fixtures/metrics.js";
 
 describe("getAdapter registry", () => {
@@ -39,22 +40,39 @@ describe("getAdapter registry", () => {
     },
   ];
 
-  it.each(testAdapters)(
-    "getAdapter('$name') returns an adapter with the expected shape",
-    (spec) => {
-      const adapter = getAdapter(spec.name);
+  it.each(testAdapters)("getAdapter('$name') returns an adapter with matching name", (spec) => {
+    const adapter = getAdapter(spec.name);
 
-      expect(adapter.name).toBe(spec.name);
-      expect(adapter.parse(spec.parseInput)).toStrictEqual(spec.parseExpected);
-      expect(adapter.defaults(spec.defaultsInput)).toStrictEqual(spec.defaultsExpected);
-    },
-  );
+    expect(adapter.name).toBe(spec.name);
+  });
+
+  it.each(testAdapters)("getAdapter('$name').parse() parses the expected input", (spec) => {
+    const adapter = getAdapter(spec.name);
+
+    expect(adapter.parse(spec.parseInput)).toStrictEqual(spec.parseExpected);
+  });
+
+  it.each(testAdapters)("getAdapter('$name').defaults() returns the expected defaults", (spec) => {
+    const adapter = getAdapter(spec.name);
+
+    expect(adapter.defaults(spec.defaultsInput)).toStrictEqual(spec.defaultsExpected);
+  });
 
   describe("getAdapter('unknown')", () => {
-    it("throws Error (not AdapterError) with valid names listed", () => {
-      expect(() => getAdapter("unknown")).toThrow(/metric-lines/);
-      expect(() => getAdapter("unknown")).toThrow(/mitata/);
-      expect(() => getAdapter("unknown")).not.toThrow(AdapterError);
+    it("throws GymratError with valid adapter names listed in the hint", () => {
+      expect(() => getAdapter("unknown")).toThrow(GymratError);
+      expect(() => getAdapter("unknown")).toThrow(/Unknown adapter/);
+    });
+
+    it("lists valid adapter names in the hint", () => {
+      let hint: string | undefined;
+      try {
+        getAdapter("unknown");
+      } catch (e) {
+        if (e instanceof GymratError) hint = e.hint;
+      }
+      expect(hint).toMatch(/metric-lines/);
+      expect(hint).toMatch(/mitata/);
     });
   });
 });

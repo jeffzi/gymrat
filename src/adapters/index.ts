@@ -1,5 +1,6 @@
 export { AdapterError } from "./types.js";
 
+import { GymratError } from "../errors.js";
 import metricLinesAdapter from "./metric-lines.js";
 import mitataAdapter from "./mitata.js";
 import type { Adapter } from "./types.js";
@@ -23,7 +24,10 @@ export function getAdapter(name: string): Adapter {
   const adapter = adapters.get(name);
   if (!adapter) {
     const validNames = Array.from(adapters.keys()).toSorted();
-    throw new Error(`Unknown adapter: "${name}". Valid adapters: ${validNames.join(", ")}`);
+    throw new GymratError(
+      `Unknown adapter: "${name}".`,
+      `valid adapters are: ${validNames.join(", ")}`,
+    );
   }
 
   return adapter;
