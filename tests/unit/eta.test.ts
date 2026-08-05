@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProgressStep } from "../../src/compare.js";
 import { EtaTracker, formatEta } from "../../src/eta.js";
@@ -112,6 +112,44 @@ describe("EtaTracker", () => {
       // targetCount = 2, completedSampleSteps before this call = 2, remaining = 3*2 - 2 = 4
       // estimate = 100 * 4 = 400
       expect(result).toBe(400);
+    });
+
+    it("ignores a backwards clock step instead of recording a negative duration", () => {
+      // Arrange — the clock jumps backwards from 100 to 50 between the second and third step
+      const tracker = new EtaTracker(1, clockSequence(0, 100, 50));
+
+      // Act
+      tracker.record(sample(1, 3, "A")); // t=0, first sample, no gap yet
+      tracker.record(sample(2, 3, "A")); // t=100, gap=100 included
+      const result = tracker.record(sample(3, 3, "A")); // t=50, gap=-50 discarded
+
+      // Assert
+      // durations = [100] (the -50 gap contributes nothing), mean = 100
+      // targetCount = 1, completedSampleSteps before this call = 2, remaining = 3*1 - 2 = 1
+      // estimate = 100 * 1 = 100
+      expect(result).toBe(100);
+    });
+  });
+
+  describe("when no clock is injected", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("measures gaps with performance.now so wall-clock shifts cannot skew estimates", () => {
+      // Arrange — the monotonic source, not the wall clock, yields 0 then 100
+      vi.spyOn(performance, "now").mockImplementation(clockSequence(0, 100));
+      const tracker = new EtaTracker(1);
+
+      // Act
+      tracker.record(sample(1, 3, "A")); // t=0, first sample, no gap yet
+      const result = tracker.record(sample(2, 3, "A")); // t=100, gap=100
+
+      // Assert
+      // durations = [100], mean = 100
+      // targetCount = 1, completedSampleSteps before this call = 1, remaining = 3*1 - 1 = 2
+      // estimate = 100 * 2 = 200
+      expect(result).toBe(200);
     });
   });
 });

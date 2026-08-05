@@ -1,7 +1,7 @@
 import type { ProgressStep } from "./compare.js";
 
 /**
- * Tracks wall-clock gaps between progress steps and estimates the remaining
+ * Tracks elapsed gaps between progress steps and estimates the remaining
  * time for a round-robin benchmark run.
  *
  * The estimate equals `meanSampleDuration * remainingSteps`, where
@@ -24,7 +24,11 @@ export class EtaTracker {
 
   #completedSamples = 0;
 
-  constructor(targetCount: number, clock: () => number = Date.now) {
+  /**
+   * The default clock must stay monotonic: `Date.now` can jump backwards or
+   * forwards on NTP corrections and DST changes, skewing every estimate.
+   */
+  constructor(targetCount: number, clock: () => number = () => performance.now()) {
     this.#targetCount = targetCount;
     this.#clock = clock;
   }
@@ -39,7 +43,12 @@ export class EtaTracker {
     const isPrepare = step.kind === "prepare";
 
     if (this.#prevTime !== undefined && !this.#prevWasPrepare && !isPrepare) {
-      this.#durations.push(now - this.#prevTime);
+      const gap = now - this.#prevTime;
+      // An injected clock may step backwards; a negative gap would drag the
+      // mean down and can push the estimate below zero.
+      if (gap >= 0) {
+        this.#durations.push(gap);
+      }
     }
 
     this.#prevWasPrepare = isPrepare;
