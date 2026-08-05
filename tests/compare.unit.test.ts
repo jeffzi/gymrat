@@ -368,6 +368,20 @@ describe("compare", () => {
     });
   });
 
+  describe("when a metric's median is zero", () => {
+    beforeEach(() => {
+      parsed.metrics = { latency: 0 };
+    });
+
+    it("reports no spread rather than a measured ± 0%", async () => {
+      const result = await runCompare({ samples: 2 });
+
+      const metric = result.metrics["latency"];
+      expect.soft(metric?.baselineSpread).toBeUndefined();
+      expect(metric?.candidates[0]?.spread).toBeUndefined();
+    });
+  });
+
   describe("cleanup sweep", () => {
     it("calls cleanupWorktrees exactly once on the success path", async () => {
       parsed.metrics = { latency: 100 };

@@ -1201,7 +1201,7 @@ describe("compare – integration", () => {
   });
 
   describe("when metric values are zero", () => {
-    it("renders a zero median as 0 ± 0% and a 0.0% delta rather than NaN", async () => {
+    it("renders a zero median without a spread and a 0.0% delta rather than NaN", async () => {
       await withScratchRepo(async (repo) => {
         createBranch(repo, {
           name: "old-zero",
@@ -1223,7 +1223,7 @@ describe("compare – integration", () => {
         );
 
         const latencyRow = findLine(report, (line) => line.startsWith("latency"));
-        expect(latencyRow).toMatch(/^latency\s*│\s*0 ± 0%\s*│\s*0 ± 0%\s*│\s*~\s+0\.0%/);
+        expect(latencyRow).toMatch(/^latency\s*│\s*0\s+│\s*0\s+│\s*~\s+0\.0%/);
       });
     });
   });

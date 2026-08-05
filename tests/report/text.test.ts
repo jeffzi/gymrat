@@ -2828,11 +2828,9 @@ describe("renderReport", () => {
         metrics: {
           "zero-median/time": {
             baselineMedian: 0,
-            baselineSpread: 0,
             candidates: [
               {
                 median: 0,
-                spread: 0,
                 verdict: exactVerdict({ n: 4 }),
               },
             ],

@@ -167,7 +167,7 @@ function computeSpread(values: readonly number[], median: number): number | unde
   }
 
   if (median === 0) {
-    return 0;
+    return undefined;
   }
 
   return (computeHalfRange(values) / Math.abs(median)) * 100;
