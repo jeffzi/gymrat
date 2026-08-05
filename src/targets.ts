@@ -86,9 +86,12 @@ function tryResolveDirectory(absolutePath: string): InPlaceTarget | undefined {
       };
     }
   } catch (error) {
-    const isFsError = error instanceof Error && "code" in error;
-    /* v8 ignore if -- non-fs errors from statSync are not reproducible in tests */
-    if (!isFsError) {
+    const isMissingDirectory =
+      error instanceof Error &&
+      "code" in error &&
+      (error.code === "ENOENT" || error.code === "ENOTDIR");
+    /* v8 ignore if -- non-ENOENT/ENOTDIR errors from statSync are not reproducible in tests */
+    if (!isMissingDirectory) {
       throw error;
     }
   }
