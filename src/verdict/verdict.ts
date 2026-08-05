@@ -177,7 +177,7 @@ export type GeomeanResult = {
  * "regressed" — every comparison against NaN is false.
  */
 function determineVerdict(delta: number, direction: "lower" | "higher"): Verdict {
-  if (Number.isNaN(delta)) return "no-signal";
+  if (delta === 0 || Number.isNaN(delta)) return "no-signal";
 
   const isImproved = direction === "lower" ? delta < 0 : delta > 0;
   return isImproved ? "improved" : "regressed";

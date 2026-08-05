@@ -402,6 +402,43 @@ describe("computeVerdicts", () => {
       expect(verdict.verdict).toBe("no-signal");
     });
 
+    it.each([
+      { desc: "direction lower", meta: METRIC_APPROX_LOWER },
+      { desc: "direction higher", meta: METRIC_APPROX_HIGHER },
+    ])("returns no-signal when delta is zero ($desc)", ({ meta }) => {
+      // 8 pairs whose medians are equal (both 100) but whose individual values
+      // differ consistently — all 6 non-zero diffs are positive, so
+      // p = 0.03125 < 0.05. Without a zero-delta guard the function would
+      // classify this as "regressed" for either direction.
+      const samplesA = [
+        { metric: 80 },
+        { metric: 90 },
+        { metric: 95 },
+        { metric: 100 },
+        { metric: 100 },
+        { metric: 105 },
+        { metric: 110 },
+        { metric: 120 },
+      ];
+      const samplesB = [
+        { metric: 81 },
+        { metric: 91 },
+        { metric: 96 },
+        { metric: 100 },
+        { metric: 100 },
+        { metric: 106 },
+        { metric: 111 },
+        { metric: 121 },
+      ];
+
+      const result = computeVerdicts(samplesA, samplesB, meta);
+
+      const verdict = getSignedRankVerdict(result, "metric");
+      expect(verdict.p).toBeLessThan(0.05);
+      expect(verdict.delta).toBe(0);
+      expect(verdict.verdict).toBe("no-signal");
+    });
+
     it("falls back to band method when wilcoxon result.n < 6 after dropping zero diffs", () => {
       // 6 samples, but 3 have zero difference → wilcoxon sees n=3 < 6, falls back to band
       const samplesA = createSamples(6, 100);
