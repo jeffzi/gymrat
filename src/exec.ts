@@ -42,7 +42,15 @@ function killTree(pid: number): void {
   } catch (err) {
     // emitWarning, not throw: callers run from setTimeout/AbortSignal contexts
     // where a throw becomes an uncaught exception.
-    if (!(err instanceof Error && "code" in err && err.code === "ESRCH")) {
+    //
+    // "Process already gone" surfaces differently per platform: POSIX process.kill
+    // throws with code "ESRCH", while Windows execFileSync("taskkill", ...) throws
+    // with a non-zero `status` (taskkill has no dedicated exit code for "not found").
+    const alreadyGone =
+      process.platform === "win32"
+        ? err instanceof Error && "status" in err && typeof err.status === "number"
+        : err instanceof Error && "code" in err && err.code === "ESRCH";
+    if (!alreadyGone) {
       process.emitWarning(err instanceof Error ? err : String(err));
     }
   }
