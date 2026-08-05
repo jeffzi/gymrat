@@ -17,26 +17,20 @@ export interface WilcoxonResult {
  * throws (empty input, all-zero diffs, single pair) and returns the existing
  * `{p, n}` shape.
  *
- * @param pairs - Array of [a, b] pairs, where each pair is a sample from two conditions
+ * @param x - Values from the first condition
+ * @param y - Values from the second condition, paired by index with `x`
  * @returns Object with p-value and effective sample size (n, after dropping zeros)
  */
-export function wilcoxonSignedRank(
-  pairs: ReadonlyArray<readonly [number, number]>,
-): WilcoxonResult {
-  const x: number[] = [];
-  const y: number[] = [];
+export function wilcoxonSignedRank(x: readonly number[], y: readonly number[]): WilcoxonResult {
   let n = 0;
-
-  for (const [a, b] of pairs) {
-    x.push(a);
-    y.push(b);
-    if (b - a !== 0) n++;
+  for (let i = 0; i < x.length; i++) {
+    if (y[i]! - x[i]! !== 0) n++;
   }
 
-  if (n === 0 || pairs.length < 2) {
+  if (n === 0 || x.length < 2) {
     return { p: 1, n };
   }
 
-  const result = wilcoxon(x, y);
+  const result = wilcoxon([...x], [...y]);
   return { p: result.pValue, n };
 }

@@ -246,6 +246,24 @@ function computeExactVerdict(
 }
 
 /**
+ * Percentage delta between two medians, normalized by the magnitude of `medianA`.
+ *
+ * Normalizing by the magnitude keeps the sign of the delta tied to the
+ * direction the value moved: a negative-median metric dropping further below
+ * zero is a decrease, not an increase. When `medianA` is 0, the ratio is
+ * undefined; the result is 0 if both medians are 0, and `NaN` otherwise.
+ */
+function computeDelta(medianA: number, medianB: number): number {
+  if (medianA === 0 && medianB === 0) {
+    return 0;
+  }
+  if (medianA === 0) {
+    return Number.NaN;
+  }
+  return ((medianB - medianA) / Math.abs(medianA)) * 100;
+}
+
+/**
  * Compute verdicts for multiple metrics across two sample sets.
  *
  * Pairing:
@@ -286,24 +304,6 @@ function computeExactVerdict(
  *   still gets a normal verdict.
  * @returns Record mapping metric names to verdicts (only metrics with verdicts)
  */
-/**
- * Percentage delta between two medians, normalized by the magnitude of `medianA`.
- *
- * Normalizing by the magnitude keeps the sign of the delta tied to the
- * direction the value moved: a negative-median metric dropping further below
- * zero is a decrease, not an increase. When `medianA` is 0, the ratio is
- * undefined; the result is 0 if both medians are 0, and `NaN` otherwise.
- */
-function computeDelta(medianA: number, medianB: number): number {
-  if (medianA === 0 && medianB === 0) {
-    return 0;
-  }
-  if (medianA === 0) {
-    return Number.NaN;
-  }
-  return ((medianB - medianA) / Math.abs(medianA)) * 100;
-}
-
 // Pairing, delta, and method dispatch are one pass over each metric; splitting
 // them would mean re-walking the samples.
 // fallow-ignore-next-line complexity
@@ -315,17 +315,13 @@ export function computeVerdicts(
 ): Record<string, MetricVerdict> {
   const result = metricRecord<MetricVerdict>();
 
-  const allMetrics = new Set(Object.keys(metricMeta));
-
-  for (const metric of allMetrics) {
+  for (const [metric, meta] of Object.entries(metricMeta)) {
     const { pairedA, pairedB } = pairSamples(metric, samplesA, samplesB);
 
     // Both paired arrays grow together, so one length check covers both.
     if (pairedA.length === 0) {
       continue;
     }
-
-    const meta = metricMeta[metric]!;
 
     const medianA = computeMedian(pairedA);
     const medianB = computeMedian(pairedB);
@@ -362,23 +358,17 @@ function computeApproximateVerdict(
   unstableNoisePct: number,
   unit: MetricUnit | undefined,
 ): SignedRankVerdict | BandVerdict {
-  const pairs = pairedA.map((a, i): readonly [number, number] => [a, pairedB[i]!]);
-  const wilcoxonResult = wilcoxonSignedRank(pairs);
+  const wilcoxonResult = wilcoxonSignedRank(pairedA, pairedB);
 
+  let result: SignedRankVerdict | BandVerdict;
   if (wilcoxonResult.n < MIN_WILCOXON_N) {
-    return applyUnstableOverride(
-      computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n, unit),
-      unstableNoisePct,
-    );
-  }
+    result = computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n, unit);
+  } else {
+    const verdict: Verdict =
+      wilcoxonResult.p < P_VALUE_THRESHOLD ? determineVerdict(delta, direction) : "no-signal";
 
-  const verdict: Verdict =
-    wilcoxonResult.p < P_VALUE_THRESHOLD ? determineVerdict(delta, direction) : "no-signal";
-
-  const noise = computeNoise(pairedA, pairedB, unit);
-
-  return applyUnstableOverride(
-    {
+    const noise = computeNoise(pairedA, pairedB, unit);
+    result = {
       verdict,
       method: "signed-rank",
       delta,
@@ -386,9 +376,10 @@ function computeApproximateVerdict(
       p: wilcoxonResult.p,
       noisePct: noise.pct,
       noiseAbs: noise.abs,
-    },
-    unstableNoisePct,
-  );
+    };
+  }
+
+  return applyUnstableOverride(result, unstableNoisePct);
 }
 
 /**

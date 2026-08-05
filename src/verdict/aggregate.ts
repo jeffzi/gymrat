@@ -42,7 +42,6 @@ type MetricEntry = readonly [name: string, meta: ResolvedMetricMeta];
 
 /** A kind's metrics, and the groups their short names sort them into. */
 interface KindBucket {
-  kind: string;
   metrics: MetricEntry[];
   groups: Map<string, MetricEntry[]>;
 }
@@ -76,7 +75,7 @@ function bucketByKind(metricMeta: Record<string, ResolvedMetricMeta>): Map<strin
   for (const [name, meta] of Object.entries(metricMeta)) {
     let bucket = buckets.get(meta.kind);
     if (!bucket) {
-      bucket = { kind: meta.kind, metrics: [], groups: new Map() };
+      bucket = { metrics: [], groups: new Map() };
       buckets.set(meta.kind, bucket);
     }
 
@@ -130,12 +129,12 @@ export function computeKindAggregates(
   verdicts: Record<string, MetricVerdict>,
   metricMeta: Record<string, ResolvedMetricMeta>,
 ): KindAggregate[] {
-  return Array.from(bucketByKind(metricMeta).values(), (bucket) => {
+  return Array.from(bucketByKind(metricMeta).entries(), ([kind, bucket]) => {
     const gating = bucket.metrics.filter(([, meta]) => meta.gating);
     const hasGating = gating.length > 0;
 
     const aggregate: KindAggregate = {
-      kind: bucket.kind,
+      kind,
       hasGating,
       geomean: geomeanOver(bucket.metrics, verdicts),
       groups: Array.from(bucket.groups, ([group, members]) => ({
