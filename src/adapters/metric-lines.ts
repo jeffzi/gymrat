@@ -7,14 +7,18 @@ const METRIC_PREFIX = "METRIC";
 
 function parseMetricLine(line: string): { name: string; value: number } | null {
   const trimmed = line.trim();
-  if (!trimmed.startsWith(METRIC_PREFIX)) return null;
+  if (!trimmed.startsWith(`${METRIC_PREFIX} `)) return null;
+
+  const reject = (): null => {
+    console.warn(`Failed to parse METRIC line: ${trimmed}`);
+    return null;
+  };
 
   const afterMetric = trimmed.slice(METRIC_PREFIX.length).trim();
   const lastEqIndex = afterMetric.lastIndexOf("=");
 
   if (lastEqIndex <= 0) {
-    console.warn(`Failed to parse METRIC line: ${trimmed}`);
-    return null;
+    return reject();
   }
 
   // `Number("")` and `Number("   ")` are 0, so an unset shell variable would
@@ -22,8 +26,7 @@ function parseMetricLine(line: string): { name: string; value: number } | null {
   const rawValue = afterMetric.slice(lastEqIndex + 1);
   const value = Number(rawValue);
   if (rawValue.trim() === "" || !Number.isFinite(value)) {
-    console.warn(`Failed to parse METRIC line: ${trimmed}`);
-    return null;
+    return reject();
   }
 
   return { name: afterMetric.slice(0, lastEqIndex), value };
