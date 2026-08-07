@@ -30,7 +30,7 @@ export type MetricComparisons = Record<string, MetricComparison>;
  * Worktree cleanup outcome shared by every run result — comparison and
  * measurement runs manage the same worktrees the same way.
  */
-interface WorktreeCleanupOutcome {
+export interface WorktreeCleanupOutcome {
   worktreesRemoved: number;
 
   /** Worktrees cleanup could not remove, each with the reason git gave. */

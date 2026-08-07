@@ -2,7 +2,7 @@
 /* eslint-disable typescript/no-unsafe-member-access -- see above */
 import { afterEach, describe, it, expect, vi } from "vitest";
 
-import { renderJson } from "../../src/report/json.js";
+import { renderJson, renderMeasureJson } from "../../src/report/json.js";
 import type { ComparisonResult } from "../../src/report/types.js";
 import {
   createCandidate,
@@ -17,6 +17,11 @@ import {
   nWayMetric,
   singleSampleResult,
 } from "../fixtures/comparison-result.js";
+import {
+  createMeasurementResult,
+  measuredMetric,
+  twoKindMeasurement,
+} from "../fixtures/measurement-result.js";
 
 /**
  * A run spanning a gating `time` kind and an informational `memory` kind.
@@ -511,6 +516,134 @@ describe("renderJson", () => {
       const output = renderJson(result);
       const parsed = JSON.parse(output);
       const encoded = JSON.stringify(parsed, null, 2);
+
+      expect(encoded).toBe(output);
+    });
+  });
+});
+
+describe("renderMeasureJson", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("schema shape", () => {
+    it("names the run under its own schemaVersion, starting at 1", () => {
+      const result = createMeasurementResult({
+        label: "experiment",
+        samples: 10,
+        adapter: "mitata",
+        metrics: { "decode/time": measuredMetric({ unit: "ns" }) },
+      });
+
+      const json = JSON.parse(renderMeasureJson(result));
+
+      expect.soft(json.schemaVersion).toBe(1);
+      expect.soft(json.label).toBe("experiment");
+      expect.soft(json.samples).toBe(10);
+      expect.soft(json.adapter).toBe("mitata");
+      expect.soft(json).toHaveProperty("metrics");
+      expect(json).toHaveProperty("worktrees");
+    });
+
+    it("leaves out everything a comparison alone has to say", () => {
+      const json = JSON.parse(renderMeasureJson(twoKindMeasurement()));
+
+      expect.soft(json).not.toHaveProperty("baseline");
+      expect.soft(json).not.toHaveProperty("candidates");
+      expect(json).not.toHaveProperty("perCandidate");
+    });
+  });
+
+  describe("metric entries", () => {
+    it("carries a grouped metric's measurement beside the metadata behind it", () => {
+      const json = JSON.parse(renderMeasureJson(twoKindMeasurement()));
+
+      expect(json.metrics["entity.alive_check/time"]).toStrictEqual({
+        median: 100,
+        spreadPct: 1,
+        unit: "ns",
+        direction: "lower",
+        gating: true,
+        exact: false,
+        kind: "time",
+        group: "entity",
+      });
+    });
+
+    it("reports no group for a metric whose name names none", () => {
+      const json = JSON.parse(renderMeasureJson(twoKindMeasurement()));
+
+      expect.soft(json.metrics["encode/heap"].group).toBeNull();
+      expect(json.metrics["encode/heap"].kind).toBe("memory");
+    });
+
+    it.each([
+      { field: "median", metric: { median: undefined, spread: 1 } },
+      { field: "spreadPct", metric: { median: 100, spread: undefined } },
+    ])("renders null for an absent $field", ({ field, metric }) => {
+      const result = createMeasurementResult({
+        metrics: { "sparse/time": measuredMetric({ ...metric, unit: "ns" }) },
+      });
+
+      const json = JSON.parse(renderMeasureJson(result));
+
+      expect(json.metrics["sparse/time"][field]).toBeNull();
+    });
+
+    it("renders a metric with no unit as a null unit", () => {
+      const result = createMeasurementResult({
+        metrics: { "throughput/ops": measuredMetric() },
+      });
+
+      const json = JSON.parse(renderMeasureJson(result));
+
+      expect(json.metrics["throughput/ops"].unit).toBeNull();
+    });
+  });
+
+  describe("worktrees section", () => {
+    it("reflects cleanup state with no issues", () => {
+      const json = JSON.parse(renderMeasureJson(createMeasurementResult({ worktreesRemoved: 2 })));
+
+      expect(json.worktrees).toStrictEqual({ removed: 2, leftBehind: [], pruneError: null });
+    });
+
+    it("includes left-behind worktrees and prune errors", () => {
+      const result = createMeasurementResult({
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "contains modified files" }],
+        worktreePruneError: "fatal: prune failed",
+      });
+
+      const json = JSON.parse(renderMeasureJson(result));
+
+      expect(json.worktrees).toStrictEqual({
+        removed: 1,
+        leftBehind: [{ path: "/tmp/gymrat-abc", reason: "contains modified files" }],
+        pruneError: "fatal: prune failed",
+      });
+    });
+  });
+
+  describe("when the ambient environment forces color", () => {
+    it("emits no ANSI escape sequences, however the ambient environment forces color", () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      expect(renderMeasureJson(twoKindMeasurement())).not.toMatch(/\x1b\[/);
+    });
+  });
+
+  describe("JSON validity", () => {
+    it("produces output that JSON.parse roundtrips cleanly", () => {
+      const result = twoKindMeasurement({
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-x", error: "locked" }],
+        worktreePruneError: "prune failed",
+      });
+
+      const output = renderMeasureJson(result);
+      const encoded = JSON.stringify(JSON.parse(output), null, 2);
 
       expect(encoded).toBe(output);
     });

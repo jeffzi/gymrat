@@ -14,6 +14,7 @@ import {
   formatEvidence,
   formatHintLabel,
   formatLabel,
+  formatMetricCellParts,
   formatNoiseBandValue,
   formatPairCount,
   formatTableLine,
@@ -40,6 +41,7 @@ import {
   SPREAD_SEPARATOR,
   type Style,
   styleWithin,
+  truncateLabels,
   UNSTABLE_FUTILITY_NOTE,
   VARIANT_NAME_STYLE,
   verdictSummaryParts,
@@ -63,8 +65,10 @@ import type {
   CandidateComparison,
   ComparisonResult,
   FailOnCondition,
+  MeasurementResult,
   MetricComparisons,
   ReportOptions,
+  WorktreeCleanupOutcome,
 } from "./types.js";
 
 /** The metric name, the two measured values, and the verdict, in column order. */
@@ -81,12 +85,16 @@ interface MetricRow {
   readonly band: string;
 }
 
-/** Fields shared by every row that names a metric in either table layout. */
-interface MetricRowBase {
+/** The two names every metric row carries, whatever the table reports beside them. */
+interface NamedRow {
   /** The full metric name, which the flat table shows and every other output keys on. */
   readonly name: string;
   /** The short name a section shows the row under, group prefix stripped and indented. */
   readonly label: string;
+}
+
+/** Fields shared by every row that names a metric in either comparison layout. */
+interface MetricRowBase extends NamedRow {
   readonly gating: boolean;
 }
 
@@ -495,7 +503,7 @@ function sectionMetrics<Metric>(section: SectionPlan<Metric>): Metric[] {
 /** The lines one section's blocks produce: groups, standalone metrics, and sub-geomeans. */
 function planBlocks<Metric, Cell>(
   section: SectionPlan<Metric>,
-  rows: AggregateRows<Metric, Cell>,
+  rows: AggregateRows<Metric, Cell> | undefined,
 ): BodyLine<Metric, Cell>[] {
   const lines: BodyLine<Metric, Cell>[] = [];
   for (const [blockIndex, block] of section.blocks.entries()) {
@@ -510,7 +518,9 @@ function planBlocks<Metric, Cell>(
     }
     lines.push({ type: "group", label: block.group });
     for (const metric of block.metrics) lines.push({ type: "metric", row: metric });
-    lines.push({ type: "aggregate", ...rows.group(section.kind, block.group, block.metrics) });
+    if (rows !== undefined) {
+      lines.push({ type: "aggregate", ...rows.group(section.kind, block.group, block.metrics) });
+    }
   }
   return lines;
 }
@@ -535,17 +545,19 @@ function planBlocks<Metric, Cell>(
  */
 function planBody<Metric, Cell>(
   layout: SectionLayout<Metric>,
-  rows: AggregateRows<Metric, Cell>,
+  rows: AggregateRows<Metric, Cell> | undefined,
   annotation: (section: SectionPlan<Metric>) => string | undefined,
 ): BodyLine<Metric, Cell>[] {
   if (layout.sections.length <= 1) {
-    return [
+    const body: BodyLine<Metric, Cell>[] = [
       { type: "header" },
       { type: "rule" },
       ...layout.ordered.map((row) => ({ type: "metric" as const, row })),
-      { type: "rule" },
-      { type: "aggregate", ...rows.flat(layout.ordered) },
     ];
+    if (rows !== undefined) {
+      body.push({ type: "rule" }, { type: "aggregate", ...rows.flat(layout.ordered) });
+    }
+    return body;
   }
 
   const lines: BodyLine<Metric, Cell>[] = [];
@@ -556,10 +568,12 @@ function planBody<Metric, Cell>(
     if (tag !== undefined) lines.push({ type: "title", text: tag });
     lines.push({ type: "border" }, { type: "header", title: section.kind }, { type: "rule" });
     lines.push(...planBlocks(section, rows));
-    lines.push(
-      { type: "rule" },
-      { type: "aggregate", ...rows.kind(section.kind, sectionMetrics(section)) },
-    );
+    if (rows !== undefined) {
+      lines.push(
+        { type: "rule" },
+        { type: "aggregate", ...rows.kind(section.kind, sectionMetrics(section)) },
+      );
+    }
   }
 
   return lines;
@@ -751,7 +765,7 @@ function renderTable(
   const baseline = result.baselineLabel;
   const headers: Row = [METRIC_COLUMN_HEADER, baseline, candidate.label, `vs ${baseline}`];
 
-  const layout = planSections<MeasuredRow>(result.metrics, (name, group, metric) => {
+  const layout = planSections(result.metrics, (name, group, metric): MeasuredRow => {
     const side = metric.candidates[candidateIndex];
     return {
       name,
@@ -940,7 +954,7 @@ function buildComparisonGrid(result: ComparisonResult): ComparisonGrid {
     cells: [],
   }));
 
-  const layout = planSections<ComparisonRow>(result.metrics, (name, group, metric) => {
+  const layout = planSections(result.metrics, (name, group, metric): ComparisonRow => {
     const candidates: CandidateCell[] = [];
     for (const [index, column] of columns.entries()) {
       const side = metric.candidates[index];
@@ -1397,7 +1411,7 @@ export function formatCleanupFailures(
  * to report — and a standing `0 worktrees removed · 0 left behind` trains the
  * reader to skip the line that matters on the run where it does.
  */
-function renderWorktreeFooter(result: ComparisonResult): string[] {
+function renderWorktreeFooter(result: WorktreeCleanupOutcome): string[] {
   const details = formatCleanupFailures(result.worktreesLeftBehind, result.worktreePruneError);
   if (result.worktreesRemoved === 0 && details.length === 0) return [];
 
@@ -1494,6 +1508,133 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
       ...renderMethodFooter(display, options.verbose ?? false),
       ...renderWorktreeFooter(display),
     ];
+    if (footer.length > 0) {
+      lines.push("", ...footer);
+    }
+
+    return lines.join("\n");
+  });
+}
+
+/** The metric name and what the target measured for it, in column order. */
+type MeasureRow = readonly [metric: string, value: string];
+
+/** Column widths, one per {@link MeasureRow} cell. */
+type MeasureWidths = readonly [number, number];
+
+/** One metric of the measure table, measured but not yet padded to its column. */
+interface MeasureMetricRow extends NamedRow {
+  readonly value: MetricCellParts;
+}
+
+/** A measure row's two cells, the value right-aligned under the target's name. */
+function formatMeasureRow(row: MeasureRow, widths: MeasureWidths, styleCell?: CellStyler): string {
+  return formatTableLine([row[0], alignRight(row[1], widths[1])], widths, styleCell);
+}
+
+/**
+ * The measure table: one column of metric names, one of what the target
+ * measured for each.
+ *
+ * Sectioning, group blocks and column sizing are the comparison table's, so a
+ * reader who knows one table can read the other. What is missing is everything
+ * a second target pays for — the delta, the verdict, the geomean closing a
+ * scope — which is why the body is planned with no aggregate rows at all rather
+ * than with empty ones.
+ */
+function renderMeasureTable(result: MeasurementResult, label: string): string[] {
+  const layout = planSections(
+    result.metrics,
+    (name, group, metric): MeasureMetricRow => ({
+      name,
+      label: indentedSectionLabel(metric.meta.shortName, group),
+      value: formatMetricCellParts(metric.median, metric.spread, metric.meta.unit),
+    }),
+  );
+  const sectioned = layout.sections.length > 1;
+
+  const valueFields = valueWidths(layout.ordered.map((row) => row.value));
+  const body = planBody<MeasureMetricRow, never>(layout, undefined, (section) =>
+    sectionAnnotation(section, result.configKinds),
+  );
+
+  const toMeasureRow = (row: MeasureMetricRow): MeasureRow => [
+    sectioned ? row.label : row.name,
+    joinValueCell(row.value, valueFields),
+  ];
+
+  const rows = layout.ordered.map(toMeasureRow);
+  const widths: MeasureWidths = [
+    computeMetricColumnWidth(widestHeaderLabel(body), [
+      ...rows.map((row) => row[0].length),
+      ...aggregateLabelLengths(body),
+    ]),
+    computeColumnWidth(
+      label.length,
+      rows.map((row) => row[1].length),
+      VALUE_COLUMN_MIN,
+    ),
+  ];
+
+  const rule = formatTableRule(widths);
+  const border = formatTableBorder(widths);
+  const styleTargetCell: CellStyler = (cell, index) =>
+    index === 1 ? styleWithin(cell, label, VARIANT_NAME_STYLE) : cell;
+
+  const renderers: BodyLineRenderers<MeasureMetricRow, never> = {
+    header: (headerLabel, hasTitle) =>
+      formatMeasureRow(
+        [headerLabel, label],
+        widths,
+        styleHeaderCell(headerLabel, hasTitle, styleTargetCell),
+      ),
+    group: (groupLabel) =>
+      formatMeasureRow([groupLabel, ""], widths, styleLabelCell(groupLabel, GROUP_LABEL_STYLE)),
+    // Nothing here is judged, so nothing here is painted: the figure is the
+    // whole row, and a color on it would claim a reading the run never made.
+    metric: (row) => formatMeasureRow(toMeasureRow(row), widths),
+    // `planBody` was handed no aggregate builders, so it planned no aggregate
+    // lines and this cell type is uninhabited.
+    aggregate: ({ cell }) => assertNever(cell),
+  };
+
+  return body.map((bodyLine) => renderBodyLine(bodyLine, rule, border, renderers));
+}
+
+/** How many rounds the target ran, as the header states it. */
+function measuredSamples(samples: number): string {
+  return `${samples} sample${samples === 1 ? "" : "s"}`;
+}
+
+/**
+ * Render a single-target measurement as the plain-text report the CLI prints.
+ *
+ * Laid out like {@link renderReport} — run header, body, then whatever speaks
+ * for the run as a whole — so the two commands read as one tool. The report
+ * states what the target measured and stops: with nothing to judge it against
+ * there is no delta, no verdict and no geomean to close a section on, and the
+ * highlights and method footer that explain those have nothing to explain.
+ *
+ * `options.verbose` and `options.failOn` are accepted and ignored, both being
+ * about verdicts. Whether the report is styled follows `options.color` exactly
+ * as it does for a comparison.
+ */
+export function renderMeasureReport(
+  result: MeasurementResult,
+  options: ReportOptions = {},
+): string {
+  return withColor(options.color, () => {
+    const label = truncateLabels([result.label])[0] ?? result.label;
+    const header = [
+      formatLabel("gymrat measure", ["bold"]),
+      formatVariantName(label),
+      measuredSamples(result.samples),
+      `adapter: ${result.adapter}`,
+    ].join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
+
+    const lines = [header, ...renderMeasureTable(result, label)];
+
+    const footer = renderWorktreeFooter(result);
     if (footer.length > 0) {
       lines.push("", ...footer);
     }

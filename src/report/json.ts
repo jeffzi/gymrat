@@ -6,7 +6,10 @@ import type {
   CandidateComparison,
   CandidateMetric,
   ComparisonResult,
+  MeasurementResult,
   MetricComparisons,
+  MetricMeasurements,
+  WorktreeCleanupOutcome,
 } from "./types.js";
 
 interface JsonCandidateMetric {
@@ -73,6 +76,43 @@ interface JsonWorktrees {
   removed: number;
   leftBehind: Array<{ path: string; reason: string }>;
   pruneError: string | null;
+}
+
+/**
+ * One metric of a single-target run: what it measured, and the metadata that
+ * settled how it is read.
+ *
+ * Flat where {@link JsonMetric} nests a `baseline` object, because there is only
+ * one side to report — a measurement states a figure rather than a pairing.
+ */
+interface JsonMeasurementMetric {
+  median: number | null;
+  spreadPct: number | null;
+  unit: string | null;
+  direction: "lower" | "higher";
+  gating: boolean;
+  /** Whether the metric is counted rather than timed, and so compares exactly. */
+  exact: boolean;
+  kind: string;
+  /** The group its short name puts it in, `null` when the name names none. */
+  group: string | null;
+}
+
+/**
+ * A single-target measurement, versioned apart from {@link JsonReport}.
+ *
+ * The two shapes share no fields beyond the run's identity and its cleanup, so
+ * they carry their own `schemaVersion` sequences: a breaking change to one says
+ * nothing about the other, and a consumer of either reads a number that only
+ * ever moves for reasons it cares about.
+ */
+interface JsonMeasurementReport {
+  schemaVersion: 1;
+  label: string;
+  samples: number;
+  adapter: string;
+  metrics: Record<string, JsonMeasurementMetric>;
+  worktrees: JsonWorktrees;
 }
 
 interface JsonReport {
@@ -171,7 +211,7 @@ function serializePerCandidate(result: ComparisonResult): JsonPerCandidate[] {
   }));
 }
 
-function serializeWorktrees(result: ComparisonResult): JsonWorktrees {
+function serializeWorktrees(result: WorktreeCleanupOutcome): JsonWorktrees {
   return {
     removed: result.worktreesRemoved,
     leftBehind: result.worktreesLeftBehind.map((failure) => ({
@@ -180,6 +220,24 @@ function serializeWorktrees(result: ComparisonResult): JsonWorktrees {
     })),
     pruneError: result.worktreePruneError ?? null,
   };
+}
+
+/** Every metric a measurement produced, each flattened into its own entry. */
+function serializeMeasurements(metrics: MetricMeasurements): Record<string, JsonMeasurementMetric> {
+  const result = metricRecord<JsonMeasurementMetric>();
+  for (const [name, metric] of Object.entries(metrics)) {
+    result[name] = {
+      median: metric.median ?? null,
+      spreadPct: metric.spread ?? null,
+      unit: metric.meta.unit ?? null,
+      direction: metric.meta.direction,
+      gating: metric.meta.gating,
+      exact: metric.meta.exact,
+      kind: metric.meta.kind,
+      group: inferGroup(metric.meta.shortName) ?? null,
+    };
+  }
+  return result;
 }
 
 /**
@@ -200,6 +258,26 @@ export function renderJson(result: ComparisonResult): string {
     adapter: result.adapter,
     metrics: serializeMetrics(result.metrics, candidateLabels),
     perCandidate: serializePerCandidate(result),
+    worktrees: serializeWorktrees(result),
+  };
+
+  return JSON.stringify(report, null, 2);
+}
+
+/**
+ * Render a single-target measurement as stable, machine-readable JSON.
+ *
+ * Formatted like {@link renderJson} — 2-space indentation, `null` for absent
+ * values, keys never omitted — and, like it, deaf to the presentation flags the
+ * text renderer reads: its consumers parse fields rather than read prose.
+ */
+export function renderMeasureJson(result: MeasurementResult): string {
+  const report: JsonMeasurementReport = {
+    schemaVersion: 1,
+    label: result.label,
+    samples: result.samples,
+    adapter: result.adapter,
+    metrics: serializeMeasurements(result.metrics),
     worktrees: serializeWorktrees(result),
   };
 

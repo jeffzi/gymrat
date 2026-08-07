@@ -2,8 +2,8 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { renderReport } from "../../src/report/text.js";
-import type { ComparisonResult, ReportOptions } from "../../src/report/types.js";
+import { renderMeasureReport, renderReport } from "../../src/report/text.js";
+import type { ComparisonResult, MeasurementResult, ReportOptions } from "../../src/report/types.js";
 import {
   bandMetric,
   bandVerdict,
@@ -27,6 +27,11 @@ import {
   twoKindMetrics,
   twoKindResult,
 } from "../fixtures/comparison-result.js";
+import {
+  createMeasurementResult,
+  measuredMetric,
+  twoKindMeasurement,
+} from "../fixtures/measurement-result.js";
 
 /** Character offsets of every occurrence of `glyph` in a rendered table line. */
 function offsetsOf(line: string, glyph: string): number[] {
@@ -3030,6 +3035,241 @@ describe("renderReport", () => {
       await expect(renderReport(twoKindResult())).toMatchFileSnapshot(
         "../fixtures/report-sectioned-color.golden.txt",
       );
+    });
+  });
+});
+
+describe("renderMeasureReport", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("when rendering the run header", () => {
+    it("names the target, the sample count and the adapter", () => {
+      const result = createMeasurementResult({
+        label: "experiment",
+        samples: 10,
+        adapter: "mitata",
+      });
+
+      const output = renderMeasureReport(result);
+
+      expect(output).toContain("gymrat measure · experiment · 10 samples · adapter: mitata");
+    });
+
+    it.each([
+      { samples: 1, expected: "· 1 sample ·" },
+      { samples: 2, expected: "· 2 samples ·" },
+    ])("matches the sample noun to a count of $samples", ({ samples, expected }) => {
+      const output = renderMeasureReport(createMeasurementResult({ samples }));
+
+      expect(output).toContain(expected);
+    });
+  });
+
+  describe("when every metric shares one kind", () => {
+    /** A flat single-kind run of two metrics measured in nanoseconds. */
+    function flatMeasurement(): MeasurementResult {
+      return createMeasurementResult({
+        metrics: {
+          "decode/time": measuredMetric({ median: 100, spread: 1, unit: "ns" }),
+          "encode/time": measuredMetric({ median: 2048, spread: 2, unit: "ns" }),
+        },
+      });
+    }
+
+    it("draws one flat table, headed by the metric column and the target", () => {
+      expect(tableRegion(renderMeasureReport(flatMeasurement()))).toStrictEqual([
+        "gymrat measure · main · 10 samples · adapter: mitata",
+        "metric",
+        "<rule>",
+        "decode/time",
+        "encode/time",
+      ]);
+    });
+
+    it("labels the value column with the target's own label", () => {
+      const headerLine = lineStartingWith(renderMeasureReport(flatMeasurement()), "metric");
+
+      expect(cellsOf(headerLine).map((cell) => cell.trim())).toStrictEqual(["metric", "main"]);
+    });
+
+    it("states each metric's median in its own unit", () => {
+      const rows = tableRows(renderMeasureReport(flatMeasurement())).slice(1);
+
+      expect(rows.map((row) => cellsOf(row).map((cell) => cell.trim()))).toStrictEqual([
+        ["decode/time", "100ns ± 1%"],
+        ["encode/time", "2.0µs ± 2%"],
+      ]);
+    });
+  });
+
+  describe("when rendering a metric row", () => {
+    it.each([
+      { case: "states the spread behind the median", spread: 1, expected: "100ns ± 1%" },
+      { case: "drops the ± when nothing measured a spread", spread: undefined, expected: "100ns" },
+    ])("$case", ({ spread, expected }) => {
+      const result = createMeasurementResult({
+        metrics: { "decode/time": measuredMetric({ median: 100, spread, unit: "ns" }) },
+      });
+
+      const row = lineStartingWith(renderMeasureReport(result), "decode/time");
+
+      expect(cellsOf(row).at(-1)?.trim()).toBe(expected);
+    });
+
+    it("carries no delta, verdict, geomean or highlight anywhere in the report", () => {
+      const output = stripAnsi(renderMeasureReport(twoKindMeasurement()));
+
+      expect.soft(output).not.toContain("geomean");
+      expect.soft(output).not.toContain("highlights");
+      expect.soft(output).not.toContain("vs ");
+      expect(output).not.toMatch(/[✓✗≈~?]/);
+    });
+  });
+
+  describe("when the run spans more than one metric kind", () => {
+    it("gives each kind its own titled section, closed by no aggregate at all", () => {
+      expect(tableRegion(renderMeasureReport(twoKindMeasurement()))).toStrictEqual([
+        "gymrat measure · main · 10 samples · adapter: mitata",
+        "",
+        "<border>",
+        "time",
+        "<rule>",
+        "entity",
+        "alive_check",
+        "spawn",
+        "",
+        "warmup",
+        "",
+        "informational — gating off (config: kinds.memory.gating = false)",
+        "<border>",
+        "memory",
+        "<rule>",
+        "encode",
+      ]);
+    });
+
+    it.each([
+      { placement: "indented under its group, stripped of the group prefix", row: "  alive_check" },
+      { placement: "at the margin under its bare short name", row: "warmup" },
+    ])("names a metric row $placement", ({ row }) => {
+      const line = lineStartingWith(renderMeasureReport(twoKindMeasurement()), row);
+
+      expect(cellsOf(line)[0]?.trimEnd()).toBe(row);
+    });
+
+    it.each([
+      {
+        source: "the kind-level config entry",
+        configKinds: { memory: { gating: false } },
+        expected: "informational — gating off (config: kinds.memory.gating = false)",
+      },
+      {
+        source: "per-metric overrides alone",
+        configKinds: undefined,
+        expected: "informational — gating off",
+      },
+    ])("credits $source for a non-gating kind's informational tag", ({ configKinds, expected }) => {
+      const report = renderMeasureReport(twoKindMeasurement({ configKinds }));
+
+      expect(lineContaining(report, "informational")).toBe(expected);
+    });
+
+    it("lines every section's columns up with the first section's header", () => {
+      const report = renderMeasureReport(twoKindMeasurement());
+      const offsets = separatorOffsets(lineStartingWith(report, "time"));
+
+      expect.soft(separatorOffsets(lineStartingWith(report, "memory"))).toStrictEqual(offsets);
+      expect.soft(separatorOffsets(lineStartingWith(report, "entity "))).toStrictEqual(offsets);
+      expect(separatorOffsets(lineStartingWith(report, "  alive_check"))).toStrictEqual(offsets);
+    });
+
+    it("states every kind's medians in that kind's own unit", () => {
+      const report = renderMeasureReport(twoKindMeasurement());
+
+      expect.soft(cellsOf(lineStartingWith(report, "  spawn")).at(-1)?.trim()).toBe("104ns ± 1%");
+      expect(cellsOf(lineStartingWith(report, "encode")).at(-1)?.trim()).toBe("93B ± 1%");
+    });
+  });
+
+  describe("when reporting worktree cleanup", () => {
+    it("says nothing at all when the run left nothing behind", () => {
+      const output = renderMeasureReport(createMeasurementResult({ worktreesRemoved: 0 }));
+
+      expect(output).not.toContain("worktree");
+    });
+
+    it("closes the report with the left-behind worktrees and the prune failure", () => {
+      const result = createMeasurementResult({
+        worktreesRemoved: 0,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
+        worktreePruneError: "fatal: not a git repository",
+      });
+
+      const lines = renderMeasureReport(result).split("\n");
+
+      expect.soft(lines.at(-3)).toContain("0 worktrees removed · 1 left behind");
+      expect.soft(lines.at(-2)).toBe("  left behind: /tmp/gymrat-abc (is locked)");
+      expect(lines.at(-1)).toBe("  worktree prune failed: fatal: not a git repository");
+    });
+  });
+
+  describe("when rendering with color", () => {
+    beforeEach(() => {
+      vi.stubEnv("FORCE_COLOR", "1");
+    });
+
+    it("names the target in the same style the comparison header gives a variant", () => {
+      const report = renderMeasureReport(twoKindMeasurement());
+
+      expect(stylesAt(lineContaining(report, "gymrat measure"), "main")).toStrictEqual(["1", "4"]);
+    });
+
+    it("emboldens the kind name in the section header and dims the informational tag", () => {
+      const report = renderMeasureReport(twoKindMeasurement());
+      const header = report
+        .split("\n")
+        .find((line) => line.includes("│") && stripAnsi(line).trimStart().startsWith("memory"));
+      if (header === undefined) {
+        throw new Error(`no memory header in report:\n${report}`);
+      }
+
+      expect.soft(stylesAt(header, "memory")).toStrictEqual(["1"]);
+      expect(stylesAt(lineContaining(report, "informational"), "informational")).toStrictEqual([
+        "2",
+      ]);
+    });
+
+    it("leaves every column separator in the default color, whatever style its row carries", () => {
+      const rows = renderMeasureReport(twoKindMeasurement())
+        .split("\n")
+        .filter((line) => line.includes("│"));
+
+      const inherited = rows.filter((row) =>
+        separatorStyles(row).some((styles) => styles.length > 0),
+      );
+
+      expect(inherited).toStrictEqual([]);
+    });
+
+    it("leaves the report unstyled when NO_COLOR is set", () => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      expect(renderMeasureReport(twoKindMeasurement())).not.toContain("\x1b[");
+    });
+
+    it.each([
+      { setting: "off", color: false, styled: false },
+      { setting: "on", color: true, styled: true },
+    ])("overrides the environment when the color option is $setting", ({ color, styled }) => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      const output = renderMeasureReport(twoKindMeasurement(), { color });
+
+      expect(output.includes("\x1b[")).toBe(styled);
     });
   });
 });

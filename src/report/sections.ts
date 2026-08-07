@@ -7,10 +7,22 @@
  * same set of metrics.
  */
 
-import type { ConfigKinds } from "../config.js";
+import type { ConfigKinds, ResolvedMetricMeta } from "../config.js";
 import { inferGroup, type KindAggregate } from "../verdict/aggregate.js";
 import type { GeomeanExclusion, GeomeanResult } from "../verdict/verdict.js";
-import type { CandidateComparison, MetricComparison, MetricComparisons } from "./types.js";
+import type { CandidateComparison } from "./types.js";
+
+/**
+ * All a layout needs of a metric entry: the resolved metadata that decides
+ * where it lands.
+ *
+ * Sectioning reads nothing else, so it is stated over this alone — which is
+ * what lets a comparison and a single-target measurement, whose entries agree
+ * on nothing but their metadata, be drawn in the same sections.
+ */
+export interface SectionedMetric {
+  readonly meta: ResolvedMetricMeta;
+}
 
 /** A group of one section's metrics, or a metric belonging to no group. */
 type SectionBlock<Metric> =
@@ -52,12 +64,12 @@ export function sectionLabel(shortName: string, group: string | undefined): stri
  * a finished label, since what a renderer does with the prefix — strip it,
  * indent under it — is its own business.
  */
-export function planSections<Metric>(
-  metrics: MetricComparisons,
-  measure: (name: string, group: string | undefined, metric: MetricComparison) => Metric,
-): SectionLayout<Metric> {
-  const sections = new Map<string, SectionPlan<Metric>>();
-  const ordered: Metric[] = [];
+export function planSections<Row, Metric extends SectionedMetric>(
+  metrics: Record<string, Metric>,
+  measure: (name: string, group: string | undefined, metric: Metric) => Row,
+): SectionLayout<Row> {
+  const sections = new Map<string, SectionPlan<Row>>();
+  const ordered: Row[] = [];
 
   for (const [name, metric] of Object.entries(metrics)) {
     const { kind, shortName, gating } = metric.meta;
@@ -79,7 +91,7 @@ export function planSections<Metric>(
     }
 
     const opened = section.blocks.find(
-      (block): block is Extract<SectionBlock<Metric>, { type: "group" }> =>
+      (block): block is Extract<SectionBlock<Row>, { type: "group" }> =>
         block.type === "group" && block.group === group,
     );
     if (opened !== undefined) {
@@ -99,7 +111,7 @@ export function planSections<Metric>(
  * parts of a report drawn outside the table — the highlights above all — can ask
  * the question without building rows they have no use for.
  */
-export function spansManyKinds(metrics: MetricComparisons): boolean {
+export function spansManyKinds(metrics: Record<string, SectionedMetric>): boolean {
   const kinds = new Set<string>();
   for (const metric of Object.values(metrics)) {
     kinds.add(metric.meta.kind);
