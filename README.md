@@ -1,12 +1,17 @@
 # gymrat
 
+[![npm version](https://img.shields.io/npm/v/gymrat)](https://www.npmjs.com/package/gymrat)
+[![Continuous integration build status](https://github.com/jeffzi/gymrat/actions/workflows/ci.yml/badge.svg)](https://github.com/jeffzi/gymrat/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/jeffzi/gymrat/blob/main/LICENSE)
+
 Standalone A/B benchmark runner with paired sampling and benchstat-style reports.
 
 `gymrat compare` runs a benchmark command against a baseline revision and one or more candidates,
 cycling samples across them so every target sees the same machine noise, and prints a report that
 tells you, per metric, whether each candidate is a real improvement, a real regression, or noise.
 Verdicts come from a two-sided Wilcoxon signed-rank test once there are enough samples, and from a
-noise band below that. No session state, no config required to start.
+noise band below that. `gymrat measure` runs the same sampling against a single target and reports
+its figures with nothing to compare them to. No session state, no config required to start.
 
 ## Install
 
@@ -57,6 +62,27 @@ gymrat compare main my-branch \
   --prepare "npm ci && npm run build" \
   --adapter mitata \
   --samples 20
+```
+
+### `measure`
+
+```text
+gymrat measure [[label=]<ref|dir>] [options]
+```
+
+The target is optional and defaults to the current directory; when given, it is a git ref or
+directory path resolved the same way as a `compare` target, with the same optional `label=` prefix.
+`measure` accepts the shared options — `--bench`, `--prepare`, `--adapter`, `--samples`,
+`--timeout`, `--config`, `--format`, and `--no-color` — but not `--verbose` or `--fail-on`: there is
+no baseline for `--verbose` to name a verdict method against, and no candidate for `--fail-on` to
+gate.
+
+```sh
+# Measure the current directory
+gymrat measure --bench "npm run bench"
+
+# Measure a git ref, labelled
+gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
 ```
 
 ### Options
@@ -321,6 +347,19 @@ Each candidate's verdict includes `method` (`signed-rank`, `band`, or `exact`), 
 signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a method are `null`.
 A `NaN` delta (zero baseline median, non-zero candidate) serializes as `null`; it is distinguished
 from a missing verdict by the non-null `verdict` field.
+
+`gymrat measure --format json` produces its own document, versioned separately (currently
+`schemaVersion: 1`), since a single-target measurement has no baseline to pair against and no
+candidates to judge:
+
+| Field           | Description                                                                      |
+| --------------- | -------------------------------------------------------------------------------- |
+| `schemaVersion` | Currently `1`; increments on breaking changes, independently of `compare`'s.     |
+| `label`         | The target's label.                                                              |
+| `samples`       | Number of samples.                                                               |
+| `adapter`       | Adapter used (`metric-lines` or `mitata`).                                       |
+| `metrics`       | Per-metric object: `median`, `spreadPct`, `exact` — flat, no `baseline` nesting. |
+| `worktrees`     | Cleanup state: removed count, left-behind paths, prune errors.                   |
 
 ## The `metric-lines` format
 
