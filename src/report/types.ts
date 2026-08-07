@@ -75,6 +75,55 @@ export interface ComparisonResult {
 }
 
 /**
+ * One metric of a single-target run: what it measured, and how steady it was.
+ *
+ * `spread` is the same half-range figure a comparison prints beside a side's
+ * median, and is absent for the same reasons — a lone sample has no run-to-run
+ * jitter to report, and a zero median has no scale to be a percentage of.
+ */
+export interface MetricMeasurement {
+  median?: number;
+  spread?: number;
+  meta: ResolvedMetricMeta;
+}
+
+/** Every metric a measurement produced, keyed by metric name. */
+export type MetricMeasurements = Record<string, MetricMeasurement>;
+
+/**
+ * Everything a single-target run measured — the rendering input contract for a
+ * measurement, as `ComparisonResult` is for a comparison.
+ *
+ * There is nothing to judge against, so no verdicts and no aggregates: a
+ * measurement states what the target reported and how steady it was, and stops
+ * there.
+ */
+export interface MeasurementResult {
+  /** The target's explicit label, or its ref name / directory base name. */
+  label: string;
+
+  samples: number;
+  adapter: string;
+  metrics: MetricMeasurements;
+
+  /**
+   * The `kinds` section of the config the run resolved, when it had one.
+   *
+   * Carried for the same reason `ComparisonResult` carries it: metadata is
+   * resolved per metric, which loses which config line decided a whole section.
+   */
+  configKinds?: ConfigKinds;
+
+  worktreesRemoved: number;
+
+  /** Worktrees cleanup could not remove, each with the reason git gave. */
+  worktreesLeftBehind: readonly WorktreeRemovalFailure[];
+
+  /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
+  worktreePruneError: string | undefined;
+}
+
+/**
  * A parsed `--fail-on` condition: either a `regressed` check or a geomean threshold.
  *
  * Shared by the gate that decides the exit code and the report that echoes which
