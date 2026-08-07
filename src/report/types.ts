@@ -26,6 +26,20 @@ export interface MetricComparison {
 /** Every metric a comparison produced, keyed by metric name. */
 export type MetricComparisons = Record<string, MetricComparison>;
 
+/**
+ * Worktree cleanup outcome shared by every run result — comparison and
+ * measurement runs manage the same worktrees the same way.
+ */
+interface WorktreeCleanupOutcome {
+  worktreesRemoved: number;
+
+  /** Worktrees cleanup could not remove, each with the reason git gave. */
+  worktreesLeftBehind: readonly WorktreeRemovalFailure[];
+
+  /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
+  worktreePruneError: string | undefined;
+}
+
 /** One candidate's run-level results, judged against the shared baseline. */
 export interface CandidateComparison {
   label: string;
@@ -44,7 +58,7 @@ export interface CandidateComparison {
  * once. Read a candidate's verdict as evidence about that candidate alone; the
  * difference between two candidates' deltas is not itself a tested quantity.
  */
-export interface ComparisonResult {
+export interface ComparisonResult extends WorktreeCleanupOutcome {
   /** Label of the target every candidate is judged against. */
   baselineLabel: string;
 
@@ -64,14 +78,6 @@ export interface ComparisonResult {
    * than guess between a kind-level entry and per-metric overrides.
    */
   configKinds?: ConfigKinds;
-
-  worktreesRemoved: number;
-
-  /** Worktrees cleanup could not remove, each with the reason git gave. */
-  worktreesLeftBehind: readonly WorktreeRemovalFailure[];
-
-  /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
-  worktreePruneError: string | undefined;
 }
 
 /**
@@ -98,7 +104,7 @@ export type MetricMeasurements = Record<string, MetricMeasurement>;
  * measurement states what the target reported and how steady it was, and stops
  * there.
  */
-export interface MeasurementResult {
+export interface MeasurementResult extends WorktreeCleanupOutcome {
   /** The target's explicit label, or its ref name / directory base name. */
   label: string;
 
@@ -113,14 +119,6 @@ export interface MeasurementResult {
    * resolved per metric, which loses which config line decided a whole section.
    */
   configKinds?: ConfigKinds;
-
-  worktreesRemoved: number;
-
-  /** Worktrees cleanup could not remove, each with the reason git gave. */
-  worktreesLeftBehind: readonly WorktreeRemovalFailure[];
-
-  /** Reason the `git worktree prune` sweep failed, or `undefined` if it succeeded. */
-  worktreePruneError: string | undefined;
 }
 
 /**

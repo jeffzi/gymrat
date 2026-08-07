@@ -46,8 +46,6 @@ function commitFiles(repo: ScratchRepo, files: Record<string, string>): void {
 }
 
 /**
- * Create an untracked subdirectory of the repo holding its own `bench.sh`.
- *
  * `resolveTarget` sees a plain directory and returns an in-place target, so
  * benching it never creates a worktree.
  */
@@ -57,8 +55,6 @@ function createInPlaceTargetDir(repo: ScratchRepo, name: string, benchScript: st
 }
 
 /**
- * Delete every worktree directory the repo still lists, main repo dir excluded.
- *
  * Keeps a run that stranded a worktree from leaking it into the system temp dir,
  * whatever the assertions did or did not manage to read.
  */

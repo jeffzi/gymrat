@@ -92,7 +92,6 @@ async function runMeasure(overrides: Partial<MeasureOptions> = {}): Promise<Meas
   return withTargetDir(async () => measure(measureOptions(overrides)));
 }
 
-/** Measure `queue.length` samples, one per entry, and return the result. */
 async function measureQueue(
   queue: Record<string, number>[],
   overrides: Partial<MeasureOptions> = {},
