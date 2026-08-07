@@ -7,8 +7,9 @@ import { exec } from "./exec.js";
 import type { ExecResult, ExecTimeoutError } from "./exec.js";
 import { computeHalfRange, computeMedian } from "./math.js";
 import { formatCleanupFailures } from "./report/text.js";
-import { planWorktree, materializeWorktree } from "./targets.js";
-import type { Target, WorktreeInfo } from "./targets.js";
+import { installTerminationCleanup } from "./signals.js";
+import { cleanupWorktrees, planWorktree, materializeWorktree } from "./targets.js";
+import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 
 /** A prepare step about to run for a target with a prepare script. */
 export interface PrepareProgressStep {
@@ -123,7 +124,12 @@ export interface TargetSamples {
   readonly samples: Record<string, number>[];
 }
 
-/** Options governing the sampling loop. */
+/**
+ * The caller-facing subset of run configuration that `collectSamples` reads.
+ *
+ * `onProgress` and `warn` are optional sinks: omitted, progress goes
+ * unreported and the adapter's own default (stderr) takes warnings.
+ */
 export interface SamplingOptions {
   bench: string;
   prepare?: string;
@@ -159,11 +165,7 @@ export async function runCommand(
 
   const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
 
-  if ("kind" in result) {
-    throw new CommandError(context, result);
-  }
-
-  if (result.exitCode !== 0) {
+  if ("kind" in result || result.exitCode !== 0) {
     throw new CommandError(context, result);
   }
 
@@ -229,6 +231,10 @@ export function resolveDir(resolved: Target, repoDir: string, worktrees: Worktre
   return resolved.dir;
 }
 
+/**
+ * The target's display label: the explicit label if one was given, otherwise
+ * the ref name or the directory's base name.
+ */
 export function resolveLabel(explicit: string | undefined, resolved: Target): string {
   if (explicit !== undefined) {
     return explicit;
@@ -314,7 +320,58 @@ export function withCleanupFailures(
     : new GymratError(combinedMessage, hint, { cause: error });
 }
 
-export { resolveTarget } from "./targets.js";
-export type { CleanupResult, WorktreeInfo } from "./targets.js";
-export { cleanupWorktrees } from "./targets.js";
-export { installTerminationCleanup } from "./signals.js";
+/**
+ * Run a target-resolution phase under the worktree/signal discipline `measure()`
+ * and `compare()` both need, then build the caller's result from whatever the
+ * phase produced.
+ *
+ * The result is built after `phase` settles so it states the cleanup that
+ * actually ran, and cleanup runs exactly once per path — a second sweep could
+ * succeed on a worktree the first one recorded as left behind, handing the
+ * caller a report the disk contradicts. When `phase` throws, `buildResult` is
+ * never called and the cleanup outcome rides out on the propagating error
+ * instead.
+ *
+ * A failure raised later, inside `buildResult` itself, is not carried that
+ * way: cleanup has already run by then and its outcome is dropped. That path
+ * is defensive-only today, so it is left uncovered rather than guarded.
+ *
+ * SIGINT and SIGTERM take a third path: the in-flight command is killed,
+ * cleanup is attempted, and the process exits with `128 + signum` without a
+ * result. The handlers are installed before the first worktree exists and
+ * uninstalled once the run settles, either way it settled.
+ */
+export async function runWithWorktrees<M, R>(
+  phase: (repoDir: string, worktrees: WorktreeInfo[], signal: AbortSignal) => Promise<M>,
+  buildResult: (measurement: M, cleanup: CleanupResult) => R,
+): Promise<R> {
+  const repoDir = process.cwd();
+  const worktrees: WorktreeInfo[] = [];
+  const run = new AbortController();
+
+  const uninstallTerminationCleanup = installTerminationCleanup(() => {
+    // Kill first: the bench group is detached, so gymrat's own Ctrl-C never
+    // reaches it and it would outlive the process. SIGKILL delivery is not
+    // awaited — removal may well race a still-dying process — but unlinking a
+    // directory out from under a live cwd is legal on POSIX, so the sweep
+    // succeeds either way.
+    run.abort();
+    cleanupWorktrees(worktrees, repoDir);
+  });
+
+  const runPhase = async (): Promise<R> => {
+    let measurement: M;
+
+    try {
+      measurement = await phase(repoDir, worktrees, run.signal);
+    } catch (error) {
+      const cleanup = cleanupWorktrees(worktrees, repoDir);
+      throw withCleanupFailures(error, cleanup);
+    }
+
+    const cleanup = cleanupWorktrees(worktrees, repoDir);
+    return buildResult(measurement, cleanup);
+  };
+
+  return runPhase().finally(uninstallTerminationCleanup);
+}

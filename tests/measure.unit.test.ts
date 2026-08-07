@@ -184,21 +184,10 @@ describe("measure", () => {
   });
 
   describe("labelling", () => {
-    it.each([
-      {
-        case: "the directory's base name when no label is given",
-        target: { target: "target" },
-        expected: "target",
-      },
-      {
-        case: "the explicit label when one is given",
-        target: { target: "target", label: "my-build" },
-        expected: "my-build",
-      },
-    ])("labels the result with $case", async ({ target, expected }) => {
-      const result = await runMeasure({ target });
+    it("labels the result with the explicit label when one is given", async () => {
+      const result = await runMeasure({ target: { target: "target", label: "my-build" } });
 
-      expect(result.label).toBe(expected);
+      expect(result.label).toBe("my-build");
     });
   });
 

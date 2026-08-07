@@ -11,12 +11,10 @@ import {
   ownValues,
   resolveDir,
   resolveLabel,
-  resolveTarget,
-  withCleanupFailures,
-  cleanupWorktrees,
-  installTerminationCleanup,
+  runWithWorktrees,
 } from "./sampling.js";
-import type { ProgressStep, TargetContext, TargetSpec, WorktreeInfo } from "./sampling.js";
+import type { ProgressStep, TargetContext, TargetSpec } from "./sampling.js";
+import { resolveTarget } from "./targets.js";
 import type { CleanupResult } from "./targets.js";
 
 export { CommandError } from "./sampling.js";
@@ -58,7 +56,6 @@ export interface MeasureOptions {
 interface Measurement {
   label: string;
   samples: Record<string, number>[];
-  metricNames: Set<string>;
   metricMeta: ReturnType<typeof resolveMetricMeta>;
 }
 
@@ -78,12 +75,12 @@ function buildMeasurementResult(
     worktreePruneError: cleanup.pruneError,
   };
 
-  for (const metricName of measurement.metricNames) {
+  for (const [metricName, meta] of Object.entries(measurement.metricMeta)) {
     const stats = computeMetricStats(ownValues(measurement.samples, metricName));
     result.metrics[metricName] = {
       median: stats.median,
       spread: stats.spread,
-      meta: measurement.metricMeta[metricName]!,
+      meta,
     };
   }
 
@@ -98,39 +95,15 @@ function buildMeasurementResult(
  * where it sits), `prepare` runs once, `bench` runs `samples` times, and the
  * adapter turns each run's stdout into metrics.
  *
- * The result is built after the try/catch so it states the cleanup that
- * actually ran, and cleanup is attempted exactly once per path — a second sweep
- * could succeed on a worktree the first one recorded as left behind, handing
- * the user a report the disk contradicts. When the measurement phase fails, no
- * result is returned and the cleanup outcome rides out on the propagating error
- * instead.
- *
- * SIGINT and SIGTERM take a third path: the in-flight command is killed,
- * cleanup is attempted, and the process exits with `128 + signum` without a
- * result.
+ * Worktree cleanup and signal handling are `runWithWorktrees`'s job — see its
+ * doc comment for the ordering and failure-path guarantees.
  *
  * Nothing is written to disk beyond that worktree — recording a run is the
  * caller's business.
  */
 export async function measure(options: MeasureOptions): Promise<MeasurementResult> {
-  const repoDir = process.cwd();
-  const worktrees: WorktreeInfo[] = [];
-  const run = new AbortController();
-
-  const uninstallTerminationCleanup = installTerminationCleanup(() => {
-    // Kill first: the bench group is detached, so gymrat's own Ctrl-C never
-    // reaches it and it would outlive the process. SIGKILL delivery is not
-    // awaited — removal may well race a still-dying process — but unlinking a
-    // directory out from under a live cwd is legal on POSIX, so the sweep
-    // succeeds either way.
-    run.abort();
-    cleanupWorktrees(worktrees, repoDir);
-  });
-
-  const runMeasurement = async (): Promise<MeasurementResult> => {
-    let measurement: Measurement;
-
-    try {
+  return runWithWorktrees(
+    async (repoDir, worktrees, signal) => {
       const adapter = getAdapter(options.adapter);
       const target = resolveTarget(options.target.target, repoDir);
 
@@ -140,9 +113,14 @@ export async function measure(options: MeasureOptions): Promise<MeasurementResul
         label: resolveLabel(options.target.label, target),
       };
 
-      const [collected] = await collectSamples(adapter, [ctx], options, run.signal);
-      const samples = collected!.samples;
+      const [collected] = await collectSamples(adapter, [ctx], options, signal);
 
+      /* v8 ignore if -- defensive check; collectSamples returns one result per target given */
+      if (collected === undefined) {
+        throw new GymratError("collectSamples returned no result for the target");
+      }
+
+      const samples = collected.samples;
       const metricNames = collectMetricNames([samples]);
 
       /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
@@ -150,10 +128,9 @@ export async function measure(options: MeasureOptions): Promise<MeasurementResul
         throw new GymratError("No metrics found in benchmark output");
       }
 
-      measurement = {
+      const measurement: Measurement = {
         label: ctx.label,
         samples,
-        metricNames,
         metricMeta: resolveMetricMeta(
           Array.from(metricNames),
           options.configMetrics,
@@ -161,15 +138,8 @@ export async function measure(options: MeasureOptions): Promise<MeasurementResul
           options.configKinds,
         ),
       };
-    } catch (error) {
-      const cleanup = cleanupWorktrees(worktrees, repoDir);
-      throw withCleanupFailures(error, cleanup);
-    }
-
-    const cleanup = cleanupWorktrees(worktrees, repoDir);
-
-    return buildMeasurementResult(measurement, options, cleanup);
-  };
-
-  return runMeasurement().finally(uninstallTerminationCleanup);
+      return measurement;
+    },
+    (measurement, cleanup) => buildMeasurementResult(measurement, options, cleanup),
+  );
 }

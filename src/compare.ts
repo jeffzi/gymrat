@@ -11,18 +11,10 @@ import {
   ownValues,
   resolveDir,
   resolveLabel,
-  resolveTarget,
-  withCleanupFailures,
-  cleanupWorktrees,
-  installTerminationCleanup,
+  runWithWorktrees,
 } from "./sampling.js";
-import type {
-  ProgressStep,
-  TargetContext,
-  TargetSamples,
-  TargetSpec,
-  WorktreeInfo,
-} from "./sampling.js";
+import type { ProgressStep, TargetContext, TargetSamples, TargetSpec } from "./sampling.js";
+import { resolveTarget } from "./targets.js";
 import type { CleanupResult, Target } from "./targets.js";
 import { computeKindAggregates } from "./verdict/aggregate.js";
 import { computeVerdicts, pairSamples } from "./verdict/verdict.js";
@@ -222,48 +214,15 @@ function measureCandidates(
  * 1. Resolves target directories/refs and creates worktrees as needed
  * 2. Runs the bench round-robin across every target, parsing output with the configured adapter
  * 3. Computes each candidate's verdicts against the shared baseline (signed-rank or band method)
- * 4. Cleans up worktrees on both the success and the failure path
- * 5. Returns the comparison data carrying that cleanup's outcome
  *
  * Rendering is the caller's job — the CLI passes the result to `renderReport`.
  *
- * The result is built after the try/catch so it states the cleanup that actually
- * ran, and cleanup is attempted exactly once per path — a second sweep could
- * succeed on a worktree the first one recorded as left behind, handing the user
- * a report the disk contradicts.
- *
- * When the measurement phase fails, no result is returned and the cleanup
- * outcome rides out on the propagating error instead. A failure raised later,
- * while building the result, is not carried that way: cleanup has already run by
- * then and its outcome is dropped. That path is defensive-only today, so it is
- * left uncovered rather than guarded.
- *
- * SIGINT and SIGTERM take a third path: the in-flight command is killed,
- * cleanup is attempted, and the process exits with `128 + signum` without a
- * result. Nothing is returned, so a worktree cleanup could not remove on this
- * path is left unreported — the exit code is the whole contract. The handlers
- * are installed before the first worktree exists and uninstalled once the run
- * settles, either way it settled.
+ * Worktree cleanup and signal handling are `runWithWorktrees`'s job — see its
+ * doc comment for the ordering and failure-path guarantees.
  */
 export async function compare(options: CompareOptions): Promise<ComparisonResult> {
-  const repoDir = process.cwd();
-  const worktrees: WorktreeInfo[] = [];
-  const run = new AbortController();
-
-  const uninstallTerminationCleanup = installTerminationCleanup(() => {
-    // Kill first: the bench group is detached, so gymrat's own Ctrl-C never
-    // reaches it and it would outlive the process. SIGKILL delivery is not
-    // awaited — removal may well race a still-dying process — but unlinking a
-    // directory out from under a live cwd is legal on POSIX, so the sweep
-    // succeeds either way.
-    run.abort();
-    cleanupWorktrees(worktrees, repoDir);
-  });
-
-  const runComparison = async (): Promise<ComparisonResult> => {
-    let measurement: Measurement;
-
-    try {
+  return runWithWorktrees(
+    async (repoDir, worktrees, signal) => {
       const adapter = getAdapter(options.adapter);
 
       // Every target is resolved before any worktree is materialized, so an
@@ -292,17 +251,19 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
       const baselineContext = toContext(resolvedBaseline, "old");
       const candidateContexts = resolvedCandidates.map((resolved) => toContext(resolved, "new"));
 
-      const allSamples = await collectSamples(
+      const [baseline, ...candidates] = await collectSamples(
         adapter,
         [baselineContext, ...candidateContexts],
         options,
-        run.signal,
+        signal,
       );
 
-      const collected: RunSamples = {
-        baseline: allSamples[0]!,
-        candidates: allSamples.slice(1),
-      };
+      /* v8 ignore if -- defensive check; collectSamples returns one result per target given */
+      if (baseline === undefined) {
+        throw new GymratError("collectSamples returned no result for the baseline target");
+      }
+
+      const collected: RunSamples = { baseline, candidates };
 
       const metricNames = collectMetricNames([
         collected.baseline.samples,
@@ -321,7 +282,7 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         options.configKinds,
       );
 
-      measurement = {
+      const measurement: Measurement = {
         baselineLabel: collected.baseline.ctx.label,
         baselineSamples: collected.baseline.samples,
         candidates: measureCandidates(
@@ -333,15 +294,8 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         metricNames,
         metricMeta,
       };
-    } catch (error) {
-      const cleanup = cleanupWorktrees(worktrees, repoDir);
-      throw withCleanupFailures(error, cleanup);
-    }
-
-    const cleanup = cleanupWorktrees(worktrees, repoDir);
-
-    return buildComparisonResult(measurement, options, cleanup);
-  };
-
-  return runComparison().finally(uninstallTerminationCleanup);
+      return measurement;
+    },
+    (measurement, cleanup) => buildComparisonResult(measurement, options, cleanup),
+  );
 }
