@@ -151,6 +151,16 @@ const HIGHLIGHT_DELTA_WIDTH = 6;
 /** The `·` separator in the report header, dimmed in colored mode. */
 const HEADER_SEPARATOR = "·";
 
+/** Join a run header's parts with the dimmed `·` separator every report header shares. */
+function joinHeaderParts(parts: readonly string[]): string {
+  return parts.join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
+}
+
+/** `count`, followed by `noun` pluralized with a trailing `s` unless `count` is exactly one. */
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 /**
  * Right-align a value in its column, one space clear of the next separator.
  *
@@ -1415,9 +1425,8 @@ function renderWorktreeFooter(result: WorktreeCleanupOutcome): string[] {
   const details = formatCleanupFailures(result.worktreesLeftBehind, result.worktreePruneError);
   if (result.worktreesRemoved === 0 && details.length === 0) return [];
 
-  const noun = result.worktreesRemoved === 1 ? "worktree" : "worktrees";
   return [
-    `${result.worktreesRemoved} ${noun} removed · ${result.worktreesLeftBehind.length} left behind`,
+    `${pluralize(result.worktreesRemoved, "worktree")} removed · ${result.worktreesLeftBehind.length} left behind`,
     ...details,
   ];
 }
@@ -1456,7 +1465,7 @@ function renderCandidate(
 
 /** How many rounds paired, as the header states it. */
 function pairedSamples(samples: number): string {
-  return `${samples} paired sample${samples === 1 ? "" : "s"}`;
+  return pluralize(samples, "paired sample");
 }
 
 /**
@@ -1487,12 +1496,12 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
     // a branch name and in an adapter name, and replacing every one of them in
     // the finished line would splice dim codes into the middle of a name's own
     // style span.
-    const header = [
+    const header = joinHeaderParts([
       formatLabel("gymrat compare", ["bold"]),
       `baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames}`,
       pairedSamples(display.samples),
       `adapter: ${display.adapter}`,
-    ].join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
+    ]);
     const lines = [header];
 
     const conditions = options.failOn ?? [];
@@ -1603,7 +1612,7 @@ function renderMeasureTable(result: MeasurementResult, label: string): string[] 
 
 /** How many rounds the target ran, as the header states it. */
 function measuredSamples(samples: number): string {
-  return `${samples} sample${samples === 1 ? "" : "s"}`;
+  return pluralize(samples, "sample");
 }
 
 /**
@@ -1625,12 +1634,12 @@ export function renderMeasureReport(
 ): string {
   return withColor(options.color, () => {
     const label = truncateLabels([result.label])[0] ?? result.label;
-    const header = [
+    const header = joinHeaderParts([
       formatLabel("gymrat measure", ["bold"]),
       formatVariantName(label),
       measuredSamples(result.samples),
       `adapter: ${result.adapter}`,
-    ].join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
+    ]);
 
     const lines = [header, ...renderMeasureTable(result, label)];
 

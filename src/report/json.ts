@@ -1,3 +1,4 @@
+import type { ResolvedMetricMeta } from "../config.js";
 import { metricRecord } from "../metric-record.js";
 import { inferGroup } from "../verdict/aggregate.js";
 import type { GeomeanResult } from "../verdict/verdict.js";
@@ -24,7 +25,8 @@ interface JsonCandidateMetric {
   band: number | null;
 }
 
-interface JsonMetric {
+/** The metadata fields every serialized metric carries, whatever else it states. */
+interface JsonMetricMeta {
   unit: string | null;
   direction: "lower" | "higher";
   gating: boolean;
@@ -32,6 +34,9 @@ interface JsonMetric {
   kind: string;
   /** The group its short name puts it in, `null` when the name names none. */
   group: string | null;
+}
+
+interface JsonMetric extends JsonMetricMeta {
   baseline: {
     median: number | null;
     spreadPct: number | null;
@@ -85,17 +90,11 @@ interface JsonWorktrees {
  * Flat where {@link JsonMetric} nests a `baseline` object, because there is only
  * one side to report — a measurement states a figure rather than a pairing.
  */
-interface JsonMeasurementMetric {
+interface JsonMeasurementMetric extends JsonMetricMeta {
   median: number | null;
   spreadPct: number | null;
-  unit: string | null;
-  direction: "lower" | "higher";
-  gating: boolean;
   /** Whether the metric is counted rather than timed, and so compares exactly. */
   exact: boolean;
-  kind: string;
-  /** The group its short name puts it in, `null` when the name names none. */
-  group: string | null;
 }
 
 /**
@@ -162,6 +161,17 @@ function serializeCandidateMetric(candidate: CandidateMetric, label: string): Js
   };
 }
 
+/** The `unit`, `direction`, `gating`, `kind` and `group` fields every serialized metric shares. */
+function serializeMeta(meta: ResolvedMetricMeta): JsonMetricMeta {
+  return {
+    unit: meta.unit ?? null,
+    direction: meta.direction,
+    gating: meta.gating,
+    kind: meta.kind,
+    group: inferGroup(meta.shortName) ?? null,
+  };
+}
+
 function serializeMetrics(
   metrics: MetricComparisons,
   candidateLabels: string[],
@@ -169,11 +179,7 @@ function serializeMetrics(
   const result = metricRecord<JsonMetric>();
   for (const [name, metric] of Object.entries(metrics)) {
     result[name] = {
-      unit: metric.meta.unit ?? null,
-      direction: metric.meta.direction,
-      gating: metric.meta.gating,
-      kind: metric.meta.kind,
-      group: inferGroup(metric.meta.shortName) ?? null,
+      ...serializeMeta(metric.meta),
       baseline: {
         median: metric.baselineMedian ?? null,
         spreadPct: metric.baselineSpread ?? null,
@@ -222,19 +228,14 @@ function serializeWorktrees(result: WorktreeCleanupOutcome): JsonWorktrees {
   };
 }
 
-/** Every metric a measurement produced, each flattened into its own entry. */
 function serializeMeasurements(metrics: MetricMeasurements): Record<string, JsonMeasurementMetric> {
   const result = metricRecord<JsonMeasurementMetric>();
   for (const [name, metric] of Object.entries(metrics)) {
     result[name] = {
       median: metric.median ?? null,
       spreadPct: metric.spread ?? null,
-      unit: metric.meta.unit ?? null,
-      direction: metric.meta.direction,
-      gating: metric.meta.gating,
+      ...serializeMeta(metric.meta),
       exact: metric.meta.exact,
-      kind: metric.meta.kind,
-      group: inferGroup(metric.meta.shortName) ?? null,
     };
   }
   return result;
