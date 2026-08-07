@@ -7,37 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-07
+
 ### Added
 
 - ETA countdown displayed between samples during comparison runs, with interpolation between updates.
-- `identical` display class (`=`) in the text report for metrics whose samples all tied, splitting
-  them out from `within noise`. Presentation only — the JSON report, `--fail-on`, and geomean gating
-  still see these as `no signal`.
+- `identical` display class (`=`) for metrics whose samples all tied, split out from `within noise`.
+  Presentation only — JSON, `--fail-on`, and geomean gating still see `no signal`.
 - A `Hint:` line, printed regardless of `--verbose`, when a metric fell back to the noise-band
   method for want of samples and more samples would buy a statistical verdict.
-- `inconclusive` display class (`?`) for metrics resting on too few paired samples for the noise
-  band to carry signal. These metrics print no `±` band, fold with the quiet rows, and tally in
-  their own summary bucket instead of inflating `within noise`. Presentation only — the JSON report,
-  `--fail-on`, and geomean gating still see `no signal`.
-- Geomean and sub-geomean rows in the single-candidate text table print their propagated noise band
-  (`±N.N%`) after the delta, so the reader sees the threshold the figure was judged against.
+- `inconclusive` display class (`?`) for metrics with too few paired samples for the noise band to
+  carry signal. Presentation only — JSON, `--fail-on`, and geomean gating still see `no signal`.
+- Geomean and sub-geomean rows print their propagated noise band (`±N.N%`) after the delta.
 - Header reads `1 paired sample` (singular) for single-sample runs.
-- Byte-metric noise floor: for metrics measured in whole bytes, the reported noise percentage never
-  falls below one byte relative to each median, preventing a one-byte quantization flip from
-  producing a double-digit verdict.
+- Byte-metric noise floor: the reported noise percentage never falls below one byte relative to each
+  median, preventing a one-byte quantization flip from producing a spurious verdict.
 - Per-kind metric sections: when a run produces metrics of more than one kind (e.g. `time` and
-  `memory` from `mitata`), reports render a section per kind with its own geomean and group
-  sub-geomeans for dotted metric names. Single-kind runs keep the flat layout unchanged.
+  `memory`), reports render a section per kind with its own geomean and group sub-geomeans.
 - `kinds` config key for per-kind gating: `"kinds": { "memory": { "gating": false } }` switches an
   entire kind to informational — its metrics stay in the report but leave the geomean and the
   `--fail-on` gate. Per-metric `gating` overrides still win over the kind-level setting.
 
 ### Changed
 
-- Text report redesign: sub-field column alignment, label truncation with emphasized target names,
-  reshaped headers, a dimmed echo row under the geomean, spread capped at 100% with a futility note
-  for unstable metrics, compact `(N/M)` geomean provenance, and bold-only geomean rows when every
-  constituent metric is within noise.
+- Text report redesign: column alignment, label truncation with emphasized target names, spread
+  capped at 100%, and compact geomean provenance.
 - Legend removed from the default report; the new `--verbose` flag names the statistical method
   behind each verdict in the report footer.
 - **Breaking:** JSON schema bumped to `schemaVersion: 2`. `perCandidate[].geomean` is replaced by
@@ -46,10 +40,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** `--fail-on geomean:<pct>` now evaluates per gating kind rather than on a blended
   cross-kind geomean. A non-gating kind can never trip the gate regardless of its value.
 - Group sub-headers in the text report render blue; geomean labels render bold.
-- Multi-kind highlights prefix each metric with its kind (`✗ time · encode  +2.2%`); single-kind
-  runs are unchanged.
-- When `--fail-on geomean:<pct>` would trip, highlights echo the tripped gate per kind
-  (`⚑ time geomean +3.1% exceeded --fail-on geomean:2`), so the reader sees why the run exits 1.
+- Multi-kind reports prefix highlights with their kind and echo tripped `--fail-on` gates per kind.
 
 ### Fixed
 
@@ -60,7 +51,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   produces) was read as `0` and entered the median as a real measurement; it is now skipped with a
   warning.
 - Delta and noise percentages were computed incorrectly for metrics whose median was negative or
-  zero, producing wrong verdicts for those metrics.
+  zero, and a zero delta was not always classified as no-signal, producing wrong verdicts.
 - Band method returned a false signal from a single paired sample, and a single observation reported
   `± 0%` spread rather than no spread at all.
 - Metric names taken from bench output are no longer looked up against `Object.prototype`, so a
@@ -80,10 +71,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A `SIGHUP` (closed terminal or dropped SSH session) left temporary worktrees behind; they are
   now swept, and the run exits `129` to match the `SIGINT` and `SIGTERM` handling.
 - JSON report nulled a candidate's measured values when the metric had no verdict.
-- Report rendering: values just below a unit threshold printed in the wrong unit (999.5 bytes as
-  `1000B`), pipes and backticks in metric names and labels broke markdown tables and code spans,
-  highlighting landed on the wrong occurrence of a repeated name, and target names carried spurious
-  quotes in plain text.
+- Report rendering: unit-threshold rounding, special characters in metric names breaking table
+  layout, highlighting on wrong occurrence, and spurious quotes in target names.
+- Near-miss `METRIC` prefix typos (e.g. `METRICS`, `Metric`) and lines missing the required space
+  after the prefix were silently ignored; they now produce a warning.
+- Annotated git tags failed to resolve because gymrat did not peel tag objects to the underlying
+  commit.
+- Progress lines wider than the terminal wrapped and garbled the display; they are now truncated to
+  fit.
+- Displayed medians could disagree with paired-sample deltas when unpaired observations existed.
+- Spread was displayed for zero-median metrics where the percentage is meaningless.
 - Error hints took their color from stdout although hints print to stderr.
 
 ### Removed
@@ -110,5 +107,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `--prepare` per-target setup, `--samples`, `--timeout`, and repeatable `--fail-on` conditions for
   failing CI on regressions.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jeffzi/gymrat/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jeffzi/gymrat/releases/tag/v0.1.0
