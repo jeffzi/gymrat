@@ -1,118 +1,34 @@
-import path from "node:path";
-
-import { getAdapter, AdapterError } from "./adapters/index.js";
-import type { Adapter, WarnSink } from "./adapters/types.js";
+import { getAdapter } from "./adapters/index.js";
+import type { WarnSink } from "./adapters/types.js";
 import { resolveMetricMeta, type ConfigKinds, type ConfigMetrics } from "./config.js";
-import { GymratError, messageOf } from "./errors.js";
-import { exec } from "./exec.js";
-import type { ExecResult, ExecTimeoutError } from "./exec.js";
-import { computeHalfRange, computeMedian } from "./math.js";
+import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
-import { formatCleanupFailures } from "./report/text.js";
 import type { ComparisonResult, MetricComparison } from "./report/types.js";
-import { installTerminationCleanup } from "./signals.js";
-import { resolveTarget, planWorktree, materializeWorktree, cleanupWorktrees } from "./targets.js";
-import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
+import {
+  collectMetricNames,
+  collectSamples,
+  computeMetricStats,
+  ownValues,
+  resolveDir,
+  resolveLabel,
+  resolveTarget,
+  withCleanupFailures,
+  cleanupWorktrees,
+  installTerminationCleanup,
+} from "./sampling.js";
+import type {
+  ProgressStep,
+  TargetContext,
+  TargetSamples,
+  TargetSpec,
+  WorktreeInfo,
+} from "./sampling.js";
+import type { CleanupResult, Target } from "./targets.js";
 import { computeKindAggregates } from "./verdict/aggregate.js";
 import { computeVerdicts, pairSamples } from "./verdict/verdict.js";
 
-/** A prepare step about to run for a target with a prepare script. */
-export interface PrepareProgressStep {
-  kind: "prepare";
-  label: string;
-}
-
-/** A bench/sample step about to run — 1-based index within the total sample count. */
-export interface SampleProgressStep {
-  kind: "sample";
-  index: number;
-  total: number;
-  label: string;
-}
-
-/** Structured step info emitted at the start of each prepare or sample step. */
-export type ProgressStep = PrepareProgressStep | SampleProgressStep;
-
-/** Fields that identify which command failed and where, for structured error reporting. */
-export interface CommandErrorContext {
-  phase: "prepare" | "bench";
-  position: "old" | "new";
-  label: string;
-  command: string;
-  target: Target;
-  dir: string;
-  sample?: number;
-}
-
-function formatCommandError(
-  context: CommandErrorContext,
-  failure: ExecResult | ExecTimeoutError,
-): string {
-  const isTimeout = "kind" in failure;
-  const verb = isTimeout ? "timed out" : "failed";
-
-  const samplePart = context.sample !== undefined ? `, sample ${context.sample}` : "";
-  const header = `${context.phase} command ${verb} (${context.position}, "${context.label}"${samplePart})`;
-
-  const lines: string[] = [header];
-
-  if (context.target.kind === "ref") {
-    lines.push(`  ref:       ${context.target.ref}`);
-    lines.push(`  worktree:  ${context.dir}`);
-  } else {
-    lines.push(`  dir:       ${context.dir}`);
-  }
-
-  lines.push(`  command:   ${context.command}`);
-
-  if ("kind" in failure) {
-    lines.push(`  timeout:   ${failure.timeoutMs}ms`);
-  } else {
-    lines.push(`  exit code: ${failure.exitCode}`);
-  }
-
-  const hasStderr = failure.stderr.length > 0;
-  const hasStdout = failure.stdout.length > 0;
-
-  if (hasStderr && hasStdout) {
-    lines.push("--- stderr ---", failure.stderr, "--- stdout ---", failure.stdout);
-  } else if (hasStderr) {
-    lines.push(failure.stderr);
-  } else if (hasStdout) {
-    lines.push(failure.stdout);
-  }
-
-  return lines.join("\n");
-}
-
-/**
- * Structured error for a command that failed during a benchmark or prepare phase.
- *
- * Carries the full context — phase, position, target, exit/timeout details — both
- * in the formatted message and as typed fields for programmatic access. Ref-target
- * failures append a hint about the ref possibly lacking the files the command needs.
- */
-export class CommandError extends GymratError {
-  constructor(context: CommandErrorContext, failure: ExecResult | ExecTimeoutError) {
-    const hint =
-      context.target.kind === "ref"
-        ? "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent"
-        : undefined;
-    super(formatCommandError(context, failure), hint);
-  }
-}
-
-/**
- * One target of a comparison run.
- *
- * `target` is either a git ref (resolved to a throwaway worktree) or a
- * filesystem directory path (benched in place).
- */
-export interface TargetSpec {
-  target: string;
-  /** Display label; defaults to the ref name or the directory's base name. */
-  label?: string;
-}
+export { CommandError } from "./sampling.js";
+export type { CommandErrorContext, ProgressStep, TargetSpec } from "./sampling.js";
 
 /**
  * Caller-facing configuration for a single comparison run.
@@ -149,173 +65,10 @@ export interface CompareOptions {
   warn?: WarnSink;
 }
 
-/**
- * Half the observed range as a percentage of the median — the run-to-run jitter a
- * verdict's noise band is judged against.
- *
- * Half-range rather than full range so the figure reads as "± this much" either
- * side of the median, which is how the report prints it. A zero median has no
- * scale to be a percentage of, so it contributes no spread at all.
- *
- * A single observation has no run-to-run jitter to report: its range is zero
- * only because nothing was ever compared against it, and `± 0%` would state
- * that as a measured result. Such a side has no spread at all.
- */
-function computeSpread(values: readonly number[], median: number): number | undefined {
-  if (values.length < 2) {
-    return undefined;
-  }
-
-  if (median === 0) {
-    return undefined;
-  }
-
-  return (computeHalfRange(values) / Math.abs(median)) * 100;
-}
-
-interface TargetContext {
-  target: Target;
-  dir: string;
-  label: string;
-  position: "old" | "new";
-}
-
-/** One target's measurements, kept beside the target that produced them. */
-interface TargetSamples {
-  readonly ctx: TargetContext;
-  readonly samples: Record<string, number>[];
-}
-
 /** Everything a run measured, in the shape the comparison reads it: one baseline, N candidates. */
 interface RunSamples {
   readonly baseline: TargetSamples;
   readonly candidates: readonly TargetSamples[];
-}
-
-/**
- * Run a shell command and throw on timeout or non-zero exit.
- *
- * Aborting `signal` kills the command's whole process group; bench commands are
- * spawned detached, so a Ctrl-C delivered to gymrat never reaches them by itself.
- */
-async function runCommand(
-  phase: "prepare" | "bench",
-  ctx: TargetContext,
-  command: string,
-  timeoutMs: number,
-  signal: AbortSignal,
-  sample?: number,
-): Promise<string> {
-  const context: CommandErrorContext = {
-    phase,
-    position: ctx.position,
-    label: ctx.label,
-    command,
-    target: ctx.target,
-    dir: ctx.dir,
-    sample,
-  };
-
-  const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
-
-  if ("kind" in result) {
-    throw new CommandError(context, result);
-  }
-
-  if (result.exitCode !== 0) {
-    throw new CommandError(context, result);
-  }
-
-  return result.stdout;
-}
-
-/**
- * Collect paired samples round-robin across the targets, baseline first.
- *
- * Each round runs the bench once per target, baseline first, before the next
- * round starts, so a round is a block of measurements taken close together in
- * time — that adjacency is what lets the machine's drift cancel out of the
- * pairwise comparisons. `prepare` runs once per target, up front.
- *
- * Baseline and candidates stay apart in the return value rather than arriving as
- * one list the caller has to split at position 0: the comparison only ever reads
- * them in those roles.
- */
-async function collectSamples(
-  adapter: Adapter,
-  baseline: TargetContext,
-  candidates: readonly TargetContext[],
-  options: Pick<
-    CompareOptions,
-    "bench" | "prepare" | "samples" | "timeoutSeconds" | "onProgress" | "warn"
-  >,
-  signal: AbortSignal,
-): Promise<RunSamples> {
-  const timeoutMs = options.timeoutSeconds * 1000;
-  const baselineSamples: TargetSamples = { ctx: baseline, samples: [] };
-  const candidateSamples: TargetSamples[] = candidates.map((ctx) => ({ ctx, samples: [] }));
-  const collected = [baselineSamples, ...candidateSamples];
-
-  if (options.prepare) {
-    for (const { ctx } of collected) {
-      options.onProgress?.({ kind: "prepare", label: ctx.label });
-      await runCommand("prepare", ctx, options.prepare, timeoutMs, signal);
-    }
-  }
-
-  for (let round = 0; round < options.samples; round++) {
-    for (const { ctx, samples } of collected) {
-      options.onProgress?.({
-        kind: "sample",
-        index: round + 1,
-        total: options.samples,
-        label: ctx.label,
-      });
-      const stdout = await runCommand("bench", ctx, options.bench, timeoutMs, signal, round + 1);
-      samples.push(adapter.parse(stdout, options.warn));
-    }
-  }
-
-  return { baseline: baselineSamples, candidates: candidateSamples };
-}
-
-/**
- * Resolve the working directory for a target, creating a worktree for ref targets.
- *
- * The worktree is registered before `git worktree add` runs, not after: git can
- * be killed once the directory is on disk but before the command returns, and
- * every cleanup path — the failure path and the termination handler alike —
- * sweeps only what `worktrees` already names.
- */
-function resolveDir(resolved: Target, repoDir: string, worktrees: WorktreeInfo[]): string {
-  if (resolved.kind === "ref") {
-    const worktree = planWorktree(resolved);
-    worktrees.push(worktree);
-    materializeWorktree(worktree, repoDir);
-    return worktree.dir;
-  }
-  return resolved.dir;
-}
-
-function resolveLabel(explicit: string | undefined, resolved: Target): string {
-  if (explicit !== undefined) {
-    return explicit;
-  }
-  return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
-}
-
-/** A side's median and spread over the given values, or both undefined when there are none. */
-function computeMetricStats(values: readonly number[]): { median?: number; spread?: number } {
-  if (values.length === 0) {
-    return {};
-  }
-  const median = computeMedian(values);
-  return { median, spread: computeSpread(values, median) };
-}
-
-/** Every value a side reported for a metric, regardless of what the other side has. */
-function ownValues(samples: readonly Record<string, number>[], metricName: string): number[] {
-  return samples.map((sample) => sample[metricName]).filter((v) => v !== undefined);
 }
 
 /**
@@ -412,11 +165,6 @@ function buildComparisonResult(
   return result;
 }
 
-/** Every metric name any target reported, so a one-sided metric still gets a row. */
-function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
-  return new Set(sampleSets.flat().flatMap(Object.keys));
-}
-
 /**
  * Everything the measurement phase produces that the report is built from.
  *
@@ -465,32 +213,6 @@ function measureCandidates(
       kinds: computeKindAggregates(verdicts, metricMeta),
     };
   });
-}
-
-/**
- * Restate a failed run's error so it also names what cleanup left on disk.
- *
- * `cleanupWorktrees` reports rather than throws, so on the failure path the
- * original exception would otherwise carry the run's error and nothing else —
- * the caller prints that, and the user never learns which directories survived.
- * When cleanup was clean there is nothing to add and the original error is
- * returned untouched. The original always becomes the `cause`, keeping its
- * stack reachable.
- */
-function withCleanupFailures(error: unknown, cleanup: CleanupResult): unknown {
-  const details = formatCleanupFailures(cleanup.failures, cleanup.pruneError);
-
-  if (details.length === 0) {
-    return error;
-  }
-
-  const combinedMessage = [messageOf(error), "", "cleanup did not finish:", ...details].join("\n");
-
-  const hint = error instanceof GymratError ? error.hint : undefined;
-
-  return error instanceof AdapterError
-    ? new AdapterError(combinedMessage, undefined, { cause: error })
-    : new GymratError(combinedMessage, hint, { cause: error });
 }
 
 /**
@@ -557,7 +279,7 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
 
       const toContext = (
         { spec, target }: { spec: TargetSpec; target: Target },
-        position: TargetContext["position"],
+        position: "old" | "new",
       ): TargetContext => ({
         target,
         dir: resolveDir(target, repoDir, worktrees),
@@ -570,13 +292,17 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
       const baselineContext = toContext(resolvedBaseline, "old");
       const candidateContexts = resolvedCandidates.map((resolved) => toContext(resolved, "new"));
 
-      const collected = await collectSamples(
+      const allSamples = await collectSamples(
         adapter,
-        baselineContext,
-        candidateContexts,
+        [baselineContext, ...candidateContexts],
         options,
         run.signal,
       );
+
+      const collected: RunSamples = {
+        baseline: allSamples[0]!,
+        candidates: allSamples.slice(1),
+      };
 
       const metricNames = collectMetricNames([
         collected.baseline.samples,

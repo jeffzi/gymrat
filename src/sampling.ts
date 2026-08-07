@@ -1,0 +1,320 @@
+import path from "node:path";
+
+import { AdapterError } from "./adapters/index.js";
+import type { Adapter, WarnSink } from "./adapters/types.js";
+import { GymratError, messageOf } from "./errors.js";
+import { exec } from "./exec.js";
+import type { ExecResult, ExecTimeoutError } from "./exec.js";
+import { computeHalfRange, computeMedian } from "./math.js";
+import { formatCleanupFailures } from "./report/text.js";
+import { planWorktree, materializeWorktree } from "./targets.js";
+import type { Target, WorktreeInfo } from "./targets.js";
+
+/** A prepare step about to run for a target with a prepare script. */
+export interface PrepareProgressStep {
+  kind: "prepare";
+  label: string;
+}
+
+/** A bench/sample step about to run — 1-based index within the total sample count. */
+export interface SampleProgressStep {
+  kind: "sample";
+  index: number;
+  total: number;
+  label: string;
+}
+
+/** Structured step info emitted at the start of each prepare or sample step. */
+export type ProgressStep = PrepareProgressStep | SampleProgressStep;
+
+/** Fields that identify which command failed and where, for structured error reporting. */
+export interface CommandErrorContext {
+  phase: "prepare" | "bench";
+  position?: "old" | "new";
+  label: string;
+  command: string;
+  target: Target;
+  dir: string;
+  sample?: number;
+}
+
+function formatCommandError(
+  context: CommandErrorContext,
+  failure: ExecResult | ExecTimeoutError,
+): string {
+  const isTimeout = "kind" in failure;
+  const verb = isTimeout ? "timed out" : "failed";
+
+  const positionPart = context.position !== undefined ? `${context.position}, ` : "";
+  const samplePart = context.sample !== undefined ? `, sample ${context.sample}` : "";
+  const header = `${context.phase} command ${verb} (${positionPart}"${context.label}"${samplePart})`;
+
+  const lines: string[] = [header];
+
+  if (context.target.kind === "ref") {
+    lines.push(`  ref:       ${context.target.ref}`);
+    lines.push(`  worktree:  ${context.dir}`);
+  } else {
+    lines.push(`  dir:       ${context.dir}`);
+  }
+
+  lines.push(`  command:   ${context.command}`);
+
+  if ("kind" in failure) {
+    lines.push(`  timeout:   ${failure.timeoutMs}ms`);
+  } else {
+    lines.push(`  exit code: ${failure.exitCode}`);
+  }
+
+  const hasStderr = failure.stderr.length > 0;
+  const hasStdout = failure.stdout.length > 0;
+
+  if (hasStderr && hasStdout) {
+    lines.push("--- stderr ---", failure.stderr, "--- stdout ---", failure.stdout);
+  } else if (hasStderr) {
+    lines.push(failure.stderr);
+  } else if (hasStdout) {
+    lines.push(failure.stdout);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Structured error for a command that failed during a benchmark or prepare phase.
+ *
+ * Carries the full context — phase, position, target, exit/timeout details — both
+ * in the formatted message and as typed fields for programmatic access. Ref-target
+ * failures append a hint about the ref possibly lacking the files the command needs.
+ */
+export class CommandError extends GymratError {
+  constructor(context: CommandErrorContext, failure: ExecResult | ExecTimeoutError) {
+    const hint =
+      context.target.kind === "ref"
+        ? "the worktree only contains files tracked at this ref; untracked, gitignored, or not-yet-committed files are absent"
+        : undefined;
+    super(formatCommandError(context, failure), hint);
+  }
+}
+
+/**
+ * One target of a comparison or measurement run.
+ *
+ * `target` is either a git ref (resolved to a throwaway worktree) or a
+ * filesystem directory path (benched in place).
+ */
+export interface TargetSpec {
+  target: string;
+  /** Display label; defaults to the ref name or the directory's base name. */
+  label?: string;
+}
+
+/** A target resolved to its working directory, label, and optional role marker. */
+export interface TargetContext {
+  target: Target;
+  dir: string;
+  label: string;
+  position?: "old" | "new";
+}
+
+/** One target's measurements, kept beside the target that produced them. */
+export interface TargetSamples {
+  readonly ctx: TargetContext;
+  readonly samples: Record<string, number>[];
+}
+
+/** Options governing the sampling loop. */
+export interface SamplingOptions {
+  bench: string;
+  prepare?: string;
+  samples: number;
+  timeoutSeconds: number;
+  onProgress?: (step: ProgressStep) => void;
+  warn?: WarnSink;
+}
+
+/**
+ * Run a shell command and throw on timeout or non-zero exit.
+ *
+ * Aborting `signal` kills the command's whole process group; bench commands are
+ * spawned detached, so a Ctrl-C delivered to gymrat never reaches them by itself.
+ */
+export async function runCommand(
+  phase: "prepare" | "bench",
+  ctx: TargetContext,
+  command: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+  sample?: number,
+): Promise<string> {
+  const context: CommandErrorContext = {
+    phase,
+    position: ctx.position,
+    label: ctx.label,
+    command,
+    target: ctx.target,
+    dir: ctx.dir,
+    sample,
+  };
+
+  const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
+
+  if ("kind" in result) {
+    throw new CommandError(context, result);
+  }
+
+  if (result.exitCode !== 0) {
+    throw new CommandError(context, result);
+  }
+
+  return result.stdout;
+}
+
+/**
+ * Collect samples round-robin across the targets in the order given.
+ *
+ * Each round runs the bench once per target, in the given order, before the next
+ * round starts. `prepare` runs once per target, up front.
+ *
+ * The caller decides the ordering and assigns roles — the sampling core treats
+ * every target identically.
+ */
+export async function collectSamples(
+  adapter: Adapter,
+  targets: readonly TargetContext[],
+  options: SamplingOptions,
+  signal: AbortSignal,
+): Promise<TargetSamples[]> {
+  const timeoutMs = options.timeoutSeconds * 1000;
+  const collected: TargetSamples[] = targets.map((ctx) => ({ ctx, samples: [] }));
+
+  if (options.prepare) {
+    for (const { ctx } of collected) {
+      options.onProgress?.({ kind: "prepare", label: ctx.label });
+      await runCommand("prepare", ctx, options.prepare, timeoutMs, signal);
+    }
+  }
+
+  for (let round = 0; round < options.samples; round++) {
+    for (const { ctx, samples } of collected) {
+      options.onProgress?.({
+        kind: "sample",
+        index: round + 1,
+        total: options.samples,
+        label: ctx.label,
+      });
+      const stdout = await runCommand("bench", ctx, options.bench, timeoutMs, signal, round + 1);
+      samples.push(adapter.parse(stdout, options.warn));
+    }
+  }
+
+  return collected;
+}
+
+/**
+ * Resolve the working directory for a target, creating a worktree for ref targets.
+ *
+ * The worktree is registered before `git worktree add` runs, not after: git can
+ * be killed once the directory is on disk but before the command returns, and
+ * every cleanup path — the failure path and the termination handler alike —
+ * sweeps only what `worktrees` already names.
+ */
+export function resolveDir(resolved: Target, repoDir: string, worktrees: WorktreeInfo[]): string {
+  if (resolved.kind === "ref") {
+    const worktree = planWorktree(resolved);
+    worktrees.push(worktree);
+    materializeWorktree(worktree, repoDir);
+    return worktree.dir;
+  }
+  return resolved.dir;
+}
+
+export function resolveLabel(explicit: string | undefined, resolved: Target): string {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
+}
+
+/**
+ * Half the observed range as a percentage of the median — the run-to-run jitter a
+ * verdict's noise band is judged against.
+ *
+ * Half-range rather than full range so the figure reads as "± this much" either
+ * side of the median, which is how the report prints it. A zero median has no
+ * scale to be a percentage of, so it contributes no spread at all.
+ *
+ * A single observation has no run-to-run jitter to report: its range is zero
+ * only because nothing was ever compared against it, and `± 0%` would state
+ * that as a measured result. Such a side has no spread at all.
+ */
+export function computeSpread(values: readonly number[], median: number): number | undefined {
+  if (values.length < 2) {
+    return undefined;
+  }
+
+  if (median === 0) {
+    return undefined;
+  }
+
+  return (computeHalfRange(values) / Math.abs(median)) * 100;
+}
+
+/** A side's median and spread over the given values, or both undefined when there are none. */
+export function computeMetricStats(values: readonly number[]): {
+  median?: number;
+  spread?: number;
+} {
+  if (values.length === 0) {
+    return {};
+  }
+  const median = computeMedian(values);
+  return { median, spread: computeSpread(values, median) };
+}
+
+/** Every value a side reported for a metric, regardless of what the other side has. */
+export function ownValues(
+  samples: readonly Record<string, number>[],
+  metricName: string,
+): number[] {
+  return samples.map((sample) => sample[metricName]).filter((v) => v !== undefined);
+}
+
+/** Every metric name any target reported, so a one-sided metric still gets a row. */
+export function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
+  return new Set(sampleSets.flat().flatMap(Object.keys));
+}
+
+/**
+ * Restate a failed run's error so it also names what cleanup left on disk.
+ *
+ * `cleanupWorktrees` reports rather than throws, so on the failure path the
+ * original exception would otherwise carry the run's error and nothing else —
+ * the caller prints that, and the user never learns which directories survived.
+ * When cleanup was clean there is nothing to add and the original error is
+ * returned untouched. The original always becomes the `cause`, keeping its
+ * stack reachable.
+ */
+export function withCleanupFailures(
+  error: unknown,
+  cleanup: { failures: readonly { dir: string; error: string }[]; pruneError: string | undefined },
+): unknown {
+  const details = formatCleanupFailures(cleanup.failures, cleanup.pruneError);
+
+  if (details.length === 0) {
+    return error;
+  }
+
+  const combinedMessage = [messageOf(error), "", "cleanup did not finish:", ...details].join("\n");
+
+  const hint = error instanceof GymratError ? error.hint : undefined;
+
+  return error instanceof AdapterError
+    ? new AdapterError(combinedMessage, undefined, { cause: error })
+    : new GymratError(combinedMessage, hint, { cause: error });
+}
+
+export { resolveTarget } from "./targets.js";
+export type { CleanupResult, WorktreeInfo } from "./targets.js";
+export { cleanupWorktrees } from "./targets.js";
+export { installTerminationCleanup } from "./signals.js";
