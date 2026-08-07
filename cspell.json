@@ -23,8 +23,10 @@
     "Pctᵢ",
     "sublabel",
     "taskkill",
+    "tsgolint",
     "sublabels",
     "typebox",
+    "typelint",
     "unjudgeable",
     "unpadded",
     "unstub",
@@ -32,7 +34,8 @@
     "Wilcoxon",
     "worktree",
     "worktrees",
-    "yocto"
+    "yocto",
+    "zizmor"
   ],
   "ignorePaths": [
     ".planning",
