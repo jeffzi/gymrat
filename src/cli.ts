@@ -23,7 +23,6 @@ import type {
   CandidateComparison,
   ComparisonResult,
   FailOnCondition,
-  MeasurementResult,
   MetricComparisons,
 } from "./report/types.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
@@ -623,6 +622,43 @@ function startProgress(targetCount: number): ProgressReporter {
 }
 
 /**
+ * Suppress color per `--no-color`, then start the progress reporter for `targetCount`
+ * targets. The veto must run before {@link startProgress} so it sees `NO_COLOR` already
+ * set when `suppressColor()` applies it.
+ */
+function beginRun(options: SharedFlags, targetCount: number): ProgressReporter {
+  if (!options.color) {
+    suppressColor();
+  }
+  return startProgress(targetCount);
+}
+
+/**
+ * `--no-color` is a veto, never a force: left unset, each renderer keeps its own
+ * detection rather than being told what the stream supports.
+ */
+function noColorOverride(colorFlag: boolean): boolean | undefined {
+  return colorFlag ? undefined : false;
+}
+
+/**
+ * Run `execute`, guarded by `progress`: stop the reporter once the run settles,
+ * whether it succeeds or throws, and route a thrown error through the CLI's
+ * exit-with-error path. `compare` and `measure` share this so neither command's
+ * action can forget to stop the progress reporter before reporting a failure.
+ */
+async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<T>): Promise<T> {
+  try {
+    const result = await execute();
+    progress.stop();
+    return result;
+  } catch (error) {
+    progress.stop();
+    return exitWithError(error);
+  }
+}
+
+/**
  * `import ... with { type: "json" }` would be tidier, but package.json sits
  * outside `rootDir`, so importing it would pull an extra directory level into
  * `dist/` and break the `dist/cli.js` bin path. Reading at runtime keeps the
@@ -691,15 +727,9 @@ export function createProgram(): Command {
     )
     .configureHelp(createHelpConfig())
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
-      let result: ComparisonResult;
+      const progress = beginRun(options, 1 + candidates.length);
 
-      if (!options.color) {
-        suppressColor();
-      }
-
-      const progress = startProgress(1 + candidates.length);
-
-      try {
+      const result = await runGuarded(progress, async () => {
         const config = resolveConfig(configFlagsOf(options));
 
         const compareOptions: CompareOptions = {
@@ -721,17 +751,10 @@ export function createProgram(): Command {
           },
         };
 
-        result = await compare(compareOptions);
-        progress.stop();
-      } catch (error) {
-        progress.stop();
-        await exitWithError(error);
-        return;
-      }
+        return compare(compareOptions);
+      });
 
-      // `--no-color` is a veto, never a force: left unset, each renderer keeps
-      // its own detection rather than being told what the stream supports.
-      const color = options.color ? undefined : false;
+      const color = noColorOverride(options.color);
 
       let output: string;
       switch (options.format) {
@@ -772,16 +795,10 @@ export function createProgram(): Command {
   )
     .configureHelp(createHelpConfig())
     .action(async (target: TargetSpec, options: SharedFlags) => {
-      let result: MeasurementResult;
-
-      if (!options.color) {
-        suppressColor();
-      }
-
       // One target, so every sample step the run reports is a step of the whole run.
-      const progress = startProgress(1);
+      const progress = beginRun(options, 1);
 
-      try {
+      const result = await runGuarded(progress, async () => {
         const config = resolveConfig(configFlagsOf(options));
 
         const measureOptions: MeasureOptions = {
@@ -801,17 +818,10 @@ export function createProgram(): Command {
           },
         };
 
-        result = await measure(measureOptions);
-        progress.stop();
-      } catch (error) {
-        progress.stop();
-        await exitWithError(error);
-        return;
-      }
+        return measure(measureOptions);
+      });
 
-      // `--no-color` is a veto, never a force: left unset, each renderer keeps
-      // its own detection rather than being told what the stream supports.
-      const color = options.color ? undefined : false;
+      const color = noColorOverride(options.color);
 
       let output: string;
       switch (options.format) {
