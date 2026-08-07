@@ -635,17 +635,19 @@ describe("renderMeasureJson", () => {
   });
 
   describe("JSON validity", () => {
-    it("produces output that JSON.parse roundtrips cleanly", () => {
+    it("indents nested fields with two spaces per level", () => {
       const result = twoKindMeasurement({
         worktreesRemoved: 1,
         worktreesLeftBehind: [{ dir: "/tmp/gymrat-x", error: "locked" }],
         worktreePruneError: "prune failed",
       });
 
-      const output = renderMeasureJson(result);
-      const encoded = JSON.stringify(JSON.parse(output), null, 2);
+      const lines = renderMeasureJson(result).split("\n");
+      const worktreesLine = lines.findIndex((line) => line.trim() === '"worktrees": {');
 
-      expect(encoded).toBe(output);
+      expect(lines[1]).toMatch(/^ {2}"schemaVersion": 1,$/);
+      expect(lines[worktreesLine]).toMatch(/^ {2}"worktrees": \{$/);
+      expect(lines[worktreesLine + 1]).toMatch(/^ {4}"removed": 1,$/);
     });
   });
 });

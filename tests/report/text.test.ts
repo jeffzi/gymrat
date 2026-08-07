@@ -3117,7 +3117,9 @@ describe("renderMeasureReport", () => {
 
       expect(cellsOf(row).at(-1)?.trim()).toBe(expected);
     });
+  });
 
+  describe("when there is nothing to compare against", () => {
     it("carries no delta, verdict, geomean or highlight anywhere in the report", () => {
       const output = stripAnsi(renderMeasureReport(twoKindMeasurement()));
 

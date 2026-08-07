@@ -161,7 +161,6 @@ function serializeCandidateMetric(candidate: CandidateMetric, label: string): Js
   };
 }
 
-/** The `unit`, `direction`, `gating`, `kind` and `group` fields every serialized metric shares. */
 function serializeMeta(meta: ResolvedMetricMeta): JsonMetricMeta {
   return {
     unit: meta.unit ?? null,

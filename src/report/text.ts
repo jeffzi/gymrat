@@ -1610,11 +1610,6 @@ function renderMeasureTable(result: MeasurementResult, label: string): string[] 
   return body.map((bodyLine) => renderBodyLine(bodyLine, rule, border, renderers));
 }
 
-/** How many rounds the target ran, as the header states it. */
-function measuredSamples(samples: number): string {
-  return pluralize(samples, "sample");
-}
-
 /**
  * Render a single-target measurement as the plain-text report the CLI prints.
  *
@@ -1637,7 +1632,7 @@ export function renderMeasureReport(
     const header = joinHeaderParts([
       formatLabel("gymrat measure", ["bold"]),
       formatVariantName(label),
-      measuredSamples(result.samples),
+      pluralize(result.samples, "sample"),
       `adapter: ${result.adapter}`,
     ]);
 
