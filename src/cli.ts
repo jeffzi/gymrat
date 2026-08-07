@@ -10,7 +10,13 @@ import yoctoSpinner from "yocto-spinner";
 import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
-import { resolveConfig, type CliFlags } from "./config.js";
+import {
+  resolveConfig,
+  type CliFlags,
+  type ConfigKinds,
+  type ConfigMetrics,
+  type ResolvedConfig,
+} from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { measure } from "./measure.js";
@@ -24,6 +30,7 @@ import type {
   ComparisonResult,
   FailOnCondition,
   MetricComparisons,
+  ReportOptions,
 } from "./report/types.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
@@ -608,29 +615,54 @@ function configFlagsOf(options: SharedFlags): CliFlags {
   };
 }
 
-/**
- * Build the reporter the run streams its progress through.
- *
- * Reads `NO_COLOR` rather than the parsed flag so it sees the veto whatever set
- * it — `--no-color`, the user's environment, or {@link suppressColor}. Call it
- * after `suppressColor()`, never before.
- */
-function startProgress(targetCount: number): ProgressReporter {
-  const tty = isTerminal(process.stderr);
-  const colorSuppressed = process.env.NO_COLOR !== undefined;
-  return createProgressReporter(tty && !colorSuppressed, tty, targetCount);
+/** The fields `CompareOptions` and `MeasureOptions` both take straight from `config` and `progress`. */
+interface RunOptions {
+  bench: string;
+  prepare?: string;
+  adapter: string;
+  samples: number;
+  timeoutSeconds: number;
+  configMetrics?: ConfigMetrics;
+  configKinds?: ConfigKinds;
+  onProgress: (step: ProgressStep) => void;
+  warn: (message: string) => void;
+}
+
+/** Wire `config`'s run settings and `progress`'s callbacks into the shared `CompareOptions`/`MeasureOptions` fields. */
+function runOptionsOf(config: ResolvedConfig, progress: ProgressReporter): RunOptions {
+  return {
+    bench: config.bench,
+    prepare: config.prepare,
+    adapter: config.adapter,
+    samples: config.samples,
+    timeoutSeconds: config.timeoutSeconds,
+    configMetrics: config.metrics,
+    configKinds: config.kinds,
+    onProgress: (step) => {
+      progress.emit(step);
+    },
+    warn: (message) => {
+      progress.warn(message);
+    },
+  };
 }
 
 /**
- * Suppress color per `--no-color`, then start the progress reporter for `targetCount`
- * targets. The veto must run before {@link startProgress} so it sees `NO_COLOR` already
- * set when `suppressColor()` applies it.
+ * Suppress color per `--no-color`, then build the reporter the run streams its
+ * progress through for `targetCount` targets.
+ *
+ * The veto must run first: the reporter reads `NO_COLOR` rather than the parsed
+ * flag, so it only sees the veto once `suppressColor()` has applied it — whether
+ * `NO_COLOR` came from `--no-color`, the user's environment, or `suppressColor`
+ * itself.
  */
 function beginRun(options: SharedFlags, targetCount: number): ProgressReporter {
   if (!options.color) {
     suppressColor();
   }
-  return startProgress(targetCount);
+  const tty = isTerminal(process.stderr);
+  const colorSuppressed = process.env.NO_COLOR !== undefined;
+  return createProgressReporter(tty && !colorSuppressed, tty, targetCount);
 }
 
 /**
@@ -656,6 +688,32 @@ async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<
     progress.stop();
     return exitWithError(error);
   }
+}
+
+/**
+ * Render `result` per `options.format` and write it to stdout with a trailing
+ * newline. `compare` and `measure` share this so the format switch — and the
+ * `assertNever` exhaustiveness guard on it — exists once.
+ */
+async function emitReport<T>(
+  result: T,
+  options: SharedFlags,
+  render: { json: (result: T) => string; text: (result: T, textOptions: ReportOptions) => string },
+  textOptions: ReportOptions,
+): Promise<void> {
+  let output: string;
+  switch (options.format) {
+    case "json":
+      output = render.json(result);
+      break;
+    case "text":
+      output = render.text(result, textOptions);
+      break;
+    default:
+      assertNever(options.format);
+  }
+
+  await writeAndDrain(process.stdout, output + "\n");
 }
 
 /**
@@ -735,45 +793,19 @@ export function createProgram(): Command {
         const compareOptions: CompareOptions = {
           baseline,
           candidates,
-          bench: config.bench,
-          prepare: config.prepare,
-          adapter: config.adapter,
-          samples: config.samples,
-          timeoutSeconds: config.timeoutSeconds,
+          ...runOptionsOf(config, progress),
           unstableNoisePct: config.unstableNoisePct,
-          configMetrics: config.metrics,
-          configKinds: config.kinds,
-          onProgress: (step) => {
-            progress.emit(step);
-          },
-          warn: (message) => {
-            progress.warn(message);
-          },
         };
 
         return compare(compareOptions);
       });
 
-      const color = noColorOverride(options.color);
-
-      let output: string;
-      switch (options.format) {
-        case "json":
-          // Machine-readable output stays byte-identical whatever --verbose says.
-          output = renderJson(result);
-          break;
-        case "text":
-          output = renderReport(result, {
-            verbose: options.verbose,
-            color,
-            failOn: options.failOn,
-          });
-          break;
-        default:
-          assertNever(options.format);
-      }
-
-      await writeAndDrain(process.stdout, output + "\n");
+      await emitReport(
+        result,
+        options,
+        { json: renderJson, text: renderReport },
+        { verbose: options.verbose, color: noColorOverride(options.color), failOn: options.failOn },
+      );
 
       warnEmptyGeomeanGates(options.failOn, result);
 
@@ -803,39 +835,18 @@ export function createProgram(): Command {
 
         const measureOptions: MeasureOptions = {
           target,
-          bench: config.bench,
-          prepare: config.prepare,
-          adapter: config.adapter,
-          samples: config.samples,
-          timeoutSeconds: config.timeoutSeconds,
-          configMetrics: config.metrics,
-          configKinds: config.kinds,
-          onProgress: (step) => {
-            progress.emit(step);
-          },
-          warn: (message) => {
-            progress.warn(message);
-          },
+          ...runOptionsOf(config, progress),
         };
 
         return measure(measureOptions);
       });
 
-      const color = noColorOverride(options.color);
-
-      let output: string;
-      switch (options.format) {
-        case "json":
-          output = renderMeasureJson(result);
-          break;
-        case "text":
-          output = renderMeasureReport(result, { color });
-          break;
-        default:
-          assertNever(options.format);
-      }
-
-      await writeAndDrain(process.stdout, output + "\n");
+      await emitReport(
+        result,
+        options,
+        { json: renderMeasureJson, text: renderMeasureReport },
+        { color: noColorOverride(options.color) },
+      );
     });
 
   /*
