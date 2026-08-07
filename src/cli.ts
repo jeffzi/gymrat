@@ -13,14 +13,17 @@ import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
 import { resolveConfig, type CliFlags } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
+import { measure } from "./measure.js";
+import type { MeasureOptions } from "./measure.js";
 import { metricRecord } from "./metric-record.js";
 import { countVerdicts, formatHintLabel, formatLabel, shortenLabel } from "./report/format.js";
-import { renderJson } from "./report/json.js";
-import { renderReport } from "./report/text.js";
+import { renderJson, renderMeasureJson } from "./report/json.js";
+import { renderMeasureReport, renderReport } from "./report/text.js";
 import type {
   CandidateComparison,
   ComparisonResult,
   FailOnCondition,
+  MeasurementResult,
   MetricComparisons,
 } from "./report/types.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
@@ -548,16 +551,75 @@ function createProgressReporter(
   };
 }
 
-/** The compare command's flags: everything `resolveConfig` reads, plus how to print. */
-interface CompareFlags extends CliFlags {
+/** The flags every command carries: everything `resolveConfig` reads, plus how to print. */
+interface SharedFlags extends CliFlags {
   /** Commander's `--no-color` counterpart: true unless the flag was passed. */
   color: boolean;
   /** Output format — `text` produces the ANSI-styled table, `json` produces plain output. */
   format: "text" | "json";
+}
+
+/** The compare command's flags: the shared set plus the two only a verdict can answer. */
+interface CompareFlags extends SharedFlags {
   /** Gate conditions that cause exit 1 when any trips. Empty when `--fail-on` is not used. */
   failOn: FailOnCondition[];
   /** Name the statistical method behind each verdict in the report footer. */
   verbose: boolean;
+}
+
+/**
+ * Declare the flags every command carries, in one place.
+ *
+ * Both commands run the same benchmark machinery and print through the same
+ * renderers, so a flag added to one and forgotten on the other is a bug the user
+ * meets as an "unknown option". Declaring them here makes that impossible: the
+ * two option sets cannot drift because there is only one definition.
+ */
+function addSharedOptions(command: Command): Command {
+  return command
+    .option("--bench <cmd>", "bench command")
+    .option("--prepare <script>", "preparation script to run before each revision")
+    .option("--adapter <type>", "adapter type for parsing benchmark output")
+    .option(
+      "--samples <number>",
+      "paired samples per target",
+      parsePositiveIntegerUpTo(Number.MAX_SAFE_INTEGER),
+    )
+    .option(
+      "--timeout <number>",
+      "timeout in seconds",
+      parsePositiveIntegerUpTo(MAX_TIMEOUT_SECONDS),
+    )
+    .option("--config <file>", "configuration file path")
+    .option("--no-color", "print the report without ANSI styles")
+    .addOption(
+      new Option("--format <value>", "output format").choices(["text", "json"]).default("text"),
+    );
+}
+
+/** The `resolveConfig` view of a parsed flag set: the run settings, without the presentation ones. */
+function configFlagsOf(options: SharedFlags): CliFlags {
+  return {
+    bench: options.bench,
+    prepare: options.prepare,
+    adapter: options.adapter,
+    samples: options.samples,
+    timeout: options.timeout,
+    config: options.config,
+  };
+}
+
+/**
+ * Build the reporter the run streams its progress through.
+ *
+ * Reads `NO_COLOR` rather than the parsed flag so it sees the veto whatever set
+ * it — `--no-color`, the user's environment, or {@link suppressColor}. Call it
+ * after `suppressColor()`, never before.
+ */
+function startProgress(targetCount: number): ProgressReporter {
+  const tty = isTerminal(process.stderr);
+  const colorSuppressed = process.env.NO_COLOR !== undefined;
+  return createProgressReporter(tty && !colorSuppressed, tty, targetCount);
 }
 
 /**
@@ -598,6 +660,8 @@ function readPackageVersion(): string {
 export function createProgram(): Command {
   const noTargets: TargetSpec[] = [];
   const noFailOnConditions: FailOnCondition[] = [];
+  /** What `measure` benches when given no target: the tree the user is standing in. */
+  const currentDirectory: TargetSpec = { target: "." };
 
   const program = new Command();
 
@@ -606,35 +670,19 @@ export function createProgram(): Command {
     .description("Performance comparison tool for benchmarks")
     .version(readPackageVersion());
 
-  const compareCmd = program
-    .command("compare")
-    .description("Compare one baseline revision against one or more candidates")
-    .argument("<baseline>", "[label=]<ref|dir> to measure against", parsePositional)
-    .argument(
-      "<candidates...>",
-      "[label=]<ref|dir>, each judged against the baseline",
-      collectPositional,
-      noTargets,
-    )
-    .option("--bench <cmd>", "bench command")
-    .option("--prepare <script>", "preparation script to run before each revision")
-    .option("--adapter <type>", "adapter type for parsing benchmark output")
-    .option(
-      "--samples <number>",
-      "paired samples per target",
-      parsePositiveIntegerUpTo(Number.MAX_SAFE_INTEGER),
-    )
-    .option(
-      "--timeout <number>",
-      "timeout in seconds",
-      parsePositiveIntegerUpTo(MAX_TIMEOUT_SECONDS),
-    )
-    .option("--config <file>", "configuration file path")
-    .option("--no-color", "print the report without ANSI styles")
+  const compareCmd = addSharedOptions(
+    program
+      .command("compare")
+      .description("Compare one baseline revision against one or more candidates")
+      .argument("<baseline>", "[label=]<ref|dir> to measure against", parsePositional)
+      .argument(
+        "<candidates...>",
+        "[label=]<ref|dir>, each judged against the baseline",
+        collectPositional,
+        noTargets,
+      ),
+  )
     .option("--verbose", "name the statistical method behind each verdict", false)
-    .addOption(
-      new Option("--format <value>", "output format").choices(["text", "json"]).default("text"),
-    )
     .option(
       "--fail-on <condition>",
       'exit 1 when a condition trips (repeatable: "regressed", "geomean:<pct>")',
@@ -649,20 +697,10 @@ export function createProgram(): Command {
         suppressColor();
       }
 
-      const tty = isTerminal(process.stderr);
-      const colorSuppressed = process.env.NO_COLOR !== undefined;
-      const targetCount = 1 + candidates.length;
-      const progress = createProgressReporter(tty && !colorSuppressed, tty, targetCount);
+      const progress = startProgress(1 + candidates.length);
 
       try {
-        const config = resolveConfig({
-          bench: options.bench,
-          prepare: options.prepare,
-          adapter: options.adapter,
-          samples: options.samples,
-          timeout: options.timeout,
-          config: options.config,
-        });
+        const config = resolveConfig(configFlagsOf(options));
 
         const compareOptions: CompareOptions = {
           baseline,
@@ -721,13 +759,82 @@ export function createProgram(): Command {
       }
     });
 
+  const measureCmd = addSharedOptions(
+    program
+      .command("measure")
+      .description("Measure one revision or directory on its own, with nothing to compare it to")
+      .argument(
+        "[target]",
+        "[label=]<ref|dir> to measure; defaults to the current directory",
+        parsePositional,
+        currentDirectory,
+      ),
+  )
+    .configureHelp(createHelpConfig())
+    .action(async (target: TargetSpec, options: SharedFlags) => {
+      let result: MeasurementResult;
+
+      if (!options.color) {
+        suppressColor();
+      }
+
+      // One target, so every sample step the run reports is a step of the whole run.
+      const progress = startProgress(1);
+
+      try {
+        const config = resolveConfig(configFlagsOf(options));
+
+        const measureOptions: MeasureOptions = {
+          target,
+          bench: config.bench,
+          prepare: config.prepare,
+          adapter: config.adapter,
+          samples: config.samples,
+          timeoutSeconds: config.timeoutSeconds,
+          configMetrics: config.metrics,
+          configKinds: config.kinds,
+          onProgress: (step) => {
+            progress.emit(step);
+          },
+          warn: (message) => {
+            progress.warn(message);
+          },
+        };
+
+        result = await measure(measureOptions);
+        progress.stop();
+      } catch (error) {
+        progress.stop();
+        await exitWithError(error);
+        return;
+      }
+
+      // `--no-color` is a veto, never a force: left unset, each renderer keeps
+      // its own detection rather than being told what the stream supports.
+      const color = options.color ? undefined : false;
+
+      let output: string;
+      switch (options.format) {
+        case "json":
+          output = renderMeasureJson(result);
+          break;
+        case "text":
+          output = renderMeasureReport(result, { color });
+          break;
+        default:
+          assertNever(options.format);
+      }
+
+      await writeAndDrain(process.stdout, output + "\n");
+    });
+
   /*
    * Commander exits 1 for usage errors by default. Override so all Commander
    * errors (unknown option, missing argument, invalid choice) surface as exit
    * code 2, keeping exit 1 reserved for gate trips. Exit code 0 (--help,
    * --version) passes through unchanged.
    */
-  for (const command of [program, compareCmd]) {
+  for (const command of [program, compareCmd, measureCmd]) {
     command.exitOverride((err) => {
       throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
     });

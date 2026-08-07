@@ -22,9 +22,10 @@ import {
 } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
 import type { ExecResult } from "../src/exec.js";
-import { renderJson } from "../src/report/json.js";
-import { renderReport } from "../src/report/text.js";
-import type { ComparisonResult } from "../src/report/types.js";
+import type { MeasureOptions } from "../src/measure.js";
+import { renderJson, renderMeasureJson } from "../src/report/json.js";
+import { renderMeasureReport, renderReport } from "../src/report/text.js";
+import type { ComparisonResult, MeasurementResult } from "../src/report/types.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
 import {
@@ -35,6 +36,7 @@ import {
   type Metrics,
   metricMeta,
 } from "./fixtures/comparison-result.js";
+import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
 
 // `...actual` is spread so CommandError passes through unmocked and tests can construct real instances.
 vi.mock("../src/compare.js", async (importOriginal) => {
@@ -45,53 +47,84 @@ vi.mock("../src/compare.js", async (importOriginal) => {
   };
 });
 
+// `...actual` is spread for the same reason as compare's mock: measure re-exports
+// CommandError, and tests construct real instances of it.
+vi.mock("../src/measure.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/measure.js")>();
+  return {
+    ...actual,
+    measure: vi.fn(),
+  };
+});
+
 vi.mock("../src/config.js", () => ({
   resolveConfig: vi.fn(),
 }));
 
 vi.mock("../src/report/json.js", () => ({
   renderJson: vi.fn().mockReturnValue('{"report": true}'),
+  renderMeasureJson: vi.fn().mockReturnValue('{"measurement": true}'),
 }));
 
-const { mockSpinnerInstance, mockYoctoSpinner, mockEtaRecord, mockFormatEta } = vi.hoisted(() => {
-  const instance = {
-    start: vi.fn(),
-    stop: vi.fn(),
-    clear: vi.fn(),
-    success: vi.fn(),
-    error: vi.fn(),
-    warning: vi.fn(),
-    info: vi.fn(),
-    text: "",
-    color: "cyan" as const,
-    isSpinning: false,
-  };
-  // Self-referencing returns for chaining
-  instance.start.mockReturnValue(instance);
-  instance.stop.mockReturnValue(instance);
-  instance.clear.mockReturnValue(instance);
+const { mockSpinnerInstance, mockYoctoSpinner, mockEtaRecord, mockEtaConstructor, mockFormatEta } =
+  vi.hoisted(() => {
+    const instance = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      clear: vi.fn(),
+      success: vi.fn(),
+      error: vi.fn(),
+      warning: vi.fn(),
+      info: vi.fn(),
+      text: "",
+      color: "cyan" as const,
+      isSpinning: false,
+    };
+    // Self-referencing returns for chaining
+    instance.start.mockReturnValue(instance);
+    instance.stop.mockReturnValue(instance);
+    instance.clear.mockReturnValue(instance);
 
-  return {
-    mockSpinnerInstance: instance,
-    mockYoctoSpinner: vi.fn().mockReturnValue(instance),
-    mockEtaRecord: vi.fn(),
-    mockFormatEta: vi.fn<(ms: number) => string>(),
-  };
-});
+    return {
+      mockSpinnerInstance: instance,
+      mockYoctoSpinner: vi.fn().mockReturnValue(instance),
+      mockEtaRecord: vi.fn(),
+      mockEtaConstructor: vi.fn<(targetCount: number) => void>(),
+      mockFormatEta: vi.fn<(ms: number) => string>(),
+    };
+  });
 
 vi.mock("yocto-spinner", () => ({
   default: mockYoctoSpinner,
 }));
 
 vi.mock("../src/eta.js", () => {
+  // The target count only ever reaches the tracker's constructor, so recording it
+  // here is the only way a test can pin how many targets a run said it had.
   class MockEtaTracker {
     record = mockEtaRecord;
+
+    constructor(targetCount: number) {
+      mockEtaConstructor(targetCount);
+    }
   }
   return {
     EtaTracker: MockEtaTracker,
     formatEta: mockFormatEta,
   };
 });
+
+/** The settled run configuration both commands read, with `overrides` applied. */
+function resolvedConfigFixture(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
+  return {
+    bench: "bench.sh",
+    adapter: "metric-lines",
+    samples: 1,
+    timeoutSeconds: 300,
+    unstableNoisePct: 200,
+    ...overrides,
+  };
+}
 
 async function setupMocks(
   compareMockReturn?: ComparisonResult | Error,
@@ -103,16 +136,7 @@ async function setupMocks(
   const typedCompareMock = vi.mocked(compareMock);
   const typedConfigMock = vi.mocked(resolveConfigMock);
 
-  const resolvedConfig: ResolvedConfig = {
-    bench: "bench.sh",
-    adapter: "metric-lines",
-    samples: 1,
-    timeoutSeconds: 300,
-    unstableNoisePct: 200,
-    ...resolveConfigMockReturn,
-  };
-
-  typedConfigMock.mockReturnValue(resolvedConfig);
+  typedConfigMock.mockReturnValue(resolvedConfigFixture(resolveConfigMockReturn));
   if (compareMockReturn instanceof Error) {
     typedCompareMock.mockRejectedValue(compareMockReturn);
   } else {
@@ -120,6 +144,27 @@ async function setupMocks(
   }
 
   return { compareMock, resolveConfigMock };
+}
+
+/** `setupMocks` for the single-target command: stubs `resolveConfig` and `measure`. */
+async function setupMeasureMocks(
+  measureMockReturn?: MeasurementResult | Error,
+  resolveConfigMockReturn: Partial<ResolvedConfig> = {},
+) {
+  const { measure: measureMock } = await import("../src/measure.js");
+  const { resolveConfig: resolveConfigMock } = await import("../src/config.js");
+
+  const typedMeasureMock = vi.mocked(measureMock);
+  const typedConfigMock = vi.mocked(resolveConfigMock);
+
+  typedConfigMock.mockReturnValue(resolvedConfigFixture(resolveConfigMockReturn));
+  if (measureMockReturn instanceof Error) {
+    typedMeasureMock.mockRejectedValue(measureMockReturn);
+  } else {
+    typedMeasureMock.mockResolvedValue(measureMockReturn ?? createMeasurementResult());
+  }
+
+  return { measureMock, resolveConfigMock };
 }
 
 /**
@@ -185,10 +230,12 @@ function createSilentProgramWithProductionExit(): Command {
 }
 
 /**
- * The subcommand renders its own help, so every command needs its own output
+ * Parse `argv` for its help text and return whatever was written to stdout.
+ *
+ * A subcommand renders its own help, so every command needs its own output
  * config; `--help` throws rather than exiting because of `exitOverride`.
  */
-async function captureCompareHelp(): Promise<string> {
+async function captureHelp(argv: string[]): Promise<string> {
   const program = createProgram();
   program.exitOverride();
   let helpOutput = "";
@@ -200,9 +247,14 @@ async function captureCompareHelp(): Promise<string> {
     });
   }
 
-  await expect(program.parseAsync(compareArgv("--help"))).rejects.toThrow();
+  await expect(program.parseAsync(argv)).rejects.toThrow();
 
   return helpOutput;
+}
+
+/** The `compare` subcommand's help text. */
+async function captureCompareHelp(): Promise<string> {
+  return captureHelp(compareArgv("--help"));
 }
 
 /**
@@ -237,6 +289,11 @@ function createRunnableProgram(): Command {
 /** Prepends the `["node", "cli.js", "compare"]` prefix Commander expects. */
 function compareArgv(...args: string[]): string[] {
   return ["node", "cli.js", "compare", ...args];
+}
+
+/** Prepends the `["node", "cli.js", "measure"]` prefix Commander expects. */
+function measureArgv(...args: string[]): string[] {
+  return ["node", "cli.js", "measure", ...args];
 }
 
 /** A single-metric, single-candidate result with an improved verdict, for tests that only care about output styling. */
@@ -289,6 +346,25 @@ async function runCompareCapturingStdout(
   await setupMocks(result);
   const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   await program.parseAsync(compareArgv("main", "branch", ...extraArgs));
+  return writeSpy;
+}
+
+/**
+ * Run `measure <args>`, mocking `measure()` to resolve with `result`, and hand
+ * back the stdout write spy.
+ *
+ * The measure counterpart of `runCompareCapturingStdout`, with the same division
+ * of labour: callers own any TTY or env state, this owns program creation, mock
+ * setup and the write spy.
+ */
+async function runMeasureCapturingStdout(
+  result: MeasurementResult,
+  ...args: string[]
+): Promise<MockInstance<typeof process.stdout.write>> {
+  const program = createRunnableProgram();
+  await setupMeasureMocks(result);
+  const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  await program.parseAsync(measureArgv(...args));
   return writeSpy;
 }
 
@@ -2092,6 +2168,366 @@ describe("createProgram", () => {
         await expect(
           program.parseAsync(compareArgv("main", "branch", "--bogus")),
         ).rejects.toHaveProperty("exitCode", 2);
+      });
+    });
+  });
+
+  describe("measure command", () => {
+    /** The flags both commands share; the verdict-only ones belong to compare alone. */
+    const SHARED_FLAGS = [
+      "--bench",
+      "--prepare",
+      "--adapter",
+      "--samples",
+      "--timeout",
+      "--config",
+      "--no-color",
+      "--format",
+    ];
+
+    /**
+     * The long flags a help text declares, sorted, minus `--help` and the
+     * verdict-only flags only `compare` carries.
+     *
+     * Reading them off the rendered help is what lets one assertion compare two
+     * commands' option sets without either one naming the other's.
+     */
+    function declaredOptions(helpOutput: string): string[] {
+      const commandSpecific = new Set(["--help", "--verbose", "--fail-on"]);
+      return helpOutput
+        .split("\n")
+        .map((line) => /^\s+(?:-\w, )?(--[a-z-]+)/.exec(line)?.[1])
+        .filter((flag): flag is string => flag !== undefined && !commandSpecific.has(flag))
+        .toSorted();
+    }
+
+    describe("on successful measurement", () => {
+      it("renders the measurement measure returned and writes it to stdout", async () => {
+        // Arrange
+        const result = twoKindMeasurement();
+
+        // Act
+        const writeSpy = await runMeasureCapturingStdout(result, "main");
+
+        // Assert
+        expect(writeSpy).toHaveBeenCalledWith(`${renderMeasureReport(result)}\n`);
+      });
+
+      it("routes to renderMeasureJson for --format json", async () => {
+        // Arrange
+        const result = createMeasurementResult();
+
+        // Act
+        const writeSpy = await runMeasureCapturingStdout(result, "main", "--format", "json");
+
+        // Assert
+        expect(vi.mocked(renderMeasureJson)).toHaveBeenCalledWith(result);
+        expect(writeSpy).toHaveBeenCalledWith('{"measurement": true}\n');
+      });
+    });
+
+    describe("when the target is given", () => {
+      it.each([
+        { form: "a bare ref", positional: "main", expected: { target: "main", label: undefined } },
+        {
+          form: "a label=ref pair",
+          positional: "build=main",
+          expected: { target: "main", label: "build" },
+        },
+      ])("passes $form through to measure", async ({ positional, expected }) => {
+        // Arrange
+        const program = createRunnableProgram();
+        const { measureMock } = await setupMeasureMocks();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(measureArgv(positional));
+
+        // Assert
+        expect(measureMock).toHaveBeenCalledWith(expect.objectContaining({ target: expected }));
+      });
+    });
+
+    describe("when the target is omitted", () => {
+      it("benches the current directory in place", async () => {
+        // Arrange
+        const program = createRunnableProgram();
+        const { measureMock } = await setupMeasureMocks();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(measureArgv());
+
+        // Assert
+        expect(measureMock).toHaveBeenCalledWith(
+          expect.objectContaining({ target: { target: "." } }),
+        );
+      });
+    });
+
+    describe("when flags provided", () => {
+      it.each([
+        { flag: "--bench", value: "my-bench", expected: { bench: "my-bench" } },
+        { flag: "--prepare", value: "setup.sh", expected: { prepare: "setup.sh" } },
+        { flag: "--adapter", value: "mitata", expected: { adapter: "mitata" } },
+        { flag: "--samples", value: "100", expected: { samples: 100 } },
+        { flag: "--timeout", value: "5000", expected: { timeout: 5000 } },
+        { flag: "--config", value: "gymrat.json", expected: { config: "gymrat.json" } },
+      ])("passes $flag through to resolveConfig", async ({ flag, value, expected }) => {
+        // Arrange
+        const program = createRunnableProgram();
+        const { resolveConfigMock } = await setupMeasureMocks();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(measureArgv("main", flag, value));
+
+        // Assert
+        expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
+      });
+
+      it("hands the settled run configuration to measure", async () => {
+        // Arrange - whatever resolveConfig settled on is what the run must use,
+        // whichever of flag, config file or default supplied each value
+        const program = createRunnableProgram();
+        const configMetrics = {
+          "decode/time": { direction: "higher" as const, gating: false, exact: true },
+        };
+        const configKinds = { memory: { gating: false } };
+        const { measureMock } = await setupMeasureMocks(undefined, {
+          bench: "run-bench",
+          prepare: "setup.sh",
+          adapter: "mitata",
+          samples: 7,
+          timeoutSeconds: 42,
+          metrics: configMetrics,
+          kinds: configKinds,
+        });
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(measureArgv("main"));
+
+        // Assert
+        expect(measureMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bench: "run-bench",
+            prepare: "setup.sh",
+            adapter: "mitata",
+            samples: 7,
+            timeoutSeconds: 42,
+            configMetrics,
+            configKinds,
+          }),
+        );
+      });
+    });
+
+    describe("when a flag the command does not carry is passed", () => {
+      it.each([
+        { flag: "--fail-on", args: ["--fail-on", "regressed"] },
+        { flag: "--verbose", args: ["--verbose"] },
+        { flag: "--bogus", args: ["--bogus"] },
+      ])("rejects $flag with a usage error naming the unknown option", async ({ flag, args }) => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+
+        // Act & Assert
+        await expect(program.parseAsync(measureArgv("main", ...args))).rejects.toThrow(
+          new RegExp(`unknown option '${flag}'`),
+        );
+      });
+
+      it("exits 2 for Commander usage errors", async () => {
+        // Arrange - the production exitOverride (which sets exit code 2) must
+        // survive here rather than being replaced by the test helper's plain one.
+        // stderr is collected rather than discarded so the assertion can tell the
+        // command's own usage error apart from one raised before it was reached.
+        const program = createProgram();
+        let usageError = "";
+        for (const command of [program, ...program.commands]) {
+          command.configureOutput({
+            writeErr: (str) => {
+              usageError += str;
+            },
+          });
+        }
+        mockProcessExit();
+
+        // Act & Assert
+        await expect(program.parseAsync(measureArgv("main", "--bogus"))).rejects.toHaveProperty(
+          "exitCode",
+          2,
+        );
+        expect(usageError).toContain("unknown option '--bogus'");
+      });
+    });
+
+    describe("when deciding whether to color the report", () => {
+      const originalIsTTY = process.stdout.isTTY;
+
+      afterEach(() => {
+        process.stdout.isTTY = originalIsTTY;
+      });
+
+      const ANSI_RE = /\x1b\[/;
+
+      it("includes ANSI escapes when stdout is a terminal", async () => {
+        // Arrange
+        process.stdout.isTTY = true;
+        vi.stubEnv("NO_COLOR", undefined);
+
+        // Act
+        const writeSpy = await runMeasureCapturingStdout(twoKindMeasurement(), "main");
+
+        // Assert
+        expect(writeSpy.mock.calls[0]![0]).toMatch(ANSI_RE);
+      });
+
+      it("sets process.env.NO_COLOR when --no-color is passed", async () => {
+        // Arrange
+        vi.stubEnv("NO_COLOR", undefined);
+
+        // Act
+        await runMeasureCapturingStdout(twoKindMeasurement(), "main", "--no-color");
+
+        // Assert
+        expect(process.env.NO_COLOR).toBe("1");
+      });
+    });
+
+    describe("progress feedback", () => {
+      const originalStderrIsTTY = process.stderr.isTTY;
+
+      afterEach(() => {
+        process.stderr.isTTY = originalStderrIsTTY;
+      });
+
+      const PREPARE_STEP: ProgressStep = { kind: "prepare", label: "main" };
+      const SAMPLE_STEP: ProgressStep = { kind: "sample", index: 1, total: 10, label: "main" };
+
+      /**
+       * Run `measure main` with `measure()` firing `steps` before it settles,
+       * and hand back the stderr write spy.
+       *
+       * The steps fire inside the mock rather than after it, mirroring the real
+       * `onProgress` timing: they arrive while the run is still in flight.
+       */
+      async function runWithProgress(
+        steps: readonly ProgressStep[],
+      ): Promise<ReturnType<typeof vi.spyOn>> {
+        const program = createRunnableProgram();
+        const { measureMock } = await setupMeasureMocks();
+        vi.mocked(measureMock).mockImplementation((options: MeasureOptions) => {
+          for (const step of steps) {
+            options.onProgress?.(step);
+          }
+          return Promise.resolve(createMeasurementResult());
+        });
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        await program.parseAsync(measureArgv("main"));
+
+        return stderrSpy;
+      }
+
+      it.each([
+        { desc: "prepare", step: PREPARE_STEP, line: "prepare · main" },
+        { desc: "sample", step: SAMPLE_STEP, line: "sample 1/10 · main" },
+      ])("streams the $desc step to stderr", async ({ step, line }) => {
+        // Arrange
+        process.stderr.isTTY = false;
+
+        // Act
+        const stderrSpy = await runWithProgress([step]);
+
+        // Assert
+        expect(stderrWrites(stderrSpy)).toContainEqual(expect.stringContaining(line));
+      });
+
+      it("sizes the ETA tracker for the single target it measures", async () => {
+        // Arrange - a wrong count scales every estimate by that same factor
+        process.stderr.isTTY = false;
+
+        // Act
+        await runWithProgress([SAMPLE_STEP]);
+
+        // Assert
+        expect(mockEtaConstructor).toHaveBeenCalledWith(1);
+      });
+
+      it("drives a stderr spinner when stderr is an interactive terminal", async () => {
+        // Arrange
+        process.stderr.isTTY = true;
+        vi.stubEnv("NO_COLOR", undefined);
+
+        // Act
+        await runWithProgress([SAMPLE_STEP]);
+
+        // Assert
+        expect
+          .soft(mockYoctoSpinner)
+          .toHaveBeenCalledWith({ color: "yellow", stream: process.stderr });
+        expect.soft(mockSpinnerInstance.start).toHaveBeenCalled();
+        expect(mockSpinnerInstance.text).toContain("sample");
+      });
+    });
+
+    describe("on measurement error", () => {
+      it("exits 2 and writes the error to stderr", async () => {
+        // Arrange
+        const program = createProgramWithSubcommandOverrides();
+        await setupMeasureMocks(new Error("Measurement failed"));
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        mockProcessExit();
+
+        // Act & Assert
+        await expect(program.parseAsync(measureArgv("main"))).rejects.toHaveProperty("exitCode", 2);
+
+        expect(stderrWrites(stderrSpy)).toContainEqual(
+          expect.stringContaining("Measurement failed"),
+        );
+      });
+    });
+
+    describe("when --help requested", () => {
+      it("lists the command in the root help", async () => {
+        // Arrange
+        vi.stubEnv("FORCE_COLOR", undefined);
+
+        // Act
+        const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+        // Assert
+        expect(helpOutput).toContain("measure");
+      });
+
+      it("documents every shared option", async () => {
+        // Arrange
+        vi.stubEnv("FORCE_COLOR", undefined);
+
+        // Act
+        const helpOutput = await captureHelp(measureArgv("--help"));
+
+        // Assert
+        expect.soft(helpOutput).toContain("Usage: gymrat measure");
+        expect(SHARED_FLAGS.filter((flag) => !helpOutput.includes(flag))).toStrictEqual([]);
+      });
+
+      it("offers the same shared options as compare", async () => {
+        // Arrange
+        vi.stubEnv("FORCE_COLOR", undefined);
+
+        // Act
+        const [measureHelp, compareHelp] = await Promise.all([
+          captureHelp(measureArgv("--help")),
+          captureCompareHelp(),
+        ]);
+
+        // Assert - one definition feeds both, so neither can drift from the other
+        expect(declaredOptions(measureHelp)).toStrictEqual(declaredOptions(compareHelp));
       });
     });
   });
