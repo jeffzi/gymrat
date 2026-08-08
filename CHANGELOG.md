@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-08
+
+### Added
+
+- `measure` command for single-target benchmarking: `gymrat measure [[label=]<ref|dir>]` samples
+  one target — a git ref (benched in a throwaway worktree), an existing directory in place, or,
+  with the argument omitted, the current tree — and reports per-metric median ± spread grouped by
+  kind, with no delta, verdict, or geomean output. It shares `compare`'s configuration surface
+  (`--bench`, `--prepare`, `--adapter`, `--samples`, `--timeout`, `--config`, `--no-color`,
+  `gymrat.json`), and runs are ephemeral — nothing is recorded.
+- `measure --format json` emits a machine-readable measurement report with its own
+  `schemaVersion: 1`, independent of `compare`'s comparison schema.
+
 ## [0.2.0] - 2026-08-07
 
 ### Added
@@ -107,6 +120,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `--prepare` per-target setup, `--samples`, `--timeout`, and repeatable `--fail-on` conditions for
   failing CI on regressions.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jeffzi/gymrat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jeffzi/gymrat/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jeffzi/gymrat/releases/tag/v0.1.0
