@@ -32,6 +32,8 @@ import type {
   MetricComparisons,
   ReportOptions,
 } from "./report/types.js";
+import { acquireLock, type ReleaseLock } from "./session/lock.js";
+import { lockfilePath, repoRoot } from "./session/paths.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
 
@@ -691,6 +693,62 @@ async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<
 }
 
 /**
+ * The repository a run must serialize against, or `undefined` when there is none.
+ *
+ * Both commands accept plain directories, so standing outside a git repository
+ * is a supported way to run gymrat rather than a failure: it just leaves nothing
+ * to take a lock on.
+ */
+function lockableRepoRoot(): string | undefined {
+  try {
+    return repoRoot();
+  } catch (error) {
+    if (error instanceof GymratError) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Hold the repository's single-flight lock for the length of `run`.
+ *
+ * The lock is taken before anything the run would execute, so a repository
+ * another gymrat process is already benchmarking is refused before a prepare or
+ * bench command can perturb its measurements.
+ *
+ * Release is wired twice because the two ways a command finishes need different
+ * hooks: `finally` covers a run that returns or throws, and the `exit` listener
+ * covers `process.exit`, which unwinds nothing — the error path and the
+ * `--fail-on` gate trip both leave that way.
+ */
+async function withRepoLock<T>(command: string, run: () => Promise<T>): Promise<T> {
+  const root = lockableRepoRoot();
+  if (root === undefined) {
+    return await run();
+  }
+
+  let release: ReleaseLock;
+  try {
+    release = acquireLock(lockfilePath(root), command);
+  } catch (error) {
+    return exitWithError(error);
+  }
+
+  const releaseOnExit = (): void => {
+    release();
+  };
+  process.once("exit", releaseOnExit);
+
+  try {
+    return await run();
+  } finally {
+    process.removeListener("exit", releaseOnExit);
+    release();
+  }
+}
+
+/**
  * Render `result` per `options.format` and write it to stdout with a trailing
  * newline. `compare` and `measure` share this so the format switch — and the
  * `assertNever` exhaustiveness guard on it — exists once.
@@ -785,33 +843,39 @@ export function createProgram(): Command {
     )
     .configureHelp(createHelpConfig())
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
-      const progress = beginRun(options, 1 + candidates.length);
+      await withRepoLock("compare", async () => {
+        const progress = beginRun(options, 1 + candidates.length);
 
-      const result = await runGuarded(progress, async () => {
-        const config = resolveConfig(configFlagsOf(options));
+        const result = await runGuarded(progress, async () => {
+          const config = resolveConfig(configFlagsOf(options));
 
-        const compareOptions: CompareOptions = {
-          baseline,
-          candidates,
-          ...runOptionsOf(config, progress),
-          unstableNoisePct: config.unstableNoisePct,
-        };
+          const compareOptions: CompareOptions = {
+            baseline,
+            candidates,
+            ...runOptionsOf(config, progress),
+            unstableNoisePct: config.unstableNoisePct,
+          };
 
-        return compare(compareOptions);
+          return compare(compareOptions);
+        });
+
+        await emitReport(
+          result,
+          options,
+          { json: renderJson, text: renderReport },
+          {
+            verbose: options.verbose,
+            color: noColorOverride(options.color),
+            failOn: options.failOn,
+          },
+        );
+
+        warnEmptyGeomeanGates(options.failOn, result);
+
+        if (shouldFailGate(options.failOn, result)) {
+          process.exit(1);
+        }
       });
-
-      await emitReport(
-        result,
-        options,
-        { json: renderJson, text: renderReport },
-        { verbose: options.verbose, color: noColorOverride(options.color), failOn: options.failOn },
-      );
-
-      warnEmptyGeomeanGates(options.failOn, result);
-
-      if (shouldFailGate(options.failOn, result)) {
-        process.exit(1);
-      }
     });
 
   const measureCmd = addSharedOptions(
@@ -827,26 +891,28 @@ export function createProgram(): Command {
   )
     .configureHelp(createHelpConfig())
     .action(async (target: TargetSpec, options: SharedFlags) => {
-      // One target, so every sample step the run reports is a step of the whole run.
-      const progress = beginRun(options, 1);
+      await withRepoLock("measure", async () => {
+        // One target, so every sample step the run reports is a step of the whole run.
+        const progress = beginRun(options, 1);
 
-      const result = await runGuarded(progress, async () => {
-        const config = resolveConfig(configFlagsOf(options));
+        const result = await runGuarded(progress, async () => {
+          const config = resolveConfig(configFlagsOf(options));
 
-        const measureOptions: MeasureOptions = {
-          target,
-          ...runOptionsOf(config, progress),
-        };
+          const measureOptions: MeasureOptions = {
+            target,
+            ...runOptionsOf(config, progress),
+          };
 
-        return measure(measureOptions);
+          return measure(measureOptions);
+        });
+
+        await emitReport(
+          result,
+          options,
+          { json: renderMeasureJson, text: renderMeasureReport },
+          { color: noColorOverride(options.color) },
+        );
       });
-
-      await emitReport(
-        result,
-        options,
-        { json: renderMeasureJson, text: renderMeasureReport },
-        { color: noColorOverride(options.color) },
-      );
     });
 
   /*

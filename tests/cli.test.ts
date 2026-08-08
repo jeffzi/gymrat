@@ -5,9 +5,17 @@
 /* eslint-disable typescript/no-unsafe-call -- see above */
 /* eslint-disable typescript/no-unsafe-type-assertion -- process.exit mock requires never cast */
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Command } from "commander";
 import { afterEach, describe, expect, it, type MockInstance, vi } from "vitest";
@@ -26,6 +34,7 @@ import type { MeasureOptions } from "../src/measure.js";
 import { renderJson, renderMeasureJson } from "../src/report/json.js";
 import { renderMeasureReport, renderReport } from "../src/report/text.js";
 import type { ComparisonResult, MeasurementResult } from "../src/report/types.js";
+import { lockfilePath, repoRoot } from "../src/session/paths.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
 import {
@@ -2540,6 +2549,147 @@ describe("createProgram", () => {
         expect(declaredOptions(measureHelp)).toStrictEqual(declaredOptions(compareHelp));
       });
     });
+  });
+
+  describe("repository lock", () => {
+    /** The lockfile both commands derive from the repository they are run in. */
+    function repoLockPath(): string {
+      return lockfilePath(repoRoot());
+    }
+
+    /** The holder record in the repository's lockfile, or `undefined` when no lock is held. */
+    function readRepoLock(): unknown {
+      const lockPath = repoLockPath();
+      return existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : undefined;
+    }
+
+    /**
+     * Take the repository lock on behalf of this very process.
+     *
+     * The current pid is the one holder a liveness probe can never mistake for
+     * stale, so the lock reliably looks like another gymrat run still in flight.
+     */
+    function holdRepoLock(command: string): void {
+      const lockPath = repoLockPath();
+      mkdirSync(dirname(lockPath), { recursive: true });
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.pid, command, at: "2026-01-01T00:00:00.000Z" }),
+      );
+    }
+
+    /**
+     * Stub `compare` to run `duringRun` before it settles, rejecting with
+     * `failure` when one is given, and hand back the stub.
+     *
+     * `duringRun` fires while the command is mid-flight, which is the only
+     * moment the lock the command took is observable.
+     */
+    async function arrangeCompareRun(
+      duringRun: () => void,
+      failure?: Error,
+    ): Promise<MockInstance> {
+      const { compareMock } = await setupMocks(failure);
+      return vi.mocked(compareMock).mockImplementation(() => {
+        duringRun();
+        return failure ? Promise.reject(failure) : Promise.resolve(createComparisonResult());
+      });
+    }
+
+    /** `arrangeCompareRun` for the single-target command. */
+    async function arrangeMeasureRun(
+      duringRun: () => void,
+      failure?: Error,
+    ): Promise<MockInstance> {
+      const { measureMock } = await setupMeasureMocks(failure);
+      return vi.mocked(measureMock).mockImplementation(() => {
+        duringRun();
+        return failure ? Promise.reject(failure) : Promise.resolve(createMeasurementResult());
+      });
+    }
+
+    const LOCKING_COMMANDS = [
+      { command: "compare", argv: compareArgv("main", "branch"), arrange: arrangeCompareRun },
+      { command: "measure", argv: measureArgv("main"), arrange: arrangeMeasureRun },
+    ];
+
+    afterEach(() => {
+      rmSync(repoLockPath(), { force: true });
+    });
+
+    it.each(LOCKING_COMMANDS)(
+      "$command exits 2 without benchmarking while another live process holds the lock",
+      async ({ argv, arrange }) => {
+        // Arrange
+        const runMock = await arrange(() => {});
+        holdRepoLock("measure");
+        const program = createProgramWithSubcommandOverrides();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(argv);
+
+        // Assert - nothing was run, and the diagnostic names the holder
+        await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+        const stderrText = stderrWrites(stderrSpy).map(String).join("");
+        expect.soft(runMock).not.toHaveBeenCalled();
+        expect.soft(stderrText).toContain(`PID ${String(process.pid)}`);
+        expect(stderrText).toMatch(/another gymrat run/i);
+      },
+    );
+
+    it.each(LOCKING_COMMANDS)(
+      "$command holds the lock for the length of a successful run and releases it",
+      async ({ command, argv, arrange }) => {
+        // Arrange
+        let heldDuringRun: unknown;
+        await arrange(() => {
+          heldDuringRun = readRepoLock();
+        });
+        const program = createRunnableProgram();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(argv);
+
+        // Assert
+        expect.soft(heldDuringRun).toStrictEqual({
+          pid: process.pid,
+          command,
+          at: expect.any(String),
+        });
+        expect(readRepoLock()).toBeUndefined();
+      },
+    );
+
+    it.each(LOCKING_COMMANDS)(
+      "$command releases the lock when the run fails",
+      async ({ command, argv, arrange }) => {
+        // Arrange
+        let heldDuringRun: unknown;
+        await arrange(() => {
+          heldDuringRun = readRepoLock();
+        }, new Error("benchmark crashed"));
+        const program = createProgramWithSubcommandOverrides();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(argv);
+
+        // Assert
+        await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+        expect.soft(heldDuringRun).toStrictEqual({
+          pid: process.pid,
+          command,
+          at: expect.any(String),
+        });
+        expect(readRepoLock()).toBeUndefined();
+      },
+    );
   });
 });
 
