@@ -19,6 +19,7 @@ import {
 } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
+import { startSession, type StartResult } from "./loop/start.js";
 import { measure } from "./measure.js";
 import type { MeasureOptions } from "./measure.js";
 import { metricRecord } from "./metric-record.js";
@@ -576,14 +577,14 @@ interface CompareFlags extends SharedFlags {
 }
 
 /**
- * Declare the flags every command carries, in one place.
+ * Declare the flags `resolveConfig` reads, in one place.
  *
- * Both commands run the same benchmark machinery and print through the same
- * renderers, so a flag added to one and forgotten on the other is a bug the user
- * meets as an "unknown option". Declaring them here makes that impossible: the
- * two option sets cannot drift because there is only one definition.
+ * Every command settles its configuration through the same resolver, so a flag
+ * added to one and forgotten on another is a bug the user meets as an "unknown
+ * option". Declaring them here makes that impossible: the option sets cannot
+ * drift because there is only one definition.
  */
-function addSharedOptions(command: Command): Command {
+function addConfigOptions(command: Command): Command {
   return command
     .option("--bench <cmd>", "bench command")
     .option("--prepare <script>", "preparation script to run before each revision")
@@ -598,7 +599,15 @@ function addSharedOptions(command: Command): Command {
       "timeout in seconds",
       parsePositiveIntegerUpTo(MAX_TIMEOUT_SECONDS),
     )
-    .option("--config <file>", "configuration file path")
+    .option("--config <file>", "configuration file path");
+}
+
+/**
+ * Declare the flags a benchmarking command carries: the configuration set plus
+ * the two that govern how its report prints.
+ */
+function addSharedOptions(command: Command): Command {
+  return addConfigOptions(command)
     .option("--no-color", "print the report without ANSI styles")
     .addOption(
       new Option("--format <value>", "output format").choices(["text", "json"]).default("text"),
@@ -774,6 +783,41 @@ async function emitReport<T>(
   await writeAndDrain(process.stdout, output + "\n");
 }
 
+/** How many hex digits of a commit SHA a session summary shows. */
+const SHORT_SHA_LENGTH = 7;
+
+/** `1 iteration`, `2 iterations` — the plural an English summary line needs. */
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * The summary `start` prints: where the session's work happens, and — when the
+ * session was already there — how far it has got.
+ *
+ * Both worktree paths are named because the agent driving the loop edits in one
+ * of them and must never touch the other.
+ */
+function formatStartSummary(result: StartResult): string {
+  const { session, state } = result;
+  const headline = result.resumed
+    ? `Resumed session ${session.sessionId} — ${pluralize(state.iterationCount, "iteration")}, ${pluralize(state.keepCount, "keep")}`
+    : `Started session ${session.sessionId}`;
+
+  const rows: readonly (readonly [string, string])[] = [
+    ["branch", session.branch],
+    ["baseline", `${session.baseline.ref}@${session.baseline.sha.slice(0, SHORT_SHA_LENGTH)}`],
+    ["experiment worktree", session.worktrees.experiment],
+    ["baseline worktree", session.worktrees.baseline],
+  ];
+  const labelWidth = Math.max(...rows.map(([label]) => label.length)) + 1;
+
+  return [
+    headline,
+    ...rows.map(([label, value]) => `  ${`${label}:`.padEnd(labelWidth)} ${value}`),
+  ].join("\n");
+}
+
 /**
  * `import ... with { type: "json" }` would be tidier, but package.json sits
  * outside `rootDir`, so importing it would pull an extra directory level into
@@ -915,13 +959,37 @@ export function createProgram(): Command {
       });
     });
 
+  const startCmd = addConfigOptions(
+    program
+      .command("start")
+      .description("Create or resume this repository's optimization session")
+      .argument("[ref]", "ref the baseline is pinned to; defaults to HEAD"),
+  )
+    .configureHelp(createHelpConfig())
+    .action(async (ref: string | undefined, options: CliFlags) => {
+      /*
+       * The summary prints after the lock is released: it describes a workspace
+       * that is already on disk, so holding the repository against every other
+       * gymrat process while stdout drains would serialize runs for nothing.
+       */
+      const result = await withRepoLock("start", async () => {
+        try {
+          return startSession(repoRoot(), ref, resolveConfig(options));
+        } catch (error) {
+          return await exitWithError(error);
+        }
+      });
+
+      await writeAndDrain(process.stdout, `${formatStartSummary(result)}\n`);
+    });
+
   /*
    * Commander exits 1 for usage errors by default. Override so all Commander
    * errors (unknown option, missing argument, invalid choice) surface as exit
    * code 2, keeping exit 1 reserved for gate trips. Exit code 0 (--help,
    * --version) passes through unchanged.
    */
-  for (const command of [program, compareCmd, measureCmd]) {
+  for (const command of [program, compareCmd, measureCmd, startCmd]) {
     command.exitOverride((err) => {
       throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
     });
