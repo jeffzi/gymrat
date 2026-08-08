@@ -8,7 +8,7 @@ import { GymratError } from "../errors.js";
 const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 /** Directory under the repo root holding session state and its worktrees. */
-const SESSION_DIR_NAME = ".gymrat";
+export const SESSION_DIR_NAME = ".gymrat";
 
 /** Number of hex digits of the repo-root digest that name a lockfile. */
 const LOCK_DIGEST_LENGTH = 12;

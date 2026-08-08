@@ -36,6 +36,29 @@ export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function hasStderr(error: unknown): error is Error & { stderr: string } {
+  return error instanceof Error && "stderr" in error && typeof error.stderr === "string";
+}
+
+/**
+ * The diagnostics a failed child process wrote to stderr.
+ *
+ * `execFileSync` attaches the child's piped stderr to the thrown error, separate
+ * from `message`, which it prefixes with `Command failed: <command>` noise.
+ *
+ * Falls back to `messageOf` for thrown values that carry no stderr.
+ */
+export function stderrTextOf(error: unknown): string {
+  if (hasStderr(error)) {
+    return error.stderr.trim();
+  }
+
+  /* v8 ignore next 2 -- spawn-level failures (the binary missing from PATH, the
+     working directory deleted) throw before the child runs, leaving stderr null;
+     the test harness cannot reproduce those without breaking its environment. */
+  return messageOf(error);
+}
+
 /**
  * Exhaustiveness guard for discriminated unions.
  *

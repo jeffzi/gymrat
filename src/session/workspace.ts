@@ -1,0 +1,185 @@
+import { execFileSync, type StdioOptions } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+import { GymratError, stderrTextOf } from "../errors.js";
+import { baselineWorktreeDir, experimentWorktreeDir, SESSION_DIR_NAME } from "./paths.js";
+
+const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
+
+/** Prefix of the branch a session's experiment worktree sits on. */
+const BRANCH_PREFIX = "gymrat/";
+
+/** A git ref together with the commit it resolved to when the session started. */
+export interface BaselineRef {
+  ref: string;
+  sha: string;
+}
+
+/** A session's git state: the branch it edits on, its worktrees, and its pinned baseline. */
+export interface WorkspaceResult {
+  branch: string;
+  worktrees: { experiment: string; baseline: string };
+  baseline: BaselineRef;
+}
+
+/** How much of a session's worktree pair is on disk. */
+export type WorkspaceStatus = "present" | "partial" | "absent";
+
+/**
+ * Create the branch and both worktrees a session runs in.
+ *
+ * The experiment worktree is checked out *on* `gymrat/<sessionId>` so edits and
+ * commits land on the session's own branch; the baseline worktree is detached at
+ * `baseline.sha` so it keeps measuring the same commit no matter what the ref it
+ * came from does afterwards.
+ *
+ * @throws GymratError when `root` is not a git repository, or when git refuses
+ *   to create the branch or either worktree.
+ */
+export function createWorkspace(
+  root: string,
+  sessionId: string,
+  baseline: BaselineRef,
+): WorkspaceResult {
+  const branch = `${BRANCH_PREFIX}${sessionId}`;
+
+  ensureGitExclude(root);
+
+  runGitStep(
+    ["branch", branch, baseline.sha],
+    root,
+    `Cannot create the session branch '${branch}'`,
+    `A crashed session may have left it behind. Delete it with: git branch -D ${branch}`,
+  );
+  addExperimentWorktree(root, branch);
+  addBaselineWorktree(root, baseline.sha);
+
+  return {
+    branch,
+    worktrees: { experiment: experimentWorktreeDir(root), baseline: baselineWorktreeDir(root) },
+    baseline,
+  };
+}
+
+/**
+ * Keep git from reporting the session directory as untracked.
+ *
+ * The line goes in `.git/info/exclude` rather than `.gitignore` because it is
+ * this checkout's business, not the project's: nothing gymrat writes should show
+ * up in a commit the agent under test prepares.
+ *
+ * @throws GymratError when `root` is not a git repository.
+ */
+export function ensureGitExclude(root: string): void {
+  const excludeFile = path.join(gitCommonDir(root), "info", "exclude");
+  const line = `${SESSION_DIR_NAME}/`;
+  const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, "utf-8") : "";
+
+  if (existing.split("\n").some((entry) => entry.trim() === line)) {
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
+  const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
+  fs.writeFileSync(excludeFile, `${existing}${separator}${line}\n`);
+}
+
+/** Report how many of the session's two worktree directories are on disk. */
+export function detectWorkspace(root: string): WorkspaceStatus {
+  const worktrees = [experimentWorktreeDir(root), baselineWorktreeDir(root)];
+  const present = worktrees.filter(isDirectory).length;
+
+  if (present === worktrees.length) {
+    return "present";
+  }
+  return present === 0 ? "absent" : "partial";
+}
+
+/**
+ * Put back whichever of a session's worktrees is no longer on disk.
+ *
+ * Resuming has to survive a worktree the user deleted, so this is a no-op when
+ * both are present — an experiment worktree carrying uncommitted work is never
+ * re-checked-out.
+ *
+ * @throws GymratError when git refuses to prune or to add a worktree.
+ */
+export function recreateWorkspace(root: string, branch: string, baselineSha: string): void {
+  const needsExperiment = !isDirectory(experimentWorktreeDir(root));
+  const needsBaseline = !isDirectory(baselineWorktreeDir(root));
+
+  if (!needsExperiment && !needsBaseline) {
+    return;
+  }
+
+  // git keeps the admin entry of a worktree whose directory vanished, and refuses
+  // to re-add that path — or to check its branch out again — until the entry goes.
+  runGitStep(
+    ["worktree", "prune"],
+    root,
+    "Cannot clear the session's stale worktree entries",
+    "Inspect them with: git worktree list",
+  );
+
+  if (needsExperiment) {
+    addExperimentWorktree(root, branch);
+  }
+  if (needsBaseline) {
+    addBaselineWorktree(root, baselineSha);
+  }
+}
+
+function addExperimentWorktree(root: string, branch: string): void {
+  const dir = experimentWorktreeDir(root);
+  runGitStep(
+    ["worktree", "add", dir, branch],
+    root,
+    `Cannot create the experiment worktree at ${dir}`,
+    `Check whether ${branch} is already checked out elsewhere: git worktree list`,
+  );
+}
+
+function addBaselineWorktree(root: string, sha: string): void {
+  const dir = baselineWorktreeDir(root);
+  runGitStep(
+    ["worktree", "add", "--detach", dir, sha],
+    root,
+    `Cannot create the baseline worktree at ${dir}`,
+    `Check that ${sha} is a commit this repository has: git cat-file -t ${sha}`,
+  );
+}
+
+/**
+ * Absolute path of the repository's shared git directory.
+ *
+ * `info/exclude` lives in the common directory, so a linked worktree — whose
+ * `.git` is a file pointing elsewhere — excludes through the same file the main
+ * checkout uses. git prints the path relative to the working directory when it
+ * sits inside it, hence the resolve against `root`.
+ */
+function gitCommonDir(root: string): string {
+  const printed = runGitStep(
+    ["rev-parse", "--git-common-dir"],
+    root,
+    `Not a git repository: ${root}`,
+    "Run gymrat from inside a git repository.",
+  ).trim();
+  return path.resolve(root, printed);
+}
+
+function isDirectory(dir: string): boolean {
+  return fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory() ?? false;
+}
+
+/**
+ * Run git in `cwd`, turning a non-zero exit into a `GymratError` that carries
+ * git's own diagnostics after `message`.
+ */
+function runGitStep(args: readonly string[], cwd: string, message: string, hint: string): string {
+  try {
+    return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: GIT_STDIO });
+  } catch (error) {
+    throw new GymratError(`${message}: ${stderrTextOf(error)}`, hint, { cause: error });
+  }
+}

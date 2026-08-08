@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { GymratError, messageOf } from "./errors.js";
+import { GymratError, stderrTextOf } from "./errors.js";
 
 /** A directory benchmarked where it sits, with no worktree of its own. */
 export interface InPlaceTarget {
@@ -129,7 +129,7 @@ export function resolveTarget(input: string, repoDir: string): Target {
     };
   } catch (error) {
     throw new GymratError(
-      `Cannot resolve target '${input}': ${gitErrorText(error)}`,
+      `Cannot resolve target '${input}': ${stderrTextOf(error)}`,
       "Pass an existing directory, or a git ref that resolves to a commit.",
       { cause: error },
     );
@@ -174,28 +174,6 @@ export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): vo
 }
 
 /**
- * Git's own diagnostics for a failed `runGitCommand` call.
- *
- * `execFileSync` attaches the child's piped stderr to the thrown error,
- * separate from `message`, which it prefixes with `Command failed: git ...`
- * noise. Reporting stderr matches how `compare.ts` builds user-facing text.
- */
-function hasStderr(error: unknown): error is Error & { stderr: string } {
-  return error instanceof Error && "stderr" in error && typeof error.stderr === "string";
-}
-
-function gitErrorText(error: unknown): string {
-  if (hasStderr(error)) {
-    return error.stderr.trim();
-  }
-
-  /* v8 ignore next 2 -- spawn-level failures (git missing from PATH, repoDir
-     deleted) throw before the child runs, leaving stderr null; the test harness
-     cannot reproduce those without breaking the environment it runs in. */
-  return messageOf(error);
-}
-
-/**
  * Run a git command, reporting success or failure instead of throwing.
  *
  * @returns `undefined` on success, or git's own stderr text on failure.
@@ -205,7 +183,7 @@ function tryGitCommand(args: readonly string[], repoDir: string): string | undef
     runGitCommand(args, repoDir);
     return undefined;
   } catch (error) {
-    return gitErrorText(error);
+    return stderrTextOf(error);
   }
 }
 
