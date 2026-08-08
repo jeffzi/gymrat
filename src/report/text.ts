@@ -157,7 +157,7 @@ function joinHeaderParts(parts: readonly string[]): string {
 }
 
 /** `count`, followed by `noun` pluralized with a trailing `s` unless `count` is exactly one. */
-function pluralize(count: number, noun: string): string {
+export function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 

@@ -1,15 +1,22 @@
 /**
- * How the loop states an iteration: its run header, and the verdict it closes on.
+ * How the loop states an iteration — its run header and the verdict it closes on
+ * — and how `gymrat status` states a whole session.
  *
- * The table between the two is the comparison report `text.ts` already renders —
- * the loop only replaces the header above it and appends the verdict below it,
- * so a reader who knows `gymrat compare` reads an iteration without relearning
- * anything.
+ * The table between an iteration's header and its verdict is the comparison
+ * report `text.ts` already renders: the loop only replaces the header above it
+ * and appends the verdict below it, so a reader who knows `gymrat compare` reads
+ * an iteration without relearning anything. The status lines follow the same
+ * conventions — the table's glyphs, the verdict block's colors, the dimmed `·`
+ * — so a session reads as the iterations it is made of.
  */
 
-import type { Style } from "./format.js";
-import { formatDelta, formatHintLabel, formatLabel } from "./format.js";
-import { pairedSamples } from "./text.js";
+import type { ConfigStop } from "../config.js";
+import { assertNever } from "../errors.js";
+import { computeMedian } from "../math.js";
+import type { BaselineRecord, SessionRecord } from "../session/records.js";
+import type { DisplayClass, Style } from "./format.js";
+import { formatDelta, formatHintLabel, formatLabel, formatValue, getGlyph } from "./format.js";
+import { pairedSamples, pluralize } from "./text.js";
 import type { MetricComparisons } from "./types.js";
 
 /**
@@ -176,4 +183,176 @@ export function deriveOutcome(metrics: MetricComparisons, primary: LoopPrimary):
     return "regressed";
   }
   return primaryImproved(metrics, primary) ? "improved" : "no-signal";
+}
+
+/**
+ * What became of a measured iteration.
+ *
+ * A blocked keep is its own state rather than a variant of `unsettled`: the
+ * iteration is still waiting to be settled, but the log knows why the last
+ * attempt did not land, and that reason is what the agent acts on.
+ */
+export type SettleState =
+  | { readonly kind: "kept"; readonly commit?: string }
+  | { readonly kind: "discarded" }
+  | { readonly kind: "unsettled" }
+  | { readonly kind: "keep-blocked"; readonly reason?: string };
+
+/** One iteration as a status line states it. */
+export interface StatusIteration {
+  readonly seq: number;
+  /** How far the iteration's primary figure moved, whichever figure that was. */
+  readonly deltaPct: number;
+  readonly outcome: LoopOutcome;
+  readonly settle: SettleState;
+}
+
+/** What a session adds up to: how its iterations settled, and how near its stop it is. */
+export interface StatusSummary {
+  readonly iterationCount: number;
+  readonly keepCount: number;
+  readonly discardCount: number;
+  /** The configured stop conditions; absent, the session runs until the agent stops it. */
+  readonly stop?: ConfigStop;
+  /** Whether a kept iteration reached the configured target. */
+  readonly targetReached: boolean;
+}
+
+/** How many hex digits of a sha a status line shows. */
+const SHORT_SHA_LENGTH = 7;
+
+/**
+ * The glyph each outcome wears, borrowed from the comparison table's vocabulary.
+ *
+ * A no-signal iteration takes the table's within-noise glyph: both say the same
+ * thing — the figure moved by nothing the run can stand behind.
+ */
+const OUTCOME_GLYPHS: Record<LoopOutcome, DisplayClass> = {
+  improved: "improved",
+  regressed: "regressed",
+  "no-signal": "within-noise",
+};
+
+/**
+ * The session a status report opens on: what it is, what it forked from, where
+ * it works, and how it measures.
+ *
+ * Both worktree paths are named for the reason `gymrat start` names them: the
+ * agent edits in one of them and must never touch the other.
+ */
+export function formatStatusHeader(session: SessionRecord): readonly string[] {
+  const baseline = `${session.baseline.ref}@${session.baseline.sha.slice(0, SHORT_SHA_LENGTH)}`;
+  return [
+    [
+      formatLabel(`session ${session.sessionId}`, ["bold"]),
+      `baseline ${baseline}`,
+      `adapter ${session.config.adapter}`,
+    ].join(separator()),
+    `branch ${session.branch}`,
+    `experiment worktree ${session.worktrees.experiment}`,
+    `baseline worktree ${session.worktrees.baseline}`,
+  ];
+}
+
+/** How an iteration was settled, in the words `status` reports it with. */
+function formatSettleState(settle: SettleState): string {
+  switch (settle.kind) {
+    case "kept":
+      return settle.commit === undefined
+        ? "kept"
+        : `kept ${settle.commit.slice(0, SHORT_SHA_LENGTH)}`;
+    case "discarded":
+      return "discarded";
+    case "unsettled":
+      return "unsettled";
+    case "keep-blocked":
+      return settle.reason === undefined ? "keep-blocked" : `keep-blocked (${settle.reason})`;
+    default:
+      return assertNever(settle);
+  }
+}
+
+/**
+ * One iteration of the session's history: which one it was, what it did, and
+ * what became of it.
+ *
+ * The glyph carries the outcome's own color, so a session's course is legible
+ * down the left of the report before a word of it is read.
+ */
+export function formatStatusIteration(iteration: StatusIteration): string {
+  const glyph = formatLabel(
+    getGlyph(OUTCOME_GLYPHS[iteration.outcome]),
+    OUTCOME_STYLES[iteration.outcome],
+  );
+  return [
+    `iteration ${iteration.seq}`,
+    `${glyph} ${formatDelta(iteration.deltaPct)}`,
+    formatSettleState(iteration.settle),
+  ].join(separator());
+}
+
+/** The median each metric measured across `samples`, in the order the rounds first named them. */
+function metricMedians(samples: readonly Record<string, number>[]): [string, number][] {
+  const byMetric = new Map<string, number[]>();
+  for (const round of samples) {
+    for (const [name, value] of Object.entries(round)) {
+      const values = byMetric.get(name) ?? [];
+      values.push(value);
+      byMetric.set(name, values);
+    }
+  }
+  return [...byMetric].map(([name, values]) => [name, computeMedian(values)]);
+}
+
+/**
+ * A recorded baseline measurement: what was measured, and the median each of
+ * its metrics came to.
+ *
+ * The log stores every round the measurement took, so the medians are computed
+ * here rather than stored — a later statistics change re-reads the same records
+ * instead of invalidating them.
+ */
+export function formatStatusBaseline(record: BaselineRecord): string {
+  return [
+    `baseline ${record.label}`,
+    ...metricMedians(record.samples).map(([name, median]) => `${name} ${formatValue(median)}`),
+  ].join(separator());
+}
+
+/** Where the session stands against its configured stop, or nothing when none is configured. */
+function formatStopState(summary: StatusSummary): string | undefined {
+  const { stop } = summary;
+  if (stop === undefined) {
+    return undefined;
+  }
+
+  const parts = [
+    ...(stop.maxIterations === undefined
+      ? []
+      : [`${summary.iterationCount} of ${stop.maxIterations} iterations`]),
+    ...(stop.targetValue === undefined
+      ? []
+      : [summary.targetReached ? "target reached" : "target pending"]),
+  ];
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return `${formatLabel("stop:", ["dim"])} ${parts.join(separator())}`;
+}
+
+/**
+ * The lines closing a status report: how the session's iterations settled, and
+ * how near it is to the stop it was given.
+ *
+ * The stop line is left out when nothing is configured rather than reported as
+ * unlimited: a loop the agent stops when it likes has no state to state.
+ */
+export function formatStatusFooter(summary: StatusSummary): readonly string[] {
+  const totals = [
+    pluralize(summary.iterationCount, "iteration"),
+    `${summary.keepCount} kept`,
+    `${summary.discardCount} discarded`,
+  ].join(separator());
+  const stop = formatStopState(summary);
+  return stop === undefined ? [totals] : [totals, stop];
 }

@@ -22,6 +22,7 @@ import { EtaTracker, formatEta } from "./eta.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
 import { discardSession, keepSession } from "./loop/settle.js";
 import { startSession, type StartResult } from "./loop/start.js";
+import { statusSession } from "./loop/status.js";
 import { measure } from "./measure.js";
 import type { MeasureOptions } from "./measure.js";
 import { metricRecord } from "./metric-record.js";
@@ -576,6 +577,12 @@ interface SharedFlags extends CliFlags {
   format: "text" | "json";
 }
 
+/** The status command's flags: the configuration set plus whether its report may be styled. */
+interface StatusFlags extends CliFlags {
+  /** Commander's `--no-color` counterpart: true unless the flag was passed. */
+  color: boolean;
+}
+
 /** The keep command's flags: the configuration set plus the message the commit carries. */
 interface KeepFlags extends CliFlags {
   /** Commit message the agent supplied; absent, keep generates one from the iteration. */
@@ -1074,6 +1081,36 @@ export function createProgram(): Command {
     });
 
   /*
+   * The one loop command that takes no repository lock: it reads the session
+   * log and writes nothing, so serializing it against a running iterate would
+   * only make the agent wait to be told what is already on disk.
+   */
+  const statusCmd = addConfigOptions(
+    program
+      .command("status")
+      .description("Show this repository's session history, read from its log")
+      .option("--no-color", "print the report without ANSI styles"),
+  )
+    .configureHelp(createHelpConfig())
+    .action(async (options: StatusFlags) => {
+      // Suppressed before rendering, not after: the lines style themselves as
+      // they are built, and `styleText` reads the environment on every call.
+      if (!options.color) {
+        suppressColor();
+      }
+
+      let report: string;
+      try {
+        report = statusSession(repoRoot(), resolveConfig(options));
+      } catch (error) {
+        await exitWithError(error);
+        return;
+      }
+
+      await writeAndDrain(process.stdout, `${report}\n`);
+    });
+
+  /*
    * Commander exits 1 for usage errors by default. Override so all Commander
    * errors (unknown option, missing argument, invalid choice) surface as exit
    * code 2, keeping exit 1 reserved for gate trips. Exit code 0 (--help,
@@ -1087,6 +1124,7 @@ export function createProgram(): Command {
     iterateCmd,
     keepCmd,
     discardCmd,
+    statusCmd,
   ]) {
     command.exitOverride((err) => {
       throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
