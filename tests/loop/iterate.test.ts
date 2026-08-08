@@ -94,6 +94,14 @@ function noisyRounds(): Record<string, number>[] {
   return rounds(jittered(BASELINE_MS, 2, 1), jittered(BASELINE_BYTES, 20, 10));
 }
 
+/** Rounds reporting `name` alone, the shape a bench filtered to that metric reports. */
+function filteredRounds(name: string, values: readonly number[]): Record<string, number>[] {
+  return values.map((value) => ({ [name]: value }));
+}
+
+/** The confirm-rerun template a consumer configures when their bench can be narrowed. */
+const FILTER = "npm run bench -- --filter {names}";
+
 /** A settled run configuration, geomean-led unless a test names its own primary. */
 function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
@@ -203,13 +211,59 @@ function stubSamples(
   );
 }
 
+/** One paired run's answer to a sampling call: the rounds each worktree reports. */
+interface PairedRun {
+  experiment: Record<string, number>[];
+  baseline: Record<string, number>[];
+}
+
+/**
+ * Answer the nth sampling call with the nth entry of `runs` — a first run, then
+ * the confirmation rerun — keyed on the directory each context names.
+ *
+ * A `GymratError` entry rejects that call instead, standing in for a bench that
+ * failed mid-run. A call past the end of `runs` rejects too, so an unexpected
+ * extra rerun surfaces as a failure rather than as silently reused samples.
+ */
+function stubRuns(root: string, runs: readonly (PairedRun | GymratError)[]): void {
+  const worktrees = sessionRecord(root).worktrees;
+  let index = 0;
+  collectSamplesMock.mockImplementation((_adapter, targets) => {
+    const run = runs[index];
+    index += 1;
+    if (run === undefined) {
+      return Promise.reject(new Error(`unexpected sampling call ${index}`));
+    }
+    if (run instanceof GymratError) {
+      return Promise.reject(run);
+    }
+    const byDir = new Map<string, Record<string, number>[]>([
+      [worktrees.experiment, run.experiment],
+      [worktrees.baseline, run.baseline],
+    ]);
+    return Promise.resolve(targets.map((ctx) => ({ ctx, samples: byDir.get(ctx.dir) ?? [] })));
+  });
+}
+
+/** The targets and bench command of sampling call `index`, failing the test if there was none. */
+function samplingCall(index: number): { targets: readonly TargetContext[]; bench: string } {
+  const call = collectSamplesMock.mock.calls[index];
+  if (call === undefined) {
+    throw new Error(`expected collectSamples to have been called ${index + 1} time(s)`);
+  }
+  return { targets: call[1], bench: call[2].bench };
+}
+
 /** The contexts handed to the first sampling call, failing the test if there was none. */
 function sampledTargets(): readonly TargetContext[] {
-  const call = collectSamplesMock.mock.calls[0];
-  if (call === undefined) {
-    throw new Error("expected collectSamples to have been called");
-  }
-  return call[1];
+  return samplingCall(0).targets;
+}
+
+/** The report's lines, stripped of color and indentation, for asserting on what it says. */
+function reportLines(report: string): string[] {
+  return stripAnsi(report)
+    .split("\n")
+    .map((line) => line.trim());
 }
 
 /** Run `act` and hand back the GymratError it rejected with, failing the test if it threw none. */
@@ -414,6 +468,213 @@ describe("iterateSession", () => {
         .soft(report.split("\n")[0])
         .toBe("iteration 2 · experiment vs baseline · 10 paired samples");
       expect(report).toContain("total_ms");
+    });
+  });
+
+  describe("when a gating metric comes back regressed", () => {
+    beforeEach(() => {
+      writeSessionLog(repo.dir);
+    });
+
+    it("reruns the same paired sampling through the filter template", async () => {
+      // Arrange
+      stubRuns(repo.dir, [
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+      ]);
+
+      // Act
+      await iterateSession(repo.dir, config({ filter: FILTER }));
+
+      // Assert
+      expect.soft(collectSamplesMock).toHaveBeenCalledTimes(2);
+      expect.soft(samplingCall(1).targets).toStrictEqual(samplingCall(0).targets);
+      expect(samplingCall(1).bench).toBe("npm run bench -- --filter total_ms alloc_bytes");
+    });
+
+    it("reruns the whole bench command when no filter template is configured", async () => {
+      // Arrange
+      stubRuns(repo.dir, [
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+      ]);
+
+      // Act
+      await iterateSession(repo.dir, config());
+
+      // Assert
+      expect(samplingCall(1).bench).toBe("npm run bench");
+    });
+
+    it("records the rerun's raw samples beside the metrics it re-measured", async () => {
+      // Arrange
+      const rerun = {
+        experiment: filteredRounds("total_ms", scaled(BASELINE_MS, 1.2)),
+        baseline: filteredRounds("total_ms", BASELINE_MS),
+      };
+      stubRuns(repo.dir, [{ experiment: regressedRounds(), baseline: baselineRounds() }, rerun]);
+      const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+
+      // Act
+      const result = await iterateSession(repo.dir, resolved);
+
+      // Assert
+      expect(result.record.confirm).toStrictEqual({
+        ran: true,
+        filtered: ["total_ms"],
+        samples: { experiment: rerun.experiment, baseline: rerun.baseline },
+      });
+    });
+
+    it("marks the metric confirmed and reads the iteration as regressed when the rerun agrees", async () => {
+      // Arrange
+      stubRuns(repo.dir, [
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+        {
+          experiment: filteredRounds("total_ms", scaled(BASELINE_MS, 1.2)),
+          baseline: filteredRounds("total_ms", BASELINE_MS),
+        },
+      ]);
+      const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+
+      // Act
+      const result = await iterateSession(repo.dir, resolved);
+
+      // Assert
+      expect.soft(result.record.metrics.total_ms).toStrictEqual({
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        deltaPct: expect.closeTo(10, 6),
+        verdict: "regressed",
+        method: "signed-rank",
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        p: expect.any(Number),
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        noisePct: expect.any(Number),
+        gating: true,
+        confirmed: true,
+      });
+      expect.soft(result.record.outcome).toBe("regressed");
+      expect(reportLines(result.report)).toContain("total_ms: regression confirmed on rerun");
+    });
+
+    it.each([
+      { rerun: "improved", experiment: scaled(BASELINE_MS, 0.9) },
+      { rerun: "no-signal", experiment: jittered(BASELINE_MS, 2, 1) },
+    ])(
+      "demotes the metric to no-signal when the rerun comes back $rerun",
+      async ({ experiment }) => {
+        // Arrange
+        stubRuns(repo.dir, [
+          { experiment: regressedRounds(), baseline: baselineRounds() },
+          {
+            experiment: filteredRounds("total_ms", experiment),
+            baseline: filteredRounds("total_ms", BASELINE_MS),
+          },
+        ]);
+        const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+
+        // Act
+        const result = await iterateSession(repo.dir, resolved);
+
+        // Assert
+        expect.soft(result.record.metrics.total_ms).toStrictEqual({
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+          deltaPct: expect.closeTo(10, 6),
+          verdict: "no-signal",
+          method: "signed-rank",
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+          p: expect.any(Number),
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+          noisePct: expect.any(Number),
+          gating: true,
+          confirmed: false,
+        });
+        expect.soft(result.record.outcome).toBe("no-signal");
+        expect(reportLines(result.report)).toContain("total_ms: regression not confirmed on rerun");
+      },
+    );
+
+    it("fails the iterate and records nothing when the rerun's bench fails", async () => {
+      // Arrange
+      stubRuns(repo.dir, [
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+        new GymratError("bench command failed"),
+      ]);
+      const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+
+      // Act
+      const error = await captureGymratError(() => iterateSession(repo.dir, resolved));
+
+      // Assert
+      expect.soft(error.message).toBe("bench command failed");
+      expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(1);
+    });
+  });
+
+  describe("when the regressed metric is one a rerun cannot inform", () => {
+    beforeEach(() => {
+      writeSessionLog(repo.dir);
+    });
+
+    it("gates an exact metric on the first run alone", async () => {
+      // Arrange
+      stubSamples(repo.dir, regressedRounds(), baselineRounds());
+      const resolved = config({
+        metrics: { total_ms: { exact: true }, alloc_bytes: { gating: false } },
+      });
+
+      // Act
+      const result = await iterateSession(repo.dir, resolved);
+
+      // Assert
+      expect.soft(collectSamplesMock).toHaveBeenCalledTimes(1);
+      expect.soft(result.record.metrics.total_ms).toStrictEqual({
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        deltaPct: expect.closeTo(10, 6),
+        verdict: "regressed",
+        method: "exact",
+        gating: true,
+        confirmed: false,
+      });
+      expect(result.record.outcome).toBe("regressed");
+    });
+
+    it("leaves an exact metric out of the rerun's filter list", async () => {
+      // Arrange
+      stubRuns(repo.dir, [
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+        {
+          experiment: filteredRounds("alloc_bytes", scaled(BASELINE_BYTES, 1.2)),
+          baseline: filteredRounds("alloc_bytes", BASELINE_BYTES),
+        },
+      ]);
+
+      // Act
+      await iterateSession(
+        repo.dir,
+        config({ filter: FILTER, metrics: { total_ms: { exact: true } } }),
+      );
+
+      // Assert
+      expect(samplingCall(1).bench).toBe("npm run bench -- --filter alloc_bytes");
+    });
+
+    it("leaves a non-gating metric to inform without rerunning", async () => {
+      // Arrange
+      const experiment = rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 1.1));
+      stubSamples(repo.dir, experiment, baselineRounds());
+
+      // Act
+      const result = await iterateSession(
+        repo.dir,
+        config({ metrics: { alloc_bytes: { gating: false } } }),
+      );
+
+      // Assert
+      expect.soft(collectSamplesMock).toHaveBeenCalledTimes(1);
+      expect.soft(result.record).not.toHaveProperty("confirm");
+      expect.soft(result.record.metrics.alloc_bytes?.verdict).toBe("regressed");
+      expect(result.record.outcome).toBe("improved");
     });
   });
 

@@ -33,6 +33,19 @@ export type LoopPrimary =
   | { readonly kind: "geomean"; readonly deltaPct: number }
   | { readonly kind: "metric"; readonly name: string; readonly deltaPct: number };
 
+/**
+ * One metric a confirmation rerun re-measured, and whether the rerun agreed.
+ *
+ * A regression only stands when both runs call it, so the block reports the
+ * rerun's answer either way: a confirmed regression is the iteration's news, and
+ * an unconfirmed one explains why a metric that read `regressed` in the table's
+ * first pass now rests at no signal.
+ */
+export interface RerunConfirmation {
+  readonly metric: string;
+  readonly confirmed: boolean;
+}
+
 /** The candidate an iteration measures: the experiment, judged against the baseline. */
 export const EXPERIMENT_INDEX = 0;
 
@@ -85,9 +98,21 @@ export function formatLoopHeader(seq: number, samples: number): string {
   );
 }
 
+/** What the rerun settled about one metric, painted the way the table paints that answer. */
+function formatRerunLine(rerun: RerunConfirmation): string {
+  const phrase = rerun.confirmed
+    ? formatLabel("regression confirmed on rerun", ["red"])
+    : formatLabel("regression not confirmed on rerun", ["dim"]);
+  return `${rerun.metric}: ${phrase}`;
+}
+
 /**
- * The lines closing an iteration: what the primary figure did, the verdict read
- * off it, and the step that follows.
+ * The lines closing an iteration: what a confirmation rerun settled, what the
+ * primary figure did, the verdict read off it, and the step that follows.
+ *
+ * The rerun lines open the block rather than close it because they qualify the
+ * table above — a metric the table shows at rest that the first run had called a
+ * regression is only readable once the rerun is named.
  *
  * Returned as lines rather than a block of text so the caller appends them to
  * the report it already holds as lines.
@@ -96,9 +121,11 @@ export function formatVerdictBlock(
   outcome: LoopOutcome,
   primary: LoopPrimary,
   nextStep: string,
+  reruns: readonly RerunConfirmation[] = [],
 ): readonly string[] {
   const verdict = formatLabel(OUTCOME_WORDS[outcome], OUTCOME_STYLES[outcome]);
   return [
+    ...reruns.map(formatRerunLine),
     `primary: ${formatDelta(primary.deltaPct)}${separator()}verdict: ${verdict}`,
     `${formatHintLabel()} ${nextStep}`,
   ];

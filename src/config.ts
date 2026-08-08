@@ -170,10 +170,10 @@ function configMessage(configPath: string, issue: SchemaIssue): string {
 }
 
 /** The primary that aggregates every gating metric rather than naming one. */
-const GEOMEAN_PRIMARY = "geomean";
+export const GEOMEAN_PRIMARY = "geomean";
 
 /** The token a `filter` command must carry, where the loop substitutes the benchmark names. */
-const FILTER_PLACEHOLDER = "{names}";
+export const FILTER_PLACEHOLDER = "{names}";
 
 const DEFAULTS = {
   adapter: "metric-lines",

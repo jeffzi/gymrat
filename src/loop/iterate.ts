@@ -1,9 +1,9 @@
 import { getAdapter } from "../adapters/index.js";
 import type { ResolvedConfig, ResolvedMetricMeta } from "../config.js";
-import { resolveMetricMeta } from "../config.js";
+import { FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, resolveMetricMeta } from "../config.js";
 import { GymratError } from "../errors.js";
 import { metricRecord } from "../metric-record.js";
-import type { LoopOutcome, LoopPrimary } from "../report/loop.js";
+import type { LoopOutcome, LoopPrimary, RerunConfirmation } from "../report/loop.js";
 import {
   deriveOutcome,
   EXPERIMENT_INDEX,
@@ -29,9 +29,6 @@ import { computeKindAggregates } from "../verdict/aggregate.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
 import { computeGeomean, computeVerdicts, pairSamples } from "../verdict/verdict.js";
 
-/** The primary figure that aggregates every gating metric rather than naming one. */
-const GEOMEAN_PRIMARY = "geomean";
-
 /** What the loop tells the agent to do next, one per outcome. */
 const NEXT_STEPS: Record<LoopOutcome, string> = {
   improved: "gymrat keep",
@@ -45,6 +42,16 @@ export interface IterateOptions {
   onProgress?: (step: ProgressStep) => void;
   /** Aborting it kills the in-flight bench command. Omitted, nothing can interrupt the run. */
   signal?: AbortSignal;
+}
+
+/** What a confirmation rerun measured, and which of the metrics it re-measured it stood behind. */
+interface Confirmation {
+  /** The metrics the rerun was asked to re-measure, in the order the run reported them. */
+  readonly filtered: readonly string[];
+  /** The rerun's own rounds, kept raw so a later statistics change can re-read them. */
+  readonly samples: IterationRecord["samples"];
+  /** The subset of `filtered` the rerun also gated as regressed. */
+  readonly confirmed: ReadonlySet<string>;
 }
 
 /** One measured iteration: what was written to the log, and what to print about it. */
@@ -90,14 +97,23 @@ export async function iterateSession(
     );
   }
 
-  const [baseline, experiment] = await measure(state.session, config, options);
+  const [baseline, experiment] = await measure(state.session, config, options, config.bench);
   const metricMeta = resolveMeta(config, [baseline.samples, experiment.samples]);
-  const verdicts = computeVerdicts(
+  const firstRun = computeVerdicts(
     baseline.samples,
     experiment.samples,
     metricMeta,
     config.unstableNoisePct,
   );
+
+  const confirmation = await confirmRegressions(
+    state.session,
+    config,
+    options,
+    firstRun,
+    metricMeta,
+  );
+  const verdicts = applyConfirmation(firstRun, confirmation);
 
   const seq = state.lastSeq + 1;
   const result = buildComparisonResult(baseline, experiment, verdicts, metricMeta, config);
@@ -109,14 +125,99 @@ export async function iterateSession(
     seq,
     at: new Date().toISOString(),
     samples: { experiment: experiment.samples, baseline: baseline.samples },
-    metrics: recordedVerdicts(verdicts, metricMeta),
+    metrics: recordedVerdicts(verdicts, metricMeta, confirmation),
+    ...(confirmation !== undefined && {
+      confirm: {
+        ran: true,
+        filtered: [...confirmation.filtered],
+        samples: confirmation.samples,
+      },
+    }),
     primary,
     outcome,
     targetReached: targetReached(config, primary, result.metrics),
   };
   appendRecord(jsonlPath, record);
 
-  return { record, report: renderIteration(result, seq, outcome, primary) };
+  return { record, report: renderIteration(result, seq, outcome, primary, confirmation) };
+}
+
+/**
+ * Re-measure the gating metrics the first run called regressed, once.
+ *
+ * Only a rerun that also gates a metric makes its regression stand — the
+ * asymmetry is deliberate: a false alarm costs the agent an edit it did not need
+ * to make, while a missed regression is caught by the next iteration's baseline.
+ *
+ * `exact` metrics never take part. One differing sample is already the whole
+ * signal for them, so a rerun could only add noise to a decision that has none.
+ *
+ * With a `filter` template configured the rerun benches just those metrics,
+ * which is what makes confirming cheap enough to do on every failure; without
+ * one it re-runs the whole bench and reads the same metrics out of it.
+ *
+ * @returns What the rerun found, or `undefined` when nothing called for one.
+ * @throws GymratError when the rerun's bench command fails, exactly as the first
+ *   run's failure does — an iteration nobody could confirm is not recorded.
+ */
+async function confirmRegressions(
+  session: SessionRecord,
+  config: ResolvedConfig,
+  options: IterateOptions,
+  verdicts: Record<string, MetricVerdict>,
+  metricMeta: Record<string, ResolvedMetricMeta>,
+): Promise<Confirmation | undefined> {
+  const filtered = Object.keys(metricMeta).filter((metricName) => {
+    const meta = metricMeta[metricName];
+    return meta?.gating === true && !meta.exact && verdicts[metricName]?.verdict === "regressed";
+  });
+  if (filtered.length === 0) {
+    return undefined;
+  }
+
+  const bench =
+    config.filter === undefined
+      ? config.bench
+      : config.filter.replaceAll(FILTER_PLACEHOLDER, filtered.join(" "));
+  const [baseline, experiment] = await measure(session, config, options, bench);
+
+  const rerun = computeVerdicts(
+    baseline.samples,
+    experiment.samples,
+    metricMeta,
+    config.unstableNoisePct,
+  );
+  return {
+    filtered,
+    samples: { experiment: experiment.samples, baseline: baseline.samples },
+    confirmed: new Set(filtered.filter((name) => rerun[name]?.verdict === "regressed")),
+  };
+}
+
+/**
+ * The verdicts as the iteration is finally read: every re-measured regression
+ * the rerun would not stand behind demoted to no signal.
+ *
+ * Only the verdict word moves. The delta, the noise, and the p-value stay the
+ * first run's, because they describe the first run's samples — the ones the
+ * record stores under `samples` and the table draws its medians from. The
+ * rerun's own rounds are kept separately, under `confirm`.
+ */
+function applyConfirmation(
+  verdicts: Record<string, MetricVerdict>,
+  confirmation: Confirmation | undefined,
+): Record<string, MetricVerdict> {
+  if (confirmation === undefined) {
+    return verdicts;
+  }
+
+  const settled = metricRecord<MetricVerdict>();
+  for (const [metricName, verdict] of Object.entries(verdicts)) {
+    const unconfirmed =
+      confirmation.filtered.includes(metricName) && !confirmation.confirmed.has(metricName);
+    settled[metricName] = unconfirmed ? { ...verdict, verdict: "no-signal" } : verdict;
+  }
+  return settled;
 }
 
 /**
@@ -124,11 +225,16 @@ export async function iterateSession(
  *
  * The order is the one `compare()` samples in — old side first — so a round of
  * the loop perturbs the two sides in the same sequence a plain comparison would.
+ *
+ * `bench` is a parameter rather than read off `config` because a confirmation
+ * rerun narrows the command to the metrics it is re-measuring, while sampling
+ * the same pair of worktrees the same way.
  */
 async function measure(
   session: SessionRecord,
   config: ResolvedConfig,
   options: IterateOptions,
+  bench: string,
 ): Promise<readonly [baseline: TargetSamples, experiment: TargetSamples]> {
   const contexts: TargetContext[] = [
     worktreeContext(session.worktrees.baseline, "baseline", "old"),
@@ -136,7 +242,7 @@ async function measure(
   ];
 
   const samplingOptions: SamplingOptions = {
-    bench: config.bench,
+    bench,
     prepare: config.prepare,
     samples: config.samples,
     timeoutSeconds: config.timeoutSeconds,
@@ -311,6 +417,7 @@ function targetReached(
 function recordedVerdicts(
   verdicts: Record<string, MetricVerdict>,
   metricMeta: Record<string, ResolvedMetricMeta>,
+  confirmation: Confirmation | undefined,
 ): IterationRecord["metrics"] {
   return Object.fromEntries(
     Object.entries(verdicts).map(([metricName, verdict]) => [
@@ -322,8 +429,7 @@ function recordedVerdicts(
         ...(verdict.method === "signed-rank" ? { p: verdict.p } : {}),
         ...(verdict.method === "exact" ? {} : { noisePct: verdict.noisePct }),
         gating: metricMeta[metricName]?.gating ?? true,
-        // Task 5 owns confirm-on-fail; until then no verdict has been re-run.
-        confirmed: false,
+        confirmed: confirmation?.confirmed.has(metricName) ?? false,
       },
     ]),
   );
@@ -335,7 +441,15 @@ function renderIteration(
   seq: number,
   outcome: LoopOutcome,
   primary: LoopPrimary,
+  confirmation: Confirmation | undefined,
 ): string {
+  const reruns: RerunConfirmation[] =
+    confirmation?.filtered.map((metric) => ({
+      metric,
+      confirmed: confirmation.confirmed.has(metric),
+    })) ?? [];
   const report = renderReport(result, { header: formatLoopHeader(seq, result.samples) });
-  return [report, "", ...formatVerdictBlock(outcome, primary, NEXT_STEPS[outcome])].join("\n");
+  return [report, "", ...formatVerdictBlock(outcome, primary, NEXT_STEPS[outcome], reruns)].join(
+    "\n",
+  );
 }
