@@ -130,6 +130,81 @@ export function recreateWorkspace(root: string, branch: string, baselineSha: str
   }
 }
 
+/**
+ * Commit everything standing in the experiment worktree, and report the commit.
+ *
+ * Staging is `add -A` so the commit holds what the agent produced whether it
+ * tracked its new files or not — the worktree belongs to the session, and a keep
+ * that left half an edit behind would put the next iteration's baseline out of
+ * step with the code that earned it.
+ *
+ * @throws GymratError when git refuses to stage or to commit — a worktree with
+ *   nothing to commit included.
+ */
+export function commitWorkspace(experimentDir: string, message: string): string {
+  runGitStep(
+    ["add", "-A"],
+    experimentDir,
+    `Cannot stage the experiment worktree at ${experimentDir}`,
+    "Inspect what is standing there with: git status",
+  );
+  runGitStep(
+    ["commit", "-m", message],
+    experimentDir,
+    `Cannot commit the experiment worktree at ${experimentDir}`,
+    "Inspect what is standing there with: git status",
+  );
+  return runGitStep(
+    ["rev-parse", "HEAD"],
+    experimentDir,
+    `Cannot read the commit just made in ${experimentDir}`,
+    "Inspect the branch with: git log -1",
+  ).trim();
+}
+
+/**
+ * Throw away everything the experiment worktree has not committed.
+ *
+ * Destructive by contract, and safe because the directory is one gymrat owns:
+ * the reset covers tracked edits — staged or not — and the clean covers the
+ * files the agent added, which a reset alone would leave behind to be picked up
+ * by the next keep.
+ *
+ * @throws GymratError when git refuses to reset or to clean.
+ */
+export function revertWorkspace(experimentDir: string): void {
+  runGitStep(
+    ["reset", "--hard", "HEAD"],
+    experimentDir,
+    `Cannot revert the experiment worktree at ${experimentDir}`,
+    "Inspect what is standing there with: git status",
+  );
+  runGitStep(
+    ["clean", "-fd"],
+    experimentDir,
+    `Cannot remove the untracked files in ${experimentDir}`,
+    "Inspect what is standing there with: git status --ignored",
+  );
+}
+
+/**
+ * Move the baseline worktree onto `sha`, detached as it was created.
+ *
+ * Detached is not incidental: `sha` is a commit on the session branch, which the
+ * experiment worktree has checked out, and git refuses to check the same branch
+ * out twice.
+ *
+ * @throws GymratError when git refuses the checkout.
+ */
+export function advanceBaseline(baselineDir: string, sha: string): void {
+  runGitStep(
+    ["checkout", "--detach", sha],
+    baselineDir,
+    `Cannot move the baseline worktree at ${baselineDir} to ${sha}`,
+    `Check that ${sha} is a commit this repository has: git cat-file -t ${sha}`,
+  );
+}
+
 function addExperimentWorktree(root: string, branch: string): void {
   const dir = experimentWorktreeDir(root);
   runGitStep(

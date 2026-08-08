@@ -20,6 +20,7 @@ import {
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { iterateSession } from "./loop/iterate.js";
+import { discardSession, keepSession } from "./loop/settle.js";
 import { startSession, type StartResult } from "./loop/start.js";
 import { measure } from "./measure.js";
 import type { MeasureOptions } from "./measure.js";
@@ -569,6 +570,12 @@ interface SharedFlags extends CliFlags {
   format: "text" | "json";
 }
 
+/** The keep command's flags: the configuration set plus the message the commit carries. */
+interface KeepFlags extends CliFlags {
+  /** Commit message the agent supplied; absent, keep generates one from the iteration. */
+  message?: string;
+}
+
 /** The compare command's flags: the shared set plus the two only a verdict can answer. */
 interface CompareFlags extends SharedFlags {
   /** Gate conditions that cause exit 1 when any trips. Empty when `--fail-on` is not used. */
@@ -1007,13 +1014,68 @@ export function createProgram(): Command {
       await writeAndDrain(process.stdout, `${result.report}\n`);
     });
 
+  const keepCmd = addConfigOptions(
+    program
+      .command("keep")
+      .description("Commit the session's measured edit once its checks pass")
+      .option("-m, --message <text>", "commit message for the kept edit"),
+  )
+    .configureHelp(createHelpConfig())
+    .action(async (options: KeepFlags) => {
+      const result = await withRepoLock("keep", async () => {
+        try {
+          return await keepSession(repoRoot(), resolveConfig(options), {
+            message: options.message,
+          });
+        } catch (error) {
+          return await exitWithError(error);
+        }
+      });
+
+      await writeAndDrain(process.stdout, `${result.report}\n`);
+
+      // A refused keep is a gate trip, not a tool failure: the record is written
+      // and reported, and only the exit code tells the agent it did not land.
+      if (result.record.status === "blocked") {
+        process.exit(1);
+      }
+    });
+
+  /*
+   * The only settle command that reads no configuration: a revert is git alone,
+   * so `discard` carries none of the config flags its siblings do.
+   */
+  const discardCmd = program
+    .command("discard")
+    .description("Revert the session's experiment worktree to its last commit")
+    .configureHelp(createHelpConfig())
+    .action(async () => {
+      const result = await withRepoLock("discard", async () => {
+        try {
+          return discardSession(repoRoot());
+        } catch (error) {
+          return await exitWithError(error);
+        }
+      });
+
+      await writeAndDrain(process.stdout, `${result.report}\n`);
+    });
+
   /*
    * Commander exits 1 for usage errors by default. Override so all Commander
    * errors (unknown option, missing argument, invalid choice) surface as exit
    * code 2, keeping exit 1 reserved for gate trips. Exit code 0 (--help,
    * --version) passes through unchanged.
    */
-  for (const command of [program, compareCmd, measureCmd, startCmd, iterateCmd]) {
+  for (const command of [
+    program,
+    compareCmd,
+    measureCmd,
+    startCmd,
+    iterateCmd,
+    keepCmd,
+    discardCmd,
+  ]) {
     command.exitOverride((err) => {
       throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
     });
