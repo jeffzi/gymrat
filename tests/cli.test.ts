@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { Command } from "commander";
-import { afterEach, describe, expect, it, type MockInstance, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
 import { AdapterError } from "../src/adapters/index.js";
 import { createProgram, formatCliError } from "../src/cli.js";
@@ -34,7 +34,9 @@ import type { MeasureOptions } from "../src/measure.js";
 import { renderJson, renderMeasureJson } from "../src/report/json.js";
 import { renderMeasureReport, renderReport } from "../src/report/text.js";
 import type { ComparisonResult, MeasurementResult } from "../src/report/types.js";
-import { lockfilePath, repoRoot } from "../src/session/paths.js";
+import { lockfilePath, repoRoot, sessionJsonlPath } from "../src/session/paths.js";
+import type { SessionLogRecord, SessionRecord } from "../src/session/records.js";
+import { appendRecord, readRecords } from "../src/session/store.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
 import {
@@ -46,6 +48,7 @@ import {
   metricMeta,
 } from "./fixtures/comparison-result.js";
 import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
+import { createScratchRepo, type ScratchRepo } from "./fixtures/scratch-repo.js";
 
 // `...actual` is spread so CommandError passes through unmocked and tests can construct real instances.
 vi.mock("../src/compare.js", async (importOriginal) => {
@@ -678,6 +681,17 @@ describe("createProgram", () => {
         await expect(
           program.parseAsync(compareArgv("main", "branch", "--bogus", "value")),
         ).rejects.toThrow(/unknown option '--bogus'/);
+      });
+
+      it("rejects --record, which only the single-target command carries", async () => {
+        // Arrange - recording a comparison would have to name two sides; only
+        // `measure` writes a baseline, so the flag stops at the command boundary.
+        const program = createProgramWithSubcommandOverrides();
+
+        // Act & Assert
+        await expect(program.parseAsync(compareArgv("main", "branch", "--record"))).rejects.toThrow(
+          /unknown option '--record'/,
+        );
       });
     });
 
@@ -2212,14 +2226,15 @@ describe("createProgram", () => {
     ];
 
     /**
-     * The long flags a help text declares, sorted, minus `--help` and the
-     * verdict-only flags only `compare` carries.
+     * The long flags a help text declares, sorted, minus `--help` and the flags
+     * one command carries alone — the verdict-only ones on `compare`, the
+     * recording one on `measure`.
      *
      * Reading them off the rendered help is what lets one assertion compare two
      * commands' option sets without either one naming the other's.
      */
     function declaredOptions(helpOutput: string): string[] {
-      const commandSpecific = new Set(["--help", "--verbose", "--fail-on"]);
+      const commandSpecific = new Set(["--help", "--verbose", "--fail-on", "--record"]);
       return helpOutput
         .split("\n")
         .map((line) => /^\s*│(?:-\w, )?(--[a-z-]+)/.exec(line)?.[1])
@@ -2338,6 +2353,128 @@ describe("createProgram", () => {
             configKinds,
           }),
         );
+      });
+    });
+
+    describe("recording", () => {
+      /** The session header a log must open with for a run to have somewhere to record. */
+      const SESSION_HEADER: SessionRecord = {
+        type: "session",
+        schemaVersion: 1,
+        sessionId: "20260808-141530-a3f2",
+        createdAt: "2026-08-08T14:15:30.000Z",
+        baseline: { ref: "main", sha: "a".repeat(40) },
+        branch: "gymrat/20260808-141530-a3f2",
+        worktrees: { experiment: "/repo/.gymrat/experiment", baseline: "/repo/.gymrat/baseline" },
+        config: {
+          bench: "bench.sh",
+          adapter: "metric-lines",
+          samples: 1,
+          timeoutSeconds: 300,
+          primary: "geomean",
+          hooks: "gymrat.hooks",
+        },
+      };
+
+      let repo: ScratchRepo;
+      let originalCwd: string;
+
+      // The command records into the repository it runs in, so the run happens in
+      // a throwaway one rather than in the checkout the suite itself lives in.
+      beforeEach(() => {
+        originalCwd = process.cwd();
+        repo = createScratchRepo();
+        process.chdir(repo.dir);
+      });
+
+      afterEach(() => {
+        process.chdir(originalCwd);
+        repo.cleanup();
+      });
+
+      /** Open a session in the scratch repository. */
+      function openSession(): void {
+        appendRecord(sessionJsonlPath(repo.dir), SESSION_HEADER);
+      }
+
+      /** Everything the scratch repository's session log holds. */
+      function sessionLog(): SessionLogRecord[] {
+        return readRecords(sessionJsonlPath(repo.dir));
+      }
+
+      it.each([
+        { form: "a bare ref", positional: "main", label: "main" },
+        { form: "a label=ref pair", positional: "build=main", label: "build" },
+      ])(
+        "appends a baseline record carrying $form's label and the run's raw samples",
+        async ({ positional, label }) => {
+          // Arrange
+          openSession();
+          const rounds = [{ latency: 41 }, { latency: 43 }];
+          const program = createRunnableProgram();
+          await setupMeasureMocks(createMeasurementResult({ label, rounds }));
+          vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+          // Act
+          await program.parseAsync(measureArgv(positional, "--record"));
+
+          // Assert
+          expect(sessionLog().at(-1)).toStrictEqual({
+            type: "baseline",
+            at: expect.any(String),
+            label,
+            samples: rounds,
+          });
+        },
+      );
+
+      it("prints the usual report plus a note naming the session it recorded to", async () => {
+        // Arrange
+        openSession();
+        const result = createMeasurementResult({ rounds: [{ latency: 42 }] });
+        const program = createRunnableProgram();
+        await setupMeasureMocks(result);
+        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(measureArgv("main", "--record"));
+
+        // Assert
+        const stdout = writeSpy.mock.calls.map((call) => String(call[0])).join("");
+        expect.soft(stdout).toContain(renderMeasureReport(result));
+        expect(stdout).toMatch(/recorded to session/i);
+      });
+
+      it("exits 2 with a start hint without measuring when the repository holds no session", async () => {
+        // Arrange - the check comes first: discovering there is nowhere to write
+        // after ten minutes of sampling would throw the whole run away.
+        const { measureMock } = await setupMeasureMocks();
+        const program = createProgramWithSubcommandOverrides();
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(measureArgv("main", "--record"));
+
+        // Assert
+        await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+        expect.soft(measureMock).not.toHaveBeenCalled();
+        expect(stderrWrites(stderrSpy).map(String).join("")).toContain("gymrat start");
+      });
+
+      it("leaves an open session untouched when --record is left out", async () => {
+        // Arrange - recording is opt-in, so a plain run writes no history
+        openSession();
+        const program = createRunnableProgram();
+        await setupMeasureMocks(createMeasurementResult({ rounds: [{ latency: 42 }] }));
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+        // Act
+        await program.parseAsync(measureArgv("main"));
+
+        // Assert
+        expect(sessionLog()).toStrictEqual([SESSION_HEADER]);
       });
     });
 
@@ -2532,6 +2669,14 @@ describe("createProgram", () => {
         // Assert
         expect.soft(helpOutput).toContain("Usage: gymrat measure");
         expect(SHARED_FLAGS.filter((flag) => !helpOutput.includes(flag))).toStrictEqual([]);
+      });
+
+      it("documents the recording flag under both its forms", async () => {
+        // Act
+        const helpOutput = await captureHelp(measureArgv("--help"));
+
+        // Assert
+        expect(helpOutput).toContain("-r, --record");
       });
 
       it("offers the same shared options as compare", async () => {

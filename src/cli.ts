@@ -33,11 +33,14 @@ import type {
   CandidateComparison,
   ComparisonResult,
   FailOnCondition,
+  MeasurementResult,
   MetricComparisons,
   ReportOptions,
 } from "./report/types.js";
 import { acquireLock, type ReleaseLock } from "./session/lock.js";
-import { lockfilePath, repoRoot } from "./session/paths.js";
+import { lockfilePath, repoRoot, sessionJsonlPath } from "./session/paths.js";
+import type { BaselineRecord } from "./session/records.js";
+import { appendRecord, foldSession, readRecords } from "./session/store.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
 
@@ -589,6 +592,12 @@ interface KeepFlags extends CliFlags {
   message?: string;
 }
 
+/** The measure command's flags: the shared set plus whether the run becomes history. */
+interface MeasureFlags extends SharedFlags {
+  /** Append the run to the session log. Recording is opt-in, never the default. */
+  record: boolean;
+}
+
 /** The compare command's flags: the shared set plus the two only a verdict can answer. */
 interface CompareFlags extends SharedFlags {
   /** Gate conditions that cause exit 1 when any trips. Empty when `--fail-on` is not used. */
@@ -804,6 +813,40 @@ async function emitReport<T>(
   await writeAndDrain(process.stdout, output + "\n");
 }
 
+/** Where a recorded run writes, and which session it becomes part of. */
+interface RecordingTarget {
+  jsonlPath: string;
+  sessionId: string;
+}
+
+/**
+ * The open session `--record` appends to.
+ *
+ * @throws GymratError when the repository has no session — there is nowhere to
+ *   record, and only `gymrat start` can change that.
+ */
+function recordingTarget(root: string): RecordingTarget {
+  const jsonlPath = sessionJsonlPath(root);
+  const { session } = foldSession(readRecords(jsonlPath));
+  if (session === undefined) {
+    throw new GymratError(
+      `No session in ${root}`,
+      "Run gymrat start to open one before recording a measurement.",
+    );
+  }
+  return { jsonlPath, sessionId: session.sessionId };
+}
+
+/** The history entry a recorded run leaves behind: what it measured, round by round. */
+function baselineRecordOf(result: MeasurementResult): BaselineRecord {
+  return {
+    type: "baseline",
+    at: new Date().toISOString(),
+    label: result.label,
+    samples: [...result.rounds],
+  };
+}
+
 /** How many hex digits of a commit SHA a session summary shows. */
 const SHORT_SHA_LENGTH = 7;
 
@@ -954,29 +997,47 @@ export function createProgram(): Command {
         currentDirectory,
       ),
   )
+    .option("-r, --record", "append the run to the session log as a baseline", false)
     .configureHelp(createHelpConfig())
-    .action(async (target: TargetSpec, options: SharedFlags) => {
+    .action(async (target: TargetSpec, options: MeasureFlags) => {
       await withRepoLock("measure", async () => {
         // One target, so every sample step the run reports is a step of the whole run.
         const progress = beginRun(options, 1);
 
-        const result = await runGuarded(progress, async () => {
+        const run = await runGuarded(progress, async () => {
           const config = resolveConfig(configFlagsOf(options));
+
+          /*
+           * The session is resolved before a single sample is taken: a run that
+           * benches for ten minutes and only then discovers it has nowhere to
+           * write has thrown the whole measurement away.
+           */
+          const recording = options.record ? recordingTarget(repoRoot()) : undefined;
 
           const measureOptions: MeasureOptions = {
             target,
             ...runOptionsOf(config, progress),
           };
 
-          return measure(measureOptions);
+          return { result: await measure(measureOptions), recording };
         });
 
         await emitReport(
-          result,
+          run.result,
           options,
           { json: renderMeasureJson, text: renderMeasureReport },
           { color: noColorOverride(options.color) },
         );
+
+        if (run.recording !== undefined) {
+          appendRecord(run.recording.jsonlPath, baselineRecordOf(run.result));
+          // The note is prose, so it goes to stderr whenever stdout is carrying
+          // JSON a consumer has to parse.
+          await writeAndDrain(
+            options.format === "json" ? process.stderr : process.stdout,
+            `baseline "${run.result.label}" recorded to session ${run.recording.sessionId}\n`,
+          );
+        }
       });
     });
 

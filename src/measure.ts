@@ -70,6 +70,7 @@ function buildMeasurementResult(
     adapter: options.adapter,
     configKinds: options.configKinds,
     metrics: metricRecord<MetricMeasurement>(),
+    rounds: measurement.samples,
     worktreesRemoved: cleanup.removed,
     worktreesLeftBehind: cleanup.failures,
     worktreePruneError: cleanup.pruneError,

@@ -120,6 +120,13 @@ describe("measure – integration", () => {
       expect(result.label).toBe("HEAD");
     });
 
+    it("carries one raw sample map per round, in the order they were collected", () => {
+      // The aggregates alone cannot be recorded as history: a baseline record
+      // keeps every round's own values.
+      // Adapter sample maps are null-prototype (src/metric-record.ts invariant).
+      expect(result.rounds).toEqual([{ latency: 42 }, { latency: 42 }]);
+    });
+
     it("removes the throwaway worktree it created", () => {
       expect.soft(result.worktreesRemoved).toBe(1);
       expect.soft(result.worktreesLeftBehind).toStrictEqual([]);

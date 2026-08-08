@@ -113,6 +113,15 @@ export interface MeasurementResult extends WorktreeCleanupOutcome {
   metrics: MetricMeasurements;
 
   /**
+   * What each round of the run reported, in the order the rounds ran.
+   *
+   * The per-metric medians above cannot stand in for these: a run recorded as
+   * history keeps the raw values, so a later reader can compute statistics the
+   * report never printed.
+   */
+  rounds: readonly Record<string, number>[];
+
+  /**
    * The `kinds` section of the config the run resolved, when it had one.
    *
    * Carried for the same reason `ComparisonResult` carries it: metadata is

@@ -40,6 +40,7 @@ export function createMeasurementResult(
     samples: 10,
     adapter: "mitata",
     metrics: {},
+    rounds: [],
     worktreesRemoved: 0,
     worktreesLeftBehind: [],
     worktreePruneError: undefined,
