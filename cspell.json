@@ -15,6 +15,7 @@
     "gpgsign",
     "gymrat",
     "judgeable",
+    "metacharacters",
     "misalign",
     "jeffzi",
     "mitata",
@@ -43,7 +44,6 @@
     "coverage",
     "dist",
     "package-lock.json",
-    "CHANGELOG.md",
     "*.tsbuildinfo"
   ]
 }
