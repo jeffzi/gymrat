@@ -193,12 +193,15 @@ describe("measure", () => {
 
   describe("when a prepare command is configured", () => {
     it("runs it once, before the first sample", async () => {
+      const append = (word: string): string =>
+        `node -e "require('fs').appendFileSync('steps.log','${word}\\n')"`;
+
       const log = await withTargetDir(async ({ targetDir }) => {
         benchOutput.queue = [{ latency: 100 }, { latency: 100 }];
         await measure(
           measureOptions({
-            prepare: "echo prepare >> steps.log",
-            bench: "echo bench >> steps.log",
+            prepare: append("prepare"),
+            bench: append("bench"),
             samples: 2,
           }),
         );
@@ -213,29 +216,27 @@ describe("measure", () => {
     it.each([
       {
         case: "the bench exits non-zero",
-        overrides: { bench: "echo bench-boom >&2; exit 3" },
-        expected: [
-          "bench",
-          "probe",
-          "echo bench-boom >&2; exit 3",
-          "exit code: 3",
-          "bench-boom",
-          "sample 1",
-        ],
+        overrides: {
+          bench: `node -e "process.stderr.write('bench-boom\\n');process.exit(3)"`,
+        },
+        expected: ["bench", "probe", "process.exit(3)", "exit code: 3", "bench-boom", "sample 1"],
         absent: [],
       },
       {
         case: "prepare exits non-zero",
-        overrides: { prepare: "echo prep-boom >&2; exit 4" },
-        expected: ["prepare", "probe", "echo prep-boom >&2; exit 4", "exit code: 4", "prep-boom"],
+        overrides: {
+          prepare: `node -e "process.stderr.write('prep-boom\\n');process.exit(4)"`,
+        },
+        expected: ["prepare", "probe", "process.exit(4)", "exit code: 4", "prep-boom"],
         absent: ["sample "],
       },
       {
-        // Fractional seconds keep the case near half a second; the sleep is
-        // killed with its process group, so nothing outlives the run.
         case: "the bench exceeds the timeout",
-        overrides: { bench: "sleep 10", timeoutSeconds: 0.5 },
-        expected: ["bench", "probe", "sleep 10", "500ms", "timed out"],
+        overrides: {
+          bench: `node -e "setTimeout(()=>{},60000)"`,
+          timeoutSeconds: 0.5,
+        },
+        expected: ["bench", "probe", "setTimeout", "500ms", "timed out"],
         absent: ["exit code"],
       },
     ] satisfies {
