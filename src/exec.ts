@@ -31,7 +31,8 @@ const FAILURE_EXIT_CODE = 1;
 /** The status taskkill exits with when no process carries the given pid. */
 const TASKKILL_NOT_FOUND_STATUS = 128;
 
-function killTree(pid: number): void {
+/** Kill the process group led by `pid`, descendants included. Never throws. */
+export function killTree(pid: number): void {
   try {
     if (process.platform === "win32") {
       // taskkill /T kills the process and all descendants; /F forces it.
@@ -60,8 +61,6 @@ function killTree(pid: number): void {
 }
 
 /**
- * Executes a shell command and captures its output with optional timeout support.
- *
  * Runs the command in a detached process group to enable killing all child processes
  * on timeout. On POSIX systems, sends SIGKILL to the negative PID to terminate the
  * entire process group.
@@ -191,21 +190,19 @@ export async function exec(
       });
     });
 
+    function onFailure(err: Error): void {
+      settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
+    }
+
     // A child that never started has nothing to say on its own stderr, so the
     // spawn failure only reaches the caller if it is written there. Node emits
     // this before any "close", so the cause survives the single-resolution guard.
-    child.on("error", (err: Error) => {
-      settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
-    });
+    child.on("error", onFailure);
 
     // A pipe read can fail on its own (EIO on a closing pty, for one). Without a
     // listener that is an unhandled "error" event, which takes the whole process
     // down instead of failing the one call that owns the pipe.
-    function onStreamError(err: Error): void {
-      settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
-    }
-
-    child.stdout.on("error", onStreamError);
-    child.stderr.on("error", onStreamError);
+    child.stdout.on("error", onFailure);
+    child.stderr.on("error", onFailure);
   });
 }

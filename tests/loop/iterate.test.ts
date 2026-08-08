@@ -821,6 +821,120 @@ describe("iterateSession", () => {
       expect(lines.at(-1)).toBe(nextStep);
     });
   });
+
+  describe("when the configured hooks directory holds scripts for both stages", () => {
+    /** Write `body` as an executable `<stage>.sh` under the configured hooks directory. */
+    function writeHookScript(stage: "before" | "after", body: string): void {
+      const hooksDir = path.join(repo.dir, config().hooks);
+      fs.mkdirSync(hooksDir, { recursive: true });
+      const scriptPath = path.join(hooksDir, `${stage}.sh`);
+      fs.writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`);
+      fs.chmodSync(scriptPath, 0o755);
+    }
+
+    /** A hook body that files its payload away where the assertions can read it back. */
+    function capturePayload(stage: "before" | "after"): string {
+      return `cat > "$(dirname "$0")/${stage}.json"`;
+    }
+
+    /** The payload the `stage` hook was handed, as the hook itself saw it. */
+    function payloadOf(stage: "before" | "after"): unknown {
+      const captured = path.join(repo.dir, config().hooks, `${stage}.json`);
+      return JSON.parse(fs.readFileSync(captured, "utf-8"));
+    }
+
+    beforeEach(() => {
+      writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
+      stubSamples(repo.dir, improvedRounds(), baselineRounds());
+    });
+
+    it("fires the before hook ahead of the measurement and the after hook once it is on file", async () => {
+      // Arrange
+      writeHookScript("before", "echo hi");
+      writeHookScript("after", "echo bye");
+
+      // Act
+      await iterateSession(repo.dir, config());
+
+      // Assert
+      const records = readRecords(sessionJsonlPath(repo.dir));
+      expect
+        .soft(records.map((record) => record.type))
+        .toStrictEqual(["session", "iteration", "keep", "hook", "iteration", "hook"]);
+      expect(records.filter((record) => record.type === "hook")).toStrictEqual([
+        {
+          type: "hook",
+          stage: "before",
+          seq: 2,
+          exitCode: 0,
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+          durationMs: expect.any(Number),
+          stdoutBytes: 3,
+          timedOut: false,
+        },
+        {
+          type: "hook",
+          stage: "after",
+          seq: 2,
+          exitCode: 0,
+          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+          durationMs: expect.any(Number),
+          stdoutBytes: 4,
+          timedOut: false,
+        },
+      ]);
+    });
+
+    it("tells each hook which iteration it sits next to", async () => {
+      // Arrange
+      writeHookScript("before", capturePayload("before"));
+      writeHookScript("after", capturePayload("after"));
+
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect.soft(payloadOf("before")).toStrictEqual({
+        stage: "before",
+        experimentDir: sessionRecord(repo.dir).worktrees.experiment,
+        seq: 2,
+        lastIteration: iteration(1),
+        session: {
+          sessionId: SESSION_ID,
+          baseline: sessionRecord(repo.dir).baseline,
+          branch: `gymrat/${SESSION_ID}`,
+          iterationCount: 1,
+        },
+      });
+      expect(payloadOf("after")).toStrictEqual({
+        stage: "after",
+        experimentDir: sessionRecord(repo.dir).worktrees.experiment,
+        seq: 2,
+        lastIteration: result.record,
+        session: {
+          sessionId: SESSION_ID,
+          baseline: sessionRecord(repo.dir).baseline,
+          branch: `gymrat/${SESSION_ID}`,
+          iterationCount: 2,
+        },
+      });
+    });
+
+    it("prints each hook's output around the measurement it brackets", async () => {
+      // Arrange
+      writeHookScript("before", 'echo "warmed the cache"');
+      writeHookScript("after", 'echo "archived the samples"');
+
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      const lines = reportLines(result.report);
+      expect.soft(lines[0]).toBe("[before] warmed the cache");
+      expect.soft(lines.at(-1)).toBe("[after] archived the samples");
+      expect(lines[1]).toBe("iteration 2 · experiment vs baseline · 10 paired samples");
+    });
+  });
 });
 
 describe("the iterate command", () => {

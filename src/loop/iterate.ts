@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { getAdapter } from "../adapters/index.js";
 import type { ResolvedConfig, ResolvedMetricMeta } from "../config.js";
 import { FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, resolveMetricMeta } from "../config.js";
@@ -29,6 +31,8 @@ import { appendRecord, foldSession, readRecords } from "../session/store.js";
 import { computeKindAggregates } from "../verdict/aggregate.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
 import { computeGeomean, computeVerdicts, pairSamples } from "../verdict/verdict.js";
+import type { HookInvocation } from "./hooks.js";
+import { runHook } from "./hooks.js";
 
 /** What the loop tells the agent to do next, one per outcome. */
 const NEXT_STEPS: Record<LoopOutcome, string> = {
@@ -114,6 +118,17 @@ export async function iterateSession(
     throw stop;
   }
 
+  const seq = state.lastSeq + 1;
+  const hooksDir = path.join(root, config.hooks);
+  const beforeReport = await fireHook(jsonlPath, {
+    hooksDir,
+    stage: "before",
+    seq,
+    session: state.session,
+    lastIteration: state.lastIteration ?? null,
+    iterationCount: state.iterationCount,
+  });
+
   const [baseline, experiment] = await measure(state.session, config, options, config.bench);
   const metricMeta = resolveMeta(config, [baseline.samples, experiment.samples]);
   const firstRun = computeVerdicts(
@@ -132,7 +147,6 @@ export async function iterateSession(
   );
   const verdicts = applyConfirmation(firstRun, confirmation);
 
-  const seq = state.lastSeq + 1;
   const result = buildComparisonResult(baseline, experiment, verdicts, metricMeta, config);
   const primary = resolvePrimary(config.primary, verdicts, metricMeta);
   const outcome = deriveOutcome(result.metrics, primary);
@@ -157,10 +171,41 @@ export async function iterateSession(
   };
   appendRecord(jsonlPath, record);
 
+  const afterReport = await fireHook(jsonlPath, {
+    hooksDir,
+    stage: "after",
+    seq,
+    session: state.session,
+    lastIteration: record,
+    iterationCount: state.iterationCount + 1,
+  });
+
+  const iterationReport = renderIteration(
+    result,
+    seq,
+    outcome,
+    primary,
+    confirmation,
+    reachedTarget,
+  );
   return {
     record,
-    report: renderIteration(result, seq, outcome, primary, confirmation, reachedTarget),
+    report: [beforeReport, iterationReport, afterReport].filter((part) => part !== "").join("\n"),
   };
+}
+
+/**
+ * Run the consumer's hook for this stage, logging what it did.
+ *
+ * @returns What to print for the hook, empty when there was no hook or it said nothing.
+ */
+async function fireHook(jsonlPath: string, invocation: HookInvocation): Promise<string> {
+  const run = await runHook(invocation);
+  if (run === undefined) {
+    return "";
+  }
+  appendRecord(jsonlPath, run.record);
+  return run.report;
 }
 
 /** What every stop condition tells the agent to do once the loop is over. */
