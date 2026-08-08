@@ -19,7 +19,7 @@ import {
 } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
-import { iterateSession } from "./loop/iterate.js";
+import { iterateSession, LoopStopError } from "./loop/iterate.js";
 import { discardSession, keepSession } from "./loop/settle.js";
 import { startSession, type StartResult } from "./loop/start.js";
 import { measure } from "./measure.js";
@@ -292,8 +292,14 @@ function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> 
   });
 }
 
-/** Print a formatted error to stderr and exit 2, the convention for tool failures. */
-async function exitWithError(error: unknown): Promise<never> {
+/** The exit code of a gate trip: a run that did what it was asked and said no. */
+const GATE_EXIT_CODE = 1;
+
+/** The exit code of a tool failure, the convention every unhandled error exits on. */
+const FAILURE_EXIT_CODE = 2;
+
+/** Print a formatted error to stderr and exit on `code`. */
+async function exitWithError(error: unknown, code = FAILURE_EXIT_CODE): Promise<never> {
   try {
     await writeAndDrain(process.stderr, `${formatCliError(error)}\n`);
   } catch {
@@ -301,10 +307,10 @@ async function exitWithError(error: unknown): Promise<never> {
      * stderr is the reporting channel, so a write failure (closed pipe, EPIPE)
      * has nowhere to be reported. Swallow it rather than let it escape as an
      * unhandled rejection, which would exit 1 — the code reserved for a gate
-     * trip — instead of the 2 this failure means.
+     * trip — instead of the code this exit was asked for.
      */
   }
-  process.exit(2);
+  process.exit(code);
 }
 
 /** Shown after a sample step until enough gaps have been measured for an ETA. */
@@ -925,7 +931,7 @@ export function createProgram(): Command {
         warnEmptyGeomeanGates(options.failOn, result);
 
         if (shouldFailGate(options.failOn, result)) {
-          process.exit(1);
+          process.exit(GATE_EXIT_CODE);
         }
       });
     });
@@ -1007,7 +1013,13 @@ export function createProgram(): Command {
         try {
           return await iterateSession(repoRoot(), resolveConfig(options));
         } catch (error) {
-          return await exitWithError(error);
+          /*
+           * A met stop condition is a gate trip, not a tool failure: the loop
+           * reached the end it was configured for, so it exits the way a keep
+           * the checks refused does.
+           */
+          const code = error instanceof LoopStopError ? GATE_EXIT_CODE : FAILURE_EXIT_CODE;
+          return await exitWithError(error, code);
         }
       });
 
@@ -1037,7 +1049,7 @@ export function createProgram(): Command {
       // A refused keep is a gate trip, not a tool failure: the record is written
       // and reported, and only the exit code tells the agent it did not land.
       if (result.record.status === "blocked") {
-        process.exit(1);
+        process.exit(GATE_EXIT_CODE);
       }
     });
 

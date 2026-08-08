@@ -52,6 +52,9 @@ export const EXPERIMENT_INDEX = 0;
 /** What the loop's header says it compared, the pair being fixed for every iteration. */
 const COMPARED = "experiment vs baseline";
 
+/** What an iteration that met the configured target says, and what it asks for. */
+const TARGET_REACHED = "target reached — keep it";
+
 /** The word each outcome is announced with. */
 const OUTCOME_WORDS: Record<LoopOutcome, string> = {
   improved: "IMPROVED",
@@ -114,6 +117,10 @@ function formatRerunLine(rerun: RerunConfirmation): string {
  * table above — a metric the table shows at rest that the first run had called a
  * regression is only readable once the rerun is named.
  *
+ * A reached target is stated last, directly above the next step, because it is
+ * an instruction rather than a reading: the loop only stops once the iteration
+ * that reached the target is kept.
+ *
  * Returned as lines rather than a block of text so the caller appends them to
  * the report it already holds as lines.
  */
@@ -122,11 +129,13 @@ export function formatVerdictBlock(
   primary: LoopPrimary,
   nextStep: string,
   reruns: readonly RerunConfirmation[] = [],
+  targetReached = false,
 ): readonly string[] {
   const verdict = formatLabel(OUTCOME_WORDS[outcome], OUTCOME_STYLES[outcome]);
   return [
     ...reruns.map(formatRerunLine),
     `primary: ${formatDelta(primary.deltaPct)}${separator()}verdict: ${verdict}`,
+    ...(targetReached ? [formatLabel(TARGET_REACHED, ["green"])] : []),
     `${formatHintLabel()} ${nextStep}`,
   ];
 }

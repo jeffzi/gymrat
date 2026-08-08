@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 
@@ -10,6 +11,7 @@ import { iterateSession } from "../../src/loop/iterate.js";
 import type { TargetContext } from "../../src/sampling.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
+  DiscardRecord,
   IterationRecord,
   KeepRecord,
   SessionLogRecord,
@@ -166,6 +168,16 @@ function iteration(seq: number): IterationRecord {
     outcome: "improved",
     targetReached: false,
   };
+}
+
+/** The iteration numbered `seq`, measured at or past the configured target. */
+function onTargetIteration(seq: number): IterationRecord {
+  return { ...iteration(seq), targetReached: true };
+}
+
+/** A discard of the iteration numbered `seq`. */
+function discardOf(seq: number): DiscardRecord {
+  return { type: "discard", seq, at: AT };
 }
 
 /** A keep that committed the iteration numbered `seq`. */
@@ -330,6 +342,80 @@ describe("iterateSession", () => {
     });
   });
 
+  describe("when a configured stop condition has already been met", () => {
+    it("refuses once the configured maximum of iterations is on file", async () => {
+      // Arrange
+      writeSessionLog(repo.dir, [iteration(1), committedKeep(1), iteration(2), committedKeep(2)]);
+      stubRuns(repo.dir, []);
+
+      // Act
+      const error = await captureGymratError(() =>
+        iterateSession(repo.dir, config({ stop: { maxIterations: 2 } })),
+      );
+
+      // Assert
+      expect.soft(error.message).toContain("max iterations");
+      expect.soft(error.message).toContain("2");
+      expect.soft(collectSamplesMock).not.toHaveBeenCalled();
+      expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(5);
+    });
+
+    it("refuses once a target-reaching iteration has been kept", async () => {
+      // Arrange
+      writeSessionLog(repo.dir, [onTargetIteration(1), committedKeep(1)]);
+      stubRuns(repo.dir, []);
+
+      // Act
+      const error = await captureGymratError(() =>
+        iterateSession(repo.dir, config({ primary: "total_ms", stop: { targetValue: 95 } })),
+      );
+
+      // Assert
+      expect.soft(error.message).toContain("target reached");
+      expect.soft(collectSamplesMock).not.toHaveBeenCalled();
+      expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(3);
+    });
+  });
+
+  describe("when the target was reached by an iteration nobody kept", () => {
+    beforeEach(() => {
+      stubSamples(repo.dir, improvedRounds(), baselineRounds());
+    });
+
+    it("measures again after that iteration was discarded", async () => {
+      // Arrange
+      writeSessionLog(repo.dir, [onTargetIteration(1), discardOf(1)]);
+
+      // Act
+      const result = await iterateSession(
+        repo.dir,
+        config({ primary: "total_ms", stop: { targetValue: 95 } }),
+      );
+
+      // Assert
+      expect(result.record.seq).toBe(2);
+    });
+  });
+
+  describe("when no stop condition is configured", () => {
+    it("measures again past a kept target and past any number of iterations", async () => {
+      // Arrange
+      writeSessionLog(repo.dir, [
+        onTargetIteration(1),
+        committedKeep(1),
+        iteration(2),
+        committedKeep(2),
+      ]);
+      stubSamples(repo.dir, improvedRounds(), baselineRounds());
+
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect(result.record.seq).toBe(3);
+    });
+  });
+
   describe("when a settled session is on disk", () => {
     beforeEach(() => {
       writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
@@ -456,6 +542,28 @@ describe("iterateSession", () => {
 
       // Assert
       expect(result.record.targetReached).toBe(true);
+    });
+
+    it("calls the target in the verdict block, right above the next step", async () => {
+      // Act
+      const result = await iterateSession(
+        repo.dir,
+        config({ primary: "total_ms", stop: { targetValue: 95 } }),
+      );
+
+      // Assert
+      expect(reportLines(result.report).at(-2)).toBe("target reached — keep it");
+    });
+
+    it.each([
+      { description: "the target is still ahead", stop: { targetValue: 85 } },
+      { description: "no stop condition is configured", stop: undefined },
+    ])("leaves the target out of the report when $description", async ({ stop }) => {
+      // Act
+      const result = await iterateSession(repo.dir, config({ primary: "total_ms", stop }));
+
+      // Assert
+      expect(stripAnsi(result.report)).not.toContain("target reached");
     });
 
     it("opens the report on the loop's own header, above the comparison table", async () => {
@@ -746,6 +854,31 @@ describe("the iterate command", () => {
     expect.soft(lines[0]).toBe("iteration 1 · experiment vs baseline · 10 paired samples");
     expect.soft(lines.at(-1)).toBe("Hint: gymrat keep");
     expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(2);
+  });
+
+  it("exits 1 when a configured stop condition has already been met", async () => {
+    // Arrange
+    writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
+    fs.writeFileSync(
+      path.join(repo.dir, "gymrat.json"),
+      JSON.stringify({ bench: "npm run bench", stop: { maxIterations: 1 } }),
+    );
+    process.chdir(repo.dir);
+    const program = createSilentProgram();
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- vitest mock requires cast
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw Object.assign(new Error(`process.exit(${code})`), { exitCode: code });
+    }) as never);
+
+    // Act
+    const parsing = program.parseAsync(["node", "cli.js", "iterate"]);
+
+    // Assert
+    await expect(parsing).rejects.toHaveProperty("exitCode", 1);
+    const stderrText = stderrSpy.mock.calls.map((call) => String(call[0])).join("");
+    expect.soft(stderrText).toContain("max iterations");
+    expect(collectSamplesMock).not.toHaveBeenCalled();
   });
 
   it("exits 2 with a start hint when the repository holds no session", async () => {

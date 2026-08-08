@@ -24,6 +24,7 @@ import {
 } from "../sampling.js";
 import { sessionJsonlPath } from "../session/paths.js";
 import type { IterationRecord, SessionRecord } from "../session/records.js";
+import type { SessionState } from "../session/store.js";
 import { appendRecord, foldSession, readRecords } from "../session/store.js";
 import { computeKindAggregates } from "../verdict/aggregate.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
@@ -35,6 +36,15 @@ const NEXT_STEPS: Record<LoopOutcome, string> = {
   regressed: "fix or gymrat discard",
   "no-signal": "gymrat keep or gymrat discard",
 };
+
+/**
+ * A configured stop condition refusing another iteration.
+ *
+ * Separate from a plain `GymratError` because nothing failed: the loop ran to
+ * the end it was configured for, which the CLI reports as a gate trip rather
+ * than as a tool failure.
+ */
+export class LoopStopError extends GymratError {}
 
 /** What a caller can hand an iteration beyond its configuration. */
 export interface IterateOptions {
@@ -75,6 +85,8 @@ export interface IterateResult {
  *
  * @throws GymratError when no session has been started, when the last iteration
  *   is still unsettled, or when the bench command fails.
+ * @throws LoopStopError when a configured stop condition has already been met,
+ *   before anything is measured or recorded.
  */
 export async function iterateSession(
   root: string,
@@ -95,6 +107,11 @@ export async function iterateSession(
       `Iteration ${state.lastSeq} has not been settled`,
       "Run gymrat keep or gymrat discard before measuring the next edit.",
     );
+  }
+
+  const stop = stopCondition(config, state);
+  if (stop !== undefined) {
+    throw stop;
   }
 
   const [baseline, experiment] = await measure(state.session, config, options, config.bench);
@@ -120,6 +137,7 @@ export async function iterateSession(
   const primary = resolvePrimary(config.primary, verdicts, metricMeta);
   const outcome = deriveOutcome(result.metrics, primary);
 
+  const reachedTarget = targetReached(config, primary, result.metrics);
   const record: IterationRecord = {
     type: "iteration",
     seq,
@@ -135,11 +153,43 @@ export async function iterateSession(
     }),
     primary,
     outcome,
-    targetReached: targetReached(config, primary, result.metrics),
+    targetReached: reachedTarget,
   };
   appendRecord(jsonlPath, record);
 
-  return { record, report: renderIteration(result, seq, outcome, primary, confirmation) };
+  return {
+    record,
+    report: renderIteration(result, seq, outcome, primary, confirmation, reachedTarget),
+  };
+}
+
+/** What every stop condition tells the agent to do once the loop is over. */
+const STOP_HINT = "The loop is done. Report what the session measured instead of measuring again.";
+
+/**
+ * The configured stop condition this session has already met, if any.
+ *
+ * Read off the folded log alone, so it settles before a bench command runs: an
+ * iteration measured past the end of the loop is one the agent would have to
+ * throw away.
+ *
+ * `targetValue` stops the loop only once the target-reaching iteration is
+ * **kept**. An unkept one is still the agent's to settle, and discarding it puts
+ * the target back out of reach.
+ */
+function stopCondition(config: ResolvedConfig, state: SessionState): LoopStopError | undefined {
+  const maxIterations = config.stop?.maxIterations;
+  if (maxIterations !== undefined && state.iterationCount >= maxIterations) {
+    return new LoopStopError(
+      `Stop condition met: max iterations (${state.iterationCount} of ${maxIterations})`,
+      STOP_HINT,
+    );
+  }
+
+  if (config.stop?.targetValue !== undefined && state.targetReachedAndKept) {
+    return new LoopStopError("Stop condition met: target reached and kept", STOP_HINT);
+  }
+  return undefined;
 }
 
 /**
@@ -442,6 +492,7 @@ function renderIteration(
   outcome: LoopOutcome,
   primary: LoopPrimary,
   confirmation: Confirmation | undefined,
+  reachedTarget: boolean,
 ): string {
   const reruns: RerunConfirmation[] =
     confirmation?.filtered.map((metric) => ({
@@ -449,7 +500,6 @@ function renderIteration(
       confirmed: confirmation.confirmed.has(metric),
     })) ?? [];
   const report = renderReport(result, { header: formatLoopHeader(seq, result.samples) });
-  return [report, "", ...formatVerdictBlock(outcome, primary, NEXT_STEPS[outcome], reruns)].join(
-    "\n",
-  );
+  const verdict = formatVerdictBlock(outcome, primary, NEXT_STEPS[outcome], reruns, reachedTarget);
+  return [report, "", ...verdict].join("\n");
 }
