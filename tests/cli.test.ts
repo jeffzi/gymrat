@@ -123,6 +123,8 @@ function resolvedConfigFixture(overrides: Partial<ResolvedConfig> = {}): Resolve
     samples: 1,
     timeoutSeconds: 300,
     unstableNoisePct: 200,
+    primary: "geomean",
+    hooks: "gymrat.hooks",
     ...overrides,
   };
 }

@@ -14,6 +14,9 @@ import { DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT } from "./verdict/verdict.j
 /** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
 const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
 
+/** Shared schema for optional string fields — reused across every plain string config key. */
+const optionalStringSchema = Type.Optional(Type.String(expected("a string")));
+
 const metricEntrySchema = Type.Object(
   {
     direction: Type.Optional(
@@ -47,12 +50,22 @@ const kindEntrySchema = Type.Object(
 /** Kind names come from the adapter, so — like metric names — any single-line string key is accepted. */
 const kindsSchema = Type.Record(Type.String(), kindEntrySchema, nameKeyedRecordOptions);
 
+/** When a loop stops: a value the primary metric must reach, an iteration budget, or both. */
+const stopSchema = Type.Object(
+  {
+    // A target is a metric value, and no metric is constrained to whole numbers.
+    targetValue: Type.Optional(Type.Number(expected("a number"))),
+    maxIterations: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
+  },
+  strictObjectOptions,
+);
+
 /** The `gymrat.json` schema — every field optional, since flags can supply any of them. */
 const configFileSchema = Type.Object(
   {
-    bench: Type.Optional(Type.String(expected("a string"))),
-    prepare: Type.Optional(Type.String(expected("a string"))),
-    adapter: Type.Optional(Type.String(expected("a string"))),
+    bench: optionalStringSchema,
+    prepare: optionalStringSchema,
+    adapter: optionalStringSchema,
     samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
     timeoutSeconds: Type.Optional(
       Type.Integer({
@@ -70,6 +83,11 @@ const configFileSchema = Type.Object(
     ),
     metrics: Type.Optional(metricsSchema),
     kinds: Type.Optional(kindsSchema),
+    checks: optionalStringSchema,
+    filter: optionalStringSchema,
+    primary: optionalStringSchema,
+    stop: Type.Optional(stopSchema),
+    hooks: optionalStringSchema,
   },
   strictObjectOptions,
 );
@@ -82,6 +100,8 @@ export type ConfigFile = Static<typeof configFileSchema>;
 export type ConfigMetrics = Static<typeof metricsSchema>;
 /** A kind-keyed record of overrides that apply to every metric of that kind, derived from the config file's `kinds` section. */
 export type ConfigKinds = Static<typeof kindsSchema>;
+/** The loop's stop conditions, derived from the config file's `stop` section. */
+export type ConfigStop = Static<typeof stopSchema>;
 
 /** Command-line overrides, named after the flags rather than the config keys. */
 export interface CliFlags {
@@ -103,6 +123,11 @@ export interface ResolvedConfig {
   unstableNoisePct: number;
   metrics?: ConfigMetrics;
   kinds?: ConfigKinds;
+  checks?: string;
+  filter?: string;
+  primary: string;
+  stop?: ConfigStop;
+  hooks: string;
 }
 
 /** One metric's settled metadata, after adapter defaults and config overrides are merged. */
@@ -114,6 +139,14 @@ export type ResolvedMetricMeta = {
   shortName: string;
   unit?: MetricDefaults["unit"];
 };
+
+/**
+ * Word an "invalid value" failure the same way whether TypeBox found it while validating
+ * the file or {@link resolveConfig} found it while cross-checking two settled fields.
+ */
+function invalidValueMessage(field: string, expectedPhrase: string, value: unknown): string {
+  return `Invalid config value for ${field}: expected ${expectedPhrase}, got ${JSON.stringify(value)}`;
+}
 
 /**
  * Word a schema failure as a config error.
@@ -133,14 +166,22 @@ function configMessage(configPath: string, issue: SchemaIssue): string {
   if (issue.kind === "unknown-key") {
     return `Unknown config key: ${issue.path}`;
   }
-  return `Invalid config value for ${issue.path}: expected ${issue.expected}, got ${JSON.stringify(issue.value)}`;
+  return invalidValueMessage(issue.path, issue.expected, issue.value);
 }
+
+/** The primary that aggregates every gating metric rather than naming one. */
+const GEOMEAN_PRIMARY = "geomean";
+
+/** The token a `filter` command must carry, where the loop substitutes the benchmark names. */
+const FILTER_PLACEHOLDER = "{names}";
 
 const DEFAULTS = {
   adapter: "metric-lines",
   samples: 10,
   timeoutSeconds: 1800,
   unstableNoisePct: DEFAULT_UNSTABLE_NOISE_PCT,
+  primary: GEOMEAN_PRIMARY,
+  hooks: "gymrat.hooks",
 } as const;
 
 function isFileNotFoundError(err: unknown): boolean {
@@ -196,6 +237,56 @@ export function loadConfigFile(
 }
 
 /**
+ * Cross-field rules that the schema alone cannot express.
+ *
+ * `filter` must carry its placeholder, and `stop.targetValue` only makes sense
+ * when `primary` names a metric (the geomean is a ratio, not a metric value).
+ */
+function validateLoopKeys(config: { filter?: string; primary: string; stop?: ConfigStop }): void {
+  if (config.filter !== undefined && !config.filter.includes(FILTER_PLACEHOLDER)) {
+    throw new GymratError(
+      invalidValueMessage(
+        "filter",
+        `a string containing the ${FILTER_PLACEHOLDER} placeholder`,
+        config.filter,
+      ),
+    );
+  }
+  if (config.stop?.targetValue !== undefined && config.primary === GEOMEAN_PRIMARY) {
+    throw new GymratError(
+      `Invalid config value for stop.targetValue: it needs primary to name a metric, not ${JSON.stringify(GEOMEAN_PRIMARY)}`,
+    );
+  }
+}
+
+/**
+ * Merge flags → config file → built-in defaults into one partial record.
+ *
+ * `bench` stays optional — the caller validates its presence and spreads the
+ * required value into the return.
+ */
+function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConfig, "bench"> {
+  return {
+    adapter: flags.adapter ?? configFile.adapter ?? DEFAULTS.adapter,
+    samples: flags.samples ?? configFile.samples ?? DEFAULTS.samples,
+    timeoutSeconds: flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds,
+    unstableNoisePct: configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct,
+    primary: configFile.primary ?? DEFAULTS.primary,
+    hooks: configFile.hooks ?? DEFAULTS.hooks,
+    ...((flags.prepare ?? configFile.prepare)
+      ? { prepare: flags.prepare ?? configFile.prepare }
+      : undefined),
+    ...(configFile.metrics
+      ? { metrics: metricRecord(Object.entries(configFile.metrics)) }
+      : undefined),
+    ...(configFile.kinds ? { kinds: metricRecord(Object.entries(configFile.kinds)) } : undefined),
+    ...(configFile.checks ? { checks: configFile.checks } : undefined),
+    ...(configFile.filter ? { filter: configFile.filter } : undefined),
+    ...(configFile.stop ? { stop: configFile.stop } : undefined),
+  };
+}
+
+/**
  * Settle a run configuration from flags, config file, and built-in defaults.
  *
  * A flag always wins over the same key in the file. With no `--config`,
@@ -209,30 +300,15 @@ export function loadConfigFile(
 export function resolveConfig(flags: CliFlags): ResolvedConfig {
   const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
+  const merged = mergeConfig(flags, configFile);
 
   const bench = flags.bench ?? configFile.bench;
-  const prepare = flags.prepare ?? configFile.prepare;
-  const adapter = flags.adapter ?? configFile.adapter ?? DEFAULTS.adapter;
-  const samples = flags.samples ?? configFile.samples ?? DEFAULTS.samples;
-  const timeoutSeconds = flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds;
-  const unstableNoisePct = configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct;
-  const metrics = configFile.metrics ? metricRecord(Object.entries(configFile.metrics)) : undefined;
-  const kinds = configFile.kinds ? metricRecord(Object.entries(configFile.kinds)) : undefined;
-
   if (!bench) {
     throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
   }
+  validateLoopKeys(merged);
 
-  return {
-    bench,
-    adapter,
-    samples,
-    timeoutSeconds,
-    unstableNoisePct,
-    ...(prepare !== undefined && { prepare }),
-    ...(metrics !== undefined && { metrics }),
-    ...(kinds !== undefined && { kinds }),
-  };
+  return { ...merged, bench };
 }
 
 /** The kind an adapter's metric falls under when it reports none. */

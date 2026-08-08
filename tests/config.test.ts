@@ -15,6 +15,24 @@ import { metricRecord } from "./fixtures/metrics.js";
 const UTF8_BOM = "\u{FEFF}";
 
 /**
+ * Loop keys `resolveConfig` always fills in, even for compare/measure runs that
+ * never read them.
+ */
+const LOOP_DEFAULTS = { primary: "geomean", hooks: "gymrat.hooks" } as const;
+
+/**
+ * Full loop configuration, shared between the `loadConfigFile` parsing test and
+ * the `resolveConfig` merging test for the loop keys.
+ */
+const LOOP_CONFIG = {
+  checks: "npm test",
+  filter: "npm run bench -- {names}",
+  primary: "decode/time",
+  stop: { targetValue: 1.5, maxIterations: 20 },
+  hooks: "scripts/hooks",
+};
+
+/**
  * Characters JavaScript regexes treat as line terminators.
  *
  * A `^…$` key pattern stops at every one of them, so any of these embedded in a
@@ -228,6 +246,10 @@ describe("loadConfigFile", () => {
       { key: "prepare", description: "a boolean", value: true },
       { key: "prepare", description: "an object", value: { cmd: "x" } },
       { key: "adapter", description: "null", value: null },
+      { key: "checks", description: "a number", value: 42 },
+      { key: "filter", description: "an array", value: ["a"] },
+      { key: "primary", description: "null", value: null },
+      { key: "hooks", description: "a boolean", value: true },
     ])("throws naming $key when it is $description", ({ key, value }) => {
       const { dir, configPath } = createConfigFile({ [key]: value });
       tmpdir = dir;
@@ -441,6 +463,54 @@ describe("loadConfigFile", () => {
       );
     });
   });
+
+  describe("when the config file has loop keys", () => {
+    it("returns the parsed loop configuration", () => {
+      const { dir, configPath } = createConfigFile(LOOP_CONFIG);
+      tmpdir = dir;
+
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual(LOOP_CONFIG);
+    });
+  });
+
+  describe("when a stop field holds an invalid value", () => {
+    it.each([
+      {
+        field: "targetValue",
+        description: "a string",
+        value: "fast",
+        pattern: /stop\.targetValue.*number/,
+      },
+      {
+        field: "maxIterations",
+        description: "zero",
+        value: 0,
+        pattern: /stop\.maxIterations.*positive integer/,
+      },
+      {
+        field: "maxIterations",
+        description: "a non-integer",
+        value: 1.5,
+        pattern: /stop\.maxIterations.*positive integer/,
+      },
+    ])("throws naming stop.$field when it is $description", ({ field, value, pattern }) => {
+      const { dir, configPath } = createConfigFile({ stop: { [field]: value } });
+      tmpdir = dir;
+
+      expect(() => loadConfigFile(configPath)).toThrow(pattern);
+    });
+  });
+
+  describe("when the stop section contains an unknown key", () => {
+    it("throws an error that names the offending key by its dotted path", () => {
+      const { dir, configPath } = createConfigFile({ stop: { targetValue: 1, patience: 3 } });
+      tmpdir = dir;
+
+      expect(() => loadConfigFile(configPath)).toThrow(/Unknown config key: stop\.patience/);
+    });
+  });
 });
 
 describe("resolveConfig", () => {
@@ -455,7 +525,7 @@ describe("resolveConfig", () => {
   });
 
   describe("when flags and config are empty", () => {
-    it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct", () => {
+    it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct, primary, hooks", () => {
       // resolveConfig falls back to ./gymrat.json, so run from a dir that has none
       tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
       process.chdir(tmpdir);
@@ -468,6 +538,7 @@ describe("resolveConfig", () => {
         samples: 10,
         timeoutSeconds: 1800,
         unstableNoisePct: 200,
+        ...LOOP_DEFAULTS,
       });
     });
   });
@@ -486,7 +557,7 @@ describe("resolveConfig", () => {
 
       const result = resolveConfig({});
 
-      expect(result).toStrictEqual(config);
+      expect(result).toStrictEqual({ ...config, ...LOOP_DEFAULTS });
     });
   });
 
@@ -510,6 +581,7 @@ describe("resolveConfig", () => {
         samples: 20,
         timeoutSeconds: 1800,
         unstableNoisePct: 200,
+        ...LOOP_DEFAULTS,
       });
     });
   });
@@ -532,6 +604,7 @@ describe("resolveConfig", () => {
         samples: 25,
         timeoutSeconds: 900,
         unstableNoisePct: 200,
+        ...LOOP_DEFAULTS,
       });
     });
   });
@@ -601,6 +674,7 @@ describe("resolveConfig", () => {
         samples: 10,
         timeoutSeconds: 1800,
         unstableNoisePct: 200,
+        ...LOOP_DEFAULTS,
         metrics: metricRecord(metrics),
       });
     });
@@ -620,6 +694,7 @@ describe("resolveConfig", () => {
         samples: 10,
         timeoutSeconds: 1800,
         unstableNoisePct: 200,
+        ...LOOP_DEFAULTS,
         kinds: metricRecord(kinds),
       });
     });
@@ -647,6 +722,66 @@ describe("resolveConfig", () => {
       });
 
       expect(result.timeoutSeconds).toBe(1200);
+    });
+  });
+
+  describe("when the config file has loop keys", () => {
+    it("propagates them to the resolved config over the loop defaults", () => {
+      tmpdir = createConfigFile({ bench: "config-bench", ...LOOP_CONFIG }).dir;
+      process.chdir(tmpdir);
+
+      const result = resolveConfig({});
+
+      expect(result).toStrictEqual({
+        bench: "config-bench",
+        adapter: "metric-lines",
+        samples: 10,
+        timeoutSeconds: 1800,
+        unstableNoisePct: 200,
+        ...LOOP_CONFIG,
+      });
+    });
+  });
+
+  describe("when filter omits the {names} placeholder", () => {
+    it("throws a GymratError naming filter and the required placeholder", () => {
+      tmpdir = createConfigFile({ bench: "config-bench", filter: "npm run bench" }).dir;
+      process.chdir(tmpdir);
+      const act = (): ResolvedConfig => resolveConfig({});
+
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/filter/);
+      expect(act).toThrow(/\{names\}/);
+    });
+  });
+
+  describe("when stop.targetValue is combined with a geomean primary", () => {
+    it.each([
+      { description: "explicitly", overrides: { primary: "geomean" } },
+      { description: "by default", overrides: {} },
+    ])("throws a GymratError when geomean is chosen $description", ({ overrides }) => {
+      tmpdir = createConfigFile({
+        bench: "config-bench",
+        stop: { targetValue: 1.5 },
+        ...overrides,
+      }).dir;
+      process.chdir(tmpdir);
+      const act = (): ResolvedConfig => resolveConfig({});
+
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/targetValue/);
+      expect(act).toThrow(/geomean/);
+    });
+  });
+
+  describe("when stop sets only maxIterations and primary defaults to geomean", () => {
+    it("resolves without demanding a named primary metric", () => {
+      tmpdir = createConfigFile({ bench: "config-bench", stop: { maxIterations: 5 } }).dir;
+      process.chdir(tmpdir);
+
+      const result = resolveConfig({});
+
+      expect(result.stop).toStrictEqual({ maxIterations: 5 });
     });
   });
 });
