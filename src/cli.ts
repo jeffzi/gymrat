@@ -19,6 +19,7 @@ import {
 } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
+import { iterateSession } from "./loop/iterate.js";
 import { startSession, type StartResult } from "./loop/start.js";
 import { measure } from "./measure.js";
 import type { MeasureOptions } from "./measure.js";
@@ -983,13 +984,36 @@ export function createProgram(): Command {
       await writeAndDrain(process.stdout, `${formatStartSummary(result)}\n`);
     });
 
+  const iterateCmd = addConfigOptions(
+    program
+      .command("iterate")
+      .description("Measure the session's experiment worktree against its baseline"),
+  )
+    .configureHelp(createHelpConfig())
+    .action(async (options: CliFlags) => {
+      /*
+       * The report prints after the lock is released, as `start`'s summary does:
+       * the measurement is over by then, and holding the repository while stdout
+       * drains would serialize runs for nothing.
+       */
+      const result = await withRepoLock("iterate", async () => {
+        try {
+          return await iterateSession(repoRoot(), resolveConfig(options));
+        } catch (error) {
+          return await exitWithError(error);
+        }
+      });
+
+      await writeAndDrain(process.stdout, `${result.report}\n`);
+    });
+
   /*
    * Commander exits 1 for usage errors by default. Override so all Commander
    * errors (unknown option, missing argument, invalid choice) surface as exit
    * code 2, keeping exit 1 reserved for gate trips. Exit code 0 (--help,
    * --version) passes through unchanged.
    */
-  for (const command of [program, compareCmd, measureCmd, startCmd]) {
+  for (const command of [program, compareCmd, measureCmd, startCmd, iterateCmd]) {
     command.exitOverride((err) => {
       throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
     });

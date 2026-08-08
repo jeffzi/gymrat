@@ -113,7 +113,12 @@ const iterationRecordSchema = Type.Object(
         strictObjectOptions,
       ),
     ),
-    primary: Type.Object({ kind: stringSchema, deltaPct: numberSchema }, strictObjectOptions),
+    primary: Type.Object(
+      // A geomean primary is nameless — it aggregates every gating metric — so
+      // the name only exists on the variant that names one.
+      { kind: stringSchema, name: Type.Optional(stringSchema), deltaPct: numberSchema },
+      strictObjectOptions,
+    ),
     outcome: Type.Union(
       [Type.Literal("improved"), Type.Literal("regressed"), Type.Literal("no-signal")],
       expected(`"improved", "regressed" or "no-signal"`),

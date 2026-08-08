@@ -162,4 +162,18 @@ export interface ReportOptions {
    * table already shows; the exit code remains the caller's decision alone.
    */
   failOn?: readonly FailOnCondition[];
+
+  /**
+   * The run header to open the report with, in place of the one the renderer
+   * would build for itself.
+   *
+   * A command that renders a comparison it did not phrase as a comparison — the
+   * loop, which reads one iteration against its baseline — states its own run in
+   * its own terms here. Left unset, the renderer names the command, the variants
+   * and the adapter as it always has.
+   *
+   * The string is printed verbatim, so a caller wanting the header styled has to
+   * style it: the override is built before `color` is pinned for the render.
+   */
+  header?: string;
 }

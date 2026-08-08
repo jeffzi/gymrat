@@ -38,6 +38,7 @@
     "yocto",
     "zizmor"
   ],
+  "ignoreRegExpList": ["/\\\\x1b\\[[0-9;]*m/g"],
   "ignorePaths": [
     ".planning",
     "node_modules",

@@ -1463,9 +1463,35 @@ function renderCandidate(
   return lines;
 }
 
-/** How many rounds paired, as the header states it. */
-function pairedSamples(samples: number): string {
+/**
+ * How many rounds paired, as the header states it.
+ *
+ * Exported so a command phrasing its own run header states the sample count in
+ * the same words this one does.
+ */
+export function pairedSamples(samples: number): string {
   return pluralize(samples, "paired sample");
+}
+
+/**
+ * The run header naming the command, the variants it compared, the rounds behind
+ * the comparison and the adapter that measured them.
+ *
+ * Joined from its parts rather than rewritten once styled: a `·` is legal in a
+ * branch name and in an adapter name, and replacing every one of them in the
+ * finished line would splice dim codes into the middle of a name's own style
+ * span.
+ */
+function compareHeader(display: ComparisonResult): string {
+  const candidateNames = display.candidates
+    .map((candidate) => formatVariantName(candidate.label))
+    .join(", ");
+  return joinHeaderParts([
+    formatLabel("gymrat compare", ["bold"]),
+    `baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames}`,
+    pairedSamples(display.samples),
+    `adapter: ${display.adapter}`,
+  ]);
 }
 
 /**
@@ -1489,20 +1515,7 @@ function pairedSamples(samples: number): string {
 export function renderReport(result: ComparisonResult, options: ReportOptions = {}): string {
   return withColor(options.color, () => {
     const display = withDisplayLabels(result);
-    const candidateNames = display.candidates
-      .map((candidate) => formatVariantName(candidate.label))
-      .join(", ");
-    // Joined from its parts rather than rewritten once styled: a `·` is legal in
-    // a branch name and in an adapter name, and replacing every one of them in
-    // the finished line would splice dim codes into the middle of a name's own
-    // style span.
-    const header = joinHeaderParts([
-      formatLabel("gymrat compare", ["bold"]),
-      `baseline ${formatVariantName(display.baselineLabel)} ↔ ${candidateNames}`,
-      pairedSamples(display.samples),
-      `adapter: ${display.adapter}`,
-    ]);
-    const lines = [header];
+    const lines = [options.header ?? compareHeader(display)];
 
     const conditions = options.failOn ?? [];
     if (display.candidates.length > 1) {
