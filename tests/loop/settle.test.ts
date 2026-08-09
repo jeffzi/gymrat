@@ -20,6 +20,30 @@ import { captureStdout, mockProcessExit } from "../fixtures/cli-harness.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import { committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
 
+/**
+ * Write `data` to `filePath`, retrying on EPERM.
+ *
+ * On Windows, a freshly created file can be briefly locked by an
+ * antivirus scan or the filesystem indexer. A few short retries are
+ * enough to ride out that transient hold without skipping the test.
+ */
+function writeWithRetry(filePath: string, data: string): void {
+  const MAX_RETRIES = 5;
+  const DELAY_MS = 200;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.writeFileSync(filePath, data);
+      return;
+    } catch (err) {
+      if (attempt >= MAX_RETRIES) throw err;
+      const code =
+        err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "";
+      if (code !== "EPERM") throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, DELAY_MS);
+    }
+  }
+}
+
 type Exec = typeof import("../../src/exec.js").exec;
 
 /**
@@ -409,10 +433,7 @@ describe("keepSession", () => {
     });
   });
 
-  // Corrupting the worktree's .git file requires overwriting it, and on
-  // Windows a background git process can hold a brief exclusive lock that
-  // makes the write non-deterministically fail with EPERM.
-  describe.skipIf(process.platform === "win32")("when the baseline worktree cannot advance", () => {
+  describe("when the baseline worktree cannot advance", () => {
     it("writes no keep record, leaving the iteration unsettled", async () => {
       // Arrange
       startWith([iteration(1)]);
@@ -420,7 +441,10 @@ describe("keepSession", () => {
       checksPass();
       // A linked worktree reaches its repository through this file, so pointing
       // it at a missing directory fails every git command run inside it.
-      fs.writeFileSync(path.join(baselineWorktreeDir(repo.dir), ".git"), "gitdir: /nonexistent\n");
+      // On Windows, a brief exclusive lock (antivirus scan, indexer) can hold
+      // the newly created file right after git worktree add; retry to ride it out.
+      const gitFile = path.join(baselineWorktreeDir(repo.dir), ".git");
+      writeWithRetry(gitFile, "gitdir: /nonexistent\n");
 
       // Act
       const keeping = keepSession(repo.dir, config());
