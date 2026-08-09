@@ -81,8 +81,22 @@ const baselineRecordSchema = Type.Object(
 const metricVerdictSchema = Type.Object(
   {
     deltaPct: numberSchema,
-    verdict: stringSchema,
-    method: stringSchema,
+    // The value set `MetricVerdict["verdict"]` admits — see `Verdict` and
+    // `ApproximateVerdictValue` in verdict/verdict.ts.
+    verdict: Type.Union(
+      [
+        Type.Literal("improved"),
+        Type.Literal("regressed"),
+        Type.Literal("no-signal"),
+        Type.Literal("unstable"),
+      ],
+      expected(`"improved", "regressed", "no-signal" or "unstable"`),
+    ),
+    // `MetricVerdict["method"]` in verdict/verdict.ts.
+    method: Type.Union(
+      [Type.Literal("signed-rank"), Type.Literal("band"), Type.Literal("exact")],
+      expected(`"signed-rank", "band" or "exact"`),
+    ),
     p: Type.Optional(numberSchema),
     noisePct: Type.Optional(numberSchema),
     gating: booleanSchema,
@@ -116,7 +130,15 @@ const iterationRecordSchema = Type.Object(
     primary: Type.Object(
       // A geomean primary is nameless — it aggregates every gating metric — so
       // the name only exists on the variant that names one.
-      { kind: stringSchema, name: Type.Optional(stringSchema), deltaPct: numberSchema },
+      {
+        // `LoopPrimary["kind"]` in report/loop.ts.
+        kind: Type.Union(
+          [Type.Literal("geomean"), Type.Literal("metric")],
+          expected(`"geomean" or "metric"`),
+        ),
+        name: Type.Optional(stringSchema),
+        deltaPct: numberSchema,
+      },
       strictObjectOptions,
     ),
     outcome: Type.Union(

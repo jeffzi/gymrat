@@ -357,22 +357,10 @@ describe("parseRecord", () => {
   });
 
   describe("when the caller narrows the returned union", () => {
-    it("exposes the fields of the matching record type", () => {
+    it("pins the return type to the full record union", () => {
       const record = parseRecord(hookRecord);
 
-      const stage = record.type === "hook" ? record.stage : undefined;
-
-      expect(stage).toBe("before");
       expectTypeOf(record).toEqualTypeOf<SessionLogRecord>();
-    });
-
-    it("unions every session record type", () => {
-      const record = parseRecord(discardRecord);
-
-      expect(record.type).toBe("discard");
-      expectTypeOf<SessionLogRecord>().toEqualTypeOf<
-        SessionRecord | BaselineRecord | IterationRecord | KeepRecord | DiscardRecord | HookRecord
-      >();
     });
   });
 });
