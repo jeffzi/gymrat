@@ -46,10 +46,12 @@ function hasStderr(error: unknown): error is Error & { stderr: string } {
  * `execFileSync` attaches the child's piped stderr to the thrown error, separate
  * from `message`, which it prefixes with `Command failed: <command>` noise.
  *
- * Falls back to `messageOf` for thrown values that carry no stderr.
+ * Falls back to `messageOf` for thrown values that carry no stderr, or whose
+ * stderr is empty — git sometimes explains a failure on stdout instead (e.g.
+ * "nothing to commit"), leaving stderr an empty string rather than absent.
  */
 export function stderrTextOf(error: unknown): string {
-  if (hasStderr(error)) {
+  if (hasStderr(error) && error.stderr.trim() !== "") {
     return error.stderr.trim();
   }
 
