@@ -59,6 +59,41 @@ function isAlive(pid: number): boolean {
   }
 }
 
+function removeLockFile(lockPath: string): void {
+  try {
+    fs.unlinkSync(lockPath);
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) {
+      throw error;
+    }
+  }
+}
+
+function heldByError(holder: LockHolder, lockPath: string): GymratError {
+  return new GymratError(
+    `Lock held by PID ${String(holder.pid)} (${holder.command}, started ${holder.at})`,
+    `Another gymrat run is active in this repo. Wait for it to finish or remove ${lockPath} if it crashed.`,
+  );
+}
+
+function stealLock(lockPath: string, record: string): void {
+  removeLockFile(lockPath);
+  try {
+    fs.writeFileSync(lockPath, record, { flag: "wx" });
+  } catch (retryError) {
+    if (!hasErrorCode(retryError, "EEXIST")) {
+      throw retryError;
+    }
+    const winner = readHolder(lockPath);
+    throw winner === undefined
+      ? new GymratError(
+          `Lock at ${lockPath} was claimed by another process while stealing it.`,
+          `Another gymrat run is active in this repo. Wait for it to finish or remove ${lockPath} if it crashed.`,
+        )
+      : heldByError(winner, lockPath);
+  }
+}
+
 /**
  * Take the single-flight lock at `lockPath` on behalf of `command`.
  *
@@ -81,21 +116,12 @@ export function acquireLock(lockPath: string, command: string): ReleaseLock {
     }
     const existing = readHolder(lockPath);
     if (existing !== undefined && isAlive(existing.pid)) {
-      throw new GymratError(
-        `Lock held by PID ${String(existing.pid)} (${existing.command}, started ${existing.at})`,
-        `Another gymrat run is active in this repo. Wait for it to finish or remove ${lockPath} if it crashed.`,
-      );
+      throw heldByError(existing, lockPath);
     }
-    fs.writeFileSync(lockPath, record);
+    stealLock(lockPath, record);
   }
 
   return () => {
-    try {
-      fs.unlinkSync(lockPath);
-    } catch (error) {
-      if (!hasErrorCode(error, "ENOENT")) {
-        throw error;
-      }
-    }
+    removeLockFile(lockPath);
   };
 }

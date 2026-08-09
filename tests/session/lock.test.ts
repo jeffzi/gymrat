@@ -135,6 +135,53 @@ describe("acquireLock", () => {
       expect(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
     });
   });
+
+  describe("when the steal race is lost", () => {
+    it("throws a GymratError naming the winner when its record is readable", () => {
+      // Arrange
+      const lockPath = freshLockPath();
+      const rivalPid = process.pid;
+      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+
+      const realUnlink = fs.unlinkSync.bind(fs);
+      vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
+        realUnlink(p);
+        // A rival writes a new lockfile between the unlink and the retry write.
+        writeLockfile(lockPath, { pid: rivalPid, command: "rival" });
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect.soft(error.message).toContain(`PID ${String(rivalPid)}`);
+      expect.soft(error.message).toContain("rival");
+      expect.soft(error.hint).toMatch(/another gymrat run/i);
+      expect.soft(error.hint).toContain(lockPath);
+    });
+
+    it("throws a GymratError with claimed-while-stealing when the winner is unreadable", () => {
+      // Arrange
+      const lockPath = freshLockPath();
+      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+
+      const realUnlink = fs.unlinkSync.bind(fs);
+      vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
+        realUnlink(p);
+        // Rival writes garbage that readHolder cannot parse.
+        fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+        fs.writeFileSync(lockPath, "not-json");
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect.soft(error.message).toContain("claimed by another process while stealing it");
+      expect.soft(error.hint).toMatch(/another gymrat run/i);
+      expect.soft(error.hint).toContain(lockPath);
+    });
+  });
 });
 
 describe("the release handle", () => {
