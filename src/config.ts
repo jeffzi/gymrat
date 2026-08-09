@@ -83,7 +83,9 @@ const configFileSchema = Type.Object(
     ),
     metrics: Type.Optional(metricsSchema),
     kinds: Type.Optional(kindsSchema),
-    checks: optionalStringSchema,
+    // An empty command would run as a no-op shell that exits 0, so the gate would
+    // report as configured and passing without ever running the checks.
+    checks: Type.Optional(Type.String({ ...expected("a non-empty string"), minLength: 1 })),
     filter: optionalStringSchema,
     primary: optionalStringSchema,
     stop: Type.Optional(stopSchema),
@@ -266,6 +268,7 @@ function validateLoopKeys(config: { filter?: string; primary: string; stop?: Con
  * required value into the return.
  */
 function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConfig, "bench"> {
+  const prepare = flags.prepare ?? configFile.prepare;
   return {
     adapter: flags.adapter ?? configFile.adapter ?? DEFAULTS.adapter,
     samples: flags.samples ?? configFile.samples ?? DEFAULTS.samples,
@@ -273,16 +276,16 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConf
     unstableNoisePct: configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct,
     primary: configFile.primary ?? DEFAULTS.primary,
     hooks: configFile.hooks ?? DEFAULTS.hooks,
-    ...((flags.prepare ?? configFile.prepare)
-      ? { prepare: flags.prepare ?? configFile.prepare }
-      : undefined),
-    ...(configFile.metrics
+    ...(prepare !== undefined ? { prepare } : undefined),
+    ...(configFile.metrics !== undefined
       ? { metrics: metricRecord(Object.entries(configFile.metrics)) }
       : undefined),
-    ...(configFile.kinds ? { kinds: metricRecord(Object.entries(configFile.kinds)) } : undefined),
-    ...(configFile.checks ? { checks: configFile.checks } : undefined),
-    ...(configFile.filter ? { filter: configFile.filter } : undefined),
-    ...(configFile.stop ? { stop: configFile.stop } : undefined),
+    ...(configFile.kinds !== undefined
+      ? { kinds: metricRecord(Object.entries(configFile.kinds)) }
+      : undefined),
+    ...(configFile.checks !== undefined ? { checks: configFile.checks } : undefined),
+    ...(configFile.filter !== undefined ? { filter: configFile.filter } : undefined),
+    ...(configFile.stop !== undefined ? { stop: configFile.stop } : undefined),
   };
 }
 

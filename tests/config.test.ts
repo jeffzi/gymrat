@@ -258,6 +258,19 @@ describe("loadConfigFile", () => {
     });
   });
 
+  describe("when checks holds an empty string", () => {
+    it("throws naming checks and the non-empty requirement", () => {
+      const { dir, configPath } = createConfigFile({ checks: "" });
+      tmpdir = dir;
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/checks.*non-empty/);
+    });
+  });
+
   describe("when a positive-integer key holds an invalid value", () => {
     it.each([
       { key: "samples", description: "a string", value: "ten" },
