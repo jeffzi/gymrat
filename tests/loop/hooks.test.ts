@@ -22,11 +22,6 @@ let experimentDir: string;
 let hookCommand: HookScripts["hookCommand"];
 let printing: HookScripts["printing"];
 
-/** A command copying everything handed to it on stdin straight back to stdout. */
-function echoingStdin(): string {
-  return hookCommand("process.stdin.pipe(process.stdout);\n");
-}
-
 /** Park `content` beside the hook and give back a command that prints it verbatim. */
 function printingContentOf(name: string, content: string): string {
   const dataPath = path.join(tempDir, name);
@@ -41,7 +36,6 @@ function printingContentOf(name: string, content: string): string {
 function invocationOf(command: string, overrides: Partial<HookInvocation> = {}): HookInvocation {
   return {
     command,
-    cwd: experimentDir,
     stage: "before",
     seq: 2,
     session: sessionRecord({
@@ -106,7 +100,7 @@ describe("runHook", () => {
       "hands the $stage hook a payload naming the stage, the worktree and the session",
       async ({ stage, seq, lastIteration, iterationCount }) => {
         // Arrange
-        const command = echoingStdin();
+        const command = hookCommand("process.stdin.pipe(process.stdout);\n");
 
         // Act
         const run = await runHook(
@@ -264,11 +258,23 @@ describe("runHook", () => {
       const vanishedDir = path.join(tempDir, "vanished");
 
       // Act
-      const run = await runHook(invocationOf(command, { cwd: vanishedDir }));
+      const run = await runHook(
+        invocationOf(command, {
+          session: sessionRecord({
+            sessionId: SESSION_ID,
+            worktrees: {
+              experiment: vanishedDir,
+              baseline: path.join(tempDir, "side-baseline"),
+            },
+          }),
+        }),
+      );
 
       // Assert
       const lines = labeledLines(run.report, "before");
-      expect.soft(lines[0]).toMatch(/^hook exited [1-9]\d*$/);
+      expect.soft(lines[0]).toBe(`hook exited ${FAILURE_EXIT_CODE}`);
+      // Windows maps a missing cwd to ENOTDIR; POSIX to ENOENT.
+      expect.soft(lines.slice(1).join("\n")).toMatch(/ENOENT|ENOTDIR/);
       expect.soft(run.record.stdoutBytes).toBe(0);
       expect(run.record.timedOut).toBe(false);
     });

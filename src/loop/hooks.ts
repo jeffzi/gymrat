@@ -9,8 +9,6 @@ export type HookStage = HookRecord["stage"];
 export interface HookInvocation {
   /** The command line the consumer configured for this stage. */
   command: string;
-  /** Where the command runs: the experiment worktree, so a relative path means the edit. */
-  cwd: string;
   stage: HookStage;
   /** The iteration the hook brackets: the one about to be measured, or the one just recorded. */
   seq: number;
@@ -90,7 +88,7 @@ export async function runHook(invocation: HookInvocation): Promise<HookRun> {
 
   const startedAt = performance.now();
   const result = await exec(invocation.command, {
-    cwd: invocation.cwd,
+    cwd: invocation.session.worktrees.experiment,
     timeoutMs,
     stdin: `${payload}\n`,
   });

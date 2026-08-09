@@ -117,9 +117,7 @@ export async function iterateSession(
   }
 
   const seq = state.lastSeq + 1;
-  const experimentDir = state.session.worktrees.experiment;
   const beforeReport = await fireHook(jsonlPath, config.hooks?.before, {
-    cwd: experimentDir,
     stage: "before",
     seq,
     session: state.session,
@@ -171,7 +169,6 @@ export async function iterateSession(
   appendRecord(jsonlPath, record);
 
   const afterReport = await fireHook(jsonlPath, config.hooks?.after, {
-    cwd: experimentDir,
     stage: "after",
     seq,
     session: state.session,
