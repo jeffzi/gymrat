@@ -129,14 +129,9 @@ export async function iterateSession(
     iterationCount: state.iterationCount,
   });
 
-  const [baseline, experiment] = await measure(state.session, config, options, config.bench);
-  const metricMeta = resolveMeta(config, [baseline.samples, experiment.samples]);
-  const firstRun = computeVerdicts(
-    baseline.samples,
-    experiment.samples,
-    metricMeta,
-    config.unstableNoisePct,
-  );
+  const first = await benchAndJudge(state.session, config, options, config.bench);
+  const metricMeta = first.metricMeta;
+  const firstRun = first.verdicts;
 
   const confirmation = await confirmRegressions(
     state.session,
@@ -147,7 +142,13 @@ export async function iterateSession(
   );
   const verdicts = applyConfirmation(firstRun, confirmation);
 
-  const result = buildComparisonResult(baseline, experiment, verdicts, metricMeta, config);
+  const result = buildComparisonResult(
+    first.baseline,
+    first.experiment,
+    verdicts,
+    metricMeta,
+    config,
+  );
   const primary = resolvePrimary(config.primary, verdicts, metricMeta);
   const outcome = deriveOutcome(result.metrics, primary);
 
@@ -156,7 +157,7 @@ export async function iterateSession(
     type: "iteration",
     seq,
     at: new Date().toISOString(),
-    samples: { experiment: experiment.samples, baseline: baseline.samples },
+    samples: first.samples,
     metrics: recordedVerdicts(verdicts, metricMeta, confirmation),
     ...(confirmation !== undefined && {
       confirm: {
@@ -274,18 +275,59 @@ async function confirmRegressions(
     config.filter === undefined
       ? config.bench
       : config.filter.replaceAll(FILTER_PLACEHOLDER, filtered.join(" "));
-  const [baseline, experiment] = await measure(session, config, options, bench);
-
-  const rerun = computeVerdicts(
-    baseline.samples,
-    experiment.samples,
+  const { verdicts: rerun, samples } = await benchAndJudge(
+    session,
+    config,
+    options,
+    bench,
     metricMeta,
-    config.unstableNoisePct,
   );
   return {
     filtered,
-    samples: { experiment: experiment.samples, baseline: baseline.samples },
+    samples,
     confirmed: new Set(filtered.filter((name) => rerun[name]?.verdict === "regressed")),
+  };
+}
+
+/**
+ * Bench a session's worktrees and judge the resulting samples, in one call.
+ *
+ * The two sites that measure a pair of worktrees — the first run and a
+ * confirmation rerun — both need the same paired-samples literal recorded and
+ * the same four `computeVerdicts` arguments in the same order, so both go
+ * through here rather than repeating the pairing by hand.
+ *
+ * `metricMeta` is optional because the first run does not know the metric set
+ * until it has samples to read it from; the confirmation rerun already has one
+ * from the first run and passes it through unchanged.
+ */
+async function benchAndJudge(
+  session: SessionRecord,
+  config: ResolvedConfig,
+  options: IterateOptions,
+  bench: string,
+  metricMeta?: Record<string, ResolvedMetricMeta>,
+): Promise<{
+  baseline: TargetSamples;
+  experiment: TargetSamples;
+  metricMeta: Record<string, ResolvedMetricMeta>;
+  verdicts: Record<string, MetricVerdict>;
+  samples: IterationRecord["samples"];
+}> {
+  const [baseline, experiment] = await measure(session, config, options, bench);
+  const resolvedMeta = metricMeta ?? resolveMeta(config, [baseline.samples, experiment.samples]);
+  const verdicts = computeVerdicts(
+    baseline.samples,
+    experiment.samples,
+    resolvedMeta,
+    config.unstableNoisePct,
+  );
+  return {
+    baseline,
+    experiment,
+    metricMeta: resolvedMeta,
+    verdicts,
+    samples: { experiment: experiment.samples, baseline: baseline.samples },
   };
 }
 
