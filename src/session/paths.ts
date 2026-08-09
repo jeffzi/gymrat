@@ -1,11 +1,8 @@
-import { execFileSync, type StdioOptions } from "node:child_process";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import { GymratError } from "../errors.js";
-
-const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
+import { notAGitRepositoryError, runGit } from "../git.js";
 
 /** Directory under the repo root holding session state and its worktrees. */
 export const SESSION_DIR_NAME = ".gymrat";
@@ -20,17 +17,9 @@ const LOCK_DIGEST_LENGTH = 12;
  */
 export function repoRoot(cwd: string = process.cwd()): string {
   try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      encoding: "utf-8",
-      stdio: GIT_STDIO,
-    }).trim();
+    return runGit(["rev-parse", "--show-toplevel"], cwd).trim();
   } catch (error) {
-    throw new GymratError(
-      `Not a git repository: ${cwd}`,
-      "Run gymrat from inside a git repository.",
-      { cause: error },
-    );
+    throw notAGitRepositoryError(cwd, error);
   }
 }
 

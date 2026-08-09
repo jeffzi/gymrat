@@ -1,11 +1,9 @@
-import { execFileSync, type StdioOptions } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 import { GymratError, stderrTextOf } from "../errors.js";
+import { notAGitRepositoryError, runGit } from "../git.js";
 import { baselineWorktreeDir, experimentWorktreeDir, SESSION_DIR_NAME } from "./paths.js";
-
-const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 /** Prefix of the branch a session's experiment worktree sits on. */
 const BRANCH_PREFIX = "gymrat/";
@@ -234,13 +232,12 @@ function addBaselineWorktree(root: string, sha: string): void {
  * sits inside it, hence the resolve against `root`.
  */
 function gitCommonDir(root: string): string {
-  const printed = runGitStep(
-    ["rev-parse", "--git-common-dir"],
-    root,
-    `Not a git repository: ${root}`,
-    "Run gymrat from inside a git repository.",
-  ).trim();
-  return path.resolve(root, printed);
+  try {
+    const printed = runGit(["rev-parse", "--git-common-dir"], root).trim();
+    return path.resolve(root, printed);
+  } catch (error) {
+    throw notAGitRepositoryError(root, error);
+  }
 }
 
 function isDirectory(dir: string): boolean {
@@ -253,7 +250,7 @@ function isDirectory(dir: string): boolean {
  */
 function runGitStep(args: readonly string[], cwd: string, message: string, hint: string): string {
   try {
-    return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: GIT_STDIO });
+    return runGit(args, cwd);
   } catch (error) {
     throw new GymratError(`${message}: ${stderrTextOf(error)}`, hint, { cause: error });
   }

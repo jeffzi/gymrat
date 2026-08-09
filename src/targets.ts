@@ -1,10 +1,10 @@
-import { execFileSync, type StdioOptions } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { GymratError, stderrTextOf } from "./errors.js";
+import { runGit } from "./git.js";
 
 /** A directory benchmarked where it sits, with no worktree of its own. */
 export interface InPlaceTarget {
@@ -71,22 +71,6 @@ export interface CleanupResult {
   pruneError: string | undefined;
 }
 
-const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
-
-/**
- * Run a git command with suppressed output.
- *
- * Arguments are passed as an array rather than a shell string so that refs and
- * paths containing shell metacharacters are treated as literal git arguments.
- */
-function runGitCommand(args: readonly string[], repoDir: string): string {
-  return execFileSync("git", args, {
-    cwd: repoDir,
-    encoding: "utf-8",
-    stdio: GIT_STDIO,
-  });
-}
-
 /** Attempt directory resolution; returns `undefined` to fall through to ref resolution. */
 function tryResolveDirectory(absolutePath: string): InPlaceTarget | undefined {
   const stats = fs.statSync(absolutePath, { throwIfNoEntry: false });
@@ -118,10 +102,7 @@ export function resolveTarget(input: string, repoDir: string): Target {
   try {
     // `^{commit}` peels the ref, so a tag resolves to the commit it points at and
     // a tree or blob sha fails instead of yielding a sha no worktree can check out.
-    const resolvedSha = runGitCommand(
-      ["rev-parse", "--verify", `${input}^{commit}`],
-      repoDir,
-    ).trim();
+    const resolvedSha = runGit(["rev-parse", "--verify", `${input}^{commit}`], repoDir).trim();
     return {
       kind: "ref",
       ref: input,
@@ -164,7 +145,7 @@ export function planWorktree(ref: RefTarget): WorktreeInfo {
  */
 export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): void {
   try {
-    runGitCommand(["worktree", "add", "--detach", worktree.dir, worktree.sha], repoDir);
+    runGit(["worktree", "add", "--detach", worktree.dir, worktree.sha], repoDir);
   } finally {
     // git registers the worktree before the command returns, and the add can be
     // killed in between, so what landed on disk — not whether git exited zero —
@@ -180,7 +161,7 @@ export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): vo
  */
 function tryGitCommand(args: readonly string[], repoDir: string): string | undefined {
   try {
-    runGitCommand(args, repoDir);
+    runGit(args, repoDir);
     return undefined;
   } catch (error) {
     return stderrTextOf(error);

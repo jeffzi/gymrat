@@ -135,7 +135,7 @@ describe("createWorkspace", () => {
 
       // Assert
       expect.soft(error.message).toContain(BRANCH);
-      expect.soft(error.hint).toEqual(expect.any(String));
+      expect.soft(error.hint).toMatch(/git branch -D/i);
     });
   });
 
@@ -154,7 +154,7 @@ describe("createWorkspace", () => {
 
         // Assert
         expect.soft(error.message).toMatch(/not a git repository/i);
-        expect.soft(error.hint).toEqual(expect.any(String));
+        expect.soft(error.hint).toMatch(/git repository/i);
       } finally {
         fs.rmSync(outside, { recursive: true, force: true });
       }
