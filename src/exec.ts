@@ -84,9 +84,16 @@ export function killTree(pid: number): void {
   }
 }
 
-/** The EPIPE a command that never reads its stdin leaves behind is its choice, not a fault. */
-function ignoreStdinError(): void {
-  // Deliberately nothing: the exit code and stderr already say how the command fared.
+/**
+ * The EPIPE a command that never reads its stdin leaves behind is its choice, not a fault, and
+ * ERR_STREAM_DESTROYED is expected when the child exits before the write completes. Anything else
+ * is a genuine failure to deliver `options.stdin` and has to reach the caller as a warning, since
+ * `exec` settles from the child's own close/error events and would otherwise resolve as an
+ * ordinary result with the payload silently missing.
+ */
+function ignoreStdinError(err: unknown): void {
+  if (hasErrorCode(err, "EPIPE") || hasErrorCode(err, "ERR_STREAM_DESTROYED")) return;
+  process.emitWarning(err instanceof Error ? err : String(err));
 }
 
 /**

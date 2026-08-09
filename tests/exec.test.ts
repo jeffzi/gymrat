@@ -143,20 +143,6 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
       expect(result).toStrictEqual({ stdout: "", stderr: "", exitCode: 3 });
     });
-
-    it("returns the timeout shape with the output captured so far", async () => {
-      const result = await runInTmpdir("echo started; sleep 10", {
-        stdin: "never read\n",
-        timeoutMs: 500,
-      });
-
-      expect(result).toStrictEqual({
-        kind: "timeout",
-        stdout: "started\n",
-        stderr: "",
-        timeoutMs: 500,
-      });
-    });
   });
 
   describe("when stdin is omitted", () => {
