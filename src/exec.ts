@@ -26,7 +26,29 @@ export interface ExecOptions {
 }
 
 /** Reported when the child has no exit status of its own: killed, or never started. */
-const FAILURE_EXIT_CODE = 1;
+export const FAILURE_EXIT_CODE = 1;
+
+/** Mutable buffer accumulating a child process's stdout/stderr as it streams in. */
+export interface OutputBuffer {
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Accumulate `stdout` and `stderr` into a buffer as data arrives, so callers can
+ * snapshot the output received so far at any point — on close, timeout, or abort
+ * — without waiting for the streams to end.
+ */
+export function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer {
+  const buffer: OutputBuffer = { stdout: "", stderr: "" };
+  stdout.on("data", (chunk: string) => {
+    buffer.stdout += chunk;
+  });
+  stderr.on("data", (chunk: string) => {
+    buffer.stderr += chunk;
+  });
+  return buffer;
+}
 
 /** The status taskkill exits with when no process carries the given pid. */
 const TASKKILL_NOT_FOUND_STATUS = 128;
@@ -122,18 +144,9 @@ export async function exec(
     // flushes any partial sequence when the stream ends.
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    let stdout = "";
-    let stderr = "";
+    const output = captureOutput(child.stdout, child.stderr);
     let timeoutHandle: NodeJS.Timeout | undefined;
     let resolved = false;
-
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
 
     function settle(result: ExecResult | ExecTimeoutError): void {
       if (resolved) return;
@@ -159,14 +172,14 @@ export async function exec(
       killGroup();
       // Snapshot rather than wait for "close": the caller asked to stop now, and a
       // descendant that outlived the group kill would still be holding the pipe.
-      settle({ stdout, stderr, exitCode: FAILURE_EXIT_CODE });
+      settle({ stdout: output.stdout, stderr: output.stderr, exitCode: FAILURE_EXIT_CODE });
     }
 
     const { timeoutMs } = options;
     if (timeoutMs) {
       timeoutHandle = setTimeout(() => {
         killGroup();
-        settle({ kind: "timeout", stdout, stderr, timeoutMs });
+        settle({ kind: "timeout", stdout: output.stdout, stderr: output.stderr, timeoutMs });
       }, timeoutMs);
     }
 
@@ -183,15 +196,19 @@ export async function exec(
     // descendants can still be writing to after the shell itself is gone.
     child.on("close", (code) => {
       settle({
-        stdout,
-        stderr,
+        stdout: output.stdout,
+        stderr: output.stderr,
         // null when the child was killed by a signal, which is how an abort ends.
         exitCode: code ?? FAILURE_EXIT_CODE,
       });
     });
 
     function onFailure(err: Error): void {
-      settle({ stdout, stderr: `${stderr}${err.message}\n`, exitCode: FAILURE_EXIT_CODE });
+      settle({
+        stdout: output.stdout,
+        stderr: `${output.stderr}${err.message}\n`,
+        exitCode: FAILURE_EXIT_CODE,
+      });
     }
 
     // A child that never started has nothing to say on its own stderr, so the

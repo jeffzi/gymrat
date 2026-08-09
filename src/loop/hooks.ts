@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import { messageOf } from "../errors.js";
-import { killTree } from "../exec.js";
+import { captureOutput, FAILURE_EXIT_CODE, killTree } from "../exec.js";
 import type { HookRecord, IterationRecord, SessionRecord } from "../session/records.js";
 
 /** Which side of a measurement a hook script runs on. */
@@ -49,9 +49,6 @@ const HOOK_TIMEOUT_MS = 30_000;
  * meant to annotate, and the whole of it is on disk anyway.
  */
 const STDOUT_LIMIT_BYTES = 8192;
-
-/** Reported when the script has no exit status of its own: killed, or never started. */
-const FAILURE_EXIT_CODE = 1;
 
 const NEWLINE_BYTE = 0x0a;
 
@@ -198,16 +195,8 @@ async function runScript(
     // flushes any partial sequence when the stream ends.
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    let stdout = "";
-    let stderr = "";
+    const output = captureOutput(child.stdout, child.stderr);
     let settled = false;
-
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
 
     function settle(outcome: ScriptOutcome): void {
       if (settled) return;
@@ -231,20 +220,30 @@ async function runScript(
       if (child.pid !== undefined) {
         killTree(child.pid);
       }
-      settle({ stdout, stderr, exitCode: FAILURE_EXIT_CODE, timedOut: true });
+      settle({
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exitCode: FAILURE_EXIT_CODE,
+        timedOut: true,
+      });
     }, timeoutMs);
 
     // "close", not "exit": it waits for the stdio pipes, which the script's own
     // children can still be writing to after the script itself is gone.
     child.on("close", (code) => {
       // null when the script was killed by a signal.
-      settle({ stdout, stderr, exitCode: code ?? FAILURE_EXIT_CODE, timedOut: false });
+      settle({
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exitCode: code ?? FAILURE_EXIT_CODE,
+        timedOut: false,
+      });
     });
 
     function onFailure(err: Error): void {
       settle({
-        stdout,
-        stderr: `${stderr}${err.message}\n`,
+        stdout: output.stdout,
+        stderr: `${output.stderr}${err.message}\n`,
         exitCode: FAILURE_EXIT_CODE,
         timedOut: false,
       });
@@ -273,13 +272,14 @@ function ignoreStdinError(): void {
  */
 function formatReport(stage: HookStage, outcome: ScriptOutcome, timeoutMs: number): string {
   const lines = splitLines(truncateStdout(outcome.stdout));
+  const failed = outcome.timedOut || outcome.exitCode !== 0;
 
   if (outcome.timedOut) {
     lines.push(`hook timed out after ${timeoutMs}ms`);
   } else if (outcome.exitCode !== 0) {
     lines.push(`hook exited ${outcome.exitCode}`);
   }
-  if (outcome.timedOut || outcome.exitCode !== 0) {
+  if (failed) {
     lines.push(...splitLines(outcome.stderr));
   }
 
