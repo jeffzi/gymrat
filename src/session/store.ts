@@ -121,12 +121,19 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
         targetReachedBySeq.set(record.seq, record.targetReached);
         break;
       case "keep":
-        unsettled = false;
         if (record.status === "committed") {
+          unsettled = false;
           keepCount += 1;
           // The keep settles the iteration it shares a seq with, so the stop condition
           // follows the last commit rather than the last measurement.
           targetReachedAndKept = targetReachedBySeq.get(record.seq) ?? false;
+        } else if (record.reason !== undefined && record.reason !== "checks-failed") {
+          // A blocked keep leaves the edit uncommitted, so it settles the iteration
+          // too — unblocking `iterate` — except for "checks-failed", where the user
+          // is expected to fix the failure and retry `keep` on the same iteration.
+          // A blocked keep with no reason at all is held to the same rule: nothing
+          // says the iteration is beyond recovery, so it stays unsettled.
+          unsettled = false;
         }
         break;
       case "discard":

@@ -17,28 +17,11 @@ import type {
 } from "../../src/session/records.js";
 import type { SessionState } from "../../src/session/store.js";
 import { appendRecord, foldSession, readRecords } from "../../src/session/store.js";
+import { AT, committedKeep, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
 
-const AT = "2026-08-08T14:15:30.000Z";
-const SHA = "a".repeat(40);
-const COMMIT = "b".repeat(40);
-
-const SESSION: SessionRecord = {
-  type: "session",
-  schemaVersion: 1,
-  sessionId: "20260808-141530-a3f2",
-  createdAt: AT,
-  baseline: { ref: "main", sha: SHA },
-  branch: "gymrat/20260808-141530-a3f2",
+const SESSION: SessionRecord = sessionRecord({
   worktrees: { experiment: "/repo/.gymrat/experiment", baseline: "/repo/.gymrat/baseline" },
-  config: {
-    bench: "npm run bench",
-    adapter: "metric-lines",
-    samples: 10,
-    timeoutSeconds: 1800,
-    primary: "geomean",
-    hooks: "gymrat.hooks",
-  },
-};
+});
 
 const BASELINE: BaselineRecord = {
   type: "baseline",
@@ -59,42 +42,14 @@ const HOOK: HookRecord = {
 
 /** An iteration record numbered `seq`, reaching the target metric or not. */
 function iteration(seq: number, targetReached: boolean): IterationRecord {
-  return {
-    type: "iteration",
+  return iterationRecord({
     seq,
-    at: AT,
     samples: {
       experiment: [{ total_ms: 14100 }, { total_ms: 14088 }],
       baseline: [{ total_ms: 15200 }, { total_ms: 15190 }],
     },
-    metrics: {
-      total_ms: {
-        deltaPct: -7.2,
-        verdict: "improved",
-        method: "signed-rank",
-        p: 0.002,
-        noisePct: 1.4,
-        gating: true,
-        confirmed: false,
-      },
-    },
-    primary: { kind: "geomean", deltaPct: -7.2 },
-    outcome: "improved",
     targetReached,
-  };
-}
-
-/** A keep that committed the iteration numbered `seq`. */
-function committedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "committed",
-    commit: COMMIT,
-    message: "cache the regex",
-    checks: { configured: true, passed: true },
-  };
+  });
 }
 
 /** A keep that gating refused, leaving the iteration numbered `seq` uncommitted. */
@@ -105,6 +60,17 @@ function blockedKeep(seq: number): KeepRecord {
     at: AT,
     status: "blocked",
     reason: "checks-failed",
+    checks: { configured: true, passed: false },
+  };
+}
+
+/** A blocked keep of the iteration numbered `seq` that never recorded why it was blocked. */
+function blockedKeepWithoutReason(seq: number): KeepRecord {
+  return {
+    type: "keep",
+    seq,
+    at: AT,
+    status: "blocked",
     checks: { configured: true, passed: false },
   };
 }
@@ -408,6 +374,19 @@ describe("foldSession", () => {
 
       // Assert
       expect(state.keepCount).toBe(0);
+    });
+  });
+
+  describe("when a keep was blocked without recording a reason", () => {
+    it("leaves the iteration unsettled", () => {
+      // Arrange
+      const records = [SESSION, ITERATION_1, blockedKeepWithoutReason(1)];
+
+      // Act
+      const state = foldSession(records);
+
+      // Assert
+      expect(state.unsettled).toBe(true);
     });
   });
 });
