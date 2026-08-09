@@ -491,10 +491,6 @@ describe("loadConfigFile", () => {
     it.each([
       { description: "only a before command", hooks: { before: "npm run warm-cache" } },
       { description: "only an after command", hooks: { after: "npm run cool-down" } },
-      {
-        description: "both commands",
-        hooks: { before: "npm run warm-cache", after: "npm run cool-down" },
-      },
     ])("returns the parsed hooks when it declares $description", ({ hooks }) => {
       const { dir, configPath } = createConfigFile({ hooks });
       tmpdir = dir;

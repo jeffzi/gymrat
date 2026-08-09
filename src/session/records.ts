@@ -38,8 +38,9 @@ const sampleRoundsSchema = Type.Array(
 );
 
 /** The hook commands a session was started with; a stage left out ran nothing. */
+const nonEmptyStringSchema = Type.String({ ...expected("a non-empty string"), minLength: 1 });
 const sessionHooksSchema = Type.Object(
-  { before: Type.Optional(stringSchema), after: Type.Optional(stringSchema) },
+  { before: Type.Optional(nonEmptyStringSchema), after: Type.Optional(nonEmptyStringSchema) },
   strictObjectOptions,
 );
 
