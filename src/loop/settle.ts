@@ -82,13 +82,13 @@ export async function keepSession(
     );
   }
 
-  if (hasConfirmedGatingRegression(iteration)) {
+  if (hasGatingRegression(iteration)) {
     return blockedKeep(
       jsonlPath,
       iteration.seq,
       "gating-regression",
       { configured },
-      `Keep refused: iteration ${iteration.seq} regressed a gating metric, confirmed by a rerun.\nHint: fix the regression and run gymrat iterate again, or run gymrat discard.`,
+      `Keep refused: iteration ${iteration.seq} regressed a gating metric.\nHint: fix the regression and run gymrat iterate again, or run gymrat discard.`,
     );
   }
 
@@ -172,16 +172,23 @@ function requireSession(root: string, state: SessionState): SessionRecord {
  * Whether the iteration carries a regression the loop refuses to commit over.
  *
  * Both halves are required: the outcome is what the agent was shown, and a
- * `confirmed` gating metric is what a rerun stood behind. A regression the rerun
- * would not repeat leaves the iteration keepable, which is the whole point of
- * measuring it twice.
+ * gating metric standing behind the regression is what makes it real. A noisy
+ * metric earns that standing from the confirmation rerun — a regression the
+ * rerun would not repeat leaves the iteration keepable, which is the whole
+ * point of measuring it twice. An exact metric is deterministic, so
+ * `confirmRegressions` skips it and its `confirmed` stays `false`; rerunning it
+ * could only reproduce the same number, and gating on `confirmed` alone would
+ * let every exact regression through.
  */
-function hasConfirmedGatingRegression(iteration: IterationRecord): boolean {
+function hasGatingRegression(iteration: IterationRecord): boolean {
   if (iteration.outcome !== "regressed") {
     return false;
   }
   return Object.values(iteration.metrics).some(
-    (metric) => metric.gating && metric.confirmed && metric.verdict === "regressed",
+    (metric) =>
+      metric.gating &&
+      metric.verdict === "regressed" &&
+      (metric.confirmed || metric.method === "exact"),
   );
 }
 

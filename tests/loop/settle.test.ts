@@ -410,6 +410,38 @@ describe("keepSession", () => {
     });
   });
 
+  describe("when the last iteration's gating exact metric regressed", () => {
+    it("blocks the keep even though the deterministic rerun never marked it confirmed", async () => {
+      // Arrange
+      startWith([
+        iteration(1, {
+          metrics: {
+            total_ms: metric({ deltaPct: 9.4, verdict: "regressed", method: "exact" }),
+          },
+          primary: { kind: "geomean", deltaPct: 9.4 },
+          outcome: "regressed",
+        }),
+      ]);
+      editExperiment();
+      checksPass();
+
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert
+      expect.soft(execMock).not.toHaveBeenCalled();
+      expect(result.record).toStrictEqual({
+        type: "keep",
+        seq: 1,
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        at: expect.stringMatching(ISO_PATTERN),
+        status: "blocked",
+        reason: "gating-regression",
+        checks: { configured: true },
+      });
+    });
+  });
+
   describe("when nothing has been measured since the last settle", () => {
     it.each([
       { description: "no iteration was ever recorded", history: [], seq: 0 },
