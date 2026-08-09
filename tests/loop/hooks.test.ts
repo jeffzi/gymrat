@@ -4,13 +4,12 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { HookInvocation, HookRun, HookStage } from "../../src/loop/hooks.js";
+import { FAILURE_EXIT_CODE } from "../../src/exec.js";
+import type { HookInvocation, HookStage } from "../../src/loop/hooks.js";
 import { runHook } from "../../src/loop/hooks.js";
-import type { IterationRecord, SessionRecord } from "../../src/session/records.js";
-import {
-  iterationRecord,
-  sessionRecord as sessionRecordDefaults,
-} from "../fixtures/session-records.js";
+import type { HookScripts } from "../fixtures/hook-scripts.js";
+import { hookScripts } from "../fixtures/hook-scripts.js";
+import { expectedHookRecord, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
 import { removeTempRoot } from "../setup/temp-root.js";
 
 const SESSION_ID = "20260808-141530-abcd";
@@ -19,57 +18,43 @@ const SESSION_ID = "20260808-141530-abcd";
 const STDOUT_LIMIT_BYTES = 8192;
 
 let tempDir: string;
-let hooksDir: string;
+let experimentDir: string;
+let hookCommand: HookScripts["hookCommand"];
+let printing: HookScripts["printing"];
 
-/** The session every invocation here describes to its hook. */
-function sessionRecord(): SessionRecord {
-  return sessionRecordDefaults({
-    sessionId: SESSION_ID,
-    worktrees: {
-      experiment: path.join(tempDir, "side-experiment"),
-      baseline: path.join(tempDir, "side-baseline"),
-    },
-  });
+/** A command copying everything handed to it on stdin straight back to stdout. */
+function echoingStdin(): string {
+  return hookCommand("process.stdin.pipe(process.stdout);\n");
 }
 
-/** A measured iteration numbered `seq`, the shape a hook is handed as `lastIteration`. */
-function iteration(seq: number): IterationRecord {
-  return iterationRecord({ seq });
+/** Park `content` beside the hook and give back a command that prints it verbatim. */
+function printingContentOf(name: string, content: string): string {
+  const dataPath = path.join(tempDir, name);
+  fs.writeFileSync(dataPath, content);
+  return hookCommand(
+    `import fs from "node:fs";\n` +
+      `process.stdout.write(fs.readFileSync(${JSON.stringify(dataPath)}, "utf-8"));\n`,
+  );
 }
 
-/** A `before` invocation on the scratch hooks directory, overridable field by field. */
-function invocationOf(overrides: Partial<HookInvocation> = {}): HookInvocation {
+/** A `before` invocation on the scratch worktree, overridable field by field. */
+function invocationOf(command: string, overrides: Partial<HookInvocation> = {}): HookInvocation {
   return {
-    hooksDir,
+    command,
+    cwd: experimentDir,
     stage: "before",
     seq: 2,
-    session: sessionRecord(),
+    session: sessionRecord({
+      sessionId: SESSION_ID,
+      worktrees: {
+        experiment: experimentDir,
+        baseline: path.join(tempDir, "side-baseline"),
+      },
+    }),
     lastIteration: null,
     iterationCount: 1,
     ...overrides,
   };
-}
-
-/** Write `body` as `<stage>.sh`, executable unless `mode` says otherwise. */
-function writeHookScript(stage: HookStage, body: string, mode = 0o755): void {
-  const scriptPath = path.join(hooksDir, `${stage}.sh`);
-  fs.writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`);
-  fs.chmodSync(scriptPath, mode);
-}
-
-/** Park `content` beside the hooks and give back a hook body that writes it to stdout. */
-function catBody(name: string, content: string): string {
-  fs.writeFileSync(path.join(hooksDir, name), content);
-  return `cat "$(dirname "$0")/${name}"`;
-}
-
-/** Run the invocation and fail the test when the runner skipped the hook. */
-async function runFired(overrides: Partial<HookInvocation> = {}): Promise<HookRun> {
-  const run = await runHook(invocationOf(overrides));
-  if (run === undefined) {
-    throw new Error("expected the hook to have fired");
-  }
-  return run;
 }
 
 /**
@@ -93,8 +78,9 @@ function labeledLines(report: string, stage: HookStage): string[] {
 
 beforeEach(() => {
   tempDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-hooks-")));
-  hooksDir = path.join(tempDir, "gymrat.hooks");
-  fs.mkdirSync(hooksDir, { recursive: true });
+  experimentDir = path.join(tempDir, "side-experiment");
+  fs.mkdirSync(experimentDir, { recursive: true });
+  ({ hookCommand, printing } = hookScripts(tempDir));
 });
 
 afterEach(() => {
@@ -102,31 +88,7 @@ afterEach(() => {
 });
 
 describe("runHook", () => {
-  describe("when the stage has no runnable script", () => {
-    it("skips a hooks directory holding no script for the stage", async () => {
-      // Act
-      const run = await runHook(invocationOf());
-
-      // Assert
-      expect(run).toBeUndefined();
-    });
-
-    it.skipIf(process.platform === "win32")(
-      "skips a script the filesystem does not mark executable",
-      async () => {
-        // Arrange
-        writeHookScript("before", 'echo "should never run"', 0o644);
-
-        // Act
-        const run = await runHook(invocationOf());
-
-        // Assert
-        expect(run).toBeUndefined();
-      },
-    );
-  });
-
-  describe("when the stage's script is executable", () => {
+  describe("when the configured command runs", () => {
     it.each([
       {
         stage: "before" as const,
@@ -137,23 +99,25 @@ describe("runHook", () => {
       {
         stage: "after" as const,
         seq: 3,
-        lastIteration: iteration(3),
+        lastIteration: iterationRecord({ seq: 3 }),
         iterationCount: 3,
       },
     ])(
       "hands the $stage hook a payload naming the stage, the worktree and the session",
       async ({ stage, seq, lastIteration, iterationCount }) => {
         // Arrange
-        writeHookScript(stage, "cat");
+        const command = echoingStdin();
 
         // Act
-        const run = await runFired({ stage, seq, lastIteration, iterationCount });
+        const run = await runHook(
+          invocationOf(command, { stage, seq, lastIteration, iterationCount }),
+        );
 
         // Assert
         const payload: unknown = JSON.parse(labeledLines(run.report, stage).join("\n"));
         expect(payload).toStrictEqual({
           stage,
-          experimentDir: sessionRecord().worktrees.experiment,
+          experimentDir,
           seq,
           lastIteration,
           session: {
@@ -166,12 +130,25 @@ describe("runHook", () => {
       },
     );
 
-    it("labels every line the hook printed with its stage", async () => {
+    it("runs the command in the experiment worktree", async () => {
       // Arrange
-      writeHookScript("after", 'echo "archived the samples"\necho "pushed the branch"');
+      const command = hookCommand(
+        `import fs from "node:fs";\nfs.writeFileSync("landed.txt", "here");\n`,
+      );
 
       // Act
-      const run = await runFired({ stage: "after" });
+      await runHook(invocationOf(command));
+
+      // Assert
+      expect(fs.readFileSync(path.join(experimentDir, "landed.txt"), "utf-8")).toBe("here");
+    });
+
+    it("labels every line the hook printed with its stage", async () => {
+      // Arrange
+      const command = printing("archived the samples", "pushed the branch");
+
+      // Act
+      const run = await runHook(invocationOf(command, { stage: "after" }));
 
       // Assert
       expect(run.report).toBe("[after] archived the samples\n[after] pushed the branch");
@@ -179,33 +156,40 @@ describe("runHook", () => {
 
     it("reports nothing at all for a hook that printed nothing", async () => {
       // Arrange
-      writeHookScript("before", "exit 0");
+      const command = hookCommand("");
 
       // Act
-      const run = await runFired();
+      const run = await runHook(invocationOf(command));
 
       // Assert
       expect(run.report).toBe("");
     });
 
-    it("records the invocation with the bytes the hook printed", async () => {
+    it("keeps a successful hook's stderr out of the report", async () => {
       // Arrange
-      writeHookScript("before", 'echo "hello"');
+      const command = hookCommand(
+        `process.stdout.write("warmed the cache\\n");\n` +
+          `process.stderr.write("cache was already warm\\n");\n`,
+      );
 
       // Act
-      const run = await runFired();
+      const run = await runHook(invocationOf(command));
 
       // Assert
-      expect(run.record).toStrictEqual({
-        type: "hook",
-        stage: "before",
-        seq: 2,
-        exitCode: 0,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        durationMs: expect.any(Number),
-        stdoutBytes: 6,
-        timedOut: false,
-      });
+      expect(run.report).toBe("[before] warmed the cache");
+    });
+
+    it("records the invocation with the bytes the hook printed", async () => {
+      // Arrange
+      const command = printing("hello");
+
+      // Act
+      const run = await runHook(invocationOf(command));
+
+      // Assert
+      expect(run.record).toStrictEqual(
+        expectedHookRecord({ stage: "before", seq: 2, exitCode: 0, stdoutBytes: 6 }),
+      );
     });
   });
 
@@ -214,10 +198,10 @@ describe("runHook", () => {
       // Arrange
       const line = "a".repeat(100);
       const text = `${line}\n`.repeat(200);
-      writeHookScript("before", catBody("many-lines.txt", text));
+      const command = printingContentOf("many-lines.txt", text);
 
       // Act
-      const run = await runFired();
+      const run = await runHook(invocationOf(command));
 
       // Assert
       const lines = labeledLines(run.report, "before");
@@ -227,10 +211,10 @@ describe("runHook", () => {
 
     it("stops mid-line without splitting a multi-byte character", async () => {
       // Arrange
-      writeHookScript("before", catBody("one-long-line.txt", "é".repeat(5000)));
+      const command = printingContentOf("one-long-line.txt", "é".repeat(5000));
 
       // Act
-      const run = await runFired();
+      const run = await runHook(invocationOf(command));
 
       // Assert
       const lines = labeledLines(run.report, "before");
@@ -242,39 +226,51 @@ describe("runHook", () => {
   describe("when the hook cannot steer the loop the way it meant to", () => {
     it("reports a non-zero exit alongside its stderr instead of failing the iterate", async () => {
       // Arrange
-      writeHookScript("before", 'echo "checked the cache"\necho "no warm copy" >&2\nexit 3');
+      const command = hookCommand(
+        `process.stdout.write("checked the cache\\n");\n` +
+          `process.stderr.write("no warm copy\\n");\n` +
+          `process.exitCode = 3;\n`,
+      );
 
       // Act
-      const run = await runFired();
+      const run = await runHook(invocationOf(command));
 
       // Assert
       expect
         .soft(labeledLines(run.report, "before"))
         .toStrictEqual(["checked the cache", "hook exited 3", "no warm copy"]);
-      expect(run.record).toStrictEqual({
-        type: "hook",
-        stage: "before",
-        seq: 2,
-        exitCode: 3,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        durationMs: expect.any(Number),
-        stdoutBytes: 18,
-        timedOut: false,
-      });
+      expect(run.record).toStrictEqual(
+        expectedHookRecord({ stage: "before", seq: 2, exitCode: 3, stdoutBytes: 18 }),
+      );
     });
 
     it("kills a hook that outruns its timeout and says so", async () => {
       // Arrange
-      writeHookScript("before", "exec sleep 5");
+      const command = hookCommand("setTimeout(() => {}, 5000);\n");
 
       // Act
-      const run = await runFired({ timeoutMs: 200 });
+      const run = await runHook(invocationOf(command, { timeoutMs: 200 }));
 
       // Assert
       expect.soft(labeledLines(run.report, "before")).toStrictEqual(["hook timed out after 200ms"]);
       expect.soft(run.record.timedOut).toBe(true);
-      expect.soft(run.record.exitCode).not.toBe(0);
+      expect.soft(run.record.exitCode).toBe(FAILURE_EXIT_CODE);
       expect(run.record.durationMs).toBeLessThan(4000);
+    });
+
+    it("reports a hook that never started instead of raising", async () => {
+      // Arrange
+      const command = printing("never runs");
+      const vanishedDir = path.join(tempDir, "vanished");
+
+      // Act
+      const run = await runHook(invocationOf(command, { cwd: vanishedDir }));
+
+      // Assert
+      const lines = labeledLines(run.report, "before");
+      expect.soft(lines[0]).toMatch(/^hook exited [1-9]\d*$/);
+      expect.soft(run.record.stdoutBytes).toBe(0);
+      expect(run.record.timedOut).toBe(false);
     });
   });
 });

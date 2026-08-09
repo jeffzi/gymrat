@@ -1,5 +1,3 @@
-import path from "node:path";
-
 import { getAdapter } from "../adapters/index.js";
 import type { ResolvedConfig, ResolvedMetricMeta } from "../config.js";
 import { FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, resolveMetricMeta } from "../config.js";
@@ -119,9 +117,9 @@ export async function iterateSession(
   }
 
   const seq = state.lastSeq + 1;
-  const hooksDir = path.join(root, config.hooks);
-  const beforeReport = await fireHook(jsonlPath, {
-    hooksDir,
+  const experimentDir = state.session.worktrees.experiment;
+  const beforeReport = await fireHook(jsonlPath, config.hooks?.before, {
+    cwd: experimentDir,
     stage: "before",
     seq,
     session: state.session,
@@ -172,8 +170,8 @@ export async function iterateSession(
   };
   appendRecord(jsonlPath, record);
 
-  const afterReport = await fireHook(jsonlPath, {
-    hooksDir,
+  const afterReport = await fireHook(jsonlPath, config.hooks?.after, {
+    cwd: experimentDir,
     stage: "after",
     seq,
     session: state.session,
@@ -198,13 +196,20 @@ export async function iterateSession(
 /**
  * Run the consumer's hook for this stage, logging what it did.
  *
+ * A stage the config leaves out runs nothing at all: no process, no record, no
+ * line in the report.
+ *
  * @returns What to print for the hook, empty when there was no hook or it said nothing.
  */
-async function fireHook(jsonlPath: string, invocation: HookInvocation): Promise<string> {
-  const run = await runHook(invocation);
-  if (run === undefined) {
+async function fireHook(
+  jsonlPath: string,
+  command: string | undefined,
+  invocation: Omit<HookInvocation, "command">,
+): Promise<string> {
+  if (command === undefined) {
     return "";
   }
+  const run = await runHook({ command, ...invocation });
   appendRecord(jsonlPath, run.record);
   return run.report;
 }

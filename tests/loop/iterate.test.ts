@@ -12,15 +12,19 @@ import type { TargetContext } from "../../src/sampling.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
   DiscardRecord,
+  HookRecord,
   IterationRecord,
   SessionLogRecord,
   SessionRecord,
 } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
+import type { HookScripts } from "../fixtures/hook-scripts.js";
+import { hookScripts } from "../fixtures/hook-scripts.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
   AT,
   committedKeep,
+  expectedHookRecord,
   iterationRecord,
   resolvedConfig,
   sessionRecord as sessionRecordDefaults,
@@ -764,39 +768,53 @@ describe("iterateSession", () => {
     });
   });
 
-  describe("when the configured hooks directory holds scripts for both stages", () => {
-    /** Write `body` as an executable `<stage>.sh` under the configured hooks directory. */
-    function writeHookScript(stage: "before" | "after", body: string): void {
-      const hooksDir = path.join(repo.dir, config().hooks);
-      fs.mkdirSync(hooksDir, { recursive: true });
-      const scriptPath = path.join(hooksDir, `${stage}.sh`);
-      fs.writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`);
-      fs.chmodSync(scriptPath, 0o755);
+  describe("when the config declares a command for a stage", () => {
+    /** The experiment worktree the hooks run in, laid down so a command can start there. */
+    let experimentDir: string;
+    let hookCommand: HookScripts["hookCommand"];
+    let printing: HookScripts["printing"];
+
+    /** A command filing its payload away where the assertions can read it back. */
+    function capturingPayload(stage: "before" | "after"): string {
+      return hookCommand(
+        `import fs from "node:fs";\n` +
+          `const chunks = [];\n` +
+          `process.stdin.on("data", (chunk) => chunks.push(chunk));\n` +
+          `process.stdin.on("end", () => {\n` +
+          `  fs.writeFileSync(${JSON.stringify(`${stage}.json`)}, Buffer.concat(chunks));\n` +
+          `});\n`,
+      );
     }
 
-    /** A hook body that files its payload away where the assertions can read it back. */
-    function capturePayload(stage: "before" | "after"): string {
-      return `cat > "$(dirname "$0")/${stage}.json"`;
-    }
-
-    /** The payload the `stage` hook was handed, as the hook itself saw it. */
+    /**
+     * The payload the `stage` hook was handed, as the hook itself saw it.
+     *
+     * The capturing command names the file relatively, so reading it back out of
+     * the experiment worktree is also what proves the hook ran there.
+     */
     function payloadOf(stage: "before" | "after"): unknown {
-      const captured = path.join(repo.dir, config().hooks, `${stage}.json`);
-      return JSON.parse(fs.readFileSync(captured, "utf-8"));
+      return JSON.parse(fs.readFileSync(path.join(experimentDir, `${stage}.json`), "utf-8"));
+    }
+
+    /** Every hook record the session log holds, oldest first. */
+    function hookRecords(): HookRecord[] {
+      return readRecords(sessionJsonlPath(repo.dir)).filter((record) => record.type === "hook");
     }
 
     beforeEach(() => {
+      experimentDir = sessionRecord(repo.dir).worktrees.experiment;
+      fs.mkdirSync(experimentDir, { recursive: true });
+      ({ hookCommand, printing } = hookScripts(repo.dir));
       writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
       stubSamples(repo.dir, improvedRounds(), baselineRounds());
     });
 
     it("fires the before hook ahead of the measurement and the after hook once it is on file", async () => {
       // Arrange
-      writeHookScript("before", "echo hi");
-      writeHookScript("after", "echo bye");
+      const hooks = { before: printing("hi"), after: printing("bye") };
 
       // Act
-      await iterateSession(repo.dir, config());
+      await iterateSession(repo.dir, config({ hooks }));
 
       // Assert
       const records = readRecords(sessionJsonlPath(repo.dir));
@@ -804,41 +822,22 @@ describe("iterateSession", () => {
         .soft(records.map((record) => record.type))
         .toStrictEqual(["session", "iteration", "keep", "hook", "iteration", "hook"]);
       expect(records.filter((record) => record.type === "hook")).toStrictEqual([
-        {
-          type: "hook",
-          stage: "before",
-          seq: 2,
-          exitCode: 0,
-          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-          durationMs: expect.any(Number),
-          stdoutBytes: 3,
-          timedOut: false,
-        },
-        {
-          type: "hook",
-          stage: "after",
-          seq: 2,
-          exitCode: 0,
-          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-          durationMs: expect.any(Number),
-          stdoutBytes: 4,
-          timedOut: false,
-        },
+        expectedHookRecord({ stage: "before", seq: 2, exitCode: 0, stdoutBytes: 3 }),
+        expectedHookRecord({ stage: "after", seq: 2, exitCode: 0, stdoutBytes: 4 }),
       ]);
     });
 
     it("tells each hook which iteration it sits next to", async () => {
       // Arrange
-      writeHookScript("before", capturePayload("before"));
-      writeHookScript("after", capturePayload("after"));
+      const hooks = { before: capturingPayload("before"), after: capturingPayload("after") };
 
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, config({ hooks }));
 
       // Assert
       expect.soft(payloadOf("before")).toStrictEqual({
         stage: "before",
-        experimentDir: sessionRecord(repo.dir).worktrees.experiment,
+        experimentDir,
         seq: 2,
         lastIteration: iteration(1),
         session: {
@@ -850,7 +849,7 @@ describe("iterateSession", () => {
       });
       expect(payloadOf("after")).toStrictEqual({
         stage: "after",
-        experimentDir: sessionRecord(repo.dir).worktrees.experiment,
+        experimentDir,
         seq: 2,
         lastIteration: result.record,
         session: {
@@ -864,17 +863,60 @@ describe("iterateSession", () => {
 
     it("prints each hook's output around the measurement it brackets", async () => {
       // Arrange
-      writeHookScript("before", 'echo "warmed the cache"');
-      writeHookScript("after", 'echo "archived the samples"');
+      const hooks = {
+        before: printing("warmed the cache"),
+        after: printing("archived the samples"),
+      };
 
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, config({ hooks }));
 
       // Assert
       const lines = reportLines(result.report);
       expect.soft(lines[0]).toBe("[before] warmed the cache");
       expect.soft(lines.at(-1)).toBe("[after] archived the samples");
       expect(lines[1]).toBe("iteration 2 · experiment vs baseline · 10 paired samples");
+    });
+
+    it("measures on past a hook that failed, reporting and recording the failure", async () => {
+      // Arrange
+      const before = hookCommand(
+        `process.stderr.write("no warm copy\\n");\nprocess.exitCode = 3;\n`,
+      );
+
+      // Act
+      const result = await iterateSession(repo.dir, config({ hooks: { before } }));
+
+      // Assert
+      expect
+        .soft(reportLines(result.report).slice(0, 2))
+        .toStrictEqual(["[before] hook exited 3", "[before] no warm copy"]);
+      expect
+        .soft(hookRecords())
+        .toStrictEqual([
+          expectedHookRecord({ stage: "before", seq: 2, exitCode: 3, stdoutBytes: 0 }),
+        ]);
+      expect.soft(lastIterationOf(repo.dir).seq).toBe(2);
+      expect(result.record.outcome).toBe("improved");
+    });
+
+    it.each([
+      { description: "the config declares no hooks at all", withAfter: false },
+      { description: "the config declares only the other stage", withAfter: true },
+    ])("runs nothing for the before stage when $description", async ({ withAfter }) => {
+      // Arrange
+      const hooks = withAfter ? { after: printing("bye") } : undefined;
+
+      // Act
+      const result = await iterateSession(repo.dir, config({ hooks }));
+
+      // Assert
+      expect
+        .soft(hookRecords().map((record) => record.stage))
+        .toStrictEqual(withAfter ? ["after"] : []);
+      expect(
+        reportLines(result.report).filter((line) => line.startsWith("[before]")),
+      ).toStrictEqual([]);
     });
   });
 });
