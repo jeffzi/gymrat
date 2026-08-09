@@ -130,6 +130,7 @@ function isExecutableFile(scriptPath: string): boolean {
     // Windows has no executable-bit concept; X_OK degrades to F_OK
     // (exists), so the file's existence is the only gate.
     if (process.platform === "win32") return true;
+    /* v8 ignore next 2 -- unreachable on Windows where the platform guard above returns */
     fs.accessSync(scriptPath, fs.constants.X_OK);
     return true;
   } catch {
