@@ -18,7 +18,7 @@ const UTF8_BOM = "\u{FEFF}";
  * Loop keys `resolveConfig` always fills in, even for compare/measure runs that
  * never read them.
  */
-const LOOP_DEFAULTS = { primary: "geomean", hooks: "gymrat.hooks" } as const;
+const LOOP_DEFAULTS = { primary: "geomean" } as const;
 
 /**
  * Full loop configuration, shared between the `loadConfigFile` parsing test and
@@ -29,7 +29,7 @@ const LOOP_CONFIG = {
   filter: "npm run bench -- {names}",
   primary: "decode/time",
   stop: { targetValue: 1.5, maxIterations: 20 },
-  hooks: "scripts/hooks",
+  hooks: { before: "npm run warm-cache", after: "npm run cool-down" },
 };
 
 /**
@@ -249,7 +249,6 @@ describe("loadConfigFile", () => {
       { key: "checks", description: "a number", value: 42 },
       { key: "filter", description: "an array", value: ["a"] },
       { key: "primary", description: "null", value: null },
-      { key: "hooks", description: "a boolean", value: true },
     ])("throws naming $key when it is $description", ({ key, value }) => {
       const { dir, configPath } = createConfigFile({ [key]: value });
       tmpdir = dir;
@@ -488,6 +487,67 @@ describe("loadConfigFile", () => {
     });
   });
 
+  describe("when hooks holds a command object", () => {
+    it.each([
+      { description: "only a before command", hooks: { before: "npm run warm-cache" } },
+      { description: "only an after command", hooks: { after: "npm run cool-down" } },
+      {
+        description: "both commands",
+        hooks: { before: "npm run warm-cache", after: "npm run cool-down" },
+      },
+    ])("returns the parsed hooks when it declares $description", ({ hooks }) => {
+      const { dir, configPath } = createConfigFile({ hooks });
+      tmpdir = dir;
+
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual({ hooks });
+    });
+  });
+
+  describe("when hooks is not a command object", () => {
+    it.each([
+      { description: "the superseded directory-name string", value: "gymrat.hooks" },
+      { description: "an array", value: [] },
+      { description: "a boolean", value: true },
+      { description: "null", value: null },
+    ])("throws naming hooks when it is $description", ({ value }) => {
+      const { dir, configPath } = createConfigFile({ hooks: value });
+      tmpdir = dir;
+
+      expect(() => loadConfigFile(configPath)).toThrow(/hooks.*object/);
+    });
+  });
+
+  describe("when a hooks command is not a non-empty string", () => {
+    it.each([
+      { stage: "before", description: "an empty string", value: "" },
+      { stage: "after", description: "an empty string", value: "" },
+      { stage: "before", description: "a number", value: 42 },
+      { stage: "after", description: "null", value: null },
+    ])("throws naming hooks.$stage when it is $description", ({ stage, value }) => {
+      const { dir, configPath } = createConfigFile({ hooks: { [stage]: value } });
+      tmpdir = dir;
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(new RegExp(`hooks\\.${stage}.*non-empty string`));
+    });
+  });
+
+  describe("when the hooks section contains an unknown key", () => {
+    it("throws an error that names the offending key by its dotted path", () => {
+      const { dir, configPath } = createConfigFile({
+        hooks: { before: "npm run warm-cache", during: "npm run mid" },
+      });
+      tmpdir = dir;
+
+      expect(() => loadConfigFile(configPath)).toThrow(/Unknown config key: hooks\.during/);
+    });
+  });
+
   describe("when a stop field holds an invalid value", () => {
     it.each([
       {
@@ -538,7 +598,7 @@ describe("resolveConfig", () => {
   });
 
   describe("when flags and config are empty", () => {
-    it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct, primary, hooks", () => {
+    it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct, primary, and no hooks", () => {
       // resolveConfig falls back to ./gymrat.json, so run from a dir that has none
       tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
       process.chdir(tmpdir);

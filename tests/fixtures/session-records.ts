@@ -1,5 +1,12 @@
+import { expect } from "vitest";
+
 import type { ResolvedConfig } from "../../src/config.js";
-import type { IterationRecord, KeepRecord, SessionRecord } from "../../src/session/records.js";
+import type {
+  HookRecord,
+  IterationRecord,
+  KeepRecord,
+  SessionRecord,
+} from "../../src/session/records.js";
 
 /** The instant every fixture record in this file was written at. */
 export const AT = "2026-08-08T14:15:30.000Z";
@@ -16,7 +23,6 @@ export function resolvedConfig(overrides: Partial<ResolvedConfig> = {}): Resolve
     timeoutSeconds: 1800,
     unstableNoisePct: 200,
     primary: "geomean",
-    hooks: "gymrat.hooks",
     ...overrides,
   };
 }
@@ -47,7 +53,6 @@ export function sessionRecord(overrides: Partial<SessionRecord> = {}): SessionRe
       samples: 10,
       timeoutSeconds: 1800,
       primary: "geomean",
-      hooks: "gymrat.hooks",
     },
     ...overrides,
   };
@@ -75,6 +80,29 @@ export function iterationRecord(overrides: Partial<IterationRecord> = {}): Itera
     outcome: "improved",
     targetReached: false,
     ...overrides,
+  };
+}
+
+/** A `HookRecord`, but with `durationMs` a matcher instead of a number — never a real one to assert against. */
+type ExpectedHookRecord = Omit<HookRecord, "durationMs"> & { durationMs: unknown };
+
+/**
+ * The `HookRecord` `runHook` produces, for asserting with `toStrictEqual`.
+ *
+ * `durationMs` is nondeterministic, so it is always `expect.any(Number)` rather
+ * than a value a caller could supply. `timedOut` defaults to `false`; every
+ * other field is the caller's to name.
+ */
+export function expectedHookRecord(
+  overrides: Omit<HookRecord, "type" | "durationMs" | "timedOut"> &
+    Partial<Pick<HookRecord, "timedOut">>,
+): ExpectedHookRecord {
+  return {
+    type: "hook",
+    timedOut: false,
+    ...overrides,
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    durationMs: expect.any(Number),
   };
 }
 

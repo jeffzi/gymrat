@@ -128,7 +128,6 @@ function resolvedConfigFixture(overrides: Partial<ResolvedConfig> = {}): Resolve
     timeoutSeconds: 300,
     unstableNoisePct: 200,
     primary: "geomean",
-    hooks: "gymrat.hooks",
     ...overrides,
   };
 }
@@ -2351,7 +2350,6 @@ describe("createProgram", () => {
           samples: 1,
           timeoutSeconds: 300,
           primary: "geomean",
-          hooks: "gymrat.hooks",
         },
       };
 

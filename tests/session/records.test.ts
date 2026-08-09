@@ -30,7 +30,6 @@ const sessionRecord: SessionRecord = {
     samples: 10,
     timeoutSeconds: 1800,
     primary: "geomean",
-    hooks: "gymrat.hooks",
   },
 };
 
@@ -136,6 +135,15 @@ describe("parseRecord", () => {
             ...sessionRecord.config,
             prepare: "npm run build",
             filter: "npm run bench -- --filter {names}",
+          },
+        }),
+      },
+      {
+        description: "a session carrying the optional hook commands",
+        record: patching(sessionRecord, {
+          config: {
+            ...sessionRecord.config,
+            hooks: { before: "npm run warm-cache", after: "npm run cool-down" },
           },
         }),
       },
@@ -246,6 +254,13 @@ describe("parseRecord", () => {
           config: { ...sessionRecord.config, samples: 10.5 },
         }),
         field: "config.samples",
+      },
+      {
+        description: "a session whose config snapshot holds the superseded string hooks value",
+        value: patching(sessionRecord, {
+          config: { ...sessionRecord.config, hooks: "gymrat.hooks" },
+        }),
+        field: "config.hooks",
       },
       {
         description: "a baseline whose samples hold non-numeric values",

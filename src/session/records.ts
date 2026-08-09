@@ -37,6 +37,12 @@ const sampleRoundsSchema = Type.Array(
   expected("an array of objects mapping metric names to numbers"),
 );
 
+/** The hook commands a session was started with; a stage left out ran nothing. */
+const sessionHooksSchema = Type.Object(
+  { before: Type.Optional(stringSchema), after: Type.Optional(stringSchema) },
+  strictObjectOptions,
+);
+
 const sessionConfigSchema = Type.Object(
   {
     bench: stringSchema,
@@ -46,7 +52,7 @@ const sessionConfigSchema = Type.Object(
     timeoutSeconds: positiveIntegerSchema,
     primary: stringSchema,
     filter: Type.Optional(stringSchema),
-    hooks: stringSchema,
+    hooks: Type.Optional(sessionHooksSchema),
   },
   strictObjectOptions,
 );

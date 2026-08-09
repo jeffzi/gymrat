@@ -139,6 +139,6 @@ function snapshotConfig(config: ResolvedConfig): SessionRecord["config"] {
     timeoutSeconds: config.timeoutSeconds,
     primary: config.primary,
     ...(config.filter === undefined ? {} : { filter: config.filter }),
-    hooks: config.hooks,
+    ...(config.hooks === undefined ? {} : { hooks: config.hooks }),
   };
 }

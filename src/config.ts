@@ -17,6 +17,17 @@ const strictObjectOptions = { ...expected("an object"), additionalProperties: fa
 /** Shared schema for optional string fields — reused across every plain string config key. */
 const optionalStringSchema = Type.Optional(Type.String(expected("a string")));
 
+/**
+ * Shared schema for optional command strings.
+ *
+ * Empty is rejected rather than read as absent: an empty command runs as a no-op
+ * shell that exits 0, so a blank entry would report as having run and succeeded
+ * without ever executing anything.
+ */
+const optionalCommandSchema = Type.Optional(
+  Type.String({ ...expected("a non-empty string"), minLength: 1 }),
+);
+
 const metricEntrySchema = Type.Object(
   {
     direction: Type.Optional(
@@ -60,6 +71,12 @@ const stopSchema = Type.Object(
   strictObjectOptions,
 );
 
+/** Commands the loop runs around each iteration; a stage left out runs nothing. */
+const hooksSchema = Type.Object(
+  { before: optionalCommandSchema, after: optionalCommandSchema },
+  strictObjectOptions,
+);
+
 /** The `gymrat.json` schema — every field optional, since flags can supply any of them. */
 const configFileSchema = Type.Object(
   {
@@ -83,13 +100,11 @@ const configFileSchema = Type.Object(
     ),
     metrics: Type.Optional(metricsSchema),
     kinds: Type.Optional(kindsSchema),
-    // An empty command would run as a no-op shell that exits 0, so the gate would
-    // report as configured and passing without ever running the checks.
-    checks: Type.Optional(Type.String({ ...expected("a non-empty string"), minLength: 1 })),
+    checks: optionalCommandSchema,
     filter: optionalStringSchema,
     primary: optionalStringSchema,
     stop: Type.Optional(stopSchema),
-    hooks: optionalStringSchema,
+    hooks: Type.Optional(hooksSchema),
   },
   strictObjectOptions,
 );
@@ -104,6 +119,8 @@ export type ConfigMetrics = Static<typeof metricsSchema>;
 export type ConfigKinds = Static<typeof kindsSchema>;
 /** The loop's stop conditions, derived from the config file's `stop` section. */
 export type ConfigStop = Static<typeof stopSchema>;
+/** The per-stage hook commands, derived from the config file's `hooks` section. */
+export type ConfigHooks = Static<typeof hooksSchema>;
 
 /** Command-line overrides, named after the flags rather than the config keys. */
 export interface CliFlags {
@@ -129,7 +146,7 @@ export interface ResolvedConfig {
   filter?: string;
   primary: string;
   stop?: ConfigStop;
-  hooks: string;
+  hooks?: ConfigHooks;
 }
 
 /** One metric's settled metadata, after adapter defaults and config overrides are merged. */
@@ -183,7 +200,6 @@ const DEFAULTS = {
   timeoutSeconds: 1800,
   unstableNoisePct: DEFAULT_UNSTABLE_NOISE_PCT,
   primary: GEOMEAN_PRIMARY,
-  hooks: "gymrat.hooks",
 } as const;
 
 function isFileNotFoundError(err: unknown): boolean {
@@ -275,7 +291,6 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConf
     timeoutSeconds: flags.timeout ?? configFile.timeoutSeconds ?? DEFAULTS.timeoutSeconds,
     unstableNoisePct: configFile.unstableNoisePct ?? DEFAULTS.unstableNoisePct,
     primary: configFile.primary ?? DEFAULTS.primary,
-    hooks: configFile.hooks ?? DEFAULTS.hooks,
     ...(prepare !== undefined ? { prepare } : undefined),
     ...(configFile.metrics !== undefined
       ? { metrics: metricRecord(Object.entries(configFile.metrics)) }
@@ -286,6 +301,7 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConf
     ...(configFile.checks !== undefined ? { checks: configFile.checks } : undefined),
     ...(configFile.filter !== undefined ? { filter: configFile.filter } : undefined),
     ...(configFile.stop !== undefined ? { stop: configFile.stop } : undefined),
+    ...(configFile.hooks !== undefined ? { hooks: configFile.hooks } : undefined),
   };
 }
 

@@ -12,7 +12,7 @@ import {
   experimentWorktreeDir,
   sessionJsonlPath,
 } from "../../src/session/paths.js";
-import type { IterationRecord, SessionRecord } from "../../src/session/records.js";
+import type { SessionRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { detectWorkspace } from "../../src/session/workspace.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
@@ -24,7 +24,7 @@ const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  * A settled run configuration carrying both the keys the session header snapshots
  * and keys it must leave out (`unstableNoisePct`, `stop`).
  */
-const CONFIG: ResolvedConfig = {
+const CONFIG_WITHOUT_HOOKS: ResolvedConfig = {
   bench: "npm run bench",
   prepare: "npm run build",
   adapter: "metric-lines",
@@ -33,9 +33,12 @@ const CONFIG: ResolvedConfig = {
   unstableNoisePct: 200,
   primary: "geomean",
   filter: "npm run bench -- {names}",
-  hooks: "gymrat.hooks",
   stop: { maxIterations: 20 },
 };
+
+const HOOKS = { before: "npm run warm-cache", after: "npm run cool-down" };
+
+const CONFIG: ResolvedConfig = { ...CONFIG_WITHOUT_HOOKS, hooks: HOOKS };
 
 /** The subset of `CONFIG` the session record's schema keeps as provenance. */
 const CONFIG_SNAPSHOT = {
@@ -46,7 +49,7 @@ const CONFIG_SNAPSHOT = {
   timeoutSeconds: 1800,
   primary: "geomean",
   filter: "npm run bench -- {names}",
-  hooks: "gymrat.hooks",
+  hooks: HOOKS,
 };
 
 /** Run git in `cwd` and return its trimmed stdout. */
@@ -74,11 +77,6 @@ function sessionHeaderOf(root: string): SessionRecord {
     throw new Error(`expected a session header in ${sessionJsonlPath(root)}`);
   }
   return first;
-}
-
-/** A measured iteration numbered `seq`, settled by nobody. */
-function iteration(seq: number): IterationRecord {
-  return iterationRecord({ seq });
 }
 
 let repo: ScratchRepo;
@@ -122,6 +120,14 @@ describe("startSession", () => {
           config: CONFIG_SNAPSHOT,
         },
       ]);
+    });
+
+    it("leaves hooks out of the config snapshot when none are configured", () => {
+      // Act
+      startSession(repo.dir, "main", CONFIG_WITHOUT_HOOKS);
+
+      // Assert
+      expect(sessionHeaderOf(repo.dir).config).not.toHaveProperty("hooks");
     });
 
     it("names the session branch after the session id", () => {
@@ -174,7 +180,7 @@ describe("startSession", () => {
     it("returns the recorded session and its counts without appending a record", () => {
       // Arrange
       const created = startSession(repo.dir, "main", CONFIG).session;
-      appendRecord(sessionJsonlPath(repo.dir), iteration(1));
+      appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
       appendRecord(sessionJsonlPath(repo.dir), committedKeep(1));
 
       // Act
