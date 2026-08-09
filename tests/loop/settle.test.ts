@@ -20,30 +20,6 @@ import { captureStdout, mockProcessExit } from "../fixtures/cli-harness.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import { committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
 
-/**
- * Write `data` to `filePath`, retrying on EPERM.
- *
- * On Windows, a freshly created file can be briefly locked by an
- * antivirus scan or the filesystem indexer. A few short retries are
- * enough to ride out that transient hold without skipping the test.
- */
-function writeWithRetry(filePath: string, data: string): void {
-  const MAX_RETRIES = 5;
-  const DELAY_MS = 200;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      fs.writeFileSync(filePath, data);
-      return;
-    } catch (err) {
-      if (attempt >= MAX_RETRIES) throw err;
-      const code =
-        err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "";
-      if (code !== "EPERM") throw err;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, DELAY_MS);
-    }
-  }
-}
-
 type Exec = typeof import("../../src/exec.js").exec;
 
 /**
@@ -439,12 +415,18 @@ describe("keepSession", () => {
       startWith([iteration(1)]);
       editExperiment();
       checksPass();
-      // A linked worktree reaches its repository through this file, so pointing
-      // it at a missing directory fails every git command run inside it.
-      // On Windows, a brief exclusive lock (antivirus scan, indexer) can hold
-      // the newly created file right after git worktree add; retry to ride it out.
-      const gitFile = path.join(baselineWorktreeDir(repo.dir), ".git");
-      writeWithRetry(gitFile, "gitdir: /nonexistent\n");
+      // Sabotage the baseline so git commands inside it fail. On POSIX we can
+      // overwrite the .git pointer directly; on Windows git holds the file
+      // locked, so we force-remove the whole worktree instead.
+      const baseline = baselineWorktreeDir(repo.dir);
+      if (process.platform === "win32") {
+        execFileSync("git", ["worktree", "remove", "--force", baseline], {
+          cwd: repo.dir,
+          stdio: "pipe",
+        });
+      } else {
+        fs.writeFileSync(path.join(baseline, ".git"), "gitdir: /nonexistent\n");
+      }
 
       // Act
       const keeping = keepSession(repo.dir, config());
