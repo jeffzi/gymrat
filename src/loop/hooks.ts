@@ -126,18 +126,10 @@ export async function runHook(invocation: HookInvocation): Promise<HookRun | und
  */
 function isExecutableFile(scriptPath: string): boolean {
   try {
-    return fs.statSync(scriptPath).isFile() && accessible(scriptPath);
-  } catch {
-    return false;
-  }
-}
-
-function accessible(scriptPath: string): boolean {
-  // Windows has no executable-bit concept; X_OK degrades to F_OK (exists),
-  // so it would pass for every readable file. statSync().isFile() already
-  // covers the existence check, making the access probe redundant there.
-  if (process.platform === "win32") return true;
-  try {
+    if (!fs.statSync(scriptPath).isFile()) return false;
+    // Windows has no executable-bit concept; X_OK degrades to F_OK
+    // (exists), so the file's existence is the only gate.
+    if (process.platform === "win32") return true;
     fs.accessSync(scriptPath, fs.constants.X_OK);
     return true;
   } catch {
