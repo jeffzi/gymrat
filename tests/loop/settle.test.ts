@@ -409,7 +409,10 @@ describe("keepSession", () => {
     });
   });
 
-  describe("when the baseline worktree cannot advance", () => {
+  // Corrupting the worktree's .git file requires overwriting it, and on
+  // Windows a background git process can hold a brief exclusive lock that
+  // makes the write non-deterministically fail with EPERM.
+  describe.skipIf(process.platform === "win32")("when the baseline worktree cannot advance", () => {
     it("writes no keep record, leaving the iteration unsettled", async () => {
       // Arrange
       startWith([iteration(1)]);
@@ -417,10 +420,7 @@ describe("keepSession", () => {
       checksPass();
       // A linked worktree reaches its repository through this file, so pointing
       // it at a missing directory fails every git command run inside it.
-      const gitFile = path.join(baselineWorktreeDir(repo.dir), ".git");
-      // Git on Windows marks the worktree's .git file read-only.
-      fs.chmodSync(gitFile, 0o666);
-      fs.writeFileSync(gitFile, "gitdir: /nonexistent\n");
+      fs.writeFileSync(path.join(baselineWorktreeDir(repo.dir), ".git"), "gitdir: /nonexistent\n");
 
       // Act
       const keeping = keepSession(repo.dir, config());
