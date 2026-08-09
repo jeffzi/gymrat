@@ -415,9 +415,18 @@ describe("keepSession", () => {
       startWith([iteration(1)]);
       editExperiment();
       checksPass();
-      // A linked worktree reaches its repository through this file, so pointing
-      // it at a missing directory fails every git command run inside it.
-      fs.writeFileSync(path.join(baselineWorktreeDir(repo.dir), ".git"), "gitdir: /nonexistent\n");
+      // Sabotage the baseline so git commands inside it fail. On POSIX we can
+      // overwrite the .git pointer directly; on Windows git holds the file
+      // locked, so we force-remove the whole worktree instead.
+      const baseline = baselineWorktreeDir(repo.dir);
+      if (process.platform === "win32") {
+        execFileSync("git", ["worktree", "remove", "--force", baseline], {
+          cwd: repo.dir,
+          stdio: "pipe",
+        });
+      } else {
+        fs.writeFileSync(path.join(baseline, ".git"), "gitdir: /nonexistent\n");
+      }
 
       // Act
       const keeping = keepSession(repo.dir, config());

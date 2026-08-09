@@ -111,16 +111,19 @@ describe("runHook", () => {
       expect(run).toBeUndefined();
     });
 
-    it("skips a script the filesystem does not mark executable", async () => {
-      // Arrange
-      writeHookScript("before", 'echo "should never run"', 0o644);
+    it.skipIf(process.platform === "win32")(
+      "skips a script the filesystem does not mark executable",
+      async () => {
+        // Arrange
+        writeHookScript("before", 'echo "should never run"', 0o644);
 
-      // Act
-      const run = await runHook(invocationOf());
+        // Act
+        const run = await runHook(invocationOf());
 
-      // Assert
-      expect(run).toBeUndefined();
-    });
+        // Assert
+        expect(run).toBeUndefined();
+      },
+    );
   });
 
   describe("when the stage's script is executable", () => {

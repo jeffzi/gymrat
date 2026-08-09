@@ -17,7 +17,9 @@ const LOCK_DIGEST_LENGTH = 12;
  */
 export function repoRoot(cwd: string = process.cwd()): string {
   try {
-    return runGit(["rev-parse", "--show-toplevel"], cwd).trim();
+    // git returns forward slashes on every platform; normalize so the
+    // path hashes and compares identically to native paths elsewhere.
+    return path.normalize(runGit(["rev-parse", "--show-toplevel"], cwd).trim());
   } catch (error) {
     throw notAGitRepositoryError(cwd, error);
   }

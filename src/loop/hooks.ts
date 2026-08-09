@@ -126,14 +126,11 @@ export async function runHook(invocation: HookInvocation): Promise<HookRun | und
  */
 function isExecutableFile(scriptPath: string): boolean {
   try {
-    return fs.statSync(scriptPath).isFile() && accessible(scriptPath);
-  } catch {
-    return false;
-  }
-}
-
-function accessible(scriptPath: string): boolean {
-  try {
+    if (!fs.statSync(scriptPath).isFile()) return false;
+    // Windows has no executable-bit concept; X_OK degrades to F_OK
+    // (exists), so the file's existence is the only gate.
+    if (process.platform === "win32") return true;
+    /* v8 ignore next 2 -- unreachable on Windows where the platform guard above returns */
     fs.accessSync(scriptPath, fs.constants.X_OK);
     return true;
   } catch {
@@ -175,9 +172,10 @@ async function runScript(
   return new Promise((resolve) => {
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
     try {
-      child = spawn(scriptPath, {
-        // POSIX: detach into its own process group so killTree can SIGKILL the
-        // whole group via negative PID.
+      // Windows has no kernel shebang support, so a bare spawn of a .sh file
+      // fails with EFTYPE. Running through "sh" works on every platform and
+      // honours the script's shebang on Unix (sh treats it as a comment).
+      child = spawn("sh", [scriptPath], {
         detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       });
