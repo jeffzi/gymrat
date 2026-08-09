@@ -78,8 +78,11 @@ export function iterationRecord(overrides: Partial<IterationRecord> = {}): Itera
   };
 }
 
-/** A keep that committed the iteration numbered `seq`. */
-export function committedKeep(seq: number): KeepRecord {
+/** A keep that committed the iteration numbered `seq`, with every field overridable. */
+export function committedKeep(
+  seq: number,
+  overrides: Partial<Omit<KeepRecord, "type" | "status">> = {},
+): KeepRecord {
   return {
     type: "keep",
     seq,
@@ -88,5 +91,6 @@ export function committedKeep(seq: number): KeepRecord {
     commit: COMMIT,
     message: "cache the regex",
     checks: { configured: true, passed: true },
+    ...overrides,
   };
 }

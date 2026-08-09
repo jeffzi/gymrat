@@ -17,15 +17,11 @@ import {
   formatStatusIteration,
   formatVerdictBlock,
 } from "../../src/report/loop.js";
-import { renderReport } from "../../src/report/text.js";
 import type { MetricComparisons } from "../../src/report/types.js";
-import type { BaselineRecord, SessionRecord } from "../../src/session/records.js";
+import type { BaselineRecord } from "../../src/session/records.js";
 import type { MetricEntry } from "../fixtures/comparison-result.js";
-import {
-  createComparisonResult,
-  metricMeta,
-  signedRankMetric,
-} from "../fixtures/comparison-result.js";
+import { metricMeta, signedRankMetric } from "../fixtures/comparison-result.js";
+import { sessionRecord } from "../fixtures/session-records.js";
 
 /** The metric under `name`, judged in `direction` with no signal of its own. */
 function directedMetric(direction: "lower" | "higher", gating = true): MetricEntry {
@@ -43,19 +39,6 @@ function regressedMetrics(gating: boolean): MetricComparisons {
 function geomeanPrimary(deltaPct = -4.2): LoopPrimary {
   return { kind: "geomean", deltaPct };
 }
-
-describe("renderReport", () => {
-  describe("when a header override is given", () => {
-    it("opens the report with the override instead of the compare header", () => {
-      const result = createComparisonResult();
-
-      const output = renderReport(result, { header: "iteration 3 · experiment vs baseline" });
-
-      expect.soft(stripAnsi(output).split("\n")[0]).toBe("iteration 3 · experiment vs baseline");
-      expect(stripAnsi(output)).not.toContain("gymrat compare");
-    });
-  });
-});
 
 describe("formatLoopHeader", () => {
   it("names the iteration, what is being compared, and the sample count", () => {
@@ -170,30 +153,6 @@ const SESSION_ID = "20260808-141530-a3f2";
 const BASELINE_SHA = `a1b2c3d${"e".repeat(33)}`;
 const KEEP_COMMIT = `b1b2b3b${"c".repeat(33)}`;
 
-/** The session header a started session writes, with every field distinguishable. */
-function sessionRecord(): SessionRecord {
-  return {
-    type: "session",
-    schemaVersion: 1,
-    sessionId: SESSION_ID,
-    createdAt: "2026-08-08T14:15:30.000Z",
-    baseline: { ref: "main", sha: BASELINE_SHA },
-    branch: `gymrat/${SESSION_ID}`,
-    worktrees: {
-      experiment: "/repo/.gymrat/worktrees/experiment",
-      baseline: "/repo/.gymrat/worktrees/baseline",
-    },
-    config: {
-      bench: "npm run bench",
-      adapter: "metric-lines",
-      samples: 10,
-      timeoutSeconds: 1800,
-      primary: "geomean",
-      hooks: "gymrat.hooks",
-    },
-  };
-}
-
 /** An improved iteration numbered 1, settled the way `settle` says. */
 function statusIteration(settle: StatusIteration["settle"]): StatusIteration {
   return { seq: 1, deltaPct: -7.2, outcome: "improved", settle };
@@ -213,7 +172,9 @@ function statusSummary(overrides: Partial<StatusSummary> = {}): StatusSummary {
 describe("formatStatusHeader", () => {
   it("names the session, the baseline it forked from, the branch, both worktrees, and the adapter", () => {
     // Act
-    const lines = formatStatusHeader(sessionRecord());
+    const lines = formatStatusHeader(
+      sessionRecord({ baseline: { ref: "main", sha: BASELINE_SHA } }),
+    );
 
     // Assert
     expect(lines.map(stripAnsi)).toStrictEqual([
@@ -234,9 +195,9 @@ describe("formatStatusHeader", () => {
     });
 
     it("emboldens the session it opens on", () => {
-      expect(formatStatusHeader(sessionRecord())[0]).toContain(
-        `\x1b[1msession ${SESSION_ID}\x1b[22m`,
-      );
+      expect(
+        formatStatusHeader(sessionRecord({ baseline: { ref: "main", sha: BASELINE_SHA } }))[0],
+      ).toContain(`\x1b[1msession ${SESSION_ID}\x1b[22m`);
     });
   });
 });

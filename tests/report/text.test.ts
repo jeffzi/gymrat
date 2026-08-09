@@ -277,6 +277,15 @@ describe("renderReport", () => {
 
       expect(output).toContain("gymrat compare · baseline main ↔ candidate-a, candidate-b ·");
     });
+
+    it("opens with a header override instead of the compare header, when one is given", () => {
+      const result = createComparisonResult();
+
+      const output = renderReport(result, { header: "iteration 3 · experiment vs baseline" });
+
+      expect.soft(stripAnsi(output).split("\n")[0]).toBe("iteration 3 · experiment vs baseline");
+      expect(stripAnsi(output)).not.toContain("gymrat compare");
+    });
   });
 
   describe("when rendering the table header", () => {

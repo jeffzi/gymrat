@@ -46,11 +46,9 @@ describe("per-file temp root", () => {
     });
 
     it("keeps a path built from os.tmpdir() inside that root", () => {
-      const root = os.tmpdir();
-
       const child = fs.mkdtempSync(path.join(os.tmpdir(), "child-"));
 
-      expect(path.dirname(child)).toBe(root);
+      expect(path.basename(path.dirname(child))).toMatch(/^gymrat-vitest-\w+$/);
     });
   });
 

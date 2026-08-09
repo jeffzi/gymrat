@@ -7,9 +7,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HookInvocation, HookRun, HookStage } from "../../src/loop/hooks.js";
 import { runHook } from "../../src/loop/hooks.js";
 import type { IterationRecord, SessionRecord } from "../../src/session/records.js";
+import {
+  iterationRecord,
+  sessionRecord as sessionRecordDefaults,
+} from "../fixtures/session-records.js";
 import { removeTempRoot } from "../setup/temp-root.js";
 
-const AT = "2026-08-08T14:15:30.000Z";
 const SESSION_ID = "20260808-141530-abcd";
 
 /** The cap the runner holds hook stdout to before it reaches gymrat's own output. */
@@ -20,50 +23,18 @@ let hooksDir: string;
 
 /** The session every invocation here describes to its hook. */
 function sessionRecord(): SessionRecord {
-  return {
-    type: "session",
-    schemaVersion: 1,
+  return sessionRecordDefaults({
     sessionId: SESSION_ID,
-    createdAt: AT,
-    baseline: { ref: "main", sha: "a".repeat(40) },
-    branch: `gymrat/${SESSION_ID}`,
     worktrees: {
       experiment: path.join(tempDir, "side-experiment"),
       baseline: path.join(tempDir, "side-baseline"),
     },
-    config: {
-      bench: "npm run bench",
-      adapter: "metric-lines",
-      samples: 10,
-      timeoutSeconds: 1800,
-      primary: "geomean",
-      hooks: "gymrat.hooks",
-    },
-  };
+  });
 }
 
 /** A measured iteration numbered `seq`, the shape a hook is handed as `lastIteration`. */
 function iteration(seq: number): IterationRecord {
-  return {
-    type: "iteration",
-    seq,
-    at: AT,
-    samples: { experiment: [{ total_ms: 14100 }], baseline: [{ total_ms: 15200 }] },
-    metrics: {
-      total_ms: {
-        deltaPct: -7.2,
-        verdict: "improved",
-        method: "signed-rank",
-        p: 0.002,
-        noisePct: 1.4,
-        gating: true,
-        confirmed: false,
-      },
-    },
-    primary: { kind: "geomean", deltaPct: -7.2 },
-    outcome: "improved",
-    targetReached: false,
-  };
+  return iterationRecord({ seq });
 }
 
 /** A `before` invocation on the scratch hooks directory, overridable field by field. */
@@ -131,7 +102,7 @@ afterEach(() => {
 });
 
 describe("runHook", () => {
-  describe("when the stage's script is not there to run", () => {
+  describe("when the stage has no runnable script", () => {
     it("skips a hooks directory holding no script for the stage", async () => {
       // Act
       const run = await runHook(invocationOf());

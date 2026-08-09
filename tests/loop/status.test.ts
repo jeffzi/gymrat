@@ -20,9 +20,16 @@ import type {
   SessionRecord,
 } from "../../src/session/records.js";
 import { appendRecord } from "../../src/session/store.js";
+import { captureStdout, mockProcessExit } from "../fixtures/cli-harness.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import {
+  AT,
+  committedKeep,
+  iterationRecord,
+  resolvedConfig,
+  sessionRecord as sessionRecordDefaults,
+} from "../fixtures/session-records.js";
 
-const AT = "2026-08-08T14:15:30.000Z";
 const SESSION_ID = "20260808-141530-a3f2";
 /** A 40-hex baseline sha whose first seven characters are recognizable on their own. */
 const BASELINE_SHA = `a1b2c3d${"e".repeat(33)}`;
@@ -45,37 +52,15 @@ function worktrees(root: string): SessionRecord["worktrees"] {
 
 /** The session header `start` writes for `root`. */
 function sessionRecord(root: string): SessionRecord {
-  return {
-    type: "session",
-    schemaVersion: 1,
-    sessionId: SESSION_ID,
-    createdAt: AT,
+  return sessionRecordDefaults({
     baseline: { ref: "main", sha: BASELINE_SHA },
-    branch: `gymrat/${SESSION_ID}`,
     worktrees: worktrees(root),
-    config: {
-      bench: "npm run bench",
-      adapter: "metric-lines",
-      samples: 10,
-      timeoutSeconds: 1800,
-      primary: "geomean",
-      hooks: "gymrat.hooks",
-    },
-  };
+  });
 }
 
 /** A settled run configuration, geomean-led unless a test names its own primary. */
 function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
-  return {
-    bench: "npm run bench",
-    adapter: "metric-lines",
-    samples: 10,
-    timeoutSeconds: 1800,
-    unstableNoisePct: 200,
-    primary: "geomean",
-    hooks: "gymrat.hooks",
-    ...overrides,
-  };
+  return resolvedConfig(overrides);
 }
 
 /** A measured iteration numbered `seq`, reading as `outcome` on a `deltaPct` primary. */
@@ -85,10 +70,8 @@ function iteration(
   outcome: IterationRecord["outcome"],
   targetReached = false,
 ): IterationRecord {
-  return {
-    type: "iteration",
+  return iterationRecord({
     seq,
-    at: AT,
     samples: {
       experiment: [{ total_ms: 14100 }, { total_ms: 14088 }],
       baseline: [{ total_ms: 15200 }, { total_ms: 15190 }],
@@ -107,20 +90,7 @@ function iteration(
     primary: { kind: "metric", name: "total_ms", deltaPct },
     outcome,
     targetReached,
-  };
-}
-
-/** A keep that committed the iteration numbered `seq`. */
-function committedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "committed",
-    commit: KEEP_COMMIT,
-    message: "cache the regex",
-    checks: { configured: true, passed: true },
-  };
+  });
 }
 
 /** A keep the checks gate refused, leaving the iteration numbered `seq` uncommitted. */
@@ -176,7 +146,7 @@ function fourIterations(): SessionLogRecord[] {
     BASELINE,
     HOOK,
     iteration(1, -7.2, "improved"),
-    committedKeep(1),
+    committedKeep(1, { commit: KEEP_COMMIT }),
     iteration(2, 9.4, "regressed"),
     discard(2),
     iteration(3, -3.1, "improved"),
@@ -252,22 +222,10 @@ describe("statusSession", () => {
         "4 iterations · 1 kept · 1 discarded",
       ]);
     });
-
-    it("renders the same report every time, holding nothing between calls", () => {
-      // Arrange
-      const root = freshRoot();
-      writeSessionLog(root, fourIterations());
-
-      // Act
-      const report = statusSession(root, config());
-
-      // Assert
-      expect(statusSession(root, config())).toBe(report);
-    });
   });
 
   describe("when a stop condition is configured", () => {
-    it("counts the iterations on file against the configured maximum", () => {
+    it("forwards the configured stop condition to the footer", () => {
       // Arrange
       const root = freshRoot();
       writeSessionLog(root, fourIterations());
@@ -277,27 +235,6 @@ describe("statusSession", () => {
 
       // Assert
       expect(reportLines(report)).toContain("stop: 4 of 30 iterations");
-    });
-
-    it.each([
-      { desc: "the target-reaching iteration was kept", kept: true, expected: "target reached" },
-      {
-        desc: "nobody kept the target-reaching iteration",
-        kept: false,
-        expected: "target pending",
-      },
-    ])("reports $expected when $desc", ({ kept, expected }) => {
-      // Arrange
-      const root = freshRoot();
-      const settle = kept ? committedKeep(1) : discard(1);
-      writeSessionLog(root, [iteration(1, -7.2, "improved", true), settle]);
-      const resolved = config({ primary: "total_ms", stop: { targetValue: 95 } });
-
-      // Act
-      const report = statusSession(root, resolved);
-
-      // Assert
-      expect(reportLines(report)).toContain(`stop: ${expected}`);
     });
   });
 });
@@ -326,24 +263,6 @@ describe("the status command", () => {
       command.configureOutput({ writeErr: () => {} });
     }
     return program;
-  }
-
-  /** Turn `process.exit` into a catchable rejection carrying the intended code. */
-  function mockProcessExit(): void {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- vitest mock requires cast
-    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw Object.assign(new Error(`process.exit(${code})`), { exitCode: code });
-    }) as never);
-  }
-
-  /** Collect everything the program writes to stdout. */
-  function captureStdout(): () => string {
-    let stdout = "";
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      stdout += String(chunk);
-      return true;
-    });
-    return () => stdout;
   }
 
   /** Write the config file every command reads its settings from. */

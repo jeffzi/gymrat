@@ -13,7 +13,7 @@
 import type { ConfigStop } from "../config.js";
 import { assertNever } from "../errors.js";
 import { computeMedian } from "../math.js";
-import type { BaselineRecord, SessionRecord } from "../session/records.js";
+import type { BaselineRecord, KeepRecord, SessionRecord } from "../session/records.js";
 import type { DisplayClass, Style } from "./format.js";
 import { formatDelta, formatHintLabel, formatLabel, formatValue, getGlyph } from "./format.js";
 import { pairedSamples, pluralize } from "./text.js";
@@ -196,7 +196,7 @@ export type SettleState =
   | { readonly kind: "kept"; readonly commit?: string }
   | { readonly kind: "discarded" }
   | { readonly kind: "unsettled" }
-  | { readonly kind: "keep-blocked"; readonly reason?: string };
+  | { readonly kind: "keep-blocked"; readonly reason?: NonNullable<KeepRecord["reason"]> };
 
 /** One iteration as a status line states it. */
 export interface StatusIteration {
@@ -219,7 +219,12 @@ export interface StatusSummary {
 }
 
 /** How many hex digits of a sha a status line shows. */
-const SHORT_SHA_LENGTH = 7;
+export const SHORT_SHA_LENGTH = 7;
+
+/** A session's baseline, in the `ref@sha` form (sha shortened) every loop summary states it with. */
+export function formatBaselineRef(baseline: SessionRecord["baseline"]): string {
+  return `${baseline.ref}@${baseline.sha.slice(0, SHORT_SHA_LENGTH)}`;
+}
 
 /**
  * The glyph each outcome wears, borrowed from the comparison table's vocabulary.
@@ -241,7 +246,7 @@ const OUTCOME_GLYPHS: Record<LoopOutcome, DisplayClass> = {
  * agent edits in one of them and must never touch the other.
  */
 export function formatStatusHeader(session: SessionRecord): readonly string[] {
-  const baseline = `${session.baseline.ref}@${session.baseline.sha.slice(0, SHORT_SHA_LENGTH)}`;
+  const baseline = formatBaselineRef(session.baseline);
   return [
     [
       formatLabel(`session ${session.sessionId}`, ["bold"]),

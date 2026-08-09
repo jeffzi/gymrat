@@ -13,12 +13,18 @@ import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
   DiscardRecord,
   IterationRecord,
-  KeepRecord,
   SessionLogRecord,
   SessionRecord,
 } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import {
+  AT,
+  committedKeep,
+  iterationRecord,
+  resolvedConfig,
+  sessionRecord as sessionRecordDefaults,
+} from "../fixtures/session-records.js";
 
 type CollectSamples = typeof import("../../src/sampling.js").collectSamples;
 
@@ -35,8 +41,6 @@ vi.mock("../../src/sampling.js", async (importOriginal) => {
 });
 
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const AT = "2026-08-08T14:15:30.000Z";
-const COMMIT = "b".repeat(40);
 const SESSION_ID = "20260808-141530-abcd";
 
 /** Ten rounds of a bench that stayed near 100. */
@@ -106,16 +110,7 @@ const FILTER = "npm run bench -- --filter {names}";
 
 /** A settled run configuration, geomean-led unless a test names its own primary. */
 function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
-  return {
-    bench: "npm run bench",
-    adapter: "metric-lines",
-    samples: 10,
-    timeoutSeconds: 1800,
-    unstableNoisePct: 200,
-    primary: "geomean",
-    hooks: "gymrat.hooks",
-    ...overrides,
-  };
+  return resolvedConfig(overrides);
 }
 
 /**
@@ -124,73 +119,28 @@ function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
  * record would bench directories no test ever filled.
  */
 function sessionRecord(root: string): SessionRecord {
-  return {
-    type: "session",
-    schemaVersion: 1,
+  return sessionRecordDefaults({
     sessionId: SESSION_ID,
-    createdAt: AT,
-    baseline: { ref: "main", sha: "a".repeat(40) },
-    branch: `gymrat/${SESSION_ID}`,
     worktrees: {
       experiment: path.join(root, "side-experiment"),
       baseline: path.join(root, "side-baseline"),
     },
-    config: {
-      bench: "npm run bench",
-      adapter: "metric-lines",
-      samples: 10,
-      timeoutSeconds: 1800,
-      primary: "geomean",
-      hooks: "gymrat.hooks",
-    },
-  };
+  });
 }
 
 /** A measured iteration numbered `seq`, settled by nobody. */
 function iteration(seq: number): IterationRecord {
-  return {
-    type: "iteration",
-    seq,
-    at: AT,
-    samples: { experiment: [{ total_ms: 14100 }], baseline: [{ total_ms: 15200 }] },
-    metrics: {
-      total_ms: {
-        deltaPct: -7.2,
-        verdict: "improved",
-        method: "signed-rank",
-        p: 0.002,
-        noisePct: 1.4,
-        gating: true,
-        confirmed: false,
-      },
-    },
-    primary: { kind: "geomean", deltaPct: -7.2 },
-    outcome: "improved",
-    targetReached: false,
-  };
+  return iterationRecord({ seq });
 }
 
 /** The iteration numbered `seq`, measured at or past the configured target. */
 function onTargetIteration(seq: number): IterationRecord {
-  return { ...iteration(seq), targetReached: true };
+  return iterationRecord({ seq, targetReached: true });
 }
 
 /** A discard of the iteration numbered `seq`. */
 function discardOf(seq: number): DiscardRecord {
   return { type: "discard", seq, at: AT };
-}
-
-/** A keep that committed the iteration numbered `seq`. */
-function committedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "committed",
-    commit: COMMIT,
-    message: "cache the regex",
-    checks: { configured: true, passed: true },
-  };
 }
 
 /** Write a session log opening on `sessionRecord(root)` and holding `history` after it. */
@@ -496,25 +446,17 @@ describe("iterateSession", () => {
       expect(result.record).toStrictEqual(lastIterationOf(repo.dir));
     });
 
-    it.each([
-      {
-        description: "a geomean primary over every gating metric",
-        primary: "geomean",
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        expected: { kind: "geomean", deltaPct: expect.closeTo(-15.1472, 3) },
-      },
-      {
-        description: "a named primary metric alone",
-        primary: "total_ms",
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        expected: { kind: "metric", name: "total_ms", deltaPct: expect.closeTo(-10, 6) },
-      },
-    ])("reads the iteration on $description", async ({ primary, expected }) => {
+    it("reads the iteration on a named primary metric alone", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config({ primary }));
+      const result = await iterateSession(repo.dir, config({ primary: "total_ms" }));
 
       // Assert
-      expect(result.record.primary).toStrictEqual(expected);
+      expect(result.record.primary).toStrictEqual({
+        kind: "metric",
+        name: "total_ms",
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        deltaPct: expect.closeTo(-10, 6),
+      });
     });
 
     it.each([

@@ -28,7 +28,8 @@ import type { MeasureOptions } from "./measure.js";
 import { metricRecord } from "./metric-record.js";
 import { countVerdicts, formatHintLabel, formatLabel, shortenLabel } from "./report/format.js";
 import { renderJson, renderMeasureJson } from "./report/json.js";
-import { renderMeasureReport, renderReport } from "./report/text.js";
+import { formatBaselineRef } from "./report/loop.js";
+import { pluralize, renderMeasureReport, renderReport } from "./report/text.js";
 import type {
   CandidateComparison,
   ComparisonResult,
@@ -300,10 +301,10 @@ function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> 
 const GATE_EXIT_CODE = 1;
 
 /** The exit code of a tool failure, the convention every unhandled error exits on. */
-const FAILURE_EXIT_CODE = 2;
+const TOOL_FAILURE_EXIT_CODE = 2;
 
 /** Print a formatted error to stderr and exit on `code`. */
-async function exitWithError(error: unknown, code = FAILURE_EXIT_CODE): Promise<never> {
+async function exitWithError(error: unknown, code = TOOL_FAILURE_EXIT_CODE): Promise<never> {
   try {
     await writeAndDrain(process.stderr, `${formatCliError(error)}\n`);
   } catch {
@@ -716,9 +717,11 @@ function noColorOverride(colorFlag: boolean): boolean | undefined {
 
 /**
  * Run `execute`, guarded by `progress`: stop the reporter once the run settles,
- * whether it succeeds or throws, and route a thrown error through the CLI's
- * exit-with-error path. `compare` and `measure` share this so neither command's
- * action can forget to stop the progress reporter before reporting a failure.
+ * whether it succeeds or throws. `compare` and `measure` share this so neither
+ * command's action can forget to stop the progress reporter before a failure
+ * reaches `withRepoLock`, which is what routes a thrown error to
+ * {@link exitWithError} — `runGuarded` re-throws rather than exiting itself, so
+ * that single path is the only place either command's errors are reported.
  */
 async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<T>): Promise<T> {
   try {
@@ -727,7 +730,7 @@ async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<
     return result;
   } catch (error) {
     progress.stop();
-    return exitWithError(error);
+    throw error;
   }
 }
 
@@ -749,8 +752,35 @@ function lockableRepoRoot(): string | undefined {
   }
 }
 
+/** `withRepoLock`'s default: every uncaught error is a tool failure. */
+function toolFailure(): number {
+  return TOOL_FAILURE_EXIT_CODE;
+}
+
 /**
- * Hold the repository's single-flight lock for the length of `run`.
+ * Run `execute`, and route a thrown error through {@link exitWithError} instead
+ * of letting it escape — `exitCodeOf` picks the exit code the error deserves,
+ * defaulting to a tool failure.
+ *
+ * `withRepoLock` calls this for both the locked and unlocked paths; `status`,
+ * the one loop command that takes no lock, calls it directly so its error
+ * handling still goes through the same path.
+ */
+async function runOrExit<T>(
+  execute: () => Promise<T>,
+  exitCodeOf: (error: unknown) => number = toolFailure,
+): Promise<T> {
+  try {
+    return await execute();
+  } catch (error) {
+    return exitWithError(error, exitCodeOf(error));
+  }
+}
+
+/**
+ * Hold the repository's single-flight lock for the length of `run`, routing a
+ * thrown error through {@link exitWithError} — `exitCodeOf` picks the exit code,
+ * defaulting to a tool failure.
  *
  * The lock is taken before anything the run would execute, so a repository
  * another gymrat process is already benchmarking is refused before a prepare or
@@ -759,12 +789,18 @@ function lockableRepoRoot(): string | undefined {
  * Release is wired twice because the two ways a command finishes need different
  * hooks: `finally` covers a run that returns or throws, and the `exit` listener
  * covers `process.exit`, which unwinds nothing — the error path and the
- * `--fail-on` gate trip both leave that way.
+ * `--fail-on` gate trip both leave that way. `runOrExit`'s catch runs before
+ * that `finally`, while the `exit` listener is still registered, so the
+ * `process.exit` inside `exitWithError` still triggers it and releases the lock.
  */
-async function withRepoLock<T>(command: string, run: () => Promise<T>): Promise<T> {
+async function withRepoLock<T>(
+  command: string,
+  run: () => Promise<T>,
+  exitCodeOf: (error: unknown) => number = toolFailure,
+): Promise<T> {
   const root = lockableRepoRoot();
   if (root === undefined) {
-    return await run();
+    return await runOrExit(run, exitCodeOf);
   }
 
   let release: ReleaseLock;
@@ -780,7 +816,7 @@ async function withRepoLock<T>(command: string, run: () => Promise<T>): Promise<
   process.once("exit", releaseOnExit);
 
   try {
-    return await run();
+    return await runOrExit(run, exitCodeOf);
   } finally {
     process.removeListener("exit", releaseOnExit);
     release();
@@ -847,14 +883,6 @@ function baselineRecordOf(result: MeasurementResult): BaselineRecord {
   };
 }
 
-/** How many hex digits of a commit SHA a session summary shows. */
-const SHORT_SHA_LENGTH = 7;
-
-/** `1 iteration`, `2 iterations` — the plural an English summary line needs. */
-function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
 /**
  * The summary `start` prints: where the session's work happens, and — when the
  * session was already there — how far it has got.
@@ -870,7 +898,7 @@ function formatStartSummary(result: StartResult): string {
 
   const rows: readonly (readonly [string, string])[] = [
     ["branch", session.branch],
-    ["baseline", `${session.baseline.ref}@${session.baseline.sha.slice(0, SHORT_SHA_LENGTH)}`],
+    ["baseline", formatBaselineRef(session.baseline)],
     ["experiment worktree", session.worktrees.experiment],
     ["baseline worktree", session.worktrees.baseline],
   ];
@@ -951,10 +979,15 @@ export function createProgram(): Command {
     )
     .configureHelp(createHelpConfig())
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
-      await withRepoLock("compare", async () => {
+      /*
+       * The gate check runs after the lock is released, as `keep`'s does: it
+       * only reads the result the lock already protected, and process.exit
+       * must not be reachable from inside withRepoLock's own error handling.
+       */
+      const result = await withRepoLock("compare", async () => {
         const progress = beginRun(options, 1 + candidates.length);
 
-        const result = await runGuarded(progress, async () => {
+        const compareResult = await runGuarded(progress, async () => {
           const config = resolveConfig(configFlagsOf(options));
 
           const compareOptions: CompareOptions = {
@@ -968,7 +1001,7 @@ export function createProgram(): Command {
         });
 
         await emitReport(
-          result,
+          compareResult,
           options,
           { json: renderJson, text: renderReport },
           {
@@ -978,12 +1011,14 @@ export function createProgram(): Command {
           },
         );
 
-        warnEmptyGeomeanGates(options.failOn, result);
+        warnEmptyGeomeanGates(options.failOn, compareResult);
 
-        if (shouldFailGate(options.failOn, result)) {
-          process.exit(GATE_EXIT_CODE);
-        }
+        return compareResult;
       });
+
+      if (shouldFailGate(options.failOn, result)) {
+        process.exit(GATE_EXIT_CODE);
+      }
     });
 
   const measureCmd = addSharedOptions(
@@ -1054,13 +1089,9 @@ export function createProgram(): Command {
        * that is already on disk, so holding the repository against every other
        * gymrat process while stdout drains would serialize runs for nothing.
        */
-      const result = await withRepoLock("start", async () => {
-        try {
-          return startSession(repoRoot(), ref, resolveConfig(options));
-        } catch (error) {
-          return await exitWithError(error);
-        }
-      });
+      const result = await withRepoLock("start", () =>
+        Promise.resolve(startSession(repoRoot(), ref, resolveConfig(options))),
+      );
 
       await writeAndDrain(process.stdout, `${formatStartSummary(result)}\n`);
     });
@@ -1077,19 +1108,16 @@ export function createProgram(): Command {
        * the measurement is over by then, and holding the repository while stdout
        * drains would serialize runs for nothing.
        */
-      const result = await withRepoLock("iterate", async () => {
-        try {
-          return await iterateSession(repoRoot(), resolveConfig(options));
-        } catch (error) {
-          /*
-           * A met stop condition is a gate trip, not a tool failure: the loop
-           * reached the end it was configured for, so it exits the way a keep
-           * the checks refused does.
-           */
-          const code = error instanceof LoopStopError ? GATE_EXIT_CODE : FAILURE_EXIT_CODE;
-          return await exitWithError(error, code);
-        }
-      });
+      const result = await withRepoLock(
+        "iterate",
+        async () => iterateSession(repoRoot(), resolveConfig(options)),
+        /*
+         * A met stop condition is a gate trip, not a tool failure: the loop
+         * reached the end it was configured for, so it exits the way a keep
+         * the checks refused does.
+         */
+        (error) => (error instanceof LoopStopError ? GATE_EXIT_CODE : TOOL_FAILURE_EXIT_CODE),
+      );
 
       await writeAndDrain(process.stdout, `${result.report}\n`);
     });
@@ -1102,15 +1130,9 @@ export function createProgram(): Command {
   )
     .configureHelp(createHelpConfig())
     .action(async (options: KeepFlags) => {
-      const result = await withRepoLock("keep", async () => {
-        try {
-          return await keepSession(repoRoot(), resolveConfig(options), {
-            message: options.message,
-          });
-        } catch (error) {
-          return await exitWithError(error);
-        }
-      });
+      const result = await withRepoLock("keep", async () =>
+        keepSession(repoRoot(), resolveConfig(options), { message: options.message }),
+      );
 
       await writeAndDrain(process.stdout, `${result.report}\n`);
 
@@ -1130,13 +1152,9 @@ export function createProgram(): Command {
     .description("Revert the session's experiment worktree to its last commit")
     .configureHelp(createHelpConfig())
     .action(async () => {
-      const result = await withRepoLock("discard", async () => {
-        try {
-          return discardSession(repoRoot());
-        } catch (error) {
-          return await exitWithError(error);
-        }
-      });
+      const result = await withRepoLock("discard", () =>
+        Promise.resolve(discardSession(repoRoot())),
+      );
 
       await writeAndDrain(process.stdout, `${result.report}\n`);
     });
@@ -1160,13 +1178,9 @@ export function createProgram(): Command {
         suppressColor();
       }
 
-      let report: string;
-      try {
-        report = statusSession(repoRoot(), resolveConfig(options));
-      } catch (error) {
-        await exitWithError(error);
-        return;
-      }
+      const report = await runOrExit(() =>
+        Promise.resolve(statusSession(repoRoot(), resolveConfig(options))),
+      );
 
       await writeAndDrain(process.stdout, `${report}\n`);
     });

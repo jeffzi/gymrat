@@ -10,6 +10,7 @@ import { createProgram } from "../../src/cli.js";
 import { experimentWorktreeDir, lockfilePath, sessionJsonlPath } from "../../src/session/paths.js";
 import type { SessionLogRecord } from "../../src/session/records.js";
 import { readRecords } from "../../src/session/store.js";
+import { exitCodeOf, mockProcessExit } from "../fixtures/cli-harness.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 
 /** Generous budget: every command below creates real worktrees and spawns real bench processes. */
@@ -93,22 +94,6 @@ function commitProject(repo: ScratchRepo, gateFile?: string): void {
 /** Tune the experiment worktree to `latency`, the edit an agent would make between iterations. */
 function tuneExperiment(repo: ScratchRepo, latency: number): void {
   fs.writeFileSync(path.join(experimentWorktreeDir(repo.dir), TUNING_FILE), `${String(latency)}\n`);
-}
-
-/** The exit code carried by the error a mocked `process.exit` threw. */
-function exitCodeOf(error: unknown): number {
-  if (error instanceof Error && "exitCode" in error && typeof error.exitCode === "number") {
-    return error.exitCode;
-  }
-  throw error;
-}
-
-/** Turn `process.exit` into a catchable rejection carrying the intended code. */
-function mockProcessExit(): void {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- vitest mock requires cast
-  vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-    throw Object.assign(new Error(`process.exit(${String(code)})`), { exitCode: code });
-  }) as never);
 }
 
 /** Swallow both streams and hand back a reader that drains the stdout collected so far. */
@@ -332,9 +317,9 @@ describe("the gymrat loop – integration", () => {
 
         // Act
         const second = await runCli(["iterate"]);
+        fs.writeFileSync(gateFile, "");
 
         // Assert
-        fs.writeFileSync(gateFile, "");
         expect.soft(second).toBe(2);
         expect.soft(await first).toBe(0);
         expect.soft(fs.existsSync(lockPath)).toBe(false);

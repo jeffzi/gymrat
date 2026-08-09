@@ -39,6 +39,7 @@ import type { SessionLogRecord, SessionRecord } from "../src/session/records.js"
 import { appendRecord, readRecords } from "../src/session/store.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
+import { createRunnableProgram, mockProcessExit } from "./fixtures/cli-harness.js";
 import {
   createCandidate,
   createComparisonResult,
@@ -296,13 +297,6 @@ function createCommandError(targetKind: "ref" | "in-place"): CommandError {
   return new CommandError(context, failure);
 }
 
-/** Build a fresh program that throws instead of exiting, ready for a single successful parse. */
-function createRunnableProgram(): Command {
-  const program = createProgram();
-  program.exitOverride();
-  return program;
-}
-
 /** Prepends the `["node", "cli.js", "compare"]` prefix Commander expects. */
 function compareArgv(...args: string[]): string[] {
   return ["node", "cli.js", "compare", ...args];
@@ -395,21 +389,6 @@ async function startMeasureRun(configOverrides: Partial<ResolvedConfig> = {}) {
   const { measureMock, resolveConfigMock } = await setupMeasureMocks(undefined, configOverrides);
   vi.spyOn(process.stdout, "write").mockReturnValue(true);
   return { program, measureMock, resolveConfigMock };
-}
-
-/**
- * Prevent process.exit from terminating the test runner.
- *
- * Converts exit calls into catchable rejections that carry the intended
- * exit code, so tests can assert on exit-code behavior without killing
- * the vitest worker.
- */
-function mockProcessExit(): ReturnType<typeof vi.spyOn> {
-  return vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-    throw Object.assign(new Error(`process.exit(${code})`), {
-      exitCode: code,
-    });
-  }) as never);
 }
 
 afterEach(() => {
@@ -2726,38 +2705,42 @@ describe("createProgram", () => {
     }
 
     /**
-     * Stub `compare` to run `duringRun` before it settles, rejecting with
-     * `failure` when one is given, and hand back the stub.
+     * Stub the command's run function to run `duringRun` before it settles,
+     * rejecting with `failure` when one is given, and hand back the stub.
      *
      * `duringRun` fires while the command is mid-flight, which is the only
      * moment the lock the command took is observable.
      */
-    async function arrangeCompareRun(
-      duringRun: () => void,
-      failure?: Error,
-    ): Promise<MockInstance> {
-      const { compareMock } = await setupMocks(failure);
-      return vi.mocked(compareMock).mockImplementation(() => {
-        duringRun();
-        return failure ? Promise.reject(failure) : Promise.resolve(createComparisonResult());
-      });
-    }
-
-    /** `arrangeCompareRun` for the single-target command. */
-    async function arrangeMeasureRun(
-      duringRun: () => void,
-      failure?: Error,
-    ): Promise<MockInstance> {
-      const { measureMock } = await setupMeasureMocks(failure);
-      return vi.mocked(measureMock).mockImplementation(() => {
-        duringRun();
-        return failure ? Promise.reject(failure) : Promise.resolve(createMeasurementResult());
-      });
+    function arrangeRun<T>(
+      setup: (failure?: Error) => Promise<(...args: never[]) => Promise<T>>,
+      resultFactory: () => T,
+    ): (duringRun: () => void, failure?: Error) => Promise<MockInstance> {
+      return async (duringRun, failure) => {
+        const mock = await setup(failure);
+        return vi.mocked(mock).mockImplementation(() => {
+          duringRun();
+          return failure ? Promise.reject(failure) : Promise.resolve(resultFactory());
+        });
+      };
     }
 
     const LOCKING_COMMANDS = [
-      { command: "compare", argv: compareArgv("main", "branch"), arrange: arrangeCompareRun },
-      { command: "measure", argv: measureArgv("main"), arrange: arrangeMeasureRun },
+      {
+        command: "compare",
+        argv: compareArgv("main", "branch"),
+        arrange: arrangeRun(
+          async (failure) => (await setupMocks(failure)).compareMock,
+          createComparisonResult,
+        ),
+      },
+      {
+        command: "measure",
+        argv: measureArgv("main"),
+        arrange: arrangeRun(
+          async (failure) => (await setupMeasureMocks(failure)).measureMock,
+          createMeasurementResult,
+        ),
+      },
     ];
 
     afterEach(() => {

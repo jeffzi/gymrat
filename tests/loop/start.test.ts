@@ -12,16 +12,14 @@ import {
   experimentWorktreeDir,
   sessionJsonlPath,
 } from "../../src/session/paths.js";
-import type { IterationRecord, KeepRecord, SessionRecord } from "../../src/session/records.js";
+import type { IterationRecord, SessionRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { detectWorkspace } from "../../src/session/workspace.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { committedKeep, iterationRecord } from "../fixtures/session-records.js";
 
 const SESSION_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const AT = "2026-08-08T14:15:30.000Z";
-const COMMIT = "b".repeat(40);
-
 /**
  * A settled run configuration carrying both the keys the session header snapshots
  * and keys it must leave out (`unstableNoisePct`, `stop`).
@@ -80,42 +78,7 @@ function sessionHeaderOf(root: string): SessionRecord {
 
 /** A measured iteration numbered `seq`, settled by nobody. */
 function iteration(seq: number): IterationRecord {
-  return {
-    type: "iteration",
-    seq,
-    at: AT,
-    samples: {
-      experiment: [{ total_ms: 14100 }],
-      baseline: [{ total_ms: 15200 }],
-    },
-    metrics: {
-      total_ms: {
-        deltaPct: -7.2,
-        verdict: "improved",
-        method: "signed-rank",
-        p: 0.002,
-        noisePct: 1.4,
-        gating: true,
-        confirmed: false,
-      },
-    },
-    primary: { kind: "geomean", deltaPct: -7.2 },
-    outcome: "improved",
-    targetReached: false,
-  };
-}
-
-/** A keep that committed the iteration numbered `seq`. */
-function committedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "committed",
-    commit: COMMIT,
-    message: "cache the regex",
-    checks: { configured: true, passed: true },
-  };
+  return iterationRecord({ seq });
 }
 
 let repo: ScratchRepo;
