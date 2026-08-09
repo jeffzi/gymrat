@@ -126,8 +126,8 @@ through the shell with the working directory set to the target's directory.
 - `regressed` — trips when any gating metric has a `regressed` verdict on any candidate. Unstable
   and non-gating metrics never trip this gate.
 - `geomean:<pct>` — trips when any candidate's gated geomean, on any gating **kind** (the class an
-  adapter assigns a metric, such as `time` or `memory`; see the
-  [report reference](docs/reference.md) for the full explanation), reaches `<pct>` percent in the
+  adapter assigns a metric, such as `time` or `memory`; see the [`kinds` config
+  key](#configuration) for the full explanation), reaches `<pct>` percent in the
   costly direction (e.g. `geomean:2` trips
   at +2.0% or worse for lower-is-better metrics). Each kind is evaluated independently: a non-gating
   kind can never trip this gate regardless of its value. A candidate whose gating kinds all have
@@ -184,14 +184,15 @@ highlights
   evidence. Exact metrics show `(exact)`.
 - The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
   hidden.
-- The **geomean** row aggregates the run's stable metrics. Metrics whose noise band exceeds
-  `unstableNoisePct` read `≈ unstable` and drop out of the geomean.
+- The **geomean** row aggregates each section's stable metrics: a single-kind run has one geomean
+  row for the whole run, while a multi-kind run closes each kind's section with its own geomean.
+  Metrics whose noise band exceeds `unstableNoisePct` read `≈ unstable` and drop out of the geomean.
 - Add `--verbose` to name the statistical method behind each verdict in the footer.
 
 Verdicts come from a two-sided Wilcoxon signed-rank test at ≥ 6 nonzero paired differences, a
 half-range noise band below that, and direct median comparison for config-flagged `exact` metrics.
-The full report anatomy — noise bands, spread columns, multi-kind sections, one-sided metrics —
-and the exact verdict rules are in the [reference](docs/reference.md).
+The [reference](docs/reference.md) covers the full report anatomy (noise bands, spread columns,
+multi-kind sections, one-sided metrics) and the exact verdict rules.
 
 ## CI integration
 

@@ -3,13 +3,10 @@
 Lookup documentation for gymrat's report anatomy, verdict methods, and JSON output. For
 installation, usage, and configuration, see the [README](../README.md).
 
-## Reading the report
+## Report anatomy
 
-```sh
-gymrat compare main perf/faster-decode --bench "node bench.js" --adapter metric-lines --samples 10
-```
-
-With a `gymrat.json` marking `encode/heap` as an exact metric, that prints:
+The sample below uses `gymrat compare` with a `gymrat.json` marking `encode/heap` as an exact
+metric:
 
 ```text
 gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
@@ -37,7 +34,28 @@ Add `--verbose` to name the method behind each verdict in the footer:
 verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 ```
 
-### Anatomy
+### Table columns
+
+- The **`±` noise band** in the verdict column is the half-range-derived spread the signed-rank and
+  noise-band methods both compute. The band decides the verdict only on the band path; signed-rank
+  decides on `p`. It appears only for non-exact metrics in the single-candidate table —
+  multi-candidate tables drop the band from cells to save width. Unstable metrics omit the band
+  (the word `unstable` replaces it).
+- The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
+  hidden.
+- The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
+  within noise, `?` inconclusive. You never do better-is-higher math yourself.
+- The **± spread** in the value columns is the cross-run half-range of the per-run values as a
+  percentage of the median, the same dispersion the noise band uses. Past 100%, the spread is
+  restated in the metric's own units (e.g. `5B ± 381B` instead of `5B ± 7620%`).
+- **Value columns vs. delta/verdict:** the value columns show each side's median and spread over
+  the windows that reported the metric; the delta and verdict come from paired windows only
+  (windows where both sides reported the metric). When a metric is missing from some windows, the
+  two sets can differ.
+- Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
+  `metric-lines` values carry no unit and are rounded to the nearest integer.
+
+### Summary and highlights
 
 - The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class at a glance,
   and doubles as the legend for the glyphs used throughout the report.
@@ -53,24 +71,9 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 - When `--fail-on geomean:<pct>` would trip, the highlights close with a **gate-trip echo** per
   tripping kind (`⚑ time geomean +3.1% exceeded --fail-on geomean:2`), so the reader sees why the
   run will exit 1 without cross-referencing the gate conditions.
-- The **`±` noise band** in the verdict column is the half-range-derived spread the signed-rank and
-  noise-band methods both compute. The band decides the verdict only on the band path; signed-rank
-  decides on `p`. It appears only for non-exact metrics in the single-candidate table —
-  multi-candidate tables drop the band from cells to save width. Unstable metrics omit the band
-  (the word `unstable` replaces it).
-- The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
-  hidden.
-- The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
-  within noise. You never do better-is-higher math yourself.
-- The **± spread** in the value columns is the cross-run half-range of the per-run values as a
-  percentage of the median, the same dispersion the noise band uses. Past 100%, the spread is
-  restated in the metric's own units (e.g. `5B ± 381B` instead of `5B ± 7620%`).
-- **Value columns vs. delta/verdict:** the value columns show each side's median and spread over
-  the windows that reported the metric; the delta and verdict come from paired windows only
-  (windows where both sides reported the metric). When a metric is missing from some windows, the
-  two sets can differ.
-- Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
-  `metric-lines` values carry no unit and are rounded to the nearest integer.
+
+### Geomean rows
+
 - When a run produces metrics of more than one **kind** (e.g. `time` and `memory` from `mitata`),
   the report renders a section per kind: a kind heading, group sub-headers for dotted metric names,
   a per-group geomean, and a per-kind geomean at the bottom of each section. A kind with no gating
@@ -133,7 +136,8 @@ highlights
 - A metric present on only one side renders one-sided: its value in the present column, a blank cell
   on the other, and no verdict.
 - The **`Hint:` line** prints regardless of `--verbose`, and only when a metric fell back to the
-  noise band for want of samples.
+  noise band for want of samples. The text reads
+  `Hint: re-run with --samples 6 or more for statistical verdicts`.
 - **Display-width limitation:** column alignment assumes one character equals one display column.
   Chinese, Japanese, Korean (CJK) or other wide characters in metric names or labels may
   misalign columns; label truncation can split a multi-byte character. A display-width
@@ -162,8 +166,8 @@ from the per-side medians.
 
 ### `compare` schema
 
-`gymrat compare --format json` produces a stable JSON structure (currently `schemaVersion: 2`).
-Top-level fields:
+`gymrat compare --format json` produces a stable JavaScript Object Notation (JSON) structure
+(currently `schemaVersion: 2`). Top-level fields:
 
 | Field           | Description                                                                              |
 | --------------- | ---------------------------------------------------------------------------------------- |
@@ -194,6 +198,57 @@ signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a me
 A `NaN` delta (zero baseline median, non-zero candidate) serializes as `null`; it is distinguished
 from a missing verdict by the non-null `verdict` field.
 
+Example, trimmed to one metric and one candidate:
+
+```json
+{
+  "schemaVersion": 2,
+  "baseline": "main",
+  "candidates": ["perf/faster-decode"],
+  "samples": 10,
+  "adapter": "metric-lines",
+  "metrics": {
+    "decode/text=digits/time": {
+      "unit": null,
+      "direction": "lower",
+      "gating": true,
+      "kind": "time",
+      "group": null,
+      "baseline": { "median": 1700, "spreadPct": 1 },
+      "candidates": [
+        {
+          "label": "perf/faster-decode",
+          "median": 1400,
+          "spreadPct": 1,
+          "verdict": "improved",
+          "method": "signed-rank",
+          "delta": -17.9,
+          "noisePct": 2.5,
+          "p": 0.002,
+          "band": null
+        }
+      ]
+    }
+  },
+  "perCandidate": [
+    {
+      "label": "perf/faster-decode",
+      "kinds": [
+        {
+          "kind": "time",
+          "hasGating": true,
+          "geomean": { "value": -17.9, "n": 1, "excluded": [], "band": 2.5 },
+          "groups": [],
+          "gatedGeomean": { "value": -17.9, "n": 1, "excluded": [], "band": 2.5 }
+        }
+      ],
+      "verdictCounts": { "improved": 1, "regressed": 0, "unstable": 0, "noSignal": 0 }
+    }
+  ],
+  "worktrees": { "removed": 0, "leftBehind": [], "pruneError": null }
+}
+```
+
 ### `measure` schema
 
 `gymrat measure --format json` produces its own document, versioned separately (currently
@@ -208,3 +263,27 @@ candidates to judge:
 | `adapter`       | Adapter used (`metric-lines` or `mitata`).                                       |
 | `metrics`       | Per-metric object: `median`, `spreadPct`, `exact` — flat, no `baseline` nesting. |
 | `worktrees`     | Cleanup state: removed count, left-behind paths, prune errors.                   |
+
+Example, trimmed to one metric:
+
+```json
+{
+  "schemaVersion": 1,
+  "label": "main",
+  "samples": 10,
+  "adapter": "metric-lines",
+  "metrics": {
+    "decode/text=digits/time": {
+      "median": 1700,
+      "spreadPct": 1,
+      "unit": null,
+      "direction": "lower",
+      "gating": true,
+      "kind": "time",
+      "group": null,
+      "exact": false
+    }
+  },
+  "worktrees": { "removed": 0, "leftBehind": [], "pruneError": null }
+}
+```
