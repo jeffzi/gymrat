@@ -14,9 +14,11 @@ import {
   experimentWorktreeDir,
   sessionJsonlPath,
 } from "../../src/session/paths.js";
-import type { IterationRecord, KeepRecord, SessionLogRecord } from "../../src/session/records.js";
+import type { IterationRecord, SessionLogRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
+import { captureStdout, mockProcessExit } from "../fixtures/cli-harness.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
 
 type Exec = typeof import("../../src/exec.js").exec;
 
@@ -33,9 +35,7 @@ vi.mock("../../src/exec.js", async (importOriginal) => {
 
 type MetricVerdict = NonNullable<IterationRecord["metrics"][string]>;
 
-const AT = "2026-08-08T14:15:30.000Z";
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const COMMIT = "b".repeat(40);
 const CHECKS = "npm test";
 /** The run timeout `config()` sets, in the milliseconds `exec` takes. */
 const TIMEOUT_MS = 1_800_000;
@@ -59,17 +59,7 @@ function statusOf(worktree: string): string {
 
 /** A settled run configuration whose checks gate is on. */
 function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
-  return {
-    bench: "npm run bench",
-    adapter: "metric-lines",
-    samples: 10,
-    timeoutSeconds: 1800,
-    unstableNoisePct: 200,
-    primary: "geomean",
-    hooks: "gymrat.hooks",
-    checks: CHECKS,
-    ...overrides,
-  };
+  return resolvedConfig({ checks: CHECKS, ...overrides });
 }
 
 /** A metric verdict the engine produces, improved and gating unless overridden. */
@@ -88,17 +78,7 @@ function metric(overrides: Partial<MetricVerdict> = {}): MetricVerdict {
 
 /** A measured iteration numbered `seq`, improved unless a test says otherwise. */
 function iteration(seq: number, overrides: Partial<IterationRecord> = {}): IterationRecord {
-  return {
-    type: "iteration",
-    seq,
-    at: AT,
-    samples: { experiment: [{ total_ms: 14100 }], baseline: [{ total_ms: 15200 }] },
-    metrics: { total_ms: metric() },
-    primary: { kind: "geomean", deltaPct: -7.2 },
-    outcome: "improved",
-    targetReached: false,
-    ...overrides,
-  };
+  return iterationRecord({ seq, ...overrides });
 }
 
 /** An iteration whose gating metric came back regressed and stayed regressed on the rerun. */
@@ -108,19 +88,6 @@ function confirmedRegression(seq: number): IterationRecord {
     primary: { kind: "geomean", deltaPct: 9.4 },
     outcome: "regressed",
   });
-}
-
-/** A keep that committed the iteration numbered `seq`. */
-function committedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "committed",
-    commit: COMMIT,
-    message: "cache the regex",
-    checks: { configured: true, passed: true },
-  };
 }
 
 let repo: ScratchRepo;
@@ -442,13 +409,34 @@ describe("keepSession", () => {
     });
   });
 
+  describe("when the baseline worktree cannot advance", () => {
+    it("writes no keep record, leaving the iteration unsettled", async () => {
+      // Arrange
+      startWith([iteration(1)]);
+      editExperiment();
+      checksPass();
+      // A linked worktree reaches its repository through this file, so pointing
+      // it at a missing directory fails every git command run inside it.
+      fs.writeFileSync(path.join(baselineWorktreeDir(repo.dir), ".git"), "gitdir: /nonexistent\n");
+
+      // Act
+      const keeping = keepSession(repo.dir, config());
+
+      // Assert
+      await expect.soft(keeping).rejects.toThrow();
+      expect(lastRecordOf(repo.dir)).toMatchObject({ type: "iteration", seq: 1 });
+    });
+  });
+
   describe("when nothing has been measured since the last settle", () => {
+    // The blocked keep settles nothing, so its seq must not alias an iteration
+    // the log already settled — it takes the number no iteration has used yet.
     it.each([
-      { description: "no iteration was ever recorded", history: [], seq: 0 },
+      { description: "no iteration was ever recorded", history: [], seq: 1 },
       {
         description: "the last iteration was already kept",
         history: [iteration(1), committedKeep(1)],
-        seq: 1,
+        seq: 2,
       },
     ] satisfies { description: string; history: SessionLogRecord[]; seq: number }[])(
       "refuses with a nothing-measured keep when $description",
@@ -532,6 +520,31 @@ describe("discardSession", () => {
       expect(lastRecordOf(repo.dir)).toStrictEqual(result.record);
     });
   });
+
+  describe("when nothing has been measured since the last settle", () => {
+    it.each([
+      { description: "no iteration was ever recorded", history: [] },
+      {
+        description: "the last iteration was already kept",
+        history: [iteration(1), committedKeep(1)],
+      },
+    ] satisfies { description: string; history: SessionLogRecord[] }[])(
+      "refuses rather than settle a second time when $description",
+      async ({ history }) => {
+        // Arrange
+        startWith(history);
+        editExperiment();
+        const before = readRecords(sessionJsonlPath(repo.dir)).length;
+
+        // Act
+        await captureGymratError(() => discardSession(repo.dir));
+
+        // Assert
+        expect.soft(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(before);
+        expect(statusOf(experimentWorktreeDir(repo.dir))).not.toBe("");
+      },
+    );
+  });
 });
 
 describe("the settle commands", () => {
@@ -545,30 +558,12 @@ describe("the settle commands", () => {
     return program;
   }
 
-  /** Turn `process.exit` into a catchable rejection carrying the intended code. */
-  function mockProcessExit(): void {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- vitest mock requires cast
-    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw Object.assign(new Error(`process.exit(${code})`), { exitCode: code });
-    }) as never);
-  }
-
   /** Write the config file the settle commands read their checks gate from. */
   function writeConfigFile(): void {
     fs.writeFileSync(
       path.join(repo.dir, "gymrat.json"),
       JSON.stringify({ bench: "npm run bench", checks: CHECKS }),
     );
-  }
-
-  /** Collect everything the program writes to stdout. */
-  function captureStdout(): () => string {
-    let stdout = "";
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      stdout += String(chunk);
-      return true;
-    });
-    return () => stdout;
   }
 
   it("keeps the session in the repository it runs in and prints the commit", async () => {

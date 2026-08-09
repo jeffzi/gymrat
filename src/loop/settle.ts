@@ -75,14 +75,17 @@ export async function keepSession(
   if (iteration === undefined) {
     return blockedKeep(
       jsonlPath,
-      state.lastSeq,
+      // The refusal settles nothing, so it takes the number no iteration has used
+      // yet: numbering it `lastSeq` would leave the log with two settlement
+      // records against an iteration that was already kept or discarded.
+      state.lastSeq + 1,
       "nothing-measured",
       { configured },
       "Keep refused: nothing has been measured since the last keep or discard.\nHint: run gymrat iterate first — an unmeasured commit is one the loop cannot account for.",
     );
   }
 
-  if (hasGatingRegression(iteration)) {
+  if (hasConfirmedGatingRegression(iteration)) {
     return blockedKeep(
       jsonlPath,
       iteration.seq,
@@ -105,7 +108,6 @@ export async function keepSession(
 
   const message = options.message ?? generatedMessage(iteration);
   const commit = commitWorkspace(session.worktrees.experiment, message);
-  advanceBaseline(session.worktrees.baseline, commit);
 
   const record: KeepRecord = {
     type: "keep",
@@ -116,6 +118,11 @@ export async function keepSession(
     message,
     checks: checks === undefined ? { configured: false } : { configured: true, passed: true },
   };
+  // Move the baseline before recording the keep: a record written first would
+  // settle the iteration even when git refuses the advance, leaving the loop
+  // sampling a baseline the log says it has already left behind. Failing with
+  // the iteration still unsettled lets the agent retry the keep.
+  advanceBaseline(session.worktrees.baseline, commit);
   appendRecord(jsonlPath, record);
 
   return {
@@ -129,18 +136,27 @@ export async function keepSession(
  *
  * A clean worktree is discarded just as loudly as a dirty one: the record is what
  * settles the iteration, and gymrat does not guess whether an agent that changed
- * nothing meant to.
+ * nothing meant to. What there must be is an iteration to settle — with none, the
+ * discard would number itself after one the log already settled, and history would
+ * read as two settlements of a single iteration.
  *
  * Holding the repository lock across the call is the caller's job — the revert
  * and the record it explains must not be separable by another run.
  *
- * @throws GymratError when no session has been started, or when git refuses to
- *   revert the worktree.
+ * @throws GymratError when no session has been started, when nothing has been
+ *   measured since the last settle, or when git refuses to revert the worktree.
  */
 export function discardSession(root: string): DiscardResult {
   const jsonlPath = sessionJsonlPath(root);
   const state = foldSession(readRecords(jsonlPath));
   const session = requireSession(root, state);
+
+  if (!state.unsettled) {
+    throw new GymratError(
+      "Discard refused: nothing has been measured since the last keep or discard.",
+      "Run gymrat iterate to measure an edit before settling it.",
+    );
+  }
 
   revertWorkspace(session.worktrees.experiment);
 
@@ -180,7 +196,7 @@ function requireSession(root: string, state: SessionState): SessionRecord {
  * could only reproduce the same number, and gating on `confirmed` alone would
  * let every exact regression through.
  */
-function hasGatingRegression(iteration: IterationRecord): boolean {
+function hasConfirmedGatingRegression(iteration: IterationRecord): boolean {
   if (iteration.outcome !== "regressed") {
     return false;
   }
