@@ -133,6 +133,10 @@ function isExecutableFile(scriptPath: string): boolean {
 }
 
 function accessible(scriptPath: string): boolean {
+  // Windows has no executable-bit concept; X_OK degrades to F_OK (exists),
+  // so it would pass for every readable file. statSync().isFile() already
+  // covers the existence check, making the access probe redundant there.
+  if (process.platform === "win32") return true;
   try {
     fs.accessSync(scriptPath, fs.constants.X_OK);
     return true;

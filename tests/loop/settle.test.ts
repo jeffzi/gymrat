@@ -417,7 +417,10 @@ describe("keepSession", () => {
       checksPass();
       // A linked worktree reaches its repository through this file, so pointing
       // it at a missing directory fails every git command run inside it.
-      fs.writeFileSync(path.join(baselineWorktreeDir(repo.dir), ".git"), "gitdir: /nonexistent\n");
+      const gitFile = path.join(baselineWorktreeDir(repo.dir), ".git");
+      // Git on Windows marks the worktree's .git file read-only.
+      fs.chmodSync(gitFile, 0o666);
+      fs.writeFileSync(gitFile, "gitdir: /nonexistent\n");
 
       // Act
       const keeping = keepSession(repo.dir, config());
