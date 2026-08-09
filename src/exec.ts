@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 
 import { hasErrorCode, messageOf } from "./errors.js";
 
@@ -18,11 +18,13 @@ export interface ExecTimeoutError {
   timeoutMs: number;
 }
 
-/** Options controlling where a command runs and how it can be stopped early. */
+/** Options controlling where a command runs, what it reads, and how it can be stopped early. */
 export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Text written to the command's stdin, which is then closed. Omitted means no input at all. */
+  stdin?: string;
 }
 
 /** Reported when the child has no exit status of its own: killed, or never started. */
@@ -82,6 +84,11 @@ export function killTree(pid: number): void {
   }
 }
 
+/** The EPIPE a command that never reads its stdin leaves behind is its choice, not a fault. */
+function ignoreStdinError(): void {
+  // Deliberately nothing: the exit code and stderr already say how the command fared.
+}
+
 /**
  * Runs the command in a detached process group to enable killing all child processes
  * on timeout. On POSIX systems, sends SIGKILL to the negative PID to terminate the
@@ -99,7 +106,9 @@ export function killTree(pid: number): void {
  *
  * @param command - The shell command to execute
  * @param options - Execution options (working directory, optional timeout in ms, optional
- *                  AbortSignal for cancellation)
+ *                  AbortSignal for cancellation, optional stdin text). The command's stdin is
+ *                  closed either way, so a command that reads it sees end-of-input instead of
+ *                  blocking, and one that ignores it is not held to account for the broken pipe.
  * @returns A promise resolving to either an ExecResult with the command output and exit code,
  *          or an ExecTimeoutError if the timeout is exceeded
  *
@@ -119,7 +128,7 @@ export async function exec(
     // Some spawn failures are raised here rather than on the "error" event —
     // ENOTDIR from a cwd that is not a directory is one. Both paths report the
     // same way, so a caller never has to handle a rejection as well as a result.
-    let child: ChildProcessByStdio<null, Readable, Readable>;
+    let child: ChildProcessByStdio<Writable, Readable, Readable>;
     try {
       child = spawn(command, {
         shell: true,
@@ -129,7 +138,7 @@ export async function exec(
         // and detached: true there allocates a new console that breaks
         // stdio pipes — stdout/stderr go to the console instead of the pipe.
         detached: process.platform !== "win32",
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
       resolve({
@@ -144,6 +153,15 @@ export async function exec(
     // flushes any partial sequence when the stream ends.
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
+
+    // A command is free to ignore its stdin, which closes the pipe under this
+    // write and raises EPIPE. Without a listener that would take the whole
+    // process down over a command doing something entirely reasonable.
+    child.stdin.on("error", ignoreStdinError);
+    // Always end: a command that reads stdin must see end-of-input rather than
+    // block on a pipe no one will ever write to.
+    child.stdin.end(options.stdin ?? "");
+
     const output = captureOutput(child.stdout, child.stderr);
     let timeoutHandle: NodeJS.Timeout | undefined;
     let resolved = false;

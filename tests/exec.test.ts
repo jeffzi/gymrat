@@ -127,6 +127,46 @@ describe.skipIf(process.platform === "win32")("exec", () => {
     });
   });
 
+  describe("when stdin is provided", () => {
+    it("delivers the text to the command's standard input", async () => {
+      const result = await runInTmpdir("cat", { stdin: "piped input\n" });
+
+      expect(result).toStrictEqual({ stdout: "piped input\n", stderr: "", exitCode: 0 });
+    });
+
+    it("settles with the command's own result when the command never reads stdin", async () => {
+      // Larger than any OS pipe buffer, so the write cannot complete on its own:
+      // the child exits first and the pending write breaks with EPIPE.
+      const unreadPayload = "x".repeat(1024 * 1024);
+
+      const result = await runInTmpdir("exit 3", { stdin: unreadPayload });
+
+      expect(result).toStrictEqual({ stdout: "", stderr: "", exitCode: 3 });
+    });
+
+    it("returns the timeout shape with the output captured so far", async () => {
+      const result = await runInTmpdir("echo started; sleep 10", {
+        stdin: "never read\n",
+        timeoutMs: 500,
+      });
+
+      expect(result).toStrictEqual({
+        kind: "timeout",
+        stdout: "started\n",
+        stderr: "",
+        timeoutMs: 500,
+      });
+    });
+  });
+
+  describe("when stdin is omitted", () => {
+    it("gives the command an immediately closed standard input", async () => {
+      const result = await runInTmpdir("cat");
+
+      expect(result).toStrictEqual({ stdout: "", stderr: "", exitCode: 0 });
+    });
+  });
+
   describe("when a descendant writes after the shell exits", () => {
     it("captures output flushed once the shell has already returned", async () => {
       const result = await runInTmpdir("(sleep 0.2; echo METRIC) &");
