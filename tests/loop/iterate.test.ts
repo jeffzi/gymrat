@@ -22,6 +22,7 @@ import { ISO_PATTERN, SESSION_ID, reportLines } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import type { HookScripts } from "../fixtures/hook-scripts.js";
 import { hookScripts } from "../fixtures/hook-scripts.js";
+import { metricRecord } from "../fixtures/metrics.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
   AT,
@@ -229,6 +230,18 @@ function trimmedReportLines(report: string): string[] {
   return reportLines(report, { trimLines: true });
 }
 
+/**
+ * `value` after the round trip through JSON the session log puts it through.
+ *
+ * A record read back off the log carries `Object.prototype`, because that is what
+ * `JSON.parse` builds; the live record's metric-keyed maps are prototype-free, as
+ * every metric-keyed map in the pipeline is. `toStrictEqual` compares prototypes,
+ * so the two sides have to meet on the logged shape to compare field by field.
+ */
+function asLogged(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value));
+}
+
 /** The iteration record `root`'s log ends on, failing the test when it ends on something else. */
 function lastIterationOf(root: string): IterationRecord {
   const last = readRecords(sessionJsonlPath(root)).at(-1);
@@ -431,7 +444,7 @@ describe("iterateSession", () => {
       const result = await iterateSession(repo.dir, config());
 
       // Assert
-      expect(result.record).toStrictEqual(lastIterationOf(repo.dir));
+      expect(asLogged(result.record)).toStrictEqual(lastIterationOf(repo.dir));
     });
 
     it("reads the iteration on a named primary metric alone", async () => {
@@ -720,6 +733,67 @@ describe("iterateSession", () => {
     });
   });
 
+  describe("when the bench names a metric after an Object.prototype member", () => {
+    // A plain object literal would read `__proto__` as its prototype rather than
+    // as a metric name, so the key reaches every object here through a variable.
+    const PROTO = "__proto__";
+
+    /** One round per entry, pairing `total_ms` with the metric named `__proto__`. */
+    function protoRounds(
+      totalMs: readonly number[],
+      proto: readonly number[],
+    ): Record<string, number>[] {
+      return totalMs.map((value, index) => ({ total_ms: value, [PROTO]: proto[index] ?? 0 }));
+    }
+
+    /** The verdict an improved signed-rank metric carries, having moved `deltaPct`. */
+    function improvedVerdict(deltaPct: number): Record<string, unknown> {
+      return {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        deltaPct: expect.closeTo(deltaPct, 6),
+        verdict: "improved",
+        method: "signed-rank",
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        p: expect.any(Number),
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        noisePct: expect.any(Number),
+        gating: true,
+        confirmed: false,
+      };
+    }
+
+    beforeEach(() => {
+      writeSessionLog(repo.dir);
+      stubSamples(
+        repo.dir,
+        protoRounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8)),
+        protoRounds(BASELINE_MS, BASELINE_BYTES),
+      );
+    });
+
+    it("keeps that metric's verdict as an own key of the record it writes", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect(result.record.metrics).toStrictEqual(
+        metricRecord({ total_ms: improvedVerdict(-10), [PROTO]: improvedVerdict(-20) }),
+      );
+    });
+
+    it("counts that metric in the geomean the primary reads", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect(result.record.primary).toStrictEqual({
+        kind: "geomean",
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        deltaPct: expect.closeTo(-15.1472, 3),
+      });
+    });
+  });
+
   describe.each([
     {
       outcome: "improved",
@@ -839,7 +913,7 @@ describe("iterateSession", () => {
         stage: "after",
         experimentDir,
         seq: 2,
-        lastIteration: result.record,
+        lastIteration: asLogged(result.record),
         session: {
           sessionId: SESSION_ID,
           baseline: sessionRecord(repo.dir).baseline,

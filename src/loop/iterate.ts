@@ -515,7 +515,7 @@ function resolvePrimary(
   metricMeta: Record<string, ResolvedMetricMeta>,
 ): LoopPrimary {
   if (primary === GEOMEAN_PRIMARY) {
-    const gating = Object.fromEntries(Object.entries(metricMeta).filter(([, meta]) => meta.gating));
+    const gating = metricRecord(Object.entries(metricMeta).filter(([, meta]) => meta.gating));
     return { kind: GEOMEAN_PRIMARY, deltaPct: computeGeomean(verdicts, gating).value };
   }
   return { kind: "metric", name: primary, deltaPct: verdicts[primary]?.delta ?? 0 };
@@ -558,20 +558,19 @@ function recordedVerdicts(
   metricMeta: Record<string, ResolvedMetricMeta>,
   confirmation: Confirmation | undefined,
 ): IterationRecord["metrics"] {
-  return Object.fromEntries(
-    Object.entries(verdicts).map(([metricName, verdict]) => [
-      metricName,
-      {
-        deltaPct: verdict.delta,
-        verdict: verdict.verdict,
-        method: verdict.method,
-        ...(verdict.method === "signed-rank" ? { p: verdict.p } : {}),
-        ...(verdict.method === "exact" ? {} : { noisePct: verdict.noisePct }),
-        gating: metricMeta[metricName]?.gating ?? true,
-        confirmed: confirmation?.confirmed.has(metricName) ?? false,
-      },
-    ]),
-  );
+  const recorded: IterationRecord["metrics"] = metricRecord();
+  for (const [metricName, verdict] of Object.entries(verdicts)) {
+    recorded[metricName] = {
+      deltaPct: verdict.delta,
+      verdict: verdict.verdict,
+      method: verdict.method,
+      ...(verdict.method === "signed-rank" ? { p: verdict.p } : {}),
+      ...(verdict.method === "exact" ? {} : { noisePct: verdict.noisePct }),
+      gating: metricMeta[metricName]?.gating ?? true,
+      confirmed: confirmation?.confirmed.has(metricName) ?? false,
+    };
+  }
+  return recorded;
 }
 
 /** The iteration as it prints: the loop's header, the comparison table, the verdict. */
