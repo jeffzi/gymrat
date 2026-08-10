@@ -259,8 +259,13 @@ export function formatStatusHeader(session: SessionRecord): readonly string[] {
   ];
 }
 
-/** How an iteration was settled, in the words `status` reports it with. */
-function formatSettleState(settle: SettleState): string {
+/**
+ * How an iteration was settled, in the words `status` reports it with.
+ *
+ * A settling record that settled no iteration — a keep refused for want of a
+ * measurement — stands on a line of its own, and this is all that line says.
+ */
+export function formatStatusSettle(settle: SettleState): string {
   switch (settle.kind) {
     case "kept":
       return settle.commit === undefined
@@ -292,7 +297,7 @@ export function formatStatusIteration(iteration: StatusIteration): string {
   return [
     `iteration ${iteration.seq}`,
     `${glyph} ${formatDelta(iteration.deltaPct)}`,
-    formatSettleState(iteration.settle),
+    formatStatusSettle(iteration.settle),
   ].join(separator());
 }
 

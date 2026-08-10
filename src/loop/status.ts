@@ -15,32 +15,56 @@ import {
   formatStatusFooter,
   formatStatusHeader,
   formatStatusIteration,
+  formatStatusSettle,
 } from "../report/loop.js";
 import { sessionJsonlPath } from "../session/paths.js";
-import type { SessionLogRecord } from "../session/records.js";
+import type { DiscardRecord, KeepRecord, SessionLogRecord } from "../session/records.js";
 import { foldSession, readRecords } from "../session/store.js";
 
+/** What a single settling record says became of the iteration it settles. */
+function settleStateOf(record: KeepRecord | DiscardRecord): SettleState {
+  if (record.type === "discard") {
+    return { kind: "discarded" };
+  }
+  return record.status === "committed"
+    ? { kind: "kept", commit: record.commit }
+    : { kind: "keep-blocked", reason: record.reason };
+}
+
 /**
- * What became of each measured iteration, keyed by its number.
+ * The settle state each record's own line states, keyed by that record's
+ * position in the log.
+ *
+ * A settling record settles the iteration it follows, not merely the one it
+ * shares a number with. `keep` numbers a refusal that measured nothing past
+ * every iteration on file, so the log can hold a blocked keep bearing the number
+ * an iteration was minted with only afterwards; matching on the number alone
+ * would hand that stale refusal to the new iteration and call it settled.
  *
  * The last settling record wins: an iteration whose keep the checks blocked, and
  * which a later keep committed, is a kept iteration — the blocked attempt is
  * history the log still holds, not the state the iteration rests in.
+ *
+ * A record that settled no iteration keeps an entry under its own position, and
+ * so a line of its own: a refused keep is a decision the log reads back, never
+ * one it erases.
  */
 function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleState> {
   const states = new Map<number, SettleState>();
-  for (const record of records) {
+  let pending: { position: number; seq: number } | undefined;
+
+  for (const [position, record] of records.entries()) {
     switch (record.type) {
-      case "keep":
-        states.set(
-          record.seq,
-          record.status === "committed"
-            ? { kind: "kept", commit: record.commit }
-            : { kind: "keep-blocked", reason: record.reason },
-        );
+      case "iteration":
+        pending = { position, seq: record.seq };
         break;
+      case "keep":
       case "discard":
-        states.set(record.seq, { kind: "discarded" });
+        if (pending !== undefined && pending.seq === record.seq) {
+          states.set(pending.position, settleStateOf(record));
+        } else {
+          states.set(position, settleStateOf(record));
+        }
         break;
       default:
         break;
@@ -75,7 +99,7 @@ export function statusSession(root: string, config: BenchlessConfig): string {
   }
 
   const settled = settleStates(records);
-  const history = records.flatMap((record) => {
+  const history = records.flatMap((record, position) => {
     switch (record.type) {
       case "baseline":
         return [formatStatusBaseline(record)];
@@ -85,9 +109,14 @@ export function statusSession(root: string, config: BenchlessConfig): string {
             seq: record.seq,
             deltaPct: record.primary.deltaPct,
             outcome: record.outcome,
-            settle: settled.get(record.seq) ?? { kind: "unsettled" },
+            settle: settled.get(position) ?? { kind: "unsettled" },
           }),
         ];
+      case "keep":
+      case "discard": {
+        const settle = settled.get(position);
+        return settle === undefined ? [] : [formatStatusSettle(settle)];
+      }
       default:
         return [];
     }

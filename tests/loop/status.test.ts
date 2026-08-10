@@ -103,9 +103,35 @@ function blockedKeep(seq: number): KeepRecord {
   };
 }
 
+/**
+ * A keep refused for want of a measurement, numbered `seq`.
+ *
+ * `keep` writes one of these when nothing has been measured since the last
+ * settle, numbering it past every iteration on file — so the number it carries
+ * belongs to an iteration that does not exist yet, and may never.
+ */
+function nothingMeasuredKeep(seq: number): KeepRecord {
+  return {
+    type: "keep",
+    seq,
+    at: AT,
+    status: "blocked",
+    reason: "nothing-measured",
+    checks: { configured: true },
+  };
+}
+
 /** A discard of the iteration numbered `seq`. */
 function discard(seq: number): DiscardRecord {
   return { type: "discard", seq, at: AT };
+}
+
+/** The four lines every report opens on: the session, its branch, and its two worktrees. */
+const HEADER_LINE_COUNT = 4;
+
+/** The report below its header: one line per record it renders, then the totals. */
+function bodyLines(report: string): string[] {
+  return reportLines(report).slice(HEADER_LINE_COUNT);
 }
 
 /** A recorded baseline measurement of `main`. */
@@ -200,6 +226,52 @@ describe("statusSession", () => {
         "iteration 3 · ✓ -3.1% · keep-blocked (checks-failed)",
         "iteration 4 · ~ +0.1% · unsettled",
         "4 iterations · 1 kept · 1 discarded",
+      ]);
+    });
+  });
+
+  describe("when a nothing-measured keep took the number a later iteration was minted with", () => {
+    it("reads that iteration as unsettled, the blocked keep standing on its own", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, [
+        iteration(1, -7.2, "improved"),
+        committedKeep(1, { commit: KEEP_COMMIT }),
+        nothingMeasuredKeep(2),
+        iteration(2, -3.1, "improved"),
+      ]);
+
+      // Act
+      const report = statusSession(root, config());
+
+      // Assert
+      expect(bodyLines(report)).toStrictEqual([
+        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+        "keep-blocked (nothing-measured)",
+        "iteration 2 · ✓ -3.1% · unsettled",
+        "2 iterations · 1 kept · 0 discarded",
+      ]);
+    });
+  });
+
+  describe("when no iteration ever followed a nothing-measured keep", () => {
+    it("renders the blocked keep anyway, counting it as no iteration of its own", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, [
+        iteration(1, -7.2, "improved"),
+        committedKeep(1, { commit: KEEP_COMMIT }),
+        nothingMeasuredKeep(2),
+      ]);
+
+      // Act
+      const report = statusSession(root, config());
+
+      // Assert
+      expect(bodyLines(report)).toStrictEqual([
+        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+        "keep-blocked (nothing-measured)",
+        "1 iteration · 1 kept · 0 discarded",
       ]);
     });
   });
