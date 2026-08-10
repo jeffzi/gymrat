@@ -186,8 +186,8 @@ export async function exec(
     }
 
     function killGroup(): void {
-      /* v8 ignore if -- reachable only when spawn failed outright and an
-         already-aborted signal ran onAbort before the "error" event */
+      // A spawn that failed outright never made a child, so there is no group to
+      // kill and nothing to report.
       if (!child.pid) {
         return;
       }
@@ -230,6 +230,11 @@ export async function exec(
     });
 
     function onFailure(err: Error): void {
+      // Settling clears the timeout and drops the abort listener, so this is the
+      // last point that can reach the group. A stdio failure leaves the child
+      // itself running: without this it would outlive the call, still holding its
+      // cwd.
+      killGroup();
       settle({
         stdout: output.stdout,
         stderr: `${output.stderr}${err.message}\n`,

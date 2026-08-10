@@ -430,5 +430,28 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         });
       },
     );
+
+    it("kills the whole process group, leaving no grandchild running", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-exec-stream-"));
+      onTestFinished(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      });
+      const running = exec("sleep 30 & echo $! > grandchild.pid; wait", { cwd: tmpDir });
+      const child = await waitForSpawnedChild();
+      if (child.stdout === null) {
+        throw new Error("child was spawned without a stdout pipe");
+      }
+      const grandchildPid = await waitForPid(path.join(tmpDir, "grandchild.pid"), PID_WAIT_MS);
+
+      child.stdout.emit("error", new Error("stream exploded"));
+
+      await vi.waitFor(
+        () => {
+          expect(isAlive(grandchildPid)).toBe(false);
+        },
+        { timeout: 3000, interval: 25 },
+      );
+      await running;
+    }, 20_000);
   });
 });
