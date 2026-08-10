@@ -59,6 +59,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   other warning, which spliced it into the progress line; and a benchmark reporting a non-finite
   `p50` or heap average entered the medians and the geomean. Such runs are now skipped, as other
   unusable runs already were.
+- Two comparison runs in one process left the first run's signal handling in charge, so a Ctrl-C
+  during the second run exited without sweeping its worktrees — and each run added another handler,
+  eventually tripping Node's max-listeners warning. Only library consumers could reach this; the
+  CLI runs one comparison per process.
+- A negative value with a unit rendered in the smallest tier (`-1500000B` rather than `-1.5MB`).
+- A metric whose name contains the word "unstable" stole the color meant for the verdict beside it.
+- Truncating a long branch label could split a multi-byte character, leaving half of it in the
+  report.
+- A benchmark reporting a few hundred thousand samples crashed with a `RangeError` while computing
+  its spread; and a non-finite sample was silently dropped from that computation instead of making
+  the spread undefined.
+- `gymrat --help` printed unframed, while every subcommand's help was boxed.
+- The warning that a `--fail-on geomean:<pct>` gate had no stable metrics to measure could be lost
+  when the run exited.
 
 ## [0.3.0] - 2026-08-08
 

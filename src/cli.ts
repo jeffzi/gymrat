@@ -10,7 +10,12 @@ import yoctoSpinner from "yocto-spinner";
 import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
-import { resolveConfig, type CliFlags, type ResolvedConfig } from "./config.js";
+import {
+  resolveBenchlessConfig,
+  resolveConfig,
+  type CliFlags,
+  type ResolvedConfig,
+} from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
@@ -193,15 +198,18 @@ function shouldFailGate(conditions: readonly FailOnCondition[], result: Comparis
  * A candidate with no gating kind at all is vacuous by the same measure: nothing
  * it ran is judged, so `every` over the empty list warns.
  */
-function warnEmptyGeomeanGates(
+async function warnEmptyGeomeanGates(
   conditions: readonly FailOnCondition[],
   result: ComparisonResult,
-): void {
+): Promise<void> {
   if (!conditions.some((condition) => condition.kind === "geomean")) return;
 
   for (const candidate of result.candidates) {
     if (gatedGeomeansOf(candidate).every((geomean) => geomean.n === 0)) {
-      process.stderr.write(
+      // Drained rather than fired and forgotten: a gate trip exits the process
+      // right after this, and `process.exit` drops whatever is still buffered.
+      await writeAndDrain(
+        process.stderr,
         `warning: geomean gate for "${candidate.label}" had no stable gating metrics to measure\n`,
       );
     }
@@ -893,7 +901,8 @@ export function createProgram(): Command {
   program
     .name("gymrat")
     .description("Performance comparison tool for benchmarks")
-    .version(readPackageVersion());
+    .version(readPackageVersion())
+    .configureHelp(createHelpConfig());
 
   const compareCmd = addSharedOptions(
     program
@@ -917,14 +926,17 @@ export function createProgram(): Command {
     .configureHelp(createHelpConfig())
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
       /*
-       * The gate check runs after the lock is released, as `keep`'s does: it
-       * only reads the result the lock already protected, and process.exit
-       * must not be reachable from inside withRepoLock's own error handling.
+       * Everything after the lock only reads the result the lock already
+       * protected: the report describes a finished measurement, so holding the
+       * repository against every other gymrat process while stdout drains would
+       * serialize runs for nothing. The gate check has a second reason to sit
+       * here — process.exit must not be reachable from inside withRepoLock's own
+       * error handling.
        */
       const result = await withRepoLock("compare", async () => {
         const progress = beginRun(options, 1 + candidates.length);
 
-        const compareResult = await runGuarded(progress, async () => {
+        return runGuarded(progress, async () => {
           const config = resolveConfig(options);
 
           const compareOptions: CompareOptions = {
@@ -936,22 +948,20 @@ export function createProgram(): Command {
 
           return compare(compareOptions);
         });
-
-        await emitReport(
-          compareResult,
-          options,
-          { json: renderJson, text: renderReport },
-          {
-            verbose: options.verbose,
-            color: noColorOverride(options.color),
-            failOn: options.failOn,
-          },
-        );
-
-        warnEmptyGeomeanGates(options.failOn, compareResult);
-
-        return compareResult;
       });
+
+      await emitReport(
+        result,
+        options,
+        { json: renderJson, text: renderReport },
+        {
+          verbose: options.verbose,
+          color: noColorOverride(options.color),
+          failOn: options.failOn,
+        },
+      );
+
+      await warnEmptyGeomeanGates(options.failOn, result);
 
       if (shouldFailGate(options.failOn, result)) {
         process.exit(GATE_EXIT_CODE);
@@ -972,11 +982,17 @@ export function createProgram(): Command {
     .option("-r, --record", "append the run to the session log as a baseline", false)
     .configureHelp(createHelpConfig())
     .action(async (target: TargetSpec, options: MeasureFlags) => {
-      await withRepoLock("measure", async () => {
+      /*
+       * The lock covers the measurement and the append it produces — every
+       * repository write — and nothing beyond. The report describes a run that
+       * is already over, so holding the repository while stdout drains would
+       * serialize runs for nothing.
+       */
+      const run = await withRepoLock("measure", async () => {
         // One target, so every sample step the run reports is a step of the whole run.
         const progress = beginRun(options, 1);
 
-        const run = await runGuarded(progress, async () => {
+        const measured = await runGuarded(progress, async () => {
           const config = resolveConfig(options);
 
           /*
@@ -994,23 +1010,28 @@ export function createProgram(): Command {
           return { result: await measure(measureOptions), recording };
         });
 
-        await emitReport(
-          run.result,
-          options,
-          { json: renderMeasureJson, text: renderMeasureReport },
-          { color: noColorOverride(options.color) },
-        );
-
-        if (run.recording !== undefined) {
-          appendRecord(run.recording.jsonlPath, baselineRecordOf(run.result));
-          // The note is prose, so it goes to stderr whenever stdout is carrying
-          // JSON a consumer has to parse.
-          await writeAndDrain(
-            options.format === "json" ? process.stderr : process.stdout,
-            `baseline "${run.result.label}" recorded to session ${run.recording.sessionId}\n`,
-          );
+        if (measured.recording !== undefined) {
+          appendRecord(measured.recording.jsonlPath, baselineRecordOf(measured.result));
         }
+
+        return measured;
       });
+
+      await emitReport(
+        run.result,
+        options,
+        { json: renderMeasureJson, text: renderMeasureReport },
+        { color: noColorOverride(options.color) },
+      );
+
+      if (run.recording !== undefined) {
+        // The note is prose, so it goes to stderr whenever stdout is carrying
+        // JSON a consumer has to parse.
+        await writeAndDrain(
+          options.format === "json" ? process.stderr : process.stdout,
+          `baseline "${run.result.label}" recorded to session ${run.recording.sessionId}\n`,
+        );
+      }
     });
 
   const startCmd = addConfigOptions(
@@ -1068,7 +1089,7 @@ export function createProgram(): Command {
     .configureHelp(createHelpConfig())
     .action(async (options: KeepFlags) => {
       const result = await withRepoLock("keep", async () =>
-        keepSession(repoRoot(), resolveConfig(options), { message: options.message }),
+        keepSession(repoRoot(), resolveBenchlessConfig(options), { message: options.message }),
       );
 
       await writeAndDrain(process.stdout, `${result.report}\n`);
@@ -1116,7 +1137,7 @@ export function createProgram(): Command {
       }
 
       const report = await runOrExit(() =>
-        Promise.resolve(statusSession(repoRoot(), resolveConfig(options))),
+        Promise.resolve(statusSession(repoRoot(), resolveBenchlessConfig(options))),
       );
 
       await writeAndDrain(process.stdout, `${report}\n`);

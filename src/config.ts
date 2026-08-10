@@ -128,9 +128,14 @@ export interface CliFlags {
   config?: string;
 }
 
-/** A settled run configuration: every value a run needs is present, defaults already applied. */
-export interface ResolvedConfig {
-  bench: string;
+/**
+ * A settled configuration for a command that never benches, defaults already applied.
+ *
+ * A bench command is what a benchmark run needs, not what gymrat needs: `status`
+ * and `keep` read settings like `checks` and `stop` and run no benchmark, so a
+ * repository they work in is fully configured without one.
+ */
+export interface BenchlessConfig {
   prepare?: string;
   adapter: string;
   samples: number;
@@ -143,6 +148,11 @@ export interface ResolvedConfig {
   primary: string;
   stop?: ConfigStop;
   hooks?: ConfigHooks;
+}
+
+/** A settled run configuration: every value a run needs is present, including the bench command it runs. */
+export interface ResolvedConfig extends BenchlessConfig {
+  bench: string;
 }
 
 /** One metric's settled metadata, after adapter defaults and config overrides are merged. */
@@ -284,12 +294,12 @@ function assertFlagNotEmpty(field: string, value: string | undefined): void {
 }
 
 /**
- * Merge flags → config file → built-in defaults into one partial record.
+ * Merge flags → config file → built-in defaults into every setting but `bench`.
  *
- * `bench` stays optional — the caller validates its presence and spreads the
- * required value into the return.
+ * `bench` is settled separately: the commands that bench spread it into the
+ * result, and the commands that do not never ask for it.
  */
-function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConfig, "bench"> {
+function mergeConfig(flags: CliFlags, configFile: ConfigFile): BenchlessConfig {
   const prepare = flags.prepare ?? configFile.prepare;
   return {
     adapter: flags.adapter ?? configFile.adapter ?? DEFAULTS.adapter,
@@ -312,30 +322,47 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConf
 }
 
 /**
- * Settle a run configuration from flags, config file, and built-in defaults.
+ * Settle every setting but `bench` from flags, config file, and built-in defaults.
  *
  * A flag always wins over the same key in the file. With no `--config`,
  * `./gymrat.json` is looked up implicitly and its absence is not an error; an
  * explicit path is loaded with `required: true` so a typo throws instead of
  * silently running on defaults.
  *
- * `bench` has no default and must come from one of the two sources — a run
- * without it throws.
+ * Use this for a command that runs no benchmark: it settles the same values
+ * {@link resolveConfig} does, without asking for a bench command none of them
+ * would ever run.
+ */
+export function resolveBenchlessConfig(flags: CliFlags): BenchlessConfig {
+  return settleConfig(flags).config;
+}
+
+/**
+ * Settle a run configuration from flags, config file, and built-in defaults.
+ *
+ * Everything {@link resolveBenchlessConfig} settles, plus the bench command the
+ * run executes. `bench` has no default and must come from a flag or the config
+ * file — a run without it throws.
  */
 export function resolveConfig(flags: CliFlags): ResolvedConfig {
+  const { config, bench } = settleConfig(flags);
+  if (bench === undefined) {
+    throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
+  }
+
+  return { ...config, bench };
+}
+
+/** Settle the shared configuration, and report what `bench` the sources named — if any. */
+function settleConfig(flags: CliFlags): { config: BenchlessConfig; bench: string | undefined } {
   assertFlagNotEmpty("bench", flags.bench);
   assertFlagNotEmpty("prepare", flags.prepare);
   const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
-  const merged = mergeConfig(flags, configFile);
+  const config = mergeConfig(flags, configFile);
+  validateLoopKeys(config);
 
-  const bench = flags.bench ?? configFile.bench;
-  if (bench === undefined) {
-    throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
-  }
-  validateLoopKeys(merged);
-
-  return { ...merged, bench };
+  return { config, bench: flags.bench ?? configFile.bench };
 }
 
 /** The kind an adapter's metric falls under when it reports none. */

@@ -1,4 +1,4 @@
-import type { ResolvedConfig } from "../config.js";
+import type { BenchlessConfig } from "../config.js";
 import { GymratError } from "../errors.js";
 import { exec } from "../exec.js";
 import { formatDelta } from "../report/format.js";
@@ -60,7 +60,7 @@ export interface DiscardResult {
  */
 export async function keepSession(
   root: string,
-  config: ResolvedConfig,
+  config: BenchlessConfig,
   options: KeepOptions = {},
 ): Promise<KeepResult> {
   const jsonlPath = sessionJsonlPath(root);
@@ -216,7 +216,7 @@ function hasConfirmedGatingRegression(iteration: IterationRecord): boolean {
  *   configured — in which case the missing gate is warned about instead.
  */
 async function runChecks(
-  config: ResolvedConfig,
+  config: BenchlessConfig,
   experimentDir: string,
 ): Promise<ChecksRun | undefined> {
   const command = config.checks;

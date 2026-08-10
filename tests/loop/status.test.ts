@@ -260,9 +260,20 @@ describe("the status command", () => {
     expect(lines).toContain("4 iterations · 1 kept · 1 discarded");
   });
 
-  it("exits 2 with a start hint when the repository holds no session", async () => {
+  /*
+   * `status` never benches, so a repository with no `gymrat.json` is not a
+   * misconfigured one — it is a repository the command has nothing to read a
+   * bench command for and no reason to. Both rows must therefore reach the same
+   * hint, the second one only because the missing config never stops it.
+   */
+  it.each([
+    { desc: "the repository holds no session", hasConfigFile: true },
+    { desc: "the repository holds neither a session nor a config file", hasConfigFile: false },
+  ])("exits 2 with a start hint when $desc", async ({ hasConfigFile }) => {
     // Arrange
-    writeConfigFile();
+    if (hasConfigFile) {
+      writeConfigFile();
+    }
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);

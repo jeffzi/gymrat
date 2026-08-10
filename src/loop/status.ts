@@ -7,7 +7,7 @@
  * every command is a fresh process.
  */
 
-import type { ResolvedConfig } from "../config.js";
+import type { BenchlessConfig } from "../config.js";
 import { GymratError } from "../errors.js";
 import type { SettleState } from "../report/loop.js";
 import {
@@ -64,7 +64,7 @@ function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleS
  * @throws GymratError when no session has been started, or when the log is
  *   corrupt — every parse failure names the log and the line at fault.
  */
-export function statusSession(root: string, config: ResolvedConfig): string {
+export function statusSession(root: string, config: BenchlessConfig): string {
   const records = readRecords(sessionJsonlPath(root));
   const state = foldSession(records);
   if (state.session === undefined) {

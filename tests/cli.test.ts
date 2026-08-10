@@ -468,6 +468,31 @@ describe("createProgram", () => {
     });
   });
 
+  describe("when the root --help is requested", () => {
+    /** The Unicode Box Drawing block, which every boxen border style draws from. */
+    const BOX_DRAWING_RE = /[─-╿]/gu;
+
+    /** The distinct box-drawing characters framing a help text, sorted. */
+    function borderCharsOf(help: string): string[] {
+      return [...new Set(help.match(BOX_DRAWING_RE) ?? [])].toSorted();
+    }
+
+    it("frames the root help in the same box as a subcommand's help", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const [rootHelp, compareHelp] = await Promise.all([
+        captureHelp(["node", "cli.js", "--help"]),
+        captureCompareHelp(),
+      ]);
+
+      // Assert - a subcommand is boxed already, so the comparison cannot pass vacuously
+      expect.soft(borderCharsOf(compareHelp)).not.toStrictEqual([]);
+      expect(borderCharsOf(rootHelp)).toStrictEqual(borderCharsOf(compareHelp));
+    });
+  });
+
   describe("compare command", () => {
     describe("when valid positional arguments provided", () => {
       it.each([
@@ -1910,6 +1935,33 @@ describe("createProgram", () => {
           // Assert
           expect(exitSpy).not.toHaveBeenCalled();
         });
+
+        it("holds the exit until a backpressured warning has flushed", async () => {
+          // Arrange - a regressed gating metric trips the other condition, so the
+          // vacuous geomean warning is written on the way to an exit. A stderr
+          // write returning false means the warning is only queued: exiting now
+          // would drop it.
+          disableColor();
+          const { program, stderrSpy, exitSpy } = await setupFailOnTest(
+            createGatingResult("regressed", { geomeanValue: 0, geomeanN: 0 }),
+          );
+          stderrSpy.mockReturnValue(false);
+
+          // Act
+          const parsing = program
+            .parseAsync(
+              compareArgv("main", "branch", "--fail-on", "regressed", "--fail-on", "geomean:0"),
+            )
+            .catch((error: unknown) => error);
+          await vi.waitFor(() => {
+            expect(geomeanGateWarning(stderrSpy)).toBeDefined();
+          });
+
+          // Assert - the exit waits on the drain, then carries the gate's code
+          expect(exitSpy).not.toHaveBeenCalled();
+          process.stderr.emit("drain");
+          await expect(parsing).resolves.toHaveProperty("exitCode", 1);
+        });
       });
 
       describe("when a candidate spans several metric kinds", () => {
@@ -2739,6 +2791,32 @@ describe("createProgram", () => {
     );
 
     it.each(LOCKING_COMMANDS)(
+      "$command has released the lock by the time it writes its report",
+      async ({ argv, arrange }) => {
+        // Arrange - stdout belongs to whoever is reading it, and a slow reader can
+        // hold the drain open indefinitely. The repository must not be held with it.
+        await arrange(() => {});
+        const program = createRunnableProgram();
+        let heldAtReport: unknown;
+        let reportWritten = false;
+        vi.spyOn(process.stdout, "write").mockImplementation(() => {
+          if (!reportWritten) {
+            reportWritten = true;
+            heldAtReport = readRepoLock();
+          }
+          return true;
+        });
+
+        // Act
+        await program.parseAsync(argv);
+
+        // Assert
+        expect.soft(reportWritten).toBe(true);
+        expect(heldAtReport).toBeUndefined();
+      },
+    );
+
+    it.each(LOCKING_COMMANDS)(
       "$command releases the lock when the run fails",
       async ({ command, argv, arrange }) => {
         // Arrange
@@ -2856,15 +2934,26 @@ interface CliProcessResult {
  *
  * The entry-point block only runs when the file is the process entry, so these
  * behaviors are unreachable in-process. The child also yields the real exit code
- * and the raw stderr text, both of which the assertions inspect.
+ * and the raw stderr text, both of which the assertions inspect, and it reads
+ * the real `config` module — which this suite mocks for every in-process test.
+ *
+ * `cwd` names the repository the run resolves its configuration and session
+ * against; it defaults to the suite's own working directory.
  */
-function runCliProcess(entry: string, args: string[]): Promise<CliProcessResult> {
+function runCliProcess(
+  entry: string,
+  args: string[],
+  options: { cwd?: string } = {},
+): Promise<CliProcessResult> {
   return new Promise<CliProcessResult>((settle) => {
     execFile(
       process.execPath,
-      ["--import", "tsx", entry, ...args],
+      // tsx is resolved to an absolute URL here: `cwd` can point outside this
+      // package, where a bare specifier has no node_modules to resolve against.
+      ["--import", import.meta.resolve("tsx"), entry, ...args],
       {
         timeout: 10000,
+        cwd: options.cwd,
         env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: "1" },
       },
       (error, stdout, stderr) => {
@@ -2877,6 +2966,55 @@ function runCliProcess(entry: string, args: string[]): Promise<CliProcessResult>
     );
   });
 }
+
+describe("a repository with no config file", () => {
+  let repo: ScratchRepo;
+
+  beforeEach(() => {
+    repo = createScratchRepo();
+  });
+
+  afterEach(() => {
+    repo.cleanup();
+  });
+
+  /*
+   * A bench command is what a benchmark run needs, not what gymrat needs: only
+   * the commands that actually bench may refuse without one. These run in a
+   * child process because the suite mocks `resolveConfig` in-process, and the
+   * requirement under test is the resolver's.
+   */
+  it.each([
+    {
+      desc: "keep reaches its own no-session hint",
+      args: ["keep"],
+      expected: "gymrat start",
+    },
+    {
+      desc: "compare asks for the bench command it has to run",
+      args: ["compare", "main", "branch"],
+      expected: "bench is required. Provide it via --bench flag or in config file.",
+    },
+    {
+      desc: "measure asks for the bench command it has to run",
+      args: ["measure", "main"],
+      expected: "bench is required. Provide it via --bench flag or in config file.",
+    },
+  ])(
+    "$desc",
+    async ({ args, expected }) => {
+      // Act
+      const { exitCode, stderr } = await runCliProcess(resolve("src/cli.ts"), args, {
+        cwd: repo.dir,
+      });
+
+      // Assert
+      expect.soft(exitCode).toBe(2);
+      expect(stderr).toContain(expected);
+    },
+    30_000,
+  );
+});
 
 describe("entry point", () => {
   it("executes CLI when invoked through symlink", async () => {
