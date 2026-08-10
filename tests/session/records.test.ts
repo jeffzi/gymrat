@@ -164,6 +164,14 @@ describe("parseRecord", () => {
         }),
       },
       {
+        description: "an iteration whose deltas a zero baseline median left undefined",
+        record: patching(iterationRecord, {
+          metrics: { total_ms: { ...metricVerdict, deltaPct: null, verdict: "no-signal" } },
+          primary: { kind: "geomean", deltaPct: null },
+          outcome: "no-signal",
+        }),
+      },
+      {
         description: "an iteration that reran to confirm",
         record: patching(iterationRecord, {
           confirm: {
@@ -217,6 +225,20 @@ describe("parseRecord", () => {
         description: "an iteration without metrics",
         value: omitting(iterationRecord, "metrics"),
         field: "metrics",
+      },
+      {
+        description: "an iteration whose metric verdict drops its delta instead of nulling it",
+        value: patching(iterationRecord, {
+          metrics: { total_ms: omitting(metricVerdict, "deltaPct") },
+        }),
+        field: "metrics.total_ms.deltaPct",
+      },
+      {
+        description: "an iteration whose primary drops its delta instead of nulling it",
+        value: patching(iterationRecord, {
+          primary: omitting(iterationRecord.primary, "deltaPct"),
+        }),
+        field: "primary.deltaPct",
       },
       {
         description: "a keep without a status",

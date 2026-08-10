@@ -537,9 +537,24 @@ function resolvePrimary(
 ): LoopPrimary {
   if (primary === GEOMEAN_PRIMARY) {
     const gating = metricRecord(Object.entries(metricMeta).filter(([, meta]) => meta.gating));
-    return { kind: GEOMEAN_PRIMARY, deltaPct: computeGeomean(verdicts, gating).value };
+    return {
+      kind: GEOMEAN_PRIMARY,
+      deltaPct: recordedDelta(computeGeomean(verdicts, gating).value),
+    };
   }
-  return { kind: "metric", name: primary, deltaPct: verdicts[primary]?.delta ?? 0 };
+  return { kind: "metric", name: primary, deltaPct: recordedDelta(verdicts[primary]?.delta ?? 0) };
+}
+
+/**
+ * A delta in the form the log keeps it: `null` where the ratio had no value.
+ *
+ * The engine answers a degenerate ratio — a baseline median of zero — with `NaN`,
+ * and `JSON.stringify` writes that as `null` whatever the writer intended. Making
+ * the substitution here rather than leaving it to serialization is what keeps the
+ * record a caller holds identical to the one read back off the log.
+ */
+function recordedDelta(delta: number): number | null {
+  return Number.isNaN(delta) ? null : delta;
 }
 
 /**
@@ -582,7 +597,7 @@ function recordedVerdicts(
   const recorded: IterationRecord["metrics"] = metricRecord();
   for (const [metricName, verdict] of Object.entries(verdicts)) {
     recorded[metricName] = {
-      deltaPct: verdict.delta,
+      deltaPct: recordedDelta(verdict.delta),
       verdict: verdict.verdict,
       method: verdict.method,
       ...(verdict.method === "signed-rank" ? { p: verdict.p } : {}),

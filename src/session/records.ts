@@ -21,6 +21,19 @@ const booleanSchema = Type.Boolean(expected("a boolean"));
 const positiveIntegerSchema = Type.Integer({ ...expected("a positive integer"), minimum: 1 });
 
 /**
+ * A percentage a figure moved by, or `null` where the ratio has no value.
+ *
+ * A baseline median of zero leaves the ratio nothing to normalize against, so the
+ * engine computes `NaN` — a defined answer to a degenerate input, never an error.
+ * `JSON.stringify` writes `NaN` as `null`, so `null` is the form such a delta
+ * reaches the log in, and reading it back must not brick the session.
+ *
+ * Required all the same: a writer that drops the key altogether has lost the
+ * figure rather than measured an undefined one, and is still a broken writer.
+ */
+const deltaPctSchema = Type.Union([numberSchema, Type.Null()], expected("a number or null"));
+
+/**
  * Rounds of raw samples, in the shape an adapter emits: one flat name → value map per round.
  *
  * Raw values are stored rather than summary statistics so a later statistics change is a
@@ -81,7 +94,7 @@ const baselineRecordSchema = Type.Object(
 
 const metricVerdictSchema = Type.Object(
   {
-    deltaPct: numberSchema,
+    deltaPct: deltaPctSchema,
     // The value set `MetricVerdict["verdict"]` admits — see `Verdict` and
     // `ApproximateVerdictValue` in verdict/verdict.ts.
     verdict: Type.Union(
@@ -138,7 +151,7 @@ const iterationRecordSchema = Type.Object(
           expected(`"geomean" or "metric"`),
         ),
         name: Type.Optional(stringSchema),
-        deltaPct: numberSchema,
+        deltaPct: deltaPctSchema,
       },
       strictObjectOptions,
     ),

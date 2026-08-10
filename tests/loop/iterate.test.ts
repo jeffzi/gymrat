@@ -854,6 +854,93 @@ describe("iterateSession", () => {
     });
   });
 
+  describe("when a metric's baseline median is zero", () => {
+    /** The baseline's ten rounds, but with `total_ms` flat at zero. */
+    function zeroBaselineRounds(): Record<string, number>[] {
+      return rounds(
+        BASELINE_MS.map(() => 0),
+        BASELINE_BYTES,
+      );
+    }
+
+    /** The iteration numbered `seq`, its deltas already written as the nulls a zero median yields. */
+    function undefinedDeltaIteration(seq: number): IterationRecord {
+      return iterationRecord({
+        seq,
+        metrics: {
+          total_ms: {
+            deltaPct: null,
+            verdict: "no-signal",
+            method: "signed-rank",
+            p: 0.005,
+            noisePct: 3,
+            gating: true,
+            confirmed: false,
+          },
+        },
+        primary: { kind: "geomean", deltaPct: null },
+        outcome: "no-signal",
+      });
+    }
+
+    beforeEach(() => {
+      writeSessionLog(repo.dir);
+      stubSamples(repo.dir, improvedRounds(), zeroBaselineRounds());
+    });
+
+    it("records that metric's delta as null, beside the delta the other metric moved by", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect.soft(result.record.metrics.total_ms?.deltaPct).toBeNull();
+      expect(result.record.metrics.alloc_bytes?.deltaPct).toBeCloseTo(-20, 6);
+    });
+
+    it("leaves the iteration it appended readable off the log", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect(lastIterationOf(repo.dir)).toStrictEqual(asLogged(result.record));
+    });
+
+    it("records the primary's own delta as null rather than as no change", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config({ primary: "total_ms" }));
+
+      // Assert
+      expect.soft(result.record.primary).toStrictEqual({
+        kind: "metric",
+        name: "total_ms",
+        deltaPct: null,
+      });
+      expect(result.record.outcome).toBe("no-signal");
+    });
+
+    it("states no percentage beside the verdict it reports", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config({ primary: "total_ms" }));
+
+      // Assert
+      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
+      expect.soft(primary).toContain("verdict: NO-SIGNAL");
+      expect(primary).not.toMatch(/NaN|null|%/);
+    });
+
+    it("measures again after an iteration the log already holds a null delta for", async () => {
+      // Arrange
+      appendRecord(sessionJsonlPath(repo.dir), undefinedDeltaIteration(1));
+      appendRecord(sessionJsonlPath(repo.dir), committedKeep(1));
+
+      // Act
+      const result = await iterateSession(repo.dir, config());
+
+      // Assert
+      expect(result.record.seq).toBe(2);
+    });
+  });
+
   describe.each([
     {
       outcome: "improved",

@@ -35,10 +35,14 @@ export type LoopOutcome = "improved" | "regressed" | "no-signal";
  * and it is direction-normalized, so a negative value improves whichever way its
  * metrics point. A named metric keeps its name, because the direction it
  * improves in is its own metadata's to say.
+ *
+ * `deltaPct` is `null` where the ratio has no value — a baseline median of zero
+ * leaves it nothing to normalize against. That is a figure with no direction to
+ * read, not a figure that stood still, so nothing may coerce it to `0`.
  */
 export type LoopPrimary =
-  | { readonly kind: "geomean"; readonly deltaPct: number }
-  | { readonly kind: "metric"; readonly name: string; readonly deltaPct: number };
+  | { readonly kind: "geomean"; readonly deltaPct: number | null }
+  | { readonly kind: "metric"; readonly name: string; readonly deltaPct: number | null };
 
 /**
  * One metric a confirmation rerun re-measured, and whether the rerun agreed.
@@ -94,6 +98,19 @@ function separator(): string {
 }
 
 /**
+ * A primary figure's move, as a signed percentage, or nothing at all when the
+ * ratio had no value.
+ *
+ * Blank is what the table already shows for the `NaN` the engine computes there,
+ * so the two agree: a reader is shown no percentage rather than one they could
+ * read a direction into. Whatever stands beside it — the glyph, the verdict —
+ * still says what the iteration amounted to.
+ */
+function formatPrimaryDelta(deltaPct: number | null): string {
+  return deltaPct === null ? "" : ` ${formatDelta(deltaPct)}`;
+}
+
+/**
  * The run header of one iteration: which iteration it is, what it compared, and
  * how many rounds stand behind the comparison.
  *
@@ -141,7 +158,9 @@ export function formatVerdictBlock(
   const verdict = formatLabel(OUTCOME_WORDS[outcome], OUTCOME_STYLES[outcome]);
   return [
     ...reruns.map(formatRerunLine),
-    `primary: ${formatDelta(primary.deltaPct)}${separator()}verdict: ${verdict}`,
+    // The delta renders blank when it is undefined, so it is joined rather than
+    // interpolated — a blank between a space and the separator reads as a gap.
+    [`primary:${formatPrimaryDelta(primary.deltaPct)}`, `verdict: ${verdict}`].join(separator()),
     ...(targetReached ? [formatLabel(TARGET_REACHED, ["green"])] : []),
     `${formatHintLabel()} ${nextStep}`,
   ];
@@ -155,8 +174,17 @@ function hasGatingRegression(metrics: MetricComparisons): boolean {
   );
 }
 
-/** Whether the primary figure moved the way its direction calls an improvement. */
+/**
+ * Whether the primary figure moved the way its direction calls an improvement.
+ *
+ * A figure whose ratio had no value moved in no direction at all, so it improves
+ * nothing — the same answer the `NaN` it stands for gives, every comparison
+ * against which is false.
+ */
 function primaryImproved(metrics: MetricComparisons, primary: LoopPrimary): boolean {
+  if (primary.deltaPct === null) {
+    return false;
+  }
   if (primary.kind === "geomean") {
     return primary.deltaPct < 0;
   }
@@ -201,8 +229,8 @@ export type SettleState =
 /** One iteration as a status line states it. */
 export interface StatusIteration {
   readonly seq: number;
-  /** How far the iteration's primary figure moved, whichever figure that was. */
-  readonly deltaPct: number;
+  /** How far the iteration's primary figure moved, or `null` where the ratio had no value. */
+  readonly deltaPct: number | null;
   readonly outcome: LoopOutcome;
   readonly settle: SettleState;
 }
@@ -296,7 +324,7 @@ export function formatStatusIteration(iteration: StatusIteration): string {
   );
   return [
     `iteration ${iteration.seq}`,
-    `${glyph} ${formatDelta(iteration.deltaPct)}`,
+    `${glyph}${formatPrimaryDelta(iteration.deltaPct)}`,
     formatStatusSettle(iteration.settle),
   ].join(separator());
 }
