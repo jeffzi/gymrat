@@ -4,7 +4,13 @@ import type { ResolvedConfig } from "../config.js";
 import { GymratError } from "../errors.js";
 import { sessionJsonlPath } from "../session/paths.js";
 import type { SessionRecord } from "../session/records.js";
-import { appendRecord, foldSession, readRecords, type SessionState } from "../session/store.js";
+import {
+  appendRecord,
+  foldSession,
+  lastKeptCommit,
+  readRecords,
+  type SessionState,
+} from "../session/store.js";
 import { createWorkspace, detectWorkspace, recreateWorkspace } from "../session/workspace.js";
 import { resolveTarget } from "../targets.js";
 
@@ -41,7 +47,8 @@ export function startSession(
   config: ResolvedConfig,
 ): StartResult {
   const jsonlPath = sessionJsonlPath(root);
-  const state = foldSession(readRecords(jsonlPath));
+  const records = readRecords(jsonlPath);
+  const state = foldSession(records);
   const { session } = state;
 
   if (session === undefined) {
@@ -49,7 +56,10 @@ export function startSession(
   }
 
   if (detectWorkspace(root) !== "present") {
-    recreateWorkspace(root, session.branch, session.baseline.sha);
+    // Every keep moves the baseline onto the commit it made, so a baseline worktree
+    // put back at the header's pinned SHA would have the next iteration measure the
+    // whole session's diff instead of the edit in front of it.
+    recreateWorkspace(root, session.branch, lastKeptCommit(records) ?? session.baseline.sha);
   }
   return { session, state, resumed: true };
 }

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -58,6 +59,18 @@ function sessionHeaderOf(root: string): SessionRecord {
     throw new Error(`expected a session header in ${sessionJsonlPath(root)}`);
   }
   return first;
+}
+
+/**
+ * Commit an edit on the session branch from inside the experiment worktree,
+ * standing in for the commit a keep makes, and return its SHA.
+ */
+function commitInExperiment(root: string, message: string): string {
+  const worktree = experimentWorktreeDir(root);
+  fs.writeFileSync(path.join(worktree, "README.md"), `# ${message}\n`);
+  git(["add", "README.md"], worktree);
+  git(["commit", "-m", message], worktree);
+  return git(["rev-parse", "HEAD"], worktree);
 }
 
 let repo: ScratchRepo;
@@ -185,6 +198,36 @@ describe("startSession", () => {
 
       // Assert
       expect(detectWorkspace(repo.dir)).toBe("present");
+    });
+  });
+
+  describe("when the baseline worktree went missing", () => {
+    it("puts it back at the last kept commit", () => {
+      // Arrange
+      startSession(repo.dir, "main", CONFIG);
+      const kept = commitInExperiment(repo.dir, "cache the regex");
+      appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
+      appendRecord(sessionJsonlPath(repo.dir), committedKeep(1, { commit: kept }));
+      fs.rmSync(baselineWorktreeDir(repo.dir), { recursive: true, force: true });
+
+      // Act
+      startSession(repo.dir, "main", CONFIG);
+
+      // Assert
+      expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(kept);
+    });
+
+    it("puts it back at the pinned baseline SHA when nothing has been kept yet", () => {
+      // Arrange
+      startSession(repo.dir, "main", CONFIG);
+      commitInExperiment(repo.dir, "work the agent has not kept");
+      fs.rmSync(baselineWorktreeDir(repo.dir), { recursive: true, force: true });
+
+      // Act
+      startSession(repo.dir, "main", CONFIG);
+
+      // Assert
+      expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(headSha);
     });
   });
 
