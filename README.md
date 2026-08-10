@@ -124,9 +124,10 @@ fails; it also refuses when nothing has been measured since the last settle, and
 regressed a gating metric. Every refusal is recorded as a blocked keep, which `status` reads back —
 gymrat never erases a decision from the log. A refused keep exits 1.
 
-`start`, `iterate`, `keep`, and `discard` hold a repository lock for the duration, so two sessions
-in one repository cannot perturb each other's measurements. `status` only reads the log, so it takes
-no lock.
+Every command that runs your commands or writes session state holds a per-repository lock for the
+duration — `start`, `iterate`, `keep`, and `discard`, and `compare` and `measure` too. A second
+gymrat run against the same repository exits 2 rather than benchmarking alongside the first, since
+concurrent runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
 
 ### Options
 

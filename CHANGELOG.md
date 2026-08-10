@@ -7,6 +7,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Session loop: five commands that turn a one-shot comparison into an optimization session.
+  `gymrat start [ref]` pins a baseline and creates a pair of persistent worktrees — one baseline,
+  one experiment — to work in; `gymrat iterate` benches the experiment against the baseline and
+  reports a verdict; `gymrat keep` commits the measured edit and advances the baseline to it;
+  `gymrat discard` reverts the experiment worktree; `gymrat status` reads the whole session back.
+  Every measurement and decision is appended to a per-repository JSONL log, so a session survives
+  across processes and an agent can resume one it did not start.
+- `gymrat keep` refuses to commit in three cases, each recorded in the log rather than thrown away:
+  nothing measured since the last settle, a gating metric that regressed, and a failing `checks`
+  command. A refused keep exits 1.
+- Confirmation rerun: an iteration that regresses a gating metric is re-measured once, and a
+  regression the rerun will not reproduce is demoted to no signal. Exact metrics never take part.
+- Loop configuration keys in `gymrat.json`: `checks` (the command `keep` must see pass), `filter`
+  (a bench command template whose `{names}` placeholder narrows a confirmation rerun to the
+  regressed metrics), `primary` (the figure each iteration is read on — the geomean by default, or
+  a named metric), `stop` (`maxIterations` and `targetValue`, which end the loop), and `hooks`
+  (`before`/`after` commands run around each iteration with a JSON payload on stdin).
+- `gymrat measure --record` appends the run to the session log as a baseline, so `gymrat status`
+  reads it back alongside the session's iterations. This supersedes 0.3.0's note that `measure`
+  runs are ephemeral.
+
+### Changed
+
+- Every command that runs consumer commands or writes session state now holds a per-repository
+  lock, `compare` and `measure` included. A second gymrat run against the same repository exits 2
+  with `Lock held by PID …` rather than benchmarking alongside the first — concurrent runs perturb
+  each other's measurements. `gymrat status` only reads the log, so it takes no lock.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
