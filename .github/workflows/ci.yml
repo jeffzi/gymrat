@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Called by publish.yml so a tag push runs this same matrix rather than a
+  # hand-copied one that drifts from it.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
