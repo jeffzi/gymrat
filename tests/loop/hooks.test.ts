@@ -11,7 +11,6 @@ import { SESSION_ID } from "../fixtures/constants.js";
 import type { HookScripts } from "../fixtures/hook-scripts.js";
 import { hookScripts } from "../fixtures/hook-scripts.js";
 import { expectedHookRecord, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
-import { removeTempRoot } from "../setup/temp-root.js";
 
 /** The cap the runner holds hook stdout to before it reaches gymrat's own output. */
 const STDOUT_LIMIT_BYTES = 8192;
@@ -77,7 +76,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  removeTempRoot(tempDir);
+  fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 describe("runHook", () => {

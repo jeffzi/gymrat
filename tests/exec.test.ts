@@ -56,7 +56,7 @@ const PID_WAIT_MS = 3000;
 async function waitForSpawnedChild(): Promise<ChildProcess> {
   return await vi.waitFor(
     () => {
-      const [child] = spawnedChildren;
+      const child = spawnedChildren.at(-1);
       if (child === undefined) {
         throw new Error("exec() has not spawned a child yet");
       }

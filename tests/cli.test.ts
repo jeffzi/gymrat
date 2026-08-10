@@ -48,7 +48,7 @@ import {
   type Metrics,
   metricMeta,
 } from "./fixtures/comparison-result.js";
-import { ANSI_RE } from "./fixtures/constants.js";
+import { ANSI_RE, ISO_PATTERN } from "./fixtures/constants.js";
 import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
 import { createScratchRepo, type ScratchRepo } from "./fixtures/scratch-repo.js";
 
@@ -2373,7 +2373,7 @@ describe("createProgram", () => {
           // Assert
           expect(sessionLog().at(-1)).toStrictEqual({
             type: "baseline",
-            at: expect.any(String),
+            at: expect.stringMatching(ISO_PATTERN),
             label,
             samples: rounds,
           });
@@ -2732,7 +2732,7 @@ describe("createProgram", () => {
         expect.soft(heldDuringRun).toStrictEqual({
           pid: process.pid,
           command,
-          at: expect.any(String),
+          at: expect.stringMatching(ISO_PATTERN),
         });
         expect(readRepoLock()).toBeUndefined();
       },
@@ -2759,7 +2759,7 @@ describe("createProgram", () => {
         expect.soft(heldDuringRun).toStrictEqual({
           pid: process.pid,
           command,
-          at: expect.any(String),
+          at: expect.stringMatching(ISO_PATTERN),
         });
         expect(readRepoLock()).toBeUndefined();
       },

@@ -72,13 +72,12 @@ describe("installTerminationCleanup", () => {
 
       try {
         // Act
-        try {
-          raiseSignal("SIGINT", before);
-        } catch {
-          // exit throws — ignore
-        }
+        const code = raiseSignal("SIGINT", before);
 
-        // Assert
+        // Assert - the code pins that a handler ran at all: swallowing whatever
+        // `raiseSignal` threw would let "no handler installed" pass as "cleanup
+        // did not run".
+        expect.soft(code).toBe(130);
         expect(cleanup).not.toHaveBeenCalled();
       } finally {
         removeNewListeners("SIGINT", before);

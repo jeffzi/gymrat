@@ -48,12 +48,19 @@ export function createScratchRepo(): ScratchRepo {
     throw error;
   }
 
+  // Captured before the caller changes into the repo, so teardown can put the
+  // worker back where it started.
+  const cwdBeforeRepo = process.cwd();
+
   return {
     dir,
     cleanup: () => {
-      // Windows cannot delete a directory that is a process's CWD.
+      // Windows cannot delete a directory that is a process's CWD. Returning to
+      // the directory the worker started in — rather than to os.tmpdir(), which
+      // the setup file deletes in its own teardown — leaves it somewhere that
+      // still exists once the suite is over.
       if (process.cwd().startsWith(dir)) {
-        process.chdir(os.tmpdir());
+        process.chdir(cwdBeforeRepo);
       }
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },

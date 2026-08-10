@@ -277,12 +277,18 @@ describe("the status command", () => {
     expect(stderrText).toContain("gymrat start");
   });
 
+  /*
+   * `status` styles its lines as it builds them, with no `withColor` wrapper to
+   * pin the environment around the render — so `--no-color` holds here only
+   * because `suppressColor` clears FORCE_COLOR as well as setting NO_COLOR.
+   * Both rows therefore run with FORCE_COLOR set: the flag has to beat it.
+   */
   it.each([
     { desc: "styles the report when the terminal takes color", args: [], color: "1", ansi: true },
     {
-      desc: "drops every style when --no-color is passed",
+      desc: "drops every style when --no-color meets a FORCE_COLOR in the environment",
       args: ["--no-color"],
-      color: undefined,
+      color: "1",
       ansi: false,
     },
   ])("$desc", async ({ args, color, ansi }) => {

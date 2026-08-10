@@ -76,13 +76,7 @@ function createBranch(
 }
 
 /**
- * Create an untracked subdirectory of the repo with its own executable `bench.sh`.
- *
- * `resolveTarget` sees a plain directory and returns an in-place target, so
- * benching it never creates a worktree.
- */
-/**
- * Create a scratch repo, chdir into it for the duration of `fn`, then sweep
+ * Create a scratch repo, change into it for the duration of `fn`, then sweep
  * any stranded worktrees and clean the repo up — even if `fn` throws.
  *
  * Centralizes the create-repo/chdir/try/cleanup scaffolding shared by every
@@ -137,12 +131,7 @@ function parseLeftBehindDirs(text: string): string[] {
   return text.split("\n").flatMap((line) => /^ {2}left behind: (\S+) \S/.exec(line)?.[1] ?? []);
 }
 
-/**
- * Delete every worktree directory the repo still lists, main repo dir excluded.
- *
- * Keeps a run that stranded a worktree from leaking it into the system temp dir,
- * whatever the assertions did or did not manage to read.
- */
+/** Assert the repo lists no worktree beyond its own main directory. */
 function assertWorktreesCleanedUp(repo: ReturnType<typeof createScratchRepo>) {
   expect(listWorktreeDirs(repo.dir, { includeMain: false })).toStrictEqual([]);
 }
@@ -942,31 +931,41 @@ describe("compare – integration", () => {
   describe("when git cannot remove a worktree the run created", () => {
     it("reports the cleanup outcome the run actually produced", async () => {
       await withScratchRepo(async (repo) => {
-        // Deleting the worktree's .git link makes `git worktree remove` refuse the
-        // directory at any force level, so one worktree survives cleanup.
-        createBranch(repo, {
-          name: "old-unremovable",
-          benchScript: '#!/bin/sh\nrm -f .git\necho "METRIC latency=100"',
-        });
+        // The directory git refuses to remove outlives the suite unless the
+        // test takes it down itself, as both sibling cases do.
+        const leftBehindDirs: string[] = [];
 
-        createBranch(repo, {
-          name: "new-unremovable",
-          benchScript: '#!/bin/sh\necho "METRIC latency=90"',
-        });
+        try {
+          // Deleting the worktree's .git link makes `git worktree remove` refuse the
+          // directory at any force level, so one worktree survives cleanup.
+          createBranch(repo, {
+            name: "old-unremovable",
+            benchScript: '#!/bin/sh\nrm -f .git\necho "METRIC latency=100"',
+          });
 
-        const report = renderReport(
-          await compare(
-            compareOptions({
-              baseline: { target: "old-unremovable" },
-              candidates: [{ target: "new-unremovable" }],
-            }),
-          ),
-        );
+          createBranch(repo, {
+            name: "new-unremovable",
+            benchScript: '#!/bin/sh\necho "METRIC latency=90"',
+          });
 
-        const leftBehindDirs = parseLeftBehindDirs(report);
-        expect(report).toContain("1 worktree removed · 1 left behind");
-        expect(leftBehindDirs).toHaveLength(1);
-        expect(leftBehindDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual(leftBehindDirs);
+          const report = renderReport(
+            await compare(
+              compareOptions({
+                baseline: { target: "old-unremovable" },
+                candidates: [{ target: "new-unremovable" }],
+              }),
+            ),
+          );
+
+          leftBehindDirs.push(...parseLeftBehindDirs(report));
+          expect(report).toContain("1 worktree removed · 1 left behind");
+          expect(leftBehindDirs).toHaveLength(1);
+          expect(leftBehindDirs.filter((dir) => fs.existsSync(dir))).toStrictEqual(leftBehindDirs);
+        } finally {
+          for (const dir of leftBehindDirs) {
+            fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+          }
+        }
       });
     });
   });

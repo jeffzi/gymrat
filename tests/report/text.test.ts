@@ -2753,6 +2753,11 @@ describe("renderReport", () => {
    */
   describe("when rendering a whole report", () => {
     it("matches the recorded bytes for a representative run", async () => {
+      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
+      // shell would otherwise style them and fail a run that changed nothing.
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       const result = createComparisonResult({
         metrics: {
           "decode/text=digits/time": {
@@ -2876,6 +2881,11 @@ describe("renderReport", () => {
     }
 
     it("matches the recorded bytes for degenerate inputs and a dirty cleanup", async () => {
+      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
+      // shell would otherwise style them and fail a run that changed nothing.
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       await expect(renderReport(degenerateResult())).toMatchFileSnapshot(
         "../fixtures/report-degenerate.golden.txt",
       );
@@ -2965,18 +2975,33 @@ describe("renderReport", () => {
     }
 
     it("matches the recorded bytes for a verbose run with two candidates", async () => {
+      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
+      // shell would otherwise style them and fail a run that changed nothing.
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       await expect(renderReport(twoCandidateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates.golden.txt",
       );
     });
 
     it("matches the recorded bytes for a run split into kind sections", async () => {
+      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
+      // shell would otherwise style them and fail a run that changed nothing.
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       await expect(renderReport(twoKindResult())).toMatchFileSnapshot(
         "../fixtures/report-sectioned.golden.txt",
       );
     });
 
     it("matches the recorded bytes for a run of one paired sample", async () => {
+      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
+      // shell would otherwise style them and fail a run that changed nothing.
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
       await expect(renderReport(singleSampleResult())).toMatchFileSnapshot(
         "../fixtures/report-single-sample.golden.txt",
       );
