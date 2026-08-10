@@ -19,6 +19,12 @@ export function computeMedian(values: readonly number[]): number {
 /**
  * Half the range of `values`: `(max - min) / 2`.
  *
+ * A non-finite sample leaves the range undefined, so the result is `NaN` — the
+ * value a report prints blank and the geomean excludes by name. Comparisons
+ * against `NaN` are always false, so the scan must reject such a sample
+ * explicitly: dropping it would understate the spread, and an all-`NaN` run
+ * would collapse to `-Infinity`, which reads downstream as a real measurement.
+ *
  * @throws {Error} If `values` is empty.
  */
 export function computeHalfRange(values: readonly number[]): number {
@@ -26,5 +32,20 @@ export function computeHalfRange(values: readonly number[]): number {
   if (values.length === 0) {
     throw new Error("Cannot compute half-range of empty array");
   }
-  return (Math.max(...values) - Math.min(...values)) / 2;
+  // Scanned rather than spread into `Math.max`/`Math.min`: a long enough run of
+  // samples exceeds the number of arguments a call accepts, which throws.
+  let min = Infinity;
+  let max = -Infinity;
+  for (const value of values) {
+    if (!Number.isFinite(value)) {
+      return Number.NaN;
+    }
+    if (value < min) {
+      min = value;
+    }
+    if (value > max) {
+      max = value;
+    }
+  }
+  return (max - min) / 2;
 }
