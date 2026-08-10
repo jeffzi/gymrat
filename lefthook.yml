@@ -46,7 +46,11 @@ commit-msg:
 
 pre-push:
   commands:
-    check:
-      run: npm run check
+    # Tests first: check's fallow health step reads coverage/, which only a
+    # test run produces. On a fresh clone the first push would otherwise fail.
     test:
+      priority: 1
       run: npm test
+    check:
+      priority: 2
+      run: npm run check

@@ -14,7 +14,7 @@
       }
     },
     {
-      "files": ["tests/**", "**/*.test.ts", "**/*.spec.ts"],
+      "files": ["tests/**"],
       "rules": {
         "no-console": "off",
         "no-control-regex": "off",

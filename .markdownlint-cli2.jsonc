@@ -8,13 +8,5 @@
     "MD033": false,
     "MD060": false,
   },
-  "ignores": [
-    ".agents/**",
-    ".claude/**",
-    ".planning/**",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "LICENSE",
-    "node_modules/**",
-  ],
+  "ignores": [".claude/**", ".planning/**", "CLAUDE.md", "node_modules/**"],
 }
