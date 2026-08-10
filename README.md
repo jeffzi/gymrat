@@ -15,7 +15,7 @@ its figures with nothing to compare them to. No session state, no config require
 
 ## Install
 
-Requires Node ≥ 22 and `git` on your `PATH`.
+Requires Node ≥ 22.12 and `git` on your `PATH`.
 
 ```sh
 npm install -g gymrat
