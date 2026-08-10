@@ -33,14 +33,34 @@ export type ReleaseLock = () => void;
 /** How many times acquisition re-reads a lockfile it lost a race for. */
 const MAX_ACQUIRE_ATTEMPTS = 3;
 
+/**
+ * Which file a lockfile read came from, as the filesystem identifies it.
+ *
+ * A path says nothing about which file it names from one moment to the next, so
+ * a steal that only knows `lockPath` cannot tell the record it judged stale from
+ * whatever a rival published there since. Device and inode do tell them apart.
+ */
+type LockfileIdentity = {
+  readonly dev: bigint;
+  readonly ino: bigint;
+};
+
+/** Whether two reads came from one and the same file. */
+function sameFile(one: LockfileIdentity, other: LockfileIdentity): boolean {
+  return one.dev === other.dev && one.ino === other.ino;
+}
+
 /** What a lockfile says at the moment it was read. */
 type LockfileState =
   | { readonly kind: "absent" }
-  | { readonly kind: "held"; readonly holder: LockHolder }
-  | { readonly kind: "unreadable" };
+  | { readonly kind: "held"; readonly holder: LockHolder; readonly identity: LockfileIdentity }
+  | { readonly kind: "unreadable"; readonly identity: LockfileIdentity };
 
 /**
- * Read what the lockfile at `lockPath` currently says.
+ * Read what the lockfile at `lockPath` currently says, and which file said it.
+ *
+ * The identity is taken from the open descriptor the contents are read through,
+ * so the two describe one file even when the lock path is taken over mid-read.
  *
  * A file that cannot be parsed, or that carries a foreign shape, is reported as
  * `unreadable`. Publication is atomic, so no reader ever catches a holder
@@ -49,9 +69,9 @@ type LockfileState =
  * somebody is in the middle of taking.
  */
 function readLockfile(lockPath: string): LockfileState {
-  let contents: string;
+  let fd: number;
   try {
-    contents = fs.readFileSync(lockPath, "utf8");
+    fd = fs.openSync(lockPath, "r");
   } catch (error) {
     if (hasErrorCode(error, "ENOENT")) {
       return { kind: "absent" };
@@ -59,15 +79,25 @@ function readLockfile(lockPath: string): LockfileState {
     throw error;
   }
 
+  let identity: LockfileIdentity;
+  let contents: string;
+  try {
+    const stats = fs.fstatSync(fd, { bigint: true });
+    identity = { dev: stats.dev, ino: stats.ino };
+    contents = fs.readFileSync(fd, "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(contents);
   } catch {
-    return { kind: "unreadable" };
+    return { kind: "unreadable", identity };
   }
   return lockHolderValidator.check(parsed)
-    ? { kind: "held", holder: parsed }
-    : { kind: "unreadable" };
+    ? { kind: "held", holder: parsed, identity }
+    : { kind: "unreadable", identity };
 }
 
 /**
@@ -86,9 +116,10 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function removeLockFile(lockPath: string): void {
+/** Delete `filePath` if it exists. Used on the lockfile and its scratch siblings alike. */
+function unlinkIfExists(filePath: string): void {
   try {
-    fs.unlinkSync(lockPath);
+    fs.unlinkSync(filePath);
   } catch (error) {
     if (!hasErrorCode(error, "ENOENT")) {
       throw error;
@@ -96,10 +127,16 @@ function removeLockFile(lockPath: string): void {
   }
 }
 
-function heldByError(holder: LockHolder, lockPath: string): GymratError {
+/**
+ * Report a lock whose holder answered a liveness probe.
+ *
+ * Deleting the lockfile is deliberately not offered: the holder is provably
+ * alive, so the only safe remedy is to wait it out.
+ */
+function heldByError(holder: LockHolder): GymratError {
   return new GymratError(
     `Lock held by PID ${String(holder.pid)} (${holder.command}, started ${holder.at})`,
-    `Another gymrat run is active in this repo. Wait for it to finish or remove ${lockPath} if it crashed.`,
+    "Another gymrat run is active in this repo. Wait for it to finish.",
   );
 }
 
@@ -123,50 +160,213 @@ function publishLockRecord(lockPath: string, record: string): boolean {
     }
     throw error;
   } finally {
-    removeLockFile(scratchPath);
+    unlinkIfExists(scratchPath);
   }
 }
 
 /**
- * Move the stale lockfile aside, handing back the path it now lives at.
+ * Rethrow the failure to displace the stale lockfile at `lockPath`.
  *
- * The rename is the atomic step of a steal: exactly one racer can move a given
- * file, so the ones that lose get `ENOENT` and are told so with `undefined`
- * rather than going on to overwrite the winner's fresh lock.
- *
- * @throws GymratError when the file belongs to another user (a sticky `/tmp`),
- *   which no retry can resolve.
+ * `EPERM` and `EACCES` say the file belongs to another user — a sticky `/tmp` —
+ * which no retry can resolve, so they are framed for whoever has to clean up.
  */
-function claimStaleLock(lockPath: string): string | undefined {
-  const claimPath = `${lockPath}.${String(process.pid)}.claim`;
-  try {
-    fs.renameSync(lockPath, claimPath);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
-      return undefined;
-    }
-    if (hasErrorCode(error, "EPERM") || hasErrorCode(error, "EACCES")) {
-      throw new GymratError(
-        `Stale lock file ${lockPath} could not be removed: ${messageOf(error)}`,
-        `It belongs to another user. Remove ${lockPath} yourself, then rerun.`,
-        { cause: error },
-      );
-    }
-    throw error;
+function rethrowDisplacementFailure(lockPath: string, error: unknown): never {
+  if (hasErrorCode(error, "EPERM") || hasErrorCode(error, "EACCES")) {
+    throw new GymratError(
+      `Stale lock file ${lockPath} could not be removed: ${messageOf(error)}`,
+      `It belongs to another user. Remove ${lockPath} yourself, then rerun.`,
+      { cause: error },
+    );
   }
-  return claimPath;
+  throw error;
 }
 
-/** Take over a lockfile no live process holds. Returns whether this process won. */
-function stealLock(lockPath: string, record: string): boolean {
-  const claimPath = claimStaleLock(lockPath);
-  if (claimPath === undefined) {
-    return false;
-  }
+/**
+ * What asking for the right to displace a stale lockfile turned up.
+ *
+ * `gone` covers both ways the judged file can stop being the one at the lock
+ * path: it vanished before the claim, or the claim came back naming a different
+ * file.
+ */
+type ClaimOutcome =
+  | { readonly kind: "claimed"; readonly claimPath: string }
+  | { readonly kind: "blocked"; readonly claimPath: string }
+  | { readonly kind: "gone" };
+
+/**
+ * Claim the right to displace the file `identity` was read from, handing back
+ * the path the claim lives at.
+ *
+ * The claim is a second name for the lockfile itself, spelled out of that file's
+ * identity, which makes it both halves of a safe steal. It is exclusive: two
+ * racers reaching the same staleness verdict about one file ask for the same
+ * name, `EEXIST` tells the loser so, and only the winner goes on to displace
+ * anything. And it is proof: a racer whose claim turns out to name a different
+ * file is holding a lock somebody published after the verdict, so it drops the
+ * claim and leaves that lock where it stands.
+ *
+ * A steal that is not this racer's to make is reported as `blocked` — the claim
+ * name is taken — or as `gone`, leaving acquisition to read the lock path
+ * afresh. The two are told apart because a claim that stays taken across every
+ * attempt is the fingerprint of a run that died holding it.
+ *
+ * @throws GymratError when the lockfile belongs to another user.
+ */
+function claimStaleLock(lockPath: string, identity: LockfileIdentity): ClaimOutcome {
+  const claimPath = `${lockPath}.${String(identity.dev)}-${String(identity.ino)}.claim`;
   try {
-    return publishLockRecord(lockPath, record);
-  } finally {
-    removeLockFile(claimPath);
+    fs.linkSync(lockPath, claimPath);
+  } catch (error) {
+    if (hasErrorCode(error, "EEXIST")) {
+      return { kind: "blocked", claimPath };
+    }
+    if (hasErrorCode(error, "ENOENT")) {
+      return { kind: "gone" };
+    }
+    rethrowDisplacementFailure(lockPath, error);
+  }
+
+  const claimed = fs.statSync(claimPath, { bigint: true });
+  if (sameFile(claimed, identity)) {
+    return { kind: "claimed", claimPath };
+  }
+  unlinkIfExists(claimPath);
+  return { kind: "gone" };
+}
+
+/**
+ * Clear the claimed lockfile off the lock path. Returns whether it went away.
+ *
+ * Only the holder of the claim gets here, and nothing else may displace a
+ * claimed file, so the file moved is the one that was judged stale. It is moved
+ * rather than deleted so a run killed mid-steal leaves the lock path free rather
+ * than holding a record it never published.
+ *
+ * @throws GymratError when the lockfile belongs to another user.
+ */
+function displaceStaleLock(lockPath: string): boolean {
+  const asidePath = `${lockPath}.${String(process.pid)}.stale`;
+  try {
+    fs.renameSync(lockPath, asidePath);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return false;
+    }
+    rethrowDisplacementFailure(lockPath, error);
+  }
+  unlinkIfExists(asidePath);
+  return true;
+}
+
+/**
+ * What taking over a lockfile no live process holds turned up.
+ *
+ * `blocked` carries the claim path that stood in the way, because a claim
+ * nobody is behind can only be cleared by hand.
+ */
+type StealOutcome =
+  | { readonly kind: "won" }
+  | { readonly kind: "lost" }
+  | { readonly kind: "blocked"; readonly claimPath: string };
+
+/** Take over a lockfile no live process holds. */
+function stealLock(lockPath: string, identity: LockfileIdentity, record: string): StealOutcome {
+  const claim = claimStaleLock(lockPath, identity);
+  switch (claim.kind) {
+    case "gone":
+      return { kind: "lost" };
+    case "blocked":
+      return { kind: "blocked", claimPath: claim.claimPath };
+    case "claimed":
+      try {
+        const won = displaceStaleLock(lockPath) && publishLockRecord(lockPath, record);
+        return won ? { kind: "won" } : { kind: "lost" };
+      } finally {
+        unlinkIfExists(claim.claimPath);
+      }
+    default:
+      return assertNever(claim);
+  }
+}
+
+/**
+ * A takeover that died holding its claim, leaving the lock impossible to steal.
+ *
+ * The claim outlives the run that made it, so every later steal of that same
+ * file is refused the claim name forever. `holderPid` is the dead process the
+ * lockfile named, or `undefined` when the lockfile was too damaged to name one.
+ */
+type WedgedTakeover = {
+  readonly identity: LockfileIdentity;
+  readonly claimPath: string;
+  readonly holderPid: number | undefined;
+};
+
+function wedgedTakeoverError(lockPath: string, wedge: WedgedTakeover): GymratError {
+  const nobodyHolds =
+    wedge.holderPid === undefined
+      ? "No gymrat process holds this lock."
+      : `No gymrat process holds this lock (PID ${String(wedge.holderPid)} is dead).`;
+  return new GymratError(
+    `Lock at ${lockPath} was left behind by a run that died while taking it over.`,
+    `${nobodyHolds} To unblock, delete ${lockPath} and ${wedge.claimPath}, then rerun.`,
+  );
+}
+
+/** What one pass at the lock path turned up. */
+type AttemptOutcome =
+  | { readonly kind: "acquired" }
+  | { readonly kind: "retry" }
+  | { readonly kind: "blocked"; readonly wedge: WedgedTakeover };
+
+/** Read a steal that did not win as either worth retrying or as wedged. */
+function attemptFromSteal(
+  steal: StealOutcome,
+  identity: LockfileIdentity,
+  holderPid: number | undefined,
+): AttemptOutcome {
+  switch (steal.kind) {
+    case "won":
+      return { kind: "acquired" };
+    case "lost":
+      return { kind: "retry" };
+    case "blocked":
+      return { kind: "blocked", wedge: { identity, claimPath: steal.claimPath, holderPid } };
+    default:
+      return assertNever(steal);
+  }
+}
+
+/**
+ * Make one bid for the lock at `lockPath`: publish, or judge what is there.
+ *
+ * @throws GymratError when the lock is held by a process that is still running,
+ *   or when a lockfile free to steal belongs to another user.
+ */
+function attemptAcquire(lockPath: string, record: string): AttemptOutcome {
+  if (publishLockRecord(lockPath, record)) {
+    return { kind: "acquired" };
+  }
+
+  const state = readLockfile(lockPath);
+  switch (state.kind) {
+    case "absent":
+      return { kind: "retry" };
+    case "unreadable":
+      return attemptFromSteal(
+        stealLock(lockPath, state.identity, record),
+        state.identity,
+        undefined,
+      );
+    case "held": {
+      if (isAlive(state.holder.pid)) {
+        throw heldByError(state.holder);
+      }
+      const steal = stealLock(lockPath, state.identity, record);
+      return attemptFromSteal(steal, state.identity, state.holder.pid);
+    }
+    default:
+      return assertNever(state);
   }
 }
 
@@ -180,47 +380,51 @@ function stealLock(lockPath: string, record: string): boolean {
  * winner is either a live holder to report or a lock released again in the
  * meantime.
  *
+ * One exception: a run killed between claiming the right to displace a stale
+ * lockfile and completing that displacement leaves a state no later run can
+ * clear on its own. The thrown error names both files to delete.
+ *
  * @throws GymratError when the lock is held by a process that is still running,
- *   or when a lockfile free to steal belongs to another user.
+ *   when a lockfile free to steal belongs to another user, or when every
+ *   attempt was refused by the claim of a takeover that never finished.
  */
 export function acquireLock(lockPath: string, command: string): ReleaseLock {
   const holder: LockHolder = { pid: process.pid, command, at: new Date().toISOString() };
   const record = JSON.stringify(holder);
   const release: ReleaseLock = () => {
-    removeLockFile(lockPath);
+    unlinkIfExists(lockPath);
   };
 
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
+  let wedge: WedgedTakeover | undefined;
+  let wedgedEveryAttempt = true;
+
   for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
-    if (publishLockRecord(lockPath, record)) {
+    const outcome = attemptAcquire(lockPath, record);
+    if (outcome.kind === "acquired") {
       return release;
     }
 
-    const state = readLockfile(lockPath);
-    switch (state.kind) {
-      case "absent":
-        continue;
-      case "unreadable":
-        if (stealLock(lockPath, record)) {
-          return release;
-        }
-        continue;
-      case "held":
-        if (isAlive(state.holder.pid)) {
-          throw heldByError(state.holder, lockPath);
-        }
-        if (stealLock(lockPath, record)) {
-          return release;
-        }
-        continue;
-      default:
-        return assertNever(state);
+    // Only one file blocking every single attempt rules out the rival that
+    // takes the lock, works, and releases it between two of our reads.
+    const blocked = outcome.kind === "blocked" ? outcome.wedge : undefined;
+    if (blocked === undefined) {
+      wedgedEveryAttempt = false;
+    } else if (wedge === undefined) {
+      wedge = blocked;
+    } else if (!sameFile(wedge.identity, blocked.identity)) {
+      wedgedEveryAttempt = false;
     }
+  }
+
+  if (wedgedEveryAttempt && wedge !== undefined) {
+    throw wedgedTakeoverError(lockPath, wedge);
   }
 
   throw new GymratError(
     `Lock at ${lockPath} was claimed by another process on every attempt.`,
-    `Another gymrat run is active in this repo. Wait for it to finish or remove ${lockPath} if it crashed.`,
+    `Another gymrat run is active in this repo. Wait for it to finish. ` +
+      `If no gymrat process is running, delete ${lockPath}.`,
   );
 }

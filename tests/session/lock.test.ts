@@ -19,6 +19,14 @@ const HOLDER_RECORD = {
 /** The `at` value `writeLockfile` stamps every fixture lockfile with. */
 const WRITTEN_LOCK_AT = "2026-01-01T00:00:00.000Z";
 
+/**
+ * The remedy for a lock whose holder answered a liveness probe.
+ *
+ * Deleting the lockfile is not offered: the holder is provably alive, so the
+ * only correct move is to wait for it.
+ */
+const LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish.";
+
 /** A lock path inside its own temp directory, so tests never share a lockfile. */
 function freshLockPath(...segments: string[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lock-test-"));
@@ -40,6 +48,32 @@ function writeLockfile(lockPath: string, holder: { pid: number; command: string 
 
 function readLockfile(lockPath: string): unknown {
   return JSON.parse(fs.readFileSync(lockPath, "utf8"));
+}
+
+/** An error carrying the errno `code` a syscall mock needs to report. */
+function errnoError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+/** A fresh lockfile whose holder process, `pid`, has already exited. */
+function staleLockPath(pid = deadPid()): { lockPath: string; holderPid: number } {
+  const lockPath = freshLockPath();
+  writeLockfile(lockPath, { pid, command: "measure" });
+  return { lockPath, holderPid: pid };
+}
+
+/**
+ * Leave behind the claim link a run that died mid-takeover would have left.
+ *
+ * The link is the lockfile's own inode under the claim name derived from that
+ * inode, so every steal attempt is blocked by an occupied claim path while the
+ * identity behind the lockfile stays constant. Hands back the claim path.
+ */
+function wedgeTakeover(lockPath: string): string {
+  const { dev, ino } = fs.statSync(lockPath, { bigint: true });
+  const claimPath = `${lockPath}.${String(dev)}-${String(ino)}.claim`;
+  fs.linkSync(lockPath, claimPath);
+  return claimPath;
 }
 
 afterEach(() => {
@@ -118,7 +152,7 @@ describe("acquireLock", () => {
   });
 
   describe("when the lockfile is held by a live process", () => {
-    it("throws a GymratError naming the holder and pointing at the lockfile", () => {
+    it("throws a GymratError naming the holder and telling the caller to wait it out", () => {
       // Arrange
       const lockPath = freshLockPath();
       writeLockfile(lockPath, { pid: process.pid, command: "measure" });
@@ -129,16 +163,14 @@ describe("acquireLock", () => {
       // Assert
       expect.soft(error.message).toContain(`PID ${String(process.pid)}`);
       expect.soft(error.message).toContain("measure");
-      expect.soft(error.hint).toMatch(/another gymrat run/i);
-      expect.soft(error.hint).toContain(lockPath);
+      expect.soft(error.hint).toBe(LIVE_HOLDER_HINT);
     });
 
     it("leaves the holder record of an unreadable liveness probe in place", () => {
       // Arrange: EPERM means the process exists but belongs to another user.
-      const lockPath = freshLockPath();
-      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+      const { lockPath } = staleLockPath();
       vi.spyOn(process, "kill").mockImplementation(() => {
-        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+        throw errnoError("EPERM", "operation not permitted");
       });
 
       // Act
@@ -158,8 +190,7 @@ describe("acquireLock", () => {
   describe("when the lockfile is held by a process that has exited", () => {
     it("steals the lock and overwrites the stale holder record", () => {
       // Arrange
-      const lockPath = freshLockPath();
-      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+      const { lockPath } = staleLockPath();
 
       // Act
       acquireLock(lockPath, "compare");
@@ -192,10 +223,9 @@ describe("acquireLock", () => {
     it("names the lockfile and the manual remedy instead of raising EPERM", () => {
       // Arrange: a sticky /tmp — the stale file is another user's, so gymrat
       // cannot claim it out of the way.
-      const lockPath = freshLockPath();
-      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+      const { lockPath } = staleLockPath();
       vi.spyOn(fs, "renameSync").mockImplementation(() => {
-        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+        throw errnoError("EPERM", "operation not permitted");
       });
 
       // Act
@@ -212,9 +242,8 @@ describe("acquireLock", () => {
     it("leaves the winner's lockfile in place and reports it as held", () => {
       // Arrange: a rival takes the lock between our claim of the stale file and
       // our exclusive re-creation of it.
-      const lockPath = freshLockPath();
+      const { lockPath } = staleLockPath();
       const rivalPid = process.pid;
-      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
 
       const realRename = fs.renameSync.bind(fs);
       vi.spyOn(fs, "renameSync").mockImplementationOnce((from, to) => {
@@ -228,7 +257,7 @@ describe("acquireLock", () => {
       // Assert
       expect.soft(error.message).toContain(`PID ${String(rivalPid)}`);
       expect.soft(error.message).toContain("rival");
-      expect.soft(error.hint).toContain(lockPath);
+      expect.soft(error.hint).toBe(LIVE_HOLDER_HINT);
       expect.soft(readLockfile(lockPath)).toStrictEqual({
         pid: rivalPid,
         command: "rival",
@@ -239,13 +268,12 @@ describe("acquireLock", () => {
     it("acquires the lock once the winner releases it", () => {
       // Arrange: a rival claims the stale file first — our claim finds it gone —
       // and has released the lock by the time we retry.
-      const lockPath = freshLockPath();
-      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+      const { lockPath } = staleLockPath();
 
       const realUnlink = fs.unlinkSync.bind(fs);
       vi.spyOn(fs, "renameSync").mockImplementationOnce((from) => {
         realUnlink(from);
-        throw Object.assign(new Error("no such file or directory"), { code: "ENOENT" });
+        throw errnoError("ENOENT", "no such file or directory");
       });
 
       // Act
@@ -253,6 +281,105 @@ describe("acquireLock", () => {
 
       // Assert
       expect(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
+    });
+  });
+
+  describe("when a rival reaches the same staleness verdict first", () => {
+    it("leaves the rival's fresh lockfile in place and reports it as held", () => {
+      // Arrange: a rival run takes the very same stale lockfile over, and holds
+      // it, in the window between our read of that lockfile and our own steal.
+      const { lockPath } = staleLockPath();
+
+      const realKill = process.kill.bind(process);
+      let rivalHasRun = false;
+      vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (!rivalHasRun) {
+          rivalHasRun = true;
+          acquireLock(lockPath, "rival");
+        }
+        return realKill(pid, signal);
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect.soft(error.message).toContain(`PID ${String(process.pid)}`);
+      expect.soft(error.message).toContain("rival");
+      expect.soft(readLockfile(lockPath)).toStrictEqual({ ...HOLDER_RECORD, command: "rival" });
+    });
+  });
+
+  describe("when a takeover died and left its claim behind", () => {
+    it("names the dead holder and both paths to delete", () => {
+      // Arrange
+      const { lockPath, holderPid } = staleLockPath();
+      const claimPath = wedgeTakeover(lockPath);
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect
+        .soft(error.message)
+        .toBe(`Lock at ${lockPath} was left behind by a run that died while taking it over.`);
+      expect
+        .soft(error.hint)
+        .toBe(
+          `No gymrat process holds this lock (PID ${String(holderPid)} is dead). ` +
+            `To unblock, delete ${lockPath} and ${claimPath}, then rerun.`,
+        );
+    });
+
+    it("leaves the holder unnamed when the lockfile cannot be read", () => {
+      // Arrange: a truncated record names no process, so the remedy cannot
+      // either.
+      const lockPath = freshLockPath();
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      fs.writeFileSync(lockPath, '{"pid":4242,"comm');
+      const claimPath = wedgeTakeover(lockPath);
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect
+        .soft(error.message)
+        .toBe(`Lock at ${lockPath} was left behind by a run that died while taking it over.`);
+      expect
+        .soft(error.hint)
+        .toBe(
+          `No gymrat process holds this lock. ` +
+            `To unblock, delete ${lockPath} and ${claimPath}, then rerun.`,
+        );
+    });
+
+    it("reports contention when an attempt failed for another reason", () => {
+      // Arrange: the first steal fails because the lockfile itself went missing
+      // — not because a leftover claim blocked it — so the run is contended
+      // rather than wedged.
+      const { lockPath } = staleLockPath();
+      const claimPath = wedgeTakeover(lockPath);
+      const realLink = fs.linkSync.bind(fs);
+      let claimRefused = false;
+      vi.spyOn(fs, "linkSync").mockImplementation((existing, target) => {
+        if (target === claimPath && !claimRefused) {
+          claimRefused = true;
+          throw errnoError("ENOENT", "no such file or directory");
+        }
+        realLink(existing, target);
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect
+        .soft(error.message)
+        .toBe(`Lock at ${lockPath} was claimed by another process on every attempt.`);
+      expect
+        .soft(error.hint)
+        .toBe(`${LIVE_HOLDER_HINT} If no gymrat process is running, delete ${lockPath}.`);
     });
   });
 });

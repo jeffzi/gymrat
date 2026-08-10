@@ -32,6 +32,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The minimum supported Node version is now 22.12, the floor gymrat's dependencies already required.
+  Installing on 22.0 through 22.11 reports an `EBADENGINE` warning instead of failing later at
+  runtime.
 - Every command that runs consumer commands or writes session state now holds a per-repository
   lock, `compare` and `measure` included. A second gymrat run against the same repository exits 2
   with `Lock held by PID …` rather than benchmarking alongside the first — concurrent runs perturb
@@ -39,6 +42,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A stale lockfile left by a crashed run could be taken over by two processes at once: both read the
+  same dead holder, and the second rename displaced the first's live lockfile. The takeover now
+  claims exclusive rights via a hard link before displacing anything, so only one racer wins. A run
+  killed mid-takeover leaves the lock permanently blocked; the error names the lockfile and the
+  blocking claim link to delete.
+- Lock error hints no longer advise waiting for a process that may already be dead, and no longer
+  suggest deleting a lockfile whose holder was probed alive.
 - A bench command could outlive the run that started it. When one of its output streams failed,
   gymrat settled the call without killing the process group, leaving the benchmark running against
   a worktree the run had already finished with.
