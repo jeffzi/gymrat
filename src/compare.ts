@@ -7,7 +7,7 @@ import {
   collectMetricNames,
   collectSamples,
   computeMetricStats,
-  ownValues,
+  pairedOrOwnValues,
   resolveDir,
   resolveLabel,
   runWithWorktrees,
@@ -39,12 +39,6 @@ export interface CompareOptions extends RunOptions {
   unstableNoisePct?: number;
 }
 
-/** Everything a run measured, in the shape the comparison reads it: one baseline, N candidates. */
-interface RunSamples {
-  readonly baseline: TargetSamples;
-  readonly candidates: readonly TargetSamples[];
-}
-
 /**
  * The baseline's values for a metric, restricted to rounds where at least one
  * candidate also reported it — the same rounds `pairSamples` can draw a
@@ -58,7 +52,7 @@ function baselinePairableValues(
   baselineSamples: readonly Record<string, number>[],
   candidateSampleSets: readonly (readonly Record<string, number>[])[],
   metricName: string,
-): number[] {
+): readonly number[] {
   const paired: number[] = [];
   for (const [i, sample] of baselineSamples.entries()) {
     const value = sample[metricName];
@@ -70,7 +64,7 @@ function baselinePairableValues(
       paired.push(value);
     }
   }
-  return paired.length > 0 ? paired : ownValues(baselineSamples, metricName);
+  return pairedOrOwnValues(paired, baselineSamples, metricName);
 }
 
 /**
@@ -86,9 +80,9 @@ function candidatePairableValues(
   baselineSamples: readonly Record<string, number>[],
   candidateSamples: readonly Record<string, number>[],
   metricName: string,
-): number[] {
+): readonly number[] {
   const { pairedB } = pairSamples(metricName, baselineSamples, candidateSamples);
-  return pairedB.length > 0 ? pairedB : ownValues(candidateSamples, metricName);
+  return pairedOrOwnValues(pairedB, candidateSamples, metricName);
 }
 
 function buildComparisonResult(
@@ -245,11 +239,9 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         throw new GymratError("collectSamples returned no result for the baseline target");
       }
 
-      const collected: RunSamples = { baseline, candidates };
-
       const metricNames = collectMetricNames([
-        collected.baseline.samples,
-        ...collected.candidates.map(({ samples }) => samples),
+        baseline.samples,
+        ...candidates.map(({ samples }) => samples),
       ]);
 
       /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
@@ -265,11 +257,11 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
       );
 
       const measurement: Measurement = {
-        baselineLabel: collected.baseline.ctx.label,
-        baselineSamples: collected.baseline.samples,
+        baselineLabel: baseline.ctx.label,
+        baselineSamples: baseline.samples,
         candidates: measureCandidates(
-          collected.baseline.samples,
-          collected.candidates,
+          baseline.samples,
+          candidates,
           metricMeta,
           options.unstableNoisePct,
         ),

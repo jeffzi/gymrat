@@ -846,7 +846,10 @@ function renderTable(
     band: row.parts === undefined ? "" : bandField(row.parts.band, verdictFields.band),
   });
 
-  const rows = layout.ordered.map(toMetricRow);
+  // Built once and kept: the width pass and the render pass need the same
+  // cells, and `planBody` emits metric lines drawn from `layout.ordered`.
+  const cellsByRow = new Map(layout.ordered.map((row) => [row, toMetricRow(row)]));
+  const rows = [...cellsByRow.values()];
   const widths: Widths = [
     computeMetricColumnWidth(widestHeaderLabel(body), [
       ...rows.map((row) => row.cells[0].length),
@@ -895,7 +898,7 @@ function renderTable(
     },
     group: (label) =>
       formatRow([label, "", "", ""], widths, styleLabelCell(label, GROUP_LABEL_STYLE)),
-    metric: (row) => formatMetricRow(toMetricRow(row), widths),
+    metric: (row) => formatMetricRow(cellsByRow.get(row)!, widths),
     aggregate: ({ label, cell }) =>
       formatRow(
         [label, "", "", joinVerdictCell(cell.parts, verdictFields)],
@@ -1585,7 +1588,10 @@ function renderMeasureTable(result: MeasurementResult, label: string): string[] 
     joinValueCell(row.value, valueFields),
   ];
 
-  const rows = layout.ordered.map(toMeasureRow);
+  // Built once and kept, as the comparison table does: the width pass and the
+  // render pass need the same cells.
+  const cellsByRow = new Map(layout.ordered.map((row) => [row, toMeasureRow(row)]));
+  const rows = [...cellsByRow.values()];
   const widths: MeasureWidths = [
     computeMetricColumnWidth(widestHeaderLabel(body), [
       ...rows.map((row) => row[0].length),
@@ -1614,7 +1620,7 @@ function renderMeasureTable(result: MeasurementResult, label: string): string[] 
       formatMeasureRow([groupLabel, ""], widths, styleLabelCell(groupLabel, GROUP_LABEL_STYLE)),
     // Nothing here is judged, so nothing here is painted: the figure is the
     // whole row, and a color on it would claim a reading the run never made.
-    metric: (row) => formatMeasureRow(toMeasureRow(row), widths),
+    metric: (row) => formatMeasureRow(cellsByRow.get(row)!, widths),
     // `planBody` was handed no aggregate builders, so it planned no aggregate
     // lines and this cell type is uninhabited.
     aggregate: ({ cell }) => assertNever(cell),

@@ -209,15 +209,6 @@ function warnEmptyGeomeanGates(
 }
 
 /**
- * `@types/node` declares `isTTY` as boolean, but node leaves it `undefined` when
- * the stream is not a TTY. Naming the real type in one place keeps every caller's
- * declared `boolean` honest instead of quietly handing back `undefined`.
- */
-function isTerminal(stream: NodeJS.WriteStream): boolean {
-  return (stream.isTTY as boolean | undefined) === true;
-}
-
-/**
  * Veto color unconditionally: `styleText` resolves `FORCE_COLOR` before `NO_COLOR`, so a
  * `FORCE_COLOR` left over from the caller's shell would otherwise defeat `NO_COLOR` and leak
  * ANSI escapes into non-interactive output.
@@ -314,45 +305,6 @@ async function exitWithError(error: unknown, code = TOOL_FAILURE_EXIT_CODE): Pro
 /** Shown after a sample step until enough gaps have been measured for an ETA. */
 const ETA_PENDING_LABEL = "estimating time left…";
 
-/** Structured segments shared by {@link formatProgressLine} and {@link styleProgressLine}. */
-interface ProgressLineParts {
-  readonly stepWord: string;
-  readonly counter: string | undefined;
-  readonly label: string;
-  readonly etaSuffix: string | undefined;
-}
-
-/**
- * Derive the step word, counter, label, and ETA suffix for a progress line,
- * leaving presentation (plain text vs. ANSI styling) to the caller.
- */
-function buildProgressLineParts(step: ProgressStep, etaMs?: number): ProgressLineParts {
-  let etaSuffix: string | undefined;
-  if (etaMs !== undefined) {
-    etaSuffix = formatEta(etaMs);
-  } else if (step.kind === "sample") {
-    etaSuffix = ETA_PENDING_LABEL;
-  }
-
-  switch (step.kind) {
-    case "prepare":
-      return { stepWord: "prepare", counter: undefined, label: step.label, etaSuffix };
-    case "sample":
-      return {
-        stepWord: "sample",
-        counter: `${step.index}/${step.total}`,
-        label: step.label,
-        etaSuffix,
-      };
-    default:
-      return assertNever(step);
-  }
-}
-
-function joinStepLine(stepWord: string, counter: string | undefined, label: string): string {
-  return counter === undefined ? `${stepWord} · ${label}` : `${stepWord} ${counter} · ${label}`;
-}
-
 /** Per-field presentation applied by {@link renderProgressLine}: identity for plain text, ANSI styling for the spinner. */
 interface ProgressLineStyle {
   readonly label: (text: string) => string;
@@ -370,13 +322,27 @@ function renderProgressLine(
   etaMs: number | undefined,
   style: ProgressLineStyle,
 ): string {
-  const { stepWord, counter, label, etaSuffix } = buildProgressLineParts(step, etaMs);
-  const styledCounter = counter === undefined ? undefined : style.counter(counter);
-  let line = joinStepLine(stepWord, styledCounter, style.label(label));
-  if (etaSuffix !== undefined) {
-    line += style.eta(` · ${etaSuffix}`);
+  let etaSuffix: string | undefined;
+  if (etaMs !== undefined) {
+    etaSuffix = formatEta(etaMs);
+  } else if (step.kind === "sample") {
+    etaSuffix = ETA_PENDING_LABEL;
   }
-  return line;
+
+  const label = style.label(step.label);
+  let line: string;
+  switch (step.kind) {
+    case "prepare":
+      line = `prepare · ${label}`;
+      break;
+    case "sample":
+      line = `sample ${style.counter(`${step.index}/${step.total}`)} · ${label}`;
+      break;
+    default:
+      return assertNever(step);
+  }
+
+  return etaSuffix === undefined ? line : line + style.eta(` · ${etaSuffix}`);
 }
 
 const IDENTITY_PROGRESS_LINE_STYLE: ProgressLineStyle = {
@@ -638,18 +604,6 @@ function addSharedOptions(command: Command): Command {
     );
 }
 
-/** The `resolveConfig` view of a parsed flag set: the run settings, without the presentation ones. */
-function configFlagsOf(options: SharedFlags): CliFlags {
-  return {
-    bench: options.bench,
-    prepare: options.prepare,
-    adapter: options.adapter,
-    samples: options.samples,
-    timeout: options.timeout,
-    config: options.config,
-  };
-}
-
 /** Wire `config`'s run settings and `progress`'s callbacks into the shared `CompareOptions`/`MeasureOptions` fields. */
 function runOptionsOf(
   config: ResolvedConfig,
@@ -685,7 +639,10 @@ function beginRun(options: SharedFlags, targetCount: number): ProgressReporter {
   if (!options.color) {
     suppressColor();
   }
-  const tty = isTerminal(process.stderr);
+  // `@types/node` declares `isTTY` as boolean, but node leaves it `undefined`
+  // when the stream is not a TTY, so the comparison is what makes the boolean
+  // honest.
+  const tty = (process.stderr.isTTY as boolean | undefined) === true;
   const colorSuppressed = process.env.NO_COLOR !== undefined;
   return createProgressReporter(tty && !colorSuppressed, tty, targetCount);
 }
@@ -735,11 +692,6 @@ function lockableRepoRoot(): string | undefined {
   }
 }
 
-/** `withRepoLock`'s default: every uncaught error is a tool failure. */
-function toolFailure(): number {
-  return TOOL_FAILURE_EXIT_CODE;
-}
-
 /**
  * Run `execute`, and route a thrown error through {@link exitWithError} instead
  * of letting it escape — `exitCodeOf` picks the exit code the error deserves,
@@ -751,7 +703,8 @@ function toolFailure(): number {
  */
 async function runOrExit<T>(
   execute: () => Promise<T>,
-  exitCodeOf: (error: unknown) => number = toolFailure,
+  // Default: every uncaught error is a tool failure.
+  exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
 ): Promise<T> {
   try {
     return await execute();
@@ -779,7 +732,8 @@ async function runOrExit<T>(
 async function withRepoLock<T>(
   command: string,
   run: () => Promise<T>,
-  exitCodeOf: (error: unknown) => number = toolFailure,
+  // Default: every uncaught error is a tool failure.
+  exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
 ): Promise<T> {
   const root = lockableRepoRoot();
   if (root === undefined) {
@@ -971,7 +925,7 @@ export function createProgram(): Command {
         const progress = beginRun(options, 1 + candidates.length);
 
         const compareResult = await runGuarded(progress, async () => {
-          const config = resolveConfig(configFlagsOf(options));
+          const config = resolveConfig(options);
 
           const compareOptions: CompareOptions = {
             baseline,
@@ -1023,7 +977,7 @@ export function createProgram(): Command {
         const progress = beginRun(options, 1);
 
         const run = await runGuarded(progress, async () => {
-          const config = resolveConfig(configFlagsOf(options));
+          const config = resolveConfig(options);
 
           /*
            * The session is resolved before a single sample is taken: a run that

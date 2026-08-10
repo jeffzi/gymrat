@@ -298,15 +298,12 @@ export function formatStatusIteration(iteration: StatusIteration): string {
 
 /** The median each metric measured across `samples`, in the order the rounds first named them. */
 function metricMedians(samples: readonly Record<string, number>[]): [string, number][] {
-  const byMetric = new Map<string, number[]>();
-  for (const round of samples) {
-    for (const [name, value] of Object.entries(round)) {
-      const values = byMetric.get(name) ?? [];
-      values.push(value);
-      byMetric.set(name, values);
-    }
-  }
-  return [...byMetric].map(([name, values]) => [name, computeMedian(values)]);
+  const readings = samples.flatMap((round) => Object.entries(round));
+  const byMetric = Map.groupBy(readings, ([name]) => name);
+  return [...byMetric].map(([name, entries]) => [
+    name,
+    computeMedian(entries.map(([, value]) => value)),
+  ]);
 }
 
 /**

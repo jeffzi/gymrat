@@ -957,7 +957,10 @@ function collectFooterData(metrics: MetricComparisons): FooterData {
  * Every line is dimmed via `styleText` auto-detection.
  */
 export function methodFooterLines(metrics: MetricComparisons): string[] {
-  const { signedRank, shortage, ties } = collectFooterData(metrics);
+  return methodLinesFrom(collectFooterData(metrics));
+}
+
+function methodLinesFrom({ signedRank, shortage, ties }: FooterData): string[] {
   const lines: string[] = [];
 
   if (signedRank.length > 0) {
@@ -991,7 +994,11 @@ export function hintFooterLines(
   metrics: MetricComparisons,
   formatHint: (hint: string) => string,
 ): string[] {
-  return collectFooterData(metrics).shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
+  return hintLinesFrom(collectFooterData(metrics), formatHint);
+}
+
+function hintLinesFrom(data: FooterData, formatHint: (hint: string) => string): string[] {
+  return data.shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
 }
 
 /**
@@ -1006,5 +1013,6 @@ export function footerLines(
   verbose: boolean,
   formatHint: (hint: string) => string,
 ): string[] {
-  return [...(verbose ? methodFooterLines(metrics) : []), ...hintFooterLines(metrics, formatHint)];
+  const data = collectFooterData(metrics);
+  return [...(verbose ? methodLinesFrom(data) : []), ...hintLinesFrom(data, formatHint)];
 }

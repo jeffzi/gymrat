@@ -16,7 +16,7 @@ import {
   collectMetricNames,
   collectSamples,
   computeMetricStats,
-  ownValues,
+  pairedOrOwnValues,
   type ProgressStep,
   type SamplingOptions,
   type TargetContext,
@@ -481,10 +481,10 @@ function compareMetric(
 ): MetricComparison {
   const { pairedA, pairedB } = pairSamples(metricName, baseline.samples, experiment.samples);
   const baselineStats = computeMetricStats(
-    pairedA.length > 0 ? pairedA : ownValues(baseline.samples, metricName),
+    pairedOrOwnValues(pairedA, baseline.samples, metricName),
   );
   const experimentStats = computeMetricStats(
-    pairedB.length > 0 ? pairedB : ownValues(experiment.samples, metricName),
+    pairedOrOwnValues(pairedB, experiment.samples, metricName),
   );
 
   return {

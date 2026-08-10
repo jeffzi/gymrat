@@ -310,6 +310,23 @@ export function ownValues(
   return samples.map((sample) => sample[metricName]).filter((v) => v !== undefined);
 }
 
+/**
+ * The values one side's displayed median is read from: the rounds the metric
+ * paired in, or — when nothing paired — every round that side reported it.
+ *
+ * A metric that paired has a verdict its median must stay consistent with, so
+ * the median comes from the paired rounds alone. A metric only one side ever
+ * reported has no verdict to agree with, so falling back to its own rounds
+ * shows a real measurement instead of an empty cell.
+ */
+export function pairedOrOwnValues(
+  paired: readonly number[],
+  samples: readonly Record<string, number>[],
+  metricName: string,
+): readonly number[] {
+  return paired.length > 0 ? paired : ownValues(samples, metricName);
+}
+
 /** Every metric name any target reported, so a one-sided metric still gets a row. */
 export function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
   return new Set(sampleSets.flat().flatMap(Object.keys));
