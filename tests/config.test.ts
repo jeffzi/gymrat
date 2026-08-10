@@ -216,14 +216,14 @@ describe("loadConfigFile", () => {
       expect(() => loadConfigFile(configPath)).toThrow(/badKey/);
     });
 
-    it("reports an unknown key rather than a non-object root for an empty-string key", () => {
+    it("names an empty-string key as a quoted empty key rather than a non-object root", () => {
       const { dir, configPath } = createConfigFile({ "": 1 });
       tmpdir = dir;
       const act = (): void => {
         loadConfigFile(configPath);
       };
 
-      expect(act).toThrow(/Unknown config key/);
+      expect.soft(act).toThrow('Unknown config key: ""');
       expect(act).not.toThrow(/JSON object/);
     });
   });
@@ -257,17 +257,20 @@ describe("loadConfigFile", () => {
     });
   });
 
-  describe("when checks holds an empty string", () => {
-    it("throws naming checks and the non-empty requirement", () => {
-      const { dir, configPath } = createConfigFile({ checks: "" });
-      tmpdir = dir;
-      const act = (): void => {
-        loadConfigFile(configPath);
-      };
+  describe("when a command key holds an empty string", () => {
+    it.each([{ key: "checks" }, { key: "bench" }, { key: "prepare" }])(
+      "throws naming $key and the non-empty requirement",
+      ({ key }) => {
+        const { dir, configPath } = createConfigFile({ [key]: "" });
+        tmpdir = dir;
+        const act = (): void => {
+          loadConfigFile(configPath);
+        };
 
-      expect.soft(act).toThrow(GymratError);
-      expect(act).toThrow(/checks.*non-empty/);
-    });
+        expect.soft(act).toThrow(GymratError);
+        expect(act).toThrow(new RegExp(`${key}.*non-empty`));
+      },
+    );
   });
 
   describe("when a positive-integer key holds an invalid value", () => {
@@ -701,6 +704,21 @@ describe("resolveConfig", () => {
       });
 
       expect(result.prepare).toBe("prepare-cmd");
+    });
+  });
+
+  describe("when a command flag holds an empty string", () => {
+    it.each([
+      { key: "bench", flags: { bench: "" } },
+      { key: "prepare", flags: { bench: "my-bench", prepare: "" } },
+    ])("throws naming --$key and the non-empty requirement", ({ key, flags }) => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      process.chdir(tmpdir);
+      const act = (): ResolvedConfig => resolveConfig(flags);
+
+      // The flag spelling, not the config key: the flag is what the user typed.
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(new RegExp(`--${key}.*non-empty`));
     });
   });
 

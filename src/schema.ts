@@ -72,6 +72,17 @@ export interface SchemaIssue {
   error: ValueError;
 }
 
+/**
+ * Render a {@link SchemaIssue.path} for a message that names the offending key.
+ *
+ * An empty path means the key itself is the empty string, so it is quoted: a bare
+ * substitution would end the message at the colon and read as if no key were named at
+ * all. Every other path is left bare so ordinary messages stay plain prose.
+ */
+export function describeKey(path: string): string {
+  return path === "" ? '""' : path;
+}
+
 /** A schema compiled once, ready to validate many values. */
 export interface Validator<T extends TSchema> {
   check: (value: unknown) => value is Static<T>;

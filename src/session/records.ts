@@ -4,6 +4,7 @@ import type { Static, TSchema } from "@sinclair/typebox";
 import { GymratError } from "../errors.js";
 import {
   compile,
+  describeKey,
   expected,
   nameKeyedRecordOptions,
   parse,
@@ -238,7 +239,7 @@ export type SessionLogRecord =
  */
 function recordMessage(issue: SchemaIssue): string {
   if (issue.kind === "unknown-key") {
-    return `Unknown session record key: ${issue.path}`;
+    return `Unknown session record key: ${describeKey(issue.path)}`;
   }
   return `Invalid session record value for ${issue.path}: expected ${issue.expected}, got ${JSON.stringify(issue.value)}`;
 }

@@ -3,7 +3,7 @@ import type { TSchema } from "@sinclair/typebox";
 import { describe, it, expect, expectTypeOf } from "vitest";
 
 import type { SchemaIssue } from "../src/schema.js";
-import { compile, expected, parse } from "../src/schema.js";
+import { compile, describeKey, expected, parse } from "../src/schema.js";
 
 function firstIssueOf(schema: TSchema, value: unknown): SchemaIssue {
   const issue = compile(schema).firstIssue(value);
@@ -38,6 +38,28 @@ describe("expected", () => {
       const issue = firstIssueOf(schema, value);
 
       expect(issue.expected).toBe(phrase);
+    });
+  });
+});
+
+describe("describeKey", () => {
+  describe("when the path names a key", () => {
+    it.each([
+      { description: "a top-level key", path: "bench" },
+      { description: "a nested key", path: "hooks.before" },
+      { description: "a key containing a slash", path: "decode/time" },
+    ])("returns $description unchanged", ({ path }) => {
+      const result = describeKey(path);
+
+      expect(result).toBe(path);
+    });
+  });
+
+  describe("when the path is the empty key", () => {
+    it("quotes it so the reader can see a key is there and that it is empty", () => {
+      const result = describeKey("");
+
+      expect(result).toBe('""');
     });
   });
 });

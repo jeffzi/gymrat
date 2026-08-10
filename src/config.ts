@@ -9,6 +9,7 @@ import { GymratError, hasErrorCode } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import {
   compile,
+  describeKey,
   expected,
   nameKeyedRecordOptions,
   parse,
@@ -22,13 +23,15 @@ import { DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT } from "./verdict/verdict.j
 const optionalStringSchema = Type.Optional(Type.String(expected("a string")));
 
 /**
- * Shared schema for optional command strings.
+ * Shared schema for optional strings that name work to do — a command to run, or the
+ * benchmark a run targets.
  *
  * Empty is rejected rather than read as absent: an empty command runs as a no-op
  * shell that exits 0, so a blank entry would report as having run and succeeded
- * without ever executing anything.
+ * without ever executing anything, and an empty `bench` selects nothing while
+ * looking like a benchmark was chosen.
  */
-const optionalCommandSchema = Type.Optional(
+const optionalNonEmptyStringSchema = Type.Optional(
   Type.String({ ...expected("a non-empty string"), minLength: 1 }),
 );
 
@@ -66,15 +69,15 @@ const stopSchema = Type.Object(
 
 /** Commands the loop runs around each iteration; a stage left out runs nothing. */
 const hooksSchema = Type.Object(
-  { before: optionalCommandSchema, after: optionalCommandSchema },
+  { before: optionalNonEmptyStringSchema, after: optionalNonEmptyStringSchema },
   strictObjectOptions,
 );
 
 /** The `gymrat.json` schema — every field optional, since flags can supply any of them. */
 const configFileSchema = Type.Object(
   {
-    bench: optionalStringSchema,
-    prepare: optionalStringSchema,
+    bench: optionalNonEmptyStringSchema,
+    prepare: optionalNonEmptyStringSchema,
     adapter: optionalStringSchema,
     samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
     timeoutSeconds: Type.Optional(
@@ -93,7 +96,7 @@ const configFileSchema = Type.Object(
     ),
     metrics: Type.Optional(metricsSchema),
     kinds: Type.Optional(kindsSchema),
-    checks: optionalCommandSchema,
+    checks: optionalNonEmptyStringSchema,
     filter: optionalStringSchema,
     primary: optionalStringSchema,
     stop: Type.Optional(stopSchema),
@@ -176,7 +179,7 @@ function configMessage(configPath: string, issue: SchemaIssue): string {
     return `Invalid config file at ${configPath}: expected a JSON object, got ${JSON.stringify(issue.value)}`;
   }
   if (issue.kind === "unknown-key") {
-    return `Unknown config key: ${issue.path}`;
+    return `Unknown config key: ${describeKey(issue.path)}`;
   }
   return invalidValueMessage(issue.path, issue.expected, issue.value);
 }
@@ -267,6 +270,20 @@ function validateLoopKeys(config: { filter?: string; primary: string; stop?: Con
 }
 
 /**
+ * Reject a flag given an empty value.
+ *
+ * Flags bypass the file schema, so `--bench ""` is the one way an empty string still
+ * reaches a resolved field; it is a value the user got wrong, not a value left out.
+ * The message names the flag rather than the config key, because the flag is what
+ * the user typed.
+ */
+function assertFlagNotEmpty(field: string, value: string | undefined): void {
+  if (value === "") {
+    throw new GymratError(invalidValueMessage(`--${field}`, "a non-empty string", value));
+  }
+}
+
+/**
  * Merge flags → config file → built-in defaults into one partial record.
  *
  * `bench` stays optional — the caller validates its presence and spreads the
@@ -306,12 +323,14 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): Omit<ResolvedConf
  * without it throws.
  */
 export function resolveConfig(flags: CliFlags): ResolvedConfig {
+  assertFlagNotEmpty("bench", flags.bench);
+  assertFlagNotEmpty("prepare", flags.prepare);
   const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
   const merged = mergeConfig(flags, configFile);
 
   const bench = flags.bench ?? configFile.bench;
-  if (!bench) {
+  if (bench === undefined) {
     throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
   }
   validateLoopKeys(merged);
