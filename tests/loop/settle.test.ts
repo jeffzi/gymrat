@@ -12,13 +12,18 @@ import {
   experimentWorktreeDir,
   sessionJsonlPath,
 } from "../../src/session/paths.js";
-import type { IterationRecord, SessionLogRecord } from "../../src/session/records.js";
+import type {
+  DiscardRecord,
+  IterationRecord,
+  KeepRecord,
+  SessionLogRecord,
+} from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { captureStdout, createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
 import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
-import { committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
+import { AT, committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
 
 type Exec = typeof import("../../src/exec.js").exec;
 
@@ -75,6 +80,15 @@ function iteration(seq: number, overrides: Partial<IterationRecord> = {}): Itera
   return iterationRecord({ seq, ...overrides });
 }
 
+/** An iteration numbered `seq` whose deltas a zero baseline median left undefined. */
+function undefinedDelta(seq: number): IterationRecord {
+  return iteration(seq, {
+    metrics: { total_ms: metric({ deltaPct: null, verdict: "no-signal" }) },
+    primary: { kind: "geomean", deltaPct: null },
+    outcome: "no-signal",
+  });
+}
+
 /** An iteration whose gating metric came back regressed and stayed regressed on the rerun. */
 function confirmedRegression(seq: number): IterationRecord {
   return iteration(seq, {
@@ -82,6 +96,23 @@ function confirmedRegression(seq: number): IterationRecord {
     primary: { kind: "geomean", deltaPct: 9.4 },
     outcome: "regressed",
   });
+}
+
+/** The keep a gating regression refused, numbered with the iteration it refused. */
+function gatingBlock(seq: number): KeepRecord {
+  return {
+    type: "keep",
+    seq,
+    at: AT,
+    status: "blocked",
+    reason: "gating-regression",
+    checks: { configured: true },
+  };
+}
+
+/** A discard of the iteration numbered `seq`. */
+function discardRecord(seq: number): DiscardRecord {
+  return { type: "discard", seq, at: AT };
 }
 
 let repo: ScratchRepo;
@@ -220,6 +251,24 @@ describe("keepSession", () => {
       const subject = git(["log", "-1", "--format=%s"], experimentWorktreeDir(repo.dir));
       expect.soft(result.record.message).toContain("iteration 1");
       expect.soft(result.record.message).toContain("-7.2");
+      expect(subject).toBe(result.record.message);
+    });
+  });
+
+  describe("when the last iteration's primary delta was left undefined", () => {
+    beforeEach(() => {
+      startWith([undefinedDelta(1)]);
+      editExperiment();
+      checksPass();
+    });
+
+    it("commits a generated message that says so instead of trailing off", async () => {
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert
+      const subject = git(["log", "-1", "--format=%s"], experimentWorktreeDir(repo.dir));
+      expect.soft(result.record.message).toBe("iteration 1: geomean delta undefined");
       expect(subject).toBe(result.record.message);
     });
   });
@@ -498,6 +547,20 @@ describe("discardSession", () => {
     });
   });
 
+  describe("when the last iteration's primary delta was left undefined", () => {
+    it("throws it away like any other", () => {
+      // Arrange
+      startWith([undefinedDelta(1)]);
+      editExperiment();
+
+      // Act
+      const result = discardSession(repo.dir);
+
+      // Assert
+      expect(result.record.seq).toBe(1);
+    });
+  });
+
   describe("when the experiment worktree is clean", () => {
     it("records the discard anyway", () => {
       // Arrange
@@ -511,12 +574,54 @@ describe("discardSession", () => {
     });
   });
 
+  describe("when the last keep was blocked for a gating regression", () => {
+    beforeEach(() => {
+      startWith([confirmedRegression(1), gatingBlock(1)]);
+      editExperiment();
+    });
+
+    it("throws away the edit the regression blocked", () => {
+      // Act
+      discardSession(repo.dir);
+
+      // Assert
+      const worktree = experimentWorktreeDir(repo.dir);
+      expect.soft(fs.readFileSync(path.join(worktree, "README.md"), "utf-8")).toBe("# Test Repo\n");
+      expect.soft(fs.existsSync(path.join(worktree, "scratch.txt"))).toBe(false);
+      expect(statusOf(worktree)).toBe("");
+    });
+
+    it("appends a discard numbered past the block, leaving the block in history", () => {
+      // Act
+      const result = discardSession(repo.dir);
+
+      // Assert - the block already settled iteration 1, so the discard takes the
+      // number no iteration has used yet. Reusing 1 would overwrite the block in
+      // `status`, which reports the last settling record to carry an iteration's
+      // number, and the block is history the log has to keep showing.
+      expect.soft(result.record).toStrictEqual({
+        type: "discard",
+        seq: 2,
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        at: expect.stringMatching(ISO_PATTERN),
+      });
+      expect(readRecords(sessionJsonlPath(repo.dir)).slice(-2)).toStrictEqual([
+        gatingBlock(1),
+        result.record,
+      ]);
+    });
+  });
+
   describe("when nothing has been measured since the last settle", () => {
     it.each([
       { description: "no iteration was ever recorded", history: [] },
       {
         description: "the last iteration was already kept",
         history: [iteration(1), committedKeep(1)],
+      },
+      {
+        description: "the gating regression it blocked was already discarded",
+        history: [confirmedRegression(1), gatingBlock(1), discardRecord(2)],
       },
     ] satisfies { description: string; history: SessionLogRecord[] }[])(
       "refuses rather than settle a second time when $description",

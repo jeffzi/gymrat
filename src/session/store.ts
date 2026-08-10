@@ -92,6 +92,50 @@ export function readRecords(jsonlPath: string): SessionLogRecord[] {
 }
 
 /**
+ * The commit made by the last keep in `records` that committed, absent when none did.
+ *
+ * The session's baseline worktree advances to every kept commit, so this — not the
+ * session header's pinned SHA — is where the baseline stands once a keep has landed.
+ * A blocked keep committed nothing and leaves the baseline where it was.
+ */
+export function lastKeptCommit(records: SessionLogRecord[]): string | undefined {
+  let commit: string | undefined;
+
+  for (const record of records) {
+    if (record.type === "keep" && record.status === "committed" && record.commit !== undefined) {
+      commit = record.commit;
+    }
+  }
+
+  return commit;
+}
+
+/**
+ * Whether `records` ends on a keep the loop blocked for a gating regression.
+ *
+ * The block settles the iteration it refused — {@link foldSession} clears
+ * `unsettled` for it — but the edit it would not commit is still standing in the
+ * experiment worktree, so `discard` accepts this as the one settled state it may
+ * still revert, making the refusal's own hint true. Any iteration, keep, or
+ * discard written after the block supersedes it.
+ */
+export function endsOnGatingBlock(records: SessionLogRecord[]): boolean {
+  let blocked = false;
+
+  // The header, baseline samples, and hook runs neither measure nor settle an
+  // edit, so they leave the answer where the last keep, iteration, or discard put it.
+  for (const record of records) {
+    if (record.type === "keep") {
+      blocked = record.status === "blocked" && record.reason === "gating-regression";
+    } else if (record.type === "iteration" || record.type === "discard") {
+      blocked = false;
+    }
+  }
+
+  return blocked;
+}
+
+/**
  * Fold `records` into the state they describe.
  *
  * Folds whatever it is given: validating the log — that it parses, and that it opens with

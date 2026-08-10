@@ -9,7 +9,13 @@ import type {
   KeepRecord,
   SessionRecord,
 } from "../session/records.js";
-import { appendRecord, foldSession, readRecords, type SessionState } from "../session/store.js";
+import {
+  appendRecord,
+  endsOnGatingBlock,
+  foldSession,
+  readRecords,
+  type SessionState,
+} from "../session/store.js";
 import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/workspace.js";
 
 const MS_PER_SECOND = 1000;
@@ -133,9 +139,11 @@ export async function keepSession(
  *
  * A clean worktree is discarded just as loudly as a dirty one: the record is what
  * settles the iteration, and gymrat does not guess whether an agent that changed
- * nothing meant to. What there must be is an iteration to settle — with none, the
- * discard would number itself after one the log already settled, and history would
- * read as two settlements of a single iteration.
+ * nothing meant to. What there must be is an edit to throw away — either an
+ * unsettled iteration, or the one a gating regression refused to commit, which is
+ * settled in the log yet still standing in the worktree. Anywhere else the discard
+ * would number itself after an iteration the log already settled, and history
+ * would read as two settlements of a single iteration.
  *
  * Holding the repository lock across the call is the caller's job — the revert
  * and the record it explains must not be separable by another run.
@@ -145,10 +153,12 @@ export async function keepSession(
  */
 export function discardSession(root: string): DiscardResult {
   const jsonlPath = sessionJsonlPath(root);
-  const state = foldSession(readRecords(jsonlPath));
+  const records = readRecords(jsonlPath);
+  const state = foldSession(records);
   const session = requireSession(root, state);
+  const afterGatingBlock = endsOnGatingBlock(records);
 
-  if (!state.unsettled) {
+  if (!state.unsettled && !afterGatingBlock) {
     throw new GymratError(
       "Discard refused: nothing has been measured since the last keep or discard.",
       "Run gymrat iterate to measure an edit before settling it.",
@@ -159,7 +169,12 @@ export function discardSession(root: string): DiscardResult {
 
   const record: DiscardRecord = {
     type: "discard",
-    seq: state.lastSeq,
+    // The block already settled the iteration it refused, so the discard behind it
+    // takes the number no iteration has used yet — the same number a refused keep
+    // takes. Reusing the iteration's own seq would make the discard the last
+    // settling record to carry it, and `gymrat status` would render it in place of
+    // the block instead of alongside it.
+    seq: afterGatingBlock ? state.lastSeq + 1 : state.lastSeq,
     at: new Date().toISOString(),
   };
   appendRecord(jsonlPath, record);
@@ -272,8 +287,13 @@ function blockedKeep(
  * It names the iteration and the figure it was read on, so the branch's history
  * reads back as the loop that produced it rather than as a run of unlabelled
  * commits.
+ *
+ * A figure whose ratio had no value says so in words: the report can print a
+ * blank percentage and let the glyph beside it carry the news, but a commit
+ * subject has nothing beside it, and would trail off on the figure's bare name.
  */
 function generatedMessage(iteration: IterationRecord): string {
   const { primary } = iteration;
-  return `iteration ${iteration.seq}: ${primary.name ?? primary.kind} ${formatDelta(primary.deltaPct)}`;
+  const moved = primary.deltaPct === null ? "delta undefined" : formatDelta(primary.deltaPct);
+  return `iteration ${iteration.seq}: ${primary.name ?? primary.kind} ${moved}`;
 }
