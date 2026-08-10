@@ -1,6 +1,6 @@
 {
   "name": "gymrat",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Benchmark candidate revisions against a baseline and get a clear per-metric verdict: improved, regressed, or noise",
   "keywords": [
     "benchmark",
