@@ -279,6 +279,20 @@ async function cleanupInFlightRun(
 /** Generous timeout for tests whose run creates worktrees and spawns real bench processes. */
 const LONG_RUN_TIMEOUT_MS = 60_000;
 
+/**
+ * The termination-signal listeners already present when this file loads.
+ *
+ * gymrat attaches one handler per signal for the lifetime of the process and
+ * reuses it for every run, so a baseline captured after the first run would
+ * already contain it and `raiseSignal` would find nothing new to invoke. Taken
+ * at module load, this is the set that is definitively not ours.
+ */
+const PREEXISTING_SIGNAL_LISTENERS: Record<SignalName, readonly unknown[]> = {
+  SIGINT: process.listeners("SIGINT").slice(),
+  SIGTERM: process.listeners("SIGTERM").slice(),
+  SIGHUP: process.listeners("SIGHUP").slice(),
+};
+
 describe("compare – integration", () => {
   let originalCwd: string;
 
@@ -1192,11 +1206,7 @@ describe("compare – integration", () => {
     let listenersBefore: Record<SignalName, readonly unknown[]>;
 
     beforeEach(() => {
-      listenersBefore = {
-        SIGINT: process.listeners("SIGINT"),
-        SIGTERM: process.listeners("SIGTERM"),
-        SIGHUP: process.listeners("SIGHUP"),
-      };
+      listenersBefore = PREEXISTING_SIGNAL_LISTENERS;
       stubProcessExit();
     });
 
@@ -1242,10 +1252,6 @@ describe("compare – integration", () => {
 
       beforeAll(async () => {
         savedCwd = process.cwd();
-        const signalListenersBefore = {
-          SIGINT: process.listeners("SIGINT"),
-          SIGTERM: process.listeners("SIGTERM"),
-        };
         stubProcessExit();
 
         repo = createScratchRepo();
@@ -1258,7 +1264,7 @@ describe("compare – integration", () => {
           throw new Error(`bench grandchild pid ${run.benchGrandchildPid} is not alive`);
         }
 
-        raiseSignal("SIGINT", signalListenersBefore.SIGINT);
+        raiseSignal("SIGINT", PREEXISTING_SIGNAL_LISTENERS.SIGINT);
       }, LONG_RUN_TIMEOUT_MS);
 
       afterAll(async () => {
@@ -1290,7 +1296,7 @@ describe("compare – integration", () => {
       { outcome: "resolved", benchScript: '#!/bin/sh\necho "METRIC latency=100"' },
       { outcome: "rejected", benchScript: "#!/bin/sh\nexit 1" },
     ])(
-      "holds one handler per signal only until the run has $outcome",
+      "leaves the signal listener count where it found it once the run has $outcome",
       async ({ outcome, benchScript }) => {
         await withScratchRepo(async (repo) => {
           createBranch(repo, { name: "old-settled", benchScript });
@@ -1299,34 +1305,28 @@ describe("compare – integration", () => {
             benchScript: '#!/bin/sh\necho "METRIC latency=90"',
           });
 
-          const before = signalListenerCounts();
+          const runOnce = async (): Promise<string> =>
+            compare(
+              compareOptions({
+                baseline: { target: "old-settled" },
+                candidates: [{ target: "new-settled" }],
+                timeoutSeconds: 20,
+              }),
+            ).then(
+              () => "resolved",
+              () => "rejected",
+            );
 
-          const running = compare(
-            compareOptions({
-              baseline: { target: "old-settled" },
-              candidates: [{ target: "new-settled" }],
-              timeoutSeconds: 20,
-            }),
-          );
-          const duringRun = signalListenerCounts();
-          const settled = await running.then(
-            () => "resolved",
-            () => "rejected",
-          );
+          const settled = await runOnce();
+          const afterFirst = signalListenerCounts();
+          await runOnce();
 
+          // What "no leak" means: the handler is attached once and reused, so a
+          // second run adds nothing. Counting the first run's own install would
+          // pin the arrangement instead — and a per-run install is exactly the
+          // shape that accumulated listeners until it tripped MaxListeners.
           expect(settled).toBe(outcome);
-          expect(duringRun).toStrictEqual({
-            SIGINT: before.SIGINT + 1,
-            SIGTERM: before.SIGTERM + 1,
-            SIGHUP: before.SIGHUP + 1,
-          });
-          // Uninstall swaps cleanup handlers for exit-only handlers, so each
-          // signal keeps one listener (the exit-only replacement).
-          expect(signalListenerCounts()).toStrictEqual({
-            SIGINT: before.SIGINT + 1,
-            SIGTERM: before.SIGTERM + 1,
-            SIGHUP: before.SIGHUP + 1,
-          });
+          expect(signalListenerCounts()).toStrictEqual(afterFirst);
         });
       },
       LONG_RUN_TIMEOUT_MS,
