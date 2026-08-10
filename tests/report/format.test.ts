@@ -151,6 +151,25 @@ describe("formatValue", () => {
       expect(formatValue(value)).toBe(expected);
     });
   });
+
+  describe("when the value is negative", () => {
+    // A negative reading belongs to the tier its magnitude names: printing it
+    // raw leaves a seven-digit cell where the column budgets four.
+    it.each([
+      { unit: "bytes" as const, value: -512, expected: "-512B" },
+      { unit: "bytes" as const, value: -3600, expected: "-3.6KB" },
+      { unit: "bytes" as const, value: -1_500_000, expected: "-1.5MB" },
+      { unit: "ns" as const, value: -1735, expected: "-1.7µs" },
+      { unit: "ns" as const, value: -2_000_000_000, expected: "-2.0s" },
+      // Rounding onto a tier boundary promotes the magnitude, sign aside.
+      { unit: "bytes" as const, value: -999.5, expected: "-1.0KB" },
+    ])(
+      "picks the tier by magnitude, rendering $value $unit as $expected",
+      ({ unit, value, expected }) => {
+        expect(formatValue(value, unit)).toBe(expected);
+      },
+    );
+  });
 });
 
 describe("formatEvidence", () => {
@@ -623,6 +642,18 @@ describe("shortenLabel", () => {
       { desc: "negative", maxWidth: -5 },
     ])("returns an empty string for a $desc width", ({ maxWidth }) => {
       expect(shortenLabel(TEXT, maxWidth)).toBe("");
+    });
+  });
+
+  describe("when the text carries characters outside the basic plane", () => {
+    it("cuts between whole code points at both ends", () => {
+      // At a width of 10 the head keeps 5 units and the tail 4, and both
+      // boundaries land inside an emoji: the head's inside the first 🚀, the
+      // tail's inside the first 🎉. Half a code point renders as a replacement
+      // box, so each partial pair is dropped rather than kept.
+      const label = "fix/🚀🚀-hot-path-🎉🎉x";
+
+      expect(shortenLabel(label, 10)).toBe("fix/…🎉x");
     });
   });
 });

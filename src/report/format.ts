@@ -43,12 +43,17 @@ const TIER_MAP: Record<"ns" | "bytes", readonly Tier[]> = {
  * 999999.6ns to `1000.0µs` — which is a four-digit magnitude in a column sized
  * for three. Promoting it to the tier above keeps every cell inside the width
  * its tier is measured for.
+ *
+ * Thresholds are compared against the magnitude, since a sign is not a size: a
+ * negative reading measured against the raw figure falls into the smallest tier
+ * whatever it is worth, and `-1500000` prints in full where `-1.5MB` belongs.
  */
 function scaleTier(value: number, tiers: readonly Tier[]): string {
   if (!Number.isFinite(value)) return value.toString();
+  const magnitude = Math.abs(value);
   const tier = tiers.find(
     ([threshold, divisor, , decimals]) =>
-      Number((value / divisor).toFixed(decimals)) * divisor < threshold,
+      Number((magnitude / divisor).toFixed(decimals)) * divisor < threshold,
   );
   if (tier === undefined) return value.toString();
   const [, divisor, suffix, decimals] = tier;
@@ -620,6 +625,26 @@ export function withColor<T>(color: boolean | undefined, fn: () => T): T {
 const ELLIPSIS = "…";
 
 /**
+ * `text` without a trailing high surrogate — the leading half of a pair whose
+ * partner the cut left behind.
+ *
+ * Astral characters — emoji in a branch name — occupy two units of the budget a
+ * slice spends, so a cut can land between the halves. Half a pair is not a
+ * character: it renders as a replacement box, which is worth less than the
+ * column it costs and, printed into a terminal, is not the label the run named.
+ */
+function dropOrphanedHighSurrogate(text: string): string {
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+}
+
+/** `text` without a leading low surrogate — the trailing half of a split pair. */
+function dropOrphanedLowSurrogate(text: string): string {
+  const first = text.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+}
+
+/**
  * `text` fitted into `maxWidth` characters, keeping both of its ends.
  *
  * The ends carry the identity: branch names that share a prefix differ in their
@@ -628,7 +653,8 @@ const ELLIPSIS = "…";
  * whichever end runs past the budget.
  *
  * Text already inside the budget comes back untouched, so widening the budget
- * can never lengthen the result.
+ * can never lengthen the result. A cut landing inside an astral character drops
+ * it rather than keeping half, so the result can come back under the budget.
  */
 export function shortenLabel(text: string, maxWidth: number): string {
   if (maxWidth <= 0) return "";
@@ -640,7 +666,9 @@ export function shortenLabel(text: string, maxWidth: number): string {
   const head = Math.ceil(kept / 2);
   const tail = kept - head;
   // Index the tail from the front: `slice(-0)` would return the whole string.
-  return `${text.slice(0, head)}${ELLIPSIS}${text.slice(text.length - tail)}`;
+  const start = dropOrphanedHighSurrogate(text.slice(0, head));
+  const end = dropOrphanedLowSurrogate(text.slice(text.length - tail));
+  return `${start}${ELLIPSIS}${end}`;
 }
 
 /**

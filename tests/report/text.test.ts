@@ -112,9 +112,12 @@ const DIMMED_LINE = /^\x1b\[2m.*\x1b\[22m$/;
  *
  * Only the unbroken run of escape sequences touching the marker counts, so a
  * style opened at the start of the line does not leak into the result.
+ *
+ * Pass `last` to read the trailing occurrence instead of the leading one, for
+ * a marker that repeats within the line.
  */
-function stylesAt(line: string, marker: string): string[] {
-  const index = line.indexOf(marker);
+function stylesAt(line: string, marker: string, options: { last?: boolean } = {}): string[] {
+  const index = options.last === true ? line.lastIndexOf(marker) : line.indexOf(marker);
   if (index === -1) {
     throw new Error(`no ${marker} in line: ${JSON.stringify(line)}`);
   }
@@ -1766,6 +1769,18 @@ describe("renderReport", () => {
 
       expect.soft(stylesAt(entry, "≈")).toContain("33");
       expect(stylesAt(entry, "unstable")).toContain("33");
+    });
+
+    it("styles the verdict word rather than a metric name that spells it too", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "unstable-parse/time": bandMetric({ verdict: "unstable", delta: 5, noisePct: 30 }),
+        },
+      });
+      const entry = highlightLines(renderReport(result))[0]!;
+
+      expect.soft(stripAnsi(entry).trim()).toBe("≈ unstable-parse/time  unstable  noise ±30.0%");
+      expect(stylesAt(entry, "unstable", { last: true })).toContain("33");
     });
 
     it("dims the evidence suffixes in highlight entries", () => {

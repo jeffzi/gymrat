@@ -435,6 +435,11 @@ function measuredOutcomes(metrics: readonly MeasuredRow[]): (DisplayClass | unde
  * Shared by every place a verdict is stated in full — the table rows, the
  * candidate columns, the highlights list — so one verdict reads the same
  * wherever the report repeats it.
+ *
+ * The delta is matched from the end of the cell, because everything a cell puts
+ * in front of it is free to spell it too: a metric named `unstable-parse` in a
+ * highlight, a spread of `± 0.0%` behind a delta that rounded to `0.0%`. The
+ * glyph is matched from the front, where nothing precedes it.
  */
 function styleGlyphAndDelta(
   cell: string,
@@ -443,7 +448,7 @@ function styleGlyphAndDelta(
   style: Style,
 ): string {
   const styled = styleWithin(cell, getGlyph(shown), style);
-  return delta === "" ? styled : styleWithin(styled, delta, style);
+  return delta === "" ? styled : styleWithin(styled, delta, style, { last: true });
 }
 
 /** Width the metric-name column needs: the widest label any of its rows carries. */
