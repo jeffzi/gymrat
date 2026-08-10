@@ -17,7 +17,7 @@ import {
   formatStatusSettle,
 } from "../report/loop.js";
 import type { DiscardRecord, KeepRecord, SessionLogRecord } from "../session/records.js";
-import { readRecords, requireSession } from "../session/store.js";
+import { requireSession } from "../session/store.js";
 
 /** What a single settling record says became of the iteration it settles. */
 function settleStateOf(record: KeepRecord | DiscardRecord): SettleState {
@@ -87,8 +87,7 @@ function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleS
  *   corrupt — every parse failure names the log and the line at fault.
  */
 export function statusSession(root: string, config: BenchlessConfig): string {
-  const { session, state, jsonlPath } = requireSession(root, "asking for its status");
-  const records = readRecords(jsonlPath);
+  const { session, state, records } = requireSession(root, "asking for its status");
 
   const settled = settleStates(records);
   const history = records.flatMap((record, position) => {

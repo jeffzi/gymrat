@@ -389,7 +389,7 @@ describe("foldSession", () => {
 
 describe("requireSession", () => {
   describe("when the log holds a session", () => {
-    it("hands back the session, the folded state, and the log path", () => {
+    it("hands back the session, the folded state, the log path, and the records", () => {
       // Arrange
       const root = freshRoot();
       const jsonlPath = sessionJsonlPath(root);
@@ -411,6 +411,7 @@ describe("requireSession", () => {
           lastSeq: 1,
         },
         jsonlPath,
+        records: [SESSION, ITERATION_1],
       });
     });
   });

@@ -40,6 +40,8 @@ export interface RequiredSession {
   state: SessionState;
   /** The log the session was read from. */
   jsonlPath: string;
+  /** Every record the log holds, in file order — the same ones `state` folds. */
+  records: SessionLogRecord[];
 }
 
 /**
@@ -240,11 +242,12 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
  */
 export function requireSession(root: string, verb: string): RequiredSession {
   const jsonlPath = sessionJsonlPath(root);
-  const state = foldSession(readRecords(jsonlPath));
+  const records = readRecords(jsonlPath);
+  const state = foldSession(records);
 
   if (state.session === undefined) {
     throw new GymratError(`No session in ${root}`, `Run gymrat start to open one before ${verb}.`);
   }
 
-  return { session: state.session, state, jsonlPath };
+  return { session: state.session, state, jsonlPath, records };
 }

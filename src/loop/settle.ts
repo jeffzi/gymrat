@@ -3,7 +3,7 @@ import { GymratError } from "../errors.js";
 import { exec } from "../exec.js";
 import { formatDelta } from "../report/format.js";
 import type { DiscardRecord, IterationRecord, KeepRecord } from "../session/records.js";
-import { appendRecord, endsOnGatingBlock, readRecords, requireSession } from "../session/store.js";
+import { appendRecord, endsOnGatingBlock, requireSession } from "../session/store.js";
 import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/workspace.js";
 
 const MS_PER_SECOND = 1000;
@@ -138,8 +138,8 @@ export async function keepSession(
  *   measured since the last keep or discard, or when git refuses to revert the worktree.
  */
 export function discardSession(root: string): DiscardResult {
-  const { session, state, jsonlPath } = requireSession(root, "settling an edit");
-  const afterGatingBlock = endsOnGatingBlock(readRecords(jsonlPath));
+  const { session, state, jsonlPath, records } = requireSession(root, "settling an edit");
+  const afterGatingBlock = endsOnGatingBlock(records);
 
   if (!state.unsettled && !afterGatingBlock) {
     throw new GymratError(
