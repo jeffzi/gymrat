@@ -12,18 +12,19 @@ import {
   experimentWorktreeDir,
   sessionJsonlPath,
 } from "../../src/session/paths.js";
-import type {
-  DiscardRecord,
-  IterationRecord,
-  KeepRecord,
-  SessionLogRecord,
-} from "../../src/session/records.js";
+import type { IterationRecord, KeepRecord, SessionLogRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { captureStdout, createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
 import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
-import { AT, committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
+import {
+  AT,
+  committedKeep,
+  discardRecord,
+  iterationRecord,
+  resolvedConfig,
+} from "../fixtures/session-records.js";
 
 type Exec = typeof import("../../src/exec.js").exec;
 
@@ -108,11 +109,6 @@ function gatingBlock(seq: number): KeepRecord {
     reason: "gating-regression",
     checks: { configured: true },
   };
-}
-
-/** A discard of the iteration numbered `seq`. */
-function discardRecord(seq: number): DiscardRecord {
-  return { type: "discard", seq, at: AT };
 }
 
 let repo: ScratchRepo;
@@ -501,6 +497,25 @@ describe("keepSession", () => {
         });
       },
     );
+
+    it("numbers a second refusal past the first instead of reusing its number", async () => {
+      // Arrange
+      startWith();
+      editExperiment();
+      checksPass();
+      await keepSession(repo.dir, config());
+
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert - a consumer walking the raw log sees two distinct records, not
+      // one number written twice.
+      const keeps = readRecords(sessionJsonlPath(repo.dir)).filter(
+        (record) => record.type === "keep",
+      );
+      expect.soft(keeps.map((record) => record.seq)).toStrictEqual([1, 2]);
+      expect(result.record.seq).toBe(2);
+    });
   });
 });
 

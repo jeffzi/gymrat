@@ -27,7 +27,12 @@ type LockHolder = Static<typeof lockHolderSchema>;
 
 const lockHolderValidator = compile(lockHolderSchema);
 
-/** Gives up an acquired lock. Calling it more than once is harmless. */
+/**
+ * Gives up an acquired lock. Calling it more than once is harmless.
+ *
+ * Only the lockfile this run published is removed. A lock taken over since
+ * belongs to whoever holds it now, and is left where it stands.
+ */
 export type ReleaseLock = () => void;
 
 /** How many times acquisition re-reads a lockfile it lost a race for. */
@@ -50,6 +55,12 @@ function sameFile(one: LockfileIdentity, other: LockfileIdentity): boolean {
   return one.dev === other.dev && one.ino === other.ino;
 }
 
+/** Which file an open descriptor refers to, whatever its path names by now. */
+function identityOf(fd: number): LockfileIdentity {
+  const stats = fs.fstatSync(fd, { bigint: true });
+  return { dev: stats.dev, ino: stats.ino };
+}
+
 /** What a lockfile says at the moment it was read. */
 type LockfileState =
   | { readonly kind: "absent" }
@@ -67,6 +78,8 @@ type LockfileState =
  * mid-write: an unreadable file is debris — a run killed between writing its
  * record and publishing it, or a foreign file at the lock path — not a lock
  * somebody is in the middle of taking.
+ *
+ * @throws GymratError when the lockfile belongs to another user.
  */
 function readLockfile(lockPath: string): LockfileState {
   let fd: number;
@@ -76,14 +89,22 @@ function readLockfile(lockPath: string): LockfileState {
     if (hasErrorCode(error, "ENOENT")) {
       return { kind: "absent" };
     }
+    // A lockfile another user owns is unreadable to every later run, so the
+    // steal path below can never reach it — the only way out is by hand.
+    if (hasErrorCode(error, "EPERM") || hasErrorCode(error, "EACCES")) {
+      throw new GymratError(
+        `Lock file ${lockPath} could not be read: ${messageOf(error)}`,
+        `It belongs to another user. Remove ${lockPath} yourself, then rerun.`,
+        { cause: error },
+      );
+    }
     throw error;
   }
 
   let identity: LockfileIdentity;
   let contents: string;
   try {
-    const stats = fs.fstatSync(fd, { bigint: true });
-    identity = { dev: stats.dev, ino: stats.ino };
+    identity = identityOf(fd);
     contents = fs.readFileSync(fd, "utf8");
   } finally {
     fs.closeSync(fd);
@@ -128,6 +149,37 @@ function unlinkIfExists(filePath: string): void {
 }
 
 /**
+ * Delete `lockPath` only while it still names the file `identity` came from.
+ *
+ * A path is not a lock: the file a run published can be displaced by a takeover
+ * at any moment, and deleting whatever answers to the path would hand the next
+ * holder's lock away to nobody. A different file there — or none at all — is
+ * left exactly as found.
+ */
+function unlinkIfSameFile(lockPath: string, identity: LockfileIdentity): void {
+  let fd: number;
+  try {
+    fd = fs.openSync(lockPath, "r");
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return;
+    }
+    throw error;
+  }
+
+  let current: LockfileIdentity;
+  try {
+    current = identityOf(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  if (sameFile(current, identity)) {
+    unlinkIfExists(lockPath);
+  }
+}
+
+/**
  * Report a lock whose holder answered a liveness probe.
  *
  * Deleting the lockfile is deliberately not offered: the holder is provably
@@ -141,22 +193,35 @@ function heldByError(holder: LockHolder): GymratError {
 }
 
 /**
- * Publish `record` at `lockPath`, or report that someone else got there first.
+ * Publish `record` at `lockPath`, handing back the identity of the file now
+ * standing there, or `undefined` when someone else got there first.
  *
  * The record is written to a scratch file beside the lock and only then linked
  * into place, so the lock path never exists holding half a record: readers see a
  * whole holder or nothing at all. The link is also the exclusive step — it fails
  * with `EEXIST` when the path is taken — so exactly one racer publishes.
+ *
+ * The identity is taken from the descriptor the record was written through,
+ * which is the same file the link names, so it stays true no matter what takes
+ * the lock path over afterwards.
  */
-function publishLockRecord(lockPath: string, record: string): boolean {
+function publishLockRecord(lockPath: string, record: string): LockfileIdentity | undefined {
   const scratchPath = `${lockPath}.${String(process.pid)}.record`;
-  fs.writeFileSync(scratchPath, record);
+  const fd = fs.openSync(scratchPath, "w");
+  let identity: LockfileIdentity;
+  try {
+    fs.writeFileSync(fd, record);
+    identity = identityOf(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+
   try {
     fs.linkSync(scratchPath, lockPath);
-    return true;
+    return identity;
   } catch (error) {
     if (hasErrorCode(error, "EEXIST")) {
-      return false;
+      return undefined;
     }
     throw error;
   } finally {
@@ -265,7 +330,7 @@ function displaceStaleLock(lockPath: string): boolean {
  * nobody is behind can only be cleared by hand.
  */
 type StealOutcome =
-  | { readonly kind: "won" }
+  | { readonly kind: "won"; readonly identity: LockfileIdentity }
   | { readonly kind: "lost" }
   | { readonly kind: "blocked"; readonly claimPath: string };
 
@@ -279,8 +344,10 @@ function stealLock(lockPath: string, identity: LockfileIdentity, record: string)
       return { kind: "blocked", claimPath: claim.claimPath };
     case "claimed":
       try {
-        const won = displaceStaleLock(lockPath) && publishLockRecord(lockPath, record);
-        return won ? { kind: "won" } : { kind: "lost" };
+        const published = displaceStaleLock(lockPath)
+          ? publishLockRecord(lockPath, record)
+          : undefined;
+        return published === undefined ? { kind: "lost" } : { kind: "won", identity: published };
       } finally {
         unlinkIfExists(claim.claimPath);
       }
@@ -315,7 +382,7 @@ function wedgedTakeoverError(lockPath: string, wedge: WedgedTakeover): GymratErr
 
 /** What one pass at the lock path turned up. */
 type AttemptOutcome =
-  | { readonly kind: "acquired" }
+  | { readonly kind: "acquired"; readonly identity: LockfileIdentity }
   | { readonly kind: "retry" }
   | { readonly kind: "blocked"; readonly wedge: WedgedTakeover };
 
@@ -327,7 +394,7 @@ function attemptFromSteal(
 ): AttemptOutcome {
   switch (steal.kind) {
     case "won":
-      return { kind: "acquired" };
+      return { kind: "acquired", identity: steal.identity };
     case "lost":
       return { kind: "retry" };
     case "blocked":
@@ -341,11 +408,12 @@ function attemptFromSteal(
  * Make one bid for the lock at `lockPath`: publish, or judge what is there.
  *
  * @throws GymratError when the lock is held by a process that is still running,
- *   or when a lockfile free to steal belongs to another user.
+ *   or when the lockfile belongs to another user.
  */
 function attemptAcquire(lockPath: string, record: string): AttemptOutcome {
-  if (publishLockRecord(lockPath, record)) {
-    return { kind: "acquired" };
+  const published = publishLockRecord(lockPath, record);
+  if (published !== undefined) {
+    return { kind: "acquired", identity: published };
   }
 
   const state = readLockfile(lockPath);
@@ -385,15 +453,12 @@ function attemptAcquire(lockPath: string, record: string): AttemptOutcome {
  * clear on its own. The thrown error names both files to delete.
  *
  * @throws GymratError when the lock is held by a process that is still running,
- *   when a lockfile free to steal belongs to another user, or when every
- *   attempt was refused by the claim of a takeover that never finished.
+ *   when the lockfile belongs to another user, or when every attempt was refused
+ *   by the claim of a takeover that never finished.
  */
 export function acquireLock(lockPath: string, command: string): ReleaseLock {
   const holder: LockHolder = { pid: process.pid, command, at: new Date().toISOString() };
   const record = JSON.stringify(holder);
-  const release: ReleaseLock = () => {
-    unlinkIfExists(lockPath);
-  };
 
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
@@ -403,7 +468,10 @@ export function acquireLock(lockPath: string, command: string): ReleaseLock {
   for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
     const outcome = attemptAcquire(lockPath, record);
     if (outcome.kind === "acquired") {
-      return release;
+      const { identity } = outcome;
+      return () => {
+        unlinkIfSameFile(lockPath, identity);
+      };
     }
 
     // Only one file blocking every single attempt rules out the rival that

@@ -39,9 +39,9 @@ import type {
 } from "./report/types.js";
 import type { RunOptions } from "./sampling.js";
 import { acquireLock, type ReleaseLock } from "./session/lock.js";
-import { lockfilePath, repoRoot, sessionJsonlPath } from "./session/paths.js";
+import { lockfilePath, repoRoot } from "./session/paths.js";
 import type { BaselineRecord } from "./session/records.js";
-import { appendRecord, foldSession, readRecords } from "./session/store.js";
+import { appendRecord, requireSession } from "./session/store.js";
 import { installTerminationCleanup } from "./signals.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
@@ -831,14 +831,7 @@ interface RecordingTarget {
  *   record, and only `gymrat start` can change that.
  */
 function recordingTarget(root: string): RecordingTarget {
-  const jsonlPath = sessionJsonlPath(root);
-  const { session } = foldSession(readRecords(jsonlPath));
-  if (session === undefined) {
-    throw new GymratError(
-      `No session in ${root}`,
-      "Run gymrat start to open one before recording a measurement.",
-    );
-  }
+  const { session, jsonlPath } = requireSession(root, "recording a measurement");
   return { jsonlPath, sessionId: session.sessionId };
 }
 

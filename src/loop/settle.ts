@@ -2,20 +2,8 @@ import type { BenchlessConfig } from "../config.js";
 import { GymratError } from "../errors.js";
 import { exec } from "../exec.js";
 import { formatDelta } from "../report/format.js";
-import { sessionJsonlPath } from "../session/paths.js";
-import type {
-  DiscardRecord,
-  IterationRecord,
-  KeepRecord,
-  SessionRecord,
-} from "../session/records.js";
-import {
-  appendRecord,
-  endsOnGatingBlock,
-  foldSession,
-  readRecords,
-  type SessionState,
-} from "../session/store.js";
+import type { DiscardRecord, IterationRecord, KeepRecord } from "../session/records.js";
+import { appendRecord, endsOnGatingBlock, readRecords, requireSession } from "../session/store.js";
 import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/workspace.js";
 
 const MS_PER_SECOND = 1000;
@@ -69,9 +57,7 @@ export async function keepSession(
   config: BenchlessConfig,
   options: KeepOptions = {},
 ): Promise<KeepResult> {
-  const jsonlPath = sessionJsonlPath(root);
-  const state = foldSession(readRecords(jsonlPath));
-  const session = requireSession(root, state);
+  const { session, state, jsonlPath } = requireSession(root, "settling an edit");
   const configured = config.checks !== undefined;
 
   const iteration = state.unsettled ? state.lastIteration : undefined;
@@ -149,14 +135,11 @@ export async function keepSession(
  * and the record it explains must not be separable by another run.
  *
  * @throws GymratError when no session has been started, when nothing has been
- *   measured since the last settle, or when git refuses to revert the worktree.
+ *   measured since the last keep or discard, or when git refuses to revert the worktree.
  */
 export function discardSession(root: string): DiscardResult {
-  const jsonlPath = sessionJsonlPath(root);
-  const records = readRecords(jsonlPath);
-  const state = foldSession(records);
-  const session = requireSession(root, state);
-  const afterGatingBlock = endsOnGatingBlock(records);
+  const { session, state, jsonlPath } = requireSession(root, "settling an edit");
+  const afterGatingBlock = endsOnGatingBlock(readRecords(jsonlPath));
 
   if (!state.unsettled && !afterGatingBlock) {
     throw new GymratError(
@@ -183,17 +166,6 @@ export function discardSession(root: string): DiscardResult {
     record,
     report: `Discarded iteration ${state.lastSeq}: the experiment worktree is back at its last commit`,
   };
-}
-
-/** The session both settle commands act on, or the error that says to open one. */
-function requireSession(root: string, state: SessionState): SessionRecord {
-  if (state.session === undefined) {
-    throw new GymratError(
-      `No session in ${root}`,
-      "Run gymrat start to open one before settling an edit.",
-    );
-  }
-  return state.session;
 }
 
 /**

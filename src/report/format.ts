@@ -624,24 +624,21 @@ export function withColor<T>(color: boolean | undefined, fn: () => T): T {
 /** U+2026, one character wide — three periods would cost two more columns. */
 const ELLIPSIS = "…";
 
-/**
- * `text` without a trailing high surrogate — the leading half of a pair whose
- * partner the cut left behind.
- *
- * Astral characters — emoji in a branch name — occupy two units of the budget a
- * slice spends, so a cut can land between the halves. Half a pair is not a
- * character: it renders as a replacement box, which is worth less than the
- * column it costs and, printed into a terminal, is not the label the run named.
- */
-function dropOrphanedHighSurrogate(text: string): string {
-  const last = text.charCodeAt(text.length - 1);
-  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
-}
+/** Locale-independent: UAX #29 cluster boundaries are the same everywhere. */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-/** `text` without a leading low surrogate — the trailing half of a split pair. */
-function dropOrphanedLowSurrogate(text: string): string {
-  const first = text.charCodeAt(0);
-  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+/**
+ * `text` split into the characters a reader perceives.
+ *
+ * A single perceived character can span several code points — a family emoji
+ * joins four of them with zero-width joiners, a waving hand carries a skin-tone
+ * modifier — and each code point outside the basic plane spans two UTF-16
+ * units. Slicing by either unit can cut inside a cluster, and a fragment of one
+ * is not the character it came from: it renders as a different glyph, or as a
+ * replacement box, which is worth less than the column it costs.
+ */
+function graphemes(text: string): string[] {
+  return [...GRAPHEME_SEGMENTER.segment(text)].map((segment) => segment.segment);
 }
 
 /**
@@ -653,21 +650,23 @@ function dropOrphanedLowSurrogate(text: string): string {
  * whichever end runs past the budget.
  *
  * Text already inside the budget comes back untouched, so widening the budget
- * can never lengthen the result. A cut landing inside an astral character drops
- * it rather than keeping half, so the result can come back under the budget.
+ * can never lengthen the result. The budget is counted and spent in whole
+ * grapheme clusters, so a cluster is either kept entire or elided entire.
  */
 export function shortenLabel(text: string, maxWidth: number): string {
   if (maxWidth <= 0) return "";
-  if (text.length <= maxWidth) return text;
+
+  const clusters = graphemes(text);
+  if (clusters.length <= maxWidth) return text;
 
   const kept = maxWidth - ELLIPSIS.length;
   if (kept <= 0) return ELLIPSIS;
 
   const head = Math.ceil(kept / 2);
   const tail = kept - head;
-  // Index the tail from the front: `slice(-0)` would return the whole string.
-  const start = dropOrphanedHighSurrogate(text.slice(0, head));
-  const end = dropOrphanedLowSurrogate(text.slice(text.length - tail));
+  // Index the tail from the front: `slice(-0)` would return the whole array.
+  const start = clusters.slice(0, head).join("");
+  const end = clusters.slice(clusters.length - tail).join("");
   return `${start}${ELLIPSIS}${end}`;
 }
 

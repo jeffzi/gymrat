@@ -237,6 +237,15 @@ function highlightLines(report: string): string[] {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+beforeEach(() => {
+  vi.stubEnv("NO_COLOR", "1");
+  vi.stubEnv("FORCE_COLOR", undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("renderReport", () => {
   afterEach(() => {
     vi.unstubAllEnvs();

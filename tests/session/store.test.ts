@@ -8,7 +8,6 @@ import { GymratError, messageOf } from "../../src/errors.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
   BaselineRecord,
-  DiscardRecord,
   HookRecord,
   IterationRecord,
   KeepRecord,
@@ -16,9 +15,15 @@ import type {
   SessionRecord,
 } from "../../src/session/records.js";
 import type { SessionState } from "../../src/session/store.js";
-import { appendRecord, foldSession, readRecords } from "../../src/session/store.js";
-import { captureThrown } from "../fixtures/errors.js";
-import { AT, committedKeep, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
+import { appendRecord, foldSession, readRecords, requireSession } from "../../src/session/store.js";
+import { captureGymratError, captureThrown } from "../fixtures/errors.js";
+import {
+  AT,
+  committedKeep,
+  discardRecord as discard,
+  iterationRecord,
+  sessionRecord,
+} from "../fixtures/session-records.js";
 
 const SESSION: SessionRecord = sessionRecord({
   worktrees: { experiment: "/repo/.gymrat/experiment", baseline: "/repo/.gymrat/baseline" },
@@ -76,11 +81,6 @@ function blockedKeepWithoutReason(seq: number): KeepRecord {
   };
 }
 
-/** A discard of the iteration numbered `seq`. */
-function discard(seq: number): DiscardRecord {
-  return { type: "discard", seq, at: AT };
-}
-
 const ITERATION_1 = iteration(1, false);
 const ITERATION_1_ON_TARGET = iteration(1, true);
 const ITERATION_2 = iteration(2, false);
@@ -97,9 +97,14 @@ const EMPTY_STATE: SessionState = {
   lastSeq: 0,
 };
 
+/** A fresh temp repo root, with no `.gymrat` directory yet. */
+function freshRoot(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-store-"));
+}
+
 /** Path to a session log inside a fresh temp repo root, with no `.gymrat` directory yet. */
 function freshJsonlPath(): string {
-  return sessionJsonlPath(fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-store-")));
+  return sessionJsonlPath(freshRoot());
 }
 
 /** Path to a session log holding exactly `lines`, each written verbatim. */
@@ -379,5 +384,51 @@ describe("foldSession", () => {
       // Assert
       expect(state.unsettled).toBe(true);
     });
+  });
+});
+
+describe("requireSession", () => {
+  describe("when the log holds a session", () => {
+    it("hands back the session, the folded state, and the log path", () => {
+      // Arrange
+      const root = freshRoot();
+      const jsonlPath = sessionJsonlPath(root);
+      appendRecord(jsonlPath, SESSION);
+      appendRecord(jsonlPath, ITERATION_1);
+
+      // Act
+      const required = requireSession(root, "measuring an edit");
+
+      // Assert
+      expect(required).toStrictEqual({
+        session: SESSION,
+        state: {
+          ...EMPTY_STATE,
+          session: SESSION,
+          iterationCount: 1,
+          lastIteration: ITERATION_1,
+          unsettled: true,
+          lastSeq: 1,
+        },
+        jsonlPath,
+      });
+    });
+  });
+
+  describe("when no session has been opened", () => {
+    it.each(["measuring an edit", "asking for its status"])(
+      "throws a GymratError naming the root and hinting at %s",
+      (verb) => {
+        // Arrange
+        const root = freshRoot();
+
+        // Act
+        const error = captureGymratError(() => requireSession(root, verb));
+
+        // Assert
+        expect.soft(error.message).toContain(root);
+        expect.soft(error.hint).toBe(`Run gymrat start to open one before ${verb}.`);
+      },
+    );
   });
 });

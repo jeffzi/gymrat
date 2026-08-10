@@ -8,7 +8,6 @@
  */
 
 import type { BenchlessConfig } from "../config.js";
-import { GymratError } from "../errors.js";
 import type { SettleState } from "../report/loop.js";
 import {
   formatStatusBaseline,
@@ -17,9 +16,8 @@ import {
   formatStatusIteration,
   formatStatusSettle,
 } from "../report/loop.js";
-import { sessionJsonlPath } from "../session/paths.js";
 import type { DiscardRecord, KeepRecord, SessionLogRecord } from "../session/records.js";
-import { foldSession, readRecords } from "../session/store.js";
+import { readRecords, requireSession } from "../session/store.js";
 
 /** What a single settling record says became of the iteration it settles. */
 function settleStateOf(record: KeepRecord | DiscardRecord): SettleState {
@@ -89,14 +87,8 @@ function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleS
  *   corrupt — every parse failure names the log and the line at fault.
  */
 export function statusSession(root: string, config: BenchlessConfig): string {
-  const records = readRecords(sessionJsonlPath(root));
-  const state = foldSession(records);
-  if (state.session === undefined) {
-    throw new GymratError(
-      `No session in ${root}`,
-      "Run gymrat start to open one before asking for its status.",
-    );
-  }
+  const { session, state, jsonlPath } = requireSession(root, "asking for its status");
+  const records = readRecords(jsonlPath);
 
   const settled = settleStates(records);
   const history = records.flatMap((record, position) => {
@@ -123,7 +115,7 @@ export function statusSession(root: string, config: BenchlessConfig): string {
   });
 
   return [
-    ...formatStatusHeader(state.session),
+    ...formatStatusHeader(session),
     ...history,
     ...formatStatusFooter({
       iterationCount: state.iterationCount,

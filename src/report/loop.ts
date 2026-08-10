@@ -45,16 +45,28 @@ export type LoopPrimary =
   | { readonly kind: "metric"; readonly name: string; readonly deltaPct: number | null };
 
 /**
- * One metric a confirmation rerun re-measured, and whether the rerun agreed.
+ * What a confirmation rerun had to say about one metric it was asked to
+ * re-measure.
+ *
+ * `absent` is not a weaker `disagreed`: a rerun that never reported the metric
+ * disproved nothing, so the regression the first run called still stands. Only
+ * `disagreed` — the rerun measured the metric and did not call it regressed —
+ * takes a regression back.
+ */
+type RerunAnswer = "confirmed" | "disagreed" | "absent";
+
+/**
+ * One metric a confirmation rerun was asked about, and what it answered.
  *
  * A regression only stands when both runs call it, so the block reports the
- * rerun's answer either way: a confirmed regression is the iteration's news, and
- * an unconfirmed one explains why a metric that read `regressed` in the table's
- * first pass now rests at no signal.
+ * rerun's answer whatever it was: a confirmed regression is the iteration's
+ * news, a disagreement explains why a metric that read `regressed` in the
+ * table's first pass now rests at no signal, and an absent one says the rerun
+ * had nothing to say about a metric still shown as regressed.
  */
 export interface RerunConfirmation {
   readonly metric: string;
-  readonly confirmed: boolean;
+  readonly answer: RerunAnswer;
 }
 
 /** The candidate an iteration measures: the experiment, judged against the baseline. */
@@ -125,12 +137,23 @@ export function formatLoopHeader(seq: number, samples: number): string {
   );
 }
 
+/**
+ * What each answer reads as, and how it is painted.
+ *
+ * An absent answer wears the same yellow the table paints an unstable metric
+ * with, because it is the same kind of news: a reading nobody could take, not a
+ * direction to act on.
+ */
+const RERUN_PHRASES: Record<RerunAnswer, { readonly text: string; readonly style: Style }> = {
+  confirmed: { text: "regression confirmed on rerun", style: ["red"] },
+  disagreed: { text: "regression not confirmed on rerun", style: ["dim"] },
+  absent: { text: "not measured on rerun", style: ["yellow"] },
+};
+
 /** What the rerun settled about one metric, painted the way the table paints that answer. */
 function formatRerunLine(rerun: RerunConfirmation): string {
-  const phrase = rerun.confirmed
-    ? formatLabel("regression confirmed on rerun", ["red"])
-    : formatLabel("regression not confirmed on rerun", ["dim"]);
-  return `${rerun.metric}: ${phrase}`;
+  const phrase = RERUN_PHRASES[rerun.answer];
+  return `${rerun.metric}: ${formatLabel(phrase.text, phrase.style)}`;
 }
 
 /**

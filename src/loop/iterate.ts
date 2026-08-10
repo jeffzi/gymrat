@@ -22,10 +22,9 @@ import {
   type TargetContext,
   type TargetSamples,
 } from "../sampling.js";
-import { sessionJsonlPath } from "../session/paths.js";
 import type { IterationRecord, SessionRecord } from "../session/records.js";
 import type { SessionState } from "../session/store.js";
-import { appendRecord, foldSession, readRecords } from "../session/store.js";
+import { appendRecord, requireSession } from "../session/store.js";
 import { computeKindAggregates } from "../verdict/aggregate.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
 import { computeGeomean, computeVerdicts, pairSamples } from "../verdict/verdict.js";
@@ -64,6 +63,13 @@ interface Confirmation {
   readonly samples: IterationRecord["samples"];
   /** The subset of `filtered` the rerun also gated as regressed. */
   readonly confirmed: ReadonlySet<string>;
+  /**
+   * The subset of `filtered` the rerun produced no verdict for at all.
+   *
+   * Disjoint from `confirmed`, and not the complement of it: a metric can be
+   * neither, which is the rerun measuring it and declining to call it regressed.
+   */
+  readonly absent: ReadonlySet<string>;
 }
 
 /** One measured iteration: what was written to the log, and what to print about it. */
@@ -95,15 +101,8 @@ export async function iterateSession(
   config: ResolvedConfig,
   options: IterateOptions = {},
 ): Promise<IterateResult> {
-  const jsonlPath = sessionJsonlPath(root);
-  const state = foldSession(readRecords(jsonlPath));
+  const { session, state, jsonlPath } = requireSession(root, "measuring an edit");
 
-  if (state.session === undefined) {
-    throw new GymratError(
-      `No session in ${root}`,
-      "Run gymrat start to open one before measuring an edit.",
-    );
-  }
   if (state.unsettled) {
     throw new GymratError(
       `Iteration ${state.lastSeq} has not been settled`,
@@ -120,23 +119,23 @@ export async function iterateSession(
   const beforeReport = await fireHook(jsonlPath, config.hooks?.before, {
     stage: "before",
     seq,
-    session: state.session,
+    session,
     lastIteration: state.lastIteration ?? null,
     iterationCount: state.iterationCount,
   });
 
-  const first = await benchAndJudge(state.session, config, options, config.bench);
+  const first = await benchAndJudge(session, config, options, config.bench);
   const metricMeta = first.metricMeta;
-  const firstRun = first.verdicts;
+  const firstVerdicts = first.verdicts;
 
   const confirmation = await confirmRegressions(
-    state.session,
+    session,
     config,
     options,
-    firstRun,
+    firstVerdicts,
     metricMeta,
   );
-  const verdicts = applyConfirmation(firstRun, confirmation);
+  const verdicts = applyConfirmation(firstVerdicts, confirmation);
 
   const result = buildComparisonResult(
     first.baseline,
@@ -159,6 +158,9 @@ export async function iterateSession(
       confirm: {
         ran: true,
         filtered: [...confirmation.filtered],
+        // Left out when the rerun answered for everything it was asked about,
+        // so the common case reads the same as it did before absence was named.
+        ...(confirmation.absent.size > 0 && { absent: [...confirmation.absent] }),
         samples: confirmation.samples,
       },
     }),
@@ -171,7 +173,7 @@ export async function iterateSession(
   const afterReport = await fireHook(jsonlPath, config.hooks?.after, {
     stage: "after",
     seq,
-    session: state.session,
+    session,
     lastIteration: record,
     iterationCount: state.iterationCount + 1,
   });
@@ -291,6 +293,7 @@ async function confirmRegressions(
     filtered,
     samples,
     confirmed: new Set(filtered.filter((name) => rerun[name]?.verdict === "regressed")),
+    absent: new Set(filtered.filter((name) => rerun[name] === undefined)),
   };
 }
 
@@ -358,6 +361,11 @@ async function benchAndJudge(
  * The verdicts as the iteration is finally read: every re-measured regression
  * the rerun would not stand behind demoted to no signal.
  *
+ * A metric the rerun never reported is left regressed. The rerun's job is to
+ * disprove a regression, and a metric it stayed silent about disproved nothing —
+ * demoting on silence would let a bench that quietly dropped a metric wave a
+ * real regression through.
+ *
  * Only the verdict word moves. The delta, the noise, and the p-value stay the
  * first run's, because they describe the first run's samples — the ones the
  * record stores under `samples` and the table draws its medians from. The
@@ -373,9 +381,11 @@ function applyConfirmation(
 
   const settled = metricRecord<MetricVerdict>();
   for (const [metricName, verdict] of Object.entries(verdicts)) {
-    const unconfirmed =
-      confirmation.filtered.includes(metricName) && !confirmation.confirmed.has(metricName);
-    settled[metricName] = unconfirmed ? { ...verdict, verdict: "no-signal" } : verdict;
+    const disagreed =
+      confirmation.filtered.includes(metricName) &&
+      !confirmation.confirmed.has(metricName) &&
+      !confirmation.absent.has(metricName);
+    settled[metricName] = disagreed ? { ...verdict, verdict: "no-signal" } : verdict;
   }
   return settled;
 }
@@ -609,6 +619,14 @@ function recordedVerdicts(
   return recorded;
 }
 
+/** What the rerun answered about `metric`, as the report words it. */
+function rerunAnswer(confirmation: Confirmation, metric: string): RerunConfirmation["answer"] {
+  if (confirmation.absent.has(metric)) {
+    return "absent";
+  }
+  return confirmation.confirmed.has(metric) ? "confirmed" : "disagreed";
+}
+
 /** The iteration as it prints: the loop's header, the comparison table, the verdict. */
 function renderIteration(
   result: ComparisonResult,
@@ -621,7 +639,7 @@ function renderIteration(
   const reruns: RerunConfirmation[] =
     confirmation?.filtered.map((metric) => ({
       metric,
-      confirmed: confirmation.confirmed.has(metric),
+      answer: rerunAnswer(confirmation, metric),
     })) ?? [];
   const report = renderReport(result, { header: formatLoopHeader(seq, result.samples) });
   const verdict = formatVerdictBlock(outcome, primary, NEXT_STEPS[outcome], reruns, reachedTarget);

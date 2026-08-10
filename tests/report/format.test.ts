@@ -645,15 +645,43 @@ describe("shortenLabel", () => {
     });
   });
 
-  describe("when the text carries characters outside the basic plane", () => {
-    it("cuts between whole code points at both ends", () => {
-      // At a width of 10 the head keeps 5 units and the tail 4, and both
-      // boundaries land inside an emoji: the head's inside the first 🚀, the
-      // tail's inside the first 🎉. Half a code point renders as a replacement
-      // box, so each partial pair is dropped rather than kept.
-      const label = "fix/🚀🚀-hot-path-🎉🎉x";
+  describe("when a cut boundary lands inside a multi-code-point grapheme", () => {
+    // Each label places a cluster so that a UTF-16 cut would land inside it:
+    // between the members of a ZWJ family, between an emoji and its skin-tone
+    // modifier, or between the halves of a surrogate pair. A fragment of a
+    // cluster renders as a different glyph — or as a replacement box — so the
+    // cluster moves to the kept side whole.
+    it.each([
+      {
+        cluster: "a ZWJ sequence",
+        label: "ab👨‍👩‍👧‍👦cdefghij",
+        maxWidth: 9,
+        expected: "ab👨‍👩‍👧‍👦c…ghij",
+      },
+      {
+        cluster: "an emoji with a skin-tone modifier",
+        label: "ab👋🏽cdefghij",
+        maxWidth: 9,
+        expected: "ab👋🏽c…ghij",
+      },
+      {
+        cluster: "a surrogate pair",
+        label: "fix/🚀🚀-hot-path-🎉🎉x",
+        maxWidth: 10,
+        expected: "fix/🚀…-🎉🎉x",
+      },
+    ])("keeps $cluster whole", ({ label, maxWidth, expected }) => {
+      expect(shortenLabel(label, maxWidth)).toBe(expected);
+    });
+  });
 
-      expect(shortenLabel(label, 10)).toBe("fix/…🎉x");
+  describe("when the width counts graphemes rather than code units", () => {
+    it("returns a label of clusters verbatim once it fits", () => {
+      // Four clusters spanning 22 UTF-16 code units: budgeting by code units
+      // would truncate a label the display has room for.
+      const label = "👨‍👩‍👧‍👦👋🏽🚀🎉";
+
+      expect(shortenLabel(label, 4)).toBe(label);
     });
   });
 });

@@ -136,6 +136,9 @@ const iterationRecordSchema = Type.Object(
         {
           ran: booleanSchema,
           filtered: Type.Array(stringSchema, expected("an array of strings")),
+          // Present only when the rerun skipped something it was asked about,
+          // so a log written before the field existed still parses.
+          absent: Type.Optional(Type.Array(stringSchema, expected("an array of strings"))),
           samples: pairedSamplesSchema,
         },
         strictObjectOptions,

@@ -2,6 +2,7 @@ import { expect } from "vitest";
 
 import type { ResolvedConfig } from "../../src/config.js";
 import type {
+  DiscardRecord,
   HookRecord,
   IterationRecord,
   KeepRecord,
@@ -104,6 +105,11 @@ export function expectedHookRecord(
     // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
     durationMs: expect.any(Number),
   };
+}
+
+/** A discard of the iteration numbered `seq`. */
+export function discardRecord(seq: number): DiscardRecord {
+  return { type: "discard", seq, at: AT };
 }
 
 /** A keep that committed the iteration numbered `seq`, with every field overridable. */

@@ -78,7 +78,7 @@ const configFileSchema = Type.Object(
   {
     bench: optionalNonEmptyStringSchema,
     prepare: optionalNonEmptyStringSchema,
-    adapter: optionalStringSchema,
+    adapter: optionalNonEmptyStringSchema,
     samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
     timeoutSeconds: Type.Optional(
       Type.Integer({
@@ -357,6 +357,7 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
 function settleConfig(flags: CliFlags): { config: BenchlessConfig; bench: string | undefined } {
   assertFlagNotEmpty("bench", flags.bench);
   assertFlagNotEmpty("prepare", flags.prepare);
+  assertFlagNotEmpty("adapter", flags.adapter);
   const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
   const config = mergeConfig(flags, configFile);

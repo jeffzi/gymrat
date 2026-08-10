@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acquireLock } from "../../src/session/lock.js";
-import { captureGymratError } from "../fixtures/errors.js";
+import { captureGymratError, captureThrown } from "../fixtures/errors.js";
 
 /** Shape every lockfile assertion expects, with the wall-clock field left open. */
 const HOLDER_RECORD = {
@@ -55,6 +55,17 @@ function errnoError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+/** Make every open of `lockPath` fail with `failure`, leaving other paths alone. */
+function refuseOpen(lockPath: string, failure: Error): void {
+  const realOpenSync = fs.openSync.bind(fs);
+  vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
+    if (file === lockPath) {
+      throw failure;
+    }
+    return realOpenSync(file, flags, mode);
+  });
+}
+
 /** A fresh lockfile whose holder process, `pid`, has already exited. */
 function staleLockPath(pid = deadPid()): { lockPath: string; holderPid: number } {
   const lockPath = freshLockPath();
@@ -74,6 +85,19 @@ function wedgeTakeover(lockPath: string): string {
   const claimPath = `${lockPath}.${String(dev)}-${String(ino)}.claim`;
   fs.linkSync(lockPath, claimPath);
   return claimPath;
+}
+
+/**
+ * Put a different run's lockfile where `lockPath` is, as a takeover would.
+ *
+ * The replacement is built beside the lock and renamed over it, so the
+ * filesystem cannot hand it the inode of the file it displaces — the two
+ * lockfiles are guaranteed to be distinguishable.
+ */
+function replaceLockfile(lockPath: string, holder: { pid: number; command: string }): void {
+  const scratchPath = `${lockPath}.replacement`;
+  writeLockfile(scratchPath, holder);
+  fs.renameSync(scratchPath, lockPath);
 }
 
 afterEach(() => {
@@ -216,6 +240,36 @@ describe("acquireLock", () => {
 
       // Assert
       expect(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
+    });
+  });
+
+  describe("when the lockfile cannot be opened", () => {
+    it.each([{ code: "EACCES" }, { code: "EPERM" }])(
+      "names the lockfile and the manual remedy instead of raising $code",
+      ({ code }) => {
+        // Arrange: the lockfile is another user's, readable by them alone, so
+        // gymrat cannot even learn whose run holds it.
+        const { lockPath } = staleLockPath();
+        refuseOpen(lockPath, errnoError(code, "permission denied"));
+
+        // Act
+        const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+        // Assert
+        expect.soft(error.message).toContain(lockPath);
+        expect.soft(error.hint).toMatch(/remove/i);
+        expect.soft(error.hint).toContain(lockPath);
+      },
+    );
+
+    it("lets an unexpected open failure reach the caller unwrapped", () => {
+      // Arrange
+      const { lockPath } = staleLockPath();
+      const failure = errnoError("EIO", "input/output error");
+      refuseOpen(lockPath, failure);
+
+      // Act & Assert
+      expect(captureThrown(() => acquireLock(lockPath, "compare"))).toBe(failure);
     });
   });
 
@@ -407,5 +461,44 @@ describe("the release handle", () => {
     expect(() => {
       release();
     }).not.toThrow();
+  });
+
+  describe("when another run has replaced the lockfile", () => {
+    it("leaves the replacement in place, however often it is called", () => {
+      // Arrange: our lock was taken over, so the file at the lock path is now
+      // the new holder's and deleting it would unlock a live run.
+      const lockPath = freshLockPath();
+      const release = acquireLock(lockPath, "compare");
+      replaceLockfile(lockPath, { pid: process.pid, command: "rival" });
+
+      // Act
+      release();
+      release();
+
+      // Assert
+      expect(readLockfile(lockPath)).toStrictEqual({
+        pid: process.pid,
+        command: "rival",
+        at: WRITTEN_LOCK_AT,
+      });
+    });
+
+    it("leaves the replacement in place when the released lock was stolen", () => {
+      // Arrange: the same takeover, but our own lock came from stealing a stale
+      // lockfile rather than from publishing a fresh one.
+      const { lockPath } = staleLockPath();
+      const release = acquireLock(lockPath, "compare");
+      replaceLockfile(lockPath, { pid: process.pid, command: "rival" });
+
+      // Act
+      release();
+
+      // Assert
+      expect(readLockfile(lockPath)).toStrictEqual({
+        pid: process.pid,
+        command: "rival",
+        at: WRITTEN_LOCK_AT,
+      });
+    });
   });
 });

@@ -11,7 +11,6 @@ import { iterateSession } from "../../src/loop/iterate.js";
 import type { TargetContext } from "../../src/sampling.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
-  DiscardRecord,
   HookRecord,
   IterationRecord,
   SessionLogRecord,
@@ -26,8 +25,8 @@ import { hookScripts } from "../fixtures/hook-scripts.js";
 import { metricRecord } from "../fixtures/metrics.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
-  AT,
   committedKeep,
+  discardRecord as discardOf,
   expectedHookRecord,
   iterationRecord,
   resolvedConfig,
@@ -141,11 +140,6 @@ function iteration(seq: number): IterationRecord {
 /** The iteration numbered `seq`, measured at or past the configured target. */
 function onTargetIteration(seq: number): IterationRecord {
   return iterationRecord({ seq, targetReached: true });
-}
-
-/** A discard of the iteration numbered `seq`. */
-function discardOf(seq: number): DiscardRecord {
-  return { type: "discard", seq, at: AT };
 }
 
 /** Write a session log opening on `sessionRecord(root)` and holding `history` after it. */
@@ -724,6 +718,75 @@ describe("iterateSession", () => {
         });
       },
     );
+  });
+
+  describe("when the rerun never measures one of the regressed metrics", () => {
+    /**
+     * The rerun a filtered bench reports when it only ever emits `total_ms`.
+     *
+     * `alloc_bytes` was regressed on the first run and named in the filter, but
+     * the rerun comes back without it — silence, not disagreement.
+     */
+    const PARTIAL_RERUN = {
+      experiment: filteredRounds("total_ms", scaled(BASELINE_MS, 1.2)),
+      baseline: filteredRounds("total_ms", BASELINE_MS),
+    };
+
+    beforeEach(() => {
+      writeSessionLog(repo.dir);
+      stubRuns(repo.dir, [
+        { experiment: regressedRounds(), baseline: baselineRounds() },
+        PARTIAL_RERUN,
+      ]);
+    });
+
+    it("leaves that metric regressed rather than demoting it to no-signal", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config({ filter: FILTER }));
+
+      // Assert
+      expect.soft(result.record.metrics.alloc_bytes).toStrictEqual({
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        deltaPct: expect.closeTo(10, 6),
+        verdict: "regressed",
+        method: "signed-rank",
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        p: expect.any(Number),
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        noisePct: expect.any(Number),
+        gating: true,
+        confirmed: false,
+      });
+      expect(result.record.outcome).toBe("regressed");
+    });
+
+    it("names that metric in the confirm section it records and logs", async () => {
+      // Arrange
+      const expected = {
+        ran: true,
+        filtered: ["total_ms", "alloc_bytes"],
+        absent: ["alloc_bytes"],
+        samples: { experiment: PARTIAL_RERUN.experiment, baseline: PARTIAL_RERUN.baseline },
+      };
+
+      // Act
+      const result = await iterateSession(repo.dir, config({ filter: FILTER }));
+
+      // Assert
+      expect.soft(result.record.confirm).toStrictEqual(expected);
+      expect(lastIterationOf(repo.dir).confirm).toStrictEqual(expected);
+    });
+
+    it("reports it as unmeasured rather than as a regression the rerun disowned", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, config({ filter: FILTER }));
+
+      // Assert
+      const lines = trimmedReportLines(result.report);
+      expect.soft(lines).toContain("alloc_bytes: not measured on rerun");
+      expect.soft(lines).toContain("total_ms: regression confirmed on rerun");
+      expect(lines).not.toContain("alloc_bytes: regression not confirmed on rerun");
+    });
   });
 
   describe("when the regressed metric is one a rerun cannot inform", () => {

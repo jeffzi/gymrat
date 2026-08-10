@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { assertNever, GymratError, messageOf } from "../errors.js";
+import { sessionJsonlPath } from "./paths.js";
 import type { IterationRecord, SessionLogRecord, SessionRecord } from "./records.js";
 import { parseRecord } from "./records.js";
 
@@ -21,8 +22,24 @@ export interface SessionState {
   discardCount: number;
   /** Whether the last committed keep settled an edit that reached the target metric. */
   targetReachedAndKept: boolean;
-  /** Number of the most recently measured edit, `0` while nothing has been measured. */
+  /**
+   * The highest number any iteration or settling record has taken, `0` while the log has none.
+   *
+   * A refusal that settles nothing still claims a number, so this is a high-water mark
+   * rather than the last iteration's number: the next record to need a number of its own
+   * takes `lastSeq + 1` and cannot alias one the log already carries.
+   */
   lastSeq: number;
+}
+
+/** An open session, with everything reading its log already produced. */
+export interface RequiredSession {
+  /** The header the log opens with. */
+  session: SessionRecord;
+  /** What the whole log folds to, `session` included. */
+  state: SessionState;
+  /** The log the session was read from. */
+  jsonlPath: string;
 }
 
 /**
@@ -152,6 +169,7 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
   let keepCount = 0;
   let discardCount = 0;
   let targetReachedAndKept = false;
+  let lastSeq = 0;
 
   for (const record of records) {
     switch (record.type) {
@@ -160,11 +178,13 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
         break;
       case "iteration":
         iterationCount += 1;
+        lastSeq = Math.max(lastSeq, record.seq);
         lastIteration = record;
         unsettled = true;
         targetReachedBySeq.set(record.seq, record.targetReached);
         break;
       case "keep":
+        lastSeq = Math.max(lastSeq, record.seq);
         if (record.status === "committed") {
           unsettled = false;
           keepCount += 1;
@@ -181,11 +201,15 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
         }
         break;
       case "discard":
+        lastSeq = Math.max(lastSeq, record.seq);
         unsettled = false;
         discardCount += 1;
         break;
       case "baseline":
       case "hook":
+        // A hook's seq names the iteration it runs around rather than claiming a
+        // number of its own: a run whose hook fired and then failed must leave that
+        // number free for the retry.
         break;
       default:
         assertNever(record);
@@ -200,6 +224,27 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
     keepCount,
     discardCount,
     targetReachedAndKept,
-    lastSeq: lastIteration?.seq ?? 0,
+    lastSeq,
   };
+}
+
+/**
+ * The session open in `root`, or the error telling the caller to open one.
+ *
+ * `verb` names what the caller was about to do — "measuring an edit" — and becomes
+ * the thing the hint says no session was open for, so every loop command refuses in
+ * its own words while sharing one guard.
+ *
+ * @throws GymratError when no session has been started, or when the log is corrupt —
+ * every parse failure names the log and the line at fault.
+ */
+export function requireSession(root: string, verb: string): RequiredSession {
+  const jsonlPath = sessionJsonlPath(root);
+  const state = foldSession(readRecords(jsonlPath));
+
+  if (state.session === undefined) {
+    throw new GymratError(`No session in ${root}`, `Run gymrat start to open one before ${verb}.`);
+  }
+
+  return { session: state.session, state, jsonlPath };
 }

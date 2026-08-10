@@ -257,8 +257,8 @@ describe("loadConfigFile", () => {
     });
   });
 
-  describe("when a command key holds an empty string", () => {
-    it.each([{ key: "checks" }, { key: "bench" }, { key: "prepare" }])(
+  describe("when a non-empty-string key holds an empty string", () => {
+    it.each([{ key: "checks" }, { key: "bench" }, { key: "prepare" }, { key: "adapter" }])(
       "throws naming $key and the non-empty requirement",
       ({ key }) => {
         const { dir, configPath } = createConfigFile({ [key]: "" });
@@ -707,10 +707,11 @@ describe("resolveConfig", () => {
     });
   });
 
-  describe("when a command flag holds an empty string", () => {
+  describe("when a non-empty-string flag holds an empty string", () => {
     it.each([
       { key: "bench", flags: { bench: "" } },
       { key: "prepare", flags: { bench: "my-bench", prepare: "" } },
+      { key: "adapter", flags: { bench: "my-bench", adapter: "" } },
     ])("throws naming --$key and the non-empty requirement", ({ key, flags }) => {
       tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
       process.chdir(tmpdir);
