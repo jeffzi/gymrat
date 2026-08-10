@@ -24,19 +24,61 @@ export function exitCodeOf(error: unknown): number {
   throw error;
 }
 
-/** Collect everything the program writes to stdout. */
-export function captureStdout(): () => string {
+/**
+ * Collect everything the program writes to stdout.
+ *
+ * `silenceStderr` keeps a command's warnings out of the test runner's own
+ * output; `drainOnRead` empties the buffer on every read, so a caller running a
+ * sequence of commands reads each one's output on its own.
+ */
+export function captureStdout(
+  options: { silenceStderr?: boolean; drainOnRead?: boolean } = {},
+): () => string {
   let stdout = "";
   vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
     stdout += String(chunk);
     return true;
   });
-  return () => stdout;
+  if (options.silenceStderr === true) {
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  }
+  return () => {
+    const collected = stdout;
+    if (options.drainOnRead === true) {
+      stdout = "";
+    }
+    return collected;
+  };
 }
 
-/** Build a fresh program that throws instead of exiting, ready for a single successful parse. */
-export function createRunnableProgram(): Command {
+/** Which commands get the test `exitOverride` instead of the one production installed. */
+export type ExitOverrideScope = "root" | "all" | "none";
+
+/**
+ * Build a fresh program that throws instead of exiting.
+ *
+ * `exitOverride` decides how far the test override reaches. `"root"` — the
+ * default — leaves gymrat's own override on the subcommands, so a subcommand's
+ * usage error still surfaces as exit code 2; `"all"` replaces it everywhere, so
+ * Commander's own exit code survives; `"none"` keeps production's throughout.
+ *
+ * `silent` swallows Commander's stderr, which is what a test asserting on a
+ * usage error wants — the error is what it reads, not the help text beside it.
+ */
+export function createRunnableProgram(
+  options: { exitOverride?: ExitOverrideScope; silent?: boolean } = {},
+): Command {
   const program = createProgram();
-  program.exitOverride();
+  const scope = options.exitOverride ?? "root";
+  const overridden =
+    scope === "all" ? [program, ...program.commands] : scope === "root" ? [program] : [];
+  for (const command of overridden) {
+    command.exitOverride();
+  }
+  if (options.silent === true) {
+    for (const command of [program, ...program.commands]) {
+      command.configureOutput({ writeErr: () => {} });
+    }
+  }
   return program;
 }

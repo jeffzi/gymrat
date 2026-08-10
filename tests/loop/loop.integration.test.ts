@@ -6,12 +6,16 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createProgram } from "../../src/cli.js";
 import { experimentWorktreeDir, lockfilePath, sessionJsonlPath } from "../../src/session/paths.js";
 import type { SessionLogRecord } from "../../src/session/records.js";
 import { readRecords } from "../../src/session/store.js";
-import { exitCodeOf, mockProcessExit } from "../fixtures/cli-harness.js";
-import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import {
+  captureStdout,
+  createRunnableProgram,
+  exitCodeOf,
+  mockProcessExit,
+} from "../fixtures/cli-harness.js";
+import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
 
 /** Generous budget: every command below creates real worktrees and spawns real bench processes. */
 const LONG_RUN_TIMEOUT_MS = 180_000;
@@ -63,11 +67,6 @@ function benchScript(gateFile?: string): string {
   return `${lines.join("\n")}\n`;
 }
 
-/** Run git in `cwd` and return its trimmed stdout. */
-function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
-}
-
 /**
  * Commit the bench, the config, and a gitignore for gymrat's own directory, so
  * every worktree the loop checks out carries a runnable bench and the main tree
@@ -98,17 +97,7 @@ function tuneExperiment(repo: ScratchRepo, latency: number): void {
 
 /** Swallow both streams and hand back a reader that drains the stdout collected so far. */
 function captureOutput(): () => string {
-  let stdout = "";
-  vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    stdout += String(chunk);
-    return true;
-  });
-  vi.spyOn(process.stderr, "write").mockReturnValue(true);
-  return () => {
-    const collected = stdout;
-    stdout = "";
-    return collected;
-  };
+  return captureStdout({ silenceStderr: true, drainOnRead: true });
 }
 
 /**
@@ -119,11 +108,7 @@ function captureOutput(): () => string {
  * rebuild the session from the log on disk.
  */
 async function runCli(argv: readonly string[]): Promise<number> {
-  const program = createProgram();
-  for (const command of [program, ...program.commands]) {
-    command.exitOverride();
-    command.configureOutput({ writeErr: () => {} });
-  }
+  const program = createRunnableProgram({ exitOverride: "all", silent: true });
   try {
     await program.parseAsync(["node", "cli.js", ...argv]);
     return 0;

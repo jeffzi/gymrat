@@ -15,6 +15,7 @@ import {
   sessionJsonlPath,
   worktreesDir,
 } from "../../src/session/paths.js";
+import { captureThrown } from "../fixtures/errors.js";
 import { createScratchRepo } from "../fixtures/scratch-repo.js";
 
 /** An arbitrary absolute root: the derivation helpers never touch the filesystem. */
@@ -31,16 +32,6 @@ const LOCKFILE_NAMES = [
   { root: "/srv/projects/demo", name: "gymrat-lock-9fe2fb7fa4f9.json" },
   { root: "/srv/projects/other", name: "gymrat-lock-4ff7d20c47bc.json" },
 ];
-
-/** Run `act` and hand back the error it threw, failing the test if it threw none. */
-function captureThrown(act: () => unknown): unknown {
-  try {
-    act();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("expected the call to throw");
-}
 
 describe("repoRoot", () => {
   describe("when the directory is inside a git repository", () => {

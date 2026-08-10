@@ -17,6 +17,7 @@ import type {
 } from "../../src/session/records.js";
 import type { SessionState } from "../../src/session/store.js";
 import { appendRecord, foldSession, readRecords } from "../../src/session/store.js";
+import { captureThrown } from "../fixtures/errors.js";
 import { AT, committedKeep, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
 
 const SESSION: SessionRecord = sessionRecord({
@@ -107,16 +108,6 @@ function jsonlHolding(lines: string[]): string {
   fs.mkdirSync(path.dirname(jsonlPath), { recursive: true });
   fs.writeFileSync(jsonlPath, lines.map((line) => `${line}\n`).join(""));
   return jsonlPath;
-}
-
-/** Run `act` and hand back the error it threw, failing the test if it threw none. */
-function captureThrown(act: () => unknown): unknown {
-  try {
-    act();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("expected the call to throw");
 }
 
 describe("appendRecord", () => {

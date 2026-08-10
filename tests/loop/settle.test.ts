@@ -4,9 +4,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createProgram } from "../../src/cli.js";
 import type { ResolvedConfig } from "../../src/config.js";
-import { GymratError } from "../../src/errors.js";
 import { discardSession, keepSession } from "../../src/loop/settle.js";
 import { startSession } from "../../src/loop/start.js";
 import {
@@ -16,8 +14,10 @@ import {
 } from "../../src/session/paths.js";
 import type { IterationRecord, SessionLogRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
-import { captureStdout, mockProcessExit } from "../fixtures/cli-harness.js";
-import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { captureStdout, createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
+import { ISO_PATTERN } from "../fixtures/constants.js";
+import { captureRejectedGymratError } from "../fixtures/errors.js";
+import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import { committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
 
 type Exec = typeof import("../../src/exec.js").exec;
@@ -35,17 +35,11 @@ vi.mock("../../src/exec.js", async (importOriginal) => {
 
 type MetricVerdict = NonNullable<IterationRecord["metrics"][string]>;
 
-const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CHECKS = "npm test";
 /** The run timeout `config()` sets, in the milliseconds `exec` takes. */
 const TIMEOUT_MS = 1_800_000;
 const CHECKS_STDOUT = "3 tests failed";
 const CHECKS_STDERR = "AssertionError: expected 2 to be 3";
-
-/** Run git in `cwd` and return its trimmed stdout. */
-function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
-}
 
 /** The commit `worktree` currently has checked out. */
 function headOf(worktree: string): string {
@@ -127,19 +121,6 @@ function lastRecordOf(root: string): SessionLogRecord {
   return last;
 }
 
-/** Run `act` and hand back the GymratError it rejected with, failing the test if it threw none. */
-async function captureGymratError(act: () => unknown): Promise<GymratError> {
-  try {
-    await act();
-  } catch (error) {
-    if (error instanceof GymratError) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error("expected the call to fail with a GymratError");
-}
-
 beforeEach(() => {
   originalCwd = process.cwd();
   repo = createScratchRepo();
@@ -156,7 +137,7 @@ describe("keepSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
       // Act
-      const error = await captureGymratError(() => keepSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() => keepSession(repo.dir, config()));
 
       // Assert
       expect.soft(error.hint).toContain("gymrat start");
@@ -478,7 +459,7 @@ describe("discardSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
       // Act
-      const error = await captureGymratError(() => discardSession(repo.dir));
+      const error = await captureRejectedGymratError(() => discardSession(repo.dir));
 
       // Assert
       expect(error.hint).toContain("gymrat start");
@@ -546,7 +527,7 @@ describe("discardSession", () => {
         const before = readRecords(sessionJsonlPath(repo.dir)).length;
 
         // Act
-        await captureGymratError(() => discardSession(repo.dir));
+        await captureRejectedGymratError(() => discardSession(repo.dir));
 
         // Assert
         expect.soft(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(before);
@@ -557,16 +538,6 @@ describe("discardSession", () => {
 });
 
 describe("the settle commands", () => {
-  /** A program whose subcommands throw instead of exiting, with stderr silenced. */
-  function createSilentProgram(): ReturnType<typeof createProgram> {
-    const program = createProgram();
-    for (const command of [program, ...program.commands]) {
-      command.exitOverride();
-      command.configureOutput({ writeErr: () => {} });
-    }
-    return program;
-  }
-
   /** Write the config file the settle commands read their checks gate from. */
   function writeConfigFile(): void {
     fs.writeFileSync(
@@ -582,7 +553,7 @@ describe("the settle commands", () => {
     checksPass();
     writeConfigFile();
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stdout = captureStdout();
 
     // Act
@@ -601,7 +572,7 @@ describe("the settle commands", () => {
     checksFail();
     writeConfigFile();
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     captureStdout();
     mockProcessExit();
 
@@ -619,7 +590,7 @@ describe("the settle commands", () => {
     editExperiment();
     writeConfigFile();
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stdout = captureStdout();
 
     // Act
@@ -637,7 +608,7 @@ describe("the settle commands", () => {
       // Arrange
       writeConfigFile();
       process.chdir(repo.dir);
-      const program = createSilentProgram();
+      const program = createRunnableProgram({ exitOverride: "all", silent: true });
       const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
       mockProcessExit();
 

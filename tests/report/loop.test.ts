@@ -21,6 +21,7 @@ import type { MetricComparisons } from "../../src/report/types.js";
 import type { BaselineRecord } from "../../src/session/records.js";
 import type { MetricEntry } from "../fixtures/comparison-result.js";
 import { metricMeta, signedRankMetric } from "../fixtures/comparison-result.js";
+import { SESSION_ID } from "../fixtures/constants.js";
 import { sessionRecord } from "../fixtures/session-records.js";
 
 /** The metric under `name`, judged in `direction` with no signal of its own. */
@@ -148,7 +149,6 @@ describe("deriveOutcome", () => {
   });
 });
 
-const SESSION_ID = "20260808-141530-a3f2";
 /** A 40-hex sha whose first seven characters are recognizable on their own. */
 const BASELINE_SHA = `a1b2c3d${"e".repeat(33)}`;
 const KEEP_COMMIT = `b1b2b3b${"c".repeat(33)}`;

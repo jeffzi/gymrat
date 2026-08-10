@@ -3,6 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Run git in `cwd` and return its trimmed stdout. */
+export function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
+}
+
 /** Throwaway git repository in the system temp dir. Call `cleanup` to remove it. */
 export interface ScratchRepo {
   dir: string;
@@ -108,4 +113,30 @@ export function listWorktreeDirs(repoDir: string, options?: { includeMain?: bool
     return dirs.filter((dir) => dir !== mainDir);
   }
   return dirs;
+}
+
+/** Convert a path to forward slashes so it can be embedded in a shell script on any platform. */
+export function toShellPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+/**
+ * Write a bench script into a plain subdirectory of `repo`.
+ *
+ * `resolveTarget` sees a plain directory and returns an in-place target, so
+ * benching it never creates a worktree.
+ */
+export function createInPlaceTargetDir(repo: ScratchRepo, name: string, benchScript: string): void {
+  fs.mkdirSync(path.join(repo.dir, name));
+  fs.writeFileSync(path.join(repo.dir, name, "bench.sh"), benchScript);
+}
+
+/**
+ * Keeps a run that stranded a worktree from leaking it into the system temp dir,
+ * whatever the assertions did or did not manage to read.
+ */
+export function removeStrandedWorktrees(repo: ScratchRepo): void {
+  for (const dir of listWorktreeDirs(repo.dir, { includeMain: false })) {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
 }

@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,16 +12,12 @@ import {
   ensureGitExclude,
   recreateWorkspace,
 } from "../../src/session/workspace.js";
-import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { SESSION_ID } from "../fixtures/constants.js";
+import { captureThrown } from "../fixtures/errors.js";
+import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
 
-const SESSION_ID = "20260808-141530-a3f2";
 const BRANCH = `gymrat/${SESSION_ID}`;
 const BASELINE_REF = "main";
-
-/** Run git in `cwd` and return its trimmed stdout. */
-function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
-}
 
 /** The ref a worktree has checked out: a branch name, or `HEAD` when detached. */
 function checkedOutRef(worktree: string): string {
@@ -31,16 +26,6 @@ function checkedOutRef(worktree: string): string {
 
 function excludePath(root: string): string {
   return path.join(root, ".git", "info", "exclude");
-}
-
-/** Run `act` and hand back the error it threw, failing the test if it threw none. */
-function captureThrown(act: () => unknown): unknown {
-  try {
-    act();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("expected the call to throw");
 }
 
 /** Narrow a thrown value to `GymratError` without an `as` cast. */

@@ -1,13 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createProgram } from "../../src/cli.js";
 import type { ResolvedConfig } from "../../src/config.js";
-import { GymratError, messageOf } from "../../src/errors.js";
+import { messageOf } from "../../src/errors.js";
 import { statusSession } from "../../src/loop/status.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
@@ -20,7 +18,9 @@ import type {
   SessionRecord,
 } from "../../src/session/records.js";
 import { appendRecord } from "../../src/session/store.js";
-import { captureStdout, mockProcessExit } from "../fixtures/cli-harness.js";
+import { captureStdout, createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
+import { ANSI_RE, SESSION_ID, reportLines } from "../fixtures/constants.js";
+import { captureGymratError } from "../fixtures/errors.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
   AT,
@@ -30,12 +30,10 @@ import {
   sessionRecord as sessionRecordDefaults,
 } from "../fixtures/session-records.js";
 
-const SESSION_ID = "20260808-141530-a3f2";
 /** A 40-hex baseline sha whose first seven characters are recognizable on their own. */
 const BASELINE_SHA = `a1b2c3d${"e".repeat(33)}`;
 /** A 40-hex commit sha whose first seven characters are recognizable on their own. */
 const KEEP_COMMIT = `b1b2b3b${"c".repeat(33)}`;
-const ANSI_RE = /\x1b\[/;
 
 /** A fresh repository root with no session on it yet. */
 function freshRoot(): string {
@@ -155,24 +153,6 @@ function fourIterations(): SessionLogRecord[] {
   ];
 }
 
-/** The report's lines, stripped of color, for asserting on what it says. */
-function reportLines(report: string): string[] {
-  return stripAnsi(report).split("\n");
-}
-
-/** Run `act` and hand back the GymratError it threw, failing the test if it threw none. */
-function captureGymratError(act: () => unknown): GymratError {
-  try {
-    act();
-  } catch (error) {
-    if (error instanceof GymratError) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error("expected the call to fail with a GymratError");
-}
-
 describe("statusSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", () => {
@@ -255,16 +235,6 @@ describe("the status command", () => {
     repo.cleanup();
   });
 
-  /** A program whose subcommands throw instead of exiting, with stderr silenced. */
-  function createSilentProgram(): ReturnType<typeof createProgram> {
-    const program = createProgram();
-    for (const command of [program, ...program.commands]) {
-      command.exitOverride();
-      command.configureOutput({ writeErr: () => {} });
-    }
-    return program;
-  }
-
   /** Write the config file every command reads its settings from. */
   function writeConfigFile(): void {
     fs.writeFileSync(
@@ -278,7 +248,7 @@ describe("the status command", () => {
     writeSessionLog(repo.dir, fourIterations());
     writeConfigFile();
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stdout = captureStdout();
 
     // Act
@@ -294,7 +264,7 @@ describe("the status command", () => {
     // Arrange
     writeConfigFile();
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     mockProcessExit();
 
@@ -322,7 +292,7 @@ describe("the status command", () => {
     writeSessionLog(repo.dir, fourIterations());
     writeConfigFile();
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stdout = captureStdout();
 
     // Act

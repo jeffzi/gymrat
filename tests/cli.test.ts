@@ -48,6 +48,7 @@ import {
   type Metrics,
   metricMeta,
 } from "./fixtures/comparison-result.js";
+import { ANSI_RE } from "./fixtures/constants.js";
 import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
 import { createScratchRepo, type ScratchRepo } from "./fixtures/scratch-repo.js";
 
@@ -209,44 +210,6 @@ function readDeclaredVersion(): string {
 }
 
 /**
- * Build a program whose subcommands also throw instead of exiting the process.
- *
- * `exitOverride()` applies only to the command it is called on, so a parse error
- * raised by the `compare` subcommand would otherwise reach `process.exit` and
- * surface as vitest's "process.exit unexpectedly called" rather than as the
- * `CommanderError` the test is asserting on.
- */
-function createProgramWithSubcommandOverrides(): Command {
-  const program = createProgram();
-  for (const command of [program, ...program.commands]) {
-    command.exitOverride();
-  }
-  return program;
-}
-
-/** Build a program whose subcommands throw instead of exiting, with stderr silenced. */
-function createSilentProgram(): Command {
-  const program = createProgramWithSubcommandOverrides();
-  for (const command of [program, ...program.commands]) {
-    command.configureOutput({ writeErr: () => {} });
-  }
-  return program;
-}
-
-/**
- * Build a program with stderr silenced but the production `exitOverride()` left in
- * place, so Commander's own exit code survives instead of being replaced by the
- * test helper's.
- */
-function createSilentProgramWithProductionExit(): Command {
-  const program = createProgram();
-  for (const command of [program, ...program.commands]) {
-    command.configureOutput({ writeErr: () => {} });
-  }
-  return program;
-}
-
-/**
  * Parse `argv` for its help text and return whatever was written to stdout.
  *
  * A subcommand renders its own help, so every command needs its own output
@@ -398,6 +361,62 @@ afterEach(() => {
   mockSpinnerInstance.isSpinning = false;
 });
 
+/**
+ * The color rules every report-emitting command follows, checked against `run`.
+ *
+ * `compare` and `measure` decide color the same way — the report is styled when
+ * stdout is a terminal, plain when it is redirected, and `--no-color` sets
+ * `NO_COLOR` for every renderer downstream — so both drive these cases through
+ * their own runner rather than each restating them.
+ */
+function describeColorDecision(
+  run: (...flags: string[]) => Promise<MockInstance<typeof process.stdout.write>>,
+): void {
+  describe("when deciding whether to color the report", () => {
+    const originalIsTTY = process.stdout.isTTY;
+
+    afterEach(() => {
+      process.stdout.isTTY = originalIsTTY;
+    });
+
+    it("includes ANSI escapes when stdout is a terminal", async () => {
+      // Arrange
+      process.stdout.isTTY = true;
+      vi.stubEnv("NO_COLOR", undefined);
+
+      // Act
+      const writeSpy = await run();
+
+      // Assert
+      expect(writeSpy.mock.calls[0]![0]).toMatch(ANSI_RE);
+    });
+
+    it("omits ANSI escapes when stdout is redirected", async () => {
+      // Arrange
+      process.stdout.isTTY = false;
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", undefined);
+
+      // Act
+      const writeSpy = await run();
+
+      // Assert
+      expect(writeSpy.mock.calls[0]![0]).not.toMatch(ANSI_RE);
+    });
+
+    it("sets process.env.NO_COLOR when --no-color is passed", async () => {
+      // Arrange
+      vi.stubEnv("NO_COLOR", undefined);
+
+      // Act
+      await run("--no-color");
+
+      // Assert
+      expect(process.env.NO_COLOR).toBe("1");
+    });
+  });
+}
+
 describe("createProgram", () => {
   it("reports the version declared in package.json", () => {
     // Arrange
@@ -509,7 +528,7 @@ describe("createProgram", () => {
         },
       ])("rejects $form with a usage error", async ({ positionals, expected }) => {
         // Arrange
-        const program = createSilentProgram();
+        const program = createRunnableProgram({ exitOverride: "all", silent: true });
         await setupMocks();
         mockProcessExit();
 
@@ -591,7 +610,7 @@ describe("createProgram", () => {
         // Arrange - the coercion error is raised by the `compare` subcommand, and
         // Commander copies the exit callback to subcommands at .command() time, so
         // overriding on the parent alone lets the error reach process.exit instead.
-        const program = createSilentProgram();
+        const program = createRunnableProgram({ exitOverride: "all", silent: true });
 
         // Act
         const parsing = program.parseAsync(compareArgv("main", "branch", flag, value));
@@ -619,7 +638,7 @@ describe("createProgram", () => {
         },
       ])("rejects $flag $value because $why", async ({ flag, value, bound }) => {
         // Arrange
-        const program = createSilentProgram();
+        const program = createRunnableProgram({ exitOverride: "all", silent: true });
 
         // Act
         const parsing = program.parseAsync(compareArgv("main", "branch", flag, value));
@@ -653,7 +672,7 @@ describe("createProgram", () => {
     describe("when unknown flag provided", () => {
       it("rejects with a usage error naming the unknown option", async () => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
 
         // Act & Assert
         await expect(
@@ -664,7 +683,7 @@ describe("createProgram", () => {
       it("rejects --record, which only the single-target command carries", async () => {
         // Arrange - recording a comparison would have to name two sides; only
         // `measure` writes a baseline, so the flag stops at the command boundary.
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
 
         // Act & Assert
         await expect(program.parseAsync(compareArgv("main", "branch", "--record"))).rejects.toThrow(
@@ -679,7 +698,7 @@ describe("createProgram", () => {
         { description: "no positionals", args: [] },
       ])("rejects with a usage error when $description provided", async ({ args }) => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
 
         // Act & Assert
         await expect(program.parseAsync(compareArgv(...args))).rejects.toThrow(
@@ -719,53 +738,9 @@ describe("createProgram", () => {
       });
     });
 
-    describe("when deciding whether to color the report", () => {
-      const originalIsTTY = process.stdout.isTTY;
-
-      afterEach(() => {
-        process.stdout.isTTY = originalIsTTY;
-      });
-
-      const ANSI_RE = /\x1b\[/;
-
-      it("includes ANSI escapes when stdout is a terminal", async () => {
-        // Arrange
-        process.stdout.isTTY = true;
-        vi.stubEnv("NO_COLOR", undefined);
-
-        // Act
-        const writeSpy = await runCompareCapturingStdout(createColorSensitiveResult());
-
-        // Assert
-        const output = writeSpy.mock.calls[0]![0];
-        expect(output).toMatch(ANSI_RE);
-      });
-
-      it("omits ANSI escapes when stdout is redirected", async () => {
-        // Arrange
-        process.stdout.isTTY = false;
-        vi.stubEnv("FORCE_COLOR", undefined);
-        vi.stubEnv("NO_COLOR", undefined);
-
-        // Act
-        const writeSpy = await runCompareCapturingStdout(createColorSensitiveResult());
-
-        // Assert
-        const output = writeSpy.mock.calls[0]![0];
-        expect(output).not.toMatch(ANSI_RE);
-      });
-
-      it("sets process.env.NO_COLOR when --no-color is passed", async () => {
-        // Arrange
-        vi.stubEnv("NO_COLOR", undefined);
-
-        // Act
-        await runCompareCapturingStdout(createComparisonResult(), "--no-color");
-
-        // Assert
-        expect(process.env.NO_COLOR).toBe("1");
-      });
-    });
+    describeColorDecision((...flags) =>
+      runCompareCapturingStdout(createColorSensitiveResult(), ...flags),
+    );
 
     describe("when --format flag provided", () => {
       it("routes to renderJson for --format json", async () => {
@@ -787,7 +762,7 @@ describe("createProgram", () => {
         "rejects $desc with Commander's invalid-argument error naming the surviving choices",
         async ({ value }) => {
           // Arrange
-          const program = createSilentProgram();
+          const program = createRunnableProgram({ exitOverride: "all", silent: true });
 
           // Act
           const parsing = program.parseAsync(compareArgv("main", "branch", "--format", value));
@@ -1118,7 +1093,7 @@ describe("createProgram", () => {
 
         it("clears progress before error text when compare throws", async () => {
           // Arrange
-          const program = createProgramWithSubcommandOverrides();
+          const program = createRunnableProgram({ exitOverride: "all" });
           useNoColorTty();
           const { stderrSpy } = await setupProgressMocks(
             [{ kind: "sample", index: 1, total: 5, label: "baseline" }],
@@ -1422,7 +1397,7 @@ describe("createProgram", () => {
 
         it("stops the spinner before a formatted error prints to stderr", async () => {
           // Arrange
-          const program = createProgramWithSubcommandOverrides();
+          const program = createRunnableProgram({ exitOverride: "all" });
           useColorTty();
           const { stderrSpy } = await setupProgressMocks(
             [PREPARE_BASELINE_STEP],
@@ -1451,7 +1426,7 @@ describe("createProgram", () => {
 
         it("stops the spinner before the --fail-on gate-failure exit", async () => {
           // Arrange
-          const program = createProgramWithSubcommandOverrides();
+          const program = createRunnableProgram({ exitOverride: "all" });
           useColorTty();
 
           const regressedResult = createComparisonResult({
@@ -1701,7 +1676,7 @@ describe("createProgram", () => {
     describe("on compare error", () => {
       it("exits 2 and writes the error to stderr", async () => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(new Error("Compare failed"));
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
@@ -1718,7 +1693,7 @@ describe("createProgram", () => {
 
       it("waits for stderr to drain before exiting", async () => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(new Error("Compare failed"));
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(false);
@@ -1740,7 +1715,7 @@ describe("createProgram", () => {
         // Arrange - a closed pipe makes the write throw outright; the exit code
         // contract reserves 1 for a gate trip, so a failed diagnostic must not
         // downgrade the error exit to an unhandled-rejection 1.
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(new Error("Compare failed"));
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         vi.spyOn(process.stderr, "write").mockImplementation(() => {
@@ -1830,7 +1805,7 @@ describe("createProgram", () => {
         stderrSpy: ReturnType<typeof vi.spyOn>;
         exitSpy: ReturnType<typeof vi.spyOn>;
       }> {
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(compareMockReturn);
         const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
@@ -2094,7 +2069,7 @@ describe("createProgram", () => {
 
       it("rejects a malformed condition with the allowed grammar in the error", async () => {
         // Arrange
-        const program = createSilentProgram();
+        const program = createRunnableProgram({ exitOverride: "all", silent: true });
         mockProcessExit();
 
         // Act & Assert
@@ -2109,7 +2084,7 @@ describe("createProgram", () => {
         { form: "a hexadecimal percentage", value: "geomean:0x10" },
       ])("rejects geomean with $form", async ({ value }) => {
         // Arrange
-        const program = createSilentProgram();
+        const program = createRunnableProgram({ exitOverride: "all", silent: true });
         await setupMocks();
         mockProcessExit();
 
@@ -2179,7 +2154,7 @@ describe("createProgram", () => {
       it("exits 2 for Commander usage errors", async () => {
         // Arrange - the production exitOverride (which sets exit code 2) must
         // survive here rather than being replaced by the test helper's plain one
-        const program = createSilentProgramWithProductionExit();
+        const program = createRunnableProgram({ exitOverride: "none", silent: true });
         mockProcessExit();
 
         // Act & Assert
@@ -2426,7 +2401,7 @@ describe("createProgram", () => {
         // Arrange - the check comes first: discovering there is nowhere to write
         // after ten minutes of sampling would throw the whole run away.
         const { measureMock } = await setupMeasureMocks();
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
         mockProcessExit();
@@ -2462,7 +2437,7 @@ describe("createProgram", () => {
         { flag: "--bogus", args: ["--bogus"] },
       ])("rejects $flag with a usage error naming the unknown option", async ({ flag, args }) => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
 
         // Act & Assert
         await expect(program.parseAsync(measureArgv("main", ...args))).rejects.toThrow(
@@ -2495,38 +2470,9 @@ describe("createProgram", () => {
       });
     });
 
-    describe("when deciding whether to color the report", () => {
-      const originalIsTTY = process.stdout.isTTY;
-
-      afterEach(() => {
-        process.stdout.isTTY = originalIsTTY;
-      });
-
-      const ANSI_RE = /\x1b\[/;
-
-      it("includes ANSI escapes when stdout is a terminal", async () => {
-        // Arrange
-        process.stdout.isTTY = true;
-        vi.stubEnv("NO_COLOR", undefined);
-
-        // Act
-        const writeSpy = await runMeasureCapturingStdout(twoKindMeasurement(), "main");
-
-        // Assert
-        expect(writeSpy.mock.calls[0]![0]).toMatch(ANSI_RE);
-      });
-
-      it("sets process.env.NO_COLOR when --no-color is passed", async () => {
-        // Arrange
-        vi.stubEnv("NO_COLOR", undefined);
-
-        // Act
-        await runMeasureCapturingStdout(twoKindMeasurement(), "main", "--no-color");
-
-        // Assert
-        expect(process.env.NO_COLOR).toBe("1");
-      });
-    });
+    describeColorDecision((...flags) =>
+      runMeasureCapturingStdout(twoKindMeasurement(), "main", ...flags),
+    );
 
     describe("progress feedback", () => {
       const originalStderrIsTTY = process.stderr.isTTY;
@@ -2609,7 +2555,7 @@ describe("createProgram", () => {
     describe("on measurement error", () => {
       it("exits 2 and writes the error to stderr", async () => {
         // Arrange
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         await setupMeasureMocks(new Error("Measurement failed"));
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
@@ -2751,7 +2697,7 @@ describe("createProgram", () => {
         // Arrange
         const runMock = await arrange(() => {});
         holdRepoLock("measure");
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
         mockProcessExit();
@@ -2800,7 +2746,7 @@ describe("createProgram", () => {
         await arrange(() => {
           heldDuringRun = readRepoLock();
         }, new Error("benchmark crashed"));
-        const program = createProgramWithSubcommandOverrides();
+        const program = createRunnableProgram({ exitOverride: "all" });
         vi.spyOn(process.stdout, "write").mockReturnValue(true);
         vi.spyOn(process.stderr, "write").mockReturnValue(true);
         mockProcessExit();

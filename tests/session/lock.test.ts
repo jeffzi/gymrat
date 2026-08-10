@@ -5,8 +5,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GymratError } from "../../src/errors.js";
 import { acquireLock } from "../../src/session/lock.js";
+import { captureGymratError } from "../fixtures/errors.js";
 
 /** Shape every lockfile assertion expects, with the wall-clock field left open. */
 const HOLDER_RECORD = {
@@ -40,19 +40,6 @@ function writeLockfile(lockPath: string, holder: { pid: number; command: string 
 
 function readLockfile(lockPath: string): unknown {
   return JSON.parse(fs.readFileSync(lockPath, "utf8"));
-}
-
-/** Run `act` and hand back the GymratError it threw, failing the test if it threw none. */
-function captureGymratError(act: () => unknown): GymratError {
-  try {
-    act();
-  } catch (error) {
-    if (error instanceof GymratError) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error("expected the call to throw a GymratError");
 }
 
 afterEach(() => {

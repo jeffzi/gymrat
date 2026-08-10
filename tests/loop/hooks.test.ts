@@ -7,12 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FAILURE_EXIT_CODE } from "../../src/exec.js";
 import type { HookInvocation, HookStage } from "../../src/loop/hooks.js";
 import { runHook } from "../../src/loop/hooks.js";
+import { SESSION_ID } from "../fixtures/constants.js";
 import type { HookScripts } from "../fixtures/hook-scripts.js";
 import { hookScripts } from "../fixtures/hook-scripts.js";
 import { expectedHookRecord, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
 import { removeTempRoot } from "../setup/temp-root.js";
-
-const SESSION_ID = "20260808-141530-abcd";
 
 /** The cap the runner holds hook stdout to before it reaches gymrat's own output. */
 const STDOUT_LIMIT_BYTES = 8192;

@@ -8,16 +8,18 @@ import { measure } from "../src/measure.js";
 import type { MeasureOptions } from "../src/measure.js";
 import type { MeasurementResult } from "../src/report/types.js";
 import { CommandError } from "../src/sampling.js";
-import { createScratchRepo, listWorktreeDirs } from "./fixtures/scratch-repo.js";
+import { captureRejection } from "./fixtures/errors.js";
+import {
+  createInPlaceTargetDir,
+  createScratchRepo,
+  listWorktreeDirs,
+  removeStrandedWorktrees,
+  toShellPath,
+} from "./fixtures/scratch-repo.js";
 import type { ScratchRepo } from "./fixtures/scratch-repo.js";
 
 /** Generous timeout for runs that create real worktrees and spawn real bench processes. */
 const LONG_RUN_TIMEOUT_MS = 60_000;
-
-/** Convert a path to forward slashes so it can be embedded in a shell script on any platform. */
-function toShellPath(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 /**
  * The MeasureOptions fields shared by every call site here, with only `target`
@@ -43,37 +45,6 @@ function commitFiles(repo: ScratchRepo, files: Record<string, string>): void {
   }
   execFileSync("git", ["add", ...Object.keys(files)], { cwd: repo.dir, stdio: "pipe" });
   execFileSync("git", ["commit", "-m", "bench scripts"], { cwd: repo.dir, stdio: "pipe" });
-}
-
-/**
- * `resolveTarget` sees a plain directory and returns an in-place target, so
- * benching it never creates a worktree.
- */
-function createInPlaceTargetDir(repo: ScratchRepo, name: string, benchScript: string): void {
-  fs.mkdirSync(path.join(repo.dir, name));
-  fs.writeFileSync(path.join(repo.dir, name, "bench.sh"), benchScript);
-}
-
-/**
- * Keeps a run that stranded a worktree from leaking it into the system temp dir,
- * whatever the assertions did or did not manage to read.
- */
-function removeStrandedWorktrees(repo: ScratchRepo): void {
-  for (const dir of listWorktreeDirs(repo.dir, { includeMain: false })) {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
-  }
-}
-
-/** Await a promise expected to reject and hand back the Error it rejected with. */
-async function captureRejection(promise: Promise<unknown>): Promise<Error> {
-  const outcome: unknown = await promise.then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  if (!(outcome instanceof Error)) {
-    throw new Error(`expected a rejection with an Error, got: ${String(outcome)}`);
-  }
-  return outcome;
 }
 
 describe("measure – integration", () => {

@@ -1,11 +1,9 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createProgram } from "../../src/cli.js";
 import type { ResolvedConfig } from "../../src/config.js";
-import { GymratError } from "../../src/errors.js";
 import { startSession } from "../../src/loop/start.js";
 import {
   baselineWorktreeDir,
@@ -15,11 +13,12 @@ import {
 import type { SessionRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { detectWorkspace } from "../../src/session/workspace.js";
-import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { ISO_PATTERN } from "../fixtures/constants.js";
+import { captureGymratError } from "../fixtures/errors.js";
+import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import { committedKeep, iterationRecord } from "../fixtures/session-records.js";
 
 const SESSION_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
-const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /**
  * A settled run configuration carrying both the keys the session header snapshots
  * and keys it must leave out (`unstableNoisePct`, `stop`).
@@ -51,24 +50,6 @@ const CONFIG_SNAPSHOT = {
   filter: "npm run bench -- {names}",
   hooks: HOOKS,
 };
-
-/** Run git in `cwd` and return its trimmed stdout. */
-function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
-}
-
-/** Run `act` and hand back the GymratError it threw, failing the test if it threw none. */
-function captureGymratError(act: () => unknown): GymratError {
-  try {
-    act();
-  } catch (error) {
-    if (error instanceof GymratError) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error("expected the call to throw a GymratError");
-}
 
 /** The session header `root`'s log opens with, failing the test when there is none. */
 function sessionHeaderOf(root: string): SessionRecord {

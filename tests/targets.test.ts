@@ -13,6 +13,7 @@ import {
   materializeWorktree,
   cleanupWorktrees,
 } from "../src/targets.js";
+import { captureThrown } from "./fixtures/errors.js";
 import {
   createScratchRepo,
   killGitDuringWorktreeAdd,
@@ -27,16 +28,6 @@ function getHeadSha(repoDir: string): string {
     cwd: repoDir,
     encoding: "utf-8",
   }).trim();
-}
-
-/** Run `act` and hand back the error it threw, failing the test if it threw none. */
-function captureThrown(act: () => unknown): unknown {
-  try {
-    act();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("expected the call to throw");
 }
 
 function createRefTarget(ref: string, resolvedSha: string): RefTarget {

@@ -1,54 +1,22 @@
-/* eslint-disable typescript/no-unsafe-type-assertion -- process.exit mock requires never cast */
 import os from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { installTerminationCleanup } from "../src/signals.js";
-
-class ProcessExited extends Error {
-  constructor(readonly code: number) {
-    super(`process.exit(${String(code)})`);
-    this.name = "ProcessExited";
-  }
-}
+import {
+  raiseSignal,
+  removeLeakedListeners,
+  type SignalName,
+  stubProcessExit,
+} from "./fixtures/signal-probe.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function stubProcessExit(): void {
-  vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-    throw new ProcessExited(code ?? 0);
-    // process.exit's overloaded signature accepts string | number | null | undefined
-  }) as (code?: string | number | null) => never);
-}
-
-function isSignalListener(value: unknown): value is (signal: NodeJS.Signals) => void {
-  return typeof value === "function";
-}
-
-function raiseNewListeners(signal: NodeJS.Signals, before: readonly unknown[]): number {
-  const installed = process.listeners(signal).filter((l) => !before.includes(l));
-  if (installed.length === 0) {
-    throw new Error(`no new ${signal} handler installed`);
-  }
-  for (const listener of installed) {
-    try {
-      if (isSignalListener(listener)) listener(signal);
-    } catch (error) {
-      if (error instanceof ProcessExited) return error.code;
-      throw error;
-    }
-  }
-  throw new Error(`${signal} handler returned instead of exiting`);
-}
-
-function removeNewListeners(signal: NodeJS.Signals, before: readonly unknown[]): void {
-  for (const listener of process.listeners(signal)) {
-    if (!before.includes(listener)) {
-      process.removeListener(signal, listener);
-    }
-  }
+/** Remove every listener on `signal` added since `before`. */
+function removeNewListeners(signal: SignalName, before: readonly unknown[]): void {
+  removeLeakedListeners(signal, before);
 }
 
 describe("installTerminationCleanup", () => {
@@ -62,7 +30,7 @@ describe("installTerminationCleanup", () => {
 
       try {
         // Act
-        const code = raiseNewListeners("SIGINT", before);
+        const code = raiseSignal("SIGINT", before);
 
         // Assert
         expect(cleanup).toHaveBeenCalledOnce();
@@ -85,7 +53,7 @@ describe("installTerminationCleanup", () => {
 
       try {
         // Act
-        const code = raiseNewListeners("SIGINT", before);
+        const code = raiseSignal("SIGINT", before);
 
         // Assert
         expect(code).toBe(128 + os.constants.signals.SIGINT);
@@ -105,7 +73,7 @@ describe("installTerminationCleanup", () => {
       try {
         // Act
         try {
-          raiseNewListeners("SIGINT", before);
+          raiseSignal("SIGINT", before);
         } catch {
           // exit throws — ignore
         }

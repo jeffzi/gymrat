@@ -12,18 +12,25 @@ import { GymratError } from "../src/errors.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
+import { captureRejection } from "./fixtures/errors.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
 import {
+  createInPlaceTargetDir,
   createScratchRepo,
   killGitDuringWorktreeAdd,
   listWorktreeDirs,
+  removeStrandedWorktrees,
+  toShellPath,
 } from "./fixtures/scratch-repo.js";
 import type { ScratchRepo } from "./fixtures/scratch-repo.js";
-
-/** Convert a path to forward slashes so it can be embedded in a shell script on any platform. */
-function toShellPath(p: string): string {
-  return p.replace(/\\/g, "/");
-}
+import {
+  TERMINATION_SIGNALS,
+  raiseSignal,
+  removeLeakedListeners,
+  signalListenerCounts,
+  stubProcessExit,
+  type SignalName,
+} from "./fixtures/signal-probe.js";
 
 function assertCommandError(error: Error): asserts error is CommandError {
   expect(error).toBeInstanceOf(CommandError);
@@ -74,16 +81,6 @@ function createBranch(
  * `resolveTarget` sees a plain directory and returns an in-place target, so
  * benching it never creates a worktree.
  */
-function createInPlaceTargetDir(
-  repo: ReturnType<typeof createScratchRepo>,
-  name: string,
-  benchScript: string,
-) {
-  fs.mkdirSync(path.join(repo.dir, name));
-  const script = path.join(repo.dir, name, "bench.sh");
-  fs.writeFileSync(script, benchScript);
-}
-
 /**
  * Create a scratch repo, chdir into it for the duration of `fn`, then sweep
  * any stranded worktrees and clean the repo up — even if `fn` throws.
@@ -120,20 +117,6 @@ function compareOptions(
 }
 
 /**
- * Await a promise expected to reject and hand back the Error it rejected with.
- */
-async function captureRejection(promise: Promise<unknown>): Promise<Error> {
-  const outcome: unknown = await promise.then(
-    () => undefined,
-    (error: unknown) => error,
-  );
-  if (!(outcome instanceof Error)) {
-    throw new Error(`expected a rejection with an Error, got: ${String(outcome)}`);
-  }
-  return outcome;
-}
-
-/**
  * The single report line matching `predicate`, or a failure naming the whole report.
  */
 function findLine(report: string, predicate: (line: string) => boolean): string {
@@ -160,12 +143,6 @@ function parseLeftBehindDirs(text: string): string[] {
  * Keeps a run that stranded a worktree from leaking it into the system temp dir,
  * whatever the assertions did or did not manage to read.
  */
-function removeStrandedWorktrees(repo: ReturnType<typeof createScratchRepo>) {
-  for (const dir of listWorktreeDirs(repo.dir, { includeMain: false })) {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
-  }
-}
-
 function assertWorktreesCleanedUp(repo: ReturnType<typeof createScratchRepo>) {
   expect(listWorktreeDirs(repo.dir, { includeMain: false })).toStrictEqual([]);
 }
@@ -182,79 +159,6 @@ function listTempWorktreeDirs(): string[] {
     .readdirSync(os.tmpdir())
     .filter((entry) => entry.startsWith("gymrat-wt-"))
     .toSorted();
-}
-
-const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-
-type SignalName = (typeof TERMINATION_SIGNALS)[number];
-
-/** Thrown by the stubbed `process.exit` so a handler unwinds where it really would. */
-class ProcessExited extends Error {
-  constructor(readonly code: number | string | null | undefined) {
-    super(`process.exit(${String(code)})`);
-    this.name = "ProcessExited";
-  }
-}
-
-function isSignalListener(value: unknown): value is (signal: SignalName) => void {
-  return typeof value === "function";
-}
-
-function signalListenerCounts(): Record<SignalName, number> {
-  return {
-    SIGINT: process.listeners("SIGINT").length,
-    SIGTERM: process.listeners("SIGTERM").length,
-    SIGHUP: process.listeners("SIGHUP").length,
-  };
-}
-
-/**
- * Remove every listener on `signal` that was not already present `before`.
- *
- * Reports whether it found (and removed) one, so a caller can name every
- * signal that still had a handler installed after a run had settled.
- */
-function removeLeakedListeners(signal: SignalName, before: readonly unknown[]): boolean {
-  let leaked = false;
-  for (const listener of process.listeners(signal)) {
-    if (!before.includes(listener) && isSignalListener(listener)) {
-      process.removeListener(signal, listener);
-      leaked = true;
-    }
-  }
-  return leaked;
-}
-
-/**
- * Run the handlers compare() installed for `signal` and report the code it exits with.
- *
- * Emitting the signal for real would also trip vitest's own handling and tear the
- * test run down, so only the listeners added since `before` are invoked. With
- * `process.exit` stubbed to throw, a handler unwinds exactly where the real one
- * would stop.
- */
-function raiseSignal(
-  signal: SignalName,
-  before: readonly unknown[],
-): number | string | null | undefined {
-  const installed = process.listeners(signal).filter((listener) => !before.includes(listener));
-  if (installed.length === 0) {
-    throw new Error(`compare() installed no ${signal} handler`);
-  }
-
-  try {
-    for (const listener of installed) {
-      if (isSignalListener(listener)) {
-        listener(signal);
-      }
-    }
-  } catch (error) {
-    if (error instanceof ProcessExited) {
-      return error.code;
-    }
-    throw error;
-  }
-  throw new Error(`the ${signal} handler returned instead of exiting`);
 }
 
 interface ErrorPathCase {
@@ -1294,9 +1198,7 @@ describe("compare – integration", () => {
         SIGTERM: process.listeners("SIGTERM"),
         SIGHUP: process.listeners("SIGHUP"),
       };
-      vi.spyOn(process, "exit").mockImplementation((code) => {
-        throw new ProcessExited(code);
-      });
+      stubProcessExit();
     });
 
     afterEach(() => {
@@ -1345,9 +1247,7 @@ describe("compare – integration", () => {
           SIGINT: process.listeners("SIGINT"),
           SIGTERM: process.listeners("SIGTERM"),
         };
-        vi.spyOn(process, "exit").mockImplementation((code) => {
-          throw new ProcessExited(code);
-        });
+        stubProcessExit();
 
         repo = createScratchRepo();
         process.chdir(repo.dir);

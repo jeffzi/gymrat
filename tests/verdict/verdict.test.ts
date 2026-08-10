@@ -8,6 +8,7 @@ import type {
 } from "../../src/verdict/verdict.js";
 import { computeGeomean, computeVerdicts } from "../../src/verdict/verdict.js";
 import { metricRecord } from "../fixtures/metrics.js";
+import { buildInputs } from "../fixtures/verdict-inputs.js";
 
 function getVerdict(result: Record<string, MetricVerdict>, key: string): MetricVerdict {
   const verdict = result[key];
@@ -965,55 +966,6 @@ function gatingVerdictsWithNoise(noise: readonly (number | null)[]): {
           };
     metricMeta[key] = { direction: "lower", gating: true, exact: noisePct === null };
   });
-
-  return { verdicts, metricMeta };
-}
-
-/** An exact verdict no exclusion rule drops, so ρ is 1 + delta/100 when lower is better. */
-function exactVerdict(delta: number): MetricVerdict {
-  const verdict = delta < 0 ? "improved" : delta > 0 ? "regressed" : "no-signal";
-  return { verdict, method: "exact", delta, n: 1 };
-}
-
-/** One metric's contribution to a geomean run: what it is, and how it moved. */
-interface MetricSpec {
-  /** Key the verdict and exclusion list report the metric under. */
-  name: string;
-  /** Defaults to "lower", so a spec list without directions describes a lower-is-better run. */
-  direction?: "lower" | "higher";
-  /** Defaults to true, matching every case that isn't explicitly non-gating. */
-  gating?: boolean;
-  /** Percentage delta behind an exact verdict. Ignored when `verdict` is given. */
-  delta?: number;
-  /** A full verdict object, for band/unstable cases `exactVerdict` can't express. */
-  verdict?: MetricVerdict;
-  /** True to add `name` to `metricMeta` without a matching verdict — the no-verdict case. */
-  noVerdict?: boolean;
-}
-
-/**
- * Verdicts and metadata keyed by metric name, in the order the specs are listed.
- */
-function buildInputs(specs: readonly MetricSpec[]): {
-  verdicts: Record<string, MetricVerdict>;
-  metricMeta: Record<string, MetricMetadata>;
-} {
-  const verdicts: Record<string, MetricVerdict> = {};
-  const metricMeta: Record<string, MetricMetadata> = {};
-
-  for (const spec of specs) {
-    const direction = spec.direction ?? "lower";
-    const gating = spec.gating ?? true;
-
-    if (spec.noVerdict) {
-      metricMeta[spec.name] = { direction, gating, exact: false };
-      continue;
-    }
-
-    const verdict = spec.verdict ?? exactVerdict(spec.delta ?? 0);
-    verdicts[spec.name] = verdict;
-    metricMeta[spec.name] = { direction, gating, exact: verdict.method === "exact" };
-  }
 
   return { verdicts, metricMeta };
 }

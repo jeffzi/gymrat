@@ -1,57 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-import type { ResolvedMetricMeta } from "../../src/config.js";
 import type { KindAggregate } from "../../src/verdict/aggregate.js";
 import { computeKindAggregates } from "../../src/verdict/aggregate.js";
 import type { MetricVerdict } from "../../src/verdict/verdict.js";
-import { metricRecord } from "../fixtures/metrics.js";
-
-/** An exact verdict no exclusion rule drops, so ρ is 1 + delta/100 when lower is better. */
-function exactVerdict(delta: number): MetricVerdict {
-  return { verdict: delta < 0 ? "improved" : "regressed", method: "exact", delta, n: 1 };
-}
-
-/** One metric's contribution to an aggregation run: what it is, and how it moved. */
-interface MetricSpec {
-  /** Full metric name — the key the exclusion list reports a metric under. */
-  name: string;
-  shortName: string;
-  /** Defaults to "time", so a spec list without kinds describes a single-kind run. */
-  kind?: string;
-  gating?: boolean;
-  /** Percentage delta behind an exact verdict. Ignored when `verdict` is given. */
-  delta?: number;
-  verdict?: MetricVerdict;
-}
-
-/**
- * Verdicts and metadata keyed by metric name, in the order the specs are listed.
- *
- * Both records are built the way the pipeline builds them — without a prototype —
- * so a metric named after an `Object.prototype` member cannot be read off the
- * chain instead of the record.
- */
-function buildInputs(specs: readonly MetricSpec[]): {
-  verdicts: Record<string, MetricVerdict>;
-  metricMeta: Record<string, ResolvedMetricMeta>;
-} {
-  const verdicts: Record<string, MetricVerdict> = {};
-  const metricMeta: Record<string, ResolvedMetricMeta> = {};
-
-  for (const spec of specs) {
-    const verdict = spec.verdict ?? exactVerdict(spec.delta ?? 0);
-    verdicts[spec.name] = verdict;
-    metricMeta[spec.name] = {
-      direction: "lower",
-      gating: spec.gating ?? true,
-      exact: verdict.method === "exact",
-      kind: spec.kind ?? "time",
-      shortName: spec.shortName,
-    };
-  }
-
-  return { verdicts: metricRecord(verdicts), metricMeta: metricRecord(metricMeta) };
-}
+import { buildInputs, exactVerdict } from "../fixtures/verdict-inputs.js";
 
 /** The aggregate for `kind`, or a failure naming the kinds that were produced. */
 function kindNamed(aggregates: readonly KindAggregate[], kind: string): KindAggregate {

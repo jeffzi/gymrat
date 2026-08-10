@@ -4,7 +4,6 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createProgram } from "../../src/cli.js";
 import type { ResolvedConfig } from "../../src/config.js";
 import { GymratError } from "../../src/errors.js";
 import { iterateSession } from "../../src/loop/iterate.js";
@@ -18,6 +17,9 @@ import type {
   SessionRecord,
 } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
+import { createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
+import { ISO_PATTERN, SESSION_ID, reportLines } from "../fixtures/constants.js";
+import { captureRejectedGymratError } from "../fixtures/errors.js";
 import type { HookScripts } from "../fixtures/hook-scripts.js";
 import { hookScripts } from "../fixtures/hook-scripts.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
@@ -43,9 +45,6 @@ vi.mock("../../src/sampling.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/sampling.js")>();
   return { ...actual, collectSamples: collectSamplesMock };
 });
-
-const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const SESSION_ID = "20260808-141530-abcd";
 
 /** Ten rounds of a bench that stayed near 100. */
 const BASELINE_MS = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100];
@@ -225,24 +224,9 @@ function sampledTargets(): readonly TargetContext[] {
   return samplingCall(0).targets;
 }
 
-/** The report's lines, stripped of color and indentation, for asserting on what it says. */
-function reportLines(report: string): string[] {
-  return stripAnsi(report)
-    .split("\n")
-    .map((line) => line.trim());
-}
-
-/** Run `act` and hand back the GymratError it rejected with, failing the test if it threw none. */
-async function captureGymratError(act: () => Promise<unknown>): Promise<GymratError> {
-  try {
-    await act();
-  } catch (error) {
-    if (error instanceof GymratError) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error("expected the call to reject with a GymratError");
+/** The report's lines, stripped of color and of the indentation a grouped metric carries. */
+function trimmedReportLines(report: string): string[] {
+  return reportLines(report, { trimLines: true });
 }
 
 /** The iteration record `root`'s log ends on, failing the test when it ends on something else. */
@@ -273,7 +257,7 @@ describe("iterateSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
       // Act
-      const error = await captureGymratError(() => iterateSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
 
       // Assert
       expect.soft(error.hint).toContain("gymrat start");
@@ -287,7 +271,7 @@ describe("iterateSession", () => {
       writeSessionLog(repo.dir, [iteration(1)]);
 
       // Act
-      const error = await captureGymratError(() => iterateSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
 
       // Assert
       expect.soft(error.hint).toContain("gymrat keep");
@@ -303,7 +287,7 @@ describe("iterateSession", () => {
       stubRuns(repo.dir, []);
 
       // Act
-      const error = await captureGymratError(() =>
+      const error = await captureRejectedGymratError(() =>
         iterateSession(repo.dir, config({ stop: { maxIterations: 2 } })),
       );
 
@@ -320,7 +304,7 @@ describe("iterateSession", () => {
       stubRuns(repo.dir, []);
 
       // Act
-      const error = await captureGymratError(() =>
+      const error = await captureRejectedGymratError(() =>
         iterateSession(repo.dir, config({ primary: "total_ms", stop: { targetValue: 95 } })),
       );
 
@@ -498,7 +482,7 @@ describe("iterateSession", () => {
       );
 
       // Assert
-      expect(reportLines(result.report).at(-2)).toBe("target reached — keep it");
+      expect(trimmedReportLines(result.report).at(-2)).toBe("target reached — keep it");
     });
 
     it.each([
@@ -608,7 +592,9 @@ describe("iterateSession", () => {
         confirmed: true,
       });
       expect.soft(result.record.outcome).toBe("regressed");
-      expect(reportLines(result.report)).toContain("total_ms: regression confirmed on rerun");
+      expect(trimmedReportLines(result.report)).toContain(
+        "total_ms: regression confirmed on rerun",
+      );
     });
 
     it.each([
@@ -644,7 +630,9 @@ describe("iterateSession", () => {
           confirmed: false,
         });
         expect.soft(result.record.outcome).toBe("no-signal");
-        expect(reportLines(result.report)).toContain("total_ms: regression not confirmed on rerun");
+        expect(trimmedReportLines(result.report)).toContain(
+          "total_ms: regression not confirmed on rerun",
+        );
       },
     );
 
@@ -657,7 +645,7 @@ describe("iterateSession", () => {
       const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
 
       // Act
-      const error = await captureGymratError(() => iterateSession(repo.dir, resolved));
+      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, resolved));
 
       // Assert
       expect.soft(error.message).toBe("bench command failed");
@@ -872,7 +860,7 @@ describe("iterateSession", () => {
       const result = await iterateSession(repo.dir, config({ hooks }));
 
       // Assert
-      const lines = reportLines(result.report);
+      const lines = trimmedReportLines(result.report);
       expect.soft(lines[0]).toBe("[before] warmed the cache");
       expect.soft(lines.at(-1)).toBe("[after] archived the samples");
       expect(lines[1]).toBe("iteration 2 · experiment vs baseline · 10 paired samples");
@@ -889,7 +877,7 @@ describe("iterateSession", () => {
 
       // Assert
       expect
-        .soft(reportLines(result.report).slice(0, 2))
+        .soft(trimmedReportLines(result.report).slice(0, 2))
         .toStrictEqual(["[before] hook exited 3", "[before] no warm copy"]);
       expect
         .soft(hookRecords())
@@ -915,29 +903,19 @@ describe("iterateSession", () => {
         .soft(hookRecords().map((record) => record.stage))
         .toStrictEqual(withAfter ? ["after"] : []);
       expect(
-        reportLines(result.report).filter((line) => line.startsWith("[before]")),
+        trimmedReportLines(result.report).filter((line) => line.startsWith("[before]")),
       ).toStrictEqual([]);
     });
   });
 });
 
 describe("the iterate command", () => {
-  /** A program whose subcommands throw instead of exiting, with stderr silenced. */
-  function createSilentProgram(): ReturnType<typeof createProgram> {
-    const program = createProgram();
-    for (const command of [program, ...program.commands]) {
-      command.exitOverride();
-      command.configureOutput({ writeErr: () => {} });
-    }
-    return program;
-  }
-
   it("measures the session in the repository it runs in and reports it on stdout", async () => {
     // Arrange
     writeSessionLog(repo.dir);
     stubSamples(repo.dir, improvedRounds(), baselineRounds());
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     let stdout = "";
     vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
       stdout += String(chunk);
@@ -962,12 +940,9 @@ describe("the iterate command", () => {
       JSON.stringify({ bench: "npm run bench", stop: { maxIterations: 1 } }),
     );
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- vitest mock requires cast
-    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw Object.assign(new Error(`process.exit(${code})`), { exitCode: code });
-    }) as never);
+    mockProcessExit();
 
     // Act
     const parsing = program.parseAsync(["node", "cli.js", "iterate"]);
@@ -982,12 +957,9 @@ describe("the iterate command", () => {
   it("exits 2 with a start hint when the repository holds no session", async () => {
     // Arrange
     process.chdir(repo.dir);
-    const program = createSilentProgram();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- vitest mock requires cast
-    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw Object.assign(new Error(`process.exit(${code})`), { exitCode: code });
-    }) as never);
+    mockProcessExit();
 
     // Act
     const parsing = program.parseAsync(["node", "cli.js", "iterate", "--bench", "npm run bench"]);
