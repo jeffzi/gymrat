@@ -69,6 +69,52 @@ describe("acquireLock", () => {
       // Assert
       expect(fs.existsSync(lockPath)).toBe(true);
     });
+
+    it("publishes the record only once it is whole, leaving no scratch file behind", () => {
+      // Arrange: a rival reader peeks at the lock path every time a record is
+      // written out, so a half-written lockfile would be caught in the act.
+      const lockPath = freshLockPath();
+      const realWriteFileSync = fs.writeFileSync.bind(fs);
+      const peeks: (string | undefined)[] = [];
+      vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+        realWriteFileSync(file, data, options);
+        peeks.push(fs.existsSync(lockPath) ? fs.readFileSync(lockPath, "utf8") : undefined);
+      });
+
+      // Act
+      acquireLock(lockPath, "compare");
+
+      // Assert
+      expect.soft(peeks).toStrictEqual([undefined]);
+      expect.soft(fs.readdirSync(path.dirname(lockPath))).toStrictEqual([path.basename(lockPath)]);
+      expect.soft(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
+    });
+  });
+
+  describe("when a rival publishes first", () => {
+    it("leaves the rival's lockfile in place and reports it as held", () => {
+      // Arrange: the rival's lockfile lands after our record is written but
+      // before it is published into place.
+      const lockPath = freshLockPath();
+      const rivalPid = process.pid;
+      const realWriteFileSync = fs.writeFileSync.bind(fs);
+      vi.spyOn(fs, "writeFileSync").mockImplementationOnce((file, data, options) => {
+        realWriteFileSync(file, data, options);
+        writeLockfile(lockPath, { pid: rivalPid, command: "rival" });
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect.soft(error.message).toContain(`PID ${String(rivalPid)}`);
+      expect.soft(error.message).toContain("rival");
+      expect.soft(readLockfile(lockPath)).toStrictEqual({
+        pid: rivalPid,
+        command: "rival",
+        at: WRITTEN_LOCK_AT,
+      });
+    });
   });
 
   describe("when the lockfile is held by a live process", () => {
@@ -123,17 +169,56 @@ describe("acquireLock", () => {
     });
   });
 
+  describe("when the lockfile cannot be read", () => {
+    it.each([
+      { shape: "an empty", contents: "" },
+      { shape: "a truncated", contents: '{"pid":4242,"comm' },
+    ])("reclaims $shape lockfile no run could have published", ({ contents }) => {
+      // Arrange: a whole record is what a reader sees, so an incomplete one is
+      // the leftover of a run that died mid-write.
+      const lockPath = freshLockPath();
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      fs.writeFileSync(lockPath, contents);
+
+      // Act
+      acquireLock(lockPath, "compare");
+
+      // Assert
+      expect(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
+    });
+  });
+
+  describe("when the stale lockfile belongs to another user", () => {
+    it("names the lockfile and the manual remedy instead of raising EPERM", () => {
+      // Arrange: a sticky /tmp — the stale file is another user's, so gymrat
+      // cannot claim it out of the way.
+      const lockPath = freshLockPath();
+      writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
+      vi.spyOn(fs, "renameSync").mockImplementation(() => {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect.soft(error.message).toContain(lockPath);
+      expect.soft(error.hint).toMatch(/remove/i);
+      expect.soft(error.hint).toContain(lockPath);
+    });
+  });
+
   describe("when the steal race is lost", () => {
-    it("throws a GymratError naming the winner when its record is readable", () => {
-      // Arrange
+    it("leaves the winner's lockfile in place and reports it as held", () => {
+      // Arrange: a rival takes the lock between our claim of the stale file and
+      // our exclusive re-creation of it.
       const lockPath = freshLockPath();
       const rivalPid = process.pid;
       writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
 
-      const realUnlink = fs.unlinkSync.bind(fs);
-      vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
-        realUnlink(p);
-        // A rival writes a new lockfile between the unlink and the retry write.
+      const realRename = fs.renameSync.bind(fs);
+      vi.spyOn(fs, "renameSync").mockImplementationOnce((from, to) => {
+        realRename(from, to);
         writeLockfile(lockPath, { pid: rivalPid, command: "rival" });
       });
 
@@ -143,30 +228,31 @@ describe("acquireLock", () => {
       // Assert
       expect.soft(error.message).toContain(`PID ${String(rivalPid)}`);
       expect.soft(error.message).toContain("rival");
-      expect.soft(error.hint).toMatch(/another gymrat run/i);
       expect.soft(error.hint).toContain(lockPath);
+      expect.soft(readLockfile(lockPath)).toStrictEqual({
+        pid: rivalPid,
+        command: "rival",
+        at: WRITTEN_LOCK_AT,
+      });
     });
 
-    it("throws a GymratError with claimed-while-stealing when the winner is unreadable", () => {
-      // Arrange
+    it("acquires the lock once the winner releases it", () => {
+      // Arrange: a rival claims the stale file first — our claim finds it gone —
+      // and has released the lock by the time we retry.
       const lockPath = freshLockPath();
       writeLockfile(lockPath, { pid: deadPid(), command: "measure" });
 
       const realUnlink = fs.unlinkSync.bind(fs);
-      vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
-        realUnlink(p);
-        // Rival writes garbage that readHolder cannot parse.
-        fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-        fs.writeFileSync(lockPath, "not-json");
+      vi.spyOn(fs, "renameSync").mockImplementationOnce((from) => {
+        realUnlink(from);
+        throw Object.assign(new Error("no such file or directory"), { code: "ENOENT" });
       });
 
       // Act
-      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+      acquireLock(lockPath, "compare");
 
       // Assert
-      expect.soft(error.message).toContain("claimed by another process while stealing it");
-      expect.soft(error.hint).toMatch(/another gymrat run/i);
-      expect.soft(error.hint).toContain(lockPath);
+      expect(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
     });
   });
 });
