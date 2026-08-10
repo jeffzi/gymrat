@@ -2,7 +2,7 @@
 
 ## Commands
 
-- `npm run build` — compile with `tsc -p tsconfig.build.json`
+- `npm run build` — remove `dist/`, compile with `tsc -p tsconfig.build.json`, then mark `dist/cli.js` executable
 - `npm test` — `vitest run --coverage`; coverage thresholds fail the run, and untested `src/` files count against them
 - `npm run check` — all static checks: lint, markdown, formatting, workflow lint/audit, type-aware lint, dead code, spelling, types. Run before committing. Expects `coverage/` from a prior `npm test` (fallow health reads it); on a fresh clone, run `npm test` first.
 - `npm run fix` — auto-fix: lint, markdown, formatting

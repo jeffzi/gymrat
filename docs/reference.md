@@ -10,15 +10,14 @@ metric:
 
 ```text
 gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
-metric                      │        main │ perf/faster-decode │ vs main
-────────────────────────────┼─────────────┼────────────────────┼──────────────────
-decode/text=digits/time     │   1700 ± 1% │          1400 ± 1% │ ✓  -17.9%  ±2.5%
-decode/text=words/time      │   3100 ± 1% │          3100 ± 3% │ ~   +0.9%  ±2.5%
-encode/time                 │    914 ± 1% │           934 ± 1% │ ✗   +2.2%  ±2.5%
-encode/heap                 │  49200 ± 0% │         45300 ± 0% │ ✓   -7.9%
-────────────────────────────┼─────────────┼────────────────────┼──────────────────
-geomean (4 stable metrics)  │             │                    │     -6.0%
-                            │        main │ perf/faster-decode │ vs main
+metric                      │       main │ perf/faster-decode │ vs main
+────────────────────────────┼────────────┼────────────────────┼──────────────────
+decode/text=digits/time     │  1700 ± 1% │          1400 ± 1% │ ✓  -17.9%  ±2.5%
+decode/text=words/time      │  3100 ± 1% │          3100 ± 3% │ ~   +0.9%  ±2.5%
+encode/time                 │   914 ± 1% │           934 ± 1% │ ✗   +2.2%  ±2.5%
+encode/heap                 │ 49200 ± 0% │         45300 ± 0% │ ✓   -7.9%
+────────────────────────────┼────────────┼────────────────────┼──────────────────
+geomean (4 stable metrics)  │            │                    │     -6.0%
 
 ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 
@@ -107,12 +106,11 @@ time                  │       main │ perf/faster-decode │ vs main
 entity                │            │                    │
   alive_check         │ 100ns ± 1% │          90ns ± 1% │ ✓  -10.0%  ±2.5%
   spawn               │ 100ns ± 1% │         104ns ± 1% │ ✗   +4.0%  ±2.5%
-geomean · entity (2)  │            │                    │     -3.1%
+geomean · entity (2)  │            │                    │     -3.1%  ±1.5%
 
 warmup                │ 100ns ± 1% │         100ns ± 1% │ ~   +0.3%  ±2.5%
 ──────────────────────┼────────────┼────────────────────┼──────────────────
-geomean · time (3)    │            │                    │     -3.2%
-                      │       main │ perf/faster-decode │ vs main
+geomean · time (3)    │            │                    │     -3.2%  ±2.0%
 
 informational — gating off (config: kinds.memory.gating = false)
 ──────────────────────┬────────────┬────────────────────┬──────────────────
@@ -121,14 +119,13 @@ memory                │       main │ perf/faster-decode │ vs main
 encode                │  100B ± 1% │           93B ± 1% │ ✓   -7.0%  ±2.5%
 ──────────────────────┼────────────┼────────────────────┼──────────────────
 geomean · memory (1)  │            │                    │     -7.0%
-                      │       main │ perf/faster-decode │ vs main
 
 ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 
 highlights
-  ✗ time · entity.spawn/time         +4.0%
-  ✓ time · entity.alive_check/time  -10.0%
-  ✓ memory · encode/heap             -7.0%
+  ✗ time · entity.spawn         +4.0%
+  ✓ time · entity.alive_check  -10.0%
+  ✓ memory · encode             -7.0%
 ```
 
 ### Rendering notes
@@ -212,7 +209,7 @@ Example, trimmed to one metric and one candidate:
       "unit": null,
       "direction": "lower",
       "gating": true,
-      "kind": "time",
+      "kind": "other",
       "group": null,
       "baseline": { "median": 1700, "spreadPct": 1 },
       "candidates": [
@@ -235,7 +232,7 @@ Example, trimmed to one metric and one candidate:
       "label": "perf/faster-decode",
       "kinds": [
         {
-          "kind": "time",
+          "kind": "other",
           "hasGating": true,
           "geomean": { "value": -17.9, "n": 1, "excluded": [], "band": 2.5 },
           "groups": [],
@@ -279,7 +276,7 @@ Example, trimmed to one metric:
       "unit": null,
       "direction": "lower",
       "gating": true,
-      "kind": "time",
+      "kind": "other",
       "group": null,
       "exact": false
     }

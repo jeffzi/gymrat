@@ -77,13 +77,56 @@ directory path resolved the same way as a `compare` target, with the same option
 no baseline for `--verbose` to name a verdict method against, and no candidate for `--fail-on` to
 gate.
 
+`-r, --record` appends the run to the repository's session log as a baseline record, so a later
+`gymrat status` reads it back alongside the session's iterations. It requires a session (see
+[The session loop](#the-session-loop)); the session is resolved before the first sample is taken, so
+a run with nowhere to write fails before it benches rather than after.
+
 ```sh
 # Measure the current directory
 gymrat measure --bench "npm run bench"
 
 # Measure a git ref, labelled
 gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
+
+# Record the measurement in the session log
+gymrat measure --bench "npm run bench" --record
 ```
+
+### The session loop
+
+`compare` and `measure` answer one question and forget it. The session loop is the stateful path:
+gymrat pins a baseline, gives you an experiment worktree to edit, and keeps a log of every
+measurement and every decision so an agent (or you) can pick the work up in a fresh process.
+
+| Command                | What it does                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `gymrat start [ref]`   | Create the repository's session, or resume the one it has. Pins the baseline at `ref` (default `HEAD`) |
+| `gymrat iterate`       | Bench the experiment worktree against the baseline worktree, record the result, print the verdict      |
+| `gymrat keep [-m msg]` | Commit the measured edit once the checks pass, and advance the baseline to that commit                 |
+| `gymrat discard`       | Revert the experiment worktree to its last commit                                                      |
+| `gymrat status`        | Print the session's history, read back from the log                                                    |
+
+```sh
+gymrat start                     # pin the baseline at HEAD, create the worktrees
+# ...edit the experiment worktree...
+gymrat iterate                   # measure the edit
+gymrat keep -m "cache the table" # commit it and move the baseline forward
+gymrat status                    # read the whole session back
+```
+
+`start` is safe to re-run: an existing log is never appended to, and only a worktree that went
+missing is put back. Each iteration must be settled — kept or discarded — before the next one
+measures, so the log never holds two settlements against one iteration.
+
+`keep` runs the `checks` command in the experiment worktree first and refuses to commit when it
+fails; it also refuses when nothing has been measured since the last settle, and when the iteration
+regressed a gating metric. Every refusal is recorded as a blocked keep, which `status` reads back —
+gymrat never erases a decision from the log. A refused keep exits 1.
+
+`start`, `iterate`, `keep`, and `discard` hold a repository lock for the duration, so two sessions
+in one repository cannot perturb each other's measurements. `status` only reads the log, so it takes
+no lock.
 
 ### Options
 
@@ -99,6 +142,7 @@ gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
 | `--no-color`            | auto            | Print the report without ANSI styles                                      |
 | `--verbose`             | off             | Name the statistical method behind each verdict in the footer             |
 | `--fail-on <condition>` | none            | Exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
+| `-r, --record`          | off             | `measure` only: append the run to the session log as a baseline           |
 
 \*`--bench` is required either on the command line or in the config file.
 
@@ -111,9 +155,11 @@ through the shell with the working directory set to the target's directory.
 
 ### Exit codes
 
-- `0`: a report was produced and no `--fail-on` gate tripped.
-- `1`: a `--fail-on` gate tripped. The full report is printed before the exit, so you can inspect
-  the results.
+- `0`: a report was produced and no gate tripped.
+- `1`: a gate tripped. Three things trip one: a `--fail-on` condition on `compare`, a keep the loop
+  refused (`gymrat keep`), and a stop condition that refuses another iteration (`gymrat iterate`).
+  The full report is printed before the exit, so you can inspect the results. A regressed verdict
+  from `iterate` is not a gate — the verdict block says so, and the command still exits 0.
 - `2`: an operational error (unresolvable target, nonzero bench/prepare exit, timeout, zero metrics
   parsed, config error, or invalid usage). gymrat surfaces the captured command output so you can
   see what went wrong.
@@ -143,56 +189,25 @@ gymrat compare main my-branch --bench "npm run bench" \
 ```
 
 gymrat removes temporary worktrees created for git-ref targets on success, on error, and on
-`SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left behind,
+`SIGHUP`/`SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left behind,
 naming each leftover directory with the reason git gave. On the signal path there is no report to
 carry that footer, so nothing is printed: gymrat kills the running bench command, sweeps the
 worktrees, and exits.
 
 ## Reading the report
 
-```sh
-gymrat compare main perf/faster-decode --bench "node bench.js" --adapter metric-lines --samples 10
-```
-
-With a `gymrat.json` marking `encode/heap` as an exact metric, that prints:
-
-```text
-gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
-metric                      │        main │ perf/faster-decode │ vs main
-────────────────────────────┼─────────────┼────────────────────┼──────────────────
-decode/text=digits/time     │   1700 ± 1% │          1400 ± 1% │ ✓  -17.9%  ±2.5%
-decode/text=words/time      │   3100 ± 1% │          3100 ± 3% │ ~   +0.9%  ±2.5%
-encode/time                 │    914 ± 1% │           934 ± 1% │ ✗   +2.2%  ±2.5%
-encode/heap                 │  49200 ± 0% │         45300 ± 0% │ ✓   -7.9%
-────────────────────────────┼─────────────┼────────────────────┼──────────────────
-geomean (4 stable metrics)  │             │                    │     -6.0%
-                            │        main │ perf/faster-decode │ vs main
-
-✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
-
-highlights
-  ✗ encode/time               +2.2%
-  ✓ decode/text=digits/time  -17.9%
-  ✓ encode/heap               -7.9%  (exact)
-```
-
-- The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class and doubles
-  as the legend for the glyphs used throughout: `✓` improved, `✗` regressed, `≈` unstable, `=`
-  identical, `~` within noise, `?` inconclusive. Glyphs are direction-aware — you never do
-  better-is-higher math yourself.
-- The **highlights** block lists regressions first, then improvements, with the delta and method
-  evidence. Exact metrics show `(exact)`.
-- The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
-  hidden.
-- The **geomean** row aggregates each section's stable metrics: a single-kind run has one geomean
-  row for the whole run, while a multi-kind run closes each kind's section with its own geomean.
-  Metrics whose noise band exceeds `unstableNoisePct` read `≈ unstable` and drop out of the geomean.
-- Add `--verbose` to name the statistical method behind each verdict in the footer.
+A `compare` report opens with a per-metric table — each side's median and spread, then the delta and
+its verdict — closes each section with a geomean row, and ends with a verdict tally and a highlights
+block. Glyphs are direction-aware (`✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
+within noise, `?` inconclusive), so you never do better-is-higher math yourself, and the delta prints
+even under `~`.
 
 Verdicts come from a two-sided Wilcoxon signed-rank test at ≥ 6 nonzero paired differences, a
 half-range noise band below that, and direct median comparison for config-flagged `exact` metrics.
-The [reference](docs/reference.md) covers the full report anatomy (noise bands, spread columns,
-multi-kind sections, one-sided metrics) and the exact verdict rules.
+Add `--verbose` to name the method behind each verdict in the footer.
+
+The [reference](docs/reference.md#report-anatomy) has an annotated example and the full anatomy —
+noise bands, spread columns, multi-kind sections, one-sided metrics — plus the exact verdict rules.
 
 ## CI integration
 
@@ -288,7 +303,12 @@ an error, to catch typos.
   },
   "kinds": {
     "memory": { "gating": false }
-  }
+  },
+  "checks": "npm test",
+  "filter": "npm run bench -- --filter {names}",
+  "primary": "decode/time",
+  "stop": { "targetValue": 900, "maxIterations": 20 },
+  "hooks": { "before": "./scripts/note-start.sh", "after": "./scripts/note-end.sh" }
 }
 ```
 
@@ -315,6 +335,30 @@ an error, to catch typos.
   `metrics` key.
 - An unknown sub-key inside a `metrics` or `kinds` entry is an error, the same as an unknown
   top-level key.
+
+### Session loop keys
+
+These five keys configure [the session loop](#the-session-loop) and are ignored by `compare` and
+`measure`.
+
+- `checks` is the command `gymrat keep` must see succeed before it commits, run in the experiment
+  worktree. Without it, `keep` commits with the gate off and warns on stderr that it did.
+- `filter` is the bench command a confirmation rerun uses to re-measure only the metrics that
+  regressed. It must contain the `{names}` placeholder — gymrat substitutes the space-separated
+  metric names there — and a `filter` without it is a config error. Left unset, a confirmation rerun
+  re-runs the whole `bench` command instead.
+- `primary` names the figure each iteration is read on. It defaults to `"geomean"`, the aggregate
+  over every gating metric; set it to a metric name to read the loop on that metric alone.
+- `stop` ends the loop. `maxIterations` (a positive integer) refuses another `iterate` once the log
+  holds that many iterations. `targetValue` (a number) stops once the primary metric reaches it, in
+  that metric's own direction, and only after the iteration that reached it is **kept** — so it
+  requires `primary` to name a metric, and pairing it with the default geomean primary is a config
+  error. A refused iteration exits 1 and prints what condition ended the loop.
+- `hooks.before` and `hooks.after` are commands gymrat runs around each iteration, in the experiment
+  worktree, with a JSON payload on stdin describing the stage, the session, and the last iteration.
+  A hook cannot brick the loop: one that fails, crashes, or overruns its 30-second timeout becomes a
+  log record and a labeled block in the report, never a failed iteration. Each hook's relayed stdout
+  is capped at 8 KB, cut on a whole line.
 
 ## License
 
