@@ -40,8 +40,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # No explicit build step: prepack rebuilds dist/ for publint, for
-      # arethetypeswrong's own npm pack, and again for npm publish.
+      - name: Build
+        run: npm run build
+
       - name: Verify tag matches package version
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
