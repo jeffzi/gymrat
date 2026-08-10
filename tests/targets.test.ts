@@ -426,7 +426,7 @@ describe("cleanupWorktrees", () => {
 
     function createStrayWorktree(): WorktreeInfo {
       strayDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-stray-"));
-      return { dir: strayDir, sha: UNKNOWN_SHA };
+      return { dir: strayDir, sha: UNKNOWN_SHA, created: true };
     }
 
     it("reports the failing directory with git's own error text", () => {
@@ -480,6 +480,7 @@ describe("cleanupWorktrees", () => {
       const vanished: WorktreeInfo = {
         dir: path.join(nonRepoDir, "gone"),
         sha: UNKNOWN_SHA,
+        created: true,
       };
 
       const result = cleanupWorktrees([vanished], nonRepoDir);

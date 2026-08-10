@@ -17,15 +17,8 @@ import {
   formatStatusIteration,
 } from "../report/loop.js";
 import { sessionJsonlPath } from "../session/paths.js";
-import type { KeepRecord, SessionLogRecord } from "../session/records.js";
+import type { SessionLogRecord } from "../session/records.js";
 import { foldSession, readRecords } from "../session/store.js";
-
-/** What became of the iteration a keep record settled. */
-function keepSettleState(record: KeepRecord): SettleState {
-  return record.status === "committed"
-    ? { kind: "kept", commit: record.commit }
-    : { kind: "keep-blocked", reason: record.reason };
-}
 
 /**
  * What became of each measured iteration, keyed by its number.
@@ -39,7 +32,12 @@ function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleS
   for (const record of records) {
     switch (record.type) {
       case "keep":
-        states.set(record.seq, keepSettleState(record));
+        states.set(
+          record.seq,
+          record.status === "committed"
+            ? { kind: "kept", commit: record.commit }
+            : { kind: "keep-blocked", reason: record.reason },
+        );
         break;
       case "discard":
         states.set(record.seq, { kind: "discarded" });

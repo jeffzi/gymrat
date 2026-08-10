@@ -39,11 +39,8 @@ export interface WorktreeInfo {
    * the add leaves something behind, which is what lets cleanup tell a worktree
    * that was never created from one that was created and has since vanished.
    * Only the latter can leave a registry entry needing a prune.
-   *
-   * Omit it on a hand-built `WorktreeInfo` to mean "assume it was created":
-   * pruning a live entry is impossible, while missing a stale one is not.
    */
-  created?: boolean;
+  created: boolean;
 }
 
 /**
@@ -185,20 +182,6 @@ function removeWorktreeIfExists(
 }
 
 /**
- * Prune only when the sweep could have left a registry entry without a directory.
- *
- * `git worktree remove` clears the entry it removes, so a sweep whose removals all
- * succeeded — or that had nothing to remove, in a `repoDir` that may not even be a
- * git repo — has no stale entry to collect. Pruning anyway would reach past this
- * run's worktrees and deregister worktrees of the user's own that are only
- * temporarily absent: an unmounted volume, a directory moved aside.
- */
-function pruneIfNeeded(mayHaveStaleEntry: boolean, repoDir: string): string | undefined {
-  if (!mayHaveStaleEntry) return undefined;
-  return tryGitCommand(["worktree", "prune"], repoDir);
-}
-
-/**
  * Remove any of `worktrees` that reached disk, then prune. Safe to call repeatedly.
  *
  * Never throws: `compare()` calls this while already handling a failed run, so a
@@ -224,12 +207,20 @@ export function cleanupWorktrees(
       // A worktree git never created has no entry to collect, so its absence is
       // no reason to sweep the whole repo and deregister worktrees of the user's
       // own that are only temporarily gone.
-      mayHaveStaleEntry ||= worktree.created ?? true;
+      mayHaveStaleEntry ||= worktree.created;
     } else {
       failures.push(outcome);
       mayHaveStaleEntry = true;
     }
   }
 
-  return { removed, failures, pruneError: pruneIfNeeded(mayHaveStaleEntry, repoDir) };
+  // Prune only when the sweep could have left a registry entry without a
+  // directory. `git worktree remove` clears the entry it removes, so a sweep
+  // whose removals all succeeded — or that had nothing to remove, in a
+  // `repoDir` that may not even be a git repo — has no stale entry to collect.
+  // Pruning anyway would reach past this run's worktrees and deregister
+  // worktrees of the user's own that are only temporarily absent: an unmounted
+  // volume, a directory moved aside.
+  const pruneError = mayHaveStaleEntry ? tryGitCommand(["worktree", "prune"], repoDir) : undefined;
+  return { removed, failures, pruneError };
 }

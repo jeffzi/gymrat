@@ -56,10 +56,8 @@ function parseMitataStats(
   if (typeof p50 !== "number") return undefined;
 
   const heap = stats.heap;
-  if (isRecord(heap) && typeof heap.avg === "number") {
-    return { args, p50, heapAvg: heap.avg };
-  }
-  return { args, p50 };
+  const heapAvg = isRecord(heap) && typeof heap.avg === "number" ? heap.avg : undefined;
+  return { args, p50, ...(heapAvg === undefined ? {} : { heapAvg }) };
 }
 
 /**

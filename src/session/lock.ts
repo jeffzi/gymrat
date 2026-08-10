@@ -1,30 +1,34 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { Type } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox";
+
 import { GymratError, hasErrorCode } from "../errors.js";
+import { compile, expected } from "../schema.js";
+
+const lockHolderSchema = Type.Object(
+  {
+    // The compiled check requires a finite number, so a `pid` that overflowed
+    // JSON's number range reads as a foreign shape rather than as a holder no
+    // signal can ever reach.
+    pid: Type.Number(expected("a number")),
+    command: Type.String(expected("a string")),
+    at: Type.String(expected("a string")),
+  },
+  // Deliberately not strict about unknown keys: a lockfile carrying a field
+  // this version does not know is still a live holder, and rejecting it would
+  // steal the lock out from under whoever wrote it.
+  expected("an object"),
+);
 
 /** The process a lockfile records as its holder. */
-interface LockHolder {
-  pid: number;
-  command: string;
-  at: string;
-}
+type LockHolder = Static<typeof lockHolderSchema>;
+
+const lockHolderValidator = compile(lockHolderSchema);
 
 /** Gives up an acquired lock. Calling it more than once is harmless. */
 export type ReleaseLock = () => void;
-
-function isLockHolder(value: unknown): value is LockHolder {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "pid" in value &&
-    typeof value.pid === "number" &&
-    "command" in value &&
-    typeof value.command === "string" &&
-    "at" in value &&
-    typeof value.at === "string"
-  );
-}
 
 /**
  * Read the holder a lockfile names, or `undefined` when it names nobody usable.
@@ -40,7 +44,7 @@ function readHolder(lockPath: string): LockHolder | undefined {
   } catch {
     return undefined;
   }
-  return isLockHolder(parsed) ? parsed : undefined;
+  return lockHolderValidator.check(parsed) ? parsed : undefined;
 }
 
 /**

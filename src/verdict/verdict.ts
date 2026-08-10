@@ -220,17 +220,11 @@ export function pairSamples(
  * Compute the exact-path verdict: any difference between medians is a signal.
  */
 function computeExactVerdict(
-  medianA: number,
-  medianB: number,
   delta: number,
   direction: "lower" | "higher",
   n: number,
 ): ExactVerdict {
-  // Equal medians lack a signal direction; an undefined ratio is caught by
-  // `determineVerdict`.
-  const verdict: Verdict = medianA === medianB ? "no-signal" : determineVerdict(delta, direction);
-
-  return { verdict, method: "exact", delta, n };
+  return { verdict: determineVerdict(delta, direction), method: "exact", delta, n };
 }
 
 /**
@@ -316,7 +310,7 @@ export function computeVerdicts(
     const delta = computeDelta(medianA, medianB);
 
     result[metric] = meta.exact
-      ? computeExactVerdict(medianA, medianB, delta, meta.direction, pairedA.length)
+      ? computeExactVerdict(delta, meta.direction, pairedA.length)
       : computeApproximateVerdict(
           pairedA,
           pairedB,
@@ -400,23 +394,20 @@ type Noise = {
 };
 
 /**
- * One byte expressed as a percentage of a median, or 0 when there is no
+ * `numerator` as a fraction of a median's magnitude, or 0 when there is no
  * magnitude to divide by.
  *
- * Each side contributes its own term, so a side that measured 0 drops out
- * instead of making the whole floor infinite.
+ * Dividing by the magnitude rather than the median keeps the ratio positive for
+ * a metric centered on a negative value. A side that measured 0 contributes
+ * nothing instead of making the result infinite, so each side stands on its own
+ * term.
  */
-function quantizationPct(median: number): number {
-  return median === 0 ? 0 : 100 / Math.abs(median);
+function fractionOfMedian(numerator: number, median: number): number {
+  return median === 0 ? 0 : numerator / Math.abs(median);
 }
 
-/**
- * A half-range expressed as a fraction of a median's magnitude, or 0 when
- * there is no magnitude to divide by.
- */
-function relativeSpread(halfRange: number, median: number): number {
-  return median === 0 ? 0 : halfRange / Math.abs(median);
-}
+/** One byte as a percentage: what a whole-byte metric cannot measure below. */
+const ONE_BYTE_PCT = 100;
 
 /**
  * Compute the measurement noise of a metric.
@@ -450,12 +441,14 @@ function computeNoise(
   const halfRangeA = computeHalfRange(pairedA);
   const halfRangeB = computeHalfRange(pairedB);
 
-  const spreadA = relativeSpread(halfRangeA, medianA);
-  const spreadB = relativeSpread(halfRangeB, medianB);
+  const spreadA = fractionOfMedian(halfRangeA, medianA);
+  const spreadB = fractionOfMedian(halfRangeB, medianB);
   const maxSpread = Math.max(spreadA, spreadB);
 
   const byteFloorPct =
-    unit === "bytes" ? Math.max(quantizationPct(medianA), quantizationPct(medianB)) : 0;
+    unit === "bytes"
+      ? Math.max(fractionOfMedian(ONE_BYTE_PCT, medianA), fractionOfMedian(ONE_BYTE_PCT, medianB))
+      : 0;
 
   return {
     pct: Math.max(NOISE_K * 100 * maxSpread, NOISE_FLOOR_PCT, byteFloorPct),

@@ -14,9 +14,6 @@ import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/wo
 
 const MS_PER_SECOND = 1000;
 
-/** Why a keep refused to commit the edit it was asked to settle. */
-type BlockReason = NonNullable<KeepRecord["reason"]>;
-
 /** What the checks command answered, once it has run. */
 interface ChecksRun {
   passed: boolean;
@@ -253,7 +250,7 @@ async function runChecks(
 function blockedKeep(
   jsonlPath: string,
   seq: number,
-  reason: BlockReason,
+  reason: NonNullable<KeepRecord["reason"]>,
   checks: KeepRecord["checks"],
   report: string,
 ): KeepResult {
