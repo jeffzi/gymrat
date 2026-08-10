@@ -28,6 +28,21 @@ export function expected(phrase: string): Pick<SchemaOptions, "description"> {
   return { description: phrase };
 }
 
+/** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
+export const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
+
+/**
+ * Shared options for the record schemas whose keys are names an adapter supplies —
+ * metric names and kind names.
+ *
+ * `Type.Record(Type.String(), …)` compiles to `patternProperties` with `^(.*)$`, and
+ * neither `.` nor an unanchored `$` spans a line terminator — so a key containing one
+ * matches no pattern at all. Without `additionalProperties: false` such a key would be
+ * an unconstrained extra property, admitting its entry unchecked; with it, the key is
+ * rejected outright.
+ */
+export const nameKeyedRecordOptions = { ...expected("an object"), additionalProperties: false };
+
 /** A single validation failure, described in terms a caller can word a message from. */
 export interface SchemaIssue {
   /**

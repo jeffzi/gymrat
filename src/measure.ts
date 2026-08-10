@@ -1,6 +1,5 @@
 import { getAdapter } from "./adapters/index.js";
-import type { WarnSink } from "./adapters/types.js";
-import { resolveMetricMeta, type ConfigKinds, type ConfigMetrics } from "./config.js";
+import { resolveMetricMeta } from "./config.js";
 import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import type { MeasurementResult, MetricMeasurement } from "./report/types.js";
@@ -13,7 +12,7 @@ import {
   resolveLabel,
   runWithWorktrees,
 } from "./sampling.js";
-import type { ProgressStep, TargetContext, TargetSpec } from "./sampling.js";
+import type { RunOptions, TargetContext, TargetSpec } from "./sampling.js";
 import { resolveTarget } from "./targets.js";
 import type { CleanupResult } from "./targets.js";
 
@@ -23,25 +22,8 @@ import type { CleanupResult } from "./targets.js";
  * One target, no baseline: nothing is judged, so there is no noise band to set
  * and no verdict to gate on.
  */
-export interface MeasureOptions {
+export interface MeasureOptions extends RunOptions {
   target: TargetSpec;
-  /** Run through the shell in the target's directory. */
-  bench: string;
-  prepare?: string;
-  /** Which output format `bench` writes: `"metric-lines"` or `"mitata"`. */
-  adapter: string;
-  /** How many times to run `bench`. */
-  samples: number;
-  timeoutSeconds: number;
-  configMetrics?: ConfigMetrics;
-  configKinds?: ConfigKinds;
-  /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
-  onProgress?: (step: ProgressStep) => void;
-  /**
-   * Where the adapter's complaints about unreadable bench output go. Omitted,
-   * the adapter falls back to stderr.
-   */
-  warn?: WarnSink;
 }
 
 /**

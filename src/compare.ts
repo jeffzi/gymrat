@@ -1,6 +1,5 @@
 import { getAdapter } from "./adapters/index.js";
-import type { WarnSink } from "./adapters/types.js";
-import { resolveMetricMeta, type ConfigKinds, type ConfigMetrics } from "./config.js";
+import { resolveMetricMeta } from "./config.js";
 import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import type { ComparisonResult, MetricComparison } from "./report/types.js";
@@ -13,7 +12,7 @@ import {
   resolveLabel,
   runWithWorktrees,
 } from "./sampling.js";
-import type { ProgressStep, TargetContext, TargetSamples, TargetSpec } from "./sampling.js";
+import type { RunOptions, TargetContext, TargetSamples, TargetSpec } from "./sampling.js";
 import { resolveTarget } from "./targets.js";
 import type { CleanupResult, Target } from "./targets.js";
 import { computeKindAggregates } from "./verdict/aggregate.js";
@@ -28,33 +27,16 @@ export type { CommandErrorContext, ProgressStep, TargetSpec } from "./sampling.j
  * One baseline, one or more candidates: every candidate is compared with the
  * baseline and never with another candidate.
  */
-export interface CompareOptions {
+export interface CompareOptions extends RunOptions {
   baseline: TargetSpec;
   /** Judged against `baseline`, and reported in this order. */
   candidates: readonly TargetSpec[];
-  /** Run through the shell in each target's directory. */
-  bench: string;
-  prepare?: string;
-  /** Which output format `bench` writes: `"metric-lines"` or `"mitata"`. */
-  adapter: string;
-  /** How many rounds to run, each round sampling every target once. */
-  samples: number;
-  timeoutSeconds: number;
   /**
    * Noise band width, in percent, above which a metric is reported "unstable".
    * Omitted, the verdict engine's own default applies — the CLI always supplies
    * the resolved config value, so only direct callers see the fallback.
    */
   unstableNoisePct?: number;
-  configMetrics?: ConfigMetrics;
-  configKinds?: ConfigKinds;
-  /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
-  onProgress?: (step: ProgressStep) => void;
-  /**
-   * Where the adapter's complaints about unreadable bench output go. Omitted,
-   * the adapter falls back to stderr.
-   */
-  warn?: WarnSink;
 }
 
 /** Everything a run measured, in the shape the comparison reads it: one baseline, N candidates. */

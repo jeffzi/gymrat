@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { AdapterError } from "./adapters/index.js";
 import type { Adapter, WarnSink } from "./adapters/types.js";
+import type { ConfigKinds, ConfigMetrics } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import type { ExecResult, ExecTimeoutError } from "./exec.js";
@@ -131,12 +132,35 @@ export interface TargetSamples {
  * unreported and the adapter's own default (stderr) takes warnings.
  */
 export interface SamplingOptions {
+  /** Run through the shell in each target's directory. */
   bench: string;
   prepare?: string;
+  /** How many rounds to run; each round runs `bench` once per target. */
   samples: number;
   timeoutSeconds: number;
+  /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
   onProgress?: (step: ProgressStep) => void;
+  /**
+   * Where the adapter's complaints about unreadable bench output go. Omitted,
+   * the adapter falls back to stderr.
+   */
   warn?: WarnSink;
+}
+
+/**
+ * The run settings a comparison and a measurement both take, beyond the targets
+ * each names for itself.
+ *
+ * `SamplingOptions` is what `collectSamples` reads; the three fields added here
+ * are what the caller needs to turn raw samples into a report — which parser to
+ * read the bench output with, and the per-metric and per-kind overrides that
+ * settle each metric's metadata.
+ */
+export interface RunOptions extends SamplingOptions {
+  /** Which output format `bench` writes: `"metric-lines"` or `"mitata"`. */
+  adapter: string;
+  configMetrics?: ConfigMetrics;
+  configKinds?: ConfigKinds;
 }
 
 /**

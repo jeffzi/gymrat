@@ -7,12 +7,16 @@ import type { Static } from "@sinclair/typebox";
 import type { Adapter, MetricDefaults } from "./adapters/types.js";
 import { GymratError, hasErrorCode } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
-import { compile, expected, parse, type SchemaIssue } from "./schema.js";
+import {
+  compile,
+  expected,
+  nameKeyedRecordOptions,
+  parse,
+  type SchemaIssue,
+  strictObjectOptions,
+} from "./schema.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import { DEFAULT_UNSTABLE_NOISE_PCT, NOISE_FLOOR_PCT } from "./verdict/verdict.js";
-
-/** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
-const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
 
 /** Shared schema for optional string fields — reused across every plain string config key. */
 const optionalStringSchema = Type.Optional(Type.String(expected("a string")));
@@ -38,17 +42,6 @@ const metricEntrySchema = Type.Object(
   },
   strictObjectOptions,
 );
-
-/**
- * Shared options for the record schemas whose keys are names supplied by an adapter.
- *
- * `Type.Record(Type.String(), …)` compiles to `patternProperties` with `^(.*)$`, and
- * neither `.` nor an unanchored `$` spans a line terminator — so a key containing one
- * matches no pattern at all. Without `additionalProperties: false` such a key would be
- * an unconstrained extra property, admitting its entry unchecked; with it, the key is
- * rejected outright.
- */
-const nameKeyedRecordOptions = { ...expected("an object"), additionalProperties: false };
 
 /** Metric names are unconstrained, so any single-line string key is accepted. */
 const metricsSchema = Type.Record(Type.String(), metricEntrySchema, nameKeyedRecordOptions);

@@ -1,25 +1,18 @@
 import { Type } from "@sinclair/typebox";
-import type { Static } from "@sinclair/typebox";
+import type { Static, TSchema } from "@sinclair/typebox";
 
 import { GymratError } from "../errors.js";
-import { compile, expected, parse, type SchemaIssue } from "../schema.js";
+import {
+  compile,
+  expected,
+  nameKeyedRecordOptions,
+  parse,
+  type SchemaIssue,
+  strictObjectOptions,
+} from "../schema.js";
 
 /** Version of the session JSONL format these schemas describe. */
 const SCHEMA_VERSION = 1;
-
-/** Shared options for object schemas: rejects non-objects and disallows unknown keys. */
-const strictObjectOptions = { ...expected("an object"), additionalProperties: false };
-
-/**
- * Shared options for the record schemas whose keys are metric names supplied by an adapter.
- *
- * `Type.Record(Type.String(), …)` compiles to `patternProperties` with `^(.*)$`, and
- * neither `.` nor an unanchored `$` spans a line terminator — so a key containing one
- * matches no pattern at all. Without `additionalProperties: false` such a key would be
- * an unconstrained extra property, admitting its entry unchecked; with it, the key is
- * rejected outright.
- */
-const nameKeyedRecordOptions = { ...expected("an object"), additionalProperties: false };
 
 const stringSchema = Type.String(expected("a string"));
 const numberSchema = Type.Number(expected("a number"));
@@ -237,13 +230,6 @@ export type SessionLogRecord =
   | DiscardRecord
   | HookRecord;
 
-const sessionValidator = compile(sessionRecordSchema);
-const baselineValidator = compile(baselineRecordSchema);
-const iterationValidator = compile(iterationRecordSchema);
-const keepValidator = compile(keepRecordSchema);
-const discardValidator = compile(discardRecordSchema);
-const hookValidator = compile(hookRecordSchema);
-
 /**
  * Word a schema failure as a session-record error.
  *
@@ -255,6 +241,33 @@ function recordMessage(issue: SchemaIssue): string {
     return `Unknown session record key: ${issue.path}`;
   }
   return `Invalid session record value for ${issue.path}: expected ${issue.expected}, got ${JSON.stringify(issue.value)}`;
+}
+
+/** Compile `schema` once, and word every failure it later finds as a record error. */
+function parserFor<T extends TSchema>(schema: T): (value: unknown) => Static<T> {
+  const validator = compile(schema);
+  return (value) => parse(validator, value, recordMessage);
+}
+
+/**
+ * One parser per `type` a session log line can carry.
+ *
+ * Keyed rather than switched so a record type added to {@link SessionLogRecord}
+ * without a schema is a missing-key compile error, not a runtime fall-through to
+ * the unknown-type throw.
+ */
+const recordParsers: Record<SessionLogRecord["type"], (value: unknown) => SessionLogRecord> = {
+  session: parserFor(sessionRecordSchema),
+  baseline: parserFor(baselineRecordSchema),
+  iteration: parserFor(iterationRecordSchema),
+  keep: parserFor(keepRecordSchema),
+  discard: parserFor(discardRecordSchema),
+  hook: parserFor(hookRecordSchema),
+};
+
+/** Whether `type` is one the log declares, and therefore a key {@link recordParsers} holds. */
+function isRecordType(type: string): type is SessionLogRecord["type"] {
+  return Object.hasOwn(recordParsers, type);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -275,21 +288,8 @@ export function parseRecord(value: unknown): SessionLogRecord {
     );
   }
   const type: unknown = value["type"];
-  if (typeof type === "string") {
-    switch (type) {
-      case "session":
-        return parse(sessionValidator, value, recordMessage);
-      case "baseline":
-        return parse(baselineValidator, value, recordMessage);
-      case "iteration":
-        return parse(iterationValidator, value, recordMessage);
-      case "keep":
-        return parse(keepValidator, value, recordMessage);
-      case "discard":
-        return parse(discardValidator, value, recordMessage);
-      case "hook":
-        return parse(hookValidator, value, recordMessage);
-    }
+  if (typeof type === "string" && isRecordType(type)) {
+    return recordParsers[type](value);
   }
   throw new GymratError(
     `Unknown session record type: ${JSON.stringify(type)}`,

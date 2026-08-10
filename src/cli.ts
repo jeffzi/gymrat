@@ -10,13 +10,7 @@ import yoctoSpinner from "yocto-spinner";
 import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
-import {
-  resolveConfig,
-  type CliFlags,
-  type ConfigKinds,
-  type ConfigMetrics,
-  type ResolvedConfig,
-} from "./config.js";
+import { resolveConfig, type CliFlags, type ResolvedConfig } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
@@ -38,6 +32,7 @@ import type {
   MetricComparisons,
   ReportOptions,
 } from "./report/types.js";
+import type { RunOptions } from "./sampling.js";
 import { acquireLock, type ReleaseLock } from "./session/lock.js";
 import { lockfilePath, repoRoot, sessionJsonlPath } from "./session/paths.js";
 import type { BaselineRecord } from "./session/records.js";
@@ -655,21 +650,11 @@ function configFlagsOf(options: SharedFlags): CliFlags {
   };
 }
 
-/** The fields `CompareOptions` and `MeasureOptions` both take straight from `config` and `progress`. */
-interface RunOptions {
-  bench: string;
-  prepare?: string;
-  adapter: string;
-  samples: number;
-  timeoutSeconds: number;
-  configMetrics?: ConfigMetrics;
-  configKinds?: ConfigKinds;
-  onProgress: (step: ProgressStep) => void;
-  warn: (message: string) => void;
-}
-
 /** Wire `config`'s run settings and `progress`'s callbacks into the shared `CompareOptions`/`MeasureOptions` fields. */
-function runOptionsOf(config: ResolvedConfig, progress: ProgressReporter): RunOptions {
+function runOptionsOf(
+  config: ResolvedConfig,
+  progress: ProgressReporter,
+): RunOptions & Required<Pick<RunOptions, "onProgress" | "warn">> {
   return {
     bench: config.bench,
     prepare: config.prepare,
