@@ -55,9 +55,6 @@ export function stderrTextOf(error: unknown): string {
     return error.stderr.trim();
   }
 
-  /* v8 ignore next 2 -- spawn-level failures (the binary missing from PATH, the
-     working directory deleted) throw before the child runs, leaving stderr null;
-     the test harness cannot reproduce those without breaking its environment. */
   return messageOf(error);
 }
 

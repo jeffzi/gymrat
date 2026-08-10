@@ -13,7 +13,7 @@ import {
   materializeWorktree,
   cleanupWorktrees,
 } from "../src/targets.js";
-import { captureThrown } from "./fixtures/errors.js";
+import { captureGymratError, captureThrown } from "./fixtures/errors.js";
 import {
   createScratchRepo,
   killGitDuringWorktreeAdd,
@@ -22,6 +22,9 @@ import {
 
 /** A sha no repository holds, so `git worktree add` rejects it outright. */
 const UNKNOWN_SHA = "0".repeat(40);
+
+/** Hint gymrat attaches to every unresolvable target, duplicated here so the test asserts against the same string production emits. */
+const RESOLVE_TARGET_HINT = "Pass an existing directory, or a git ref that resolves to a commit.";
 
 function getHeadSha(repoDir: string): string {
   return execFileSync("git", ["rev-parse", "HEAD"], {
@@ -235,6 +238,69 @@ describe("resolveTarget", () => {
       expect(() => resolveTarget(sha, repo!.dir)).toThrow(/Cannot resolve target/);
     });
   });
+
+  // Windows cannot create the symlink without elevation, and its permission
+  // model does not produce EACCES from chmod; root bypasses the mode bits
+  // entirely, so the unreadable directory would resolve instead of failing.
+  describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "when the directory probe fails for a reason other than the path being absent",
+    () => {
+      let repo: ReturnType<typeof createScratchRepo> | undefined;
+      const cleanups: (() => void)[] = [];
+
+      afterEach(() => {
+        while (cleanups.length > 0) {
+          cleanups.pop()?.();
+        }
+        repo?.cleanup();
+      });
+
+      /** A symlink pointing at itself: stat on it fails with ELOOP. */
+      function createSymlinkLoop(): string {
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-loop-"));
+        cleanups.push(() => {
+          fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 });
+        });
+
+        const loop = path.join(base, "loop");
+        fs.symlinkSync(loop, loop);
+        return loop;
+      }
+
+      /** A directory whose parent denies traversal: stat on it fails with EACCES. */
+      function createUnsearchableParent(): string {
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-eacces-"));
+        const parent = path.join(base, "parent");
+        const target = path.join(parent, "target");
+        fs.mkdirSync(target, { recursive: true });
+        fs.chmodSync(parent, 0o000);
+        cleanups.push(() => {
+          fs.chmodSync(parent, 0o700);
+          fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 });
+        });
+
+        return target;
+      }
+
+      it.each([
+        { probeFailure: "a symlink loop", code: "ELOOP", arrange: createSymlinkLoop },
+        {
+          probeFailure: "an unsearchable parent directory",
+          code: "EACCES",
+          arrange: createUnsearchableParent,
+        },
+      ])("reports $probeFailure as the documented resolve failure", ({ code, arrange }) => {
+        repo = createScratchRepo();
+        const input = arrange();
+
+        const error = captureGymratError(() => resolveTarget(input, repo!.dir));
+
+        expect.soft(error.message).toContain(`Cannot resolve target '${input}'`);
+        expect.soft(error.message).toContain(code);
+        expect(error.hint).toBe(RESOLVE_TARGET_HINT);
+      });
+    },
+  );
 });
 
 describe("planWorktree", () => {

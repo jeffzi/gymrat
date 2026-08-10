@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { GymratError, stderrTextOf } from "./errors.js";
+import { GymratError, hasErrorCode, stderrTextOf } from "./errors.js";
 import { runGit } from "./git.js";
 
 /** A directory benchmarked where it sits, with no worktree of its own. */
@@ -68,16 +68,54 @@ export interface CleanupResult {
   pruneError: string | undefined;
 }
 
-/** Attempt directory resolution; returns `undefined` to fall through to ref resolution. */
-function tryResolveDirectory(absolutePath: string): InPlaceTarget | undefined {
-  const stats = fs.statSync(absolutePath, { throwIfNoEntry: false });
-  if (stats?.isDirectory()) {
-    return {
-      kind: "in-place",
-      dir: fs.realpathSync(absolutePath),
-    };
+/**
+ * Probe failures that mean "there is no directory here", not "the probe broke".
+ *
+ * `throwIfNoEntry: false` already absorbs ENOENT, but a ref name carrying a
+ * slash resolves to a path underneath one of its own components — `fix/typo`
+ * with a file named `fix` in the working directory — and stat reports that as
+ * ENOTDIR. Both leave ref resolution as the input's only remaining reading.
+ */
+const ABSENT_PATH_CODES = ["ENOENT", "ENOTDIR"] as const;
+
+function isAbsentPathError(error: unknown): boolean {
+  return ABSENT_PATH_CODES.some((code) => hasErrorCode(error, code));
+}
+
+/** The failure a target the tool cannot make sense of is reported as. */
+function unresolvableTarget(input: string, cause: unknown): GymratError {
+  return new GymratError(
+    `Cannot resolve target '${input}': ${stderrTextOf(cause)}`,
+    "Pass an existing directory, or a git ref that resolves to a commit.",
+    { cause },
+  );
+}
+
+/**
+ * Attempt directory resolution; returns `undefined` to fall through to ref resolution.
+ *
+ * @throws when the probe fails for a reason other than the path being absent —
+ * a symlink loop or an unsearchable parent says nothing about whether the input
+ * is a ref, so it is reported rather than silently retried as one.
+ */
+function tryResolveDirectory(input: string): InPlaceTarget | undefined {
+  const absolutePath = path.resolve(input);
+
+  try {
+    const stats = fs.statSync(absolutePath, { throwIfNoEntry: false });
+    if (stats?.isDirectory()) {
+      return {
+        kind: "in-place",
+        dir: fs.realpathSync(absolutePath),
+      };
+    }
+    return undefined;
+  } catch (error) {
+    if (isAbsentPathError(error)) {
+      return undefined;
+    }
+    throw unresolvableTarget(input, error);
   }
-  return undefined;
 }
 
 /**
@@ -88,10 +126,11 @@ function tryResolveDirectory(absolutePath: string): InPlaceTarget | undefined {
  * through `realpathSync` so a symlinked target and its destination compare as
  * the same place.
  *
- * @throws when the input is neither an existing directory nor a ref git can verify.
+ * @throws when the input is neither an existing directory nor a ref git can
+ * verify, and when the directory probe itself fails.
  */
 export function resolveTarget(input: string, repoDir: string): Target {
-  const directory = tryResolveDirectory(path.resolve(input));
+  const directory = tryResolveDirectory(input);
   if (directory !== undefined) {
     return directory;
   }
@@ -106,11 +145,7 @@ export function resolveTarget(input: string, repoDir: string): Target {
       resolvedSha,
     };
   } catch (error) {
-    throw new GymratError(
-      `Cannot resolve target '${input}': ${stderrTextOf(error)}`,
-      "Pass an existing directory, or a git ref that resolves to a commit.",
-      { cause: error },
-    );
+    throw unresolvableTarget(input, error);
   }
 }
 
