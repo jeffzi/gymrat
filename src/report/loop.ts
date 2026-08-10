@@ -219,7 +219,7 @@ export interface StatusSummary {
 }
 
 /** How many hex digits of a sha a status line shows. */
-export const SHORT_SHA_LENGTH = 7;
+const SHORT_SHA_LENGTH = 7;
 
 /** A session's baseline, in the `ref@sha` form (sha shortened) every loop summary states it with. */
 export function formatBaselineRef(baseline: SessionRecord["baseline"]): string {

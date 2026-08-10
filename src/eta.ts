@@ -1,4 +1,4 @@
-import type { ProgressStep } from "./compare.js";
+import type { ProgressStep } from "./sampling.js";
 
 /**
  * Tracks elapsed gaps between progress steps and estimates the remaining

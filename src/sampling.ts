@@ -12,13 +12,13 @@ import { cleanupWorktrees, planWorktree, materializeWorktree } from "./targets.j
 import type { CleanupResult, Target, WorktreeInfo } from "./targets.js";
 
 /** A prepare step about to run for a target with a prepare script. */
-export interface PrepareProgressStep {
+interface PrepareProgressStep {
   kind: "prepare";
   label: string;
 }
 
 /** A bench/sample step about to run — 1-based index within the total sample count. */
-export interface SampleProgressStep {
+interface SampleProgressStep {
   kind: "sample";
   index: number;
   total: number;
@@ -61,7 +61,7 @@ function formatCommandError(
 
   lines.push(`  command:   ${context.command}`);
 
-  if ("kind" in failure) {
+  if (isTimeout) {
     lines.push(`  timeout:   ${failure.timeoutMs}ms`);
   } else {
     lines.push(`  exit code: ${failure.exitCode}`);
@@ -84,9 +84,9 @@ function formatCommandError(
 /**
  * Structured error for a command that failed during a benchmark or prepare phase.
  *
- * Carries the full context — phase, position, target, exit/timeout details — both
- * in the formatted message and as typed fields for programmatic access. Ref-target
- * failures append a hint about the ref possibly lacking the files the command needs.
+ * The formatted message carries the full context: phase, position, target, and the
+ * exit code or timeout. Ref-target failures append a hint about the ref possibly
+ * lacking the files the command needs.
  */
 export class CommandError extends GymratError {
   constructor(context: CommandErrorContext, failure: ExecResult | ExecTimeoutError) {
@@ -145,7 +145,7 @@ export interface SamplingOptions {
  * Aborting `signal` kills the command's whole process group; bench commands are
  * spawned detached, so a Ctrl-C delivered to gymrat never reaches them by itself.
  */
-export async function runCommand(
+async function runCommand(
   phase: "prepare" | "bench",
   ctx: TargetContext,
   command: string,
@@ -254,7 +254,7 @@ export function resolveLabel(explicit: string | undefined, resolved: Target): st
  * only because nothing was ever compared against it, and `± 0%` would state
  * that as a measured result. Such a side has no spread at all.
  */
-export function computeSpread(values: readonly number[], median: number): number | undefined {
+function computeSpread(values: readonly number[], median: number): number | undefined {
   if (values.length < 2) {
     return undefined;
   }
@@ -301,7 +301,7 @@ export function collectMetricNames(sampleSets: readonly Record<string, number>[]
  * returned untouched. The original always becomes the `cause`, keeping its
  * stack reachable.
  */
-export function withCleanupFailures(
+function withCleanupFailures(
   error: unknown,
   cleanup: { failures: readonly { dir: string; error: string }[]; pruneError: string | undefined },
 ): unknown {
@@ -316,7 +316,7 @@ export function withCleanupFailures(
   const hint = error instanceof GymratError ? error.hint : undefined;
 
   return error instanceof AdapterError
-    ? new AdapterError(combinedMessage, undefined, { cause: error })
+    ? new AdapterError(combinedMessage, hint, { cause: error })
     : new GymratError(combinedMessage, hint, { cause: error });
 }
 

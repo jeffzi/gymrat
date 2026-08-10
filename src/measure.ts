@@ -17,9 +17,6 @@ import type { ProgressStep, TargetContext, TargetSpec } from "./sampling.js";
 import { resolveTarget } from "./targets.js";
 import type { CleanupResult } from "./targets.js";
 
-export { CommandError } from "./sampling.js";
-export type { CommandErrorContext, ProgressStep, TargetSpec } from "./sampling.js";
-
 /**
  * Caller-facing configuration for a single measurement run.
  *

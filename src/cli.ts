@@ -120,17 +120,15 @@ const GEOMEAN_CONDITION_RE = /^geomean:(-?\d+(?:\.\d+)?)$/;
  * Accepts `regressed` or `geomean:<number>`. Throws `InvalidArgumentError`
  * for anything else so Commander renders the allowed grammar in the usage error.
  */
-function parseFailOn(value: string, previous: FailOnCondition[]): FailOnCondition[] {
+function parseFailOn(value: string, previous: readonly FailOnCondition[]): FailOnCondition[] {
   if (value === "regressed") {
-    previous.push({ kind: "regressed" });
-    return previous;
+    return [...previous, { kind: "regressed" }];
   }
 
   const match = GEOMEAN_CONDITION_RE.exec(value);
   const pct = match ? Number(match[1]) : NaN;
   if (Number.isFinite(pct)) {
-    previous.push({ kind: "geomean", pct });
-    return previous;
+    return [...previous, { kind: "geomean", pct }];
   }
 
   throw new InvalidArgumentError(

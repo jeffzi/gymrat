@@ -112,7 +112,7 @@ const configFileSchema = Type.Object(
 const configFileValidator = compile(configFileSchema);
 
 /** The shape of `gymrat.json` after schema validation — every field optional, since CLI flags can supply any of them. */
-export type ConfigFile = Static<typeof configFileSchema>;
+type ConfigFile = Static<typeof configFileSchema>;
 /** A string-keyed record of per-metric overrides (direction, gating, exact), derived from the config file's `metrics` section. */
 export type ConfigMetrics = Static<typeof metricsSchema>;
 /** A kind-keyed record of overrides that apply to every metric of that kind, derived from the config file's `kinds` section. */
@@ -120,7 +120,7 @@ export type ConfigKinds = Static<typeof kindsSchema>;
 /** The loop's stop conditions, derived from the config file's `stop` section. */
 export type ConfigStop = Static<typeof stopSchema>;
 /** The per-stage hook commands, derived from the config file's `hooks` section. */
-export type ConfigHooks = Static<typeof hooksSchema>;
+type ConfigHooks = Static<typeof hooksSchema>;
 
 /** Command-line overrides, named after the flags rather than the config keys. */
 export interface CliFlags {
@@ -202,15 +202,11 @@ const DEFAULTS = {
   primary: GEOMEAN_PRIMARY,
 } as const;
 
-function isFileNotFoundError(err: unknown): boolean {
-  return hasErrorCode(err, "ENOENT");
-}
-
 function readConfigContent(configPath: string, required: boolean): string | undefined {
   try {
     return fs.readFileSync(configPath, "utf-8");
   } catch (err) {
-    if (isFileNotFoundError(err)) {
+    if (hasErrorCode(err, "ENOENT")) {
       if (required) {
         throw new GymratError(`Config file not found at ${configPath}`, undefined, { cause: err });
       }

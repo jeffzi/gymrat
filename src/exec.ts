@@ -31,7 +31,7 @@ export interface ExecOptions {
 export const FAILURE_EXIT_CODE = 1;
 
 /** Mutable buffer accumulating a child process's stdout/stderr as it streams in. */
-export interface OutputBuffer {
+interface OutputBuffer {
   stdout: string;
   stderr: string;
 }
@@ -41,7 +41,7 @@ export interface OutputBuffer {
  * snapshot the output received so far at any point — on close, timeout, or abort
  * — without waiting for the streams to end.
  */
-export function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer {
+function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer {
   const buffer: OutputBuffer = { stdout: "", stderr: "" };
   stdout.on("data", (chunk: string) => {
     buffer.stdout += chunk;
@@ -56,7 +56,7 @@ export function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer 
 const TASKKILL_NOT_FOUND_STATUS = 128;
 
 /** Kill the process group led by `pid`, descendants included. Never throws. */
-export function killTree(pid: number): void {
+function killTree(pid: number): void {
   try {
     if (process.platform === "win32") {
       // taskkill /T kills the process and all descendants; /F forces it.
@@ -186,7 +186,8 @@ export async function exec(
     }
 
     function killGroup(): void {
-      /* v8 ignore if -- pid is always set when stdio is "pipe" */
+      /* v8 ignore if -- reachable only when spawn failed outright and an
+         already-aborted signal ran onAbort before the "error" event */
       if (!child.pid) {
         return;
       }
