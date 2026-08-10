@@ -17,8 +17,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Every measurement and decision is appended to a per-repository JSONL log, so a session survives
   across processes and an agent can resume one it did not start.
 - `gymrat keep` refuses to commit in three cases, each recorded in the log rather than thrown away:
-  nothing measured since the last settle, a gating metric that regressed, and a failing `checks`
-  command. A refused keep exits 1.
+  nothing measured since the last `keep` or `discard`, a gating metric that regressed, and a failing
+  `checks` command. A refused keep exits 1.
 - Confirmation rerun: an iteration that regresses a gating metric is re-measured once, and a
   regression the rerun will not reproduce is demoted to no signal. Exact metrics never take part.
 - Loop configuration keys in `gymrat.json`: `checks` (the command `keep` must see pass), `filter`
@@ -36,6 +36,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lock, `compare` and `measure` included. A second gymrat run against the same repository exits 2
   with `Lock held by PID …` rather than benchmarking alongside the first — concurrent runs perturb
   each other's measurements. `gymrat status` only reads the log, so it takes no lock.
+
+### Fixed
+
+- A bench command could outlive the run that started it. When one of its output streams failed,
+  gymrat settled the call without killing the process group, leaving the benchmark running against
+  a worktree the run had already finished with.
+- `bench` and `prepare` accepted an empty string, from the config file or from `--bench ""` /
+  `--prepare ""`, and an empty `--bench` was reported as a missing one. Both are now rejected where
+  they are given, as `checks` and the hook commands already were.
+- A `gymrat.json` whose top-level key was the empty string reported `Unknown config key:` with
+  nothing after the colon.
+- A target that existed but could not be examined — a symlink loop, an unreadable parent directory
+  — surfaced a raw `ELOOP: too many symbolic links` instead of the usual
+  `Cannot resolve target '<name>'` with its hint.
+- The `metric-lines` adapter only ended a line on a newline, so a progress-style bench that wrote
+  `50%\rMETRIC name=value` lost the metric, and a metric name could carry a bare carriage return
+  into the session log. Lines now end on a carriage return too, and a name containing U+2028 or
+  U+2029 is skipped with the usual parse warning rather than producing a record gymrat cannot read
+  back.
+- The `mitata` adapter printed its duplicate-metric warning itself instead of routing it like every
+  other warning, which spliced it into the progress line; and a benchmark reporting a non-finite
+  `p50` or heap average entered the medians and the geomean. Such runs are now skipped, as other
+  unusable runs already were.
 
 ## [0.3.0] - 2026-08-08
 

@@ -1,13 +1,23 @@
 import { computeMedian } from "../math.js";
 import { metricRecord } from "../metric-record.js";
 import type { Adapter, MetricDefaults, WarnSink } from "./types.js";
-import { AdapterError } from "./types.js";
+import { AdapterError, warnToStderr } from "./types.js";
 
 const METRIC_PREFIX = "METRIC";
 
-const warnToStderr: WarnSink = (message) => {
-  console.warn(message);
-};
+// A bench that redraws a progress line ends it with a bare `\r`, so a split on
+// `\n` alone folds the metric printed after it into the progress text.
+const LINE_TERMINATOR = /\r\n|[\n\r]/;
+
+/**
+ * Characters a metric name may not carry.
+ *
+ * U+2028 (line separator) and U+2029 (paragraph separator) are line
+ * terminators to JavaScript's regular-expression engine, so a name holding one
+ * cannot pass the session record's name check — gymrat must never write a
+ * record it cannot read back.
+ */
+const FORBIDDEN_NAME_CHARS = new RegExp(`[${String.fromCodePoint(0x2028, 0x2029)}]`, "u");
 
 function parseMetricLine(line: string, warn: WarnSink): { name: string; value: number } | null {
   const trimmed = line.trim();
@@ -39,7 +49,12 @@ function parseMetricLine(line: string, warn: WarnSink): { name: string; value: n
     return reject();
   }
 
-  return { name: afterMetric.slice(0, lastEqIndex), value };
+  const name = afterMetric.slice(0, lastEqIndex);
+  if (FORBIDDEN_NAME_CHARS.test(name)) {
+    return reject();
+  }
+
+  return { name, value };
 }
 
 /**
@@ -53,7 +68,7 @@ const metricLinesAdapter: Adapter = {
 
   parse(stdout: string, warn: WarnSink = warnToStderr): Record<string, number> {
     const parsed = stdout
-      .split("\n")
+      .split(LINE_TERMINATOR)
       .map((line) => parseMetricLine(line, warn))
       .filter((r) => r !== null);
 

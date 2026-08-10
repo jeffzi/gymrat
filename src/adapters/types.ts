@@ -9,6 +9,11 @@ import { GymratError } from "../errors.js";
  */
 export type WarnSink = (message: string) => void;
 
+/** Default {@link WarnSink} for adapters called without an explicit one: prints to stderr. */
+export const warnToStderr: WarnSink = (message) => {
+  console.warn(message);
+};
+
 /**
  * Turns one benchmark harness's stdout into the metric map the rest of gymrat works with.
  *

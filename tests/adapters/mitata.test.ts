@@ -178,6 +178,19 @@ describe("mitata adapter", () => {
         });
       });
 
+      it("routes the collision warning to the warn sink it is given, not stderr", () => {
+        const warnings: string[] = [];
+
+        const stderr = captureStderr(() => {
+          mitataAdapter.parse(aliasMissingPlaceholder, (message) => warnings.push(message));
+        });
+
+        expect({ warnings, stderr }).toStrictEqual({
+          warnings: [expect.stringContaining("Duplicate metric name: decode/time")],
+          stderr: "",
+        });
+      });
+
       it("warns when two benchmarks share an alias", () => {
         const stdout = JSON.stringify({
           benchmarks: [
@@ -298,6 +311,43 @@ describe("mitata adapter", () => {
           ],
         });
         const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ "test/time": 42 }));
+      });
+    });
+
+    describe("non-finite statistics", () => {
+      it.each([
+        ["positive infinity", "1e999"],
+        ["negative infinity", "-1e999"],
+      ])("skips a run whose p50 is %s", (_, literal) => {
+        const stdout = `{"benchmarks":[{"alias":"test/$x","runs":[
+          {"name":"test/a","args":{"x":"a"},"stats":{"p50":${literal}}},
+          {"name":"test/b","args":{"x":"b"},"stats":{"p50":20}}
+        ]}]}`;
+
+        const result = mitataAdapter.parse(stdout);
+
+        expect(result).toStrictEqual(metricRecord({ "test/x=b/time": 20 }));
+      });
+
+      it("throws AdapterError when every run has a non-finite p50", () => {
+        const stdout = `{"benchmarks":[{"alias":"test","runs":[
+          {"name":"test","args":{},"stats":{"p50":1e999}}
+        ]}]}`;
+
+        const parse = () => mitataAdapter.parse(stdout);
+
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^No valid benchmark runs found$/);
+      });
+
+      it("keeps the time metric but records no heap metric when heap.avg is non-finite", () => {
+        const stdout = `{"benchmarks":[{"alias":"test","runs":[
+          {"name":"test","args":{},"stats":{"p50":42,"heap":{"avg":1e999}}}
+        ]}]}`;
+
+        const result = mitataAdapter.parse(stdout);
+
         expect(result).toStrictEqual(metricRecord({ "test/time": 42 }));
       });
     });

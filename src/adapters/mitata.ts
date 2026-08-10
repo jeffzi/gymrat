@@ -1,7 +1,7 @@
 import { messageOf } from "../errors.js";
 import { metricRecord } from "../metric-record.js";
-import type { Adapter, MetricDefaults } from "./types.js";
-import { AdapterError } from "./types.js";
+import type { Adapter, MetricDefaults, WarnSink } from "./types.js";
+import { AdapterError, warnToStderr } from "./types.js";
 
 function isRecord(val: unknown): val is Record<string, unknown> {
   return typeof val === "object" && val !== null;
@@ -52,11 +52,17 @@ function parseMitataStats(
   const stats = run.stats;
   if (!isRecord(args) || !isRecord(stats)) return undefined;
 
+  // `1e999` in JSON parses to Infinity, so a reading that overflowed is a number
+  // here. It would poison any median or geomean it entered, so the run counts as
+  // unusable in exactly the way a malformed one does.
   const p50 = stats.p50;
-  if (typeof p50 !== "number") return undefined;
+  if (typeof p50 !== "number" || !Number.isFinite(p50)) return undefined;
 
   const heap = stats.heap;
-  const heapAvg = isRecord(heap) && typeof heap.avg === "number" ? heap.avg : undefined;
+  const heapAvg =
+    isRecord(heap) && typeof heap.avg === "number" && Number.isFinite(heap.avg)
+      ? heap.avg
+      : undefined;
   return { args, p50, ...(heapAvg === undefined ? {} : { heapAvg }) };
 }
 
@@ -67,24 +73,34 @@ function parseMitataStats(
  * `$placeholder` for the argument that varies, or two benchmarks sharing an
  * alias — so the report would silently show only the last run's numbers.
  */
-function recordMetric(metrics: Record<string, number>, name: string, value: number): void {
+function recordMetric(
+  metrics: Record<string, number>,
+  name: string,
+  value: number,
+  warn: WarnSink,
+): void {
   if (Object.hasOwn(metrics, name)) {
-    console.warn(
+    warn(
       `Duplicate metric name: ${name} (keeping the last value; give the benchmark aliases distinct $placeholders to separate the runs)`,
     );
   }
   metrics[name] = value;
 }
 
-function extractRunMetrics(run: unknown, alias: string, metrics: Record<string, number>): void {
+function extractRunMetrics(
+  run: unknown,
+  alias: string,
+  metrics: Record<string, number>,
+  warn: WarnSink,
+): void {
   const parsed = parseMitataStats(run);
   if (parsed === undefined) return;
 
   const prefix = buildMetricNamePrefix(alias, parsed.args);
-  recordMetric(metrics, `${prefix}/time`, parsed.p50);
+  recordMetric(metrics, `${prefix}/time`, parsed.p50, warn);
 
   if (parsed.heapAvg !== undefined) {
-    recordMetric(metrics, `${prefix}/heap`, parsed.heapAvg);
+    recordMetric(metrics, `${prefix}/heap`, parsed.heapAvg, warn);
   }
 }
 
@@ -122,7 +138,11 @@ function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): st
   return result + alias.slice(cursor);
 }
 
-function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, number>): void {
+function extractBenchmarkMetrics(
+  benchmark: unknown,
+  metrics: Record<string, number>,
+  warn: WarnSink,
+): void {
   if (!isRecord(benchmark)) return;
 
   const alias = benchmark.alias;
@@ -130,7 +150,7 @@ function extractBenchmarkMetrics(benchmark: unknown, metrics: Record<string, num
   if (typeof alias !== "string" || !Array.isArray(runs)) return;
 
   for (const run of runs) {
-    extractRunMetrics(run, alias, metrics);
+    extractRunMetrics(run, alias, metrics, warn);
   }
 }
 
@@ -139,12 +159,18 @@ const METRIC_SUFFIXES = [
   { suffix: "/heap", unit: "bytes", kind: "memory" },
 ] as const satisfies readonly { suffix: string; unit: MetricDefaults["unit"]; kind: string }[];
 
+/**
+ * Adapter for bench scripts that print the JSON `mitata --json` writes.
+ *
+ * Each benchmark becomes `<alias>/time` and, when mitata measured it,
+ * `<alias>/heap`.
+ */
 const mitataAdapter: Adapter = {
   name: "mitata",
 
   /**
-   * Reads mitata's JSON output — the shape `mitata --json` writes, with a
-   * `benchmarks` array whose entries carry an `alias` and a list of `runs`.
+   * Reads mitata's JSON output — a `benchmarks` array whose entries carry an
+   * `alias` and a list of `runs`.
    *
    * The JSON is located by slicing between the first `{` and the last `}` so that
    * banner text mitata prints around it does not have to be stripped by the user.
@@ -155,17 +181,18 @@ const mitataAdapter: Adapter = {
    * benchmark becomes one metric per argument combination rather than collapsing
    * them all onto the same name.
    *
-   * Runs that errored are skipped rather than failing the parse — a single bad
-   * argument combination should not discard the rest of the run — but a parse that
-   * finds no usable run at all raises {@link AdapterError}. Two runs landing on
-   * one metric name warn on stderr; the last one still wins.
+   * Runs that errored or reported a non-finite `p50` are skipped rather than
+   * failing the parse — a single bad argument combination should not discard the
+   * rest of the run — but a parse that finds no usable run at all raises
+   * {@link AdapterError}. Two runs landing on one metric name go to `warn`, which
+   * defaults to stderr; the last one still wins.
    */
-  parse(stdout: string): Record<string, number> {
+  parse(stdout: string, warn: WarnSink = warnToStderr): Record<string, number> {
     const json = extractJson(stdout);
     const benchmarks = parseBenchmarks(json);
     const metrics = metricRecord<number>();
     for (const benchmark of benchmarks) {
-      extractBenchmarkMetrics(benchmark, metrics);
+      extractBenchmarkMetrics(benchmark, metrics, warn);
     }
 
     if (Object.keys(metrics).length === 0) {

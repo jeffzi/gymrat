@@ -243,6 +243,9 @@ benchmark library required. gymrat scans bench **stdout** (never stderr) for lin
 METRIC <name>=<value>
 ```
 
+- A line ends at a line feed, a carriage return, or the two together, so a bench that redraws a
+  progress line with a bare `\r` still gets the metrics printed after it read. No metric name can
+  contain a line break.
 - gymrat trims each line and keeps the ones starting with `METRIC` (note the mandatory space after
   the prefix). Everything after the prefix is trimmed and split at its **last** `=`, so metric names
   may themselves contain `=` (e.g. `decode/text=digits`).
@@ -259,6 +262,9 @@ METRIC <name>=<value>
 - Every non-matching line is **ignored**, so gymrat tolerates arbitrary surrounding output. A line
   starting with `METRIC` whose remainder has no `=`, has an empty name, or has an empty or
   non-finite value emits a warning on gymrat's stderr without failing the run.
+- A name carrying **U+2028** (line separator) or **U+2029** (paragraph separator) draws that same
+  warning and is skipped. Both count as line terminators to JavaScript's regular-expression engine,
+  so a session record holding such a name could never be read back.
 - A **repeated name within one run** produces within-run samples: gymrat takes the median of the
   occurrences as the run's value.
 - A run in which **zero** metrics are found is an operational error (exit 2; see

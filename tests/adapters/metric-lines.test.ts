@@ -24,6 +24,30 @@ describe("metric-lines adapter", () => {
       });
     });
 
+    describe("line terminators", () => {
+      it.each([
+        ["line feed", "METRIC foo=42\nMETRIC bar=1"],
+        ["carriage return + line feed", "METRIC foo=42\r\nMETRIC bar=1"],
+        ["bare carriage return", "METRIC foo=42\rMETRIC bar=1"],
+        ["mixed terminators", "METRIC foo=42\r\nMETRIC bar=1\r"],
+      ])("ends a line on a %s", (_, stdout) => {
+        const result = metricLinesAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ foo: 42, bar: 1 }));
+      });
+
+      it("keeps the metric a progress-style bench writes after a carriage return", () => {
+        const result = metricLinesAdapter.parse("50%\rMETRIC foo=42\n");
+        expect(result).toStrictEqual(metricRecord({ foo: 42 }));
+      });
+
+      it("never records a metric name containing a bare carriage return", () => {
+        captureStderr(() => {
+          const result = metricLinesAdapter.parse("METRIC fo\ro=42\nMETRIC valid=1");
+          expect(result).toStrictEqual(metricRecord({ valid: 1 }));
+        });
+      });
+    });
+
     describe("last-= split", () => {
       it.each([
         ["two equals", "METRIC k=v=3.14", metricRecord({ "k=v": 3.14 })],
@@ -136,6 +160,23 @@ describe("metric-lines adapter", () => {
           const result = metricLinesAdapter.parse(stdout);
           expect(result).toStrictEqual(metricRecord({ valid: 42 }));
         });
+      });
+    });
+
+    describe("names carrying a JSON-illegal line separator", () => {
+      it.each([
+        { description: "line separator U+2028", codePoint: 0x2028 },
+        { description: "paragraph separator U+2029", codePoint: 0x2029 },
+      ])("warns and skips a name containing a $description", ({ codePoint }) => {
+        const offending = `METRIC na${String.fromCodePoint(codePoint)}me=42`;
+        let result: Record<string, number> | undefined;
+
+        const stderr = captureStderr(() => {
+          result = metricLinesAdapter.parse(`${offending}\nMETRIC valid=1`);
+        });
+
+        expect.soft(stderr).toContain(`Failed to parse METRIC line: ${offending}`);
+        expect(result).toStrictEqual(metricRecord({ valid: 1 }));
       });
     });
 
