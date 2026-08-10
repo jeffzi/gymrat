@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
@@ -664,6 +665,65 @@ describe("iterateSession", () => {
       expect.soft(error.message).toBe("bench command failed");
       expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(1);
     });
+
+    // The filter command reaches a POSIX shell, which is what decides where one
+    // argument ends and the next begins; Windows is skipped for the same reason
+    // the exec suite is.
+    describe.skipIf(process.platform === "win32")(
+      "when a regressed metric's name would not survive a shell unquoted",
+      () => {
+        /** A stand-in bench printing each argument it was handed on its own line. */
+        const ARGS_SCRIPT = '#!/bin/sh\nfor arg in "$@"; do\n  echo "$arg"\ndone\n';
+
+        /** The confirm-rerun template pointed at that stand-in bench. */
+        const ARGS_FILTER = "sh args.sh {names}";
+
+        /** One round per entry, reporting `name` beside a plainly named metric. */
+        function pairedWith(name: string, values: readonly number[]): Record<string, number>[] {
+          return values.map((value) => ({ [name]: value, total_ms: value }));
+        }
+
+        /**
+         * The arguments a POSIX shell hands the stand-in bench when it runs `command`.
+         *
+         * The rerun's bench string is handed to a shell verbatim, so running it
+         * through one is the only assertion that speaks to what the bench is
+         * really given — a string comparison would pass for a command the shell
+         * refuses outright.
+         */
+        function shellArgs(dir: string, command: string): string[] {
+          const printed = execFileSync("sh", ["-c", command], {
+            cwd: dir,
+            encoding: "utf-8",
+            stdio: "pipe",
+          });
+          return printed.split("\n").filter(Boolean);
+        }
+
+        beforeEach(() => {
+          fs.writeFileSync(path.join(repo.dir, "args.sh"), ARGS_SCRIPT);
+        });
+
+        it.each([
+          { shape: "parentheses and an equals sign", name: "sort(n=1000)/time" },
+          { shape: "a space", name: "decode large payload" },
+          { shape: "a single quote", name: "o'clock/time" },
+        ])("hands the bench a name carrying $shape as one argument", async ({ name }) => {
+          // Arrange
+          const regressed = {
+            experiment: pairedWith(name, scaled(BASELINE_MS, 1.1)),
+            baseline: pairedWith(name, BASELINE_MS),
+          };
+          stubRuns(repo.dir, [regressed, regressed]);
+
+          // Act
+          await iterateSession(repo.dir, config({ filter: ARGS_FILTER }));
+
+          // Assert
+          expect(shellArgs(repo.dir, samplingCall(1).bench)).toStrictEqual([name, "total_ms"]);
+        });
+      },
+    );
   });
 
   describe("when the regressed metric is one a rerun cannot inform", () => {

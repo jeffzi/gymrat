@@ -50,7 +50,16 @@ import {
 } from "./fixtures/comparison-result.js";
 import { ANSI_RE, ISO_PATTERN } from "./fixtures/constants.js";
 import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
-import { createScratchRepo, type ScratchRepo } from "./fixtures/scratch-repo.js";
+import { isAlive, waitForPid } from "./fixtures/process-probe.js";
+import { createScratchRepo, type ScratchRepo, toShellPath } from "./fixtures/scratch-repo.js";
+import { sessionRecord } from "./fixtures/session-records.js";
+import {
+  raiseSignal,
+  removeLeakedListeners,
+  type SignalName,
+  stubProcessExit,
+  TERMINATION_SIGNALS,
+} from "./fixtures/signal-probe.js";
 
 // `...actual` is spread so CommandError passes through unmocked and tests can construct real instances.
 vi.mock("../src/compare.js", async (importOriginal) => {
@@ -2966,6 +2975,196 @@ function runCliProcess(
     );
   });
 }
+
+/**
+ * The termination-signal listeners already present when this file loads.
+ *
+ * gymrat attaches its handler for the lifetime of the process and reuses it, so
+ * a baseline taken after a run would already hold it and `raiseSignal` would
+ * find nothing new to invoke. Taken at module load, this is the set that is
+ * definitively not gymrat's.
+ */
+const PREEXISTING_SIGNAL_LISTENERS: Record<SignalName, readonly unknown[]> = {
+  SIGINT: process.listeners("SIGINT").slice(),
+  SIGTERM: process.listeners("SIGTERM").slice(),
+  SIGHUP: process.listeners("SIGHUP").slice(),
+};
+
+// The bench parks a background process via `sleep 30 &` and writes its PID; Git
+// for Windows' sh reports PIDs from its own process namespace that Node cannot
+// signal.
+describe.skipIf(process.platform === "win32")("the iterate command, interrupted mid-run", () => {
+  /** Generous timeout: every case starts a real repository and a real bench process. */
+  const LONG_RUN_TIMEOUT_MS = 60_000;
+
+  /** This pid appears only once the loop has reached its first bench, so it waits far longer. */
+  const PID_WAIT_MS = 10_000;
+
+  /** A bench that parks until something kills it, having recorded a child pid of its own. */
+  function blockingBench(pidFile: string): string {
+    return `#!/bin/sh\nsleep 30 &\necho $! > "${toShellPath(pidFile)}"\nwait\n`;
+  }
+
+  interface InFlightIterate {
+    /** Settles when the command gives up; never rejects, so a test picks when to wait. */
+    settled: Promise<void>;
+    /** A process the bench spawned outside gymrat's own child, still running. */
+    benchGrandchildPid: number;
+    /** The worktrees the session record points the loop at. */
+    worktreeDirs: string[];
+  }
+
+  /**
+   * Start `gymrat iterate` on a session whose baseline bench blocks until
+   * something kills it.
+   *
+   * Resolves once that bench is up and has spawned a live grandchild of its
+   * own, so a signal raised afterwards lands on a run with real work in
+   * flight. The liveness check throws rather than asserting: `waitForPid` only
+   * proves a number reached the file, and every assertion below would pass for
+   * a pid that was never alive.
+   */
+  async function startInFlightIterate(repo: ScratchRepo): Promise<InFlightIterate> {
+    const worktrees = {
+      baseline: join(repo.dir, "wt-baseline"),
+      experiment: join(repo.dir, "wt-experiment"),
+    };
+    // Written into the repo dir so it outlives whatever becomes of the worktree.
+    const pidFile = join(repo.dir, "bench-grandchild.pid");
+    for (const dir of [worktrees.baseline, worktrees.experiment]) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(join(worktrees.baseline, "bench.sh"), blockingBench(pidFile));
+    writeFileSync(join(worktrees.experiment, "bench.sh"), '#!/bin/sh\necho "METRIC latency=100"\n');
+    appendRecord(sessionJsonlPath(repo.dir), sessionRecord({ worktrees }));
+
+    const { resolveConfig } = await import("../src/config.js");
+    vi.mocked(resolveConfig).mockReturnValue(
+      resolvedConfigFixture({ bench: "sh bench.sh", samples: 1, timeoutSeconds: 20 }),
+    );
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    stubProcessExit();
+
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
+    // Swallowed: once a signal has torn the run down, whether the command
+    // reports the killed bench or the exit it was already taking is beside the
+    // point being tested.
+    const settled = program.parseAsync(["node", "cli.js", "iterate"]).then(
+      () => undefined,
+      () => undefined,
+    );
+    const benchGrandchildPid = await waitForPid(pidFile, PID_WAIT_MS);
+    if (!isAlive(benchGrandchildPid)) {
+      throw new Error(`bench grandchild pid ${String(benchGrandchildPid)} is not alive`);
+    }
+
+    return {
+      settled,
+      benchGrandchildPid,
+      worktreeDirs: [worktrees.baseline, worktrees.experiment],
+    };
+  }
+
+  /**
+   * Kill whatever the bench left running and wait for the command to settle.
+   *
+   * Safety net: a run interrupted before gymrat killed it must not leak a
+   * sleeping process into the rest of the suite.
+   */
+  async function settleInFlightIterate(run: InFlightIterate | undefined): Promise<void> {
+    if (!run) {
+      return;
+    }
+    try {
+      process.kill(run.benchGrandchildPid, "SIGKILL");
+    } catch {
+      // Already gone — the handler got it.
+    }
+    await run.settled;
+  }
+
+  let originalCwd: string;
+  let repo: ScratchRepo;
+  let run: InFlightIterate | undefined;
+
+  beforeEach(() => {
+    originalCwd = process.cwd();
+    repo = createScratchRepo();
+    process.chdir(repo.dir);
+  });
+
+  afterEach(async () => {
+    await settleInFlightIterate(run);
+    run = undefined;
+    process.chdir(originalCwd);
+    repo.cleanup();
+
+    // Uninstall swaps the cleanup handler for an exit-only one that survives
+    // settlement by design. Remove it so the next case installs its own.
+    for (const signal of TERMINATION_SIGNALS) {
+      removeLeakedListeners(signal, PREEXISTING_SIGNAL_LISTENERS[signal]);
+    }
+  });
+
+  it.each<{ signal: SignalName; expectedCode: number }>([
+    { signal: "SIGINT", expectedCode: 130 },
+    { signal: "SIGTERM", expectedCode: 143 },
+    { signal: "SIGHUP", expectedCode: 129 },
+  ])(
+    "exits with $expectedCode on $signal",
+    async ({ signal, expectedCode }) => {
+      // Arrange
+      run = await startInFlightIterate(repo);
+
+      // Act
+      const exitCode = raiseSignal(signal, PREEXISTING_SIGNAL_LISTENERS[signal]);
+
+      // Assert
+      expect(exitCode).toBe(expectedCode);
+    },
+    LONG_RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "kills the bench process group, leaving nothing running in the session worktrees",
+    async () => {
+      // Arrange
+      run = await startInFlightIterate(repo);
+      const grandchildPid = run.benchGrandchildPid;
+
+      // Act
+      raiseSignal("SIGINT", PREEXISTING_SIGNAL_LISTENERS.SIGINT);
+
+      // Assert
+      await vi.waitFor(
+        () => {
+          expect(isAlive(grandchildPid)).toBe(false);
+        },
+        { timeout: 5000, interval: 25 },
+      );
+    },
+    LONG_RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves the session worktrees where the session put them",
+    async () => {
+      // Arrange - a session's worktrees persist by doctrine, unlike the
+      // throwaway ones a comparison creates and sweeps.
+      run = await startInFlightIterate(repo);
+      const worktreeDirs = run.worktreeDirs;
+
+      // Act
+      raiseSignal("SIGINT", PREEXISTING_SIGNAL_LISTENERS.SIGINT);
+
+      // Assert
+      await run.settled;
+      expect(worktreeDirs.filter((dir) => existsSync(dir))).toStrictEqual(worktreeDirs);
+    },
+    LONG_RUN_TIMEOUT_MS,
+  );
+});
 
 describe("a repository with no config file", () => {
   let repo: ScratchRepo;

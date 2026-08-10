@@ -42,6 +42,7 @@ import { acquireLock, type ReleaseLock } from "./session/lock.js";
 import { lockfilePath, repoRoot, sessionJsonlPath } from "./session/paths.js";
 import type { BaselineRecord } from "./session/records.js";
 import { appendRecord, foldSession, readRecords } from "./session/store.js";
+import { installTerminationCleanup } from "./signals.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
 
@@ -769,6 +770,29 @@ async function withRepoLock<T>(
 }
 
 /**
+ * Run `execute` with an abort signal a termination signal trips, then exit with
+ * the conventional `128 + signum`.
+ *
+ * The bench runs in a detached process group, so gymrat's own Ctrl-C never
+ * reaches it: without this, a killed `iterate` leaves a bench group running in —
+ * and writing into — the session's worktrees. Aborting is the whole cleanup.
+ * Those worktrees belong to the session and outlive any single run, unlike the
+ * throwaway ones a comparison creates and sweeps on its way out.
+ */
+async function runInterruptibly<T>(execute: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const run = new AbortController();
+  const uninstallTerminationCleanup = installTerminationCleanup(() => {
+    run.abort();
+  });
+
+  try {
+    return await execute(run.signal);
+  } finally {
+    uninstallTerminationCleanup();
+  }
+}
+
+/**
  * Render `result` per `options.format` and write it to stdout with a trailing
  * newline. `compare` and `measure` share this so the format switch — and the
  * `assertNever` exhaustiveness guard on it — exists once.
@@ -1068,7 +1092,10 @@ export function createProgram(): Command {
        */
       const result = await withRepoLock(
         "iterate",
-        async () => iterateSession(repoRoot(), resolveConfig(options)),
+        async () =>
+          runInterruptibly((signal) =>
+            iterateSession(repoRoot(), resolveConfig(options), { signal }),
+          ),
         /*
          * A met stop condition is a gate trip, not a tool failure: the loop
          * reached the end it was configured for, so it exits the way a keep

@@ -273,10 +273,13 @@ async function confirmRegressions(
     return undefined;
   }
 
+  const names = filtered.map(shellQuote).join(" ");
   const bench =
     config.filter === undefined
       ? config.bench
-      : config.filter.replaceAll(FILTER_PLACEHOLDER, filtered.join(" "));
+      : // Replaced through a function so a `$&` or `$'` inside a metric name is
+        // the name's own text rather than a substitution pattern.
+        config.filter.replaceAll(FILTER_PLACEHOLDER, () => names);
   const { verdicts: rerun, samples } = await benchAndJudge(
     session,
     config,
@@ -289,6 +292,24 @@ async function confirmRegressions(
     samples,
     confirmed: new Set(filtered.filter((name) => rerun[name]?.verdict === "regressed")),
   };
+}
+
+/** Characters a POSIX shell passes through untouched, so a word of them alone needs no quoting. */
+const SHELL_SAFE_WORD = /^[\w@%+=:,./-]+$/;
+
+/**
+ * `value` as a single word of a POSIX shell command.
+ *
+ * The metric names are the bench's to choose, and mitata's `sort(n=1000)/time`
+ * alias shape is an ordinary one: spliced into the filter template raw, the
+ * shell either splits the name across arguments or refuses the command as a
+ * syntax error — and a rerun that cannot run demotes a real regression to no
+ * signal. Single quotes are the only POSIX quoting that suspends every
+ * expansion, so a name that is not a plain word is wrapped in them, with each
+ * single quote inside closed, escaped and reopened.
+ */
+function shellQuote(value: string): string {
+  return SHELL_SAFE_WORD.test(value) ? value : `'${value.replaceAll("'", String.raw`'\''`)}'`;
 }
 
 /**
