@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 
 import type { ResolvedConfig } from "../config.js";
 import { GymratError } from "../errors.js";
-import { sessionJsonlPath } from "../session/paths.js";
+import { archivedSessionPath, sessionJsonlPath } from "../session/paths.js";
 import type { SessionRecord } from "../session/records.js";
 import {
   appendRecord,
@@ -28,15 +29,21 @@ export interface StartResult {
   state: SessionState;
   /** Whether the session was already on disk. */
   resumed: boolean;
+  /** The id of the finalized session whose log was moved aside to make room for this one. */
+  archived?: string;
+  /** The path the finalized session's log was moved to. */
+  archivedPath?: string;
 }
 
 /**
  * Create the repository's optimization session, or resume the one it already has.
  *
  * Resuming is what makes a second `start` safe: an existing log is never appended
- * to, and only a worktree that went missing is put back. Holding the repository
- * lock across the call is the caller's job — this touches `.gymrat/` and the
- * repository's branches, so two concurrent runs must not reach it.
+ * to, and only a worktree that went missing is put back. A finalized session is
+ * the one exception — it is closed, so its log is moved aside and a fresh session
+ * takes its place rather than the agent being refused until it deletes something.
+ * Holding the repository lock across the call is the caller's job — this touches
+ * `.gymrat/` and the repository's branches, so two concurrent runs must not reach it.
  *
  * @throws GymratError when `ref` names no commit, when the log is corrupt, or
  *   when git refuses to create or recreate the workspace.
@@ -50,9 +57,23 @@ export function startSession(
   const records = readRecords(jsonlPath);
   const state = foldSession(records);
   const { session } = state;
+  const baselineRef = ref ?? DEFAULT_BASELINE_REF;
 
   if (session === undefined) {
-    return createSession(root, jsonlPath, ref ?? DEFAULT_BASELINE_REF, config);
+    return createSession(root, jsonlPath, baselineRef, config);
+  }
+
+  if (state.finalized !== undefined) {
+    // Renamed rather than copied: the new log must not exist until the closed one
+    // is out of the way, or a start interrupted mid-archive would leave two
+    // sessions claiming the same file.
+    const archivedPath = archivedSessionPath(root, session.sessionId);
+    fs.renameSync(jsonlPath, archivedPath);
+    return {
+      ...createSession(root, jsonlPath, baselineRef, config),
+      archived: session.sessionId,
+      archivedPath,
+    };
   }
 
   if (detectWorkspace(root) !== "present") {

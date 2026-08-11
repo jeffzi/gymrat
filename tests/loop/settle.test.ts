@@ -22,6 +22,7 @@ import {
   AT,
   committedKeep,
   discardRecord,
+  finalizeRecord,
   iterationRecord,
   resolvedConfig,
 } from "../fixtures/session-records.js";
@@ -822,6 +823,28 @@ describe("discardSession", () => {
       },
     );
   });
+});
+
+describe("when the session on disk was finalized", () => {
+  it.each([
+    { command: "keepSession", settle: (): unknown => keepSession(repo.dir, config()) },
+    { command: "discardSession", settle: (): unknown => discardSession(repo.dir) },
+  ])(
+    "$command refuses with a hint pointing at a fresh start, writing nothing",
+    async ({ settle }) => {
+      // Arrange
+      startWith([iteration(1), committedKeep(1), finalizeRecord()]);
+      editExperiment();
+      const before = readRecords(sessionJsonlPath(repo.dir)).length;
+
+      // Act
+      const error = await captureRejectedGymratError(settle);
+
+      // Assert
+      expect.soft(error.hint).toContain("gymrat start");
+      expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(before);
+    },
+  );
 });
 
 describe("the settle commands", () => {

@@ -35,6 +35,17 @@ export function sessionJsonlPath(root: string): string {
   return path.join(sessionDir(root), "session.jsonl");
 }
 
+/**
+ * Where the log of the session `sessionId` closed on is kept.
+ *
+ * A finalized session is moved aside rather than deleted, so the history that
+ * earned a squash commit is still on disk when someone asks what produced it.
+ * The id is in the name so a repository can hold every session it ever ran.
+ */
+export function archivedSessionPath(root: string, sessionId: string): string {
+  return path.join(sessionDir(root), `session-${sessionId}.jsonl`);
+}
+
 /** Parent of the per-side worktree directories. */
 export function worktreesDir(root: string): string {
   return path.join(sessionDir(root), "worktrees");

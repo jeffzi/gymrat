@@ -12,6 +12,7 @@ import {
   deriveOutcome,
   formatLoopHeader,
   formatStatusBaseline,
+  formatStatusFinalized,
   formatStatusFooter,
   formatStatusHeader,
   formatStatusIteration,
@@ -22,7 +23,7 @@ import type { BaselineRecord } from "../../src/session/records.js";
 import type { MetricEntry } from "../fixtures/comparison-result.js";
 import { metricMeta, signedRankMetric } from "../fixtures/comparison-result.js";
 import { SESSION_ID } from "../fixtures/constants.js";
-import { sessionRecord } from "../fixtures/session-records.js";
+import { finalizeRecord, sessionRecord } from "../fixtures/session-records.js";
 
 /** The metric under `name`, judged in `direction` with no signal of its own. */
 function directedMetric(direction: "lower" | "higher", gating = true): MetricEntry {
@@ -352,5 +353,29 @@ describe("formatStatusFooter", () => {
     const lines = formatStatusFooter(summary).map(stripAnsi);
 
     expect(lines.find((line) => line.startsWith("stop:"))).toBe(expected);
+  });
+});
+
+describe("formatStatusFinalized", () => {
+  it("names the branch the squash landed on and the commit it made", () => {
+    // Act
+    const line = formatStatusFinalized(finalizeRecord());
+
+    // Assert
+    expect(stripAnsi(line)).toBe(`finalized · branch gymrat/${SESSION_ID}-final · commit ccccccc`);
+  });
+
+  describe("when rendering with color", () => {
+    beforeEach(() => {
+      vi.stubEnv("FORCE_COLOR", "1");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("emboldens the word that closes the session", () => {
+      expect(formatStatusFinalized(finalizeRecord())).toContain("\x1b[1mfinalized\x1b[22m");
+    });
   });
 });

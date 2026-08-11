@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { GymratError, messageOf } from "../../src/errors.js";
 import {
+  archivedSessionPath,
   baselineWorktreeDir,
   experimentWorktreeDir,
   lockfilePath,
@@ -15,6 +16,7 @@ import {
   sessionJsonlPath,
   worktreesDir,
 } from "../../src/session/paths.js";
+import { SESSION_ID } from "../fixtures/constants.js";
 import { captureThrown } from "../fixtures/errors.js";
 import { createScratchRepo } from "../fixtures/scratch-repo.js";
 
@@ -95,6 +97,11 @@ describe("session layout", () => {
       label: "baselineWorktreeDir",
       derive: baselineWorktreeDir,
       relative: [".gymrat", "worktrees", "baseline"],
+    },
+    {
+      label: "archivedSessionPath",
+      derive: (root: string) => archivedSessionPath(root, SESSION_ID),
+      relative: [".gymrat", `session-${SESSION_ID}.jsonl`],
     },
   ])("$label places $relative under the repo root", ({ derive, relative }) => {
     // Act

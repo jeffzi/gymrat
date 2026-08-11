@@ -30,6 +30,7 @@ import {
 } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
 import type { ExecResult } from "../src/exec.js";
+import { startSession } from "../src/loop/start.js";
 import type { MeasureOptions } from "../src/measure.js";
 import { renderJson, renderMeasureJson } from "../src/report/json.js";
 import { renderMeasureReport, renderReport } from "../src/report/text.js";
@@ -39,7 +40,7 @@ import type { SessionLogRecord, SessionRecord } from "../src/session/records.js"
 import { appendRecord, readRecords } from "../src/session/store.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
-import { createRunnableProgram, mockProcessExit } from "./fixtures/cli-harness.js";
+import { captureStdout, createRunnableProgram, mockProcessExit } from "./fixtures/cli-harness.js";
 import {
   createCandidate,
   createComparisonResult,
@@ -51,8 +52,13 @@ import {
 import { ANSI_RE, ISO_PATTERN } from "./fixtures/constants.js";
 import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
-import { createScratchRepo, type ScratchRepo, toShellPath } from "./fixtures/scratch-repo.js";
-import { sessionRecord } from "./fixtures/session-records.js";
+import { createScratchRepo, git, type ScratchRepo, toShellPath } from "./fixtures/scratch-repo.js";
+import {
+  committedKeep,
+  finalizeRecord,
+  iterationRecord,
+  sessionRecord,
+} from "./fixtures/session-records.js";
 import {
   raiseSignal,
   removeLeakedListeners,
@@ -2476,6 +2482,25 @@ describe("createProgram", () => {
         expect(stderrWrites(stderrSpy).map(String).join("")).toContain("gymrat start");
       });
 
+      it("exits 2 with a start hint without measuring when the session was finalized", async () => {
+        // Arrange - a closed session is nowhere to record to either
+        openSession();
+        appendRecord(sessionJsonlPath(repo.dir), finalizeRecord());
+        const { measureMock } = await setupMeasureMocks();
+        const program = createRunnableProgram({ exitOverride: "all" });
+        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        mockProcessExit();
+
+        // Act
+        const parsing = program.parseAsync(measureArgv("main", "--record"));
+
+        // Assert
+        await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+        expect.soft(measureMock).not.toHaveBeenCalled();
+        expect(stderrWrites(stderrSpy).map(String).join("")).toContain("gymrat start");
+      });
+
       it("leaves an open session untouched when --record is left out", async () => {
         // Arrange - recording is opt-in, so a plain run writes no history
         openSession();
@@ -2851,6 +2876,132 @@ describe("createProgram", () => {
         expect(readRepoLock()).toBeUndefined();
       },
     );
+  });
+});
+
+describe("the finalize command", () => {
+  let repo: ScratchRepo;
+  let originalCwd: string;
+
+  // The command closes the session in the repository it runs in, so the run
+  // happens in a throwaway one rather than in the checkout the suite lives in.
+  beforeEach(() => {
+    originalCwd = process.cwd();
+    repo = createScratchRepo();
+    process.chdir(repo.dir);
+  });
+
+  afterEach(() => {
+    rmSync(lockfilePath(repo.dir), { force: true });
+    process.chdir(originalCwd);
+    repo.cleanup();
+  });
+
+  /** Open a session with one kept commit on it, and hand back its branch. */
+  function sessionWithOneKeep(): string {
+    const { session } = startSession(repo.dir, "main", resolvedConfigFixture());
+    const worktree = session.worktrees.experiment;
+    writeFileSync(join(worktree, "step.txt"), "cache the regex\n");
+    git(["add", "-A"], worktree);
+    git(["commit", "-m", "cache the regex"], worktree);
+    appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
+    appendRecord(
+      sessionJsonlPath(repo.dir),
+      committedKeep(1, { commit: git(["rev-parse", "HEAD"], worktree) }),
+    );
+    return session.branch;
+  }
+
+  /** Everything the scratch repository's session log holds. */
+  function sessionLog(): SessionLogRecord[] {
+    return readRecords(sessionJsonlPath(repo.dir));
+  }
+
+  it("documents both its flags and the branch it defaults to", async () => {
+    // Arrange
+    vi.stubEnv("FORCE_COLOR", undefined);
+
+    // Act
+    const helpOutput = await captureHelp(["node", "cli.js", "finalize", "--help"]);
+
+    // Assert
+    expect.soft(helpOutput).toContain("Usage: gymrat finalize");
+    expect.soft(helpOutput).toContain("-m, --message");
+    expect.soft(helpOutput).toContain("--branch");
+    expect(helpOutput).toContain("-final");
+  });
+
+  it.each([
+    {
+      desc: "the branch the caller named",
+      args: ["--branch", "perf/regex-cache"],
+      named: "perf/regex-cache",
+    },
+    { desc: "the session branch's -final when the caller names none", args: [], named: undefined },
+  ])("records and reports $desc", async ({ args, named }) => {
+    // Arrange
+    const branch = sessionWithOneKeep();
+    const finalBranch = named ?? `${branch}-final`;
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
+    const stdout = captureStdout();
+
+    // Act
+    await program.parseAsync(["node", "cli.js", "finalize", ...args]);
+
+    // Assert
+    expect.soft(sessionLog().at(-1)).toMatchObject({ type: "finalize", branch: finalBranch });
+    expect(stdout()).toContain(finalBranch);
+  });
+
+  it("commits the message it was given", async () => {
+    // Arrange
+    sessionWithOneKeep();
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
+    captureStdout();
+
+    // Act
+    await program.parseAsync(["node", "cli.js", "finalize", "-m", "squash the tuning session"]);
+
+    // Assert
+    expect(sessionLog().at(-1)).toMatchObject({ message: "squash the tuning session" });
+  });
+
+  it("exits 2 with a start hint when the repository holds no session", async () => {
+    // Arrange
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
+    captureStdout();
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    mockProcessExit();
+
+    // Act
+    const parsing = program.parseAsync(["node", "cli.js", "finalize"]);
+
+    // Assert
+    await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+    expect(stderrWrites(stderrSpy).map(String).join("")).toContain("gymrat start");
+  });
+
+  it("exits 2 leaving the session open while another live process holds the lock", async () => {
+    // Arrange - this process's own pid is the one holder a liveness probe can never call stale
+    sessionWithOneKeep();
+    const openLog = sessionLog();
+    mkdirSync(dirname(lockfilePath(repo.dir)), { recursive: true });
+    writeFileSync(
+      lockfilePath(repo.dir),
+      JSON.stringify({ pid: process.pid, command: "iterate", at: "2026-01-01T00:00:00.000Z" }),
+    );
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
+    captureStdout();
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    mockProcessExit();
+
+    // Act
+    const parsing = program.parseAsync(["node", "cli.js", "finalize"]);
+
+    // Assert
+    await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+    expect.soft(sessionLog()).toStrictEqual(openLog);
+    expect(stderrWrites(stderrSpy).map(String).join("")).toMatch(/another gymrat run/i);
   });
 });
 

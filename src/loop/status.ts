@@ -11,6 +11,7 @@ import type { BenchlessConfig } from "../config.js";
 import type { SettleState } from "../report/loop.js";
 import {
   formatStatusBaseline,
+  formatStatusFinalized,
   formatStatusFooter,
   formatStatusHeader,
   formatStatusIteration,
@@ -123,5 +124,6 @@ export function statusSession(root: string, config: BenchlessConfig): string {
       targetReached: state.targetReachedAndKept,
       ...(config.stop === undefined ? {} : { stop: config.stop }),
     }),
+    ...(state.finalized === undefined ? [] : [formatStatusFinalized(state.finalized)]),
   ].join("\n");
 }

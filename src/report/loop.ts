@@ -13,7 +13,12 @@
 import type { ConfigStop } from "../config.js";
 import { assertNever } from "../errors.js";
 import { computeMedian } from "../math.js";
-import type { BaselineRecord, KeepRecord, SessionRecord } from "../session/records.js";
+import type {
+  BaselineRecord,
+  FinalizeRecord,
+  KeepRecord,
+  SessionRecord,
+} from "../session/records.js";
 import type { DisplayClass, Style } from "./format.js";
 import { formatDelta, formatHintLabel, formatLabel, formatValue, getGlyph } from "./format.js";
 import { pairedSamples, pluralize } from "./text.js";
@@ -413,4 +418,19 @@ export function formatStatusFooter(summary: StatusSummary): readonly string[] {
   ].join(separator());
   const stop = formatStopState(summary);
   return stop === undefined ? [totals] : [totals, stop];
+}
+
+/**
+ * The line a finalized session's report ends on: where its work ended up.
+ *
+ * It sits under the totals rather than in the header because closing the
+ * session is the last thing that happened to it, and the branch and commit it
+ * names are what the reader goes to next — everything above them is history.
+ */
+export function formatStatusFinalized(finalized: FinalizeRecord): string {
+  return [
+    formatLabel("finalized", ["bold"]),
+    `branch ${finalized.branch}`,
+    `commit ${finalized.commit.slice(0, SHORT_SHA_LENGTH)}`,
+  ].join(separator());
 }

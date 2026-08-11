@@ -25,6 +25,7 @@ import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js
 import {
   AT,
   committedKeep,
+  finalizeRecord,
   iterationRecord,
   resolvedConfig,
   sessionRecord as sessionRecordDefaults,
@@ -272,6 +273,28 @@ describe("statusSession", () => {
         "iteration 1 · ✓ -7.2% · kept b1b2b3b",
         "keep-blocked (nothing-measured)",
         "1 iteration · 1 kept · 0 discarded",
+      ]);
+    });
+  });
+
+  describe("when the session was finalized", () => {
+    it("closes the report under the totals with the branch and commit it squashed onto", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, [
+        iteration(1, -7.2, "improved"),
+        committedKeep(1, { commit: KEEP_COMMIT }),
+        finalizeRecord(),
+      ]);
+
+      // Act
+      const report = statusSession(root, config());
+
+      // Assert
+      expect(bodyLines(report)).toStrictEqual([
+        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+        "1 iteration · 1 kept · 0 discarded",
+        `finalized · branch gymrat/${SESSION_ID}-final · commit ccccccc`,
       ]);
     });
   });

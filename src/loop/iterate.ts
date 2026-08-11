@@ -24,7 +24,7 @@ import {
 } from "../sampling.js";
 import type { IterationRecord, SessionRecord } from "../session/records.js";
 import type { SessionState } from "../session/store.js";
-import { appendRecord, requireSession } from "../session/store.js";
+import { appendRecord, requireOpenSession } from "../session/store.js";
 import { computeKindAggregates } from "../verdict/aggregate.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
 import { computeGeomean, computeVerdicts, pairSamples } from "../verdict/verdict.js";
@@ -101,7 +101,7 @@ export async function iterateSession(
   config: ResolvedConfig,
   options: IterateOptions = {},
 ): Promise<IterateResult> {
-  const { session, state, jsonlPath } = requireSession(root, "measuring an edit");
+  const { session, state, jsonlPath } = requireOpenSession(root, "measuring an edit");
 
   if (state.unsettled) {
     throw new GymratError(

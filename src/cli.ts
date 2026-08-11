@@ -18,6 +18,7 @@ import {
 } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
+import { finalizeSession } from "./loop/finalize.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
 import { discardSession, keepSession } from "./loop/settle.js";
 import { startSession, type StartResult } from "./loop/start.js";
@@ -41,7 +42,7 @@ import type { RunOptions } from "./sampling.js";
 import { acquireLock, type ReleaseLock } from "./session/lock.js";
 import { lockfilePath, repoRoot } from "./session/paths.js";
 import type { BaselineRecord } from "./session/records.js";
-import { appendRecord, requireSession } from "./session/store.js";
+import { appendRecord, requireOpenSession } from "./session/store.js";
 import { installTerminationCleanup } from "./signals.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
@@ -561,6 +562,17 @@ interface KeepFlags extends CliFlags {
   message?: string;
 }
 
+/**
+ * The finalize command's flags — the only loop command whose flags are all its
+ * own, because closing a session reads no configuration.
+ */
+interface FinalizeFlags {
+  /** Message the squash commit carries; absent, finalize generates one from the kept commits. */
+  message?: string;
+  /** Branch to point at the squash commit; absent, the session branch's `-final`. */
+  branch?: string;
+}
+
 /** The measure command's flags: the shared set plus whether the run becomes history. */
 interface MeasureFlags extends SharedFlags {
   /** Append the run to the session log. Recording is opt-in, never the default. */
@@ -827,11 +839,12 @@ interface RecordingTarget {
 /**
  * The open session `--record` appends to.
  *
- * @throws GymratError when the repository has no session — there is nowhere to
- *   record, and only `gymrat start` can change that.
+ * @throws GymratError when the repository has no open session — a finalized one
+ *   is no more somewhere to record than none at all, and only `gymrat start`
+ *   can change either.
  */
 function recordingTarget(root: string): RecordingTarget {
-  const { session, jsonlPath } = requireSession(root, "recording a measurement");
+  const { session, jsonlPath } = requireOpenSession(root, "recording a measurement");
   return { jsonlPath, sessionId: session.sessionId };
 }
 
@@ -850,7 +863,9 @@ function baselineRecordOf(result: MeasurementResult): BaselineRecord {
  * session was already there — how far it has got.
  *
  * Both worktree paths are named because the agent driving the loop edits in one
- * of them and must never touch the other.
+ * of them and must never touch the other. A closed session that was moved aside
+ * is named too: the log it left is still on disk, and this is the only place the
+ * agent is told so.
  */
 function formatStartSummary(result: StartResult): string {
   const { session, state } = result;
@@ -869,6 +884,9 @@ function formatStartSummary(result: StartResult): string {
   return [
     headline,
     ...rows.map(([label, value]) => `  ${`${label}:`.padEnd(labelWidth)} ${value}`),
+    ...(result.archivedPath === undefined
+      ? []
+      : [`  archived the finalized session ${result.archived} to ${result.archivedPath}`]),
   ].join("\n");
 }
 
@@ -1064,11 +1082,12 @@ export function createProgram(): Command {
        * that is already on disk, so holding the repository against every other
        * gymrat process while stdout drains would serialize runs for nothing.
        */
-      const result = await withRepoLock("start", () =>
-        Promise.resolve(startSession(repoRoot(), ref, resolveConfig(options))),
-      );
+      const started = await withRepoLock("start", () => {
+        const root = repoRoot();
+        return Promise.resolve({ root, result: startSession(root, ref, resolveConfig(options)) });
+      });
 
-      await writeAndDrain(process.stdout, `${formatStartSummary(result)}\n`);
+      await writeAndDrain(process.stdout, `${formatStartSummary(started.result)}\n`);
     });
 
   const iterateCmd = addConfigOptions(
@@ -1138,6 +1157,26 @@ export function createProgram(): Command {
     });
 
   /*
+   * Reads no configuration, for `discard`'s reason: a squash is git alone, so
+   * `finalize` carries none of the config flags its siblings do.
+   */
+  const finalizeCmd = program
+    .command("finalize")
+    .description("Collapse the session's kept iterations into one commit and close it")
+    .option("-m, --message <text>", "message for the squash commit")
+    .option("--branch <name>", "branch to point at the squash commit (default: <branch>-final)")
+    .configureHelp(createHelpConfig())
+    .action(async (options: FinalizeFlags) => {
+      const result = await withRepoLock("finalize", () =>
+        Promise.resolve(
+          finalizeSession(repoRoot(), { message: options.message, branch: options.branch }),
+        ),
+      );
+
+      await writeAndDrain(process.stdout, `${result.report}\n`);
+    });
+
+  /*
    * The one loop command that takes no repository lock: it reads the session
    * log and writes nothing, so serializing it against a running iterate would
    * only make the agent wait to be told what is already on disk.
@@ -1177,6 +1216,7 @@ export function createProgram(): Command {
     iterateCmd,
     keepCmd,
     discardCmd,
+    finalizeCmd,
     statusCmd,
   ]) {
     command.exitOverride((err) => {

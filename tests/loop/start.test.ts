@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createProgram } from "../../src/cli.js";
 import type { ResolvedConfig } from "../../src/config.js";
+import { finalizeSession } from "../../src/loop/finalize.js";
 import { startSession } from "../../src/loop/start.js";
 import {
+  archivedSessionPath,
   baselineWorktreeDir,
   experimentWorktreeDir,
   sessionJsonlPath,
@@ -71,6 +73,21 @@ function commitInExperiment(root: string, message: string): string {
   git(["add", "README.md"], worktree);
   git(["commit", "-m", message], worktree);
   return git(["rev-parse", "HEAD"], worktree);
+}
+
+/**
+ * Keep one commit on the open session and finalize it, returning the id it closed on.
+ *
+ * The squash goes through `finalizeSession` rather than a hand-written record so
+ * the session start meets afterwards is one a real run could leave behind —
+ * worktrees gone, branch squashed, log closed.
+ */
+function closeSessionWithOneKeep(): string {
+  const commit = commitInExperiment(repo.dir, "cache the regex");
+  appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
+  appendRecord(sessionJsonlPath(repo.dir), committedKeep(1, { commit }));
+  finalizeSession(repo.dir);
+  return sessionHeaderOf(repo.dir).sessionId;
 }
 
 let repo: ScratchRepo;
@@ -202,6 +219,51 @@ describe("startSession", () => {
     });
   });
 
+  describe("when the session on disk was finalized", () => {
+    it("moves the closed log aside under the session id it belonged to", () => {
+      // Arrange
+      startSession(repo.dir, "main", CONFIG);
+      const closed = closeSessionWithOneKeep();
+      const closedLog = readRecords(sessionJsonlPath(repo.dir));
+
+      // Act
+      startSession(repo.dir, "main", CONFIG);
+
+      // Assert
+      expect(readRecords(archivedSessionPath(repo.dir, closed))).toStrictEqual(closedLog);
+    });
+
+    it("opens a fresh session in the log the closed one left rather than resuming it", () => {
+      // Arrange
+      startSession(repo.dir, "main", CONFIG);
+      const closed = closeSessionWithOneKeep();
+
+      // Act
+      const result = startSession(repo.dir, "main", CONFIG);
+
+      // Assert
+      expect.soft(result.archived).toBe(closed);
+      expect.soft(result.archivedPath).toBe(archivedSessionPath(repo.dir, closed));
+      expect.soft(result.resumed).toBe(false);
+      expect.soft(result.state.finalized).toBeUndefined();
+      expect.soft(result.session.sessionId).not.toBe(closed);
+      expect(readRecords(sessionJsonlPath(repo.dir))).toStrictEqual([result.session]);
+    });
+
+    it("checks out both worktrees at the pinned baseline, carrying no kept commit over", () => {
+      // Arrange - finalize took the closed session's worktrees off disk
+      startSession(repo.dir, "main", CONFIG);
+      closeSessionWithOneKeep();
+
+      // Act
+      startSession(repo.dir, "main", CONFIG);
+
+      // Assert
+      expect.soft(git(["rev-parse", "HEAD"], experimentWorktreeDir(repo.dir))).toBe(headSha);
+      expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(headSha);
+    });
+  });
+
   describe("when the baseline worktree went missing", () => {
     it("puts it back at the last kept commit", () => {
       // Arrange
@@ -263,5 +325,26 @@ describe("the start command", () => {
     const session = sessionHeaderOf(repo.dir);
     expect.soft(session.baseline).toStrictEqual({ ref: "main", sha: headSha });
     expect(stdout).toContain(session.branch);
+  });
+
+  it("names the closed session it archived when it opens a fresh one after a finalize", async () => {
+    // Arrange
+    startSession(repo.dir, "main", CONFIG);
+    const closed = closeSessionWithOneKeep();
+    process.chdir(repo.dir);
+    const program = createProgram();
+    program.exitOverride();
+    let stdout = "";
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      stdout += String(chunk);
+      return true;
+    });
+
+    // Act
+    await program.parseAsync(["node", "cli.js", "start", "main", "--bench", "npm run bench"]);
+
+    // Assert
+    expect.soft(stdout).toMatch(/archived/i);
+    expect(stdout).toContain(closed);
   });
 });

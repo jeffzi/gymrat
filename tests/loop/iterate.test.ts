@@ -28,6 +28,7 @@ import {
   committedKeep,
   discardRecord as discardOf,
   expectedHookRecord,
+  finalizeRecord,
   iterationRecord,
   resolvedConfig,
   sessionRecord as sessionRecordDefaults,
@@ -264,6 +265,20 @@ afterEach(() => {
 describe("iterateSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
+      // Act
+      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
+
+      // Assert
+      expect.soft(error.hint).toContain("gymrat start");
+      expect(collectSamplesMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when the session on disk was finalized", () => {
+    it("refuses with a hint pointing at a fresh start", async () => {
+      // Arrange
+      writeSessionLog(repo.dir, [iteration(1), committedKeep(1), finalizeRecord()]);
+
       // Act
       const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
 
