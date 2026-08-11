@@ -121,8 +121,11 @@ measures, so the log never holds two settlements against one iteration.
 
 `keep` runs the `checks` command in the experiment worktree first and refuses to commit when it
 fails; it also refuses when nothing has been measured since the last settle, and when the iteration
-regressed a gating metric. Every refusal is recorded as a blocked keep, which `status` reads back —
-gymrat never erases a decision from the log. A refused keep exits 1.
+regressed a gating metric. The confirmation rerun decides that last case: a regression the rerun
+re-measured and would not repeat leaves the keep committable, while one the rerun never reported
+back on blocks it — silence is not evidence the regression went away. Every refusal is recorded as
+a blocked keep, which `status` reads back — gymrat never erases a decision from the log. A refused
+keep exits 1.
 
 Every command that runs your commands or writes session state holds a per-repository lock for the
 duration — `start`, `iterate`, `keep`, and `discard`, and `compare` and `measure` too. A second
@@ -353,7 +356,9 @@ These five keys configure [the session loop](#the-session-loop) and are ignored 
 - `filter` is the bench command a confirmation rerun uses to re-measure only the metrics that
   regressed. It must contain the `{names}` placeholder — gymrat substitutes the space-separated
   metric names there — and a `filter` without it is a config error. Left unset, a confirmation rerun
-  re-runs the whole `bench` command instead.
+  re-runs the whole `bench` command instead. A filter that drops a gating metric the rerun was asked
+  about blocks the keep rather than weakening the gate, and the refusal names the metric it never
+  saw.
 - `primary` names the figure each iteration is read on. It defaults to `"geomean"`, the aggregate
   over every gating metric; set it to a metric name to read the loop on that metric alone.
 - `stop` ends the loop. `maxIterations` (a positive integer) refuses another `iterate` once the log

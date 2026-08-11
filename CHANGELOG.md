@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `gymrat keep` now refuses to commit an iteration whose gating metric regressed and which the
+  confirmation rerun never re-measured — a bench or `filter` template that stops reporting the
+  metric no longer lets the regression through on a warning line alone. The refusal names each
+  unmeasured metric and exits 1, where such a keep previously committed.
+
 ## [0.4.0] - 2026-08-10
 
 ### Added

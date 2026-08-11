@@ -74,13 +74,13 @@ export async function keepSession(
     );
   }
 
-  if (hasConfirmedGatingRegression(iteration)) {
+  if (hasStandingGatingRegression(iteration)) {
     return blockedKeep(
       jsonlPath,
       iteration.seq,
       "gating-regression",
       { configured },
-      `Keep refused: iteration ${iteration.seq} regressed a gating metric.\nHint: fix the regression and run gymrat iterate again, or run gymrat discard.`,
+      gatingRefusal(iteration),
     );
   }
 
@@ -179,17 +179,62 @@ export function discardSession(root: string): DiscardResult {
  * `confirmRegressions` skips it and its `confirmed` stays `false`; rerunning it
  * could only reproduce the same number, and gating on `confirmed` alone would
  * let every exact regression through.
+ *
+ * Silence earns the same standing as disagreement: a metric the rerun was asked
+ * about and never reported back on lands in `confirm.absent`, its `confirmed`
+ * still `false` because nothing re-measured it. The gate fails closed on those —
+ * a rerun that cannot see the metric is not evidence the regression went away,
+ * and treating no answer as a clean answer is how a regression walks into the
+ * baseline.
  */
-function hasConfirmedGatingRegression(iteration: IterationRecord): boolean {
+function hasStandingGatingRegression(iteration: IterationRecord): boolean {
   if (iteration.outcome !== "regressed") {
     return false;
   }
+  if (unmeasuredGatingRegressions(iteration).length > 0) {
+    return true;
+  }
   return Object.values(iteration.metrics).some(
-    (metric) =>
-      metric.gating &&
-      metric.verdict === "regressed" &&
-      (metric.confirmed || metric.method === "exact"),
+    (metric) => isGatingRegression(metric) && (metric.confirmed || metric.method === "exact"),
   );
+}
+
+/** The gating metrics that regressed and that the confirmation rerun never reported back on. */
+function unmeasuredGatingRegressions(iteration: IterationRecord): string[] {
+  const absent = new Set(iteration.confirm?.absent ?? []);
+  return Object.entries(iteration.metrics)
+    .filter(([name, metric]) => isGatingRegression(metric) && absent.has(name))
+    .map(([name]) => name);
+}
+
+/** Whether a metric is a gating metric that the checks called a regression. */
+function isGatingRegression(metric: IterationRecord["metrics"][string]): boolean {
+  return metric.gating && metric.verdict === "regressed";
+}
+
+/**
+ * How the refusal reads to the agent that has to act on it.
+ *
+ * A regression the rerun stood behind needs no explaining beyond the number the
+ * iteration already reported. One the rerun never re-measured does: the agent is
+ * looking at a metric its own report called regressed and unconfirmed, and
+ * without the missing measurement named, the block reads as gymrat contradicting
+ * itself. The extra hint points at the likeliest cause — a filter template that
+ * narrows the rerun to a subset the bench does not answer with.
+ */
+function gatingRefusal(iteration: IterationRecord): string {
+  const refusal = `Keep refused: iteration ${iteration.seq} regressed a gating metric.`;
+  const settleHint = "fix the regression and run gymrat iterate again, or run gymrat discard";
+
+  const unmeasured = unmeasuredGatingRegressions(iteration);
+  if (unmeasured.length === 0) {
+    return `${refusal}\nHint: ${settleHint}.`;
+  }
+
+  const named = unmeasured
+    .map((name) => `  ${name}: not measured on the confirmation rerun, so the regression stands`)
+    .join("\n");
+  return `${refusal}\n${named}\nHint: check that the filter template (or the bench itself) reports ${unmeasured.join(", ")}, then ${settleHint}.`;
 }
 
 /**

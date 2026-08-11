@@ -99,6 +99,49 @@ function confirmedRegression(seq: number): IterationRecord {
   });
 }
 
+/** The rerun samples a filtered bench reports when it only ever emits `total_ms`. */
+const RERUN_SAMPLES = {
+  experiment: [{ total_ms: 14_120 }],
+  baseline: [{ total_ms: 15_170 }],
+};
+
+/**
+ * An iteration whose gating `alloc_bytes` regressed on the first run and came
+ * back missing from the confirmation rerun — silence, not disagreement.
+ */
+function unmeasuredRegression(seq: number): IterationRecord {
+  return iteration(seq, {
+    metrics: {
+      total_ms: metric(),
+      alloc_bytes: metric({ deltaPct: 9.4, verdict: "regressed" }),
+    },
+    primary: { kind: "geomean", deltaPct: 9.4 },
+    outcome: "regressed",
+    confirm: {
+      ran: true,
+      filtered: ["total_ms", "alloc_bytes"],
+      absent: ["alloc_bytes"],
+      samples: RERUN_SAMPLES,
+    },
+  });
+}
+
+/**
+ * An iteration whose gating regression the rerun re-measured and would not repeat.
+ *
+ * The metric carries the verdict `iterate` writes after the demotion — `no-signal`
+ * on the first run's delta — so the record is the shape a real rerun leaves behind
+ * rather than one only this file produces. `confirm` is the parameter because the
+ * rerun can report the metric or come from a log written before `absent` existed.
+ */
+function rerunConfirm(confirm: IterationRecord["confirm"]): IterationRecord {
+  return iteration(1, {
+    metrics: { total_ms: metric({ deltaPct: 9.4, verdict: "no-signal" }) },
+    outcome: "no-signal",
+    confirm,
+  });
+}
+
 /** The keep a gating regression refused, numbered with the iteration it refused. */
 function gatingBlock(seq: number): KeepRecord {
   return {
@@ -384,6 +427,42 @@ describe("keepSession", () => {
       });
     });
 
+    it("refuses without claiming anything went unmeasured", async () => {
+      // Arrange
+      startWith([confirmedRegression(1)]);
+      editExperiment();
+      checksPass();
+
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert
+      expect.soft(result.report).not.toMatch(/not measured/i);
+      expect(result.report).not.toMatch(/filter/i);
+    });
+
+    it("blocks a log written before the absent field on the confirmation alone", async () => {
+      // Arrange
+      startWith([
+        iteration(1, {
+          metrics: { total_ms: metric({ deltaPct: 9.4, verdict: "regressed", confirmed: true }) },
+          primary: { kind: "geomean", deltaPct: 9.4 },
+          outcome: "regressed",
+          confirm: { ran: true, filtered: ["total_ms"], samples: RERUN_SAMPLES },
+        }),
+      ]);
+      editExperiment();
+      checksPass();
+
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert
+      expect.soft(result.record.status).toBe("blocked");
+      expect.soft(result.record.reason).toBe("gating-regression");
+      expect(result.report).not.toMatch(/not measured/i);
+    });
+
     it("keeps an iteration whose regression the rerun did not confirm", async () => {
       // Arrange
       startWith([
@@ -433,6 +512,74 @@ describe("keepSession", () => {
         checks: { configured: true },
       });
     });
+  });
+
+  describe("when the confirmation rerun never measured the gating regression", () => {
+    beforeEach(() => {
+      startWith([unmeasuredRegression(1)]);
+      editExperiment();
+      checksPass();
+    });
+
+    it("blocks the keep before the checks ever run", async () => {
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert
+      expect.soft(execMock).not.toHaveBeenCalled();
+      expect(result.record).toStrictEqual({
+        type: "keep",
+        seq: 1,
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        at: expect.stringMatching(ISO_PATTERN),
+        status: "blocked",
+        reason: "gating-regression",
+        checks: { configured: true },
+      });
+    });
+
+    it("names the unmeasured metric and points the agent at the filter", async () => {
+      // Act
+      const result = await keepSession(repo.dir, config());
+
+      // Assert
+      expect.soft(result.report).toContain("alloc_bytes");
+      expect.soft(result.report).toMatch(/not measured on the confirmation rerun/i);
+      expect.soft(result.report).toMatch(/filter/i);
+      expect(result.report).toMatch(/discard/i);
+    });
+  });
+
+  describe("when the confirmation rerun measured the gating regression away", () => {
+    it.each([
+      {
+        description: "the rerun reported the metric",
+        confirm: {
+          ran: true,
+          filtered: ["total_ms"],
+          absent: [],
+          samples: RERUN_SAMPLES,
+        },
+      },
+      {
+        description: "the log predates the absent field",
+        confirm: { ran: true, filtered: ["total_ms"], samples: RERUN_SAMPLES },
+      },
+    ] satisfies { description: string; confirm: IterationRecord["confirm"] }[])(
+      "keeps the iteration when $description",
+      async ({ confirm }) => {
+        // Arrange
+        startWith([rerunConfirm(confirm)]);
+        editExperiment();
+        checksPass();
+
+        // Act
+        const result = await keepSession(repo.dir, config());
+
+        // Assert
+        expect(result.record.status).toBe("committed");
+      },
+    );
   });
 
   describe("when the baseline worktree cannot advance", () => {
@@ -624,6 +771,26 @@ describe("discardSession", () => {
         gatingBlock(1),
         result.record,
       ]);
+    });
+  });
+
+  describe("when the last keep was blocked for a regression the rerun never measured", () => {
+    it("throws away the edit the block refused, numbered past it", () => {
+      // Arrange
+      startWith([unmeasuredRegression(1), gatingBlock(1)]);
+      editExperiment();
+
+      // Act
+      const result = discardSession(repo.dir);
+
+      // Assert
+      expect.soft(statusOf(experimentWorktreeDir(repo.dir))).toBe("");
+      expect(result.record).toStrictEqual({
+        type: "discard",
+        seq: 2,
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+        at: expect.stringMatching(ISO_PATTERN),
+      });
     });
   });
 
