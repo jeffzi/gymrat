@@ -3,7 +3,12 @@ import path from "node:path";
 
 import { assertNever, GymratError, messageOf } from "../errors.js";
 import { sessionJsonlPath } from "./paths.js";
-import type { IterationRecord, SessionLogRecord, SessionRecord } from "./records.js";
+import type {
+  FinalizeRecord,
+  IterationRecord,
+  SessionLogRecord,
+  SessionRecord,
+} from "./records.js";
 import { parseRecord } from "./records.js";
 
 /** What a session log adds up to: the state every loop command reads before acting. */
@@ -30,6 +35,13 @@ export interface SessionState {
    * takes `lastSeq + 1` and cannot alias one the log already carries.
    */
   lastSeq: number;
+  /**
+   * The record that closed the session, absent while the session is still open.
+   *
+   * A finalized session accepts no further loop commands — see
+   * {@link requireOpenSession} — but still reads and renders.
+   */
+  finalized: FinalizeRecord | undefined;
 }
 
 /** An open session, with everything reading its log already produced. */
@@ -172,6 +184,7 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
   let discardCount = 0;
   let targetReachedAndKept = false;
   let lastSeq = 0;
+  let finalized: FinalizeRecord | undefined;
 
   for (const record of records) {
     switch (record.type) {
@@ -207,6 +220,11 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
         unsettled = false;
         discardCount += 1;
         break;
+      case "finalize":
+        // Closing the session settles nothing and measures nothing: it collapses
+        // work the counters have already counted.
+        finalized = record;
+        break;
       case "baseline":
       case "hook":
         // A hook's seq names the iteration it runs around rather than claiming a
@@ -227,6 +245,7 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
     discardCount,
     targetReachedAndKept,
     lastSeq,
+    finalized,
   };
 }
 
@@ -250,4 +269,30 @@ export function requireSession(root: string, verb: string): RequiredSession {
   }
 
   return { session: state.session, state, jsonlPath, records };
+}
+
+/**
+ * The *open* session in `root`, or the error telling the caller why there is none.
+ *
+ * Every command that writes to the log goes through this rather than
+ * {@link requireSession}: a finalized session has had its kept work collapsed and
+ * its worktrees removed, so appending to it would record work no branch carries.
+ * `status` keeps the unguarded path — reading a closed session is exactly what it
+ * is for.
+ *
+ * @throws GymratError when no session has been started, when the log is corrupt, or
+ * when the session was already finalized.
+ */
+export function requireOpenSession(root: string, verb: string): RequiredSession {
+  const required = requireSession(root, verb);
+  const { finalized } = required.state;
+
+  if (finalized !== undefined) {
+    throw new GymratError(
+      `Session ${required.session.sessionId} was finalized onto ${finalized.branch}`,
+      `Run gymrat start to open a new session before ${verb}.`,
+    );
+  }
+
+  return required;
 }

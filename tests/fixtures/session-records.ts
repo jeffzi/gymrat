@@ -3,6 +3,7 @@ import { expect } from "vitest";
 import type { ResolvedConfig } from "../../src/config.js";
 import type {
   DiscardRecord,
+  FinalizeRecord,
   HookRecord,
   IterationRecord,
   KeepRecord,
@@ -14,6 +15,11 @@ export const AT = "2026-08-08T14:15:30.000Z";
 
 /** A commit SHA fixture records point at; not a real commit. */
 const COMMIT = "b".repeat(40);
+
+/** The squash commit SHA finalize fixtures point at; distinct from {@link COMMIT}. */
+const SQUASH_COMMIT = "c".repeat(40);
+
+const DEFAULT_SESSION_ID = "20260808-141530-a3f2";
 
 /** A settled run configuration, geomean-led unless a test names its own primary. */
 export function resolvedConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
@@ -36,7 +42,7 @@ export function resolvedConfig(overrides: Partial<ResolvedConfig> = {}): Resolve
  * both explicitly.
  */
 export function sessionRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
-  const sessionId = overrides.sessionId ?? "20260808-141530-a3f2";
+  const sessionId = overrides.sessionId ?? DEFAULT_SESSION_ID;
   return {
     type: "session",
     schemaVersion: 1,
@@ -110,6 +116,18 @@ export function expectedHookRecord(
 /** A discard of the iteration numbered `seq`. */
 export function discardRecord(seq: number): DiscardRecord {
   return { type: "discard", seq, at: AT };
+}
+
+/** The record that closes a session, with every field overridable. */
+export function finalizeRecord(overrides: Partial<FinalizeRecord> = {}): FinalizeRecord {
+  return {
+    type: "finalize",
+    at: AT,
+    branch: `gymrat/${DEFAULT_SESSION_ID}-final`,
+    commit: SQUASH_COMMIT,
+    message: "squash 1 kept iteration",
+    ...overrides,
+  };
 }
 
 /** A keep that committed the iteration numbered `seq`, with every field overridable. */

@@ -156,6 +156,7 @@ describe("startSession", () => {
           discardCount: 0,
           targetReachedAndKept: false,
           lastSeq: 0,
+          finalized: undefined,
         },
         resumed: false,
       });

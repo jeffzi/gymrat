@@ -225,6 +225,17 @@ const hookRecordSchema = Type.Object(
   strictObjectOptions,
 );
 
+const finalizeRecordSchema = Type.Object(
+  {
+    type: Type.Literal("finalize"),
+    at: stringSchema,
+    branch: stringSchema,
+    commit: stringSchema,
+    message: stringSchema,
+  },
+  strictObjectOptions,
+);
+
 /** Opens a session log: the session's identity, worktrees, and a config snapshot for provenance. */
 export type SessionRecord = Static<typeof sessionRecordSchema>;
 /** A labelled set of baseline samples, written by `measure --record`. */
@@ -237,6 +248,8 @@ export type KeepRecord = Static<typeof keepRecordSchema>;
 export type DiscardRecord = Static<typeof discardRecordSchema>;
 /** One hook invocation around an iteration. */
 export type HookRecord = Static<typeof hookRecordSchema>;
+/** Closes a session: the branch and squash commit its kept work was collapsed onto. */
+export type FinalizeRecord = Static<typeof finalizeRecordSchema>;
 
 /** Any line of a session log, discriminated on `type`. */
 export type SessionLogRecord =
@@ -245,7 +258,8 @@ export type SessionLogRecord =
   | IterationRecord
   | KeepRecord
   | DiscardRecord
-  | HookRecord;
+  | HookRecord
+  | FinalizeRecord;
 
 /**
  * Word a schema failure as a session-record error.
@@ -280,6 +294,7 @@ const recordParsers: Record<SessionLogRecord["type"], (value: unknown) => Sessio
   keep: parserFor(keepRecordSchema),
   discard: parserFor(discardRecordSchema),
   hook: parserFor(hookRecordSchema),
+  finalize: parserFor(finalizeRecordSchema),
 };
 
 /** Whether `type` is one the log declares, and therefore a key {@link recordParsers} holds. */
@@ -310,6 +325,8 @@ export function parseRecord(value: unknown): SessionLogRecord {
   }
   throw new GymratError(
     `Unknown session record type: ${JSON.stringify(type)}`,
-    "Expected one of: session, baseline, iteration, keep, discard, hook.",
+    // Read off the registry so a record type added to `recordParsers` cannot
+    // leave the hint naming a set the parser no longer accepts.
+    `Expected one of: ${Object.keys(recordParsers).join(", ")}.`,
   );
 }

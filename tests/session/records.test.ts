@@ -4,6 +4,7 @@ import { GymratError } from "../../src/errors.js";
 import type {
   BaselineRecord,
   DiscardRecord,
+  FinalizeRecord,
   HookRecord,
   IterationRecord,
   KeepRecord,
@@ -11,6 +12,7 @@ import type {
   SessionRecord,
 } from "../../src/session/records.js";
 import { parseRecord } from "../../src/session/records.js";
+import { captureGymratError } from "../fixtures/errors.js";
 
 const AT = "2026-08-08T14:15:30.000Z";
 const SHA = "a".repeat(40);
@@ -93,6 +95,14 @@ const hookRecord: HookRecord = {
   durationMs: 120,
   stdoutBytes: 80,
   timedOut: false,
+};
+
+const finalizeRecord: FinalizeRecord = {
+  type: "finalize",
+  at: AT,
+  branch: "gymrat/20260808-141530-a3f2-final",
+  commit: COMMIT,
+  message: "squash 3 kept iterations",
 };
 
 /** Copy of `record` without `key`, widened to `unknown` so `parseRecord` accepts it. */
@@ -197,6 +207,7 @@ describe("parseRecord", () => {
       },
       { description: "a discard", record: discardRecord },
       { description: "a hook", record: hookRecord },
+      { description: "a finalize", record: finalizeRecord },
     ])("returns $description record unchanged", ({ record }) => {
       const result = parseRecord(record);
 
@@ -254,6 +265,11 @@ describe("parseRecord", () => {
         description: "a hook without an exit code",
         value: omitting(hookRecord, "exitCode"),
         field: "exitCode",
+      },
+      {
+        description: "a finalize without the commit it squashed onto",
+        value: omitting(finalizeRecord, "commit"),
+        field: "commit",
       },
     ]);
   });
@@ -341,6 +357,11 @@ describe("parseRecord", () => {
         value: patching(hookRecord, { timedOut: 0 }),
         field: "timedOut",
       },
+      {
+        description: "a finalize whose branch is not a string",
+        value: patching(finalizeRecord, { branch: 42 }),
+        field: "branch",
+      },
     ]);
   });
 
@@ -390,6 +411,12 @@ describe("parseRecord", () => {
       const act = (): SessionLogRecord => parseRecord({ type: "banana", seq: 1 });
 
       expect(act).toThrow(mentioning("banana"));
+    });
+
+    it("names finalize among the types it does recognize", () => {
+      const error = captureGymratError(() => parseRecord({ type: "banana", seq: 1 }));
+
+      expect(error.hint).toContain("finalize");
     });
   });
 
