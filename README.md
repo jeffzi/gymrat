@@ -138,7 +138,7 @@ closed log and opens a fresh session. Pass `-m <text>` for a custom squash messa
 gymrat generates one listing the kept commits.
 
 Every command that runs your commands or writes session state holds a per-repository lock for the
-duration — `start`, `iterate`, `keep`, and `discard`, and `compare` and `measure` too. A second
+duration — `start`, `iterate`, `keep`, `discard`, and `finalize`, and `compare` and `measure` too. A second
 gymrat run against the same repository exits 2 rather than benchmarking alongside the first, since
 concurrent runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
 
