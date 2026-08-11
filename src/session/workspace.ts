@@ -186,6 +186,61 @@ export function revertWorkspace(experimentDir: string): void {
 }
 
 /**
+ * Take both of a session's worktrees off disk and out of git's bookkeeping.
+ *
+ * A worktree whose directory is already gone is skipped rather than pruned: the
+ * user who deleted it has nothing left to lose, and git refuses to remove a path
+ * it cannot find. Removal failures are returned instead of thrown because this
+ * runs after the finalize record is written — the session is closed either way,
+ * and the caller's job is to tell the user which directory to clear by hand.
+ *
+ * @returns One warning per worktree git would not remove, empty when both went.
+ */
+export function removeWorktrees(
+  root: string,
+  worktrees: { experiment: string; baseline: string },
+): string[] {
+  const warnings: string[] = [];
+
+  for (const dir of [worktrees.experiment, worktrees.baseline]) {
+    if (!isDirectory(dir)) {
+      continue;
+    }
+    try {
+      runGit(["worktree", "remove", "--force", dir], root);
+    } catch (error) {
+      warnings.push(
+        `Could not remove the worktree at ${dir}: ${stderrTextOf(error)}\n` +
+          `  remove it by hand with: git worktree remove --force ${dir}`,
+      );
+    }
+  }
+
+  return warnings;
+}
+
+/**
+ * Whether `dir` holds work git has not committed — untracked files included.
+ *
+ * A directory that is not there reads as clean: a worktree the user deleted
+ * carries no uncommitted work anyone can still act on, and refusing to finalize
+ * over a directory that cannot be inspected would strand the session.
+ */
+export function isWorktreeDirty(dir: string): boolean {
+  if (!isDirectory(dir)) {
+    return false;
+  }
+  return (
+    runGitStep(
+      ["status", "--porcelain"],
+      dir,
+      `Cannot read the status of the worktree at ${dir}`,
+      "Inspect what is standing there with: git status",
+    ).trim() !== ""
+  );
+}
+
+/**
  * Move the baseline worktree onto `sha`, detached as it was created.
  *
  * Detached is not incidental: `sha` is a commit on the session branch, which the
@@ -248,7 +303,12 @@ function isDirectory(dir: string): boolean {
  * Run git in `cwd`, turning a non-zero exit into a `GymratError` that carries
  * git's own diagnostics after `message`.
  */
-function runGitStep(args: readonly string[], cwd: string, message: string, hint: string): string {
+export function runGitStep(
+  args: readonly string[],
+  cwd: string,
+  message: string,
+  hint: string,
+): string {
   try {
     return runGit(args, cwd);
   } catch (error) {

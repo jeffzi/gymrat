@@ -10,11 +10,18 @@ import {
   createWorkspace,
   detectWorkspace,
   ensureGitExclude,
+  isWorktreeDirty,
   recreateWorkspace,
+  removeWorktrees,
 } from "../../src/session/workspace.js";
 import { SESSION_ID } from "../fixtures/constants.js";
 import { captureThrown } from "../fixtures/errors.js";
-import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import {
+  createScratchRepo,
+  git,
+  listWorktreeDirs,
+  type ScratchRepo,
+} from "../fixtures/scratch-repo.js";
 
 const BRANCH = `gymrat/${SESSION_ID}`;
 const BASELINE_REF = "main";
@@ -225,6 +232,96 @@ describe("detectWorkspace", () => {
 
     // Assert
     expect(status).toBe("partial");
+  });
+});
+
+describe("removeWorktrees", () => {
+  /** The two worktree paths `createWorkspace` laid down in the scratch repo. */
+  function worktrees(): { experiment: string; baseline: string } {
+    return {
+      experiment: experimentWorktreeDir(repo.dir),
+      baseline: baselineWorktreeDir(repo.dir),
+    };
+  }
+
+  beforeEach(() => {
+    createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
+  });
+
+  describe("when both worktrees are on disk", () => {
+    it("takes them off disk and out of git's bookkeeping, warning about nothing", () => {
+      // Act
+      const warnings = removeWorktrees(repo.dir, worktrees());
+
+      // Assert
+      expect.soft(warnings).toStrictEqual([]);
+      expect.soft(fs.existsSync(experimentWorktreeDir(repo.dir))).toBe(false);
+      expect.soft(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
+      expect(listWorktreeDirs(repo.dir, { includeMain: false })).toStrictEqual([]);
+    });
+  });
+
+  describe("when one worktree directory is already gone", () => {
+    it("removes the other and still warns about nothing", () => {
+      // Arrange
+      fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
+
+      // Act
+      const warnings = removeWorktrees(repo.dir, worktrees());
+
+      // Assert
+      expect.soft(warnings).toStrictEqual([]);
+      expect(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
+    });
+  });
+
+  describe("when git refuses to remove a worktree", () => {
+    it("warns naming the worktree it left behind and removes the other", () => {
+      // Arrange - git declines a locked worktree unless --force is passed twice.
+      git(["worktree", "lock", experimentWorktreeDir(repo.dir)], repo.dir);
+
+      // Act
+      const warnings = removeWorktrees(repo.dir, worktrees());
+
+      // Assert
+      expect.soft(warnings).toHaveLength(1);
+      expect.soft(warnings[0]).toContain(experimentWorktreeDir(repo.dir));
+      expect(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
+    });
+  });
+});
+
+describe("isWorktreeDirty", () => {
+  it.each([
+    { description: "nothing was touched", edit: undefined, expected: false },
+    { description: "a tracked file was edited", edit: "README.md", expected: true },
+    { description: "an untracked file was added", edit: "scratch.txt", expected: true },
+  ] satisfies { description: string; edit: string | undefined; expected: boolean }[])(
+    "reports $expected when $description",
+    ({ edit, expected }) => {
+      // Arrange
+      createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
+      const worktree = experimentWorktreeDir(repo.dir);
+      if (edit !== undefined) {
+        fs.writeFileSync(path.join(worktree, edit), "# edited by the agent\n");
+      }
+
+      // Act
+      const dirty = isWorktreeDirty(worktree);
+
+      // Assert
+      expect(dirty).toBe(expected);
+    },
+  );
+
+  describe("when the directory does not exist", () => {
+    it("reports clean rather than failing on the missing worktree", () => {
+      // Act
+      const dirty = isWorktreeDirty(experimentWorktreeDir(repo.dir));
+
+      // Assert
+      expect(dirty).toBe(false);
+    });
   });
 });
 
