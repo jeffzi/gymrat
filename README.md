@@ -99,13 +99,14 @@ gymrat measure --bench "npm run bench" --record
 gymrat pins a baseline, gives you an experiment worktree to edit, and keeps a log of every
 measurement and every decision so an agent (or you) can pick the work up in a fresh process.
 
-| Command                | What it does                                                                                           |
-| ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `gymrat start [ref]`   | Create the repository's session, or resume the one it has. Pins the baseline at `ref` (default `HEAD`) |
-| `gymrat iterate`       | Bench the experiment worktree against the baseline worktree, record the result, print the verdict      |
-| `gymrat keep [-m msg]` | Commit the measured edit once the checks pass, and advance the baseline to that commit                 |
-| `gymrat discard`       | Revert the experiment worktree to its last commit                                                      |
-| `gymrat status`        | Print the session's history, read back from the log                                                    |
+| Command                    | What it does                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `gymrat start [ref]`       | Create the repository's session, or resume the one it has. Pins the baseline at `ref` (default `HEAD`) |
+| `gymrat iterate`           | Bench the experiment worktree against the baseline worktree, record the result, print the verdict      |
+| `gymrat keep [-m msg]`     | Commit the measured edit once the checks pass, and advance the baseline to that commit                 |
+| `gymrat discard`           | Revert the experiment worktree to its last commit                                                      |
+| `gymrat finalize [-m msg]` | Collapse kept iterations into one squash commit on a new branch and close the session                  |
+| `gymrat status`            | Print the session's history, read back from the log                                                    |
 
 ```sh
 gymrat start                     # pin the baseline at HEAD, create the worktrees
@@ -113,6 +114,7 @@ gymrat start                     # pin the baseline at HEAD, create the worktree
 gymrat iterate                   # measure the edit
 gymrat keep -m "cache the table" # commit it and move the baseline forward
 gymrat status                    # read the whole session back
+gymrat finalize                  # squash kept iterations onto a new branch
 ```
 
 `start` is safe to re-run: an existing log is never appended to, and only a worktree that went
@@ -126,6 +128,14 @@ re-measured and would not repeat leaves the keep committable, while one the reru
 back on blocks it — silence is not evidence the regression went away. Every refusal is recorded as
 a blocked keep, which `status` reads back — gymrat never erases a decision from the log. A refused
 keep exits 1.
+
+`finalize` collapses every kept iteration into one squash commit whose tree equals the session
+branch's HEAD and whose parent is the pinned baseline, then points a new branch at it (default
+`<session-branch>-final`, override with `--branch <name>`). The session is closed: `iterate`,
+`keep`, `discard`, and `measure --record` refuse on a finalized session (exit 2). `status` still
+renders the full history plus a closing line naming the final branch. The next `start` archives the
+closed log and opens a fresh session. Pass `-m <text>` for a custom squash message; without it,
+gymrat generates one listing the kept commits.
 
 Every command that runs your commands or writes session state holds a per-repository lock for the
 duration — `start`, `iterate`, `keep`, and `discard`, and `compare` and `measure` too. A second
@@ -371,6 +381,20 @@ These five keys configure [the session loop](#the-session-loop) and are ignored 
   A hook cannot brick the loop: one that fails, crashes, or overruns its 30-second timeout becomes a
   log record and a labeled block in the report, never a failed iteration. Each hook's relayed stdout
   is capped at 8 KB, cut on a whole line.
+
+## Agent skill
+
+gymrat ships a skill file (`skills/gymrat/SKILL.md`) that teaches an AI coding agent to drive the
+full session loop — start, iterate, keep/discard, finalize — through the CLI. To install it, copy
+the `skills/gymrat/` directory from the package into your project's agent configuration:
+
+```sh
+cp -r node_modules/gymrat/skills/gymrat .claude/skills/
+```
+
+The skill owns loop mechanics (when to iterate, how to read verdicts, when to finalize). Domain
+rules — what to optimize, which metrics gate, build steps — belong in a per-repo runbook that the
+skill tells the agent to load.
 
 ## License
 

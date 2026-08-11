@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `gymrat finalize [-m <text>] [--branch <name>]` collapses a session's kept iterations into one
+  squash commit on a new branch and closes the session. The squash's tree equals the session
+  branch's HEAD; its parent is the pinned baseline. A finalized session refuses `iterate`, `keep`,
+  `discard`, and `measure --record` (exit 2); `status` renders the full history plus a closing line
+  naming the final branch and commit. The next `start` archives the closed log and opens a fresh
+  session.
+- Agent skill (`skills/gymrat/SKILL.md`) that teaches an AI coding agent to drive the full session
+  loop. Install by copying `skills/gymrat/` from the package into your agent configuration.
+
 ### Changed
 
 - `gymrat keep` now refuses to commit an iteration whose gating metric regressed and which the

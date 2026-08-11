@@ -284,3 +284,28 @@ Example, trimmed to one metric:
   "worktrees": { "removed": 0, "leftBehind": [], "pruneError": null }
 }
 ```
+
+## Session log records
+
+The session log (`.gymrat/session.jsonl`) is a newline-delimited JSON file. Each line is a record
+with a `type` field discriminating the record kind. The `finalize` record closes a session:
+
+### `finalize` record
+
+| Field     | Type   | Description                                                            |
+| --------- | ------ | ---------------------------------------------------------------------- |
+| `type`    | string | Always `"finalize"`.                                                   |
+| `at`      | string | ISO 8601 timestamp of the finalize.                                    |
+| `branch`  | string | The branch pointing at the squash commit.                              |
+| `commit`  | string | The full SHA of the squash commit.                                     |
+| `message` | string | The squash commit's message (user-supplied or generated from history). |
+
+```json
+{
+  "type": "finalize",
+  "at": "2026-08-11T14:30:00.000Z",
+  "branch": "gymrat/20260811-143000-a1b2-final",
+  "commit": "abc123def456789...",
+  "message": "gymrat: squash 3 kept iterations\n\ncache the regex\nflatten the lookup\ninline the hot path"
+}
+```
