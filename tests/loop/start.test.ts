@@ -18,7 +18,12 @@ import { appendRecord, readRecords } from "../../src/session/store.js";
 import { detectWorkspace } from "../../src/session/workspace.js";
 import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureGymratError } from "../fixtures/errors.js";
-import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import {
+  createScratchRepo,
+  git,
+  killGitDuringWorktreeAdd,
+  type ScratchRepo,
+} from "../fixtures/scratch-repo.js";
 import { committedKeep, iterationRecord } from "../fixtures/session-records.js";
 
 const SESSION_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
@@ -263,6 +268,30 @@ describe("startSession", () => {
       expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(headSha);
     });
   });
+
+  // killGitDuringWorktreeAdd sends POSIX signal 9 via a post-checkout hook;
+  // Windows cannot deliver that signal to the git parent process.
+  describe.skipIf(process.platform === "win32")(
+    "when the fresh session after a finalize cannot build its workspace",
+    () => {
+      it("puts the closed log back, failing with the git step that broke", () => {
+        // Arrange - installed once the closed session is settled, so only the
+        // fresh session's worktree checkouts die.
+        startSession(repo.dir, "main", CONFIG);
+        const closed = closeSessionWithOneKeep();
+        const closedLog = readRecords(sessionJsonlPath(repo.dir));
+        killGitDuringWorktreeAdd(repo.dir);
+
+        // Act
+        const error = captureGymratError(() => startSession(repo.dir, "main", CONFIG));
+
+        // Assert - the rollback's own failure never speaks for the start's.
+        expect.soft(error.message).toMatch(/cannot create the experiment worktree/i);
+        expect.soft(readRecords(sessionJsonlPath(repo.dir))).toStrictEqual(closedLog);
+        expect(fs.existsSync(archivedSessionPath(repo.dir, closed))).toBe(false);
+      });
+    },
+  );
 
   describe("when the baseline worktree went missing", () => {
     it("puts it back at the last kept commit", () => {

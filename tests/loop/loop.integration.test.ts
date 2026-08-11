@@ -6,9 +6,17 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { experimentWorktreeDir, lockfilePath, sessionJsonlPath } from "../../src/session/paths.js";
+import { finalizeSession } from "../../src/loop/finalize.js";
+import { startSession } from "../../src/loop/start.js";
+import {
+  archivedSessionPath,
+  baselineWorktreeDir,
+  experimentWorktreeDir,
+  lockfilePath,
+  sessionJsonlPath,
+} from "../../src/session/paths.js";
 import type { SessionLogRecord } from "../../src/session/records.js";
-import { readRecords } from "../../src/session/store.js";
+import { appendRecord, readRecords } from "../../src/session/store.js";
 import {
   captureStdout,
   createRunnableProgram,
@@ -16,6 +24,7 @@ import {
   mockProcessExit,
 } from "../fixtures/cli-harness.js";
 import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { committedKeep, iterationRecord, resolvedConfig } from "../fixtures/session-records.js";
 
 /** Generous budget: every command below creates real worktrees and spawns real bench processes. */
 const LONG_RUN_TIMEOUT_MS = 180_000;
@@ -312,5 +321,58 @@ describe("the gymrat loop – integration", () => {
       },
       LONG_RUN_TIMEOUT_MS,
     );
+  });
+
+  describe("when a session is started again after one that finalized without its worktree on disk", () => {
+    let repo: ScratchRepo;
+    let closedSessionId: string;
+    let closedLog: SessionLogRecord[];
+    let restarted: ReturnType<typeof startSession>;
+
+    beforeAll(() => {
+      repo = createScratchRepo();
+
+      // Drive a whole session: open it, commit the edit a keep would commit,
+      // log the iteration and the keep behind it, then close it. The bench never
+      // runs — the iteration record stands in for what `iterate` measured.
+      const first = startSession(repo.dir, "main", resolvedConfig());
+      closedSessionId = first.session.sessionId;
+
+      const worktree = experimentWorktreeDir(repo.dir);
+      fs.writeFileSync(path.join(worktree, TUNING_FILE), `${String(KEPT_LATENCY)}\n`);
+      git(["add", "-A"], worktree);
+      git(["commit", "-m", "tune latency to 90"], worktree);
+      appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
+      appendRecord(
+        sessionJsonlPath(repo.dir),
+        committedKeep(1, { commit: git(["rev-parse", "HEAD"], worktree) }),
+      );
+
+      // The directory goes before finalize does, so `git worktree remove` finds
+      // nothing to take and git keeps its entry for the path.
+      fs.rmSync(worktree, { recursive: true, force: true });
+      finalizeSession(repo.dir);
+      closedLog = readRecords(sessionJsonlPath(repo.dir));
+
+      restarted = startSession(repo.dir, "main", resolvedConfig());
+    }, LONG_RUN_TIMEOUT_MS);
+
+    afterAll(() => {
+      repo.cleanup();
+    });
+
+    it("opens a fresh session rather than resuming the closed one", () => {
+      expect.soft(restarted.resumed).toBe(false);
+      expect(restarted.session.sessionId).not.toBe(closedSessionId);
+    });
+
+    it("checks out both worktrees of the fresh session", () => {
+      expect.soft(fs.existsSync(experimentWorktreeDir(repo.dir))).toBe(true);
+      expect(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(true);
+    });
+
+    it("archives the closed session's log under the id it belonged to", () => {
+      expect(readRecords(archivedSessionPath(repo.dir, closedSessionId))).toStrictEqual(closedLog);
+    });
   });
 });

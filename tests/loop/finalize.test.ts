@@ -53,18 +53,26 @@ function lastRecord(): SessionLogRecord {
 }
 
 /**
- * Commit one edit in the experiment worktree and log the iteration and keep that produced it.
+ * Commit one edit in the experiment worktree and log the iteration behind it.
  *
  * The experiment worktree is checked out on the session branch, so each call
- * moves that branch forward exactly as a real `gymrat keep` would.
+ * moves that branch forward exactly as a real `gymrat keep` would. The keep
+ * record is left to the caller, which is what lets a test log one whose fields
+ * gymrat itself would never omit.
  */
-function keepIteration(seq: number, message: string): string {
+function commitIteration(seq: number, message: string): string {
   const worktree = experimentWorktreeDir(repo.dir);
   fs.writeFileSync(path.join(worktree, `step-${seq}.txt`), `${message}\n`);
   git(["add", "-A"], worktree);
   git(["commit", "-m", message], worktree);
   const commit = git(["rev-parse", "HEAD"], worktree);
   appendRecord(jsonlPath(), iterationRecord({ seq }));
+  return commit;
+}
+
+/** Commit one edit and log the iteration and the committed keep that settled it. */
+function keepIteration(seq: number, message: string): string {
+  const commit = commitIteration(seq, message);
   appendRecord(jsonlPath(), committedKeep(seq, { commit, message }));
   return commit;
 }
@@ -172,6 +180,37 @@ describe("finalizeSession", () => {
 
       // Assert
       expect(lastRecord()).toStrictEqual(result.record);
+    });
+  });
+
+  describe("when a committed keep carries no message", () => {
+    it("stands the keep's short commit in, leaving one body line per kept iteration", () => {
+      // Arrange
+      keepIteration(1, "cache the regex");
+      const commit = commitIteration(2, "hoist the loop");
+      appendRecord(jsonlPath(), committedKeep(2, { commit, message: undefined }));
+
+      // Act
+      const result = finalizeSession(repo.dir);
+
+      // Assert
+      const subject = git(["log", "-1", "--format=%s", result.record.branch], repo.dir);
+      const body = git(["log", "-1", "--format=%b", result.record.branch], repo.dir);
+      expect.soft(subject).toContain("2 kept iterations");
+      expect(body.split("\n")).toStrictEqual(["cache the regex", commit.slice(0, 7)]);
+    });
+
+    it("stands a placeholder in when the keep names no commit either", () => {
+      // Arrange
+      commitIteration(1, "cache the regex");
+      appendRecord(jsonlPath(), committedKeep(1, { commit: undefined, message: undefined }));
+
+      // Act
+      const result = finalizeSession(repo.dir);
+
+      // Assert
+      const body = git(["log", "-1", "--format=%b", result.record.branch], repo.dir);
+      expect(body.split("\n")).toStrictEqual(["(no message)"]);
     });
   });
 

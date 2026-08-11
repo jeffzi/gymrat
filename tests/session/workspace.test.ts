@@ -19,12 +19,17 @@ import { captureThrown } from "../fixtures/errors.js";
 import {
   createScratchRepo,
   git,
+  killGitDuringWorktreeAdd,
   listWorktreeDirs,
   type ScratchRepo,
 } from "../fixtures/scratch-repo.js";
 
 const BRANCH = `gymrat/${SESSION_ID}`;
 const BASELINE_REF = "main";
+
+/** The id the session after {@link SESSION_ID} opens on, for a workspace built over an earlier one's leftovers. */
+const NEXT_SESSION_ID = "20260808-152045-b7c1";
+const NEXT_BRANCH = `gymrat/${NEXT_SESSION_ID}`;
 
 /** The ref a worktree has checked out: a branch name, or `HEAD` when detached. */
 function checkedOutRef(worktree: string): string {
@@ -33,6 +38,13 @@ function checkedOutRef(worktree: string): string {
 
 function excludePath(root: string): string {
   return path.join(root, ".git", "info", "exclude");
+}
+
+/** The session branches `root` still holds, one per `gymrat/…` ref. */
+function sessionBranches(root: string): string[] {
+  return git(["for-each-ref", "--format=%(refname:short)", "refs/heads/gymrat"], root)
+    .split("\n")
+    .filter((line) => line !== "");
 }
 
 /** Narrow a thrown value to `GymratError` without an `as` cast. */
@@ -128,6 +140,67 @@ describe("createWorkspace", () => {
       // Assert
       expect.soft(error.message).toContain(BRANCH);
       expect.soft(error.hint).toMatch(/git branch -D/i);
+    });
+  });
+
+  // killGitDuringWorktreeAdd sends POSIX signal 9 via a post-checkout hook;
+  // Windows cannot deliver that signal to the git parent process.
+  describe.skipIf(process.platform === "win32")(
+    "when a worktree add fails after the session branch was created",
+    () => {
+      it("unwinds what it made, failing with the git step that broke", () => {
+        // Arrange - installed after the scratch repo's own commit so only the
+        // worktree checkouts under test die.
+        killGitDuringWorktreeAdd(repo.dir);
+
+        // Act
+        const error = asGymratError(
+          captureThrown(() =>
+            createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha }),
+          ),
+        );
+
+        // Assert - the unwind's own git steps never speak for it.
+        expect.soft(error.message).toMatch(/cannot create the experiment worktree/i);
+        expect.soft(sessionBranches(repo.dir)).toStrictEqual([]);
+        expect.soft(listWorktreeDirs(repo.dir, { includeMain: false })).toStrictEqual([]);
+        expect(fs.existsSync(experimentWorktreeDir(repo.dir))).toBe(false);
+      });
+    },
+  );
+
+  describe("when git still holds an entry for a worktree whose directory is gone", () => {
+    beforeEach(() => {
+      // A session whose worktree directories vanished behind git's back: what
+      // `git worktree remove` leaves when the directory is already off disk.
+      createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
+      fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
+      fs.rmSync(baselineWorktreeDir(repo.dir), { recursive: true, force: true });
+    });
+
+    it("checks the next session's worktrees out over the stale entries", () => {
+      // Act
+      const result = createWorkspace(repo.dir, NEXT_SESSION_ID, {
+        ref: BASELINE_REF,
+        sha: baselineSha,
+      });
+
+      // Assert
+      expect.soft(checkedOutRef(result.worktrees.experiment)).toBe(NEXT_BRANCH);
+      expect(git(["rev-parse", "HEAD"], result.worktrees.baseline)).toBe(baselineSha);
+    });
+
+    it("leaves a worktree that is still on disk registered", () => {
+      // Arrange
+      const live = path.join(repo.dir, "live-worktree");
+      git(["worktree", "add", "--detach", live, baselineSha], repo.dir);
+
+      // Act
+      createWorkspace(repo.dir, NEXT_SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
+
+      // Assert
+      expect.soft(fs.existsSync(live)).toBe(true);
+      expect(listWorktreeDirs(repo.dir, { includeMain: false })).toContain(live);
     });
   });
 

@@ -71,7 +71,7 @@ export function finalizeSession(root: string, options: FinalizeOptions = {}): Fi
     );
   }
 
-  const message = options.message ?? generatedMessage(records, state.keepCount);
+  const message = options.message ?? generatedMessage(records);
   const commit = squashOntoBaseline(root, session.branch, session.baseline.sha, message);
   runGitStep(
     ["branch", branch, commit],
@@ -135,6 +135,9 @@ function branchExists(root: string, branch: string): boolean {
   }
 }
 
+/** The body line a committed keep gets when it names neither a message nor a commit. */
+const UNNAMED_KEEP_LINE = "(no message)";
+
 /**
  * The squash message written when the caller supplied none.
  *
@@ -142,17 +145,23 @@ function branchExists(root: string, branch: string): boolean {
  * the order they landed, so the one commit that reaches the user's branch still
  * says what the session did — the per-iteration history stays on the session
  * branch, which nothing but the reader's curiosity brings back.
+ *
+ * A keep whose `message` the log omits — which gymrat never writes, but a
+ * hand-edited or older log can hold — falls back to its short commit rather
+ * than dropping its line and leaving the subject claiming more than the body
+ * shows.
  */
-function generatedMessage(records: SessionLogRecord[], keepCount: number): string {
+function generatedMessage(records: SessionLogRecord[]): string {
   const kept = records
     .filter(
       (record): record is KeepRecord => record.type === "keep" && record.status === "committed",
     )
-    .map((record) => record.message)
-    .filter((message) => message !== undefined);
+    .map(
+      (record) => record.message ?? record.commit?.slice(0, SHORT_SHA_LENGTH) ?? UNNAMED_KEEP_LINE,
+    );
 
-  const subject = `gymrat: squash ${pluralize(keepCount, "kept iteration")}`;
-  return kept.length === 0 ? subject : `${subject}\n\n${kept.join("\n")}`;
+  const subject = `gymrat: squash ${pluralize(kept.length, "kept iteration")}`;
+  return `${subject}\n\n${kept.join("\n")}`;
 }
 
 /** The finalize as the agent reads it, with anything git would not clean up spelled out. */

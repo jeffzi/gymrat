@@ -66,14 +66,21 @@ export function startSession(
   if (state.finalized !== undefined) {
     // Renamed rather than copied: the new log must not exist until the closed one
     // is out of the way, or a start interrupted mid-archive would leave two
-    // sessions claiming the same file.
+    // sessions claiming the same file. A start that then fails renames it back,
+    // so the closed session stays where `status` reads it — safe because the new
+    // header lands last, leaving nothing at `jsonlPath` to collide with.
     const archivedPath = archivedSessionPath(root, session.sessionId);
     fs.renameSync(jsonlPath, archivedPath);
-    return {
-      ...createSession(root, jsonlPath, baselineRef, config),
-      archived: session.sessionId,
-      archivedPath,
-    };
+    try {
+      return {
+        ...createSession(root, jsonlPath, baselineRef, config),
+        archived: session.sessionId,
+        archivedPath,
+      };
+    } catch (error) {
+      restoreArchivedLog(archivedPath, jsonlPath);
+      throw error;
+    }
   }
 
   if (detectWorkspace(root) !== "present") {
@@ -83,6 +90,21 @@ export function startSession(
     recreateWorkspace(root, session.branch, lastKeptCommit(records) ?? session.baseline.sha);
   }
   return { session, state, resumed: true };
+}
+
+/**
+ * Move a closed session's log back from the archive after a start that failed.
+ *
+ * Best-effort: the caller is rethrowing the failure that broke the start, and a
+ * rename that cannot run must not speak in its place — the closed session's
+ * records are still on disk under its own id either way.
+ */
+function restoreArchivedLog(archivedPath: string, jsonlPath: string): void {
+  try {
+    fs.renameSync(archivedPath, jsonlPath);
+  } catch {
+    // Swallowed by contract — see above.
+  }
 }
 
 /**

@@ -32,8 +32,13 @@ export type WorkspaceStatus = "present" | "partial" | "absent";
  * `baseline.sha` so it keeps measuring the same commit no matter what the ref it
  * came from does afterwards.
  *
+ * Either all of the branch and both worktrees exist afterwards, or none of them
+ * do: a worktree git refuses takes the branch and whatever was already checked
+ * out down with it, so a retry starts from the state the first attempt found
+ * instead of tripping over its leftovers.
+ *
  * @throws GymratError when `root` is not a git repository, or when git refuses
- *   to create the branch or either worktree.
+ *   to prune, to create the branch, or to create either worktree.
  */
 export function createWorkspace(
   root: string,
@@ -43,6 +48,7 @@ export function createWorkspace(
   const branch = `${BRANCH_PREFIX}${sessionId}`;
 
   ensureGitExclude(root);
+  pruneStaleWorktrees(root);
 
   runGitStep(
     ["branch", branch, baseline.sha],
@@ -50,8 +56,13 @@ export function createWorkspace(
     `Cannot create the session branch '${branch}'`,
     `A crashed session may have left it behind. Delete it with: git branch -D ${branch}`,
   );
-  addExperimentWorktree(root, branch);
-  addBaselineWorktree(root, baseline.sha);
+  try {
+    addExperimentWorktree(root, branch);
+    addBaselineWorktree(root, baseline.sha);
+  } catch (error) {
+    unwindWorkspace(root, branch);
+    throw error;
+  }
 
   return {
     branch,
@@ -111,14 +122,7 @@ export function recreateWorkspace(root: string, branch: string, baselineSha: str
     return;
   }
 
-  // git keeps the admin entry of a worktree whose directory vanished, and refuses
-  // to re-add that path — or to check its branch out again — until the entry goes.
-  runGitStep(
-    ["worktree", "prune"],
-    root,
-    "Cannot clear the session's stale worktree entries",
-    "Inspect them with: git worktree list",
-  );
+  pruneStaleWorktrees(root);
 
   if (needsExperiment) {
     addExperimentWorktree(root, branch);
@@ -258,6 +262,25 @@ export function advanceBaseline(baselineDir: string, sha: string): void {
   );
 }
 
+/**
+ * Drop git's bookkeeping for worktrees whose directories are no longer there.
+ *
+ * git keeps the admin entry of a worktree whose directory vanished, and refuses
+ * to add that path back — or to check its branch out again — until the entry
+ * goes. Only entries with nothing on disk behind them go, so a worktree the user
+ * is still working in is left alone.
+ *
+ * @throws GymratError when git refuses to prune.
+ */
+function pruneStaleWorktrees(root: string): void {
+  runGitStep(
+    ["worktree", "prune"],
+    root,
+    "Cannot clear the session's stale worktree entries",
+    "Inspect them with: git worktree list",
+  );
+}
+
 function addExperimentWorktree(root: string, branch: string): void {
   const dir = experimentWorktreeDir(root);
   runGitStep(
@@ -266,6 +289,32 @@ function addExperimentWorktree(root: string, branch: string): void {
     `Cannot create the experiment worktree at ${dir}`,
     `Check whether ${branch} is already checked out elsewhere: git worktree list`,
   );
+}
+
+/**
+ * Take back the branch and worktrees a failed {@link createWorkspace} had made.
+ *
+ * The worktrees go first: git refuses to delete a branch one of them still has
+ * checked out. Every step is best-effort — the caller is about to see the git
+ * step that broke the session, and a cleanup that cannot finish must not speak
+ * in its place.
+ */
+function unwindWorkspace(root: string, branch: string): void {
+  for (const dir of [experimentWorktreeDir(root), baselineWorktreeDir(root)]) {
+    if (isDirectory(dir)) {
+      runGitIgnoringFailure(["worktree", "remove", "--force", dir], root);
+    }
+  }
+  runGitIgnoringFailure(["branch", "-D", branch], root);
+}
+
+/** Run git for a cleanup step whose failure the caller has no better answer for. */
+function runGitIgnoringFailure(args: readonly string[], cwd: string): void {
+  try {
+    runGit(args, cwd);
+  } catch {
+    // Swallowed by contract — see unwindWorkspace.
+  }
 }
 
 function addBaselineWorktree(root: string, sha: string): void {
