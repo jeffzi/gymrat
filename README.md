@@ -385,8 +385,15 @@ These five keys configure [the session loop](#the-session-loop) and are ignored 
 ## Agent skill
 
 gymrat ships a skill file (`skills/gymrat/SKILL.md`) that teaches an AI coding agent to drive the
-full session loop — start, iterate, keep/discard, finalize — through the CLI. To install it, copy
-the `skills/gymrat/` directory from the package into your project's agent configuration:
+full session loop — start, iterate, keep/discard, finalize — through the CLI.
+
+Install with the [skills](https://github.com/vercel-labs/skills) CLI (supports 80+ agents):
+
+```sh
+npx skills add jeffzi/gymrat
+```
+
+Or copy manually into your agent's configuration directory:
 
 ```sh
 cp -r node_modules/gymrat/skills/gymrat .claude/skills/
