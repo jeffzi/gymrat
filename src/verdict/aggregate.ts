@@ -24,9 +24,6 @@ export interface GroupAggregate {
 export interface KindAggregate {
   kind: string;
 
-  /** Whether any metric of the kind gates — the condition `gatedGeomean` exists under. */
-  hasGating: boolean;
-
   /** Over every metric of the kind, gating and non-gating alike. */
   geomean: GeomeanResult;
 
@@ -131,22 +128,15 @@ export function computeKindAggregates(
 ): KindAggregate[] {
   return Array.from(bucketByKind(metricMeta).entries(), ([kind, bucket]) => {
     const gating = bucket.metrics.filter(([, meta]) => meta.gating);
-    const hasGating = gating.length > 0;
 
-    const aggregate: KindAggregate = {
+    return {
       kind,
-      hasGating,
       geomean: geomeanOver(bucket.metrics, verdicts),
       groups: Array.from(bucket.groups, ([group, members]) => ({
         group,
         geomean: geomeanOver(members, verdicts),
       })),
+      gatedGeomean: gating.length > 0 ? geomeanOver(gating, verdicts) : undefined,
     };
-
-    if (hasGating) {
-      aggregate.gatedGeomean = geomeanOver(gating, verdicts);
-    }
-
-    return aggregate;
   });
 }

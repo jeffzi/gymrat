@@ -23,12 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
 
 import { AdapterError } from "../src/adapters/index.js";
 import { createProgram, formatCliError } from "../src/cli.js";
-import {
-  CommandError,
-  type CommandErrorContext,
-  type CompareOptions,
-  type ProgressStep,
-} from "../src/compare.js";
+import type { CompareOptions, ProgressStep } from "../src/compare.js";
 import type { ResolvedConfig } from "../src/config.js";
 import type { ExecResult } from "../src/exec.js";
 import { startSession } from "../src/loop/start.js";
@@ -36,6 +31,7 @@ import type { MeasureOptions } from "../src/measure.js";
 import { renderJson, renderMeasureJson } from "../src/report/json.js";
 import { renderMeasureReport, renderReport } from "../src/report/text.js";
 import type { ComparisonResult, MeasurementResult } from "../src/report/types.js";
+import { CommandError, type CommandErrorContext } from "../src/sampling.js";
 import { lockfilePath, repoRoot, sessionJsonlPath } from "../src/session/paths.js";
 import type { SessionLogRecord, SessionRecord } from "../src/session/records.js";
 import { appendRecord, readRecords } from "../src/session/store.js";
@@ -1819,7 +1815,6 @@ describe("createProgram", () => {
               kinds: [
                 {
                   kind: "other",
-                  hasGating: gating,
                   geomean: aggregate,
                   groups: [],
                   ...(gating ? { gatedGeomean: aggregate } : {}),
@@ -2000,12 +1995,12 @@ describe("createProgram", () => {
       describe("when a candidate spans several metric kinds", () => {
         /** A kind whose metrics gate, aggregating to `gated` both overall and when gated. */
         function gatingKind(kind: string, gated: GeomeanResult): KindAggregate {
-          return { kind, hasGating: true, geomean: gated, groups: [], gatedGeomean: gated };
+          return { kind, geomean: gated, groups: [], gatedGeomean: gated };
         }
 
         /** An informational kind: it aggregates a geomean but nothing of it gates. */
         function informationalKind(kind: string, geomean: GeomeanResult): KindAggregate {
-          return { kind, hasGating: false, geomean, groups: [] };
+          return { kind, geomean, groups: [] };
         }
 
         /**
@@ -2021,7 +2016,7 @@ describe("createProgram", () => {
                 shortName: "decode",
                 verdict: "no-signal",
                 delta: 0.2,
-                gating: aggregate.hasGating,
+                gating: aggregate.gatedGeomean !== undefined,
               }),
             ]),
           );
@@ -2109,7 +2104,6 @@ describe("createProgram", () => {
                 kinds: [
                   {
                     kind: "time",
-                    hasGating: true,
                     geomean: gated,
                     groups: [],
                     gatedGeomean: gated,

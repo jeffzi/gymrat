@@ -201,7 +201,7 @@ function serializeMetrics(
 function serializeKinds(candidate: CandidateComparison): JsonKindAggregate[] {
   return candidate.kinds.map((aggregate) => ({
     kind: aggregate.kind,
-    hasGating: aggregate.hasGating,
+    hasGating: aggregate.gatedGeomean !== undefined,
     geomean: aggregate.geomean,
     groups: aggregate.groups.map((group) => ({ group: group.group, geomean: group.geomean })),
     gatedGeomean: aggregate.gatedGeomean ?? null,

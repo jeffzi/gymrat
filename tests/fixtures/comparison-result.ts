@@ -318,7 +318,7 @@ export function geomeanOf(
  * `geomeanOverrides` applies once to the shared aggregate behind both
  * `geomean` and `gatedGeomean`, so a caller excluding metrics or widening the
  * band writes that only once. `kindOverrides` remains the escape hatch for
- * sites that need `hasGating`, `groups`, or divergent geomeans instead.
+ * sites that need `groups` or divergent geomeans instead.
  */
 export function otherKind(
   value: number,
@@ -329,7 +329,6 @@ export function otherKind(
   const geomean = geomeanOf(value, n, geomeanOverrides);
   return {
     kind: "other",
-    hasGating: true,
     geomean,
     groups: [],
     gatedGeomean: geomean,
@@ -484,7 +483,6 @@ export function timeKind(overrides: Partial<KindAggregate> = {}): KindAggregate 
   const geomean = geomeanOf(-3.2, 3, { band: 2 });
   return {
     kind: "time",
-    hasGating: true,
     geomean,
     groups: [{ group: "entity", geomean: geomeanOf(-3.1, 2, { band: 1.5 }) }],
     gatedGeomean: geomean,
@@ -501,7 +499,6 @@ export function timeKind(overrides: Partial<KindAggregate> = {}): KindAggregate 
 export function memoryKind(overrides: Partial<KindAggregate> = {}): KindAggregate {
   return {
     kind: "memory",
-    hasGating: false,
     geomean: geomeanOf(-7, 1),
     groups: [],
     ...overrides,

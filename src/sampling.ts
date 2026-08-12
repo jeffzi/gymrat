@@ -55,28 +55,21 @@ function formatCommandError(
   const lines: string[] = [header];
 
   if (context.target.kind === "ref") {
-    lines.push(`  ref:       ${context.target.ref}`);
-    lines.push(`  worktree:  ${context.dir}`);
+    lines.push(`  ref:       ${context.target.ref}`, `  worktree:  ${context.dir}`);
   } else {
     lines.push(`  dir:       ${context.dir}`);
   }
 
   lines.push(`  command:   ${context.command}`);
+  lines.push(
+    isTimeout ? `  timeout:   ${failure.timeoutMs}ms` : `  exit code: ${failure.exitCode}`,
+  );
 
-  if (isTimeout) {
-    lines.push(`  timeout:   ${failure.timeoutMs}ms`);
-  } else {
-    lines.push(`  exit code: ${failure.exitCode}`);
-  }
-
-  const hasStderr = failure.stderr.length > 0;
-  const hasStdout = failure.stdout.length > 0;
-
-  if (hasStderr && hasStdout) {
+  if (failure.stderr.length > 0 && failure.stdout.length > 0) {
     lines.push("--- stderr ---", failure.stderr, "--- stdout ---", failure.stdout);
-  } else if (hasStderr) {
+  } else if (failure.stderr.length > 0) {
     lines.push(failure.stderr);
-  } else if (hasStdout) {
+  } else if (failure.stdout.length > 0) {
     lines.push(failure.stdout);
   }
 
@@ -178,15 +171,7 @@ async function runCommand(
   signal: AbortSignal,
   sample?: number,
 ): Promise<string> {
-  const context: CommandErrorContext = {
-    phase,
-    position: ctx.position,
-    label: ctx.label,
-    command,
-    target: ctx.target,
-    dir: ctx.dir,
-    sample,
-  };
+  const context: CommandErrorContext = { ...ctx, phase, command, sample };
 
   const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
 
@@ -261,10 +246,7 @@ export function resolveDir(resolved: Target, repoDir: string, worktrees: Worktre
  * the ref name or the directory's base name.
  */
 export function resolveLabel(explicit: string | undefined, resolved: Target): string {
-  if (explicit !== undefined) {
-    return explicit;
-  }
-  return resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir);
+  return explicit ?? (resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir));
 }
 
 /**
@@ -280,14 +262,7 @@ export function resolveLabel(explicit: string | undefined, resolved: Target): st
  * that as a measured result. Such a side has no spread at all.
  */
 function computeSpread(values: readonly number[], median: number): number | undefined {
-  if (values.length < 2) {
-    return undefined;
-  }
-
-  if (median === 0) {
-    return undefined;
-  }
-
+  if (values.length < 2 || median === 0) return undefined;
   return (computeHalfRange(values) / Math.abs(median)) * 100;
 }
 

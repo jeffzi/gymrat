@@ -49,9 +49,9 @@ describe("computeKindAggregates", () => {
       expect(result).toStrictEqual([
         {
           kind: "time",
-          hasGating: false,
           geomean: { value: 0, n: 1, excluded: [], band: 0 },
           groups: [],
+          gatedGeomean: undefined,
         },
       ]);
     });
@@ -193,7 +193,6 @@ describe("computeKindAggregates", () => {
 
       const kind = onlyKind(computeKindAggregates(verdicts, metricMeta));
 
-      expect.soft(kind.hasGating).toBe(true);
       expect.soft(kind.gatedGeomean?.n).toBe(1);
       expect(kind.gatedGeomean?.value).toBeCloseTo(-10, 5);
     });
@@ -206,8 +205,7 @@ describe("computeKindAggregates", () => {
 
       const result = computeKindAggregates(verdicts, metricMeta);
 
-      expect.soft(kindNamed(result, "time").hasGating).toBe(true);
-      expect.soft(kindNamed(result, "memory").hasGating).toBe(false);
+      expect.soft(kindNamed(result, "time").gatedGeomean).toBeDefined();
       expect(kindNamed(result, "memory").gatedGeomean).toBeUndefined();
     });
   });

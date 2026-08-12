@@ -118,12 +118,6 @@ export type ExactVerdict = VerdictBase & { verdict: Verdict; method: "exact" };
 export type MetricVerdict = SignedRankVerdict | BandVerdict | ExactVerdict;
 
 /**
- * The discriminant of {@link MetricVerdict}, derived rather than restated so a
- * new method variant widens it automatically.
- */
-export type Method = MetricVerdict["method"];
-
-/**
  * Settled per-metric metadata the engine consumes, produced by `resolveMetricMeta`
  * in `config.ts` from adapter defaults merged with the user's config overrides.
  */

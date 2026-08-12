@@ -76,12 +76,12 @@ const metricLinesAdapter: Adapter = {
       throw new AdapterError("No valid METRIC lines found");
     }
 
-    const grouped = Map.groupBy(parsed, ({ name }) => name);
-    const medians = metricRecord<number>();
-    for (const [name, values] of grouped) {
-      medians[name] = computeMedian(values.map((v) => v.value));
-    }
-    return medians;
+    return metricRecord(
+      Array.from(
+        Map.groupBy(parsed, ({ name }) => name),
+        ([name, values]) => [name, computeMedian(values.map((v) => v.value))],
+      ),
+    );
   },
 
   defaults(_metricName: string): MetricDefaults {

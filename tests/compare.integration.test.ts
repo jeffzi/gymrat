@@ -6,11 +6,12 @@ import path from "node:path";
 import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 
 import { AdapterError } from "../src/adapters/index.js";
-import { compare, CommandError } from "../src/compare.js";
+import { compare } from "../src/compare.js";
 import type { CompareOptions, ProgressStep } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
 import { renderReport } from "../src/report/text.js";
 import type { ComparisonResult } from "../src/report/types.js";
+import { CommandError } from "../src/sampling.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
 import { captureRejection } from "./fixtures/errors.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";

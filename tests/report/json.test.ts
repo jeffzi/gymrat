@@ -38,7 +38,6 @@ function twoKindWithExclusions(): ComparisonResult {
         kinds: [
           {
             kind: "time",
-            hasGating: true,
             geomean: geomeanOf(-3.2, 2, {
               excluded: [
                 { metric: "jittery/time", reason: "unstable" },
@@ -48,7 +47,7 @@ function twoKindWithExclusions(): ComparisonResult {
             groups: [{ group: "entity", geomean: geomeanOf(-3.1, 2) }],
             gatedGeomean: geomeanOf(-3.2, 2),
           },
-          { kind: "memory", hasGating: false, geomean: geomeanOf(-7, 1), groups: [] },
+          { kind: "memory", geomean: geomeanOf(-7, 1), groups: [] },
         ],
       }),
     ],

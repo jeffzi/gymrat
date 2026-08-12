@@ -1137,7 +1137,7 @@ describe("renderReport", () => {
       const result = twoKindResult({
         candidates: [
           createCandidate({
-            kinds: [timeKind(), otherKind(9, 1, {}, { hasGating: false, gatedGeomean: undefined })],
+            kinds: [timeKind(), otherKind(9, 1, {}, { gatedGeomean: undefined })],
           }),
         ],
       });
@@ -2377,10 +2377,7 @@ describe("renderReport", () => {
             metrics: twoKindMetrics({ memoryGates: true }),
             candidates: [
               createCandidate({
-                kinds: [
-                  timeKind(),
-                  memoryKind({ hasGating: true, gatedGeomean: geomeanOf(6.1, 1) }),
-                ],
+                kinds: [timeKind(), memoryKind({ gatedGeomean: geomeanOf(6.1, 1) })],
               }),
             ],
             configKinds: undefined,
@@ -2393,7 +2390,7 @@ describe("renderReport", () => {
             metrics: twoKindMetrics({ timeGates: false }),
             candidates: [
               createCandidate({
-                kinds: [timeKind({ hasGating: false, gatedGeomean: undefined }), memoryKind()],
+                kinds: [timeKind({ gatedGeomean: undefined }), memoryKind()],
               }),
             ],
           }),
@@ -2497,7 +2494,6 @@ describe("renderReport", () => {
             kinds: [
               {
                 kind: "time",
-                hasGating: true,
                 geomean: geomeanOf(-3.2, 2),
                 groups: [{ group: "entity", geomean: geomeanOf(-3.2, 2) }],
                 gatedGeomean: geomeanOf(-3.2, 2),
@@ -2534,7 +2530,7 @@ describe("renderReport", () => {
         },
         candidates: [
           createCandidate({
-            kinds: [{ kind: "time", hasGating: false, geomean: geomeanOf(-10, 1), groups: [] }],
+            kinds: [{ kind: "time", geomean: geomeanOf(-10, 1), groups: [] }],
           }),
         ],
       });
@@ -2557,7 +2553,6 @@ describe("renderReport", () => {
             kinds: [
               {
                 kind: "time",
-                hasGating: true,
                 geomean: geomeanOf(-3.2, 2),
                 groups: [],
                 gatedGeomean: geomeanOf(-3.2, 2, { band: 1 }),

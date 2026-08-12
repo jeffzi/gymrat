@@ -53,30 +53,6 @@ function parseBenchmarks(json: Record<string, unknown>): unknown[] {
   return benchmarks;
 }
 
-function parseMitataStats(
-  run: unknown,
-): { args: Record<string, unknown>; p50: number; heapAvg?: number } | undefined {
-  if (!isRecord(run)) return undefined;
-  if ("error" in run && run.error !== null) return undefined;
-
-  const args = run.args;
-  const stats = run.stats;
-  if (!isRecord(args) || !isRecord(stats)) return undefined;
-
-  // `1e999` in JSON parses to Infinity, so a reading that overflowed is a number
-  // here. It would poison any median or geomean it entered, so the run counts as
-  // unusable in exactly the way a malformed one does.
-  const p50 = stats.p50;
-  if (typeof p50 !== "number" || !Number.isFinite(p50)) return undefined;
-
-  const heap = stats.heap;
-  const heapAvg =
-    isRecord(heap) && typeof heap.avg === "number" && Number.isFinite(heap.avg)
-      ? heap.avg
-      : undefined;
-  return { args, p50, ...(heapAvg === undefined ? {} : { heapAvg }) };
-}
-
 /**
  * Store `value` under `name`, warning when it displaces an earlier reading.
  *
@@ -104,10 +80,20 @@ function extractRunMetrics(
   metrics: Record<string, number>,
   warn: WarnSink,
 ): void {
-  const parsed = parseMitataStats(run);
-  if (parsed === undefined) return;
+  if (!isRecord(run)) return;
+  if ("error" in run && run.error !== null) return;
 
-  const prefix = buildMetricNamePrefix(alias, parsed.args);
+  const args = run.args;
+  const stats = run.stats;
+  if (!isRecord(args) || !isRecord(stats)) return;
+
+  // `1e999` in JSON parses to Infinity, so a reading that overflowed is a number
+  // here. It would poison any median or geomean it entered, so the run counts as
+  // unusable in exactly the way a malformed one does.
+  const p50 = stats.p50;
+  if (typeof p50 !== "number" || !Number.isFinite(p50)) return;
+
+  const prefix = buildMetricNamePrefix(alias, args);
   if (FORBIDDEN_NAME_CHARS.test(prefix)) {
     warn(
       `Skipping run with a line terminator in its metric name: ${alias} (the alias or one of its argument values carries one)`,
@@ -115,10 +101,11 @@ function extractRunMetrics(
     return;
   }
 
-  recordMetric(metrics, `${prefix}/time`, parsed.p50, warn);
+  recordMetric(metrics, `${prefix}/time`, p50, warn);
 
-  if (parsed.heapAvg !== undefined) {
-    recordMetric(metrics, `${prefix}/heap`, parsed.heapAvg, warn);
+  const heap = stats.heap;
+  if (isRecord(heap) && typeof heap.avg === "number" && Number.isFinite(heap.avg)) {
+    recordMetric(metrics, `${prefix}/heap`, heap.avg, warn);
   }
 }
 

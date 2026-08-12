@@ -1244,8 +1244,6 @@ function gateTripLines(
   );
 
   return candidate.kinds.flatMap((kind) => {
-    if (!kind.hasGating) return [];
-
     const geomean = kind.gatedGeomean;
     if (geomean === undefined || geomean.n === 0) return [];
 

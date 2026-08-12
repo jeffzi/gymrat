@@ -4,11 +4,13 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
-import { compare, CommandError } from "../src/compare.js";
-import type { CommandErrorContext, CompareOptions } from "../src/compare.js";
+import { compare } from "../src/compare.js";
+import type { CompareOptions } from "../src/compare.js";
 import { GymratError } from "../src/errors.js";
 import type { ExecResult, ExecTimeoutError } from "../src/exec.js";
 import type { ComparisonResult } from "../src/report/types.js";
+import { CommandError } from "../src/sampling.js";
+import type { CommandErrorContext } from "../src/sampling.js";
 import type { InPlaceTarget, RefTarget } from "../src/targets.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
 
@@ -362,7 +364,6 @@ describe("compare", () => {
           await runCompare({ configKinds: { other: { gating: false } } }),
         );
 
-        expect.soft(candidate.kinds[0]?.hasGating).toBe(false);
         expect(candidate.kinds[0]?.gatedGeomean).toBeUndefined();
       });
     });

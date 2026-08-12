@@ -18,8 +18,7 @@ import type { CleanupResult, Target } from "./targets.js";
 import { computeKindAggregates } from "./verdict/aggregate.js";
 import { computeVerdicts, pairSamples } from "./verdict/verdict.js";
 
-export { CommandError } from "./sampling.js";
-export type { CommandErrorContext, ProgressStep, TargetSpec } from "./sampling.js";
+export type { ProgressStep, TargetSpec } from "./sampling.js";
 
 /**
  * Caller-facing configuration for a single comparison run.
@@ -67,30 +66,12 @@ function baselinePairableValues(
   return pairedOrOwnValues(paired, baselineSamples, metricName);
 }
 
-/**
- * A candidate's values for a metric, restricted to the same rounds
- * `computeVerdicts` pairs against the baseline — so the displayed median
- * matches the median the candidate's verdict delta was computed from.
- *
- * Falls back to every round the candidate reported the metric in when the
- * baseline never did: a candidate-only metric has no verdict to stay
- * consistent with, so its displayed median is the candidate's own, unpaired.
- */
-function candidatePairableValues(
-  baselineSamples: readonly Record<string, number>[],
-  candidateSamples: readonly Record<string, number>[],
-  metricName: string,
-): readonly number[] {
-  const { pairedB } = pairSamples(metricName, baselineSamples, candidateSamples);
-  return pairedOrOwnValues(pairedB, candidateSamples, metricName);
-}
-
 function buildComparisonResult(
   measurement: Measurement,
   options: Pick<CompareOptions, "samples" | "adapter" | "configKinds">,
   cleanup: CleanupResult,
 ): ComparisonResult {
-  const { baselineLabel, baselineSamples, candidates, metricNames, metricMeta } = measurement;
+  const { baselineLabel, baselineSamples, candidates, metricMeta } = measurement;
 
   const result: ComparisonResult = {
     baselineLabel,
@@ -109,7 +90,7 @@ function buildComparisonResult(
 
   const candidateSampleSets = candidates.map((candidate) => candidate.samples);
 
-  for (const metricName of metricNames) {
+  for (const metricName of Object.keys(metricMeta)) {
     const baseline = computeMetricStats(
       baselinePairableValues(baselineSamples, candidateSampleSets, metricName),
     );
@@ -117,9 +98,8 @@ function buildComparisonResult(
       baselineMedian: baseline.median,
       baselineSpread: baseline.spread,
       candidates: candidates.map((candidate) => {
-        const stats = computeMetricStats(
-          candidatePairableValues(baselineSamples, candidate.samples, metricName),
-        );
+        const { pairedB } = pairSamples(metricName, baselineSamples, candidate.samples);
+        const stats = computeMetricStats(pairedOrOwnValues(pairedB, candidate.samples, metricName));
         return {
           median: stats.median,
           spread: stats.spread,
@@ -143,7 +123,6 @@ interface Measurement {
   baselineLabel: string;
   baselineSamples: Record<string, number>[];
   candidates: CandidateMeasurement[];
-  metricNames: Set<string>;
   metricMeta: Record<string, ResolvedMetricMeta>;
 }
 
@@ -255,7 +234,6 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
           metricMeta,
           options.unstableNoisePct,
         ),
-        metricNames: new Set(Object.keys(metricMeta)),
         metricMeta,
       };
       return measurement;
