@@ -62,6 +62,17 @@ describe("describeKey", () => {
       expect(result).toBe('""');
     });
   });
+
+  describe("when the path ends in an empty key nested under a parent", () => {
+    it("quotes the empty key so it does not read as a stray trailing dot", () => {
+      const schema = Type.Object({ metrics: Type.Object({ "": Type.String() }) });
+      const issue = firstIssueOf(schema, { metrics: { "": 1 } });
+
+      const result = describeKey(issue.path);
+
+      expect(result).toBe('metrics.""');
+    });
+  });
 });
 
 describe("compile", () => {

@@ -75,12 +75,20 @@ export interface SchemaIssue {
 /**
  * Render a {@link SchemaIssue.path} for a message that names the offending key.
  *
- * An empty path means the key itself is the empty string, so it is quoted: a bare
- * substitution would end the message at the colon and read as if no key were named at
- * all. Every other path is left bare so ordinary messages stay plain prose.
+ * An empty key is quoted so the reader can see a key is there and that it is empty. Bare,
+ * a top-level empty key would end the message at the colon and a nested one would trail
+ * off after a dot, both reading as if no key were named at all. Every other key is left
+ * bare so ordinary messages stay plain prose.
+ *
+ * Splitting on `.` inherits the ambiguity documented on {@link SchemaIssue.path} — a key
+ * that itself contains a `.` is split like a nesting step — but only empty segments render
+ * differently, so those keys come back unchanged.
  */
 export function describeKey(path: string): string {
-  return path === "" ? '""' : path;
+  return path
+    .split(".")
+    .map((segment) => (segment === "" ? '""' : segment))
+    .join(".");
 }
 
 /** A schema compiled once, ready to validate many values. */
