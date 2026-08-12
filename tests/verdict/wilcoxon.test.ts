@@ -28,6 +28,14 @@ describe("wilcoxonSignedRank", () => {
       expect(result.n).toBe(6);
     });
 
+    it("clamps a p-value the exact branch inflates above one", () => {
+      // Diffs -1, +2, +3, -4 split the signed ranks evenly (W+ = W- = 5), so the
+      // exact two-sided p-value is doubled past 1 before clamping.
+      const result = wilcoxonSignedRank([11, 12, 13, 10], [12, 10, 10, 14]);
+
+      expect(result).toStrictEqual({ p: 1, n: 4 });
+    });
+
     it("excludes zero-difference pairs from n", () => {
       const result = wilcoxonSignedRank(
         [5, 5, 10, 12, 14, 16, 18, 20],

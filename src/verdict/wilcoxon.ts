@@ -19,7 +19,7 @@ export interface WilcoxonResult {
  *
  * @param x - Values from the first condition
  * @param y - Values from the second condition, paired by index with `x`
- * @returns Object with p-value and effective sample size (n, after dropping zeros)
+ * @returns Object with p-value (never above 1) and effective sample size (n, after dropping zeros)
  */
 export function wilcoxonSignedRank(x: readonly number[], y: readonly number[]): WilcoxonResult {
   let n = 0;
@@ -32,5 +32,8 @@ export function wilcoxonSignedRank(x: readonly number[], y: readonly number[]): 
   }
 
   const result = wilcoxon([...x], [...y]);
-  return { p: result.pValue, n };
+  // The exact branch doubles a one-sided tail probability, so it can report up to
+  // ~1.13 when the signed ranks split evenly. Downstream consumers compare p
+  // against alpha and print it, so keep it a valid probability.
+  return { p: Math.min(result.pValue, 1), n };
 }
