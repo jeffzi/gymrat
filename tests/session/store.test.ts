@@ -17,6 +17,7 @@ import type {
 import type { SessionState } from "../../src/session/store.js";
 import {
   appendRecord,
+  endsOnGatingBlock,
   foldSession,
   readRecords,
   requireOpenSession,
@@ -70,6 +71,21 @@ function iteration(seq: number, targetReached: boolean): IterationRecord {
 /** A blocked keep of the iteration numbered `seq` that never recorded why it was blocked. */
 function blockedKeepWithoutReason(seq: number): KeepRecord {
   return blockedKeep(seq, { reason: undefined });
+}
+
+/** The keep a gating regression refused, numbered with the iteration it refused. */
+function gatingBlock(seq: number): KeepRecord {
+  return blockedKeep(seq, { reason: "gating-regression", checks: { configured: true } });
+}
+
+/**
+ * The keep a retry refuses when nothing was measured since the last settle.
+ *
+ * It settles no iteration, so it carries the number past every record on file
+ * rather than the number of an iteration the log already settled.
+ */
+function nothingMeasuredBlock(seq: number): KeepRecord {
+  return blockedKeep(seq, { reason: "nothing-measured", checks: { configured: true } });
 }
 
 const ITERATION_1 = iteration(1, false);
@@ -438,6 +454,68 @@ describe("foldSession", () => {
       expect(state.unsettled).toBe(true);
     });
   });
+});
+
+describe("endsOnGatingBlock", () => {
+  it.each([
+    {
+      description: "a log ending on the keep a gating regression refused",
+      records: [SESSION, ITERATION_1, gatingBlock(1)],
+      expected: true,
+    },
+    {
+      description: "a retried keep that refused for want of a measurement",
+      records: [SESSION, ITERATION_1, gatingBlock(1), nothingMeasuredBlock(2)],
+      expected: true,
+    },
+    {
+      description: "a second refusal on top of the first",
+      records: [
+        SESSION,
+        ITERATION_1,
+        gatingBlock(1),
+        nothingMeasuredBlock(2),
+        nothingMeasuredBlock(3),
+      ],
+      expected: true,
+    },
+    {
+      description: "a fresh iteration measured after the block",
+      records: [SESSION, ITERATION_1, gatingBlock(1), ITERATION_2],
+      expected: false,
+    },
+    {
+      description: "a keep committed after a refusal and a fresh measurement",
+      records: [
+        SESSION,
+        ITERATION_1,
+        gatingBlock(1),
+        nothingMeasuredBlock(2),
+        ITERATION_2,
+        committedKeep(2),
+      ],
+      expected: false,
+    },
+    {
+      description: "a discard of the edit the block refused",
+      records: [SESSION, ITERATION_1, gatingBlock(1), discard(2)],
+      expected: false,
+    },
+    {
+      description: "an iteration nobody has settled",
+      records: [SESSION, ITERATION_1],
+      expected: false,
+    },
+  ] satisfies { description: string; records: SessionLogRecord[]; expected: boolean }[])(
+    "reads $description as $expected",
+    ({ records, expected }) => {
+      // Act
+      const onGatingBlock = endsOnGatingBlock(records);
+
+      // Assert
+      expect(onGatingBlock).toBe(expected);
+    },
+  );
 });
 
 describe("requireSession", () => {

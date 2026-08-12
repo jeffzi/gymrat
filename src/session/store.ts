@@ -178,7 +178,9 @@ export function lastKeptCommit(records: SessionLogRecord[]): string | undefined 
  * `unsettled` for it — but the edit it would not commit is still standing in the
  * experiment worktree, so `discard` accepts this as the one settled state it may
  * still revert, making the refusal's own hint true. Any iteration, keep, or
- * discard written after the block supersedes it.
+ * discard written after the block supersedes it — except a keep refused for want
+ * of a measurement, which is what retrying `keep` after the block appends and
+ * which must not wedge the edit in place by closing the window the block opened.
  */
 export function endsOnGatingBlock(records: SessionLogRecord[]): boolean {
   let blocked = false;
@@ -187,7 +189,11 @@ export function endsOnGatingBlock(records: SessionLogRecord[]): boolean {
   // edit, so they leave the answer where the last keep, iteration, or discard put it.
   for (const record of records) {
     if (record.type === "keep") {
-      blocked = record.status === "blocked" && record.reason === "gating-regression";
+      // A "nothing-measured" refusal commits nothing and settles nothing, so it
+      // leaves the standing edit — and the window to revert it — as it found them.
+      if (record.reason !== "nothing-measured") {
+        blocked = record.status === "blocked" && record.reason === "gating-regression";
+      }
     } else if (record.type === "iteration" || record.type === "discard") {
       blocked = false;
     }

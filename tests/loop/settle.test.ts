@@ -854,6 +854,40 @@ describe("discardSession", () => {
     });
   });
 
+  describe("when a keep retried after a gating block refused for want of a measurement", () => {
+    beforeEach(async () => {
+      startWith([confirmedRegression(1), gatingBlock(1)]);
+      editExperiment();
+      checksPass();
+      await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
+    });
+
+    it("throws away the edit the refusal left standing", () => {
+      // Act
+      discardSession(repo.dir);
+
+      // Assert
+      const worktree = experimentWorktreeDir(repo.dir);
+      expect.soft(fs.readFileSync(path.join(worktree, "README.md"), "utf-8")).toBe("# Test Repo\n");
+      expect.soft(fs.existsSync(path.join(worktree, "scratch.txt"))).toBe(false);
+      expect(statusOf(worktree)).toBe("");
+    });
+
+    it("appends the discard after the refusal, leaving the refusal in history", () => {
+      // Act
+      const result = discardSession(repo.dir);
+
+      // Assert
+      const tail = readRecords(sessionJsonlPath(repo.dir)).slice(-2);
+      expect.soft(tail[0]).toMatchObject({
+        type: "keep",
+        status: "blocked",
+        reason: "nothing-measured",
+      });
+      expect(tail[1]).toStrictEqual(result.record);
+    });
+  });
+
   describe("when nothing has been measured since the last settle", () => {
     it.each([
       { description: "no iteration was ever recorded", history: [] },
