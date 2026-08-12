@@ -40,7 +40,10 @@ against the baseline alone — candidates are never compared with each other. De
 against the baseline (the report's `vs <baseline>` column). Each target is either a path to an
 existing directory (used in place, never removed) or a git ref that gymrat resolves with
 `git rev-parse` and checks out into a temporary detached worktree. An existing directory wins over a
-git ref of the same name, so prefix the ref with `refs/heads/` to disambiguate.
+git ref of the same name, so prefix the ref with `refs/heads/` to disambiguate. gymrat removes
+temporary worktrees created for git-ref targets on success, on error, and on
+`SIGHUP`/`SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left
+behind, naming each leftover directory with the reason git gave.
 
 An optional `label=` prefix sets the display name. Without it, a git target is labelled with its
 ref and a path target with the directory's base name, resolved through symlinks. Pass `label=`
@@ -138,10 +141,9 @@ renders the full history plus a closing line naming the final branch. The next `
 closed log and opens a fresh session. Pass `-m <text>` for a custom squash message; without it,
 gymrat generates one listing the kept commits.
 
-Every command that runs your commands or writes session state holds a per-repository lock for the
-duration — `start`, `iterate`, `keep`, `discard`, and `finalize`, and `compare` and `measure` too. A second
-gymrat run against the same repository exits 2 rather than benchmarking alongside the first, since
-concurrent runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
+Every command except `status` holds a per-repository lock for the duration. A second gymrat run
+against the same repository exits 2 rather than benchmarking alongside the first, since concurrent
+runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
 
 ### Options
 
@@ -202,12 +204,6 @@ gymrat compare main my-branch --bench "npm run bench" --fail-on regressed
 gymrat compare main my-branch --bench "npm run bench" \
   --fail-on regressed --fail-on geomean:2
 ```
-
-gymrat removes temporary worktrees created for git-ref targets on success, on error, and on
-`SIGHUP`/`SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left behind,
-naming each leftover directory with the reason git gave. On the signal path there is no report to
-carry that footer, so nothing is printed: gymrat kills the running bench command, sweeps the
-worktrees, and exits.
 
 ## Reading the report
 
@@ -356,8 +352,7 @@ an error, to catch typos.
 - `kinds` keys are kind names reported by the adapter (`time`, `memory` for `mitata`; `other` for
   `metric-lines`). Each entry accepts:
   - `gating`: whether every metric of this kind counts toward the gated geomean and the
-    `--fail-on` gate. Defaults to `true`. A per-metric `gating` entry in `metrics` overrides the
-    kind-level setting.
+    `--fail-on` gate. Defaults to `true`.
 - A `kinds` key that matches no kind the run produced is silently ignored, the same as an unmatched
   `metrics` key.
 - An unknown sub-key inside a `metrics` or `kinds` entry is an error, the same as an unknown

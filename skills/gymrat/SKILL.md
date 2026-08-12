@@ -9,7 +9,6 @@ when_to_use: >-
   gymrat finalize, or gymrat status; when a repo has a gymrat.json; when asked to
   optimize a benchmark toward a target or budget; or on errors like "has not been
   settled", "Keep refused", or "Stop condition met".
-user-invocable: true
 ---
 
 # Driving a gymrat optimization session
@@ -105,9 +104,8 @@ exists). A finalized session refuses `iterate`, `keep`, `discard`, and `measure 
    iterations produce NO-SIGNAL and the approach needs rethinking. When a configured target proves
    unreachable after sustained NO-SIGNAL results, report the shortfall and stop.
 
-2. **Act on every check and hook failure.** When `keep` refuses because `checks` failed, fix the
-   issue and run `gymrat keep` again. Hooks cannot fail the loop, but ignoring their output
-   accumulates technical debt.
+2. **Act on hook failures.** Hooks cannot fail the loop, but ignoring their output accumulates
+   technical debt.
 
 3. **Never run concurrent sessions.** Every mutating command holds a per-repository lock. A second
    gymrat process exits 2 — concurrent benchmarks perturb each other.
@@ -126,13 +124,3 @@ exists). A finalized session refuses `iterate`, `keep`, `discard`, and `measure 
 | 2    | Operational error: no session, finalized session, lock contention, bad config, timeout |
 
 Exit 1 is information — read the output. Exit 2 is a real error — diagnose before retrying.
-
-## Common mistakes
-
-| Mistake                                                             | Consequence                            |
-| ------------------------------------------------------------------- | -------------------------------------- |
-| Editing outside the experiment worktree                             | Changes invisible to `iterate`         |
-| Running `iterate` without settling the previous one                 | Exit 2                                 |
-| Running `iterate` after a checks-failed `keep`                      | Exit 2 — run `keep` again after fixing |
-| Calling `finalize` with uncommitted work in the experiment worktree | Exit 2                                 |
-| Stopping before the configured stop condition                       | Underpowered results                   |
