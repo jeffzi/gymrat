@@ -16,6 +16,7 @@ import {
 import type { SessionRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { detectWorkspace } from "../../src/session/workspace.js";
+import { captureStdout } from "../fixtures/cli-harness.js";
 import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureGymratError } from "../fixtures/errors.js";
 import {
@@ -338,11 +339,7 @@ describe("the start command", () => {
     process.chdir(repo.dir);
     const program = createProgram();
     program.exitOverride();
-    let stdout = "";
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      stdout += String(chunk);
-      return true;
-    });
+    const readStdout = captureStdout();
 
     // Act
     await program.parseAsync(["node", "cli.js", "start", "main", "--bench", "npm run bench"]);
@@ -350,7 +347,7 @@ describe("the start command", () => {
     // Assert
     const session = sessionHeaderOf(repo.dir);
     expect.soft(session.baseline).toStrictEqual({ ref: "main", sha: headSha });
-    expect(stdout).toContain(session.branch);
+    expect(readStdout()).toContain(session.branch);
   });
 
   it("names the closed session it archived when it opens a fresh one after a finalize", async () => {
@@ -360,16 +357,13 @@ describe("the start command", () => {
     process.chdir(repo.dir);
     const program = createProgram();
     program.exitOverride();
-    let stdout = "";
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      stdout += String(chunk);
-      return true;
-    });
+    const readStdout = captureStdout();
 
     // Act
     await program.parseAsync(["node", "cli.js", "start", "main", "--bench", "npm run bench"]);
 
     // Assert
+    const stdout = readStdout();
     expect.soft(stdout).toMatch(/archived/i);
     expect(stdout).toContain(closed);
   });

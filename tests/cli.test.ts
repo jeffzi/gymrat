@@ -41,7 +41,14 @@ import type { SessionLogRecord, SessionRecord } from "../src/session/records.js"
 import { appendRecord, readRecords } from "../src/session/store.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
-import { captureStdout, createRunnableProgram, mockProcessExit } from "./fixtures/cli-harness.js";
+import {
+  captureStdout,
+  createRunnableProgram,
+  mockProcessExit,
+  stubDeferredWrite,
+  stubWrite,
+  writtenChunks,
+} from "./fixtures/cli-harness.js";
 import {
   createCandidate,
   createComparisonResult,
@@ -340,7 +347,7 @@ async function runCompareCapturingStdout(
 ): Promise<MockInstance<typeof process.stdout.write>> {
   const program = createRunnableProgram();
   await setupMocks(result);
-  const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const writeSpy = stubWrite(process.stdout);
   await program.parseAsync(compareArgv("main", "branch", ...extraArgs));
   return writeSpy;
 }
@@ -359,7 +366,7 @@ async function runMeasureCapturingStdout(
 ): Promise<MockInstance<typeof process.stdout.write>> {
   const program = createRunnableProgram();
   await setupMeasureMocks(result);
-  const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  const writeSpy = stubWrite(process.stdout);
   await program.parseAsync(measureArgv(...args));
   return writeSpy;
 }
@@ -372,7 +379,7 @@ async function runMeasureCapturingStdout(
 async function startMeasureRun(configOverrides: Partial<ResolvedConfig> = {}) {
   const program = createRunnableProgram();
   const { measureMock, resolveConfigMock } = await setupMeasureMocks(undefined, configOverrides);
-  vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  stubWrite(process.stdout);
   return { program, measureMock, resolveConfigMock };
 }
 
@@ -782,7 +789,7 @@ describe("createProgram", () => {
         const writeSpy = await runCompareCapturingStdout(result);
 
         // Assert
-        expect(writeSpy).toHaveBeenCalledWith(`${renderReport(result)}\n`);
+        expect(writtenChunks(writeSpy)).toStrictEqual([`${renderReport(result)}\n`]);
       });
     });
 
@@ -800,7 +807,7 @@ describe("createProgram", () => {
 
         // Assert
         expect(vi.mocked(renderJson)).toHaveBeenCalledWith(result);
-        expect(writeSpy).toHaveBeenCalledWith('{"report": true}\n');
+        expect(writtenChunks(writeSpy)).toStrictEqual(['{"report": true}\n']);
       });
 
       it.each([
@@ -913,9 +920,9 @@ describe("createProgram", () => {
             : Promise.resolve(mockReturn ?? createComparisonResult());
         });
 
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const stderrSpy = stubWrite(process.stderr);
         // Suppress stdout report output so tests focus on stderr
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
 
         return { stderrSpy };
       }
@@ -1431,7 +1438,7 @@ describe("createProgram", () => {
           const program = createRunnableProgram();
           useColorTty();
           await setupProgressMocks([PREPARE_BASELINE_STEP]);
-          const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+          const stdoutSpy = stubWrite(process.stdout);
 
           // Act
           await program.parseAsync(compareArgv("main", "branch"));
@@ -1557,8 +1564,8 @@ describe("createProgram", () => {
             });
           });
 
-          const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-          vi.spyOn(process.stdout, "write").mockReturnValue(true);
+          const stderrSpy = stubWrite(process.stderr);
+          stubWrite(process.stdout);
 
           // Wrapper defers the read: `settle` is assigned when `compareMock` runs
           // inside `parseAsync`, which happens after this function returns.
@@ -1726,8 +1733,8 @@ describe("createProgram", () => {
         // Arrange
         const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(new Error("Compare failed"));
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
         mockProcessExit();
 
         // Act & Assert
@@ -1739,23 +1746,26 @@ describe("createProgram", () => {
         expect(stderrWrites(stderrSpy)).toContainEqual(expect.stringContaining("Compare failed"));
       });
 
-      it("waits for stderr to drain before exiting", async () => {
-        // Arrange
+      it("holds the exit until the error text has landed", async () => {
+        // Arrange - a chunk the stream accepted is not a chunk it has handed on,
+        // so exiting on the accepting `write` alone drops the diagnostic.
         const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(new Error("Compare failed"));
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(false);
+        stubWrite(process.stdout);
+        const stderr = stubDeferredWrite(process.stderr);
         const exitSpy = mockProcessExit();
 
         // Act
         const parsing = program.parseAsync(compareArgv("main", "branch")).catch((e: unknown) => e);
         await vi.waitFor(() => {
-          expect(stderrSpy).toHaveBeenCalled();
+          expect(writtenChunks(stderr.spy)).toContainEqual(
+            expect.stringContaining("Compare failed"),
+          );
         });
 
-        // Assert — exit is held until stderr drains
+        // Assert
         expect(exitSpy).not.toHaveBeenCalled();
-        process.stderr.emit("drain");
+        stderr.flush();
         await expect(parsing).resolves.toHaveProperty("exitCode", 2);
       });
 
@@ -1765,7 +1775,7 @@ describe("createProgram", () => {
         // downgrade the error exit to an unhandled-rejection 1.
         const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(new Error("Compare failed"));
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
         vi.spyOn(process.stderr, "write").mockImplementation(() => {
           throw new Error("EPIPE: broken pipe");
         });
@@ -1855,8 +1865,8 @@ describe("createProgram", () => {
       }> {
         const program = createRunnableProgram({ exitOverride: "all" });
         await setupMocks(compareMockReturn);
-        const stdoutSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const stdoutSpy = stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
         const exitSpy = mockProcessExit();
         return { program, stdoutSpy, stderrSpy, exitSpy };
       }
@@ -1959,16 +1969,15 @@ describe("createProgram", () => {
           expect(exitSpy).not.toHaveBeenCalled();
         });
 
-        it("holds the exit until a backpressured warning has flushed", async () => {
+        it("holds the exit until the warning has landed", async () => {
           // Arrange - a regressed gating metric trips the other condition, so the
-          // vacuous geomean warning is written on the way to an exit. A stderr
-          // write returning false means the warning is only queued: exiting now
-          // would drop it.
+          // vacuous geomean warning is written on the way to an exit. The stream
+          // accepted the chunk without handing it on: exiting now would drop it.
           disableColor();
-          const { program, stderrSpy, exitSpy } = await setupFailOnTest(
+          const { program, exitSpy } = await setupFailOnTest(
             createGatingResult("regressed", { geomeanValue: 0, geomeanN: 0 }),
           );
-          stderrSpy.mockReturnValue(false);
+          const stderr = stubDeferredWrite(process.stderr);
 
           // Act
           const parsing = program
@@ -1977,12 +1986,12 @@ describe("createProgram", () => {
             )
             .catch((error: unknown) => error);
           await vi.waitFor(() => {
-            expect(geomeanGateWarning(stderrSpy)).toBeDefined();
+            expect(geomeanGateWarning(stderr.spy)).toBeDefined();
           });
 
-          // Assert - the exit waits on the drain, then carries the gate's code
+          // Assert - the exit waits on the write, then carries the gate's code
           expect(exitSpy).not.toHaveBeenCalled();
-          process.stderr.emit("drain");
+          stderr.flush();
           await expect(parsing).resolves.toHaveProperty("exitCode", 1);
         });
       });
@@ -2202,26 +2211,25 @@ describe("createProgram", () => {
         expect(stdoutSpy).toHaveBeenCalled();
       });
 
-      describe("when stdout applies backpressure", () => {
-        it("waits for the report to flush before exiting", async () => {
-          // Arrange - a write returning false means the pipe buffer is full and
-          // the data is queued; exiting now would truncate the report.
-          const { program, stdoutSpy, exitSpy } = await setupFailOnTest(
-            createGatingResult("regressed"),
-          );
-          stdoutSpy.mockReturnValue(false);
+      describe("when stdout has accepted the report without handing it on", () => {
+        it("holds the exit until the report has landed", async () => {
+          // Arrange - a `write` returning true only says the chunk fit under the
+          // high-water mark; the bytes are still queued, so exiting on that
+          // return alone truncates the report.
+          const { program, exitSpy } = await setupFailOnTest(createGatingResult("regressed"));
+          const stdout = stubDeferredWrite(process.stdout);
 
           // Act
           const parsing = program
             .parseAsync(compareArgv("main", "branch", "--fail-on", "regressed"))
             .catch((e: unknown) => e);
           await vi.waitFor(() => {
-            expect(stdoutSpy).toHaveBeenCalled();
+            expect(stdout.spy).toHaveBeenCalled();
           });
 
-          // Assert - the exit is held until the stream drains
+          // Assert - the exit is held until the write completes
           expect(exitSpy).not.toHaveBeenCalled();
-          process.stdout.emit("drain");
+          stdout.flush();
           await expect(parsing).resolves.toHaveProperty("exitCode", 1);
         });
       });
@@ -2279,7 +2287,7 @@ describe("createProgram", () => {
         const writeSpy = await runMeasureCapturingStdout(result, "main");
 
         // Assert
-        expect(writeSpy).toHaveBeenCalledWith(`${renderMeasureReport(result)}\n`);
+        expect(writtenChunks(writeSpy)).toStrictEqual([`${renderMeasureReport(result)}\n`]);
       });
 
       it("routes to renderMeasureJson for --format json", async () => {
@@ -2291,7 +2299,7 @@ describe("createProgram", () => {
 
         // Assert
         expect(vi.mocked(renderMeasureJson)).toHaveBeenCalledWith(result);
-        expect(writeSpy).toHaveBeenCalledWith('{"measurement": true}\n');
+        expect(writtenChunks(writeSpy)).toStrictEqual(['{"measurement": true}\n']);
       });
     });
 
@@ -2436,7 +2444,7 @@ describe("createProgram", () => {
           const rounds = [{ latency: 41 }, { latency: 43 }];
           const program = createRunnableProgram();
           await setupMeasureMocks(createMeasurementResult({ label, rounds }));
-          vi.spyOn(process.stdout, "write").mockReturnValue(true);
+          stubWrite(process.stdout);
 
           // Act
           await program.parseAsync(measureArgv(positional, "--record"));
@@ -2457,7 +2465,7 @@ describe("createProgram", () => {
         const result = createMeasurementResult({ rounds: [{ latency: 42 }] });
         const program = createRunnableProgram();
         await setupMeasureMocks(result);
-        const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        const writeSpy = stubWrite(process.stdout);
 
         // Act
         await program.parseAsync(measureArgv("main", "--record"));
@@ -2473,8 +2481,8 @@ describe("createProgram", () => {
         // after ten minutes of sampling would throw the whole run away.
         const { measureMock } = await setupMeasureMocks();
         const program = createRunnableProgram({ exitOverride: "all" });
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
         mockProcessExit();
 
         // Act
@@ -2492,8 +2500,8 @@ describe("createProgram", () => {
         appendRecord(sessionJsonlPath(repo.dir), finalizeRecord());
         const { measureMock } = await setupMeasureMocks();
         const program = createRunnableProgram({ exitOverride: "all" });
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
         mockProcessExit();
 
         // Act
@@ -2510,7 +2518,7 @@ describe("createProgram", () => {
         openSession();
         const program = createRunnableProgram();
         await setupMeasureMocks(createMeasurementResult({ rounds: [{ latency: 42 }] }));
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
 
         // Act
         await program.parseAsync(measureArgv("main"));
@@ -2591,7 +2599,7 @@ describe("createProgram", () => {
           }
           return Promise.resolve(createMeasurementResult());
         });
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        const stderrSpy = stubWrite(process.stderr);
 
         await program.parseAsync(measureArgv("main"));
 
@@ -2647,8 +2655,8 @@ describe("createProgram", () => {
         // Arrange
         const program = createRunnableProgram({ exitOverride: "all" });
         await setupMeasureMocks(new Error("Measurement failed"));
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
         mockProcessExit();
 
         // Act & Assert
@@ -2788,8 +2796,8 @@ describe("createProgram", () => {
         const runMock = await arrange(() => {});
         holdRepoLock("measure");
         const program = createRunnableProgram({ exitOverride: "all" });
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
         mockProcessExit();
 
         // Act
@@ -2813,7 +2821,7 @@ describe("createProgram", () => {
           heldDuringRun = readRepoLock();
         });
         const program = createRunnableProgram();
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
 
         // Act
         await program.parseAsync(argv);
@@ -2837,12 +2845,11 @@ describe("createProgram", () => {
         const program = createRunnableProgram();
         let heldAtReport: unknown;
         let reportWritten = false;
-        vi.spyOn(process.stdout, "write").mockImplementation(() => {
+        stubWrite(process.stdout, () => {
           if (!reportWritten) {
             reportWritten = true;
             heldAtReport = readRepoLock();
           }
-          return true;
         });
 
         // Act
@@ -2863,8 +2870,8 @@ describe("createProgram", () => {
           heldDuringRun = readRepoLock();
         }, new Error("benchmark crashed"));
         const program = createRunnableProgram({ exitOverride: "all" });
-        vi.spyOn(process.stdout, "write").mockReturnValue(true);
-        vi.spyOn(process.stderr, "write").mockReturnValue(true);
+        stubWrite(process.stdout);
+        stubWrite(process.stderr);
         mockProcessExit();
 
         // Act
@@ -2970,7 +2977,7 @@ describe("the finalize command", () => {
     // Arrange
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
     captureStdout();
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const stderrSpy = stubWrite(process.stderr);
     mockProcessExit();
 
     // Act
@@ -2992,7 +2999,7 @@ describe("the finalize command", () => {
     );
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
     captureStdout();
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const stderrSpy = stubWrite(process.stderr);
     mockProcessExit();
 
     // Act
@@ -3181,8 +3188,8 @@ describe.skipIf(process.platform === "win32")("the iterate command, interrupted 
     vi.mocked(resolveConfig).mockReturnValue(
       resolvedConfigFixture({ bench: "sh bench.sh", samples: 1, timeoutSeconds: 20 }),
     );
-    vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    stubWrite(process.stdout);
+    stubWrite(process.stderr);
     stubProcessExit();
 
     const program = createRunnableProgram({ exitOverride: "all", silent: true });

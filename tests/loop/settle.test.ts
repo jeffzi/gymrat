@@ -13,7 +13,12 @@ import {
 } from "../../src/session/paths.js";
 import type { IterationRecord, KeepRecord, SessionLogRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
-import { captureStdout, createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
+import {
+  captureStdout,
+  createRunnableProgram,
+  mockProcessExit,
+  stubWrite,
+} from "../fixtures/cli-harness.js";
 import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
@@ -1015,7 +1020,7 @@ describe("the settle commands", () => {
       writeConfigFile();
       process.chdir(repo.dir);
       const program = createRunnableProgram({ exitOverride: "all", silent: true });
-      const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      const stderrSpy = stubWrite(process.stderr);
       mockProcessExit();
 
       // Act

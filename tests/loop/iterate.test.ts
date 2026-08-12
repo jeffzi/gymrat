@@ -11,7 +11,12 @@ import type { TargetContext } from "../../src/sampling.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type { HookRecord, IterationRecord, SessionRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
-import { createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
+import {
+  captureStdout,
+  createRunnableProgram,
+  mockProcessExit,
+  stubWrite,
+} from "../fixtures/cli-harness.js";
 import { ISO_PATTERN, SESSION_ID, reportLines } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import type { HookScripts } from "../fixtures/hook-scripts.js";
@@ -1274,17 +1279,13 @@ describe("the iterate command", () => {
     stubSamples(repo.dir, improvedRounds(), baselineRounds());
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
-    let stdout = "";
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      stdout += String(chunk);
-      return true;
-    });
+    const readStdout = captureStdout();
 
     // Act
     await program.parseAsync(["node", "cli.js", "iterate", "--bench", "npm run bench"]);
 
     // Assert
-    const lines = stripAnsi(stdout).split("\n").filter(Boolean);
+    const lines = stripAnsi(readStdout()).split("\n").filter(Boolean);
     expect.soft(lines[0]).toBe("iteration 1 · experiment vs baseline · 10 paired samples");
     expect.soft(lines.at(-1)).toBe("Hint: gymrat keep");
     expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(2);
@@ -1299,7 +1300,7 @@ describe("the iterate command", () => {
     );
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const stderrSpy = stubWrite(process.stderr);
     mockProcessExit();
 
     // Act
@@ -1316,7 +1317,7 @@ describe("the iterate command", () => {
     // Arrange
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const stderrSpy = stubWrite(process.stderr);
     mockProcessExit();
 
     // Act

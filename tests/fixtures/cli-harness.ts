@@ -1,7 +1,86 @@
 import { Command } from "commander";
-import { vi } from "vitest";
+import { type MockInstance, vi } from "vitest";
 
 import { createProgram } from "../../src/cli.js";
+
+/** The completion callback `stream.write(chunk, callback)` hands back once the chunk lands. */
+type WriteCompletion = (error?: Error | null) => void;
+
+function isWriteCompletion(value: unknown): value is WriteCompletion {
+  return typeof value === "function";
+}
+
+/** The completion callback a `write` call passed, when it passed one. */
+function writeCompletionOf(args: readonly unknown[]): WriteCompletion | undefined {
+  const last = args.at(-1);
+  return isWriteCompletion(last) ? last : undefined;
+}
+
+/** A stand-in for one of the process write streams. */
+export type WriteSpy = MockInstance<NodeJS.WriteStream["write"]>;
+
+/**
+ * Stub `stream.write` with a spy that accepts every chunk and completes it.
+ *
+ * A real stream reports a chunk as landed by invoking the callback it was
+ * handed, which is how a caller knows the bytes are out — the `true` return
+ * value only says the chunk fit under the high-water mark. A stub that returns
+ * `true` and drops the callback would leave any awaited write pending forever,
+ * so completion is signalled here on the next tick, as Node does.
+ *
+ * `onChunk` observes each chunk as the stream takes it, for a test that has to
+ * read some state at the moment of the write rather than after it.
+ */
+export function stubWrite(stream: NodeJS.WriteStream, onChunk?: (chunk: string) => void): WriteSpy {
+  return vi.spyOn(stream, "write").mockImplementation((...args: unknown[]): boolean => {
+    onChunk?.(String(args[0]));
+    const complete = writeCompletionOf(args);
+    if (complete) {
+      process.nextTick(complete);
+    }
+    return true;
+  });
+}
+
+/** A write stream that has accepted chunks without reporting them as landed yet. */
+export interface DeferredWriteStub {
+  /** The spy standing in for `stream.write`. */
+  spy: WriteSpy;
+  /** Reports every chunk accepted so far as landed. */
+  flush: () => void;
+}
+
+/**
+ * Stub `stream.write` so accepted chunks stay in flight until the test releases
+ * them, modelling a pipe that took the bytes but has not handed them on.
+ *
+ * The stub returns `true`, so a caller reading only the return value sees a
+ * write it believes is complete — which is the window where an early
+ * `process.exit` truncates output.
+ */
+export function stubDeferredWrite(stream: NodeJS.WriteStream): DeferredWriteStub {
+  const inFlight: WriteCompletion[] = [];
+  const spy = vi.spyOn(stream, "write").mockImplementation((...args: unknown[]): boolean => {
+    const complete = writeCompletionOf(args);
+    if (complete) {
+      inFlight.push(complete);
+    }
+    return true;
+  });
+  return {
+    spy,
+    flush: () => {
+      for (const complete of inFlight.splice(0)) {
+        complete();
+      }
+    },
+  };
+}
+
+/** The chunks a write spy was handed, as strings. */
+export function writtenChunks(spy: WriteSpy): string[] {
+  return spy.mock.calls.map((call) => String(call[0]));
+}
 
 /**
  * Turn `process.exit` into a catchable rejection carrying the intended exit code.
@@ -35,12 +114,11 @@ export function captureStdout(
   options: { silenceStderr?: boolean; drainOnRead?: boolean } = {},
 ): () => string {
   let stdout = "";
-  vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    stdout += String(chunk);
-    return true;
+  stubWrite(process.stdout, (chunk) => {
+    stdout += chunk;
   });
   if (options.silenceStderr === true) {
-    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    stubWrite(process.stderr);
   }
   return () => {
     const collected = stdout;

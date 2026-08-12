@@ -211,7 +211,7 @@ async function warnEmptyGeomeanGates(
     if (gatedGeomeansOf(candidate).every((geomean) => geomean.n === 0)) {
       // Drained rather than fired and forgotten: a gate trip exits the process
       // right after this, and `process.exit` drops whatever is still buffered.
-      await writeAndDrain(
+      await writeAndFlush(
         process.stderr,
         `warning: geomean gate for "${candidate.label}" had no stable gating metrics to measure\n`,
       );
@@ -259,36 +259,33 @@ export function formatCliError(error: unknown): string {
 }
 
 /**
- * Write to a stream and resolve once the data has left the internal buffer.
+ * Write to a stream and resolve once the chunk has been handed on.
  *
- * `process.exit` drops whatever is still queued, so a report larger than the
- * pipe buffer (64 KiB on most systems) is truncated when an immediate exit
- * follows the write. A `false` return means the data was buffered; `drain`
- * fires once it has been flushed.
+ * `process.exit` drops whatever is still queued, so an immediate exit truncates
+ * a report the stream has taken but not yet written out. A `true` return does
+ * not mean it has — only that the chunk fit under the high-water mark — so
+ * completion is taken from the callback `write` reports it on.
+ *
+ * The `error` listener stays attached on the failing path: the stream emits
+ * `error` right after handing the same error to the callback, and with nothing
+ * listening that lands as an unhandled `error` event, which tears the process
+ * down before the rejection can be acted on.
  */
-function writeAndDrain(stream: NodeJS.WriteStream, data: string): Promise<void> {
+function writeAndFlush(stream: NodeJS.WriteStream, data: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const cleanup = (): void => {
-      stream.removeListener("error", onError);
-      stream.removeListener("drain", onDrain);
-    };
     const onError = (error: Error): void => {
-      cleanup();
       reject(error);
     };
-    const onDrain = (): void => {
-      cleanup();
-      resolve();
-    };
-
     stream.once("error", onError);
 
-    if (stream.write(data)) {
-      cleanup();
+    stream.write(data, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      stream.removeListener("error", onError);
       resolve();
-      return;
-    }
-    stream.once("drain", onDrain);
+    });
   });
 }
 
@@ -301,7 +298,7 @@ const TOOL_FAILURE_EXIT_CODE = 2;
 /** Print a formatted error to stderr and exit on `code`. */
 async function exitWithError(error: unknown, code = TOOL_FAILURE_EXIT_CODE): Promise<never> {
   try {
-    await writeAndDrain(process.stderr, `${formatCliError(error)}\n`);
+    await writeAndFlush(process.stderr, `${formatCliError(error)}\n`);
   } catch {
     /*
      * stderr is the reporting channel, so a write failure (closed pipe, EPIPE)
@@ -836,7 +833,7 @@ async function emitReport<T>(
       assertNever(options.format);
   }
 
-  await writeAndDrain(process.stdout, output + "\n");
+  await writeAndFlush(process.stdout, output + "\n");
 }
 
 /** Where a recorded run writes, and which session it becomes part of. */
@@ -1071,7 +1068,7 @@ export function createProgram(): Command {
       if (run.recording !== undefined) {
         // The note is prose, so it goes to stderr whenever stdout is carrying
         // JSON a consumer has to parse.
-        await writeAndDrain(
+        await writeAndFlush(
           options.format === "json" ? process.stderr : process.stdout,
           `baseline "${run.result.label}" recorded to session ${run.recording.sessionId}\n`,
         );
@@ -1096,7 +1093,7 @@ export function createProgram(): Command {
         return Promise.resolve({ root, result: startSession(root, ref, resolveConfig(options)) });
       });
 
-      await writeAndDrain(process.stdout, `${formatStartSummary(started.result)}\n`);
+      await writeAndFlush(process.stdout, `${formatStartSummary(started.result)}\n`);
     });
 
   const iterateCmd = addConfigOptions(
@@ -1125,7 +1122,7 @@ export function createProgram(): Command {
         (error) => (error instanceof LoopStopError ? GATE_EXIT_CODE : TOOL_FAILURE_EXIT_CODE),
       );
 
-      await writeAndDrain(process.stdout, `${result.report}\n`);
+      await writeAndFlush(process.stdout, `${result.report}\n`);
     });
 
   const keepCmd = addConfigOptions(
@@ -1140,7 +1137,7 @@ export function createProgram(): Command {
         keepSession(repoRoot(), resolveBenchlessConfig(options), { message: options.message }),
       );
 
-      await writeAndDrain(process.stdout, `${result.report}\n`);
+      await writeAndFlush(process.stdout, `${result.report}\n`);
 
       // A refused keep is a gate trip, not a tool failure: the record is written
       // and reported, and only the exit code tells the agent it did not land.
@@ -1162,7 +1159,7 @@ export function createProgram(): Command {
         Promise.resolve(discardSession(repoRoot())),
       );
 
-      await writeAndDrain(process.stdout, `${result.report}\n`);
+      await writeAndFlush(process.stdout, `${result.report}\n`);
     });
 
   /*
@@ -1182,7 +1179,7 @@ export function createProgram(): Command {
         ),
       );
 
-      await writeAndDrain(process.stdout, `${result.report}\n`);
+      await writeAndFlush(process.stdout, `${result.report}\n`);
     });
 
   /*
@@ -1208,7 +1205,7 @@ export function createProgram(): Command {
         Promise.resolve(statusSession(repoRoot(), resolveBenchlessConfig(options))),
       );
 
-      await writeAndDrain(process.stdout, `${report}\n`);
+      await writeAndFlush(process.stdout, `${report}\n`);
     });
 
   /*
