@@ -73,6 +73,9 @@ function staleLockPath(pid = deadPid()): { lockPath: string; holderPid: number }
   return { lockPath, holderPid: pid };
 }
 
+/** The real `fs.linkSync`, captured so wedging works under a `linkSync` spy. */
+const realLinkSync = fs.linkSync.bind(fs);
+
 /**
  * Leave behind the claim link a run that died mid-takeover would have left.
  *
@@ -83,7 +86,7 @@ function staleLockPath(pid = deadPid()): { lockPath: string; holderPid: number }
 function wedgeTakeover(lockPath: string): string {
   const { dev, ino } = fs.statSync(lockPath, { bigint: true });
   const claimPath = `${lockPath}.${String(dev)}-${String(ino)}.claim`;
-  fs.linkSync(lockPath, claimPath);
+  realLinkSync(lockPath, claimPath);
   return claimPath;
 }
 
@@ -234,6 +237,27 @@ describe("acquireLock", () => {
       const lockPath = freshLockPath();
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       fs.writeFileSync(lockPath, contents);
+
+      // Act
+      acquireLock(lockPath, "compare");
+
+      // Assert
+      expect(readLockfile(lockPath)).toStrictEqual(HOLDER_RECORD);
+    });
+  });
+
+  describe("when the lockfile names an impossible process", () => {
+    it.each([
+      { shape: "the whole process group", pid: 0 },
+      { shape: "every process at once", pid: -1 },
+      { shape: "a fraction of a process", pid: 3.5 },
+      { shape: "a number no pid can reach", pid: 4_294_967_296 },
+    ])("reclaims a lockfile whose holder is $shape", ({ pid }) => {
+      // Arrange: no run can be identified by this pid, so the record is damaged
+      // exactly as a truncated one is — and probing it would answer for
+      // something other than the holder.
+      const lockPath = freshLockPath();
+      writeLockfile(lockPath, { pid, command: "measure" });
 
       // Act
       acquireLock(lockPath, "compare");
@@ -422,6 +446,47 @@ describe("acquireLock", () => {
           throw errnoError("ENOENT", "no such file or directory");
         }
         realLink(existing, target);
+      });
+
+      // Act
+      const error = captureGymratError(() => acquireLock(lockPath, "compare"));
+
+      // Assert
+      expect
+        .soft(error.message)
+        .toBe(`Lock at ${lockPath} was claimed by another process on every attempt.`);
+      expect
+        .soft(error.hint)
+        .toBe(`${LIVE_HOLDER_HINT} If no gymrat process is running, delete ${lockPath}.`);
+    });
+
+    it("reports contention when the lockfile it wedged on is no longer the one on disk", () => {
+      // Arrange: the leftover claim wedges every steal, and a rival publishes
+      // its own lockfile as the last claim is refused — so the file left at the
+      // lock path is not the one the attempts were wedged on, and no remedy may
+      // name it for deletion. Which refusal is the last one is not knowable from
+      // here, so the rival publishes after every refusal, and the wedged
+      // lockfile — still reachable through its own claim link — goes back
+      // whenever a further attempt begins.
+      const { lockPath, holderPid } = staleLockPath();
+      const claimPath = wedgeTakeover(lockPath);
+      const restoreWedgedLockfile = (): void => {
+        const scratchPath = `${lockPath}.restored`;
+        realLinkSync(claimPath, scratchPath);
+        fs.renameSync(scratchPath, lockPath);
+        fs.rmSync(scratchPath, { force: true });
+      };
+      vi.spyOn(fs, "linkSync").mockImplementation((existing, target) => {
+        if (target === lockPath) {
+          restoreWedgedLockfile();
+        }
+        try {
+          realLinkSync(existing, target);
+        } finally {
+          if (target === claimPath) {
+            replaceLockfile(lockPath, { pid: holderPid, command: "rival" });
+          }
+        }
       });
 
       // Act

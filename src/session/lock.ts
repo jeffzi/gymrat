@@ -7,12 +7,17 @@ import type { Static } from "@sinclair/typebox";
 import { assertNever, GymratError, hasErrorCode, messageOf } from "../errors.js";
 import { compile, expected } from "../schema.js";
 
+/** Largest pid a liveness probe can be asked about: `process.kill` rejects anything past int32. */
+const MAX_PID = 2_147_483_647;
+
 const lockHolderSchema = Type.Object(
   {
-    // The compiled check requires a finite number, so a `pid` that overflowed
-    // JSON's number range reads as a foreign shape rather than as a holder no
-    // signal can ever reach.
-    pid: Type.Number(expected("a number")),
+    // A pid outside this range names no process the holder could be: 0 and
+    // negative values address process groups — 0 the prober's own — a fraction
+    // and anything past int32 cannot be asked about at all. Such a record is
+    // debris, and reading it as a foreign shape leaves the lock stealable
+    // instead of held by a holder no signal can ever reach.
+    pid: Type.Integer({ ...expected("a positive integer"), minimum: 1, maximum: MAX_PID }),
     command: Type.String(expected("a string")),
     at: Type.String(expected("a string")),
   },
@@ -176,6 +181,24 @@ function unlinkIfSameFile(lockPath: string, identity: LockfileIdentity): void {
 
   if (sameFile(current, identity)) {
     unlinkIfExists(lockPath);
+  }
+}
+
+/**
+ * Whether `lockPath` still names the file `identity` came from.
+ *
+ * The answer is a snapshot, true only for the instant it was taken — enough to
+ * word a remedy about the file standing at the path, never enough to decide a
+ * write against it. {@link unlinkIfSameFile} is the safe form for that.
+ */
+function stillNamesFile(lockPath: string, identity: LockfileIdentity): boolean {
+  try {
+    return sameFile(fs.statSync(lockPath, { bigint: true }), identity);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -486,7 +509,11 @@ export function acquireLock(lockPath: string, command: string): ReleaseLock {
     }
   }
 
-  if (wedgedEveryAttempt && wedge !== undefined) {
+  // The wedged remedy tells the caller to delete the lockfile, so it may only be
+  // given while the wedged file is the one still standing at the lock path. A
+  // lock that moved on in the meantime belongs to whoever published it — a run
+  // that may well be alive — and contention is what this run really met.
+  if (wedgedEveryAttempt && wedge !== undefined && stillNamesFile(lockPath, wedge.identity)) {
     throw wedgedTakeoverError(lockPath, wedge);
   }
 
