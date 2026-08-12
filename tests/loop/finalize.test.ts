@@ -286,7 +286,7 @@ describe("finalizeSession", () => {
       // Assert
       expect.soft(result.report).toContain(finalBranch);
       expect.soft(result.report).toContain(result.record.commit.slice(0, 7));
-      expect.soft(result.report).toContain("2");
+      expect.soft(result.report).toContain("2 kept");
       expect(result.report).toMatch(/closed/i);
     });
 

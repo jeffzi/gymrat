@@ -905,6 +905,7 @@ describe("methodFooterLines", () => {
 
     const lines = methodFooterLines(metrics);
 
+    expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
       expect(line).not.toContain("\x1b[");
     }

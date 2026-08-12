@@ -377,8 +377,9 @@ describe("compare", () => {
       const result = await runCompare({ samples: 2 });
 
       const metric = result.metrics["latency"];
-      expect.soft(metric?.baselineSpread).toBeUndefined();
-      expect(metric?.candidates[0]?.spread).toBeUndefined();
+      expect(metric).toBeDefined();
+      expect.soft(metric!.baselineSpread).toBeUndefined();
+      expect(metric!.candidates[0]!.spread).toBeUndefined();
     });
   });
 
