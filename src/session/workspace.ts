@@ -21,9 +21,6 @@ export interface WorkspaceResult {
   baseline: BaselineRef;
 }
 
-/** How much of a session's worktree pair is on disk. */
-export type WorkspaceStatus = "present" | "partial" | "absent";
-
 /**
  * Create the branch and both worktrees a session runs in.
  *
@@ -99,15 +96,9 @@ export function ensureGitExclude(root: string): void {
   fs.writeFileSync(excludeFile, `${existing}${separator}${line}\n`);
 }
 
-/** Report how many of the session's two worktree directories are on disk. */
-export function detectWorkspace(root: string): WorkspaceStatus {
-  const worktrees = [experimentWorktreeDir(root), baselineWorktreeDir(root)];
-  const present = worktrees.filter(isDirectory).length;
-
-  if (present === worktrees.length) {
-    return "present";
-  }
-  return present === 0 ? "absent" : "partial";
+/** Whether both of the session's worktree directories are on disk. */
+export function detectWorkspace(root: string): boolean {
+  return isDirectory(experimentWorktreeDir(root)) && isDirectory(baselineWorktreeDir(root));
 }
 
 /**

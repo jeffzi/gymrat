@@ -157,7 +157,7 @@ describe("startSession", () => {
       startSession(repo.dir, "main", CONFIG);
 
       // Assert
-      expect(detectWorkspace(repo.dir)).toBe("present");
+      expect(detectWorkspace(repo.dir)).toBe(true);
     });
 
     it("returns the recorded session with no history behind it", () => {
@@ -176,6 +176,8 @@ describe("startSession", () => {
           discardCount: 0,
           targetReachedAndKept: false,
           lastSeq: 0,
+          lastKeptCommit: undefined,
+          endsOnGatingBlock: false,
           finalized: undefined,
         },
         resumed: false,
@@ -218,7 +220,7 @@ describe("startSession", () => {
       startSession(repo.dir, "main", CONFIG);
 
       // Assert
-      expect(detectWorkspace(repo.dir)).toBe("present");
+      expect(detectWorkspace(repo.dir)).toBe(true);
     });
   });
 

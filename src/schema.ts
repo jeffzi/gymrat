@@ -41,7 +41,7 @@ export const strictObjectOptions = { ...expected("an object"), additionalPropert
  * an unconstrained extra property, admitting its entry unchecked; with it, the key is
  * rejected outright.
  */
-export const nameKeyedRecordOptions = { ...expected("an object"), additionalProperties: false };
+export const nameKeyedRecordOptions = strictObjectOptions;
 
 /** A single validation failure, described in terms a caller can word a message from. */
 export interface SchemaIssue {

@@ -17,7 +17,6 @@ import type {
 import type { SessionState } from "../../src/session/store.js";
 import {
   appendRecord,
-  endsOnGatingBlock,
   foldSession,
   readRecords,
   requireOpenSession,
@@ -28,6 +27,7 @@ import { freshRoot } from "../fixtures/scratch-repo.js";
 import {
   AT,
   blockedKeep,
+  COMMIT,
   committedKeep,
   discardRecord as discard,
   finalizeRecord,
@@ -115,6 +115,8 @@ const EMPTY_STATE: SessionState = {
   discardCount: 0,
   targetReachedAndKept: false,
   lastSeq: 0,
+  lastKeptCommit: undefined,
+  endsOnGatingBlock: false,
   finalized: undefined,
 };
 
@@ -326,6 +328,7 @@ describe("foldSession", () => {
         lastIteration: ITERATION_1,
         keepCount: 1,
         lastSeq: 1,
+        lastKeptCommit: COMMIT,
       },
     },
     {
@@ -351,6 +354,7 @@ describe("foldSession", () => {
         unsettled: true,
         keepCount: 1,
         lastSeq: 2,
+        lastKeptCommit: COMMIT,
       },
     },
     {
@@ -364,6 +368,7 @@ describe("foldSession", () => {
         keepCount: 1,
         targetReachedAndKept: true,
         lastSeq: 1,
+        lastKeptCommit: COMMIT,
       },
     },
     {
@@ -389,6 +394,7 @@ describe("foldSession", () => {
         unsettled: true,
         keepCount: 1,
         lastSeq: 2,
+        lastKeptCommit: COMMIT,
       },
     },
     {
@@ -403,6 +409,7 @@ describe("foldSession", () => {
         discardCount: 1,
         targetReachedAndKept: true,
         lastSeq: 2,
+        lastKeptCommit: COMMIT,
       },
     },
     {
@@ -415,6 +422,7 @@ describe("foldSession", () => {
         lastIteration: ITERATION_1,
         keepCount: 1,
         lastSeq: 1,
+        lastKeptCommit: COMMIT,
         finalized: FINALIZE,
       },
     },
@@ -510,10 +518,10 @@ describe("endsOnGatingBlock", () => {
     "reads $description as $expected",
     ({ records, expected }) => {
       // Act
-      const onGatingBlock = endsOnGatingBlock(records);
+      const state = foldSession(records);
 
       // Assert
-      expect(onGatingBlock).toBe(expected);
+      expect(state.endsOnGatingBlock).toBe(expected);
     },
   );
 });

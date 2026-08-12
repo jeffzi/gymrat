@@ -5,13 +5,7 @@ import type { ResolvedConfig } from "../config.js";
 import { GymratError } from "../errors.js";
 import { archivedSessionPath, sessionJsonlPath } from "../session/paths.js";
 import type { SessionRecord } from "../session/records.js";
-import {
-  appendRecord,
-  foldSession,
-  lastKeptCommit,
-  readRecords,
-  type SessionState,
-} from "../session/store.js";
+import { appendRecord, foldSession, readRecords, type SessionState } from "../session/store.js";
 import { createWorkspace, detectWorkspace, recreateWorkspace } from "../session/workspace.js";
 import { resolveTarget } from "../targets.js";
 
@@ -83,11 +77,11 @@ export function startSession(
     }
   }
 
-  if (detectWorkspace(root) !== "present") {
+  if (!detectWorkspace(root)) {
     // Every keep moves the baseline onto the commit it made, so a baseline worktree
     // put back at the header's pinned SHA would have the next iteration measure the
     // whole session's diff instead of the edit in front of it.
-    recreateWorkspace(root, session.branch, lastKeptCommit(records) ?? session.baseline.sha);
+    recreateWorkspace(root, session.branch, state.lastKeptCommit ?? session.baseline.sha);
   }
   return { session, state, resumed: true };
 }
@@ -169,10 +163,7 @@ function resolveBaselineSha(ref: string, root: string): string {
  */
 function newSessionId(now: Date): string {
   const iso = now.toISOString();
-  const date = iso.slice(0, 10).replaceAll("-", "");
-  const time = iso.slice(11, 19).replaceAll(":", "");
-  const suffix = crypto.randomBytes(SESSION_ID_ENTROPY_BYTES).toString("hex");
-  return `${date}-${time}-${suffix}`;
+  return `${iso.slice(0, 10).replaceAll("-", "")}-${iso.slice(11, 19).replaceAll(":", "")}-${crypto.randomBytes(SESSION_ID_ENTROPY_BYTES).toString("hex")}`;
 }
 
 /**

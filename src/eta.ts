@@ -14,8 +14,8 @@ export class EtaTracker {
   readonly #targetCount: number;
   readonly #clock: () => number;
 
-  /** Durations of completed sample-to-sample gaps (milliseconds). */
-  #durations: number[] = [];
+  #durationSum = 0;
+  #durationCount = 0;
 
   /** Whether the previous step was a `prepare` step (gap must be excluded). */
   #prevWasPrepare = false;
@@ -47,7 +47,8 @@ export class EtaTracker {
       // An injected clock may step backwards; a negative gap would drag the
       // mean down and can push the estimate below zero.
       if (gap >= 0) {
-        this.#durations.push(gap);
+        this.#durationSum += gap;
+        this.#durationCount += 1;
       }
     }
 
@@ -61,14 +62,11 @@ export class EtaTracker {
     const remaining = step.total * this.#targetCount - this.#completedSamples;
     this.#completedSamples++;
 
-    if (this.#durations.length === 0) {
+    if (this.#durationCount === 0) {
       return undefined;
     }
 
-    const mean =
-      this.#durations.reduce((sum, duration) => sum + duration, 0) / this.#durations.length;
-
-    return mean * remaining;
+    return (this.#durationSum / this.#durationCount) * remaining;
   }
 }
 

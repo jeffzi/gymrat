@@ -36,6 +36,25 @@ export interface SessionState {
    */
   lastSeq: number;
   /**
+   * The commit made by the last keep that committed, absent when none did.
+   *
+   * The session's baseline worktree advances to every kept commit, so this — not the
+   * session header's pinned SHA — is where the baseline stands once a keep has landed.
+   * A blocked keep committed nothing and leaves the baseline where it was.
+   */
+  lastKeptCommit: string | undefined;
+  /**
+   * Whether the log ends on a keep the loop blocked for a gating regression.
+   *
+   * The block settles the iteration it refused — `unsettled` is cleared — but the edit
+   * it would not commit is still standing in the experiment worktree, so `discard`
+   * accepts this as the one settled state it may still revert. Any iteration, keep, or
+   * discard written after the block supersedes it — except a keep refused for want of a
+   * measurement, which must not wedge the edit in place by closing the window the block
+   * opened.
+   */
+  endsOnGatingBlock: boolean;
+  /**
    * The record that closed the session, absent while the session is still open.
    *
    * A finalized session accepts no further loop commands — see
@@ -153,56 +172,6 @@ export function readRecords(jsonlPath: string): SessionLogRecord[] {
 }
 
 /**
- * The commit made by the last keep in `records` that committed, absent when none did.
- *
- * The session's baseline worktree advances to every kept commit, so this — not the
- * session header's pinned SHA — is where the baseline stands once a keep has landed.
- * A blocked keep committed nothing and leaves the baseline where it was.
- */
-export function lastKeptCommit(records: SessionLogRecord[]): string | undefined {
-  let commit: string | undefined;
-
-  for (const record of records) {
-    if (record.type === "keep" && record.status === "committed" && record.commit !== undefined) {
-      commit = record.commit;
-    }
-  }
-
-  return commit;
-}
-
-/**
- * Whether `records` ends on a keep the loop blocked for a gating regression.
- *
- * The block settles the iteration it refused — {@link foldSession} clears
- * `unsettled` for it — but the edit it would not commit is still standing in the
- * experiment worktree, so `discard` accepts this as the one settled state it may
- * still revert, making the refusal's own hint true. Any iteration, keep, or
- * discard written after the block supersedes it — except a keep refused for want
- * of a measurement, which is what retrying `keep` after the block appends and
- * which must not wedge the edit in place by closing the window the block opened.
- */
-export function endsOnGatingBlock(records: SessionLogRecord[]): boolean {
-  let blocked = false;
-
-  // The header, baseline samples, and hook runs neither measure nor settle an
-  // edit, so they leave the answer where the last keep, iteration, or discard put it.
-  for (const record of records) {
-    if (record.type === "keep") {
-      // A "nothing-measured" refusal commits nothing and settles nothing, so it
-      // leaves the standing edit — and the window to revert it — as it found them.
-      if (record.reason !== "nothing-measured") {
-        blocked = record.status === "blocked" && record.reason === "gating-regression";
-      }
-    } else if (record.type === "iteration" || record.type === "discard") {
-      blocked = false;
-    }
-  }
-
-  return blocked;
-}
-
-/**
  * Fold `records` into the state they describe.
  *
  * Folds whatever it is given: validating the log — that it parses, and that it opens with
@@ -220,6 +189,8 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
   let discardCount = 0;
   let targetReachedAndKept = false;
   let lastSeq = 0;
+  let lastKeptCommit: string | undefined;
+  let endsOnGatingBlock = false;
   let finalized: FinalizeRecord | undefined;
 
   for (const record of records) {
@@ -232,6 +203,7 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
         lastSeq = Math.max(lastSeq, record.seq);
         lastIteration = record;
         unsettled = true;
+        endsOnGatingBlock = false;
         targetReachedBySeq.set(record.seq, record.targetReached);
         break;
       case "keep":
@@ -239,9 +211,8 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
         if (record.status === "committed") {
           unsettled = false;
           keepCount += 1;
-          // The keep settles the iteration it shares a seq with, so the stop condition
-          // follows the last commit rather than the last measurement.
           targetReachedAndKept = targetReachedBySeq.get(record.seq) ?? false;
+          lastKeptCommit = record.commit ?? lastKeptCommit;
         } else if (record.reason !== undefined && record.reason !== "checks-failed") {
           // A blocked keep leaves the edit uncommitted, so it settles the iteration
           // too — unblocking `iterate` — except for "checks-failed", where the user
@@ -250,11 +221,18 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
           // says the iteration is beyond recovery, so it stays unsettled.
           unsettled = false;
         }
+        // A "nothing-measured" refusal commits nothing and settles nothing, so it
+        // leaves the standing edit — and the gating-block window — as it found them.
+        // Every other keep outcome resolves the gating-block state.
+        if (record.reason !== "nothing-measured") {
+          endsOnGatingBlock = record.status === "blocked" && record.reason === "gating-regression";
+        }
         break;
       case "discard":
         lastSeq = Math.max(lastSeq, record.seq);
         unsettled = false;
         discardCount += 1;
+        endsOnGatingBlock = false;
         break;
       case "finalize":
         // Closing the session settles nothing and measures nothing: it collapses
@@ -281,6 +259,8 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
     discardCount,
     targetReachedAndKept,
     lastSeq,
+    lastKeptCommit,
+    endsOnGatingBlock,
     finalized,
   };
 }

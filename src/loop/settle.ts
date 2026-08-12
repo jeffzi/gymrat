@@ -3,7 +3,7 @@ import { GymratError } from "../errors.js";
 import { exec } from "../exec.js";
 import { formatDelta } from "../report/format.js";
 import type { DiscardRecord, IterationRecord, KeepRecord } from "../session/records.js";
-import { appendRecord, endsOnGatingBlock, requireOpenSession } from "../session/store.js";
+import { appendRecord, requireOpenSession } from "../session/store.js";
 import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/workspace.js";
 import { limitOutput } from "./output-limit.js";
 
@@ -148,10 +148,9 @@ export async function keepSession(
  *   measured since the last keep or discard, or when git refuses to revert the worktree.
  */
 export function discardSession(root: string): DiscardResult {
-  const { session, state, jsonlPath, records } = requireOpenSession(root, "settling an edit");
-  const afterGatingBlock = endsOnGatingBlock(records);
+  const { session, state, jsonlPath } = requireOpenSession(root, "settling an edit");
 
-  if (!state.unsettled && !afterGatingBlock) {
+  if (!state.unsettled && !state.endsOnGatingBlock) {
     throw new GymratError(
       "Discard refused: nothing has been measured since the last keep or discard.",
       "Run gymrat iterate to measure an edit before settling it.",
@@ -167,7 +166,7 @@ export function discardSession(root: string): DiscardResult {
     // takes. Reusing the iteration's own seq would make the discard the last
     // settling record to carry it, and `gymrat status` would render it in place of
     // the block instead of alongside it.
-    seq: afterGatingBlock ? state.lastSeq + 1 : state.lastSeq,
+    seq: state.endsOnGatingBlock ? state.lastSeq + 1 : state.lastSeq,
     at: new Date().toISOString(),
   };
   appendRecord(jsonlPath, record);

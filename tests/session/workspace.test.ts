@@ -296,38 +296,29 @@ describe("ensureGitExclude", () => {
 });
 
 describe("detectWorkspace", () => {
-  it("reports absent when neither worktree directory exists", () => {
-    // Act
-    const status = detectWorkspace(repo.dir);
-
-    // Assert
-    expect(status).toBe("absent");
+  it("returns false when neither worktree directory exists", () => {
+    // Act — Assert
+    expect(detectWorkspace(repo.dir)).toBe(false);
   });
 
-  it("reports present when both worktree directories exist", () => {
+  it("returns true when both worktree directories exist", () => {
     // Arrange
     createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-    // Act
-    const status = detectWorkspace(repo.dir);
-
-    // Assert
-    expect(status).toBe("present");
+    // Act — Assert
+    expect(detectWorkspace(repo.dir)).toBe(true);
   });
 
   it.each([
     { missing: "experiment", locate: experimentWorktreeDir },
     { missing: "baseline", locate: baselineWorktreeDir },
-  ])("reports partial when only the $missing worktree is gone", ({ locate }) => {
+  ])("returns false when only the $missing worktree is gone", ({ locate }) => {
     // Arrange
     createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
     fs.rmSync(locate(repo.dir), { recursive: true, force: true });
 
-    // Act
-    const status = detectWorkspace(repo.dir);
-
-    // Assert
-    expect(status).toBe("partial");
+    // Act — Assert
+    expect(detectWorkspace(repo.dir)).toBe(false);
   });
 });
 
@@ -447,7 +438,7 @@ describe("recreateWorkspace", () => {
 
       // Assert
       expect.soft(checkedOutRef(experimentWorktreeDir(repo.dir))).toBe(BRANCH);
-      expect.soft(detectWorkspace(repo.dir)).toBe("present");
+      expect.soft(detectWorkspace(repo.dir)).toBe(true);
     });
   });
 
@@ -479,7 +470,7 @@ describe("recreateWorkspace", () => {
 
       // Assert
       expect.soft(fs.readFileSync(edited, "utf-8")).toBe("# edited by the agent\n");
-      expect.soft(detectWorkspace(repo.dir)).toBe("present");
+      expect.soft(detectWorkspace(repo.dir)).toBe(true);
     });
   });
 });

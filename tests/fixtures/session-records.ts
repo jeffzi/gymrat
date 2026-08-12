@@ -17,7 +17,7 @@ import { appendRecord } from "../../src/session/store.js";
 export const AT = "2026-08-08T14:15:30.000Z";
 
 /** A commit SHA fixture records point at; not a real commit. */
-const COMMIT = "b".repeat(40);
+export const COMMIT = "b".repeat(40);
 
 /** The squash commit SHA finalize fixtures point at; distinct from {@link COMMIT}. */
 const SQUASH_COMMIT = "c".repeat(40);

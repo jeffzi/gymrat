@@ -142,17 +142,6 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Delete `filePath` if it exists. Used on the lockfile and its scratch siblings alike. */
-function unlinkIfExists(filePath: string): void {
-  try {
-    fs.unlinkSync(filePath);
-  } catch (error) {
-    if (!hasErrorCode(error, "ENOENT")) {
-      throw error;
-    }
-  }
-}
-
 /**
  * Delete `lockPath` only while it still names the file `identity` came from.
  *
@@ -180,7 +169,7 @@ function unlinkIfSameFile(lockPath: string, identity: LockfileIdentity): void {
   }
 
   if (sameFile(current, identity)) {
-    unlinkIfExists(lockPath);
+    fs.rmSync(lockPath, { force: true });
   }
 }
 
@@ -248,7 +237,7 @@ function publishLockRecord(lockPath: string, record: string): LockfileIdentity |
     }
     throw error;
   } finally {
-    unlinkIfExists(scratchPath);
+    fs.rmSync(scratchPath, { force: true });
   }
 }
 
@@ -318,7 +307,7 @@ function claimStaleLock(lockPath: string, identity: LockfileIdentity): ClaimOutc
   if (sameFile(claimed, identity)) {
     return { kind: "claimed", claimPath };
   }
-  unlinkIfExists(claimPath);
+  fs.rmSync(claimPath, { force: true });
   return { kind: "gone" };
 }
 
@@ -342,7 +331,7 @@ function displaceStaleLock(lockPath: string): boolean {
     }
     rethrowDisplacementFailure(lockPath, error);
   }
-  unlinkIfExists(asidePath);
+  fs.rmSync(asidePath, { force: true });
   return true;
 }
 
@@ -352,27 +341,29 @@ function displaceStaleLock(lockPath: string): boolean {
  * `blocked` carries the claim path that stood in the way, because a claim
  * nobody is behind can only be cleared by hand.
  */
-type StealOutcome =
-  | { readonly kind: "won"; readonly identity: LockfileIdentity }
-  | { readonly kind: "lost" }
-  | { readonly kind: "blocked"; readonly claimPath: string };
-
 /** Take over a lockfile no live process holds. */
-function stealLock(lockPath: string, identity: LockfileIdentity, record: string): StealOutcome {
+function stealLock(
+  lockPath: string,
+  identity: LockfileIdentity,
+  record: string,
+  holderPid: number | undefined,
+): AttemptOutcome {
   const claim = claimStaleLock(lockPath, identity);
   switch (claim.kind) {
     case "gone":
-      return { kind: "lost" };
+      return { kind: "retry" };
     case "blocked":
-      return { kind: "blocked", claimPath: claim.claimPath };
+      return { kind: "blocked", wedge: { identity, claimPath: claim.claimPath, holderPid } };
     case "claimed":
       try {
         const published = displaceStaleLock(lockPath)
           ? publishLockRecord(lockPath, record)
           : undefined;
-        return published === undefined ? { kind: "lost" } : { kind: "won", identity: published };
+        return published === undefined
+          ? { kind: "retry" }
+          : { kind: "acquired", identity: published };
       } finally {
-        unlinkIfExists(claim.claimPath);
+        fs.rmSync(claim.claimPath, { force: true });
       }
     default:
       return assertNever(claim);
@@ -409,24 +400,6 @@ type AttemptOutcome =
   | { readonly kind: "retry" }
   | { readonly kind: "blocked"; readonly wedge: WedgedTakeover };
 
-/** Read a steal that did not win as either worth retrying or as wedged. */
-function attemptFromSteal(
-  steal: StealOutcome,
-  identity: LockfileIdentity,
-  holderPid: number | undefined,
-): AttemptOutcome {
-  switch (steal.kind) {
-    case "won":
-      return { kind: "acquired", identity: steal.identity };
-    case "lost":
-      return { kind: "retry" };
-    case "blocked":
-      return { kind: "blocked", wedge: { identity, claimPath: steal.claimPath, holderPid } };
-    default:
-      return assertNever(steal);
-  }
-}
-
 /**
  * Make one bid for the lock at `lockPath`: publish, or judge what is there.
  *
@@ -444,17 +417,12 @@ function attemptAcquire(lockPath: string, record: string): AttemptOutcome {
     case "absent":
       return { kind: "retry" };
     case "unreadable":
-      return attemptFromSteal(
-        stealLock(lockPath, state.identity, record),
-        state.identity,
-        undefined,
-      );
+      return stealLock(lockPath, state.identity, record, undefined);
     case "held": {
       if (isAlive(state.holder.pid)) {
         throw heldByError(state.holder);
       }
-      const steal = stealLock(lockPath, state.identity, record);
-      return attemptFromSteal(steal, state.identity, state.holder.pid);
+      return stealLock(lockPath, state.identity, record, state.holder.pid);
     }
     default:
       return assertNever(state);
