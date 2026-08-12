@@ -142,6 +142,77 @@ describe("mitata adapter", () => {
       });
     });
 
+    describe("metric names carrying a line terminator", () => {
+      /**
+       * Characters JavaScript regexes treat as line terminators.
+       *
+       * A metric name holding one of these could never be matched back by an
+       * anchored key pattern, so the run is dropped instead of recorded.
+       */
+      const LINE_TERMINATORS = [
+        { description: "a line feed", char: "\n" },
+        { description: "a carriage return", char: "\r" },
+        { description: "a line separator U+2028", char: "\u{2028}" },
+        { description: "a paragraph separator U+2029", char: "\u{2029}" },
+      ];
+
+      it.each(LINE_TERMINATORS)(
+        "warns and skips a benchmark whose alias contains $description",
+        ({ char }) => {
+          const offendingAlias = `enc${char}ode`;
+          const stdout = JSON.stringify({
+            benchmarks: [
+              {
+                alias: offendingAlias,
+                runs: [{ name: "encode", args: {}, stats: { p50: 42 } }],
+              },
+              {
+                alias: "valid",
+                runs: [{ name: "valid", args: {}, stats: { p50: 1 } }],
+              },
+            ],
+          });
+          let result: Record<string, number> | undefined;
+
+          const stderr = captureStderr(() => {
+            result = mitataAdapter.parse(stdout);
+          });
+
+          expect
+            .soft(stderr)
+            .toContain(`Skipping run with a line terminator in its metric name: ${offendingAlias}`);
+          expect(result).toStrictEqual(metricRecord({ "valid/time": 1 }));
+        },
+      );
+
+      it.each(LINE_TERMINATORS)(
+        "warns and skips a run whose argument value contains $description",
+        ({ char }) => {
+          const stdout = JSON.stringify({
+            benchmarks: [
+              {
+                alias: "decode/$text",
+                runs: [
+                  { name: "decode/offending", args: { text: `di${char}gits` }, stats: { p50: 10 } },
+                  { name: "decode/words", args: { text: "words" }, stats: { p50: 20 } },
+                ],
+              },
+            ],
+          });
+          let result: Record<string, number> | undefined;
+
+          const stderr = captureStderr(() => {
+            result = mitataAdapter.parse(stdout);
+          });
+
+          expect
+            .soft(stderr)
+            .toContain("Skipping run with a line terminator in its metric name: decode/$text");
+          expect(result).toStrictEqual(metricRecord({ "decode/text=words/time": 20 }));
+        },
+      );
+    });
+
     describe("metric name collisions", () => {
       const aliasMissingPlaceholder = JSON.stringify({
         benchmarks: [

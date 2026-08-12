@@ -7,6 +7,17 @@ function isRecord(val: unknown): val is Record<string, unknown> {
   return typeof val === "object" && val !== null;
 }
 
+/**
+ * Characters a metric name may not carry.
+ *
+ * All four are line terminators to JavaScript's regular-expression engine, so an
+ * anchored name check can never match a name holding one — gymrat must never
+ * write a session record it cannot read back. Unlike `metric-lines`, whose input
+ * is split on `\n` and `\r` before any name is read, mitata's JSON can carry
+ * every one of them inside an alias or an argument value.
+ */
+const FORBIDDEN_NAME_CHARS = /[\n\r\u{2028}\u{2029}]/u;
+
 function extractJson(stdout: string): Record<string, unknown> {
   const startIdx = stdout.indexOf("{");
   const endIdx = stdout.lastIndexOf("}");
@@ -97,6 +108,13 @@ function extractRunMetrics(
   if (parsed === undefined) return;
 
   const prefix = buildMetricNamePrefix(alias, parsed.args);
+  if (FORBIDDEN_NAME_CHARS.test(prefix)) {
+    warn(
+      `Skipping run with a line terminator in its metric name: ${alias} (the alias or one of its argument values carries one)`,
+    );
+    return;
+  }
+
   recordMetric(metrics, `${prefix}/time`, parsed.p50, warn);
 
   if (parsed.heapAvg !== undefined) {
@@ -181,11 +199,13 @@ const mitataAdapter: Adapter = {
    * benchmark becomes one metric per argument combination rather than collapsing
    * them all onto the same name.
    *
-   * Runs that errored or reported a non-finite `p50` are skipped rather than
-   * failing the parse — a single bad argument combination should not discard the
-   * rest of the run — but a parse that finds no usable run at all raises
-   * {@link AdapterError}. Two runs landing on one metric name go to `warn`, which
-   * defaults to stderr; the last one still wins.
+   * Runs that errored, reported a non-finite `p50`, or resolved to a metric name
+   * carrying a line terminator are skipped rather than failing the parse — a
+   * single bad argument combination should not discard the rest of the run — but a
+   * parse that finds no usable run at all raises {@link AdapterError}. Both the
+   * skipped-name notice and a collision between two runs landing on one metric
+   * name go to `warn`, which defaults to stderr; on a collision the last run still
+   * wins.
    */
   parse(stdout: string, warn: WarnSink = warnToStderr): Record<string, number> {
     const json = extractJson(stdout);
