@@ -175,6 +175,8 @@ const iterationRecordSchema = Type.Object(
  */
 const settledSeqSchema = Type.Integer({ ...expected("a non-negative integer"), minimum: 0 });
 
+const byteCountSchema = Type.Integer({ ...expected("a non-negative integer"), minimum: 0 });
+
 const keepRecordSchema = Type.Object(
   {
     type: Type.Literal("keep"),
@@ -197,7 +199,15 @@ const keepRecordSchema = Type.Object(
       ),
     ),
     checks: Type.Object(
-      { configured: booleanSchema, passed: Type.Optional(booleanSchema) },
+      {
+        configured: booleanSchema,
+        passed: Type.Optional(booleanSchema),
+        // Carried by a keep the checks blocked, whose report relays the command's
+        // output cut to the relay limit: the counts are what the command wrote,
+        // so a reader of the log can tell the relay was cut.
+        stdoutBytes: Type.Optional(byteCountSchema),
+        stderrBytes: Type.Optional(byteCountSchema),
+      },
       strictObjectOptions,
     ),
   },

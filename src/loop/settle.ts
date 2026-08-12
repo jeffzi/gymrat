@@ -5,14 +5,19 @@ import { formatDelta } from "../report/format.js";
 import type { DiscardRecord, IterationRecord, KeepRecord } from "../session/records.js";
 import { appendRecord, endsOnGatingBlock, requireOpenSession } from "../session/store.js";
 import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/workspace.js";
+import { limitOutput } from "./output-limit.js";
 
 const MS_PER_SECOND = 1000;
 
 /** What the checks command answered, once it has run. */
 interface ChecksRun {
   passed: boolean;
-  /** Everything the command wrote, both streams, as the agent needs to read it. */
+  /** Both streams as the agent needs to read them, each cut to the relay limit. */
   output: string;
+  /** What the command wrote on stdout, however much of it {@link output} carries. */
+  stdoutBytes: number;
+  /** What the command wrote on stderr, however much of it {@link output} carries. */
+  stderrBytes: number;
 }
 
 /** What a caller can hand a keep beyond its configuration. */
@@ -90,7 +95,12 @@ export async function keepSession(
       jsonlPath,
       iteration.seq,
       "checks-failed",
-      { configured: true, passed: false },
+      {
+        configured: true,
+        passed: false,
+        stdoutBytes: checks.stdoutBytes,
+        stderrBytes: checks.stderrBytes,
+      },
       `Keep refused: the checks command failed.\n\n${checks.output}\nHint: fix the failures and run gymrat keep again.`,
     );
   }
@@ -244,6 +254,9 @@ function gatingRefusal(iteration: IterationRecord): string {
  * gate asks whether the tree is provably good, and a run that never finished has
  * not answered.
  *
+ * Each stream is cut to the relay limit on its own, so a test suite that writes
+ * its failures to stderr is as readable as one that writes them to stdout.
+ *
  * @returns What the command answered, or `undefined` when no checks are
  *   configured — in which case the missing gate is warned about instead.
  */
@@ -270,11 +283,15 @@ async function runChecks(
     passed: !timedOut && result.exitCode === 0,
     output: [
       ...(timedOut ? [`${command} timed out after ${result.timeoutMs}ms`] : []),
-      result.stdout,
-      result.stderr,
+      limitOutput(result.stdout),
+      limitOutput(result.stderr),
     ]
       .filter((text) => text.trim() !== "")
       .join("\n"),
+    // What the command wrote, not what was relayed: a figure above the relay
+    // limit is how a reader of the log learns the report was cut short.
+    stdoutBytes: Buffer.byteLength(result.stdout, "utf-8"),
+    stderrBytes: Buffer.byteLength(result.stderr, "utf-8"),
   };
 }
 

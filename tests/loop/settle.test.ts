@@ -47,6 +47,23 @@ const TIMEOUT_MS = 1_800_000;
 const CHECKS_STDOUT = "3 tests failed";
 const CHECKS_STDERR = "AssertionError: expected 2 to be 3";
 
+/**
+ * 200 lines of exactly 100 bytes each, every one numbered behind `prefix`.
+ *
+ * The uniform line width puts the relay's byte budget on a line a test can name:
+ * 81 lines are 8100 bytes and fit the 8192-byte budget the hook relay uses, an
+ * 82nd would take it to 8200 and overrun it.
+ */
+function longOutput(prefix: string): string {
+  return Array.from(
+    { length: 200 },
+    (_, index) => `${`${prefix}-${String(index).padStart(3, "0")}`.padEnd(99, ".")}\n`,
+  ).join("");
+}
+
+const LONG_STDOUT = longOutput("out");
+const LONG_STDERR = longOutput("err");
+
 /** The commit `worktree` currently has checked out. */
 function headOf(worktree: string): string {
   return git(["rev-parse", "HEAD"], worktree);
@@ -353,7 +370,12 @@ describe("keepSession", () => {
         at: expect.stringMatching(ISO_PATTERN),
         status: "blocked",
         reason: "checks-failed",
-        checks: { configured: true, passed: false },
+        checks: {
+          configured: true,
+          passed: false,
+          stdoutBytes: Buffer.byteLength(CHECKS_STDOUT, "utf-8"),
+          stderrBytes: Buffer.byteLength(CHECKS_STDERR, "utf-8"),
+        },
       });
       expect(lastRecordOf(repo.dir)).toStrictEqual(result.record);
     });
@@ -395,7 +417,49 @@ describe("keepSession", () => {
       // Assert
       expect.soft(result.record.status).toBe("blocked");
       expect.soft(result.record.reason).toBe("checks-failed");
-      expect(result.record.checks).toStrictEqual({ configured: true, passed: false });
+      expect(result.record.checks).toStrictEqual({
+        configured: true,
+        passed: false,
+        stdoutBytes: Buffer.byteLength(CHECKS_STDOUT, "utf-8"),
+        stderrBytes: Buffer.byteLength(CHECKS_STDERR, "utf-8"),
+      });
+    });
+  });
+
+  describe("when the failing checks printed more than the relay allows", () => {
+    beforeEach(() => {
+      startWith([iteration(1)]);
+      editExperiment();
+      execMock.mockResolvedValue({ stdout: LONG_STDOUT, stderr: LONG_STDERR, exitCode: 1 });
+    });
+
+    it.each([
+      { stream: "stdout", prefix: "out" },
+      { stream: "stderr", prefix: "err" },
+    ])("cuts the relayed $stream back to the last whole line in the budget", async ({ prefix }) => {
+      // Act
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
+
+      // Assert - 81 of the 100-byte lines fit the byte budget the hook relay
+      // uses, an 82nd overruns it, so the cut lands between the two.
+      expect.soft(result.report).toContain(`${prefix}-000`);
+      expect.soft(result.report).toContain(`${prefix}-080`);
+      expect(result.report).not.toContain(`${prefix}-081`);
+    });
+
+    it("records the true byte counts of the output it cut", async () => {
+      // Act
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
+
+      // Assert - the counts are what the command printed rather than what the
+      // report relayed, so a reader of the log can tell the relay was cut.
+      expect.soft(result.record.checks).toStrictEqual({
+        configured: true,
+        passed: false,
+        stdoutBytes: Buffer.byteLength(LONG_STDOUT, "utf-8"),
+        stderrBytes: Buffer.byteLength(LONG_STDERR, "utf-8"),
+      });
+      expect(lastRecordOf(repo.dir)).toStrictEqual(result.record);
     });
   });
 
