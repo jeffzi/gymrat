@@ -1,6 +1,7 @@
 import type { ExecResult, ExecTimeoutError } from "../exec.js";
 import { exec, FAILURE_EXIT_CODE } from "../exec.js";
 import type { HookRecord, IterationRecord, SessionRecord } from "../session/records.js";
+import { limitOutput } from "./output-limit.js";
 
 /** Which side of a measurement a hook command runs on. */
 export type HookStage = HookRecord["stage"];
@@ -27,7 +28,8 @@ export interface HookRun {
   record: HookRecord;
   /**
    * The hook's stdout, truncated and labeled with its stage, followed by a note
-   * naming the exit code or the timeout when the command did not succeed.
+   * naming the exit code or the timeout when the command did not succeed and the
+   * truncated stderr under it.
    *
    * Empty when a successful hook printed nothing.
    */
@@ -36,16 +38,6 @@ export interface HookRun {
 
 /** How long a hook may run before it is killed. Long enough to build, short enough to notice. */
 const HOOK_TIMEOUT_MS = 30_000;
-
-/**
- * How much hook stdout reaches the agent driving the loop.
- *
- * A hook that dumps a build log would otherwise bury the measurement it was
- * meant to annotate, and the whole of it is on disk anyway.
- */
-const STDOUT_LIMIT_BYTES = 8192;
-
-const NEWLINE_BYTE = 0x0a;
 
 /** What the hook is told about the loop, as it reads it on stdin. */
 interface HookPayload {
@@ -151,14 +143,16 @@ function buildPayload(invocation: HookInvocation): HookPayload {
  * a failing hook's exit code and stderr spelled out under its own output.
  *
  * A successful hook's stderr is left out. Commands write progress there routinely,
- * and repeating it would drown the measurement the hook was annotating.
+ * and repeating it would drown the measurement the hook was annotating. A failing
+ * hook's stderr is held to the same cap as its stdout — a build log is as easy to
+ * bury a measurement under on one channel as on the other.
  */
 function formatReport(stage: HookStage, outcome: CommandOutcome, timeoutMs: number): string {
-  const lines = splitLines(truncateStdout(outcome.stdout));
+  const lines = splitLines(limitOutput(outcome.stdout));
   const note = failureNote(outcome, timeoutMs);
 
   if (note !== undefined) {
-    lines.push(note, ...splitLines(outcome.stderr));
+    lines.push(note, ...splitLines(limitOutput(outcome.stderr)));
   }
 
   return lines.map((line) => `[${stage}] ${line}`).join("\n");
@@ -179,30 +173,4 @@ function failureNote(outcome: CommandOutcome, timeoutMs: number): string | undef
 function splitLines(text: string): string[] {
   const trimmed = text.replace(/\n$/, "");
   return trimmed === "" ? [] : trimmed.split("\n");
-}
-
-/**
- * At most {@link STDOUT_LIMIT_BYTES} of `text`, cut back to the last whole line
- * and, when a single line already overruns the limit, to the last whole
- * character.
- *
- * The limit is counted in bytes because that is what a consumer sizing their
- * hook's output can measure; cutting mid-character would put a replacement
- * character in the agent's transcript instead.
- */
-function truncateStdout(text: string): string {
-  const encoded = Buffer.from(text, "utf-8");
-  if (encoded.byteLength <= STDOUT_LIMIT_BYTES) {
-    return text;
-  }
-
-  const head = encoded.subarray(0, STDOUT_LIMIT_BYTES);
-  const lastNewline = head.lastIndexOf(NEWLINE_BYTE);
-  if (lastNewline >= 0) {
-    return head.subarray(0, lastNewline).toString("utf-8");
-  }
-
-  // A streaming decoder holds back the bytes of a character the cut split
-  // instead of emitting U+FFFD for them.
-  return new TextDecoder("utf-8").decode(head, { stream: true });
 }

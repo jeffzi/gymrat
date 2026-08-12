@@ -12,21 +12,39 @@ import type { HookScripts } from "../fixtures/hook-scripts.js";
 import { hookScripts } from "../fixtures/hook-scripts.js";
 import { expectedHookRecord, iterationRecord, sessionRecord } from "../fixtures/session-records.js";
 
-/** The cap the runner holds hook stdout to before it reaches gymrat's own output. */
-const STDOUT_LIMIT_BYTES = 8192;
+/** The cap the runner holds each of a hook's channels to before it reaches gymrat's own output. */
+const RELAY_LIMIT_BYTES = 8192;
 
 let tempDir: string;
 let experimentDir: string;
 let hookCommand: HookScripts["hookCommand"];
 let printing: HookScripts["printing"];
 
-/** Park `content` beside the hook and give back a command that prints it verbatim. */
-function printingContentOf(name: string, content: string): string {
+/**
+ * Park `content` in `name` beside the hook and give back the line that prints it
+ * verbatim on `channel`.
+ *
+ * The text lives in a file rather than inside the script so a payload far larger
+ * than a source literal wants to be still reaches the runner byte for byte.
+ */
+function printingLine(name: string, channel: "stdout" | "stderr", content: string): string {
   const dataPath = path.join(tempDir, name);
   fs.writeFileSync(dataPath, content);
+  return `process.${channel}.write(fs.readFileSync(${JSON.stringify(dataPath)}, "utf-8"));\n`;
+}
+
+/** Park `content` beside the hook and give back a command that prints it verbatim. */
+function printingContentOf(fileName: string, content: string): string {
+  return hookCommand(`import fs from "node:fs";\n${printingLine(fileName, "stdout", content)}`);
+}
+
+/** A command that prints parked text on both channels and then exits 3. */
+function failingContentOf(stem: string, streams: { stdout: string; stderr: string }): string {
   return hookCommand(
     `import fs from "node:fs";\n` +
-      `process.stdout.write(fs.readFileSync(${JSON.stringify(dataPath)}, "utf-8"));\n`,
+      printingLine(`${stem}-stdout.txt`, "stdout", streams.stdout) +
+      printingLine(`${stem}-stderr.txt`, "stderr", streams.stderr) +
+      `process.exitCode = 3;\n`,
   );
 }
 
@@ -210,8 +228,50 @@ describe("runHook", () => {
 
       // Assert
       const lines = labeledLines(run.report, "before");
-      expect.soft(lines).toStrictEqual(["é".repeat(STDOUT_LIMIT_BYTES / 2)]);
+      expect.soft(lines).toStrictEqual(["é".repeat(RELAY_LIMIT_BYTES / 2)]);
       expect(run.record.stdoutBytes).toBe(10000);
+    });
+  });
+
+  describe("when a failing hook prints more than the 8 KiB gymrat will relay on either channel", () => {
+    it("holds each channel to its own cap, cut at the last whole line that fits", async () => {
+      // Arrange
+      const outLine = "a".repeat(100);
+      const errLine = "b".repeat(100);
+      const command = failingContentOf("both-channels", {
+        stdout: `${outLine}\n`.repeat(200),
+        stderr: `${errLine}\n`.repeat(200),
+      });
+
+      // Act
+      const run = await runHook(invocationOf(command));
+
+      // Assert
+      expect
+        .soft(labeledLines(run.report, "before"))
+        .toStrictEqual([
+          ...Array.from({ length: 81 }, () => outLine),
+          "hook exited 3",
+          ...Array.from({ length: 81 }, () => errLine),
+        ]);
+      expect(run.record.stdoutBytes).toBe(20200);
+    });
+
+    it("stops stderr mid-line without splitting a multi-byte character", async () => {
+      // Arrange
+      const command = failingContentOf("long-stderr-line", {
+        stdout: "",
+        stderr: "é".repeat(5000),
+      });
+
+      // Act
+      const run = await runHook(invocationOf(command));
+
+      // Assert
+      expect(labeledLines(run.report, "before")).toStrictEqual([
+        "hook exited 3",
+        "é".repeat(RELAY_LIMIT_BYTES / 2),
+      ]);
     });
   });
 
