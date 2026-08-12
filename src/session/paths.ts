@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import { notAGitRepositoryError, runGit } from "../git.js";
+import { repositoryLookupError, runGit } from "../git.js";
 
 /** Directory under the repo root holding session state and its worktrees. */
 export const SESSION_DIR_NAME = ".gymrat";
@@ -13,7 +13,8 @@ const LOCK_DIGEST_LENGTH = 12;
 /**
  * Locate the top level of the git repository containing `cwd`.
  *
- * @throws GymratError when `cwd` is not inside a git repository.
+ * @throws NotAGitRepositoryError when git places `cwd` outside every repository.
+ * @throws GymratError when git could not answer where `cwd` sits.
  */
 export function repoRoot(cwd: string = process.cwd()): string {
   try {
@@ -21,7 +22,7 @@ export function repoRoot(cwd: string = process.cwd()): string {
     // path hashes and compares identically to native paths elsewhere.
     return path.normalize(runGit(["rev-parse", "--show-toplevel"], cwd).trim());
   } catch (error) {
-    throw notAGitRepositoryError(cwd, error);
+    throw repositoryLookupError(cwd, error);
   }
 }
 

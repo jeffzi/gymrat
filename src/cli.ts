@@ -18,6 +18,7 @@ import {
 } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
+import { NotAGitRepositoryError } from "./git.js";
 import { finalizeSession } from "./loop/finalize.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
 import { discardSession, keepSession } from "./loop/settle.js";
@@ -700,13 +701,16 @@ async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<
  *
  * Both commands accept plain directories, so standing outside a git repository
  * is a supported way to run gymrat rather than a failure: it just leaves nothing
- * to take a lock on.
+ * to take a lock on. Git declining to answer is not that answer — an untrusted
+ * or unreadable repository still holds a repository, and a run that read the
+ * failure as "no repository here" would bench it unlocked alongside whatever
+ * else is running there. That error propagates instead.
  */
 function lockableRepoRoot(): string | undefined {
   try {
     return repoRoot();
   } catch (error) {
-    if (error instanceof GymratError) {
+    if (error instanceof NotAGitRepositoryError) {
       return undefined;
     }
     throw error;
@@ -756,7 +760,12 @@ async function withRepoLock<T>(
   // Default: every uncaught error is a tool failure.
   exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
 ): Promise<T> {
-  const root = lockableRepoRoot();
+  let root: string | undefined;
+  try {
+    root = lockableRepoRoot();
+  } catch (error) {
+    return exitWithError(error);
+  }
   if (root === undefined) {
     return await runOrExit(run, exitCodeOf);
   }

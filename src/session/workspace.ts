@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { GymratError, stderrTextOf } from "../errors.js";
-import { notAGitRepositoryError, runGit } from "../git.js";
+import { repositoryLookupError, runGit } from "../git.js";
 import { baselineWorktreeDir, experimentWorktreeDir, SESSION_DIR_NAME } from "./paths.js";
 
 /** Prefix of the branch a session's experiment worktree sits on. */
@@ -340,7 +340,7 @@ function gitCommonDir(root: string): string {
     const printed = runGit(["rev-parse", "--git-common-dir"], root).trim();
     return path.resolve(root, printed);
   } catch (error) {
-    throw notAGitRepositoryError(root, error);
+    throw repositoryLookupError(root, error);
   }
 }
 

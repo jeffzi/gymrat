@@ -6,6 +6,7 @@
 /* eslint-disable typescript/no-unsafe-type-assertion -- process.exit mock requires never cast */
 import { execFile } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -15,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
@@ -52,7 +53,13 @@ import {
 import { ANSI_RE, ISO_PATTERN } from "./fixtures/constants.js";
 import { createMeasurementResult, twoKindMeasurement } from "./fixtures/measurement-result.js";
 import { isAlive, waitForPid } from "./fixtures/process-probe.js";
-import { createScratchRepo, git, type ScratchRepo, toShellPath } from "./fixtures/scratch-repo.js";
+import {
+  createScratchRepo,
+  freshRoot,
+  git,
+  type ScratchRepo,
+  toShellPath,
+} from "./fixtures/scratch-repo.js";
 import {
   committedKeep,
   finalizeRecord,
@@ -3096,7 +3103,7 @@ interface CliProcessResult {
 function runCliProcess(
   entry: string,
   args: string[],
-  options: { cwd?: string } = {},
+  options: { cwd?: string; env?: Record<string, string | undefined> } = {},
 ): Promise<CliProcessResult> {
   return new Promise<CliProcessResult>((settle) => {
     execFile(
@@ -3107,7 +3114,7 @@ function runCliProcess(
       {
         timeout: 10000,
         cwd: options.cwd,
-        env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: "1" },
+        env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: "1", ...options.env },
       },
       (error, stdout, stderr) => {
         settle({
@@ -3342,6 +3349,102 @@ describe("a repository with no config file", () => {
     },
     30_000,
   );
+});
+
+describe("the repository a benchmark run locks", () => {
+  /** The opening of the diagnostic git emits when it refuses to trust a repository. */
+  const DUBIOUS_OWNERSHIP = "fatal: detected dubious ownership in repository";
+
+  /** A bench that leaves `marker` behind, so a refusal can be told from a completed run. */
+  function benchRecordingItRan(marker: string): string {
+    return `#!/bin/sh\necho ran > "${toShellPath(marker)}"\necho "METRIC latency=100"\n`;
+  }
+
+  /**
+   * A PATH whose `git` fails every invocation the way one refusing an untrusted
+   * repository does.
+   *
+   * "Not a git repository" is the single git answer that places the run outside
+   * a repository; every other failure leaves the question unanswered, and this
+   * shim stands in for that whole class — dubious ownership, an unreadable
+   * `.git`, a git that cannot run at all.
+   */
+  function pathWithFailingGit(dir: string): string {
+    const shimDir = join(dir, "git-shim");
+    mkdirSync(shimDir, { recursive: true });
+    const shim = join(shimDir, "git");
+    writeFileSync(shim, `#!/bin/sh\necho "${DUBIOUS_OWNERSHIP} at '$PWD'" >&2\nexit 128\n`);
+    chmodSync(shim, 0o755);
+    return `${shimDir}${delimiter}${process.env.PATH ?? ""}`;
+  }
+
+  /*
+   * These run in a child process: the shimmed PATH has to be the one the CLI's
+   * own git calls resolve against, and the suite mocks `resolveConfig` in
+   * process, which would take the bench command out of the run.
+   */
+  describe("when git fails inside a repository", () => {
+    let repo: ScratchRepo;
+
+    beforeEach(() => {
+      repo = createScratchRepo();
+    });
+
+    afterEach(() => {
+      repo.cleanup();
+    });
+
+    // The shim is a POSIX shell script, which Windows cannot execute as `git`.
+    it.skipIf(process.platform === "win32")(
+      "exits 2 with the git error instead of benchmarking unlocked",
+      async () => {
+        // Arrange
+        const benchMarker = join(repo.dir, "bench-ran");
+        writeFileSync(join(repo.dir, "bench.sh"), benchRecordingItRan(benchMarker));
+
+        // Act
+        const { exitCode, stderr } = await runCliProcess(
+          resolve("src/cli.ts"),
+          ["measure", "--bench", "sh bench.sh", "--samples", "1"],
+          { cwd: repo.dir, env: { PATH: pathWithFailingGit(repo.dir) } },
+        );
+
+        // Assert - the run stops at the unanswered question, in git's own words
+        expect.soft(exitCode).toBe(2);
+        expect.soft(stderr).toContain(DUBIOUS_OWNERSHIP);
+        expect(existsSync(benchMarker)).toBe(false);
+      },
+      30_000,
+    );
+  });
+
+  describe("when the working directory is outside every repository", () => {
+    let nonRepoDir: string;
+
+    beforeEach(() => {
+      nonRepoDir = freshRoot("gymrat-not-a-repo-");
+    });
+
+    afterEach(() => {
+      rmSync(nonRepoDir, { recursive: true, force: true, maxRetries: 3 });
+    });
+
+    it("benchmarks lock-free on git's explicit not-a-repository answer", async () => {
+      // Arrange
+      writeFileSync(join(nonRepoDir, "bench.sh"), '#!/bin/sh\necho "METRIC latency=100"\n');
+
+      // Act
+      const { exitCode, stdout } = await runCliProcess(
+        resolve("src/cli.ts"),
+        ["measure", "--bench", "sh bench.sh", "--samples", "1"],
+        { cwd: nonRepoDir },
+      );
+
+      // Assert
+      expect.soft(exitCode).toBe(0);
+      expect(stdout).toContain("latency");
+    }, 30_000);
+  });
 });
 
 describe("entry point", () => {
