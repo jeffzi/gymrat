@@ -56,7 +56,9 @@ Read the verdict block. The opening lines report what a confirmation rerun alrea
 (`regression confirmed on rerun`, `not confirmed`, or `not measured`). Then the verdict:
 
 - **IMPROVED** — the primary metric moved in the right direction.
-- **REGRESSED** — a gating metric regressed (confirmed by the rerun).
+- **REGRESSED** — a gating metric regressed. For inexact metrics the rerun confirms the regression;
+  exact metrics gate without a rerun (their value is deterministic). A metric absent from the rerun
+  still gates — silence is not evidence the regression went away.
 - **NO-SIGNAL** — the change did not move the needle.
 
 The `Hint:` line tells you what to do next. Then settle:

@@ -121,12 +121,13 @@ gymrat finalize                  # squash kept iterations onto a new branch
 missing is put back. Each iteration must be settled — kept or discarded — before the next one
 measures, so the log never holds two settlements against one iteration.
 
-`keep` runs the `checks` command in the experiment worktree first and refuses to commit when it
-fails; it also refuses when nothing has been measured since the last settle, and when the iteration
-regressed a gating metric. The confirmation rerun decides that last case: a regression the rerun
+`keep` refuses to commit when nothing has been measured since the last keep or discard, when the
+iteration regressed a gating metric, or — checked last — when the `checks` command fails. The
+confirmation rerun decides the gating-regression case for inexact metrics: a regression the rerun
 re-measured and would not repeat leaves the keep committable, while one the rerun never reported
-back on blocks it — silence is not evidence the regression went away. Every refusal is recorded as
-a blocked keep, which `status` reads back — gymrat never erases a decision from the log. A refused
+back on blocks it — silence is not evidence the regression went away. An exact metric gates without
+a rerun (its value is deterministic, so repeating it adds nothing). Every refusal is recorded as a
+blocked keep, which `status` reads back — gymrat never erases a decision from the log. A refused
 keep exits 1.
 
 `finalize` collapses every kept iteration into one squash commit whose tree equals the session
@@ -144,19 +145,19 @@ concurrent runs perturb each other's measurements. `status` only reads the log, 
 
 ### Options
 
-| Option                  | Default         | Description                                                               |
-| ----------------------- | --------------- | ------------------------------------------------------------------------- |
-| `--bench <cmd>`         | — (required\*)  | Bench command run in each target directory                                |
-| `--prepare <script>`    | none            | Per-target setup, e.g. `"npm ci && npm run build"`                        |
-| `--adapter <type>`      | `metric-lines`  | Output parser: `metric-lines` or `mitata`                                 |
-| `--samples <number>`    | `10`            | Paired samples per target                                                 |
-| `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare` and per bench run                        |
-| `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                           |
-| `--format <value>`      | `text`          | Output format: `text` or `json`                                           |
-| `--no-color`            | auto            | Print the report without ANSI styles                                      |
-| `--verbose`             | off             | Name the statistical method behind each verdict in the footer             |
-| `--fail-on <condition>` | none            | Exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
-| `-r, --record`          | off             | `measure` only: append the run to the session log as a baseline           |
+| Option                  | Default         | Description                                                           |
+| ----------------------- | --------------- | --------------------------------------------------------------------- |
+| `--bench <cmd>`         | — (required\*)  | Bench command run in each target directory                            |
+| `--prepare <script>`    | none            | Per-target setup, e.g. `"npm ci && npm run build"`                    |
+| `--adapter <type>`      | `metric-lines`  | Output parser: `metric-lines` or `mitata`                             |
+| `--samples <number>`    | `10`            | Paired samples per target                                             |
+| `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare`, per bench run, and per `checks` run |
+| `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                       |
+| `--format <value>`      | `text`          | Output format: `text` or `json` (`compare` and `measure` only)        |
+| `--no-color`            | auto            | Print the report without ANSI styles                                  |
+| `--verbose`             | off             | `compare` only: name the statistical method behind each verdict       |
+| `--fail-on <condition>` | none            | `compare` only: exit 1 when a condition trips (repeatable; see below) |
+| `-r, --record`          | off             | `measure` only: append the run to the session log as a baseline       |
 
 \*`--bench` is required either on the command line or in the config file.
 
@@ -218,7 +219,10 @@ even under `~`.
 
 Verdicts come from a two-sided Wilcoxon signed-rank test at ≥ 6 nonzero paired differences, a
 half-range noise band below that, and direct median comparison for config-flagged `exact` metrics.
-Add `--verbose` to name the method behind each verdict in the footer.
+Add `--verbose` to name the method behind each verdict in the footer. With multiple candidates, the
+baseline column summarizes every sampling round that any candidate paired on — the union gives the
+strongest estimate of the baseline's central tendency, while each candidate's delta is computed
+from its own paired rounds alone.
 
 The [reference](docs/reference.md#report-anatomy) has an annotated example and the full anatomy —
 noise bands, spread columns, multi-kind sections, one-sided metrics — plus the exact verdict rules.
@@ -341,16 +345,19 @@ an error, to catch typos.
   flag — set it in the config file or leave the default.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
   - `direction`: `"lower"` or `"higher"` (which way is better).
-  - `gating`: whether the metric counts toward the geomean and the `--fail-on` gate. Defaults to
-    `true`. A per-metric `gating` entry takes precedence over the kind-level setting.
+  - `gating`: whether the metric counts toward the gated geomean (the one `--fail-on geomean:<pct>`
+    evaluates and the flat-report closing row shows) and the `--fail-on regressed` gate. Defaults to
+    `true`. The sectioned per-kind geomean row includes every metric of the kind regardless of this
+    setting. A per-metric `gating` entry takes precedence over the kind-level setting.
   - `exact`: when `true`, any median difference is a signal and a single sample suffices.
 - A `metrics` key that matches no metric the run produced is ignored without a warning, unlike an
   unknown top-level key. When an override seems to do nothing, check the spelling against the
   report's metric column.
 - `kinds` keys are kind names reported by the adapter (`time`, `memory` for `mitata`; `other` for
   `metric-lines`). Each entry accepts:
-  - `gating`: whether every metric of this kind counts toward the geomean and the `--fail-on` gate.
-    Defaults to `true`. A per-metric `gating` entry in `metrics` overrides the kind-level setting.
+  - `gating`: whether every metric of this kind counts toward the gated geomean and the
+    `--fail-on` gate. Defaults to `true`. A per-metric `gating` entry in `metrics` overrides the
+    kind-level setting.
 - A `kinds` key that matches no kind the run produced is silently ignored, the same as an unmatched
   `metrics` key.
 - An unknown sub-key inside a `metrics` or `kinds` entry is an error, the same as an unknown
@@ -362,7 +369,9 @@ These five keys configure [the session loop](#the-session-loop) and are ignored 
 `measure`.
 
 - `checks` is the command `gymrat keep` must see succeed before it commits, run in the experiment
-  worktree. Without it, `keep` commits with the gate off and warns on stderr that it did.
+  worktree. The `timeoutSeconds` limit applies to the checks run; a timeout counts as a failure and
+  produces a `checks-failed` blocked keep. Without `checks`, `keep` commits with the gate off and
+  warns on stderr that it did.
 - `filter` is the bench command a confirmation rerun uses to re-measure only the metrics that
   regressed. It must contain the `{names}` placeholder — gymrat substitutes the space-separated
   metric names there — and a `filter` without it is a config error. Left unset, a confirmation rerun
