@@ -103,7 +103,9 @@ function ignoreStdinError(err: unknown): void {
  *
  * Aborting `options.signal` kills that same process group. Unlike a timeout, an abort
  * resolves with an ExecResult holding the output captured so far, so callers can tell a
- * caller-initiated cancellation apart from a timeout.
+ * caller-initiated cancellation apart from a timeout. A signal that is already aborted
+ * when the call arrives never spawns the shell at all, and resolves with that same
+ * cancelled shape.
  *
  * A run that ends on its own is snapshotted when the child's stdio closes rather than when
  * the shell exits, so a line a background job writes after the shell returns is still
@@ -132,6 +134,14 @@ export async function exec(
   options: ExecOptions,
 ): Promise<ExecResult | ExecTimeoutError> {
   return new Promise((resolve) => {
+    // A signal already aborted when the call arrives is a cancellation, not a run:
+    // spawning would execute the command text and only then kill it. Settle with the
+    // shape a mid-run abort produces, so callers handle cancellation one way.
+    if (options.signal?.aborted) {
+      resolve({ stdout: "", stderr: "", exitCode: FAILURE_EXIT_CODE });
+      return;
+    }
+
     // Some spawn failures are raised here rather than on the "error" event —
     // ENOTDIR from a cwd that is not a directory is one. Both paths report the
     // same way, so a caller never has to handle a rejection as well as a result.
@@ -178,6 +188,11 @@ export async function exec(
       resolved = true;
       clearTimeout(timeoutHandle);
       options.signal?.removeEventListener("abort", onAbort);
+      // The snapshot in `result` is final, but a descendant that survived the group
+      // kill still holds the write end of these pipes and would keep appending to
+      // `output`. Destroying the read end releases the pipe with the call.
+      child.stdout.destroy();
+      child.stderr.destroy();
 
       // "close", "error", the timeout and the abort can all fire for one run;
       // `resolved` keeps the first of them the only one.
@@ -209,14 +224,10 @@ export async function exec(
       }, timeoutMs);
     }
 
-    // A signal aborted before this call never dispatches to a listener added after
-    // the fact, so an already-aborted signal must clean up directly instead of
-    // relying on the "abort" event.
-    if (options.signal?.aborted) {
-      onAbort();
-    } else {
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-    }
+    // Aborting after this point is the only case left to listen for: a signal already
+    // aborted settled the call before the spawn, and nothing between there and here
+    // yields to the event loop.
+    options.signal?.addEventListener("abort", onAbort, { once: true });
 
     // "close", not "exit": it waits for the stdio pipes, which the shell's
     // descendants can still be writing to after the shell itself is gone.

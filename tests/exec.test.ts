@@ -309,7 +309,11 @@ describe.skipIf(process.platform === "win32")("exec", () => {
     });
 
     describe("before the call", () => {
-      it("kills the command instead of running it, settling as a cancelled run", async () => {
+      beforeEach(() => {
+        spawnedChildren.length = 0;
+      });
+
+      it("never spawns the shell, settling as a cancelled run", async () => {
         const controller = new AbortController();
         controller.abort();
 
@@ -324,11 +328,10 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         if (settled === PENDING) {
           throw new Error("exec() stayed pending for an already-aborted signal");
         }
-        // A `sleep 30` that settles inside three seconds can only have been
-        // signalled, so this doubles as the proof the command was killed rather
-        // than left running. Same shape as a mid-run abort: no output, and a
-        // SIGKILLed child reports a null code that exec maps to 1. An exact match
-        // also rules out the timeout shape, which carries `kind` and `timeoutMs`.
+        expect(spawnedChildren).toHaveLength(0);
+        // Same shape as a mid-run abort: no output, and exec's failure exit code.
+        // An exact match also rules out the timeout shape, which carries `kind`
+        // and `timeoutMs`.
         expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
         expect(fs.existsSync(path.join(tmpDir, "completed.marker"))).toBe(false);
       }, 20_000);
@@ -342,6 +345,61 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
       expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
     });
+  });
+
+  describe("when a run settles while the child's pipes are still open", () => {
+    /** A run under way, plus the trigger that settles it early. */
+    interface StartedRun {
+      readonly running: Promise<ExecResult | ExecTimeoutError>;
+      /** Absent for a run that settles on its own, such as one that times out. */
+      readonly settleRun?: () => void;
+    }
+
+    beforeEach(() => {
+      spawnedChildren.length = 0;
+    });
+
+    afterEach(() => {
+      killSpawnedChildren();
+    });
+
+    it.each([
+      {
+        description: "a timeout",
+        start: (): StartedRun => ({ running: runInTmpdir("sleep 30", { timeoutMs: 500 }) }),
+      },
+      {
+        description: "an abort",
+        start: (): StartedRun => {
+          const controller = new AbortController();
+          return {
+            running: runInTmpdir("sleep 30", { signal: controller.signal }),
+            settleRun: () => {
+              controller.abort();
+            },
+          };
+        },
+      },
+    ])(
+      "destroys the child's stdio pipes after $description, so a surviving descendant cannot grow the settled buffers",
+      async ({ start }) => {
+        const { running, settleRun } = start();
+        const child = await waitForSpawnedChild();
+        const { stdout, stderr } = child;
+        if (stdout === null || stderr === null) {
+          throw new Error("child was spawned without stdio pipes");
+        }
+
+        settleRun?.();
+        await running;
+
+        expect({ stdout: stdout.destroyed, stderr: stderr.destroyed }).toStrictEqual({
+          stdout: true,
+          stderr: true,
+        });
+      },
+      20_000,
+    );
   });
 
   describe("when taskkill fails on Windows", () => {
