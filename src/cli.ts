@@ -301,6 +301,9 @@ const GATE_EXIT_CODE = 1;
 /** The exit code of a tool failure, the convention every unhandled error exits on. */
 const TOOL_FAILURE_EXIT_CODE = 2;
 
+/** Default exit-code mapper: every uncaught error is a tool failure. */
+const defaultExitCodeOf = (): number => TOOL_FAILURE_EXIT_CODE;
+
 /** Print a formatted error to stderr and exit on `code`. */
 async function exitWithError(error: unknown, code = TOOL_FAILURE_EXIT_CODE): Promise<never> {
   try {
@@ -554,11 +557,8 @@ interface SharedFlags extends CliFlags {
   format: "text" | "json";
 }
 
-/** The status command's flags: the configuration set plus whether its report may be styled. */
-interface StatusFlags extends CliFlags {
-  /** Commander's `--no-color` counterpart: true unless the flag was passed. */
-  color: boolean;
-}
+/** The status command's flags: the shared set minus the format choice status does not offer. */
+type StatusFlags = Omit<SharedFlags, "format">;
 
 /** The keep command's flags: the configuration set plus the message the commit carries. */
 interface KeepFlags extends CliFlags {
@@ -690,12 +690,9 @@ function noColorOverride(colorFlag: boolean): boolean | undefined {
  */
 async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<T>): Promise<T> {
   try {
-    const result = await execute();
+    return await execute();
+  } finally {
     progress.stop();
-    return result;
-  } catch (error) {
-    progress.stop();
-    throw error;
   }
 }
 
@@ -732,7 +729,7 @@ function lockableRepoRoot(): string | undefined {
 async function runOrExit<T>(
   execute: () => Promise<T>,
   // Default: every uncaught error is a tool failure.
-  exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
+  exitCodeOf: (error: unknown) => number = defaultExitCodeOf,
 ): Promise<T> {
   try {
     return await execute();
@@ -761,7 +758,7 @@ async function withRepoLock<T>(
   command: string,
   run: () => Promise<T>,
   // Default: every uncaught error is a tool failure.
-  exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
+  exitCodeOf: (error: unknown) => number = defaultExitCodeOf,
 ): Promise<T> {
   let root: string | undefined;
   try {
@@ -780,15 +777,12 @@ async function withRepoLock<T>(
     return exitWithError(error);
   }
 
-  const releaseOnExit = (): void => {
-    release();
-  };
-  process.once("exit", releaseOnExit);
+  process.once("exit", release);
 
   try {
     return await runOrExit(run, exitCodeOf);
   } finally {
-    process.removeListener("exit", releaseOnExit);
+    process.removeListener("exit", release);
     release();
   }
 }
@@ -840,24 +834,6 @@ async function emitReport<T>(
   }
 
   await writeAndFlush(process.stdout, output + "\n");
-}
-
-/** Where a recorded run writes, and which session it becomes part of. */
-interface RecordingTarget {
-  jsonlPath: string;
-  sessionId: string;
-}
-
-/**
- * The open session `--record` appends to.
- *
- * @throws GymratError when the repository has no open session — a finalized one
- *   is no more somewhere to record than none at all, and only `gymrat start`
- *   can change either.
- */
-function recordingTarget(root: string): RecordingTarget {
-  const { session, jsonlPath } = requireOpenSession(root, "recording a measurement");
-  return { jsonlPath, sessionId: session.sessionId };
 }
 
 /** The history entry a recorded run leaves behind: what it measured, round by round. */
@@ -949,9 +925,12 @@ export function createProgram(): Command {
     .name("gymrat")
     .description("Performance comparison tool for benchmarks")
     .version(readPackageVersion())
-    .configureHelp(createHelpConfig());
+    .configureHelp(createHelpConfig())
+    .exitOverride((err) => {
+      throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
+    });
 
-  const compareCmd = addSharedOptions(
+  addSharedOptions(
     program
       .command("compare")
       .description("Compare one baseline revision against one or more candidates")
@@ -970,7 +949,6 @@ export function createProgram(): Command {
       parseFailOn,
       noFailOnConditions,
     )
-    .configureHelp(createHelpConfig())
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
       /*
        * Everything after the lock only reads the result the lock already
@@ -1015,7 +993,7 @@ export function createProgram(): Command {
       }
     });
 
-  const measureCmd = addSharedOptions(
+  addSharedOptions(
     program
       .command("measure")
       .description("Measure one revision or directory on its own, with nothing to compare it to")
@@ -1027,7 +1005,6 @@ export function createProgram(): Command {
       ),
   )
     .option("-r, --record", "append the run to the session log as a baseline", false)
-    .configureHelp(createHelpConfig())
     .action(async (target: TargetSpec, options: MeasureFlags) => {
       /*
        * The lock covers the measurement and the append it produces — every
@@ -1047,7 +1024,9 @@ export function createProgram(): Command {
            * benches for ten minutes and only then discovers it has nowhere to
            * write has thrown the whole measurement away.
            */
-          const recording = options.record ? recordingTarget(repoRoot()) : undefined;
+          const recording = options.record
+            ? requireOpenSession(repoRoot(), "recording a measurement")
+            : undefined;
 
           const measureOptions: MeasureOptions = {
             target,
@@ -1076,98 +1055,91 @@ export function createProgram(): Command {
         // JSON a consumer has to parse.
         await writeAndFlush(
           options.format === "json" ? process.stderr : process.stdout,
-          `baseline "${run.result.label}" recorded to session ${run.recording.sessionId}\n`,
+          `baseline "${run.result.label}" recorded to session ${run.recording.session.sessionId}\n`,
         );
       }
     });
 
-  const startCmd = addConfigOptions(
+  addConfigOptions(
     program
       .command("start")
       .description("Create or resume this repository's optimization session")
       .argument("[ref]", "ref the baseline is pinned to; defaults to HEAD"),
-  )
-    .configureHelp(createHelpConfig())
-    .action(async (ref: string | undefined, options: CliFlags) => {
-      /*
-       * The summary prints after the lock is released: it describes a workspace
-       * that is already on disk, so holding the repository against every other
-       * gymrat process while stdout drains would serialize runs for nothing.
-       */
-      const started = await withRepoLock("start", () => {
-        const root = repoRoot();
-        return Promise.resolve({
-          root,
-          result: startSession(root, ref, resolveConfig(options, root)),
-        });
+  ).action(async (ref: string | undefined, options: CliFlags) => {
+    /*
+     * The summary prints after the lock is released: it describes a workspace
+     * that is already on disk, so holding the repository against every other
+     * gymrat process while stdout drains would serialize runs for nothing.
+     */
+    const started = await withRepoLock("start", () => {
+      const root = repoRoot();
+      return Promise.resolve({
+        root,
+        result: startSession(root, ref, resolveConfig(options, root)),
       });
-
-      await writeAndFlush(process.stdout, `${formatStartSummary(started.result)}\n`);
     });
 
-  const iterateCmd = addConfigOptions(
+    await writeAndFlush(process.stdout, `${formatStartSummary(started.result)}\n`);
+  });
+
+  addConfigOptions(
     program
       .command("iterate")
       .description("Measure the session's experiment worktree against its baseline"),
-  )
-    .configureHelp(createHelpConfig())
-    .action(async (options: CliFlags) => {
+  ).action(async (options: CliFlags) => {
+    /*
+     * The report prints after the lock is released, as `start`'s summary does:
+     * the measurement is over by then, and holding the repository while stdout
+     * drains would serialize runs for nothing.
+     */
+    const result = await withRepoLock(
+      "iterate",
+      async () => {
+        const root = repoRoot();
+        return runInterruptibly((signal) =>
+          iterateSession(root, resolveConfig(options, root), { signal }),
+        );
+      },
       /*
-       * The report prints after the lock is released, as `start`'s summary does:
-       * the measurement is over by then, and holding the repository while stdout
-       * drains would serialize runs for nothing.
+       * A met stop condition is a gate trip, not a tool failure: the loop
+       * reached the end it was configured for, so it exits the way a keep
+       * the checks refused does.
        */
-      const result = await withRepoLock(
-        "iterate",
-        async () => {
-          const root = repoRoot();
-          return runInterruptibly((signal) =>
-            iterateSession(root, resolveConfig(options, root), { signal }),
-          );
-        },
-        /*
-         * A met stop condition is a gate trip, not a tool failure: the loop
-         * reached the end it was configured for, so it exits the way a keep
-         * the checks refused does.
-         */
-        (error) => (error instanceof LoopStopError ? GATE_EXIT_CODE : TOOL_FAILURE_EXIT_CODE),
-      );
+      (error) => (error instanceof LoopStopError ? GATE_EXIT_CODE : TOOL_FAILURE_EXIT_CODE),
+    );
 
-      await writeAndFlush(process.stdout, `${result.report}\n`);
-    });
+    await writeAndFlush(process.stdout, `${result.report}\n`);
+  });
 
-  const keepCmd = addConfigOptions(
+  addConfigOptions(
     program
       .command("keep")
       .description("Commit the session's measured edit once its checks pass")
       .option("-m, --message <text>", "commit message for the kept edit"),
-  )
-    .configureHelp(createHelpConfig())
-    .action(async (options: KeepFlags) => {
-      const result = await withRepoLock("keep", async () => {
-        const root = repoRoot();
-        return keepSession(root, resolveBenchlessConfig(options, root), {
-          message: options.message,
-        });
+  ).action(async (options: KeepFlags) => {
+    const result = await withRepoLock("keep", async () => {
+      const root = repoRoot();
+      return keepSession(root, resolveBenchlessConfig(options, root), {
+        message: options.message,
       });
-
-      await writeAndFlush(process.stdout, `${result.report}\n`);
-
-      // A refused keep is a gate trip, not a tool failure: the record is written
-      // and reported, and only the exit code tells the agent it did not land.
-      if (result.record.status === "blocked") {
-        process.exit(GATE_EXIT_CODE);
-      }
     });
+
+    await writeAndFlush(process.stdout, `${result.report}\n`);
+
+    // A refused keep is a gate trip, not a tool failure: the record is written
+    // and reported, and only the exit code tells the agent it did not land.
+    if (result.record.status === "blocked") {
+      process.exit(GATE_EXIT_CODE);
+    }
+  });
 
   /*
    * The only settle command that reads no configuration: a revert is git alone,
    * so `discard` carries none of the config flags its siblings do.
    */
-  const discardCmd = program
+  program
     .command("discard")
     .description("Revert the session's experiment worktree to its last commit")
-    .configureHelp(createHelpConfig())
     .action(async () => {
       const result = await withRepoLock("discard", () =>
         Promise.resolve(discardSession(repoRoot())),
@@ -1180,12 +1152,11 @@ export function createProgram(): Command {
    * Reads no configuration, for `discard`'s reason: a squash is git alone, so
    * `finalize` carries none of the config flags its siblings do.
    */
-  const finalizeCmd = program
+  program
     .command("finalize")
     .description("Collapse the session's kept iterations into one commit and close it")
     .option("-m, --message <text>", "message for the squash commit")
     .option("--branch <name>", "branch to point at the squash commit (default: <branch>-final)")
-    .configureHelp(createHelpConfig())
     .action(async (options: FinalizeFlags) => {
       const result = await withRepoLock("finalize", () =>
         Promise.resolve(
@@ -1201,49 +1172,25 @@ export function createProgram(): Command {
    * log and writes nothing, so serializing it against a running iterate would
    * only make the agent wait to be told what is already on disk.
    */
-  const statusCmd = addConfigOptions(
+  addConfigOptions(
     program
       .command("status")
       .description("Show this repository's session history, read from its log")
       .option("--no-color", "print the report without ANSI styles"),
-  )
-    .configureHelp(createHelpConfig())
-    .action(async (options: StatusFlags) => {
-      // Suppressed before rendering, not after: the lines style themselves as
-      // they are built, and `styleText` reads the environment on every call.
-      if (!options.color) {
-        suppressColor();
-      }
+  ).action(async (options: StatusFlags) => {
+    // Suppressed before rendering, not after: the lines style themselves as
+    // they are built, and `styleText` reads the environment on every call.
+    if (!options.color) {
+      suppressColor();
+    }
 
-      const report = await runOrExit(() => {
-        const root = repoRoot();
-        return Promise.resolve(statusSession(root, resolveBenchlessConfig(options, root)));
-      });
-
-      await writeAndFlush(process.stdout, `${report}\n`);
+    const report = await runOrExit(() => {
+      const root = repoRoot();
+      return Promise.resolve(statusSession(root, resolveBenchlessConfig(options, root)));
     });
 
-  /*
-   * Commander exits 1 for usage errors by default. Override so all Commander
-   * errors (unknown option, missing argument, invalid choice) surface as exit
-   * code 2, keeping exit 1 reserved for gate trips. Exit code 0 (--help,
-   * --version) passes through unchanged.
-   */
-  for (const command of [
-    program,
-    compareCmd,
-    measureCmd,
-    startCmd,
-    iterateCmd,
-    keepCmd,
-    discardCmd,
-    finalizeCmd,
-    statusCmd,
-  ]) {
-    command.exitOverride((err) => {
-      throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
-    });
-  }
+    await writeAndFlush(process.stdout, `${report}\n`);
+  });
 
   return program;
 }
