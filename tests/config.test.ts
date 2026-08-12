@@ -5,8 +5,13 @@ import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 
 import type { Adapter } from "../src/adapters/types.js";
-import type { ResolvedConfig } from "../src/config.js";
-import { loadConfigFile, resolveConfig, resolveMetricMeta } from "../src/config.js";
+import type { BenchlessConfig, ResolvedConfig } from "../src/config.js";
+import {
+  loadConfigFile,
+  resolveBenchlessConfig,
+  resolveConfig,
+  resolveMetricMeta,
+} from "../src/config.js";
 import { GymratError } from "../src/errors.js";
 import { metricMeta } from "./fixtures/comparison-result.js";
 import { metricRecord } from "./fixtures/metrics.js";
@@ -289,6 +294,31 @@ describe("loadConfigFile", () => {
     });
   });
 
+  describe("when timeoutSeconds exceeds the millisecond timer cap", () => {
+    it("throws naming timeoutSeconds and the cap the flag path reports", () => {
+      const { dir, configPath } = createConfigFile({ timeoutSeconds: 2_147_484 });
+      tmpdir = dir;
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
+
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/timeoutSeconds/);
+      expect(act).toThrow(/no greater than 2147483/);
+    });
+  });
+
+  describe("when timeoutSeconds sits exactly on the millisecond timer cap", () => {
+    it("accepts the value", () => {
+      const { dir, configPath } = createConfigFile({ timeoutSeconds: 2_147_483 });
+      tmpdir = dir;
+
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual({ timeoutSeconds: 2_147_483 });
+    });
+  });
+
   describe("when unstableNoisePct holds an invalid value", () => {
     it.each([
       { description: "a string", value: "loud" },
@@ -343,6 +373,15 @@ describe("loadConfigFile", () => {
       tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency.*object/);
+    });
+  });
+
+  describe("when a metrics entry under an empty-string key has an invalid value", () => {
+    it("quotes the empty key so the path does not end with a trailing dot", () => {
+      const { dir, configPath } = createConfigFile({ metrics: { "": 5 } });
+      tmpdir = dir;
+
+      expect(() => loadConfigFile(configPath)).toThrow(/metrics\."".*object/);
     });
   });
 
@@ -712,6 +751,7 @@ describe("resolveConfig", () => {
       { key: "bench", flags: { bench: "" } },
       { key: "prepare", flags: { bench: "my-bench", prepare: "" } },
       { key: "adapter", flags: { bench: "my-bench", adapter: "" } },
+      { key: "config", flags: { bench: "my-bench", config: "" } },
     ])("throws naming --$key and the non-empty requirement", ({ key, flags }) => {
       tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
       process.chdir(tmpdir);
@@ -870,6 +910,29 @@ describe("resolveConfig", () => {
       const result = resolveConfig({});
 
       expect(result.stop).toStrictEqual({ maxIterations: 5 });
+    });
+  });
+});
+
+describe("resolveBenchlessConfig", () => {
+  let tmpdir: string;
+  const originalCwd = process.cwd();
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    if (tmpdir && fs.existsSync(tmpdir)) {
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
+  describe("when the config flag holds an empty string", () => {
+    it("throws naming --config and the non-empty requirement", () => {
+      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      process.chdir(tmpdir);
+      const act = (): BenchlessConfig => resolveBenchlessConfig({ config: "" });
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/--config.*non-empty/);
     });
   });
 });

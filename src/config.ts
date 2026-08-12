@@ -80,9 +80,11 @@ const configFileSchema = Type.Object(
     prepare: optionalNonEmptyStringSchema,
     adapter: optionalNonEmptyStringSchema,
     samples: Type.Optional(Type.Integer({ ...expected("a positive integer"), minimum: 1 })),
+    // The phrase names the cap because a single description covers both bounds, and a
+    // value over the cap is the one a reader cannot guess the limit of.
     timeoutSeconds: Type.Optional(
       Type.Integer({
-        ...expected("a positive integer"),
+        ...expected(`a positive integer no greater than ${MAX_TIMEOUT_SECONDS}`),
         minimum: 1,
         maximum: MAX_TIMEOUT_SECONDS,
       }),
@@ -191,7 +193,7 @@ function configMessage(configPath: string, issue: SchemaIssue): string {
   if (issue.kind === "unknown-key") {
     return `Unknown config key: ${describeKey(issue.path)}`;
   }
-  return invalidValueMessage(issue.path, issue.expected, issue.value);
+  return invalidValueMessage(describeKey(issue.path), issue.expected, issue.value);
 }
 
 /** The primary that aggregates every gating metric rather than naming one. */
@@ -286,6 +288,10 @@ function validateLoopKeys(config: { filter?: string; primary: string; stop?: Con
  * reaches a resolved field; it is a value the user got wrong, not a value left out.
  * The message names the flag rather than the config key, because the flag is what
  * the user typed.
+ *
+ * `--config ""` needs the same guard for a different reason: it is not nullish, so it
+ * wins the fallback to `./gymrat.json` and is then loaded as a required path — leaving
+ * the user with a missing-file error that names no file.
  */
 function assertFlagNotEmpty(field: string, value: string | undefined): void {
   if (value === "") {
@@ -358,6 +364,7 @@ function settleConfig(flags: CliFlags): { config: BenchlessConfig; bench: string
   assertFlagNotEmpty("bench", flags.bench);
   assertFlagNotEmpty("prepare", flags.prepare);
   assertFlagNotEmpty("adapter", flags.adapter);
+  assertFlagNotEmpty("config", flags.config);
   const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
   const config = mergeConfig(flags, configFile);
