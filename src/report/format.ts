@@ -264,9 +264,9 @@ export const QUIET_VERDICTS: ReadonlySet<DisplayClass> = new Set([
 /** The name the geomean row is reported under, in every renderer. */
 export const GEOMEAN_LABEL = "geomean";
 
-/** How many gating metrics an aggregate rests on, as the reader is told. */
-function stableMetrics(n: number): string {
-  return `${n} stable metric${n === 1 ? "" : "s"}`;
+/** Append an `s` to `noun` when `count` is not exactly one. */
+export function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 /**
@@ -279,7 +279,7 @@ function stableMetrics(n: number): string {
  * same form an empty geomean takes, having no count to name.
  */
 export function geomeanLabel(n: number): string {
-  return n === 0 ? GEOMEAN_LABEL : `${GEOMEAN_LABEL} (${stableMetrics(n)})`;
+  return n === 0 ? GEOMEAN_LABEL : `${GEOMEAN_LABEL} (${pluralize(n, "stable metric")})`;
 }
 
 /** The scope separator inside a sectioned table's aggregate labels. */
@@ -378,7 +378,7 @@ export function formatNoiseBandValue(noisePct: number): string {
 }
 
 /** A metric's noise band, as the `±N%` the row annotations and highlights share. */
-export function formatNoiseBand(noisePct: number): string {
+function formatNoiseBand(noisePct: number): string {
   return `${PLUS_MINUS}${formatNoiseBandValue(noisePct)}`;
 }
 
@@ -831,7 +831,7 @@ export function geomeanParts(geomean: GeomeanResult): GeomeanParts | null {
   // there is no noise to state, and `±0.0%` would read as a measurement.
   return {
     delta: formatDelta(geomean.value),
-    provenance: stableMetrics(geomean.n),
+    provenance: pluralize(geomean.n, "stable metric"),
     band: geomean.band > 0 ? formatNoiseBandValue(geomean.band) : "",
   };
 }
@@ -983,10 +983,6 @@ function collectFooterData(metrics: MetricComparisons): FooterData {
  *
  * Every line is dimmed via `styleText` auto-detection.
  */
-export function methodFooterLines(metrics: MetricComparisons): string[] {
-  return methodLinesFrom(collectFooterData(metrics));
-}
-
 function methodLinesFrom({ signedRank, shortage, ties }: FooterData): string[] {
   const lines: string[] = [];
 
@@ -1007,28 +1003,6 @@ function methodLinesFrom({ signedRank, shortage, ties }: FooterData): string[] {
 }
 
 /**
- * The always-on footer hint, told when a metric fell back to the noise band for
- * want of samples and more of them would buy a statistical verdict.
- *
- * The other cause of a band fallback, tied pairs, gets no hint: more samples
- * cannot help it, and the `=` glyph on those rows already reports what happened.
- *
- * `formatHint` turns the shared hint string into a format-appropriate line —
- * the text renderer prepends a styled label. The line is left unstyled here —
- * its label carries its own color through `formatHint`.
- */
-export function hintFooterLines(
-  metrics: MetricComparisons,
-  formatHint: (hint: string) => string,
-): string[] {
-  return hintLinesFrom(collectFooterData(metrics), formatHint);
-}
-
-function hintLinesFrom(data: FooterData, formatHint: (hint: string) => string): string[] {
-  return data.shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : [];
-}
-
-/**
  * The footer: how each verdict was decided when verbose, and — either way — the
  * hint telling the reader when more samples would buy a statistical verdict.
  *
@@ -1041,5 +1015,8 @@ export function footerLines(
   formatHint: (hint: string) => string,
 ): string[] {
   const data = collectFooterData(metrics);
-  return [...(verbose ? methodLinesFrom(data) : []), ...hintLinesFrom(data, formatHint)];
+  return [
+    ...(verbose ? methodLinesFrom(data) : []),
+    ...(data.shortage.length > 0 ? [formatHint(SAMPLES_HINT)] : []),
+  ];
 }

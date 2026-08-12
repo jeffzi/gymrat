@@ -27,10 +27,16 @@ import { statusSession } from "./loop/status.js";
 import { measure } from "./measure.js";
 import type { MeasureOptions } from "./measure.js";
 import { metricRecord } from "./metric-record.js";
-import { countVerdicts, formatHintLabel, formatLabel, shortenLabel } from "./report/format.js";
+import {
+  countVerdicts,
+  formatHintLabel,
+  formatLabel,
+  pluralize,
+  shortenLabel,
+} from "./report/format.js";
 import { renderJson, renderMeasureJson } from "./report/json.js";
 import { formatBaselineRef } from "./report/loop.js";
-import { pluralize, renderMeasureReport, renderReport } from "./report/text.js";
+import { renderMeasureReport, renderReport } from "./report/text.js";
 import type {
   CandidateComparison,
   ComparisonResult,

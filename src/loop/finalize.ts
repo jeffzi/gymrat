@@ -1,7 +1,7 @@
 import { GymratError } from "../errors.js";
 import { runGit } from "../git.js";
+import { pluralize } from "../report/format.js";
 import { SHORT_SHA_LENGTH } from "../report/loop.js";
-import { pluralize } from "../report/text.js";
 import type { FinalizeRecord, KeepRecord, SessionLogRecord } from "../session/records.js";
 import { appendRecord, requireOpenSession } from "../session/store.js";
 import { isWorktreeDirty, removeWorktrees, runGitStep } from "../session/workspace.js";

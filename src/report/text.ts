@@ -34,6 +34,7 @@ import {
   NO_GEOMEAN_FIGURE,
   NO_STABLE_METRICS,
   PLUS_MINUS,
+  pluralize,
   QUIET_VERDICTS,
   scopedGeomeanLabel,
   selectHighlights,
@@ -154,11 +155,6 @@ const HEADER_SEPARATOR = "·";
 /** Join a run header's parts with the dimmed `·` separator every report header shares. */
 function joinHeaderParts(parts: readonly string[]): string {
   return parts.join(` ${formatLabel(HEADER_SEPARATOR, ["dim"])} `);
-}
-
-/** `count`, followed by `noun` pluralized with a trailing `s` unless `count` is exactly one. */
-export function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 /**
@@ -1529,9 +1525,7 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
     if (display.candidates.length > 1) {
       lines.push(...renderComparison(display, conditions));
     } else {
-      for (const [index, candidate] of display.candidates.entries()) {
-        lines.push(...renderCandidate(display, candidate, index, conditions));
-      }
+      lines.push(...renderCandidate(display, display.candidates[0]!, 0, conditions));
     }
 
     const footer = [

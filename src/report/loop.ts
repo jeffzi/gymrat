@@ -20,8 +20,15 @@ import type {
   SessionRecord,
 } from "../session/records.js";
 import type { DisplayClass, Style } from "./format.js";
-import { formatDelta, formatHintLabel, formatLabel, formatValue, getGlyph } from "./format.js";
-import { pairedSamples, pluralize } from "./text.js";
+import {
+  formatDelta,
+  formatHintLabel,
+  formatLabel,
+  formatValue,
+  getGlyph,
+  pluralize,
+} from "./format.js";
+import { pairedSamples } from "./text.js";
 import type { MetricComparisons } from "./types.js";
 
 /**

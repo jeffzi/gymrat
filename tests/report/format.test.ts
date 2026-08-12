@@ -4,16 +4,14 @@ import {
   computeColumnWidth,
   countVerdicts,
   displayClass,
+  footerLines,
   formatDelta,
   formatEvidence,
   formatLabel,
-  formatNoiseBand,
   formatTableLine,
   formatValue,
   geomeanValueStyle,
   getGlyph,
-  hintFooterLines,
-  methodFooterLines,
   shortenLabel,
   scopedGeomeanLabel,
   selectHighlights,
@@ -184,6 +182,9 @@ describe("formatEvidence", () => {
   it.each([
     { desc: "well below the cap", noisePct: 30, expected: "noise ±30.0%" },
     { desc: "at the cap", noisePct: 100, expected: "noise ±100.0%" },
+    { desc: "fractional", noisePct: 2.5, expected: "noise ±2.5%" },
+    { desc: "whole number", noisePct: 2, expected: "noise ±2.0%" },
+    { desc: "sub-percent", noisePct: 0.5, expected: "noise ±0.5%" },
   ])("states unstable noise $desc as a percentage", ({ noisePct, expected }) => {
     const verdict = signedRankVerdict({ verdict: "unstable", noisePct, noiseAbs: 381 });
 
@@ -302,17 +303,6 @@ describe("getGlyph", () => {
     { displayClass: "inconclusive" as const, expected: "?" },
   ])("marks $displayClass with $expected", ({ displayClass: shown, expected }) => {
     expect(getGlyph(shown)).toBe(expected);
-  });
-});
-
-describe("formatNoiseBand", () => {
-  it.each([
-    { noisePct: 2.5, expected: "±2.5%" },
-    { noisePct: 2, expected: "±2.0%" },
-    { noisePct: 0.5, expected: "±0.5%" },
-    { noisePct: 213.47, expected: "±213.5%" },
-  ])("renders a noise band of $noisePct as $expected", ({ noisePct, expected }) => {
-    expect(formatNoiseBand(noisePct)).toBe(expected);
   });
 });
 
@@ -887,10 +877,17 @@ describe("verdictSummaryParts", () => {
   });
 });
 
-describe("methodFooterLines", () => {
+describe("footerLines (verbose method lines)", () => {
+  const noHint = (hint: string): string => `Hint: ${hint}`;
+
+  /** The verbose method lines, with no hint contribution. */
+  function verboseLines(metrics: Metrics): string[] {
+    return footerLines(metrics, true, noHint).filter((line) => !line.startsWith("Hint"));
+  }
+
   /** The lines describing the noise-band fallback, in the order they were emitted. */
   function bandLinesFor(metrics: Metrics): string[] {
-    return methodFooterLines(metrics).filter((line) => line.startsWith("noise band"));
+    return verboseLines(metrics).filter((line) => line.startsWith("noise band"));
   }
 
   afterEach(() => {
@@ -903,7 +900,7 @@ describe("methodFooterLines", () => {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics);
+    const lines = verboseLines(metrics);
 
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
@@ -918,16 +915,16 @@ describe("methodFooterLines", () => {
       "a/time": approximateMetric({ verdict: "improved", delta: -10 }),
     };
 
-    const lines = methodFooterLines(metrics);
+    const lines = verboseLines(metrics);
     const verdictLine = lines.find((line) => line.includes("Wilcoxon"));
 
     expect(verdictLine).toContain("\x1b[2m");
   });
 
-  it("leaves the sample-shortage hint to the hint lines", () => {
+  it("leaves the sample-shortage hint to the non-verbose output", () => {
     const metrics: Metrics = { "a/time": bandMetric({ n: 4 }) };
 
-    expect(methodFooterLines(metrics).join("\n")).not.toContain("Hint");
+    expect(verboseLines(metrics).join("\n")).not.toContain("Hint");
   });
 
   const bandCases: { cause: string; metrics: Metrics; expected: string[] }[] = [
@@ -966,7 +963,7 @@ describe("methodFooterLines", () => {
   });
 });
 
-describe("hintFooterLines", () => {
+describe("footerLines (hint lines)", () => {
   const formatHint = (hint: string): string => `Hint: ${hint}`;
 
   afterEach(() => {
@@ -978,7 +975,7 @@ describe("hintFooterLines", () => {
 
     const metrics: Metrics = { "a/time": bandMetric({ n: 4 }) };
 
-    expect(hintFooterLines(metrics, formatHint)[0]).not.toContain("\x1b[2m");
+    expect(footerLines(metrics, false, formatHint)[0]).not.toContain("\x1b[2m");
   });
 
   const hintCases: { desc: string; metrics: Metrics; expected: string[] }[] = [
@@ -992,8 +989,6 @@ describe("hintFooterLines", () => {
       expected: ["Hint: re-run with --samples 6 or more for statistical verdicts"],
     },
     {
-      // The = glyph already says the values are identical, so more samples buy
-      // nothing.
       desc: "ties alone starved the signed-rank test",
       metrics: {
         "entity.alive_check/heap": bandMetric({ n: 10, usableN: 3 }),
@@ -1021,7 +1016,7 @@ describe("hintFooterLines", () => {
   ];
 
   it.each(hintCases)("hints when $desc", ({ metrics, expected }) => {
-    expect(hintFooterLines(metrics, formatHint)).toStrictEqual(expected);
+    expect(footerLines(metrics, false, formatHint)).toStrictEqual(expected);
   });
 });
 
