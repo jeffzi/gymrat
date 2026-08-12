@@ -4,7 +4,7 @@ pre-commit:
   commands:
     lint:
       priority: 1
-      glob: "**/*.{ts,tsx,mts,cts,js}"
+      glob: "**/*.ts"
       run: npx oxlint --fix {staged_files}
       stage_fixed: true
     md:
@@ -14,25 +14,25 @@ pre-commit:
       stage_fixed: true
     fmt:
       priority: 2
-      glob: "**/*.{ts,tsx,mts,cts,js,json,jsonc,md,yml,yaml}"
+      glob: "**/*.{ts,json,jsonc,md,yml}"
       # oxfmt errors when every staged file is ignored; oxlint exits 0 and needs no guard
       run: npx oxfmt --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
     type:
       priority: 3
-      glob: "**/*.{ts,tsx,mts,cts,json}"
+      glob: "**/*.{ts,json}"
       run: npm run check:type
     quality:
       priority: 3
-      glob: "**/*.{ts,tsx,mts,cts,js,json}"
+      glob: "**/*.{ts,json}"
       run: npm run check:quality
     typelint:
       priority: 3
-      glob: "**/*.{ts,tsx,mts,cts}"
+      glob: "**/*.ts"
       run: npm run check:typelint
     spelling:
       priority: 3
-      glob: "**/*.{ts,tsx,mts,cts,md}"
+      glob: "**/*.{ts,md}"
       run: npx cspell --no-progress --no-summary --no-must-find-files {staged_files}
     actions:
       priority: 3
