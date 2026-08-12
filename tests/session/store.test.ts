@@ -77,6 +77,17 @@ const ITERATION_1_ON_TARGET = iteration(1, true);
 const ITERATION_2 = iteration(2, false);
 const ITERATION_2_ON_TARGET = iteration(2, true);
 
+/**
+ * An iteration TypeScript accepts but JSON cannot carry.
+ *
+ * `NaN` is a `number` to the compiler and `null` to `JSON.stringify`, so this
+ * record is exactly what an adapter handing back an unparsed measurement
+ * produces: a line no schema accepts on read-back.
+ */
+const UNREADABLE_ITERATION: IterationRecord = iterationRecord({
+  samples: { experiment: [{ total_ms: Number.NaN }], baseline: [{ total_ms: 15200 }] },
+});
+
 const FINALIZE: FinalizeRecord = finalizeRecord({ branch: `${SESSION.branch}-final` });
 
 const EMPTY_STATE: SessionState = {
@@ -141,6 +152,36 @@ describe("appendRecord", () => {
       expect(fs.readFileSync(jsonlPath, "utf-8")).toBe(
         `${JSON.stringify(SESSION)}\n${JSON.stringify(ITERATION_1)}\n`,
       );
+    });
+  });
+
+  describe("when the record would fail its own schema on read-back", () => {
+    it("throws a GymratError naming the record type", () => {
+      // Arrange
+      const jsonlPath = freshJsonlPath();
+      appendRecord(jsonlPath, SESSION);
+
+      // Act
+      const error = captureGymratError(() => {
+        appendRecord(jsonlPath, UNREADABLE_ITERATION);
+      });
+
+      // Assert
+      expect(error.message).toMatch(/\biteration\b/);
+    });
+
+    it("leaves the log byte-identical", () => {
+      // Arrange
+      const jsonlPath = freshJsonlPath();
+      appendRecord(jsonlPath, SESSION);
+
+      // Act
+      captureGymratError(() => {
+        appendRecord(jsonlPath, UNREADABLE_ITERATION);
+      });
+
+      // Assert
+      expect(fs.readFileSync(jsonlPath, "utf-8")).toBe(`${JSON.stringify(SESSION)}\n`);
     });
   });
 });

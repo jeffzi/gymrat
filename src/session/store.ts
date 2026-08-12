@@ -62,10 +62,40 @@ export interface RequiredSession {
  * One record is one `appendFileSync` call: a single write of a single line is what lets
  * a reader treat the log as append-only truth rather than a file that may be caught
  * half-written.
+ *
+ * @throws GymratError when `record` would not read back — the log is left untouched,
+ * and no directory is created for a log that does not exist yet.
  */
 export function appendRecord(jsonlPath: string, record: SessionLogRecord): void {
+  const line = serializeRecord(record);
   fs.mkdirSync(path.dirname(jsonlPath), { recursive: true });
-  fs.appendFileSync(jsonlPath, `${JSON.stringify(record)}\n`);
+  fs.appendFileSync(jsonlPath, `${line}\n`);
+}
+
+/**
+ * The line `record` is written as, once proven to parse back into the same record.
+ *
+ * A record can satisfy the compiler and still not survive JSON: `NaN` and `Infinity`
+ * are `number` to TypeScript and `null` on the wire, and any measurement an adapter
+ * hands back unchecked can carry one. So the check runs the serialized line — not the
+ * object — through the very parser {@link readRecords} will use, reusing its compiled
+ * validators. Nothing is written until that round trip succeeds, which is what stops a
+ * single bad measurement from leaving the whole session log unreadable.
+ */
+function serializeRecord(record: SessionLogRecord): string {
+  let line: string;
+  try {
+    line = JSON.stringify(record);
+    const readBack: unknown = JSON.parse(line);
+    parseRecord(readBack);
+  } catch (error) {
+    throw new GymratError(
+      `Refusing to log an unreadable ${record.type} record: ${messageOf(error)}`,
+      "Nothing was written. A metric that is NaN or Infinity becomes null in JSON and no longer reads back.",
+      { cause: error },
+    );
+  }
+  return line;
 }
 
 /**
