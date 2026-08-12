@@ -331,6 +331,14 @@ export function computeVerdicts(
  *
  * Tied pairs carry no rank information, so `wilcoxonSignedRank` drops them — a
  * long but mostly identical run falls back to the band just as a short one does.
+ *
+ * A significant p-value is not enough on the signed-rank path: the delta must
+ * also clear the metric's measurement resolution (see `Noise.resolutionPct`).
+ * Whole-byte samples that differ by one byte every round are perfectly
+ * consistent, so the test finds them significant however many rounds run — but a
+ * single step of quantization is the same non-result at 6 pairs as at 5. Only the
+ * resolution gates the signal; the observed scatter does not, because the
+ * p-value already accounts for it.
  */
 function computeApproximateVerdict(
   pairedA: readonly number[],
@@ -346,10 +354,10 @@ function computeApproximateVerdict(
   if (wilcoxonResult.n < MIN_WILCOXON_N) {
     result = computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n, unit);
   } else {
-    const verdict: Verdict =
-      wilcoxonResult.p < P_VALUE_THRESHOLD ? determineVerdict(delta, direction) : "no-signal";
-
     const noise = computeNoise(pairedA, pairedB, unit);
+    const hasSignal = wilcoxonResult.p < P_VALUE_THRESHOLD && Math.abs(delta) > noise.resolutionPct;
+    const verdict: Verdict = hasSignal ? determineVerdict(delta, direction) : "no-signal";
+
     result = {
       verdict,
       method: "signed-rank",
@@ -391,6 +399,16 @@ type Noise = {
   pct: number;
   /** The same noise in the metric's own unit, with no floor applied. */
   abs: number;
+  /**
+   * The part of `pct` set by the metric's measurement resolution rather than by
+   * its observed scatter, and 0 for a unit that is not quantized.
+   *
+   * A delta no larger than this is a step of quantization, not a measured move,
+   * so it is not signal on any path. The scatter part is deliberately left out:
+   * the signed-rank p-value already models scatter, and gating on it too would
+   * discard genuine small deltas that every round agreed on.
+   */
+  resolutionPct: number;
 };
 
 /**
@@ -429,7 +447,8 @@ const ONE_BYTE_PCT = 100;
  * on what the numbers can express, not an estimate of their scatter. Averaged
  * units such as `ns` carry no such bound and keep the plain floor.
  *
- * @returns The noise as a percentage (never below the floor) and in raw units
+ * @returns The noise as a percentage (never below the floor), in raw units, and
+ *   the resolution-only part of the percentage
  */
 function computeNoise(
   pairedA: readonly number[],
@@ -453,6 +472,7 @@ function computeNoise(
   return {
     pct: Math.max(NOISE_K * 100 * maxSpread, NOISE_FLOOR_PCT, byteFloorPct),
     abs: NOISE_K * Math.max(halfRangeA, halfRangeB),
+    resolutionPct: byteFloorPct,
   };
 }
 

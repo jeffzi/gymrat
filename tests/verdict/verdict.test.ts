@@ -66,6 +66,9 @@ const METRIC_APPROX_LOWER = { metric: { direction: "lower" as const, gating: tru
 const METRIC_BYTES_LOWER = {
   metric: { direction: "lower" as const, gating: true, exact: false, unit: "bytes" as const },
 };
+const METRIC_BYTES_HIGHER = {
+  metric: { direction: "higher" as const, gating: true, exact: false, unit: "bytes" as const },
+};
 const METRIC_APPROX_HIGHER = {
   metric: { direction: "higher" as const, gating: true, exact: false },
 };
@@ -438,6 +441,39 @@ describe("computeVerdicts", () => {
       expect(verdict.p).toBeLessThan(0.05);
       expect(verdict.delta).toBe(0);
       expect(verdict.verdict).toBe("no-signal");
+    });
+
+    it("keeps a significant verdict when the delta is smaller than the noise band", () => {
+      // The p-value already accounts for the windows' spread, so the K × spread
+      // band is not a second gate on the signed-rank path: every window moved
+      // down by 5%, which is significant even though the band is 30%.
+      // pairedA: [80, 90, 100, 100, 110, 120] → median = 100, halfRange = 20 → 0.2
+      // pairedB: every value 5% lower → median = 95, halfRange = 19 → 0.2
+      // noisePct = max(1.5 * 100 * 0.2, 0.5) = 30, delta = -5
+      const samplesA = [
+        { metric: 80 },
+        { metric: 90 },
+        { metric: 100 },
+        { metric: 100 },
+        { metric: 110 },
+        { metric: 120 },
+      ];
+      const samplesB = [
+        { metric: 76 },
+        { metric: 85.5 },
+        { metric: 95 },
+        { metric: 95 },
+        { metric: 104.5 },
+        { metric: 114 },
+      ];
+
+      const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
+
+      const verdict = getSignedRankVerdict(result, "metric");
+      expect.soft(verdict.p).toBeLessThan(0.05);
+      expect.soft(verdict.delta).toBeCloseTo(-5, 5);
+      expect.soft(verdict.noisePct).toBeCloseTo(30, 5);
+      expect(verdict.verdict).toBe("improved");
     });
 
     it("falls back to band method when wilcoxon result.n < 6 after dropping zero diffs", () => {
@@ -823,6 +859,64 @@ describe("computeVerdicts", () => {
         expect.soft(verdict.delta).toBeCloseTo(-25, 5);
         expect.soft(verdict.noisePct).toBeCloseTo(100 / 3, 5);
         expect(verdict.verdict).toBe("no-signal");
+      },
+    );
+
+    it.each([
+      { direction: "lower", meta: METRIC_BYTES_LOWER },
+      { direction: "higher", meta: METRIC_BYTES_HIGHER },
+    ])(
+      "reads a 4B against 3B move as no-signal from 6 paired windows (direction: $direction)",
+      ({ meta }) => {
+        // Six pairs put the metric on the signed-rank path, where six identical
+        // −1B diffs are significant (p < 0.05). The move is still one byte of
+        // resolution, so the same 33.3% floor that silences it at five pairs has
+        // to silence it here — a verdict cannot start depending on window count.
+        const result = computeVerdicts(createSamples(6, 4), createSamples(6, 3), meta);
+
+        const verdict = getSignedRankVerdict(result, "metric");
+        expect.soft(verdict.p).toBeLessThan(0.05);
+        expect.soft(verdict.delta).toBeCloseTo(-25, 5);
+        expect.soft(verdict.noisePct).toBeCloseTo(100 / 3, 5);
+        expect(verdict.verdict).toBe("no-signal");
+      },
+    );
+
+    it.each([
+      { direction: "lower", meta: METRIC_BYTES_LOWER, expected: "improved" },
+      { direction: "higher", meta: METRIC_BYTES_HIGHER, expected: "regressed" },
+    ])(
+      "reports $expected for a 100B against 75B move from 6 paired windows (direction: $direction)",
+      ({ meta, expected }) => {
+        // One byte against 75B is a 1.33% floor, so a −25% move clears it by far
+        // and the signed-rank verdict stands.
+        const result = computeVerdicts(createSamples(6, 100), createSamples(6, 75), meta);
+
+        const verdict = getSignedRankVerdict(result, "metric");
+        expect.soft(verdict.delta).toBeCloseTo(-25, 5);
+        expect.soft(verdict.noisePct).toBeCloseTo(100 / 75, 5);
+        expect(verdict.verdict).toBe(expected);
+      },
+    );
+
+    it.each([
+      {
+        unit: "ns",
+        meta: {
+          metric: { direction: "lower" as const, gating: true, exact: false, unit: "ns" as const },
+        },
+      },
+      { unit: "none", meta: METRIC_APPROX_LOWER },
+    ])(
+      "reports improved for a 4 against 3 move from 6 paired windows when unit is $unit",
+      ({ meta }) => {
+        // Nothing quantizes these values to whole units, so no resolution floor
+        // applies and the −25% move keeps its signed-rank verdict.
+        const result = computeVerdicts(createSamples(6, 4), createSamples(6, 3), meta);
+
+        const verdict = getSignedRankVerdict(result, "metric");
+        expect.soft(verdict.noisePct).toBeCloseTo(0.5, 5);
+        expect(verdict.verdict).toBe("improved");
       },
     );
 
