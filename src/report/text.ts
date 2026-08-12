@@ -42,6 +42,7 @@ import {
   SPREAD_SEPARATOR,
   type Style,
   styleWithin,
+  type StyleWithinOptions,
   truncateLabels,
   UNSTABLE_FUTILITY_NOTE,
   VARIANT_NAME_STYLE,
@@ -432,19 +433,21 @@ function measuredOutcomes(metrics: readonly MeasuredRow[]): (DisplayClass | unde
  * candidate columns, the highlights list — so one verdict reads the same
  * wherever the report repeats it.
  *
- * The delta is matched from the end of the cell, because everything a cell puts
- * in front of it is free to spell it too: a metric named `unstable-parse` in a
- * highlight, a spread of `± 0.0%` behind a delta that rounded to `0.0%`. The
- * glyph is matched from the front, where nothing precedes it.
+ * The delta is found by its first occurrence after the glyph by default. A
+ * caller whose cell puts the delta's own text before it — the "unstable" word
+ * inside a highlight's metric name — passes `{ last: true }` to search from
+ * the end instead. The default avoids a collision in the other direction: a
+ * noise band like `±10.0%` whose digits spell the same `0.0%` the delta does.
  */
 function styleGlyphAndDelta(
   cell: string,
   shown: DisplayClass,
   delta: string,
   style: Style,
+  deltaSearch?: StyleWithinOptions,
 ): string {
   const styled = styleWithin(cell, getGlyph(shown), style);
-  return delta === "" ? styled : styleWithin(styled, delta, style, { last: true });
+  return delta === "" ? styled : styleWithin(styled, delta, style, deltaSearch);
 }
 
 /** Width the metric-name column needs: the widest label any of its rows carries. */
@@ -1204,7 +1207,9 @@ function highlightEntries(metrics: MetricComparisons, candidateIndex: number): H
     )}${suffix}`;
 
     const style = VERDICT_STYLES[shown];
-    let styled = styleGlyphAndDelta(plain, shown, delta, style);
+    // The metric name can spell the delta (e.g. "unstable-parse" vs the verdict
+    // word "unstable"), so the delta is matched from the end of the line.
+    let styled = styleGlyphAndDelta(plain, shown, delta, style, { last: true });
     if (evidence !== "") {
       styled = styleWithin(styled, evidence, ["dim"]);
     }

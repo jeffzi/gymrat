@@ -767,7 +767,7 @@ export const VERDICT_STYLES: Record<DisplayClass, Style> = {
 };
 
 /** Which occurrence of the marker `styleWithin` reaches for. */
-interface StyleWithinOptions {
+export interface StyleWithinOptions {
   /**
    * Style the last occurrence rather than the first.
    *

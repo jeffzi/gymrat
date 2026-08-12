@@ -1882,6 +1882,27 @@ describe("renderReport", () => {
       expect(stylesAt(lineContaining(report, "slower/time"), "±2.5%")).toContain("2");
     });
 
+    it("places the verdict color on the delta, not the noise band, when both share a digit sequence", () => {
+      const result = createComparisonResult({
+        metrics: {
+          "collision/time": bandMetric({
+            delta: 0,
+            noisePct: 10,
+            n: 10,
+            usableN: 0,
+          }),
+        },
+      });
+
+      const row = lineContaining(renderReport(result), "collision/time");
+
+      // The delta "0.0%" and the noise band "±10.0%" both contain "0.0%".
+      // The identical verdict color (cyan/36) must wrap the delta, and
+      // dim (2) the band — not the other way around.
+      expect.soft(stylesAt(row, "0.0%")).toContain("36");
+      expect(stylesAt(row, "±10.0%")).toContain("2");
+    });
+
     // The band behind a single pair is the noise floor constant, so a styled
     // report has no more business printing it than a plain one does.
     it("leaves the floor band off an inconclusive row", () => {
