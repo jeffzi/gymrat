@@ -13,29 +13,29 @@ pre-commit:
       run: npx markdownlint-cli2 --fix {staged_files}
       stage_fixed: true
     fmt:
-      priority: 1
+      priority: 2
       glob: "**/*.{ts,tsx,mts,cts,js,json,jsonc,md,yml,yaml}"
       # oxfmt errors when every staged file is ignored; oxlint exits 0 and needs no guard
       run: npx oxfmt --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
     type:
-      priority: 2
+      priority: 3
       glob: "**/*.{ts,tsx,mts,cts,json}"
       run: npm run check:type
     quality:
-      priority: 2
+      priority: 3
       glob: "**/*.{ts,tsx,mts,cts,js,json}"
       run: npm run check:quality
     typelint:
-      priority: 2
+      priority: 3
       glob: "**/*.{ts,tsx,mts,cts}"
       run: npm run check:typelint
     spelling:
-      priority: 2
+      priority: 3
       glob: "**/*.{ts,tsx,mts,cts,md}"
       run: npx cspell --no-progress --no-summary --no-must-find-files {staged_files}
     actions:
-      priority: 2
+      priority: 3
       glob: ".github/workflows/*.yml"
       run: actionlint {staged_files} && zizmor {staged_files}
 
