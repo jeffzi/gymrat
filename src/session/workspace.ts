@@ -32,10 +32,11 @@ export type WorkspaceStatus = "present" | "partial" | "absent";
  * `baseline.sha` so it keeps measuring the same commit no matter what the ref it
  * came from does afterwards.
  *
- * Either all of the branch and both worktrees exist afterwards, or none of them
- * do: a worktree git refuses takes the branch and whatever was already checked
- * out down with it, so a retry starts from the state the first attempt found
- * instead of tripping over its leftovers.
+ * Either all of the branch and both worktrees exist afterwards, or nothing this
+ * call made does: a worktree git refuses takes the branch and whatever this
+ * attempt had already checked out down with it, so a retry starts from the state
+ * it found instead of tripping over its own leftovers. A worktree directory that
+ * was already standing survives — see {@link unwindWorkspace}.
  *
  * @throws GymratError when `root` is not a git repository, or when git refuses
  *   to prune, to create the branch, or to create either worktree.
@@ -56,11 +57,15 @@ export function createWorkspace(
     `Cannot create the session branch '${branch}'`,
     `A crashed session may have left it behind. Delete it with: git branch -D ${branch}`,
   );
+  // Read before the first add, so the unwind can tell a directory this attempt
+  // checked out from one that was already there.
+  const standing = [experimentWorktreeDir(root), baselineWorktreeDir(root)].filter(isDirectory);
+
   try {
     addExperimentWorktree(root, branch);
     addBaselineWorktree(root, baseline.sha);
   } catch (error) {
-    unwindWorkspace(root, branch);
+    unwindWorkspace(root, branch, standing);
     throw error;
   }
 
@@ -192,13 +197,17 @@ export function revertWorkspace(experimentDir: string): void {
 /**
  * Take both of a session's worktrees off disk and out of git's bookkeeping.
  *
- * A worktree whose directory is already gone is skipped rather than pruned: the
- * user who deleted it has nothing left to lose, and git refuses to remove a path
- * it cannot find. Removal failures are returned instead of thrown because this
- * runs after the finalize record is written — the session is closed either way,
- * and the caller's job is to tell the user which directory to clear by hand.
+ * Each worktree is named by path rather than swept for, because git clears the
+ * entry of a directory that vanished behind its back when it is asked for that
+ * path — which leaves a worktree of the user's own that is only temporarily
+ * absent registered. A refusal over a directory that is already gone stays quiet:
+ * nothing is standing there for the user to clear by hand.
  *
- * @returns One warning per worktree git would not remove, empty when both went.
+ * Removal failures are returned instead of thrown because this runs after the
+ * finalize record is written — the session is closed either way, and the caller's
+ * job is to tell the user which directory to clear by hand.
+ *
+ * @returns One warning per worktree git left standing, empty when both went.
  */
 export function removeWorktrees(
   root: string,
@@ -207,16 +216,15 @@ export function removeWorktrees(
   const warnings: string[] = [];
 
   for (const dir of [worktrees.experiment, worktrees.baseline]) {
-    if (!isDirectory(dir)) {
-      continue;
-    }
     try {
       runGit(["worktree", "remove", "--force", dir], root);
     } catch (error) {
-      warnings.push(
-        `Could not remove the worktree at ${dir}: ${stderrTextOf(error)}\n` +
-          `  remove it by hand with: git worktree remove --force ${dir}`,
-      );
+      if (isDirectory(dir)) {
+        warnings.push(
+          `Could not remove the worktree at ${dir}: ${stderrTextOf(error)}\n` +
+            `  remove it by hand with: git worktree remove --force ${dir}`,
+        );
+      }
     }
   }
 
@@ -294,14 +302,19 @@ function addExperimentWorktree(root: string, branch: string): void {
 /**
  * Take back the branch and worktrees a failed {@link createWorkspace} had made.
  *
- * The worktrees go first: git refuses to delete a branch one of them still has
- * checked out. Every step is best-effort — the caller is about to see the git
- * step that broke the session, and a cleanup that cannot finish must not speak
- * in its place.
+ * A directory listed in `standing` was there before the attempt began — what a
+ * session whose log was lost leaves behind — so it stays, uncommitted work and
+ * all. The error the caller is about to throw names the path, which is the only
+ * notice the user gets that something is in the way.
+ *
+ * The worktrees go before the branch: git refuses to delete a branch one of them
+ * still has checked out. Every step is best-effort — the caller is about to see
+ * the git step that broke the session, and a cleanup that cannot finish must not
+ * speak in its place.
  */
-function unwindWorkspace(root: string, branch: string): void {
+function unwindWorkspace(root: string, branch: string, standing: readonly string[]): void {
   for (const dir of [experimentWorktreeDir(root), baselineWorktreeDir(root)]) {
-    if (isDirectory(dir)) {
+    if (isDirectory(dir) && !standing.includes(dir)) {
       runGitIgnoringFailure(["worktree", "remove", "--force", dir], root);
     }
   }

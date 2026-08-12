@@ -127,6 +127,27 @@ export function listWorktreeDirs(repoDir: string, options?: { includeMain?: bool
   return dirs;
 }
 
+/**
+ * Register a worktree of `repoDir` the way a user would, then delete its directory.
+ *
+ * Stands in for a worktree of the user's own that is only temporarily absent — a
+ * removable volume, a directory moved aside. Git keeps listing it until something
+ * runs `git worktree prune`, which makes its entry the probe for whether a sweep
+ * reached past the worktrees it was asked about. It sits inside the repo so the
+ * scratch repo's teardown takes it along.
+ *
+ * Returns the resolved path git lists the worktree under.
+ */
+export function registerAbsentWorktree(repoDir: string): string {
+  const dir = path.join(fs.realpathSync(repoDir), "absent-user-worktree");
+  execFileSync("git", ["worktree", "add", "--detach", dir, "HEAD"], {
+    cwd: repoDir,
+    stdio: "pipe",
+  });
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  return dir;
+}
+
 /** Convert a path to forward slashes so it can be embedded in a shell script on any platform. */
 export function toShellPath(p: string): string {
   return p.replace(/\\/g, "/");

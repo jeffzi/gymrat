@@ -18,6 +18,7 @@ import {
   createScratchRepo,
   killGitDuringWorktreeAdd,
   listWorktreeDirs,
+  registerAbsentWorktree,
 } from "./fixtures/scratch-repo.js";
 
 /** A sha no repository holds, so `git worktree add` rejects it outright. */
@@ -94,26 +95,6 @@ function planRejectedWorktree(repoDir: string): WorktreeInfo {
     return worktree;
   }
   throw new Error(`expected 'git worktree add' to create nothing at ${worktree.dir}`);
-}
-
-/**
- * Register a worktree of `repoDir` the way a user would, then delete its directory.
- *
- * Stands in for a worktree of the user's own that is only temporarily absent — a
- * removable volume, a directory moved aside. Git keeps listing it until something
- * runs `git worktree prune`, which makes its entry the probe for whether a sweep
- * pruned. It sits inside the repo so the scratch repo's teardown takes it along.
- *
- * Returns the resolved path git lists the worktree under.
- */
-function registerAbsentWorktree(repoDir: string): string {
-  const dir = path.join(fs.realpathSync(repoDir), "absent-user-worktree");
-  execFileSync("git", ["worktree", "add", "--detach", dir, "HEAD"], {
-    cwd: repoDir,
-    stdio: "pipe",
-  });
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
-  return dir;
 }
 
 describe("resolveTarget", () => {
@@ -460,14 +441,17 @@ describe("cleanupWorktrees", () => {
   });
 
   describe("when a worktree directory no longer exists", () => {
-    it("prunes the registry entry git still lists for it", () => {
+    it("deregisters that worktree by name and no other", () => {
       repo = createScratchRepo();
+      const absent = registerAbsentWorktree(repo.dir);
       const worktree = createHeadWorktree(repo.dir);
       fs.rmSync(worktree.dir, { recursive: true, force: true, maxRetries: 3 });
 
       cleanupWorktrees([worktree], repo.dir);
 
-      expect(listWorktreeDirs(repo.dir)).toStrictEqual([fs.realpathSync(repo.dir)]);
+      const listed = listWorktreeDirs(repo.dir);
+      expect.soft(listed).not.toContain(worktree.dir);
+      expect(listed).toContain(absent);
     });
   });
 

@@ -21,6 +21,7 @@ import {
   git,
   killGitDuringWorktreeAdd,
   listWorktreeDirs,
+  registerAbsentWorktree,
   type ScratchRepo,
 } from "../fixtures/scratch-repo.js";
 
@@ -204,6 +205,28 @@ describe("createWorkspace", () => {
     });
   });
 
+  describe("when a worktree directory from an earlier session is still on disk", () => {
+    it("leaves its uncommitted work standing and names the path it left", () => {
+      // Arrange - the earlier session's log is gone, so nothing told this run the
+      // workspace was already there; its worktree still holds uncommitted work.
+      createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
+      const stranded = path.join(experimentWorktreeDir(repo.dir), "README.md");
+      fs.writeFileSync(stranded, "# work from the earlier session\n");
+
+      // Act
+      const error = asGymratError(
+        captureThrown(() =>
+          createWorkspace(repo.dir, NEXT_SESSION_ID, { ref: BASELINE_REF, sha: baselineSha }),
+        ),
+      );
+
+      // Assert - only this attempt's own branch is unwound.
+      expect.soft(fs.readFileSync(stranded, "utf-8")).toBe("# work from the earlier session\n");
+      expect.soft(sessionBranches(repo.dir)).toStrictEqual([BRANCH]);
+      expect(error.message).toContain(experimentWorktreeDir(repo.dir));
+    });
+  });
+
   describe("when the directory is not inside a git repository", () => {
     it("throws a GymratError naming the missing repository", () => {
       // Arrange
@@ -345,6 +368,20 @@ describe("removeWorktrees", () => {
       // Assert
       expect.soft(warnings).toStrictEqual([]);
       expect(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
+    });
+
+    it("deregisters that worktree by name and no other", () => {
+      // Arrange - the user's own worktree, absent only for the moment.
+      const absent = registerAbsentWorktree(repo.dir);
+      fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
+
+      // Act
+      removeWorktrees(repo.dir, worktrees());
+
+      // Assert
+      const listed = listWorktreeDirs(repo.dir);
+      expect.soft(listed).not.toContain(experimentWorktreeDir(repo.dir));
+      expect(listed).toContain(absent);
     });
   });
 

@@ -38,7 +38,7 @@ export interface WorktreeInfo {
    * `planWorktree` starts it at `false` and `materializeWorktree` raises it once
    * the add leaves something behind, which is what lets cleanup tell a worktree
    * that was never created from one that was created and has since vanished.
-   * Only the latter can leave a registry entry needing a prune.
+   * Only the latter can leave a registry entry behind to clear.
    */
   created: boolean;
 }
@@ -56,7 +56,7 @@ export interface WorktreeRemovalFailure {
  * whether the repo-wide prune step failed.
  */
 export interface CleanupResult {
-  /** Worktrees this call handed to `git worktree remove` successfully. */
+  /** Worktrees this call took off disk. */
   removed: number;
   /** Worktrees left on disk, one entry each. */
   failures: readonly WorktreeRemovalFailure[];
@@ -200,24 +200,42 @@ function tryGitCommand(args: readonly string[], repoDir: string): string | undef
   }
 }
 
-/** Remove a single worktree if it exists on disk; returns the outcome or a failure record. */
-function removeWorktreeIfExists(
-  worktree: WorktreeInfo,
-  repoDir: string,
-): "removed" | "absent" | WorktreeRemovalFailure {
-  if (!fs.existsSync(worktree.dir)) {
-    return "absent";
+/**
+ * What handing one worktree to git accomplished.
+ *
+ * `deregistered` and `stale` both describe a directory that vanished behind git's
+ * back: the entry git still listed either went with the targeted removal or may
+ * have survived it, and only the latter leaves anything for a prune to collect.
+ * `untouched` is a worktree `git worktree add` never put on disk, which has
+ * neither a directory nor an entry.
+ */
+type RemovalOutcome = "removed" | "deregistered" | "stale" | "untouched" | WorktreeRemovalFailure;
+
+/**
+ * Take one worktree off disk, or clear the entry left behind if it is already gone.
+ *
+ * The removal names the worktree's own path instead of sweeping the repository,
+ * because git clears the entry of a directory that vanished behind its back when
+ * it is asked for that path — which leaves a worktree of the user's own that is
+ * only temporarily absent registered.
+ */
+function removeWorktree(worktree: WorktreeInfo, repoDir: string): RemovalOutcome {
+  const onDisk = fs.existsSync(worktree.dir);
+  if (!onDisk && !worktree.created) {
+    return "untouched";
   }
 
   const error = tryGitCommand(["worktree", "remove", "--force", worktree.dir], repoDir);
-  if (error === undefined) {
-    return "removed";
+  if (error !== undefined) {
+    // Nothing is standing for the user to clear by hand when the directory is
+    // already gone, so a refusal there is a reason to sweep, not to report.
+    return onDisk ? { dir: worktree.dir, error } : "stale";
   }
-  return { dir: worktree.dir, error };
+  return onDisk ? "removed" : "deregistered";
 }
 
 /**
- * Remove any of `worktrees` that reached disk, then prune. Safe to call repeatedly.
+ * Remove each of `worktrees` git has anything for. Safe to call repeatedly.
  *
  * Never throws: `compare()` calls this while already handling a failed run, so a
  * throw here would replace the error the user actually needs to see. Everything
@@ -235,24 +253,27 @@ export function cleanupWorktrees(
   let mayHaveStaleEntry = false;
 
   for (const worktree of worktrees) {
-    const outcome = removeWorktreeIfExists(worktree, repoDir);
-    if (outcome === "removed") {
-      removed += 1;
-    } else if (outcome === "absent") {
-      // A worktree git never created has no entry to collect, so its absence is
-      // no reason to sweep the whole repo and deregister worktrees of the user's
-      // own that are only temporarily gone.
-      mayHaveStaleEntry ||= worktree.created;
-    } else {
-      failures.push(outcome);
-      mayHaveStaleEntry = true;
+    const outcome = removeWorktree(worktree, repoDir);
+    switch (outcome) {
+      case "removed":
+        removed += 1;
+        break;
+      case "stale":
+        mayHaveStaleEntry = true;
+        break;
+      case "deregistered":
+      case "untouched":
+        break;
+      default:
+        failures.push(outcome);
+        mayHaveStaleEntry = true;
     }
   }
 
-  // Prune only when the sweep could have left a registry entry without a
-  // directory. `git worktree remove` clears the entry it removes, so a sweep
-  // whose removals all succeeded — or that had nothing to remove, in a
-  // `repoDir` that may not even be a git repo — has no stale entry to collect.
+  // Prune only when a targeted removal failed and may have left an entry with no
+  // directory behind it. Naming each worktree already clears its own entry, so a
+  // sweep whose removals all succeeded — or that had nothing to ask git for, in a
+  // `repoDir` that may not even be a git repo — has nothing left to collect.
   // Pruning anyway would reach past this run's worktrees and deregister
   // worktrees of the user's own that are only temporarily absent: an unmounted
   // volume, a directory moved aside.
