@@ -306,9 +306,12 @@ in the alias are replaced with `name=value`, so an alias of `decode/$text` becom
 
 ## Configuration
 
-gymrat loads `./gymrat.json` automatically when present (override with `--config <path>`). All keys
-are optional. Precedence is **flags > config file > built-in defaults**. Unknown top-level keys are
-an error, to catch typos.
+gymrat loads `gymrat.json` automatically when present (override with `--config <path>`). Loop
+commands (`start`, `iterate`, `keep`, `status`) look for it at the repository root — the same root
+the session lives at — so a `checks` gate configured there applies even when you run from a
+subdirectory. `measure` and `compare` look in the working directory. An explicit `--config` path
+resolves relative to the working directory on every command. All keys are optional. Precedence is
+**flags > config file > built-in defaults**. Unknown top-level keys are an error, to catch typos.
 
 ```json
 {

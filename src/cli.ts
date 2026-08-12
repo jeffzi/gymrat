@@ -1090,7 +1090,10 @@ export function createProgram(): Command {
        */
       const started = await withRepoLock("start", () => {
         const root = repoRoot();
-        return Promise.resolve({ root, result: startSession(root, ref, resolveConfig(options)) });
+        return Promise.resolve({
+          root,
+          result: startSession(root, ref, resolveConfig(options, root)),
+        });
       });
 
       await writeAndFlush(process.stdout, `${formatStartSummary(started.result)}\n`);
@@ -1110,10 +1113,12 @@ export function createProgram(): Command {
        */
       const result = await withRepoLock(
         "iterate",
-        async () =>
-          runInterruptibly((signal) =>
-            iterateSession(repoRoot(), resolveConfig(options), { signal }),
-          ),
+        async () => {
+          const root = repoRoot();
+          return runInterruptibly((signal) =>
+            iterateSession(root, resolveConfig(options, root), { signal }),
+          );
+        },
         /*
          * A met stop condition is a gate trip, not a tool failure: the loop
          * reached the end it was configured for, so it exits the way a keep
@@ -1133,9 +1138,12 @@ export function createProgram(): Command {
   )
     .configureHelp(createHelpConfig())
     .action(async (options: KeepFlags) => {
-      const result = await withRepoLock("keep", async () =>
-        keepSession(repoRoot(), resolveBenchlessConfig(options), { message: options.message }),
-      );
+      const result = await withRepoLock("keep", async () => {
+        const root = repoRoot();
+        return keepSession(root, resolveBenchlessConfig(options, root), {
+          message: options.message,
+        });
+      });
 
       await writeAndFlush(process.stdout, `${result.report}\n`);
 
@@ -1201,9 +1209,10 @@ export function createProgram(): Command {
         suppressColor();
       }
 
-      const report = await runOrExit(() =>
-        Promise.resolve(statusSession(repoRoot(), resolveBenchlessConfig(options))),
-      );
+      const report = await runOrExit(() => {
+        const root = repoRoot();
+        return Promise.resolve(statusSession(root, resolveBenchlessConfig(options, root)));
+      });
 
       await writeAndFlush(process.stdout, `${report}\n`);
     });

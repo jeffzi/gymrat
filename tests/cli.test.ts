@@ -103,6 +103,7 @@ vi.mock("../src/measure.js", async (importOriginal) => {
 
 vi.mock("../src/config.js", () => ({
   resolveConfig: vi.fn(),
+  resolveBenchlessConfig: vi.fn(),
 }));
 
 vi.mock("../src/report/json.js", () => ({
@@ -3010,6 +3011,71 @@ describe("the finalize command", () => {
     expect.soft(sessionLog()).toStrictEqual(openLog);
     expect(stderrWrites(stderrSpy).map(String).join("")).toMatch(/another gymrat run/i);
   });
+});
+
+describe("the loop commands, run from a subdirectory of the repository", () => {
+  /** The resolver `start` and `iterate` settle a full run configuration through. */
+  async function fullConfigResolver() {
+    const { resolveConfig } = await import("../src/config.js");
+    return vi.mocked(resolveConfig);
+  }
+
+  /** The resolver the loop commands that never bench settle their configuration through. */
+  async function benchlessConfigResolver() {
+    const { resolveBenchlessConfig } = await import("../src/config.js");
+    return vi.mocked(resolveBenchlessConfig);
+  }
+
+  /**
+   * Every loop command that settles configuration, with the resolver it reads it
+   * through.
+   *
+   * `discard` and `finalize` read no configuration at all, so neither has a
+   * lookup to place.
+   */
+  const CONFIG_READING_COMMANDS = [
+    { command: "start", args: ["start", "main"], resolver: fullConfigResolver },
+    { command: "iterate", args: ["iterate"], resolver: fullConfigResolver },
+    { command: "keep", args: ["keep"], resolver: benchlessConfigResolver },
+    { command: "status", args: ["status"], resolver: benchlessConfigResolver },
+  ];
+
+  /** The subdirectory of the repository each command is run from. */
+  const NESTED_DIR = join("packages", "core");
+
+  let repo: ScratchRepo;
+
+  beforeEach(async () => {
+    repo = createScratchRepo();
+    mkdirSync(join(repo.dir, NESTED_DIR), { recursive: true });
+    process.chdir(join(repo.dir, NESTED_DIR));
+    const { resolveConfig, resolveBenchlessConfig } = await import("../src/config.js");
+    vi.mocked(resolveConfig).mockReturnValue(resolvedConfigFixture());
+    vi.mocked(resolveBenchlessConfig).mockReturnValue(resolvedConfigFixture());
+  });
+
+  afterEach(() => {
+    rmSync(lockfilePath(repo.dir), { force: true });
+    repo.cleanup();
+  });
+
+  it.each(CONFIG_READING_COMMANDS)(
+    "$command looks the implicit config up at the repository root",
+    async ({ args, resolver }) => {
+      // Arrange
+      const resolverMock = await resolver();
+      const program = createRunnableProgram({ exitOverride: "all", silent: true });
+      captureStdout({ silenceStderr: true });
+      mockProcessExit();
+
+      // Act - whether the command then finds the session it needs is beside the
+      // point; where it looked the configuration up is what is under test.
+      await program.parseAsync(["node", "cli.js", ...args]).catch(() => undefined);
+
+      // Assert
+      expect(resolverMock).toHaveBeenCalledWith(expect.anything(), repo.dir);
+    },
+  );
 });
 
 describe("formatCliError", () => {

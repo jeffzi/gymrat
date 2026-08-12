@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
 
 import type { Adapter } from "../src/adapters/types.js";
-import type { BenchlessConfig, ResolvedConfig } from "../src/config.js";
+import type { BenchlessConfig, CliFlags, ResolvedConfig } from "../src/config.js";
 import {
   loadConfigFile,
   resolveBenchlessConfig,
@@ -933,6 +933,90 @@ describe("resolveBenchlessConfig", () => {
 
       expect.soft(act).toThrow(GymratError);
       expect(act).toThrow(/--config.*non-empty/);
+    });
+  });
+});
+
+/**
+ * Both resolvers settle the implicit `gymrat.json` through the same lookup, so a
+ * base directory has to reach it through either one.
+ */
+const CONFIG_RESOLVERS = [
+  {
+    name: "resolveConfig",
+    resolve: (flags: CliFlags, baseDir?: string): BenchlessConfig => resolveConfig(flags, baseDir),
+  },
+  {
+    name: "resolveBenchlessConfig",
+    resolve: (flags: CliFlags, baseDir?: string): BenchlessConfig =>
+      resolveBenchlessConfig(flags, baseDir),
+  },
+];
+
+describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) => {
+  let tmpdir: string;
+  const originalCwd = process.cwd();
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    if (tmpdir && fs.existsSync(tmpdir)) {
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
+  /**
+   * A directory holding a `gymrat.json` of `baseConfig`, with a nested directory
+   * holding one of `nestedConfig` — the two the lookup has to choose between.
+   */
+  function createNestedConfigDirs(
+    baseConfig: Record<string, unknown>,
+    nestedConfig: Record<string, unknown>,
+  ): { baseDir: string; nestedDir: string } {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+    const nestedDir = path.join(baseDir, "packages", "core");
+    fs.mkdirSync(nestedDir, { recursive: true });
+    fs.writeFileSync(path.join(baseDir, "gymrat.json"), JSON.stringify(baseConfig));
+    fs.writeFileSync(path.join(nestedDir, "gymrat.json"), JSON.stringify(nestedConfig));
+    return { baseDir, nestedDir };
+  }
+
+  describe("when the base directory and the working directory each hold a gymrat.json", () => {
+    it("reads the base directory's", () => {
+      // Arrange
+      const { baseDir, nestedDir } = createNestedConfigDirs(
+        { bench: "a-bench", checks: "base-checks" },
+        { bench: "a-bench", checks: "cwd-checks" },
+      );
+      tmpdir = baseDir;
+      process.chdir(nestedDir);
+
+      // Act
+      const result = resolve({}, baseDir);
+
+      // Assert
+      expect(result.checks).toBe("base-checks");
+    });
+  });
+
+  describe("when --config names a path relative to the working directory", () => {
+    it("reads the named file, leaving the base directory's gymrat.json unread", () => {
+      // Arrange
+      const { baseDir, nestedDir } = createNestedConfigDirs(
+        { bench: "a-bench", checks: "base-checks" },
+        { bench: "a-bench", checks: "cwd-checks" },
+      );
+      tmpdir = baseDir;
+      fs.writeFileSync(
+        path.join(nestedDir, "custom.json"),
+        JSON.stringify({ bench: "a-bench", checks: "named-checks" }),
+      );
+      process.chdir(nestedDir);
+
+      // Act
+      const result = resolve({ config: "custom.json" }, baseDir);
+
+      // Assert
+      expect(result.checks).toBe("named-checks");
     });
   });
 });

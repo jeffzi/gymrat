@@ -339,8 +339,8 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): BenchlessConfig {
  * {@link resolveConfig} does, without asking for a bench command none of them
  * would ever run.
  */
-export function resolveBenchlessConfig(flags: CliFlags): BenchlessConfig {
-  return settleConfig(flags).config;
+export function resolveBenchlessConfig(flags: CliFlags, baseDir?: string): BenchlessConfig {
+  return settleConfig(flags, baseDir).config;
 }
 
 /**
@@ -350,8 +350,8 @@ export function resolveBenchlessConfig(flags: CliFlags): BenchlessConfig {
  * run executes. `bench` has no default and must come from a flag or the config
  * file — a run without it throws.
  */
-export function resolveConfig(flags: CliFlags): ResolvedConfig {
-  const { config, bench } = settleConfig(flags);
+export function resolveConfig(flags: CliFlags, baseDir?: string): ResolvedConfig {
+  const { config, bench } = settleConfig(flags, baseDir);
   if (bench === undefined) {
     throw new GymratError("bench is required. Provide it via --bench flag or in config file.");
   }
@@ -360,12 +360,15 @@ export function resolveConfig(flags: CliFlags): ResolvedConfig {
 }
 
 /** Settle the shared configuration, and report what `bench` the sources named — if any. */
-function settleConfig(flags: CliFlags): { config: BenchlessConfig; bench: string | undefined } {
+function settleConfig(
+  flags: CliFlags,
+  baseDir?: string,
+): { config: BenchlessConfig; bench: string | undefined } {
   assertFlagNotEmpty("bench", flags.bench);
   assertFlagNotEmpty("prepare", flags.prepare);
   assertFlagNotEmpty("adapter", flags.adapter);
   assertFlagNotEmpty("config", flags.config);
-  const configPath = flags.config ?? path.join(process.cwd(), "gymrat.json");
+  const configPath = flags.config ?? path.join(baseDir ?? process.cwd(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
   const config = mergeConfig(flags, configFile);
   validateLoopKeys(config);
