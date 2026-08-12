@@ -1,45 +1,39 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ResolvedConfig } from "../../src/config.js";
 import { messageOf } from "../../src/errors.js";
 import { statusSession } from "../../src/loop/status.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
   BaselineRecord,
-  DiscardRecord,
   HookRecord,
   IterationRecord,
   KeepRecord,
   SessionLogRecord,
   SessionRecord,
 } from "../../src/session/records.js";
-import { appendRecord } from "../../src/session/store.js";
 import { captureStdout, createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
 import { ANSI_RE, SESSION_ID, reportLines } from "../fixtures/constants.js";
 import { captureGymratError } from "../fixtures/errors.js";
-import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { createScratchRepo, freshRoot, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
   AT,
+  blockedKeep,
   committedKeep,
+  discardRecord,
   finalizeRecord,
   iterationRecord,
   resolvedConfig,
   sessionRecord as sessionRecordDefaults,
+  writeSessionLog,
 } from "../fixtures/session-records.js";
 
 /** A 40-hex baseline sha whose first seven characters are recognizable on their own. */
 const BASELINE_SHA = `a1b2c3d${"e".repeat(33)}`;
 /** A 40-hex commit sha whose first seven characters are recognizable on their own. */
 const KEEP_COMMIT = `b1b2b3b${"c".repeat(33)}`;
-
-/** A fresh repository root with no session on it yet. */
-function freshRoot(): string {
-  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-status-")));
-}
 
 /** The worktree paths a session under `root` records. */
 function worktrees(root: string): SessionRecord["worktrees"] {
@@ -55,11 +49,6 @@ function sessionRecord(root: string): SessionRecord {
     baseline: { ref: "main", sha: BASELINE_SHA },
     worktrees: worktrees(root),
   });
-}
-
-/** A settled run configuration, geomean-led unless a test names its own primary. */
-function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
-  return resolvedConfig(overrides);
 }
 
 /** A measured iteration numbered `seq`, reading as `outcome` on a `deltaPct` primary. */
@@ -92,18 +81,6 @@ function iteration(
   });
 }
 
-/** A keep the checks gate refused, leaving the iteration numbered `seq` uncommitted. */
-function blockedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "blocked",
-    reason: "checks-failed",
-    checks: { configured: true, passed: false },
-  };
-}
-
 /**
  * A keep refused for want of a measurement, numbered `seq`.
  *
@@ -120,11 +97,6 @@ function nothingMeasuredKeep(seq: number): KeepRecord {
     reason: "nothing-measured",
     checks: { configured: true },
   };
-}
-
-/** A discard of the iteration numbered `seq`. */
-function discard(seq: number): DiscardRecord {
-  return { type: "discard", seq, at: AT };
 }
 
 /** The four lines every report opens on: the session, its branch, and its two worktrees. */
@@ -154,14 +126,6 @@ const HOOK: HookRecord = {
   timedOut: false,
 };
 
-/** Write a session log for `root` opening on its header and holding `history` after it. */
-function writeSessionLog(root: string, history: SessionLogRecord[] = []): void {
-  appendRecord(sessionJsonlPath(root), sessionRecord(root));
-  for (const record of history) {
-    appendRecord(sessionJsonlPath(root), record);
-  }
-}
-
 /**
  * A session that measured four iterations: one kept, one discarded, one whose
  * keep the checks blocked, and one still waiting to be settled.
@@ -173,7 +137,7 @@ function fourIterations(): SessionLogRecord[] {
     iteration(1, -7.2, "improved"),
     committedKeep(1, { commit: KEEP_COMMIT }),
     iteration(2, 9.4, "regressed"),
-    discard(2),
+    discardRecord(2),
     iteration(3, -3.1, "improved"),
     blockedKeep(3),
     iteration(4, 0.1, "no-signal"),
@@ -184,7 +148,7 @@ describe("statusSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", () => {
       // Act
-      const error = captureGymratError(() => statusSession(freshRoot(), config()));
+      const error = captureGymratError(() => statusSession(freshRoot(), resolvedConfig()));
 
       // Assert
       expect(error.hint).toContain("gymrat start");
@@ -195,11 +159,11 @@ describe("statusSession", () => {
     it("surfaces the store's error naming the log and the line number", () => {
       // Arrange
       const root = freshRoot();
-      writeSessionLog(root);
+      writeSessionLog(root, sessionRecord(root));
       fs.appendFileSync(sessionJsonlPath(root), "{not json\n");
 
       // Act
-      const error = captureGymratError(() => statusSession(root, config()));
+      const error = captureGymratError(() => statusSession(root, resolvedConfig()));
 
       // Assert
       expect(messageOf(error)).toContain(`${sessionJsonlPath(root)}:2`);
@@ -210,10 +174,10 @@ describe("statusSession", () => {
     it("renders the header, every measured record in file order, and the totals", () => {
       // Arrange
       const root = freshRoot();
-      writeSessionLog(root, fourIterations());
+      writeSessionLog(root, sessionRecord(root), fourIterations());
 
       // Act
-      const report = statusSession(root, config());
+      const report = statusSession(root, resolvedConfig());
 
       // Assert
       expect(reportLines(report)).toStrictEqual([
@@ -235,7 +199,7 @@ describe("statusSession", () => {
     it("reads that iteration as unsettled, the blocked keep standing on its own", () => {
       // Arrange
       const root = freshRoot();
-      writeSessionLog(root, [
+      writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
         committedKeep(1, { commit: KEEP_COMMIT }),
         nothingMeasuredKeep(2),
@@ -243,7 +207,7 @@ describe("statusSession", () => {
       ]);
 
       // Act
-      const report = statusSession(root, config());
+      const report = statusSession(root, resolvedConfig());
 
       // Assert
       expect(bodyLines(report)).toStrictEqual([
@@ -259,14 +223,14 @@ describe("statusSession", () => {
     it("renders the blocked keep anyway, counting it as no iteration of its own", () => {
       // Arrange
       const root = freshRoot();
-      writeSessionLog(root, [
+      writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
         committedKeep(1, { commit: KEEP_COMMIT }),
         nothingMeasuredKeep(2),
       ]);
 
       // Act
-      const report = statusSession(root, config());
+      const report = statusSession(root, resolvedConfig());
 
       // Assert
       expect(bodyLines(report)).toStrictEqual([
@@ -281,14 +245,14 @@ describe("statusSession", () => {
     it("closes the report under the totals with the branch and commit it squashed onto", () => {
       // Arrange
       const root = freshRoot();
-      writeSessionLog(root, [
+      writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
         committedKeep(1, { commit: KEEP_COMMIT }),
         finalizeRecord(),
       ]);
 
       // Act
-      const report = statusSession(root, config());
+      const report = statusSession(root, resolvedConfig());
 
       // Assert
       expect(bodyLines(report)).toStrictEqual([
@@ -303,10 +267,10 @@ describe("statusSession", () => {
     it("forwards the configured stop condition to the footer", () => {
       // Arrange
       const root = freshRoot();
-      writeSessionLog(root, fourIterations());
+      writeSessionLog(root, sessionRecord(root), fourIterations());
 
       // Act
-      const report = statusSession(root, config({ stop: { maxIterations: 30 } }));
+      const report = statusSession(root, resolvedConfig({ stop: { maxIterations: 30 } }));
 
       // Assert
       expect(reportLines(report)).toContain("stop: 4 of 30 iterations");
@@ -316,17 +280,14 @@ describe("statusSession", () => {
 
 describe("the status command", () => {
   let repo: ScratchRepo;
-  let originalCwd: string;
 
   beforeEach(() => {
-    originalCwd = process.cwd();
     repo = createScratchRepo();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
-    process.chdir(originalCwd);
     repo.cleanup();
   });
 
@@ -340,7 +301,7 @@ describe("the status command", () => {
 
   it("renders the session in the repository it runs in on stdout", async () => {
     // Arrange
-    writeSessionLog(repo.dir, fourIterations());
+    writeSessionLog(repo.dir, sessionRecord(repo.dir), fourIterations());
     writeConfigFile();
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
@@ -401,7 +362,7 @@ describe("the status command", () => {
     // Arrange
     vi.stubEnv("NO_COLOR", undefined);
     vi.stubEnv("FORCE_COLOR", color);
-    writeSessionLog(repo.dir, fourIterations());
+    writeSessionLog(repo.dir, sessionRecord(repo.dir), fourIterations());
     writeConfigFile();
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });

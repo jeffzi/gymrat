@@ -144,7 +144,6 @@ function latencySamples(latency: number, count = SAMPLES): { latency: number }[]
 describe("the gymrat loop – integration", () => {
   describe("when a whole session is driven command by command", () => {
     let repo: ScratchRepo;
-    let savedCwd: string;
     let exitCodes: number[];
     let records: SessionLogRecord[];
     let statusReport: string;
@@ -154,7 +153,6 @@ describe("the gymrat loop – integration", () => {
     let history: string;
 
     beforeAll(async () => {
-      savedCwd = process.cwd();
       repo = createScratchRepo();
       commitProject(repo);
       process.chdir(repo.dir);
@@ -195,7 +193,6 @@ describe("the gymrat loop – integration", () => {
     }, LONG_RUN_TIMEOUT_MS);
 
     afterAll(() => {
-      process.chdir(savedCwd);
       repo.cleanup();
     });
 
@@ -271,12 +268,10 @@ describe("the gymrat loop – integration", () => {
 
   describe("when a second iterate starts while the first still holds the repository lock", () => {
     let repo: ScratchRepo;
-    let savedCwd: string;
     let gateDir: string;
     let gateFile: string;
 
     beforeEach(async () => {
-      savedCwd = process.cwd();
       gateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-gate-"));
       gateFile = path.join(gateDir, "release");
       repo = createScratchRepo();
@@ -291,7 +286,6 @@ describe("the gymrat loop – integration", () => {
 
     afterEach(() => {
       vi.restoreAllMocks();
-      process.chdir(savedCwd);
       repo.cleanup();
       fs.rmSync(gateDir, { recursive: true, force: true });
     });

@@ -4,7 +4,6 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ResolvedConfig } from "../../src/config.js";
 import { discardSession, keepSession } from "../../src/loop/settle.js";
 import { startSession } from "../../src/loop/start.js";
 import {
@@ -43,7 +42,7 @@ vi.mock("../../src/exec.js", async (importOriginal) => {
 type MetricVerdict = NonNullable<IterationRecord["metrics"][string]>;
 
 const CHECKS = "npm test";
-/** The run timeout `config()` sets, in the milliseconds `exec` takes. */
+/** The run timeout from `resolvedConfig().timeoutSeconds`, in milliseconds. */
 const TIMEOUT_MS = 1_800_000;
 const CHECKS_STDOUT = "3 tests failed";
 const CHECKS_STDERR = "AssertionError: expected 2 to be 3";
@@ -56,11 +55,6 @@ function headOf(worktree: string): string {
 /** The porcelain status of `worktree` — empty when nothing is uncommitted. */
 function statusOf(worktree: string): string {
   return git(["status", "--porcelain"], worktree);
-}
-
-/** A settled run configuration whose checks gate is on. */
-function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
-  return resolvedConfig({ checks: CHECKS, ...overrides });
 }
 
 /** A metric verdict the engine produces, improved and gating unless overridden. */
@@ -156,11 +150,10 @@ function gatingBlock(seq: number): KeepRecord {
 }
 
 let repo: ScratchRepo;
-let originalCwd: string;
 
 /** Open a session in the scratch repo and leave `history` behind its header. */
 function startWith(history: SessionLogRecord[] = []): void {
-  startSession(repo.dir, "main", config());
+  startSession(repo.dir, "main", resolvedConfig({ checks: CHECKS }));
   for (const record of history) {
     appendRecord(sessionJsonlPath(repo.dir), record);
   }
@@ -193,14 +186,12 @@ function lastRecordOf(root: string): SessionLogRecord {
 }
 
 beforeEach(() => {
-  originalCwd = process.cwd();
   repo = createScratchRepo();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   execMock.mockReset();
-  process.chdir(originalCwd);
   repo.cleanup();
 });
 
@@ -208,7 +199,9 @@ describe("keepSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
       // Act
-      const error = await captureRejectedGymratError(() => keepSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() =>
+        keepSession(repo.dir, resolvedConfig({ checks: CHECKS })),
+      );
 
       // Assert
       expect.soft(error.hint).toContain("gymrat start");
@@ -225,7 +218,7 @@ describe("keepSession", () => {
 
     it("runs the configured checks in the experiment worktree under the run timeout", async () => {
       // Act
-      await keepSession(repo.dir, config());
+      await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect(execMock).toHaveBeenCalledWith(CHECKS, {
@@ -239,7 +232,7 @@ describe("keepSession", () => {
       const before = headOf(experimentWorktreeDir(repo.dir));
 
       // Act
-      await keepSession(repo.dir, config());
+      await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       const worktree = experimentWorktreeDir(repo.dir);
@@ -249,7 +242,9 @@ describe("keepSession", () => {
 
     it("appends a committed keep carrying the commit and the message", async () => {
       // Act
-      const result = await keepSession(repo.dir, config(), { message: "cache the regex" });
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }), {
+        message: "cache the regex",
+      });
 
       // Assert
       expect.soft(result.record).toStrictEqual({
@@ -267,7 +262,7 @@ describe("keepSession", () => {
 
     it("advances the baseline worktree to the kept commit, still detached", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       const baseline = baselineWorktreeDir(repo.dir);
@@ -277,7 +272,7 @@ describe("keepSession", () => {
 
     it("reports the commit it made", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect(result.report).toContain(headOf(experimentWorktreeDir(repo.dir)).slice(0, 7));
@@ -285,7 +280,7 @@ describe("keepSession", () => {
 
     it("commits a generated message naming the iteration and its primary delta", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       const subject = git(["log", "-1", "--format=%s"], experimentWorktreeDir(repo.dir));
@@ -304,7 +299,7 @@ describe("keepSession", () => {
 
     it("commits a generated message that says so instead of trailing off", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       const subject = git(["log", "-1", "--format=%s"], experimentWorktreeDir(repo.dir));
@@ -321,7 +316,7 @@ describe("keepSession", () => {
 
     it("keeps anyway and records that the gate was off", async () => {
       // Act
-      const result = await keepSession(repo.dir, config({ checks: undefined }));
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: undefined }));
 
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
@@ -348,7 +343,7 @@ describe("keepSession", () => {
 
     it("appends a keep blocked on the failed checks", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(result.record).toStrictEqual({
@@ -365,7 +360,7 @@ describe("keepSession", () => {
 
     it("reports both streams of the checks output", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(result.report).toContain(CHECKS_STDOUT);
@@ -377,7 +372,7 @@ describe("keepSession", () => {
       const before = headOf(experimentWorktreeDir(repo.dir));
 
       // Act
-      await keepSession(repo.dir, config());
+      await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       const worktree = experimentWorktreeDir(repo.dir);
@@ -395,7 +390,7 @@ describe("keepSession", () => {
       });
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(result.record.status).toBe("blocked");
@@ -412,7 +407,7 @@ describe("keepSession", () => {
       checksPass();
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
@@ -435,7 +430,7 @@ describe("keepSession", () => {
       checksPass();
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(result.report).not.toMatch(/not measured/i);
@@ -456,7 +451,7 @@ describe("keepSession", () => {
       checksPass();
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(result.record.status).toBe("blocked");
@@ -476,7 +471,7 @@ describe("keepSession", () => {
       checksPass();
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect(result.record.status).toBe("committed");
@@ -499,7 +494,7 @@ describe("keepSession", () => {
       checksPass();
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
@@ -524,7 +519,7 @@ describe("keepSession", () => {
 
     it("blocks the keep before the checks ever run", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
@@ -541,7 +536,7 @@ describe("keepSession", () => {
 
     it("names the unmeasured metric and points the agent at the filter", async () => {
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       expect.soft(result.report).toContain("alloc_bytes");
@@ -575,7 +570,7 @@ describe("keepSession", () => {
         checksPass();
 
         // Act
-        const result = await keepSession(repo.dir, config());
+        const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
         // Assert
         expect(result.record.status).toBe("committed");
@@ -603,7 +598,7 @@ describe("keepSession", () => {
       }
 
       // Act
-      const keeping = keepSession(repo.dir, config());
+      const keeping = keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert
       await expect.soft(keeping).rejects.toThrow();
@@ -630,7 +625,7 @@ describe("keepSession", () => {
         checksPass();
 
         // Act
-        const result = await keepSession(repo.dir, config());
+        const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
         // Assert
         expect.soft(execMock).not.toHaveBeenCalled();
@@ -651,10 +646,10 @@ describe("keepSession", () => {
       startWith();
       editExperiment();
       checksPass();
-      await keepSession(repo.dir, config());
+      await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Act
-      const result = await keepSession(repo.dir, config());
+      const result = await keepSession(repo.dir, resolvedConfig({ checks: CHECKS }));
 
       // Assert - a consumer walking the raw log sees two distinct records, not
       // one number written twice.
@@ -827,7 +822,10 @@ describe("discardSession", () => {
 
 describe("when the session on disk was finalized", () => {
   it.each([
-    { command: "keepSession", settle: (): unknown => keepSession(repo.dir, config()) },
+    {
+      command: "keepSession",
+      settle: (): unknown => keepSession(repo.dir, resolvedConfig({ checks: CHECKS })),
+    },
     { command: "discardSession", settle: (): unknown => discardSession(repo.dir) },
   ])(
     "$command refuses with a hint pointing at a fresh start, writing nothing",

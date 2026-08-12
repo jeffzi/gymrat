@@ -28,6 +28,22 @@ export function stubProcessExit(): void {
   }) as (code?: string | number | null) => never);
 }
 
+/**
+ * Snapshot every termination signal's current listener list.
+ *
+ * Taken at module load, this is the set that is definitively not ours —
+ * gymrat attaches one handler per signal for the lifetime of the process and
+ * reuses it for every run, so a baseline captured after the first run would
+ * already contain it.
+ */
+export function snapshotSignalListeners(): Record<SignalName, readonly unknown[]> {
+  return {
+    SIGINT: process.listeners("SIGINT").slice(),
+    SIGTERM: process.listeners("SIGTERM").slice(),
+    SIGHUP: process.listeners("SIGHUP").slice(),
+  };
+}
+
 function isSignalListener(value: unknown): value is (signal: SignalName) => void {
   return typeof value === "function";
 }

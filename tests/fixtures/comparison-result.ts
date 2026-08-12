@@ -83,6 +83,7 @@ export function signedRankMetric(options: {
   noiseAbs?: number;
   unit?: "ns" | "bytes";
   gating?: boolean;
+  direction?: "lower" | "higher";
   n?: number;
 }): MetricEntry {
   const {
@@ -97,6 +98,7 @@ export function signedRankMetric(options: {
     noiseAbs = 3.5,
     unit,
     gating = true,
+    direction = "lower",
     n = 10,
   } = options;
   return {
@@ -109,7 +111,7 @@ export function signedRankMetric(options: {
         verdict: { verdict, method: "signed-rank", delta, n, p, noisePct, noiseAbs },
       },
     ],
-    meta: { direction: "lower", gating, exact: false, unit, kind: "other", shortName: "time" },
+    meta: { direction, gating, exact: false, unit, kind: "other", shortName: "time" },
   };
 }
 

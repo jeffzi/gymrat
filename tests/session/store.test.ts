@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -24,8 +23,10 @@ import {
   requireSession,
 } from "../../src/session/store.js";
 import { captureGymratError, captureThrown } from "../fixtures/errors.js";
+import { freshRoot } from "../fixtures/scratch-repo.js";
 import {
   AT,
+  blockedKeep,
   committedKeep,
   discardRecord as discard,
   finalizeRecord,
@@ -66,27 +67,9 @@ function iteration(seq: number, targetReached: boolean): IterationRecord {
   });
 }
 
-/** A keep that gating refused, leaving the iteration numbered `seq` uncommitted. */
-function blockedKeep(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "blocked",
-    reason: "checks-failed",
-    checks: { configured: true, passed: false },
-  };
-}
-
 /** A blocked keep of the iteration numbered `seq` that never recorded why it was blocked. */
 function blockedKeepWithoutReason(seq: number): KeepRecord {
-  return {
-    type: "keep",
-    seq,
-    at: AT,
-    status: "blocked",
-    checks: { configured: true, passed: false },
-  };
+  return blockedKeep(seq, { reason: undefined });
 }
 
 const ITERATION_1 = iteration(1, false);
@@ -107,11 +90,6 @@ const EMPTY_STATE: SessionState = {
   lastSeq: 0,
   finalized: undefined,
 };
-
-/** A fresh temp repo root, with no `.gymrat` directory yet. */
-function freshRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-store-"));
-}
 
 /** Path to a session log inside a fresh temp repo root, with no `.gymrat` directory yet. */
 function freshJsonlPath(): string {

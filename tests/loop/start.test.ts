@@ -97,17 +97,14 @@ function closeSessionWithOneKeep(): string {
 
 let repo: ScratchRepo;
 let headSha: string;
-let originalCwd: string;
 
 beforeEach(() => {
-  originalCwd = process.cwd();
   repo = createScratchRepo();
   headSha = git(["rev-parse", "HEAD"], repo.dir);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  process.chdir(originalCwd);
   repo.cleanup();
 });
 

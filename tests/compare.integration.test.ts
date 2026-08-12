@@ -28,6 +28,7 @@ import {
   raiseSignal,
   removeLeakedListeners,
   signalListenerCounts,
+  snapshotSignalListeners,
   stubProcessExit,
   type SignalName,
 } from "./fixtures/signal-probe.js";
@@ -160,8 +161,8 @@ interface ErrorPathCase {
  * Run a compare() setup expected to reject with a CommandError, once for the whole
  * describe block, and hand back accessors for the repo and the captured error.
  *
- * Centralizes the save-cwd/create-repo/chdir/create-branches/capture-rejection/
- * restore-cwd/cleanup scaffolding shared by every error-path describe block below.
+ * Centralizes the create-repo/chdir/create-branches/capture-rejection/cleanup
+ * scaffolding shared by every error-path describe block below.
  */
 function useErrorPathCase(setup: ErrorPathCase): {
   repo: () => ReturnType<typeof createScratchRepo>;
@@ -169,10 +170,8 @@ function useErrorPathCase(setup: ErrorPathCase): {
 } {
   let repo: ReturnType<typeof createScratchRepo>;
   let error: CommandError;
-  let savedCwd: string;
 
   beforeAll(async () => {
-    savedCwd = process.cwd();
     repo = createScratchRepo();
     process.chdir(repo.dir);
 
@@ -191,7 +190,6 @@ function useErrorPathCase(setup: ErrorPathCase): {
   });
 
   afterAll(() => {
-    process.chdir(savedCwd);
     repo.cleanup();
   });
 
@@ -279,31 +277,9 @@ async function cleanupInFlightRun(
 /** Generous timeout for tests whose run creates worktrees and spawns real bench processes. */
 const LONG_RUN_TIMEOUT_MS = 60_000;
 
-/**
- * The termination-signal listeners already present when this file loads.
- *
- * gymrat attaches one handler per signal for the lifetime of the process and
- * reuses it for every run, so a baseline captured after the first run would
- * already contain it and `raiseSignal` would find nothing new to invoke. Taken
- * at module load, this is the set that is definitively not ours.
- */
-const PREEXISTING_SIGNAL_LISTENERS: Record<SignalName, readonly unknown[]> = {
-  SIGINT: process.listeners("SIGINT").slice(),
-  SIGTERM: process.listeners("SIGTERM").slice(),
-  SIGHUP: process.listeners("SIGHUP").slice(),
-};
+const PREEXISTING_SIGNAL_LISTENERS = snapshotSignalListeners();
 
 describe("compare – integration", () => {
-  let originalCwd: string;
-
-  beforeEach(() => {
-    originalCwd = process.cwd();
-  });
-
-  afterEach(() => {
-    process.chdir(originalCwd);
-  });
-
   describe("when prepare command is provided", () => {
     it("runs prepare once before every bench run on both targets", async () => {
       await withScratchRepo(async (repo) => {
@@ -341,12 +317,10 @@ describe("compare – integration", () => {
 
   describe("when one baseline is compared against two candidates", () => {
     let repo: ReturnType<typeof createScratchRepo>;
-    let savedCwd: string;
     let benchOrder: string[];
     let result: ComparisonResult;
 
     beforeAll(async () => {
-      savedCwd = process.cwd();
       repo = createScratchRepo();
       process.chdir(repo.dir);
 
@@ -374,7 +348,6 @@ describe("compare – integration", () => {
     }, LONG_RUN_TIMEOUT_MS);
 
     afterAll(() => {
-      process.chdir(savedCwd);
       removeStrandedWorktrees(repo);
       repo.cleanup();
     });
@@ -461,12 +434,10 @@ describe("compare – integration", () => {
 
   describe("when targets are plain directories rather than refs", () => {
     let repo: ReturnType<typeof createScratchRepo>;
-    let savedCwd: string;
     let result: ComparisonResult;
     let report: string;
 
     beforeAll(async () => {
-      savedCwd = process.cwd();
       repo = createScratchRepo();
       process.chdir(repo.dir);
 
@@ -487,7 +458,6 @@ describe("compare – integration", () => {
     }, LONG_RUN_TIMEOUT_MS);
 
     afterAll(() => {
-      process.chdir(savedCwd);
       repo.cleanup();
     });
 
@@ -636,15 +606,12 @@ describe("compare – integration", () => {
 
   describe("when using mitata adapter with fixture replay", () => {
     let repo: ReturnType<typeof createScratchRepo>;
-    let savedCwd: string;
     let result: ComparisonResult;
 
     beforeAll(async () => {
-      savedCwd = process.cwd();
+      const fixturePath = path.resolve("tests/fixtures/mitata.json");
       repo = createScratchRepo();
       process.chdir(repo.dir);
-
-      const fixturePath = path.resolve(savedCwd, "tests/fixtures/mitata.json");
       const mitataBenchScript = `#!/bin/sh\ncat "${toShellPath(fixturePath)}"`;
       createBranch(repo, { name: "mitata-branch", benchScript: mitataBenchScript });
       createBranch(repo, { name: "mitata-branch-2", benchScript: mitataBenchScript });
@@ -659,7 +626,6 @@ describe("compare – integration", () => {
     });
 
     afterAll(() => {
-      process.chdir(savedCwd);
       repo.cleanup();
     });
 
@@ -1248,10 +1214,8 @@ describe("compare – integration", () => {
     describe("once SIGINT interrupts an in-flight run", () => {
       let repo: ReturnType<typeof createScratchRepo>;
       let run: InFlightRun;
-      let savedCwd: string;
 
       beforeAll(async () => {
-        savedCwd = process.cwd();
         stubProcessExit();
 
         repo = createScratchRepo();
@@ -1269,7 +1233,6 @@ describe("compare – integration", () => {
 
       afterAll(async () => {
         vi.restoreAllMocks();
-        process.chdir(savedCwd);
         await cleanupInFlightRun(repo, run);
       });
 

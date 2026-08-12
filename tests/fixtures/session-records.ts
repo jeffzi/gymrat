@@ -1,14 +1,17 @@
 import { expect } from "vitest";
 
 import type { ResolvedConfig } from "../../src/config.js";
+import { sessionJsonlPath } from "../../src/session/paths.js";
 import type {
   DiscardRecord,
   FinalizeRecord,
   HookRecord,
   IterationRecord,
   KeepRecord,
+  SessionLogRecord,
   SessionRecord,
 } from "../../src/session/records.js";
+import { appendRecord } from "../../src/session/store.js";
 
 /** The instant every fixture record in this file was written at. */
 export const AT = "2026-08-08T14:15:30.000Z";
@@ -145,4 +148,36 @@ export function committedKeep(
     checks: { configured: true, passed: true },
     ...overrides,
   };
+}
+
+/** A keep the checks gate refused, leaving the iteration numbered `seq` uncommitted. */
+export function blockedKeep(
+  seq: number,
+  overrides: Partial<Omit<KeepRecord, "type" | "status">> = {},
+): KeepRecord {
+  return {
+    type: "keep",
+    seq,
+    at: AT,
+    status: "blocked",
+    reason: "checks-failed",
+    checks: { configured: true, passed: false },
+    ...overrides,
+  };
+}
+
+/**
+ * Write a session log opening on `header` and holding `history` after it.
+ *
+ * The header is appended first, then each history record in order.
+ */
+export function writeSessionLog(
+  root: string,
+  header: SessionRecord,
+  history: SessionLogRecord[] = [],
+): void {
+  appendRecord(sessionJsonlPath(root), header);
+  for (const record of history) {
+    appendRecord(sessionJsonlPath(root), record);
+  }
 }

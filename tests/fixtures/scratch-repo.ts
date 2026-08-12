@@ -8,6 +8,11 @@ export function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
 }
 
+/** A fresh temp directory with no git repository, resolved through `realpathSync.native`. */
+export function freshRoot(prefix = "gymrat-test-"): string {
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
 /** Throwaway git repository in the system temp dir. Call `cleanup` to remove it. */
 export interface ScratchRepo {
   dir: string;

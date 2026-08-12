@@ -5,17 +5,11 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ResolvedConfig } from "../../src/config.js";
 import { GymratError } from "../../src/errors.js";
 import { iterateSession } from "../../src/loop/iterate.js";
 import type { TargetContext } from "../../src/sampling.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
-import type {
-  HookRecord,
-  IterationRecord,
-  SessionLogRecord,
-  SessionRecord,
-} from "../../src/session/records.js";
+import type { HookRecord, IterationRecord, SessionRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
 import { createRunnableProgram, mockProcessExit } from "../fixtures/cli-harness.js";
 import { ISO_PATTERN, SESSION_ID, reportLines } from "../fixtures/constants.js";
@@ -32,6 +26,7 @@ import {
   iterationRecord,
   resolvedConfig,
   sessionRecord as sessionRecordDefaults,
+  writeSessionLog,
 } from "../fixtures/session-records.js";
 
 type CollectSamples = typeof import("../../src/sampling.js").collectSamples;
@@ -113,11 +108,6 @@ function filteredRounds(name: string, values: readonly number[]): Record<string,
 /** The confirm-rerun template a consumer configures when their bench can be narrowed. */
 const FILTER = "npm run bench -- --filter {names}";
 
-/** A settled run configuration, geomean-led unless a test names its own primary. */
-function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
-  return resolvedConfig(overrides);
-}
-
 /**
  * A session header whose worktrees sit beside the default paths rather than on
  * them, so a run that recomputed the paths instead of reading them off the
@@ -141,14 +131,6 @@ function iteration(seq: number): IterationRecord {
 /** The iteration numbered `seq`, measured at or past the configured target. */
 function onTargetIteration(seq: number): IterationRecord {
   return iterationRecord({ seq, targetReached: true });
-}
-
-/** Write a session log opening on `sessionRecord(root)` and holding `history` after it. */
-function writeSessionLog(root: string, history: SessionLogRecord[] = []): void {
-  appendRecord(sessionJsonlPath(root), sessionRecord(root));
-  for (const record of history) {
-    appendRecord(sessionJsonlPath(root), record);
-  }
 }
 
 /**
@@ -248,17 +230,14 @@ function lastIterationOf(root: string): IterationRecord {
 }
 
 let repo: ScratchRepo;
-let originalCwd: string;
 
 beforeEach(() => {
-  originalCwd = process.cwd();
   repo = createScratchRepo();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   collectSamplesMock.mockReset();
-  process.chdir(originalCwd);
   repo.cleanup();
 });
 
@@ -266,7 +245,9 @@ describe("iterateSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
       // Act
-      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() =>
+        iterateSession(repo.dir, resolvedConfig()),
+      );
 
       // Assert
       expect.soft(error.hint).toContain("gymrat start");
@@ -277,10 +258,16 @@ describe("iterateSession", () => {
   describe("when the session on disk was finalized", () => {
     it("refuses with a hint pointing at a fresh start", async () => {
       // Arrange
-      writeSessionLog(repo.dir, [iteration(1), committedKeep(1), finalizeRecord()]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [
+        iteration(1),
+        committedKeep(1),
+        finalizeRecord(),
+      ]);
 
       // Act
-      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() =>
+        iterateSession(repo.dir, resolvedConfig()),
+      );
 
       // Assert
       expect.soft(error.hint).toContain("gymrat start");
@@ -291,10 +278,12 @@ describe("iterateSession", () => {
   describe("when the last iteration is neither kept nor discarded", () => {
     it("refuses with a hint naming both ways to settle it", async () => {
       // Arrange
-      writeSessionLog(repo.dir, [iteration(1)]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1)]);
 
       // Act
-      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, config()));
+      const error = await captureRejectedGymratError(() =>
+        iterateSession(repo.dir, resolvedConfig()),
+      );
 
       // Assert
       expect.soft(error.hint).toContain("gymrat keep");
@@ -306,12 +295,17 @@ describe("iterateSession", () => {
   describe("when a configured stop condition has already been met", () => {
     it("refuses once the configured maximum of iterations is on file", async () => {
       // Arrange
-      writeSessionLog(repo.dir, [iteration(1), committedKeep(1), iteration(2), committedKeep(2)]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [
+        iteration(1),
+        committedKeep(1),
+        iteration(2),
+        committedKeep(2),
+      ]);
       stubRuns(repo.dir, []);
 
       // Act
       const error = await captureRejectedGymratError(() =>
-        iterateSession(repo.dir, config({ stop: { maxIterations: 2 } })),
+        iterateSession(repo.dir, resolvedConfig({ stop: { maxIterations: 2 } })),
       );
 
       // Assert
@@ -323,12 +317,15 @@ describe("iterateSession", () => {
 
     it("refuses once a target-reaching iteration has been kept", async () => {
       // Arrange
-      writeSessionLog(repo.dir, [onTargetIteration(1), committedKeep(1)]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [onTargetIteration(1), committedKeep(1)]);
       stubRuns(repo.dir, []);
 
       // Act
       const error = await captureRejectedGymratError(() =>
-        iterateSession(repo.dir, config({ primary: "total_ms", stop: { targetValue: 95 } })),
+        iterateSession(
+          repo.dir,
+          resolvedConfig({ primary: "total_ms", stop: { targetValue: 95 } }),
+        ),
       );
 
       // Assert
@@ -345,12 +342,12 @@ describe("iterateSession", () => {
 
     it("measures again after that iteration was discarded", async () => {
       // Arrange
-      writeSessionLog(repo.dir, [onTargetIteration(1), discardOf(1)]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [onTargetIteration(1), discardOf(1)]);
 
       // Act
       const result = await iterateSession(
         repo.dir,
-        config({ primary: "total_ms", stop: { targetValue: 95 } }),
+        resolvedConfig({ primary: "total_ms", stop: { targetValue: 95 } }),
       );
 
       // Assert
@@ -361,7 +358,7 @@ describe("iterateSession", () => {
   describe("when no stop condition is configured", () => {
     it("measures again past a kept target and past any number of iterations", async () => {
       // Arrange
-      writeSessionLog(repo.dir, [
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [
         onTargetIteration(1),
         committedKeep(1),
         iteration(2),
@@ -370,7 +367,7 @@ describe("iterateSession", () => {
       stubSamples(repo.dir, improvedRounds(), baselineRounds());
 
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(result.record.seq).toBe(3);
@@ -379,13 +376,13 @@ describe("iterateSession", () => {
 
   describe("when a settled session is on disk", () => {
     beforeEach(() => {
-      writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1), committedKeep(1)]);
       stubSamples(repo.dir, improvedRounds(), baselineRounds());
     });
 
     it("benches the session's two worktrees, baseline first", async () => {
       // Act
-      await iterateSession(repo.dir, config());
+      await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       const worktrees = sessionRecord(repo.dir).worktrees;
@@ -407,7 +404,7 @@ describe("iterateSession", () => {
 
     it("appends the measurement as the iteration after the last one settled", async () => {
       // Act
-      await iterateSession(repo.dir, config());
+      await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(lastIterationOf(repo.dir)).toStrictEqual({
@@ -451,7 +448,7 @@ describe("iterateSession", () => {
 
     it("hands back the record it appended", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(asLogged(result.record)).toStrictEqual(lastIterationOf(repo.dir));
@@ -459,7 +456,7 @@ describe("iterateSession", () => {
 
     it("reads the iteration on a named primary metric alone", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config({ primary: "total_ms" }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
 
       // Assert
       expect(result.record.primary).toStrictEqual({
@@ -476,7 +473,7 @@ describe("iterateSession", () => {
       { description: "the target is met", stop: { targetValue: 95 }, expected: true },
     ])("records targetReached as $expected when $description", async ({ stop, expected }) => {
       // Act
-      const result = await iterateSession(repo.dir, config({ primary: "total_ms", stop }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms", stop }));
 
       // Assert
       expect(result.record.targetReached).toBe(expected);
@@ -484,7 +481,7 @@ describe("iterateSession", () => {
 
     it("reads a higher-is-better target from the other side", async () => {
       // Arrange
-      const resolved = config({
+      const resolved = resolvedConfig({
         primary: "total_ms",
         stop: { targetValue: 85 },
         metrics: { total_ms: { direction: "higher" } },
@@ -501,7 +498,7 @@ describe("iterateSession", () => {
       // Act
       const result = await iterateSession(
         repo.dir,
-        config({ primary: "total_ms", stop: { targetValue: 95 } }),
+        resolvedConfig({ primary: "total_ms", stop: { targetValue: 95 } }),
       );
 
       // Assert
@@ -513,7 +510,7 @@ describe("iterateSession", () => {
       { description: "no stop condition is configured", stop: undefined },
     ])("leaves the target out of the report when $description", async ({ stop }) => {
       // Act
-      const result = await iterateSession(repo.dir, config({ primary: "total_ms", stop }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms", stop }));
 
       // Assert
       expect(stripAnsi(result.report)).not.toContain("target reached");
@@ -521,7 +518,7 @@ describe("iterateSession", () => {
 
     it("opens the report on the loop's own header, above the comparison table", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       const report = stripAnsi(result.report);
@@ -534,7 +531,7 @@ describe("iterateSession", () => {
 
   describe("when a gating metric comes back regressed", () => {
     beforeEach(() => {
-      writeSessionLog(repo.dir);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
     });
 
     it("reruns the same paired sampling through the filter template", async () => {
@@ -545,7 +542,7 @@ describe("iterateSession", () => {
       ]);
 
       // Act
-      await iterateSession(repo.dir, config({ filter: FILTER }));
+      await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
 
       // Assert
       expect.soft(collectSamplesMock).toHaveBeenCalledTimes(2);
@@ -561,7 +558,7 @@ describe("iterateSession", () => {
       ]);
 
       // Act
-      await iterateSession(repo.dir, config());
+      await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(samplingCall(1).bench).toBe("npm run bench");
@@ -574,7 +571,10 @@ describe("iterateSession", () => {
         baseline: filteredRounds("total_ms", BASELINE_MS),
       };
       stubRuns(repo.dir, [{ experiment: regressedRounds(), baseline: baselineRounds() }, rerun]);
-      const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+      const resolved = resolvedConfig({
+        filter: FILTER,
+        metrics: { alloc_bytes: { gating: false } },
+      });
 
       // Act
       const result = await iterateSession(repo.dir, resolved);
@@ -596,7 +596,10 @@ describe("iterateSession", () => {
           baseline: filteredRounds("total_ms", BASELINE_MS),
         },
       ]);
-      const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+      const resolved = resolvedConfig({
+        filter: FILTER,
+        metrics: { alloc_bytes: { gating: false } },
+      });
 
       // Act
       const result = await iterateSession(repo.dir, resolved);
@@ -634,7 +637,10 @@ describe("iterateSession", () => {
             baseline: filteredRounds("total_ms", BASELINE_MS),
           },
         ]);
-        const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+        const resolved = resolvedConfig({
+          filter: FILTER,
+          metrics: { alloc_bytes: { gating: false } },
+        });
 
         // Act
         const result = await iterateSession(repo.dir, resolved);
@@ -665,7 +671,10 @@ describe("iterateSession", () => {
         { experiment: regressedRounds(), baseline: baselineRounds() },
         new GymratError("bench command failed"),
       ]);
-      const resolved = config({ filter: FILTER, metrics: { alloc_bytes: { gating: false } } });
+      const resolved = resolvedConfig({
+        filter: FILTER,
+        metrics: { alloc_bytes: { gating: false } },
+      });
 
       // Act
       const error = await captureRejectedGymratError(() => iterateSession(repo.dir, resolved));
@@ -726,7 +735,7 @@ describe("iterateSession", () => {
           stubRuns(repo.dir, [regressed, regressed]);
 
           // Act
-          await iterateSession(repo.dir, config({ filter: ARGS_FILTER }));
+          await iterateSession(repo.dir, resolvedConfig({ filter: ARGS_FILTER }));
 
           // Assert
           expect(shellArgs(repo.dir, samplingCall(1).bench)).toStrictEqual([name, "total_ms"]);
@@ -748,7 +757,7 @@ describe("iterateSession", () => {
     };
 
     beforeEach(() => {
-      writeSessionLog(repo.dir);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
       stubRuns(repo.dir, [
         { experiment: regressedRounds(), baseline: baselineRounds() },
         PARTIAL_RERUN,
@@ -757,7 +766,7 @@ describe("iterateSession", () => {
 
     it("leaves that metric regressed rather than demoting it to no-signal", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config({ filter: FILTER }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
 
       // Assert
       expect.soft(result.record.metrics.alloc_bytes).toStrictEqual({
@@ -785,7 +794,7 @@ describe("iterateSession", () => {
       };
 
       // Act
-      const result = await iterateSession(repo.dir, config({ filter: FILTER }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
 
       // Assert
       expect.soft(result.record.confirm).toStrictEqual(expected);
@@ -794,7 +803,7 @@ describe("iterateSession", () => {
 
     it("reports it as unmeasured rather than as a regression the rerun disowned", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config({ filter: FILTER }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
 
       // Assert
       const lines = trimmedReportLines(result.report);
@@ -806,13 +815,13 @@ describe("iterateSession", () => {
 
   describe("when the regressed metric is one a rerun cannot inform", () => {
     beforeEach(() => {
-      writeSessionLog(repo.dir);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
     });
 
     it("gates an exact metric on the first run alone", async () => {
       // Arrange
       stubSamples(repo.dir, regressedRounds(), baselineRounds());
-      const resolved = config({
+      const resolved = resolvedConfig({
         metrics: { total_ms: { exact: true }, alloc_bytes: { gating: false } },
       });
 
@@ -845,7 +854,7 @@ describe("iterateSession", () => {
       // Act
       await iterateSession(
         repo.dir,
-        config({ filter: FILTER, metrics: { total_ms: { exact: true } } }),
+        resolvedConfig({ filter: FILTER, metrics: { total_ms: { exact: true } } }),
       );
 
       // Assert
@@ -860,7 +869,7 @@ describe("iterateSession", () => {
       // Act
       const result = await iterateSession(
         repo.dir,
-        config({ metrics: { alloc_bytes: { gating: false } } }),
+        resolvedConfig({ metrics: { alloc_bytes: { gating: false } } }),
       );
 
       // Assert
@@ -901,7 +910,7 @@ describe("iterateSession", () => {
     }
 
     beforeEach(() => {
-      writeSessionLog(repo.dir);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
       stubSamples(
         repo.dir,
         protoRounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8)),
@@ -911,7 +920,7 @@ describe("iterateSession", () => {
 
     it("keeps that metric's verdict as an own key of the record it writes", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(result.record.metrics).toStrictEqual(
@@ -921,7 +930,7 @@ describe("iterateSession", () => {
 
     it("counts that metric in the geomean the primary reads", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(result.record.primary).toStrictEqual({
@@ -962,13 +971,13 @@ describe("iterateSession", () => {
     }
 
     beforeEach(() => {
-      writeSessionLog(repo.dir);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
       stubSamples(repo.dir, improvedRounds(), zeroBaselineRounds());
     });
 
     it("records that metric's delta as null, beside the delta the other metric moved by", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect.soft(result.record.metrics.total_ms?.deltaPct).toBeNull();
@@ -977,7 +986,7 @@ describe("iterateSession", () => {
 
     it("leaves the iteration it appended readable off the log", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(lastIterationOf(repo.dir)).toStrictEqual(asLogged(result.record));
@@ -985,7 +994,7 @@ describe("iterateSession", () => {
 
     it("records the primary's own delta as null rather than as no change", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config({ primary: "total_ms" }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
 
       // Assert
       expect.soft(result.record.primary).toStrictEqual({
@@ -998,7 +1007,7 @@ describe("iterateSession", () => {
 
     it("states no percentage beside the verdict it reports", async () => {
       // Act
-      const result = await iterateSession(repo.dir, config({ primary: "total_ms" }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
 
       // Assert
       const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
@@ -1012,7 +1021,7 @@ describe("iterateSession", () => {
       appendRecord(sessionJsonlPath(repo.dir), committedKeep(1));
 
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       expect(result.record.seq).toBe(2);
@@ -1041,11 +1050,11 @@ describe("iterateSession", () => {
   ])("when the measurement comes out $outcome", ({ outcome, word, experiment, nextStep }) => {
     it("closes the report on that verdict and the step it calls for", async () => {
       // Arrange
-      writeSessionLog(repo.dir);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
       stubSamples(repo.dir, experiment, baselineRounds());
 
       // Act
-      const result = await iterateSession(repo.dir, config());
+      const result = await iterateSession(repo.dir, resolvedConfig());
 
       // Assert
       const lines = stripAnsi(result.report).split("\n");
@@ -1092,7 +1101,7 @@ describe("iterateSession", () => {
       experimentDir = sessionRecord(repo.dir).worktrees.experiment;
       fs.mkdirSync(experimentDir, { recursive: true });
       ({ hookCommand, printing } = hookScripts(repo.dir));
-      writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
+      writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1), committedKeep(1)]);
       stubSamples(repo.dir, improvedRounds(), baselineRounds());
     });
 
@@ -1101,7 +1110,7 @@ describe("iterateSession", () => {
       const hooks = { before: printing("hi"), after: printing("bye") };
 
       // Act
-      await iterateSession(repo.dir, config({ hooks }));
+      await iterateSession(repo.dir, resolvedConfig({ hooks }));
 
       // Assert
       const records = readRecords(sessionJsonlPath(repo.dir));
@@ -1119,7 +1128,7 @@ describe("iterateSession", () => {
       const hooks = { before: capturingPayload("before"), after: capturingPayload("after") };
 
       // Act
-      const result = await iterateSession(repo.dir, config({ hooks }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ hooks }));
 
       // Assert
       expect.soft(payloadOf("before")).toStrictEqual({
@@ -1156,7 +1165,7 @@ describe("iterateSession", () => {
       };
 
       // Act
-      const result = await iterateSession(repo.dir, config({ hooks }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ hooks }));
 
       // Assert
       const lines = trimmedReportLines(result.report);
@@ -1172,7 +1181,7 @@ describe("iterateSession", () => {
       );
 
       // Act
-      const result = await iterateSession(repo.dir, config({ hooks: { before } }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ hooks: { before } }));
 
       // Assert
       expect
@@ -1195,7 +1204,7 @@ describe("iterateSession", () => {
       const hooks = withAfter ? { after: printing("bye") } : undefined;
 
       // Act
-      const result = await iterateSession(repo.dir, config({ hooks }));
+      const result = await iterateSession(repo.dir, resolvedConfig({ hooks }));
 
       // Assert
       expect
@@ -1211,7 +1220,7 @@ describe("iterateSession", () => {
 describe("the iterate command", () => {
   it("measures the session in the repository it runs in and reports it on stdout", async () => {
     // Arrange
-    writeSessionLog(repo.dir);
+    writeSessionLog(repo.dir, sessionRecord(repo.dir));
     stubSamples(repo.dir, improvedRounds(), baselineRounds());
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
@@ -1233,7 +1242,7 @@ describe("the iterate command", () => {
 
   it("exits 1 when a configured stop condition has already been met", async () => {
     // Arrange
-    writeSessionLog(repo.dir, [iteration(1), committedKeep(1)]);
+    writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1), committedKeep(1)]);
     fs.writeFileSync(
       path.join(repo.dir, "gymrat.json"),
       JSON.stringify({ bench: "npm run bench", stop: { maxIterations: 1 } }),

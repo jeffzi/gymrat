@@ -63,6 +63,7 @@ import {
   raiseSignal,
   removeLeakedListeners,
   type SignalName,
+  snapshotSignalListeners,
   stubProcessExit,
   TERMINATION_SIGNALS,
 } from "./fixtures/signal-probe.js";
@@ -2396,18 +2397,14 @@ describe("createProgram", () => {
       };
 
       let repo: ScratchRepo;
-      let originalCwd: string;
-
       // The command records into the repository it runs in, so the run happens in
       // a throwaway one rather than in the checkout the suite itself lives in.
       beforeEach(() => {
-        originalCwd = process.cwd();
         repo = createScratchRepo();
         process.chdir(repo.dir);
       });
 
       afterEach(() => {
-        process.chdir(originalCwd);
         repo.cleanup();
       });
 
@@ -2881,19 +2878,15 @@ describe("createProgram", () => {
 
 describe("the finalize command", () => {
   let repo: ScratchRepo;
-  let originalCwd: string;
-
   // The command closes the session in the repository it runs in, so the run
   // happens in a throwaway one rather than in the checkout the suite lives in.
   beforeEach(() => {
-    originalCwd = process.cwd();
     repo = createScratchRepo();
     process.chdir(repo.dir);
   });
 
   afterEach(() => {
     rmSync(lockfilePath(repo.dir), { force: true });
-    process.chdir(originalCwd);
     repo.cleanup();
   });
 
@@ -3127,19 +3120,7 @@ function runCliProcess(
   });
 }
 
-/**
- * The termination-signal listeners already present when this file loads.
- *
- * gymrat attaches its handler for the lifetime of the process and reuses it, so
- * a baseline taken after a run would already hold it and `raiseSignal` would
- * find nothing new to invoke. Taken at module load, this is the set that is
- * definitively not gymrat's.
- */
-const PREEXISTING_SIGNAL_LISTENERS: Record<SignalName, readonly unknown[]> = {
-  SIGINT: process.listeners("SIGINT").slice(),
-  SIGTERM: process.listeners("SIGTERM").slice(),
-  SIGHUP: process.listeners("SIGHUP").slice(),
-};
+const PREEXISTING_SIGNAL_LISTENERS = snapshotSignalListeners();
 
 // The bench parks a background process via `sleep 30 &` and writes its PID; Git
 // for Windows' sh reports PIDs from its own process namespace that Node cannot
@@ -3235,12 +3216,10 @@ describe.skipIf(process.platform === "win32")("the iterate command, interrupted 
     await run.settled;
   }
 
-  let originalCwd: string;
   let repo: ScratchRepo;
   let run: InFlightIterate | undefined;
 
   beforeEach(() => {
-    originalCwd = process.cwd();
     repo = createScratchRepo();
     process.chdir(repo.dir);
   });
@@ -3248,7 +3227,6 @@ describe.skipIf(process.platform === "win32")("the iterate command, interrupted 
   afterEach(async () => {
     await settleInFlightIterate(run);
     run = undefined;
-    process.chdir(originalCwd);
     repo.cleanup();
 
     // Uninstall swaps the cleanup handler for an exit-only one that survives
