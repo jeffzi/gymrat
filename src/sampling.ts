@@ -2,7 +2,8 @@ import path from "node:path";
 
 import { AdapterError } from "./adapters/index.js";
 import type { Adapter, WarnSink } from "./adapters/types.js";
-import type { ConfigKinds, ConfigMetrics } from "./config.js";
+import type { ConfigKinds, ConfigMetrics, ResolvedMetricMeta } from "./config.js";
+import { resolveMetricMeta } from "./config.js";
 import { GymratError, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import type { ExecResult, ExecTimeoutError } from "./exec.js";
@@ -328,8 +329,32 @@ export function pairedOrOwnValues(
 }
 
 /** Every metric name any target reported, so a one-sided metric still gets a row. */
-export function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
+function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
   return new Set(sampleSets.flat().flatMap(Object.keys));
+}
+
+/**
+ * Collect metric names from sample sets and resolve their metadata in one step.
+ *
+ * Every call site that measures — `measure`, `compare`, `iterate` — runs the
+ * same sequence: collect names, guard against an empty set, resolve metadata.
+ * The `v8 ignore` guard covers the empty-set branch that adapters' own
+ * validation makes unreachable in practice.
+ */
+export function resolveMetricMetaFromSamples(
+  sampleSets: readonly Record<string, number>[][],
+  configMetrics: ConfigMetrics | undefined,
+  adapter: Adapter,
+  configKinds?: ConfigKinds,
+): Record<string, ResolvedMetricMeta> {
+  const metricNames = collectMetricNames(sampleSets);
+
+  /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
+  if (metricNames.size === 0) {
+    throw new GymratError("No metrics found in benchmark output");
+  }
+
+  return resolveMetricMeta(Array.from(metricNames), configMetrics, adapter, configKinds);
 }
 
 /**

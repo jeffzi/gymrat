@@ -1,15 +1,15 @@
 import { getAdapter } from "./adapters/index.js";
-import { resolveMetricMeta } from "./config.js";
+import type { ResolvedMetricMeta } from "./config.js";
 import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import type { ComparisonResult, MetricComparison } from "./report/types.js";
 import {
-  collectMetricNames,
   collectSamples,
   computeMetricStats,
   pairedOrOwnValues,
   resolveDir,
   resolveLabel,
+  resolveMetricMetaFromSamples,
   runWithWorktrees,
 } from "./sampling.js";
 import type { RunOptions, TargetContext, TargetSamples, TargetSpec } from "./sampling.js";
@@ -144,7 +144,7 @@ interface Measurement {
   baselineSamples: Record<string, number>[];
   candidates: CandidateMeasurement[];
   metricNames: Set<string>;
-  metricMeta: ReturnType<typeof resolveMetricMeta>;
+  metricMeta: Record<string, ResolvedMetricMeta>;
 }
 
 /** One candidate's samples and the pairwise verdicts they earned against the baseline. */
@@ -169,7 +169,7 @@ interface CandidateMeasurement {
 function measureCandidates(
   baselineSamples: Record<string, number>[],
   candidates: readonly TargetSamples[],
-  metricMeta: ReturnType<typeof resolveMetricMeta>,
+  metricMeta: Record<string, ResolvedMetricMeta>,
   unstableNoisePct: number | undefined,
 ): CandidateMeasurement[] {
   return candidates.map(({ ctx, samples }) => {
@@ -239,18 +239,8 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         throw new GymratError("collectSamples returned no result for the baseline target");
       }
 
-      const metricNames = collectMetricNames([
-        baseline.samples,
-        ...candidates.map(({ samples }) => samples),
-      ]);
-
-      /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
-      if (metricNames.size === 0) {
-        throw new GymratError("No metrics found in benchmark output");
-      }
-
-      const metricMeta = resolveMetricMeta(
-        Array.from(metricNames),
+      const metricMeta = resolveMetricMetaFromSamples(
+        [baseline.samples, ...candidates.map(({ samples }) => samples)],
         options.configMetrics,
         adapter,
         options.configKinds,
@@ -265,7 +255,7 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
           metricMeta,
           options.unstableNoisePct,
         ),
-        metricNames,
+        metricNames: new Set(Object.keys(metricMeta)),
         metricMeta,
       };
       return measurement;

@@ -1,6 +1,6 @@
 import { getAdapter } from "../adapters/index.js";
 import type { ResolvedConfig, ResolvedMetricMeta } from "../config.js";
-import { FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, resolveMetricMeta } from "../config.js";
+import { FILTER_PLACEHOLDER, GEOMEAN_PRIMARY } from "../config.js";
 import { GymratError } from "../errors.js";
 import { metricRecord } from "../metric-record.js";
 import type { LoopOutcome, LoopPrimary, RerunConfirmation } from "../report/loop.js";
@@ -13,10 +13,10 @@ import {
 import { renderReport } from "../report/text.js";
 import type { ComparisonResult, MetricComparison, MetricComparisons } from "../report/types.js";
 import {
-  collectMetricNames,
   collectSamples,
   computeMetricStats,
   pairedOrOwnValues,
+  resolveMetricMetaFromSamples,
   type ProgressStep,
   type SamplingOptions,
   type TargetContext,
@@ -341,7 +341,15 @@ async function benchAndJudge(
   samples: IterationRecord["samples"];
 }> {
   const [baseline, experiment] = await measure(session, config, options, bench);
-  const resolvedMeta = metricMeta ?? resolveMeta(config, [baseline.samples, experiment.samples]);
+  const adapter = getAdapter(config.adapter);
+  const resolvedMeta =
+    metricMeta ??
+    resolveMetricMetaFromSamples(
+      [baseline.samples, experiment.samples],
+      config.metrics,
+      adapter,
+      config.kinds,
+    );
   const verdicts = computeVerdicts(
     baseline.samples,
     experiment.samples,
@@ -437,26 +445,6 @@ async function measure(
 /** A session worktree, benched where it sits: it is checked out for the whole session. */
 function worktreeContext(dir: string, label: string, position: "old" | "new"): TargetContext {
   return { target: { kind: "in-place", dir }, dir, label, position };
-}
-
-/** Settle metadata for every metric either worktree reported. */
-function resolveMeta(
-  config: ResolvedConfig,
-  sampleSets: readonly Record<string, number>[][],
-): Record<string, ResolvedMetricMeta> {
-  const metricNames = collectMetricNames(sampleSets);
-
-  /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
-  if (metricNames.size === 0) {
-    throw new GymratError("No metrics found in benchmark output");
-  }
-
-  return resolveMetricMeta(
-    Array.from(metricNames),
-    config.metrics,
-    getAdapter(config.adapter),
-    config.kinds,
-  );
 }
 
 /**

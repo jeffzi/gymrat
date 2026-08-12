@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { GymratError, hasErrorCode, stderrTextOf } from "./errors.js";
-import { runGit } from "./git.js";
+import { runGit, tryGit } from "./git.js";
 
 /** A directory benchmarked where it sits, with no worktree of its own. */
 export interface InPlaceTarget {
@@ -187,20 +187,6 @@ export function materializeWorktree(worktree: WorktreeInfo, repoDir: string): vo
 }
 
 /**
- * Run a git command, reporting success or failure instead of throwing.
- *
- * @returns `undefined` on success, or git's own stderr text on failure.
- */
-function tryGitCommand(args: readonly string[], repoDir: string): string | undefined {
-  try {
-    runGit(args, repoDir);
-    return undefined;
-  } catch (error) {
-    return stderrTextOf(error);
-  }
-}
-
-/**
  * What handing one worktree to git accomplished.
  *
  * `deregistered` and `stale` both describe a directory that vanished behind git's
@@ -225,7 +211,7 @@ function removeWorktree(worktree: WorktreeInfo, repoDir: string): RemovalOutcome
     return "untouched";
   }
 
-  const error = tryGitCommand(["worktree", "remove", "--force", worktree.dir], repoDir);
+  const error = tryGit(["worktree", "remove", "--force", worktree.dir], repoDir);
   if (error !== undefined) {
     // Nothing is standing for the user to clear by hand when the directory is
     // already gone, so a refusal there is a reason to sweep, not to report.
@@ -277,6 +263,6 @@ export function cleanupWorktrees(
   // Pruning anyway would reach past this run's worktrees and deregister
   // worktrees of the user's own that are only temporarily absent: an unmounted
   // volume, a directory moved aside.
-  const pruneError = mayHaveStaleEntry ? tryGitCommand(["worktree", "prune"], repoDir) : undefined;
+  const pruneError = mayHaveStaleEntry ? tryGit(["worktree", "prune"], repoDir) : undefined;
   return { removed, failures, pruneError };
 }

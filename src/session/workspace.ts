@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { GymratError, stderrTextOf } from "../errors.js";
-import { repositoryLookupError, runGit } from "../git.js";
+import { repositoryLookupError, runGit, tryGit } from "../git.js";
 import { baselineWorktreeDir, experimentWorktreeDir, SESSION_DIR_NAME } from "./paths.js";
 
 /** Prefix of the branch a session's experiment worktree sits on. */
@@ -216,15 +216,12 @@ export function removeWorktrees(
   const warnings: string[] = [];
 
   for (const dir of [worktrees.experiment, worktrees.baseline]) {
-    try {
-      runGit(["worktree", "remove", "--force", dir], root);
-    } catch (error) {
-      if (isDirectory(dir)) {
-        warnings.push(
-          `Could not remove the worktree at ${dir}: ${stderrTextOf(error)}\n` +
-            `  remove it by hand with: git worktree remove --force ${dir}`,
-        );
-      }
+    const error = tryGit(["worktree", "remove", "--force", dir], root);
+    if (error !== undefined && isDirectory(dir)) {
+      warnings.push(
+        `Could not remove the worktree at ${dir}: ${error}\n` +
+          `  remove it by hand with: git worktree remove --force ${dir}`,
+      );
     }
   }
 
@@ -315,19 +312,10 @@ function addExperimentWorktree(root: string, branch: string): void {
 function unwindWorkspace(root: string, branch: string, standing: readonly string[]): void {
   for (const dir of [experimentWorktreeDir(root), baselineWorktreeDir(root)]) {
     if (isDirectory(dir) && !standing.includes(dir)) {
-      runGitIgnoringFailure(["worktree", "remove", "--force", dir], root);
+      tryGit(["worktree", "remove", "--force", dir], root);
     }
   }
-  runGitIgnoringFailure(["branch", "-D", branch], root);
-}
-
-/** Run git for a cleanup step whose failure the caller has no better answer for. */
-function runGitIgnoringFailure(args: readonly string[], cwd: string): void {
-  try {
-    runGit(args, cwd);
-  } catch {
-    // Swallowed by contract — see unwindWorkspace.
-  }
+  tryGit(["branch", "-D", branch], root);
 }
 
 function addBaselineWorktree(root: string, sha: string): void {

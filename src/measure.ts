@@ -1,15 +1,15 @@
 import { getAdapter } from "./adapters/index.js";
-import { resolveMetricMeta } from "./config.js";
+import type { ResolvedMetricMeta } from "./config.js";
 import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import type { MeasurementResult, MetricMeasurement } from "./report/types.js";
 import {
-  collectMetricNames,
   collectSamples,
   computeMetricStats,
   ownValues,
   resolveDir,
   resolveLabel,
+  resolveMetricMetaFromSamples,
   runWithWorktrees,
 } from "./sampling.js";
 import type { RunOptions, TargetContext, TargetSpec } from "./sampling.js";
@@ -35,7 +35,7 @@ export interface MeasureOptions extends RunOptions {
 interface Measurement {
   label: string;
   samples: Record<string, number>[];
-  metricMeta: ReturnType<typeof resolveMetricMeta>;
+  metricMeta: Record<string, ResolvedMetricMeta>;
 }
 
 function buildMeasurementResult(
@@ -101,18 +101,12 @@ export async function measure(options: MeasureOptions): Promise<MeasurementResul
       }
 
       const samples = collected.samples;
-      const metricNames = collectMetricNames([samples]);
-
-      /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
-      if (metricNames.size === 0) {
-        throw new GymratError("No metrics found in benchmark output");
-      }
 
       const measurement: Measurement = {
         label: ctx.label,
         samples,
-        metricMeta: resolveMetricMeta(
-          Array.from(metricNames),
+        metricMeta: resolveMetricMetaFromSamples(
+          [samples],
           options.configMetrics,
           adapter,
           options.configKinds,

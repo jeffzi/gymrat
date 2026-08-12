@@ -17,6 +17,21 @@ export function runGit(args: readonly string[], cwd: string): string {
 }
 
 /**
+ * Run a git command, reporting success or failure instead of throwing.
+ *
+ * @returns `undefined` on success, or git's stderr text on failure — callers
+ * decide whether a failure is a warning, a silent swallow, or an error.
+ */
+export function tryGit(args: readonly string[], cwd: string): string | undefined {
+  try {
+    runGit(args, cwd);
+    return undefined;
+  } catch (error) {
+    return stderrTextOf(error);
+  }
+}
+
+/**
  * A directory git placed outside every repository.
  *
  * Its own class because callers act on the distinction: standing outside a
