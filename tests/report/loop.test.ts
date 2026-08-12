@@ -247,6 +247,16 @@ describe("formatStatusIteration", () => {
     },
   );
 
+  it("states no percentage for an iteration whose delta went unmeasured", () => {
+    const entry: StatusIteration = {
+      ...statusIteration({ kind: "unsettled" }),
+      deltaPct: null,
+      outcome: "no-signal",
+    };
+
+    expect(stripAnsi(formatStatusIteration(entry))).toBe("iteration 1 · ~ · unsettled");
+  });
+
   describe("when rendering with color", () => {
     beforeEach(() => {
       vi.stubEnv("FORCE_COLOR", "1");

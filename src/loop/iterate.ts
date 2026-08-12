@@ -536,9 +536,10 @@ function compareMetric(
  * The figure the iteration is read on: the geomean over every gating metric, or
  * the one metric the config named.
  *
- * A named metric the run never measured still yields a primary, at rest: the
- * outcome reads it as no signal, which is what a figure nothing was measured for
- * amounts to.
+ * A named metric the run never measured yields a primary with no delta at all:
+ * `null`, the form a figure that has no value takes everywhere in the record.
+ * Nothing may stand a zero there — a zero is a measurement, and it would have the
+ * report, the log and the keep commit all claim the run held its ground.
  */
 function resolvePrimary(
   primary: string,
@@ -552,7 +553,12 @@ function resolvePrimary(
       deltaPct: recordedDelta(computeGeomean(verdicts, gating).value),
     };
   }
-  return { kind: "metric", name: primary, deltaPct: recordedDelta(verdicts[primary]?.delta ?? 0) };
+  const measured = verdicts[primary];
+  return {
+    kind: "metric",
+    name: primary,
+    deltaPct: measured === undefined ? null : recordedDelta(measured.delta),
+  };
 }
 
 /**

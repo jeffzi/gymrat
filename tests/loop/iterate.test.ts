@@ -1028,6 +1028,56 @@ describe("iterateSession", () => {
     });
   });
 
+  describe("when the named primary metric is one the bench never reported", () => {
+    beforeEach(() => {
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
+      stubSamples(repo.dir, improvedRounds(), baselineRounds());
+    });
+
+    it("records the primary's delta as null rather than as no change", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "startup_ms" }));
+
+      // Assert
+      expect.soft(result.record.primary).toStrictEqual({
+        kind: "metric",
+        name: "startup_ms",
+        deltaPct: null,
+      });
+      expect(result.record.outcome).toBe("no-signal");
+    });
+
+    it("states no percentage beside the verdict it reports", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "startup_ms" }));
+
+      // Assert
+      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
+      expect(primary).toBe("primary: · verdict: NO-SIGNAL");
+    });
+  });
+
+  describe("when the named primary metric came back exactly where it started", () => {
+    beforeEach(() => {
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
+      stubSamples(repo.dir, baselineRounds(), baselineRounds());
+    });
+
+    it("records that measured zero and states it as a percentage", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
+
+      // Assert
+      expect.soft(result.record.primary).toStrictEqual({
+        kind: "metric",
+        name: "total_ms",
+        deltaPct: 0,
+      });
+      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
+      expect(primary).toBe("primary: 0.0% · verdict: NO-SIGNAL");
+    });
+  });
+
   describe.each([
     {
       outcome: "improved",
