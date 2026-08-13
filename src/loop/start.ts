@@ -163,7 +163,10 @@ function resolveBaselineSha(ref: string, root: string): string {
  */
 function newSessionId(now: Date): string {
   const iso = now.toISOString();
-  return `${iso.slice(0, 10).replaceAll("-", "")}-${iso.slice(11, 19).replaceAll(":", "")}-${crypto.randomBytes(SESSION_ID_ENTROPY_BYTES).toString("hex")}`;
+  const date = iso.slice(0, 10).replaceAll("-", "");
+  const time = iso.slice(11, 19).replaceAll(":", "");
+  const suffix = crypto.randomBytes(SESSION_ID_ENTROPY_BYTES).toString("hex");
+  return `${date}-${time}-${suffix}`;
 }
 
 /**

@@ -728,7 +728,6 @@ function lockableRepoRoot(): string | undefined {
  */
 async function runOrExit<T>(
   execute: () => Promise<T>,
-  // Default: every uncaught error is a tool failure.
   exitCodeOf: (error: unknown) => number = defaultExitCodeOf,
 ): Promise<T> {
   try {
@@ -757,7 +756,6 @@ async function runOrExit<T>(
 async function withRepoLock<T>(
   command: string,
   run: () => Promise<T>,
-  // Default: every uncaught error is a tool failure.
   exitCodeOf: (error: unknown) => number = defaultExitCodeOf,
 ): Promise<T> {
   let root: string | undefined;
