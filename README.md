@@ -147,19 +147,19 @@ runs perturb each other's measurements. `status` only reads the log, so it takes
 
 ### Options
 
-| Option                  | Default         | Description                                                           |
-| ----------------------- | --------------- | --------------------------------------------------------------------- |
-| `--bench <cmd>`         | — (required\*)  | Bench command run in each target directory                            |
-| `--prepare <script>`    | none            | Per-target setup, e.g. `"npm ci && npm run build"`                    |
-| `--adapter <type>`      | `metric-lines`  | Output parser: `metric-lines` or `mitata`                             |
-| `--samples <number>`    | `10`            | Paired samples per target                                             |
-| `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare`, per bench run, and per `checks` run |
-| `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                       |
-| `--format <value>`      | `text`          | Output format: `text` or `json` (`compare` and `measure` only)        |
-| `--no-color`            | auto            | Print the report without ANSI styles                                  |
-| `--verbose`             | off             | `compare` only: name the statistical method behind each verdict       |
-| `--fail-on <condition>` | none            | `compare` only: exit 1 when a condition trips (repeatable; see below) |
-| `-r, --record`          | off             | `measure` only: append the run to the session log as a baseline       |
+| Option                  | Default         | Description                                                                               |
+| ----------------------- | --------------- | ----------------------------------------------------------------------------------------- |
+| `--bench <cmd>`         | — (required\*)  | Bench command run in each target directory                                                |
+| `--prepare <script>`    | none            | Per-target setup, e.g. `"npm ci && npm run build"`                                        |
+| `--adapter <type>`      | `metric-lines`  | Output parser: `metric-lines` or `mitata`                                                 |
+| `--samples <number>`    | `10`            | Paired samples per target                                                                 |
+| `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare`, per bench run, and per `checks` run                     |
+| `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                                           |
+| `--format <value>`      | `text`          | Output format: `text` or `json` (`compare` and `measure` only)                            |
+| `--no-color`            | auto            | Print the report without ANSI styles                                                      |
+| `--verbose`             | off             | `compare` only: name the statistical method behind each verdict                           |
+| `--fail-on <condition>` | none            | `compare` only: exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
+| `-r, --record`          | off             | `measure` only: append the run to the session log as a baseline                           |
 
 \*`--bench` is required either on the command line or in the config file.
 
