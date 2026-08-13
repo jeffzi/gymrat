@@ -17,12 +17,12 @@ This skill covers the full session lifecycle: start, iterate, settle, finalize. 
 from the repository root.
 
 `bench` must be resolvable — from `gymrat.json` or `--bench`. `gymrat.json` is optional but is
-where `checks`, `filter`, `primary`, `stop`, and `hooks` live; `adapter` and `samples` default to
-`metric-lines` and `10`.
+where `checks`, `filter`, `primary`, `runbook`, `stop`, and `hooks` live; `adapter` and `samples`
+default to `metric-lines` and `10`.
 
-**Load the per-repo runbook before your first edit.** Read the project's CLAUDE.md for the
-runbook's name and load it. If CLAUDE.md names none and no runbook exists under `.claude/skills/`,
-stop and ask which metrics gate and what to optimize before editing.
+**Load the per-repo runbook before your first edit.** Read the runbook file that `gymrat start`
+printed (also shown by `gymrat status`). If no runbook line was printed, stop and ask which metrics
+gate and what to optimize before editing.
 
 ## Session lifecycle
 

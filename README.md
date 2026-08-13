@@ -331,7 +331,8 @@ resolves relative to the working directory on every command. All keys are option
   "filter": "npm run bench -- --filter {names}",
   "primary": "decode/time",
   "stop": { "targetValue": 900, "maxIterations": 20 },
-  "hooks": { "before": "./scripts/note-start.sh", "after": "./scripts/note-end.sh" }
+  "hooks": { "before": "./scripts/note-start.sh", "after": "./scripts/note-end.sh" },
+  "runbook": ".claude/skills/ecstatic-bench/SKILL.md"
 }
 ```
 
@@ -363,7 +364,7 @@ resolves relative to the working directory on every command. All keys are option
 
 ### Session loop keys
 
-These five keys configure [the session loop](#the-session-loop) and are ignored by `compare` and
+These six keys configure [the session loop](#the-session-loop) and are ignored by `compare` and
 `measure`.
 
 - `checks` is the command `gymrat keep` must see succeed before it commits, run in the experiment
@@ -383,6 +384,11 @@ These five keys configure [the session loop](#the-session-loop) and are ignored 
   that metric's own direction, and only after the iteration that reached it is **kept** — so it
   requires `primary` to name a metric, and pairing it with the default geomean primary is a config
   error. A refused iteration exits 1 and prints what condition ended the loop.
+- `runbook` is a repo-root-relative path to a markdown runbook — domain rules for optimization
+  sessions (what to optimize, what's off-limits). The path is validated to exist whenever the config
+  is loaded; a missing file fails every command. `start` and `status` echo the path so agents
+  discover it without scanning the filesystem. Any markdown file works; a Claude skill's `SKILL.md`
+  is one valid target. It has no flag — set it in the config file.
 - `hooks.before` and `hooks.after` are commands gymrat runs around each iteration, in the experiment
   worktree, with a JSON payload on stdin describing the stage, the session, and the last iteration.
   A hook cannot brick the loop: one that fails, crashes, or overruns its 30-second timeout becomes a

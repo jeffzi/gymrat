@@ -15,6 +15,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `discard`, and `measure --record` (exit 2); `status` renders the full history plus a closing line
   naming the final branch and commit. The next `start` archives the closed log and opens a fresh
   session.
+- `runbook` config key: a repo-root-relative path to a markdown runbook validated to exist at config
+  load. `gymrat start` prints a `runbook:` row with the path and a read-before-first-edit
+  instruction; `gymrat status` echoes it from the live config so a mid-session addition is
+  immediately visible.
 - Agent skill (`skills/gymrat/SKILL.md`) that teaches an AI coding agent to drive the full session
   loop. Install by copying `skills/gymrat/` from the package into your agent configuration.
 
