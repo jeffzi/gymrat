@@ -855,7 +855,7 @@ function baselineRecordOf(result: MeasurementResult): BaselineRecord {
  * is named too: the log it left is still on disk, and this is the only place the
  * agent is told so.
  */
-function formatStartSummary(result: StartResult): string {
+function formatStartSummary(result: StartResult, runbook?: string): string {
   const { session, state } = result;
   const headline = result.resumed
     ? `Resumed session ${session.sessionId} — ${pluralize(state.iterationCount, "iteration")}, ${pluralize(state.keepCount, "keep")}`
@@ -872,6 +872,7 @@ function formatStartSummary(result: StartResult): string {
   return [
     headline,
     ...rows.map(([label, value]) => `  ${`${label}:`.padEnd(labelWidth)} ${value}`),
+    ...(runbook === undefined ? [] : [`  runbook: ${runbook} — read it before your first edit`]),
     ...(result.archivedPath === undefined
       ? []
       : [`  archived the finalized session ${result.archived} to ${result.archivedPath}`]),
@@ -1073,13 +1074,14 @@ export function createProgram(): Command {
      */
     const started = await withRepoLock("start", () => {
       const root = repoRoot();
+      const config = resolveConfig(options, root);
       return Promise.resolve({
-        root,
-        result: startSession(root, ref, resolveConfig(options, root)),
+        result: startSession(root, ref, config),
+        runbook: config.runbook,
       });
     });
 
-    await writeAndFlush(process.stdout, `${formatStartSummary(started.result)}\n`);
+    await writeAndFlush(process.stdout, `${formatStartSummary(started.result, started.runbook)}\n`);
   });
 
   addConfigOptions(

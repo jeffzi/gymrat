@@ -39,6 +39,8 @@ import {
 const BASELINE_SHA = `a1b2c3d${"e".repeat(33)}`;
 /** A 40-hex commit sha whose first seven characters are recognizable on their own. */
 const KEEP_COMMIT = `b1b2b3b${"c".repeat(33)}`;
+/** The runbook path a session's config points an agent at, when it has one. */
+const RUNBOOK_PATH = ".claude/skills/ecstatic-bench/SKILL.md";
 
 /** The worktree paths a session under `root` records. */
 function worktrees(root: string): SessionRecord["worktrees"] {
@@ -279,6 +281,34 @@ describe("statusSession", () => {
 
       // Assert
       expect(reportLines(report)).toContain("stop: 4 of 30 iterations");
+    });
+  });
+
+  describe("when runbook is configured", () => {
+    it("includes a runbook line in the header block", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, sessionRecord(root), fourIterations());
+
+      // Act
+      const report = statusSession(root, resolvedConfig({ runbook: RUNBOOK_PATH }));
+
+      // Assert
+      expect(reportLines(report)).toContain(`runbook ${RUNBOOK_PATH}`);
+    });
+  });
+
+  describe("when runbook is not configured", () => {
+    it("omits the runbook line from the header", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, sessionRecord(root), fourIterations());
+
+      // Act
+      const report = statusSession(root, resolvedConfig());
+
+      // Assert
+      expect(reportLines(report)).not.toContainEqual(expect.stringContaining("runbook"));
     });
   });
 });

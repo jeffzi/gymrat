@@ -116,6 +116,7 @@ export function statusSession(root: string, config: BenchlessConfig): string {
 
   return [
     ...formatStatusHeader(session),
+    ...(config.runbook === undefined ? [] : [`runbook ${config.runbook}`]),
     ...history,
     ...formatStatusFooter({
       iterationCount: state.iterationCount,

@@ -3007,6 +3007,58 @@ describe("the finalize command", () => {
   });
 });
 
+describe("the start command", () => {
+  let repo: ScratchRepo;
+
+  beforeEach(() => {
+    repo = createScratchRepo();
+    process.chdir(repo.dir);
+  });
+
+  afterEach(() => {
+    rmSync(lockfilePath(repo.dir), { force: true });
+    repo.cleanup();
+  });
+
+  describe("when runbook is configured", () => {
+    const RUNBOOK_PATH = ".claude/skills/ecstatic-bench/SKILL.md";
+
+    it.each([
+      { desc: "fresh session", resumed: false },
+      { desc: "resumed session", resumed: true },
+    ])("includes a runbook row in the summary ($desc)", async ({ resumed }) => {
+      // Arrange
+      if (resumed) {
+        startSession(repo.dir, "main", resolvedConfigFixture());
+      }
+      await setupMocks(undefined, { runbook: RUNBOOK_PATH });
+      const readStdout = captureStdout();
+      const program = createRunnableProgram();
+
+      // Act
+      await program.parseAsync(["node", "cli.js", "start", "main"]);
+
+      // Assert
+      expect(readStdout()).toContain(`runbook: ${RUNBOOK_PATH} — read it before your first edit`);
+    });
+  });
+
+  describe("when runbook is not configured", () => {
+    it("omits the runbook row from the summary", async () => {
+      // Arrange
+      await setupMocks();
+      const readStdout = captureStdout();
+      const program = createRunnableProgram();
+
+      // Act
+      await program.parseAsync(["node", "cli.js", "start", "main"]);
+
+      // Assert
+      expect(readStdout()).not.toContain("runbook");
+    });
+  });
+});
+
 describe("the loop commands, run from a subdirectory of the repository", () => {
   /** The resolver `start` and `iterate` settle a full run configuration through. */
   async function fullConfigResolver() {
