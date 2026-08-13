@@ -5,7 +5,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 
 import type { Adapter, MetricDefaults } from "./adapters/types.js";
-import { GymratError, hasErrorCode } from "./errors.js";
+import { GymratError, hasErrorCode, messageOf } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import {
   compile,
@@ -313,8 +313,13 @@ function assertRunbookExists(runbook: string, baseDir: string | undefined): void
   let stat: fs.Stats | undefined;
   try {
     stat = fs.statSync(resolvedPath);
-  } catch {
-    // Missing (or otherwise unreadable) path — fall through to the error below.
+  } catch (err) {
+    if (!hasErrorCode(err, "ENOENT")) {
+      throw new GymratError(`Cannot read runbook path ${runbook}: ${messageOf(err)}`, undefined, {
+        cause: err,
+      });
+    }
+    // Missing path — fall through to the error below.
   }
   if (stat === undefined || !stat.isFile()) {
     throw new GymratError(invalidValueMessage("runbook", "a path to an existing file", runbook));
