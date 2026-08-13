@@ -99,6 +99,7 @@ const configFileSchema = Type.Object(
     metrics: Type.Optional(metricsSchema),
     kinds: Type.Optional(kindsSchema),
     checks: optionalNonEmptyStringSchema,
+    runbook: optionalNonEmptyStringSchema,
     filter: optionalStringSchema,
     primary: optionalStringSchema,
     stop: Type.Optional(stopSchema),
@@ -146,6 +147,7 @@ export interface BenchlessConfig {
   metrics?: ConfigMetrics;
   kinds?: ConfigKinds;
   checks?: string;
+  runbook?: string;
   filter?: string;
   primary: string;
   stop?: ConfigStop;
@@ -300,6 +302,26 @@ function assertFlagNotEmpty(field: string, value: string | undefined): void {
 }
 
 /**
+ * Reject a `runbook` that does not resolve to an existing file.
+ *
+ * Resolved relative to `baseDir` rather than the process's cwd, matching how
+ * the implicit `./gymrat.json` lookup itself is anchored — a runbook path is
+ * authored relative to the repo the config lives in.
+ */
+function assertRunbookExists(runbook: string, baseDir: string | undefined): void {
+  const resolvedPath = path.resolve(baseDir ?? process.cwd(), runbook);
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.statSync(resolvedPath);
+  } catch {
+    // Missing (or otherwise unreadable) path — fall through to the error below.
+  }
+  if (stat === undefined || !stat.isFile()) {
+    throw new GymratError(invalidValueMessage("runbook", "a path to an existing file", runbook));
+  }
+}
+
+/**
  * Merge flags → config file → built-in defaults into every setting but `bench`.
  *
  * `bench` is settled separately: the commands that bench spread it into the
@@ -321,6 +343,7 @@ function mergeConfig(flags: CliFlags, configFile: ConfigFile): BenchlessConfig {
       ? { kinds: metricRecord(Object.entries(configFile.kinds)) }
       : undefined),
     ...(configFile.checks !== undefined ? { checks: configFile.checks } : undefined),
+    ...(configFile.runbook !== undefined ? { runbook: configFile.runbook } : undefined),
     ...(configFile.filter !== undefined ? { filter: configFile.filter } : undefined),
     ...(configFile.stop !== undefined ? { stop: configFile.stop } : undefined),
     ...(configFile.hooks !== undefined ? { hooks: configFile.hooks } : undefined),
@@ -372,6 +395,10 @@ function settleConfig(
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
   const config = mergeConfig(flags, configFile);
   validateLoopKeys(config);
+
+  if (config.runbook !== undefined) {
+    assertRunbookExists(config.runbook, baseDir);
+  }
 
   return { config, bench: flags.bench ?? configFile.bench };
 }

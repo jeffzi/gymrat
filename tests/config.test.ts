@@ -263,19 +263,22 @@ describe("loadConfigFile", () => {
   });
 
   describe("when a non-empty-string key holds an empty string", () => {
-    it.each([{ key: "checks" }, { key: "bench" }, { key: "prepare" }, { key: "adapter" }])(
-      "throws naming $key and the non-empty requirement",
-      ({ key }) => {
-        const { dir, configPath } = createConfigFile({ [key]: "" });
-        tmpdir = dir;
-        const act = (): void => {
-          loadConfigFile(configPath);
-        };
+    it.each([
+      { key: "checks" },
+      { key: "bench" },
+      { key: "prepare" },
+      { key: "adapter" },
+      { key: "runbook" },
+    ])("throws naming $key and the non-empty requirement", ({ key }) => {
+      const { dir, configPath } = createConfigFile({ [key]: "" });
+      tmpdir = dir;
+      const act = (): void => {
+        loadConfigFile(configPath);
+      };
 
-        expect.soft(act).toThrow(GymratError);
-        expect(act).toThrow(new RegExp(`${key}.*non-empty`));
-      },
-    );
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(new RegExp(`${key}.*non-empty`));
+    });
   });
 
   describe("when a positive-integer key holds an invalid value", () => {
@@ -515,6 +518,17 @@ describe("loadConfigFile", () => {
       expect(() => loadConfigFile(configPath)).toThrow(
         /Unknown config key: kinds\.memory\.threshold/,
       );
+    });
+  });
+
+  describe("when the config file has a runbook key", () => {
+    it("returns the parsed runbook value", () => {
+      const { dir, configPath } = createConfigFile({ runbook: "RUNBOOK.md" });
+      tmpdir = dir;
+
+      const result = loadConfigFile(configPath);
+
+      expect(result).toStrictEqual({ runbook: "RUNBOOK.md" });
     });
   });
 
@@ -1017,6 +1031,66 @@ describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) =
 
       // Assert
       expect(result.checks).toBe("named-checks");
+    });
+  });
+});
+
+describe.each(CONFIG_RESOLVERS)("$name, runbook resolution", ({ resolve }) => {
+  let tmpdir: string;
+  const originalCwd = process.cwd();
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    if (tmpdir && fs.existsSync(tmpdir)) {
+      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
+  describe("when the config file has no runbook key", () => {
+    it("omits runbook from the resolved config", () => {
+      tmpdir = createConfigFile({ bench: "a-bench" }).dir;
+      process.chdir(tmpdir);
+
+      const result = resolve({});
+
+      expect(result).not.toHaveProperty("runbook");
+    });
+  });
+
+  describe("when the config file names a runbook that exists as a file", () => {
+    it("carries the runbook path verbatim into the resolved config", () => {
+      tmpdir = createConfigFile({ bench: "a-bench", runbook: "RUNBOOK.md" }).dir;
+      fs.writeFileSync(path.join(tmpdir, "RUNBOOK.md"), "# Steps\n");
+      process.chdir(tmpdir);
+
+      const result = resolve({});
+
+      expect(result.runbook).toBe("RUNBOOK.md");
+    });
+  });
+
+  describe("when the runbook path does not resolve to an existing file", () => {
+    it("throws a GymratError naming the field and the path", () => {
+      tmpdir = createConfigFile({ bench: "a-bench", runbook: "missing.md" }).dir;
+      process.chdir(tmpdir);
+      const act = (): BenchlessConfig => resolve({});
+
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/runbook/);
+      expect(act).toThrow(/missing\.md/);
+    });
+  });
+
+  describe("when the runbook path points to a directory instead of a file", () => {
+    it("throws a GymratError naming the field and the path", () => {
+      tmpdir = createConfigFile({ bench: "a-bench", runbook: "docs" }).dir;
+      fs.mkdirSync(path.join(tmpdir, "docs"));
+      process.chdir(tmpdir);
+      const act = (): BenchlessConfig => resolve({});
+
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/runbook/);
+      expect(act).toThrow(/docs/);
     });
   });
 });
