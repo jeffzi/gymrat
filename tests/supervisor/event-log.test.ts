@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -8,11 +9,8 @@ import { createEventLogWriter } from "../../src/supervisor/event-log.js";
 import type { SessionObserver, UsageUpdateEvent } from "../../src/supervisor/events.js";
 import { combineObservers } from "../../src/supervisor/events.js";
 
-const SCRATCHPAD =
-  "/private/tmp/claude-501/-Users-jeffzi-Projects-personal-ts-gymrat/7ee5e097-1801-4596-b1c1-2f158acb58f3/scratchpad";
-
 function makeTempDir(): string {
-  return mkdtempSync(join(SCRATCHPAD, "event-log-"));
+  return mkdtempSync(join(tmpdir(), "event-log-"));
 }
 
 function makeTempLogPath(): { dir: string; logPath: string } {
