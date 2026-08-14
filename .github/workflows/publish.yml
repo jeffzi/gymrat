@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 concurrency:
-  group: publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 permissions: {}
@@ -54,6 +54,17 @@ jobs:
 
       - name: Check published surface
         run: npm run check:package
+
+      - name: Verify npm version
+        run: |
+          NPM_VERSION=$(npm --version)
+          node -e "
+            const [major, minor, patch] = '${NPM_VERSION}'.split('.').map(Number);
+            if (major < 11 || (major === 11 && minor < 5) || (major === 11 && minor === 5 && patch < 1)) {
+              console.error('npm >= 11.5.1 required for --provenance, found ' + '${NPM_VERSION}');
+              process.exit(1);
+            }
+          "
 
       - name: Publish
         run: npm publish --access public

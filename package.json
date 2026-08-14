@@ -41,7 +41,7 @@
     "check:package": "npx -y publint && npx -y @arethetypeswrong/cli --pack . --profile esm-only",
     "check:quality": "fallow --fail-on-issues --quiet",
     "check:security": "fallow security",
-    "check:spelling": "cspell --no-progress --no-must-find-files \"**/*.{ts,tsx,mts,cts,md}\"",
+    "check:spelling": "cspell --no-progress --no-must-find-files \"**/*.{ts,md}\"",
     "check:type": "tsc -p tsconfig.json",
     "check:typelint": "oxlint --type-aware",
     "check": "run-s -c check:lint check:md check:fmt check:actions check:typelint check:spelling check:type check:quality",

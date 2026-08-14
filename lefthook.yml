@@ -22,10 +22,6 @@ pre-commit:
       priority: 3
       glob: "**/*.{ts,json}"
       run: npm run check:type
-    quality:
-      priority: 3
-      glob: "**/*.{ts,json}"
-      run: npm run check:quality
     typelint:
       priority: 3
       glob: "**/*.ts"
