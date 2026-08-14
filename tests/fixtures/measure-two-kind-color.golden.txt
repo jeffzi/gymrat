@@ -1,0 +1,16 @@
+[1mgymrat measure[22m [2m·[22m [1m[4mmain[24m[22m [2m·[22m 10 samples [2m·[22m adapter: mitata
+
+────────────────┬────────────
+[1mtime[22m            │       [1m[4mmain[24m[22m
+────────────────┼────────────
+[34mentity[39m          │
+  alive_check   │ 100ns ± 1%
+  spawn         │ 104ns ± 1%
+
+warmup          │ 100ns ± 1%
+
+[2minformational — gating off (config: kinds.memory.gating = false)[22m
+────────────────┬────────────
+[1mmemory[22m          │       [1m[4mmain[24m[22m
+────────────────┼────────────
+encode          │   93B ± 1%

@@ -305,22 +305,22 @@ describe("createMockDriver", () => {
     });
 
     it("reports the last known cost in the interrupted outcome", async () => {
+      vi.useFakeTimers();
       const steps: MockStep[] = [
         { costUsd: 0.07 },
         {
           action: async () => {
             /* never reached */
           },
+          delayMs: 1000,
         },
       ];
       const driver = createMockDriver(steps);
 
       const session = driver.start(makePrompt(), noopObserver());
 
-      // Let the first step (cost) run, then interrupt before the second
-      await vi.waitFor(async () => {
-        expect(session.usage().costUsd).toBe(0.07);
-      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.usage().costUsd).toBe(0.07);
       await session.interrupt();
 
       const outcome = await session.outcome;
@@ -464,6 +464,7 @@ describe("createMockDriver", () => {
     });
 
     it("reports the last known cost when aborted", async () => {
+      vi.useFakeTimers();
       const controller = new AbortController();
       const steps: MockStep[] = [
         { costUsd: 0.12 },
@@ -471,16 +472,15 @@ describe("createMockDriver", () => {
           action: async () => {
             /* never reached */
           },
-          delayMs: 100,
+          delayMs: 1000,
         },
       ];
       const driver = createMockDriver(steps);
 
       const session = driver.start(makePrompt(), noopObserver(), controller.signal);
 
-      await vi.waitFor(async () => {
-        expect(session.usage().costUsd).toBe(0.12);
-      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.usage().costUsd).toBe(0.12);
       controller.abort();
 
       const outcome = await session.outcome;

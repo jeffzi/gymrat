@@ -505,7 +505,7 @@ export function memoryKind(overrides: Partial<KindAggregate> = {}): KindAggregat
   };
 }
 
-/** A two-candidate comparison spanning the gating `time` kind and the informational `memory` kind. */
+/** A single-candidate comparison spanning the gating `time` kind and the informational `memory` kind. */
 export function twoKindResult(overrides: Partial<ComparisonResult> = {}): ComparisonResult {
   return createComparisonResult({
     metrics: twoKindMetrics(),

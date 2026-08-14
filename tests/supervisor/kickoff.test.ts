@@ -116,29 +116,25 @@ describe("composeKickoff", () => {
   });
 
   describe("when config has no runbook", () => {
-    it("throws a GymratError telling the user to set runbook in gymrat.json", () => {
+    it("throws a GymratError mentioning both runbook and gymrat.json", () => {
       const { importMetaUrl } = createPackageLayout();
       const config = makeConfig();
 
       expect(() => composeKickoff(config, importMetaUrl)).toThrow(GymratError);
-    });
-
-    it("mentions runbook and gymrat.json in the error message", () => {
-      const { importMetaUrl } = createPackageLayout();
-      const config = makeConfig();
-
       expect(() => composeKickoff(config, importMetaUrl)).toThrow(/runbook/i);
+      expect(() => composeKickoff(config, importMetaUrl)).toThrow(/gymrat\.json/);
     });
   });
 
   describe("when no prompt is provided", () => {
-    it("returns a default kickoff message", () => {
+    it("returns a default kickoff containing an identifying substring", () => {
       const { config, importMetaUrl } = setupHappyPath();
 
       const result = composeKickoff(config, importMetaUrl);
 
       expect(result.kickoff).toBeTruthy();
       expect(typeof result.kickoff).toBe("string");
+      expect(result.kickoff).toContain("optimization");
     });
   });
 

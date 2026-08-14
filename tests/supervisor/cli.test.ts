@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BenchlessConfig } from "../../src/config.js";
 import { GymratError } from "../../src/errors.js";
+import type { Driver } from "../../src/supervisor/driver.js";
 import type { SupervisionResult } from "../../src/supervisor/supervise.js";
 import {
   createRunnableProgram,
@@ -36,14 +37,13 @@ vi.mock("../../src/supervisor/kickoff.js", () => ({
 
 vi.mock("../../src/supervisor/claude.js", () => ({
   createClaudeDriver: vi.fn().mockReturnValue({
-    startSession: vi.fn().mockReturnValue({
-      events: (async function* () {
-        /* empty session */
-      })(),
-      result: Promise.resolve({ reason: "completed", costUsd: 0.05 }),
+    start: vi.fn().mockReturnValue({
       inject: vi.fn(),
+      interrupt: vi.fn().mockResolvedValue(undefined),
+      usage: vi.fn().mockReturnValue({ costUsd: 0.05 }),
+      outcome: Promise.resolve({ reason: "completed", costUsd: 0.05 }),
     }),
-  }),
+  } satisfies Driver),
 }));
 
 vi.mock("../../src/supervisor/supervise.js", () => ({
@@ -125,6 +125,17 @@ describe("supervise command", () => {
     });
 
     describe("when valid flags are provided", () => {
+      let repo: ScratchRepo;
+
+      beforeEach(() => {
+        repo = createScratchRepo();
+        process.chdir(repo.dir);
+      });
+
+      afterEach(() => {
+        repo.cleanup();
+      });
+
       it("passes max-minutes through to supervise", async () => {
         const program = createRunnableProgram();
         stubWrite(process.stdout);
@@ -191,15 +202,27 @@ describe("supervise command", () => {
   });
 
   describe("exit codes", () => {
+    let repo: ScratchRepo;
+
+    beforeEach(() => {
+      repo = createScratchRepo();
+      process.chdir(repo.dir);
+    });
+
+    afterEach(() => {
+      repo.cleanup();
+    });
+
     it("exits 0 when the session completed on its own", async () => {
-      const program = createRunnableProgram({ exitOverride: "all" });
+      const program = createRunnableProgram();
       stubWrite(process.stdout);
       stubWrite(process.stderr);
+      // oxlint-disable-next-line typescript/no-unsafe-assignment -- vi.spyOn return type is inherently `any`
+      const exitSpy = mockProcessExit();
 
-      // Resolving without throwing confirms exit code 0
-      await expect(
-        program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10")),
-      ).resolves.toBeDefined();
+      await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      expect(exitSpy).not.toHaveBeenCalled();
     });
 
     it("exits 1 when a cap ended the session", async () => {
@@ -242,6 +265,17 @@ describe("supervise command", () => {
   });
 
   describe("closing summary", () => {
+    let repo: ScratchRepo;
+
+    beforeEach(() => {
+      repo = createScratchRepo();
+      process.chdir(repo.dir);
+    });
+
+    afterEach(() => {
+      repo.cleanup();
+    });
+
     it("reports how the run ended, duration, final cost estimate, and log path", async () => {
       const program = createRunnableProgram();
       const stderrSpy = stubWrite(process.stderr);
@@ -312,6 +346,17 @@ describe("supervise command", () => {
   });
 
   describe("driver wiring", () => {
+    let repo: ScratchRepo;
+
+    beforeEach(() => {
+      repo = createScratchRepo();
+      process.chdir(repo.dir);
+    });
+
+    afterEach(() => {
+      repo.cleanup();
+    });
+
     it("creates a Claude driver and passes it to supervise", async () => {
       const program = createRunnableProgram();
       stubWrite(process.stdout);

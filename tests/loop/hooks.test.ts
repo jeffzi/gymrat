@@ -310,6 +310,17 @@ describe("runHook", () => {
       expect(run.record.durationMs).toBeLessThan(4000);
     });
 
+    it("records exit code 127 when the hook command does not exist", async () => {
+      // Arrange — a command that cannot be found
+      const command = "nonexistent-command-abc123xyz";
+
+      // Act
+      const run = await runHook(invocationOf(command));
+
+      // Assert
+      expect(run.record.exitCode).toBe(127);
+    });
+
     it("reports a hook that never started instead of raising", async () => {
       // Arrange
       const command = printing("never runs");

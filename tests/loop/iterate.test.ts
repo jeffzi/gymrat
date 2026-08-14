@@ -156,7 +156,15 @@ function stubSamples(
     [sessionRecord(root).worktrees.baseline, baseline],
   ]);
   collectSamplesMock.mockImplementation((_adapter, targets) =>
-    Promise.resolve(targets.map((ctx) => ({ ctx, samples: byDir.get(ctx.dir) ?? [] }))),
+    Promise.resolve(
+      targets.map((ctx) => {
+        const samples = byDir.get(ctx.dir);
+        if (samples === undefined) {
+          throw new Error(`stubSamples: unrecognized worktree dir ${ctx.dir}`);
+        }
+        return { ctx, samples };
+      }),
+    ),
   );
 }
 
@@ -190,7 +198,15 @@ function stubRuns(root: string, runs: readonly (PairedRun | GymratError)[]): voi
       [worktrees.experiment, run.experiment],
       [worktrees.baseline, run.baseline],
     ]);
-    return Promise.resolve(targets.map((ctx) => ({ ctx, samples: byDir.get(ctx.dir) ?? [] })));
+    return Promise.resolve(
+      targets.map((ctx) => {
+        const samples = byDir.get(ctx.dir);
+        if (samples === undefined) {
+          throw new Error(`stubRuns: unrecognized worktree dir ${ctx.dir}`);
+        }
+        return { ctx, samples };
+      }),
+    );
   });
 }
 

@@ -3291,6 +3291,59 @@ describe("renderMeasureReport", () => {
     });
   });
 
+  /**
+   * Byte-level pins on the whole rendered measure report.
+   *
+   * Same rationale as the comparison-report goldens: substring and offset
+   * assertions let column widths drift silently, so the snapshots catch any
+   * user-visible output change that those tests wouldn't.
+   */
+  describe("when rendering a whole report", () => {
+    it("matches the recorded bytes for a two-kind run", async () => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      await expect(renderMeasureReport(twoKindMeasurement())).toMatchFileSnapshot(
+        "../fixtures/measure-two-kind.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes with ANSI color", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      await expect(renderMeasureReport(twoKindMeasurement())).toMatchFileSnapshot(
+        "../fixtures/measure-two-kind-color.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes when the cleanup footer is present", async () => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      const result = twoKindMeasurement({
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
+      });
+
+      await expect(renderMeasureReport(result)).toMatchFileSnapshot(
+        "../fixtures/measure-cleanup-footer.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for the cleanup footer with ANSI color", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      const result = twoKindMeasurement({
+        worktreesRemoved: 1,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
+      });
+
+      await expect(renderMeasureReport(result)).toMatchFileSnapshot(
+        "../fixtures/measure-cleanup-footer-color.golden.txt",
+      );
+    });
+  });
+
   describe("when rendering with color", () => {
     beforeEach(() => {
       vi.stubEnv("FORCE_COLOR", "1");

@@ -446,6 +446,11 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
       await abortWithFailingTaskkill(failure);
 
+      expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+        "taskkill",
+        expect.arrayContaining(["/F", "/T"]),
+        expect.anything(),
+      );
       expect(emitWarning).not.toHaveBeenCalledWith(failure);
     });
 
@@ -455,6 +460,11 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
       await abortWithFailingTaskkill(failure);
 
+      expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+        "taskkill",
+        expect.arrayContaining(["/F", "/T"]),
+        expect.anything(),
+      );
       expect(emitWarning).toHaveBeenCalledWith(failure);
     });
   });

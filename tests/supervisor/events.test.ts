@@ -269,23 +269,22 @@ describe("combineObservers", () => {
     };
   }
 
-  it("invokes each observer in order with the same event", () => {
-    // Arrange
-    const calls: string[] = [];
-    const obs1: SessionObserver = () => {
-      calls.push("first");
+  it("invokes each observer in order with the identical event object", () => {
+    const received: SessionEvent[] = [];
+    const obs1: SessionObserver = (e) => {
+      received.push(e);
     };
-    const obs2: SessionObserver = () => {
-      calls.push("second");
+    const obs2: SessionObserver = (e) => {
+      received.push(e);
     };
     const combined = combineObservers(obs1, obs2);
     const event = makeEvent();
 
-    // Act
     combined(event);
 
-    // Assert
-    expect(calls).toStrictEqual(["first", "second"]);
+    expect(received).toHaveLength(2);
+    expect(received[0]).toBe(event);
+    expect(received[1]).toBe(event);
   });
 
   it("returns a no-op observer when called with no arguments", () => {

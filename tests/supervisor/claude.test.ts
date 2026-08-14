@@ -1,7 +1,7 @@
 /* oxlint-disable require-yield -- async generators used as AsyncIterable adapters for the SDK message stream; yield is not always needed */
 /* oxlint-disable typescript/require-await -- mock action callbacks are async to match the interface but have no awaitable work */
 /* oxlint-disable typescript/no-unsafe-type-assertion -- narrowing test assertions on partial event objects */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createClaudeDriver } from "../../src/supervisor/claude.js";
 import type { QueryFn } from "../../src/supervisor/claude.js";
@@ -307,24 +307,44 @@ describe("SDK message mapping", () => {
   });
 
   describe("when SDK yields a tool_result message", () => {
-    it("emits a tool_end event with durationMs from matching start", async () => {
-      const sdkMessages = [
-        {
-          type: "assistant",
-          content: [
-            { type: "tool_use", id: "tu_1", name: "Read", input: { file_path: "/foo.ts" } },
-          ],
-        },
-        {
-          type: "tool_result",
-          tool_use_id: "tu_1",
-          content: "file contents here",
-        },
-      ];
-      const driver = createClaudeDriver({ queryFn: fakeQueryFn(sdkMessages) });
-      const { events, observer } = collectingObserver();
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
+    it("emits a tool_end event with durationMs derived from the start timestamp", async () => {
+      vi.useFakeTimers({ now: 1000 });
+
+      let yieldGate: (() => void) | undefined;
+      const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
+        async function* generate() {
+          yield {
+            type: "assistant",
+            content: [
+              { type: "tool_use", id: "tu_1", name: "Read", input: { file_path: "/foo.ts" } },
+            ],
+          };
+          await new Promise<void>((resolve) => {
+            yieldGate = resolve;
+          });
+          yield {
+            type: "tool_result",
+            tool_use_id: "tu_1",
+            content: "file contents here",
+          };
+        }
+        return {
+          messages: generate(),
+          interrupt(): void {},
+          result: { total_cost_usd: 0 },
+        };
+      };
+
+      const driver = createClaudeDriver({ queryFn });
+      const { events, observer } = collectingObserver();
       const session = driver.start(makePrompt(), observer);
+
+      await vi.advanceTimersByTimeAsync(150);
+      yieldGate!();
       await session.outcome;
 
       const toolEnds = events.filter((e) => e.type === "tool_end");
@@ -333,9 +353,8 @@ describe("SDK message mapping", () => {
         type: "tool_end",
         toolUseId: "tu_1",
         toolName: "Read",
+        durationMs: 150,
       });
-      // durationMs should be a non-negative number
-      expect((toolEnds[0] as { durationMs: number }).durationMs).toBeGreaterThanOrEqual(0);
     });
   });
 
@@ -413,6 +432,7 @@ describe("SDK message mapping", () => {
       expect(toolEnds[0]).toMatchObject({
         toolName: "unknown",
         toolUseId: "tu_orphan",
+        durationMs: 0,
       });
     });
   });
@@ -600,13 +620,16 @@ describe("usage tracking", () => {
 // ---------------------------------------------------------------------------
 
 describe("interrupt", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("resolves outcome as interrupted after interrupt()", async () => {
+    vi.useFakeTimers();
     let interruptCalled = false;
     const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
       async function* generate() {
-        // Yield a message, then stall — interrupt should stop iteration
         yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
-        // This simulates the SDK cooperating with interrupt by stopping iteration
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 10_000);
         });
@@ -631,7 +654,12 @@ describe("interrupt", () => {
 });
 
 describe("abort signal", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("resolves outcome as interrupted when abort signal fires", async () => {
+    vi.useFakeTimers();
     const controller = new AbortController();
     const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
       async function* generate() {
@@ -714,8 +742,21 @@ describe("outcome", () => {
 
 describe("lazy SDK loading", () => {
   it("does not import the SDK module at driver construction time", () => {
-    const driver = createClaudeDriver({ queryFn: fakeQueryFn([]) });
-    expect(driver).toBeDefined();
+    let queryFnCalled = false;
+    const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
+      queryFnCalled = true;
+      async function* empty() {}
+      return {
+        messages: empty(),
+        interrupt(): void {},
+        result: { total_cost_usd: 0 },
+      };
+    };
+
+    const driver = createClaudeDriver({ queryFn });
+
+    expect(queryFnCalled).toBe(false);
+    expect(driver).toHaveProperty("start");
   });
 });
 

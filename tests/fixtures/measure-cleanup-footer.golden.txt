@@ -1,0 +1,19 @@
+gymrat measure · main · 10 samples · adapter: mitata
+
+────────────────┬────────────
+time            │       main
+────────────────┼────────────
+entity          │
+  alive_check   │ 100ns ± 1%
+  spawn         │ 104ns ± 1%
+
+warmup          │ 100ns ± 1%
+
+informational — gating off (config: kinds.memory.gating = false)
+────────────────┬────────────
+memory          │       main
+────────────────┼────────────
+encode          │   93B ± 1%
+
+1 worktree removed · 1 left behind
+  left behind: /tmp/gymrat-abc (is locked)
