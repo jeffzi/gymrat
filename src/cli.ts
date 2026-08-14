@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { createHelpConfig } from "@jeffzi/epaulettes";
@@ -18,7 +19,7 @@ import {
 } from "./config.js";
 import { assertNever, GymratError, messageOf } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
-import { NotAGitRepositoryError } from "./git.js";
+import { NotAGitRepositoryError, runGit } from "./git.js";
 import { finalizeSession } from "./loop/finalize.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
 import { discardSession, keepSession } from "./loop/settle.js";
@@ -51,6 +52,12 @@ import { lockfilePath, repoRoot } from "./session/paths.js";
 import type { BaselineRecord } from "./session/records.js";
 import { appendRecord, requireOpenSession } from "./session/store.js";
 import { installTerminationCleanup } from "./signals.js";
+import { createClaudeDriver } from "./supervisor/claude.js";
+import type { LaunchEvent } from "./supervisor/events.js";
+import { summarize, SUMMARY_MAX_CHARS } from "./supervisor/events.js";
+import { composeKickoff } from "./supervisor/kickoff.js";
+import { supervise } from "./supervisor/supervise.js";
+import type { SupervisionResult } from "./supervisor/supervise.js";
 import { MAX_TIMEOUT_SECONDS } from "./timer-limits.js";
 import type { GeomeanResult } from "./verdict/verdict.js";
 
@@ -113,6 +120,14 @@ function parsePositiveIntegerUpTo(max: number): (value: string) => number {
     }
     return parsed;
   };
+}
+
+function parsePositiveNumber(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError("must be a positive number.");
+  }
+  return parsed;
 }
 
 /**
@@ -591,6 +606,16 @@ interface CompareFlags extends SharedFlags {
   verbose: boolean;
 }
 
+/** The supervise command's flags: session caps plus where to write the event log. */
+interface SuperviseFlags {
+  maxMinutes: number;
+  maxUsd?: number;
+  /** Path to the JSONL event log; absent, defaults to `.gymrat/supervisor-<timestamp>.jsonl`. */
+  log?: string;
+  model?: string;
+  allowDirty: boolean;
+}
+
 /**
  * Declare the flags `resolveConfig` reads, in one place.
  *
@@ -694,6 +719,12 @@ async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<
   } finally {
     progress.stop();
   }
+}
+
+function getDirtyFileCount(root: string): number {
+  const output = runGit(["status", "--porcelain"], root).trim();
+  if (output === "") return 0;
+  return output.split("\n").length;
 }
 
 /**
@@ -1191,6 +1222,94 @@ export function createProgram(): Command {
 
     await writeAndFlush(process.stdout, `${report}\n`);
   });
+
+  // ---------------------------------------------------------------------------
+  // supervise
+  // ---------------------------------------------------------------------------
+
+  program
+    .command("supervise")
+    .description("Run a supervised agent session with wall-clock and spend caps")
+    .argument("[prompt]", "optimization prompt for the agent")
+    .requiredOption("--max-minutes <number>", "wall-clock cap in minutes", parsePositiveNumber)
+    .option("--max-usd <number>", "spend cap in USD", parsePositiveNumber)
+    .option("--log <path>", "path for the JSONL event log")
+    .option("--model <name>", "model to use for the agent session")
+    .option("--allow-dirty", "allow launching with uncommitted changes", false)
+    .action(async (prompt: string | undefined, options: SuperviseFlags) => {
+      const root = await runOrExit(() => Promise.resolve(repoRoot()));
+
+      const dirtyFileCount = getDirtyFileCount(root);
+      if (dirtyFileCount > 0 && !options.allowDirty) {
+        await exitWithError(
+          new GymratError(
+            `Working tree has ${pluralize(dirtyFileCount, "uncommitted file")}.`,
+            "Commit or stash your changes, or pass --allow-dirty to proceed anyway.",
+          ),
+        );
+      }
+      if (dirtyFileCount > 0) {
+        await writeAndFlush(
+          process.stderr,
+          `warning: working tree has ${pluralize(dirtyFileCount, "dirty file")} — proceeding because --allow-dirty was set\n`,
+        );
+      }
+
+      const logPath = options.log ?? join(root, ".gymrat", `supervisor-${Date.now()}.jsonl`);
+
+      const config = resolveBenchlessConfig({}, root);
+      const kickoff = composeKickoff(config, import.meta.url, prompt);
+
+      const headSha = runGit(["rev-parse", "HEAD"], root).trim();
+
+      const launch: LaunchEvent = {
+        type: "launch",
+        timestamp: Date.now(),
+        headSha,
+        dirty: dirtyFileCount > 0 ? { fileCount: dirtyFileCount } : false,
+        maxMinutes: options.maxMinutes,
+        maxUsd: options.maxUsd,
+        model: options.model,
+        runbookPath: config.runbook ?? "",
+        kickoffSummary: summarize(kickoff.kickoff, SUMMARY_MAX_CHARS),
+      };
+
+      const driver = createClaudeDriver();
+
+      await writeAndFlush(process.stderr, `log: ${logPath}\n`);
+
+      const result: SupervisionResult = await runOrExit(() =>
+        supervise({
+          driver,
+          prompt: {
+            kickoff: kickoff.kickoff,
+            systemPromptAppend: kickoff.systemPromptAppend,
+            cwd: root,
+            model: options.model,
+          },
+          maxMinutes: options.maxMinutes,
+          maxUsd: options.maxUsd,
+          logPath,
+          launch,
+        }),
+      );
+
+      const durationSec = Math.round(result.durationMs / 1000);
+      const minutes = Math.floor(durationSec / 60);
+      const seconds = durationSec % 60;
+      const summary = [
+        `ended by: ${result.endedBy}`,
+        `duration: ${String(minutes)}m ${String(seconds)}s`,
+        `cost: $${result.costUsd.toFixed(2)}`,
+        `log: ${logPath}`,
+      ].join("\n");
+
+      await writeAndFlush(process.stderr, `${summary}\n`);
+
+      if (result.endedBy !== "session") {
+        process.exit(GATE_EXIT_CODE);
+      }
+    });
 
   return program;
 }
