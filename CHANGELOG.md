@@ -9,6 +9,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `gymrat supervise [prompt]` launches a supervised agent session that drives the optimization loop
+  autonomously. The supervisor enforces a wall-clock cap (`--max-minutes`, required) and an optional
+  spend cap (`--max-usd`), triggering an interrupt with a 30-second grace period when either is
+  reached. A JSONL event log (`--log`) records every agent action for post-session review. The
+  kickoff injects the bundled gymrat skill and the repo's runbook (required in supervised mode) into
+  the agent's system prompt.
+- Driver seam for agent sessions: a `Driver` interface with `start()` → `DriverSession` exposing
+  `inject()`, `interrupt()`, `usage()`, and an `outcome` promise. Ships with a Claude SDK driver
+  (backed by `@anthropic-ai/claude-agent-sdk`, loaded lazily) and a scripted mock driver for
+  testing.
+
+## [0.5.0] - 2026-08-13
+
+### Added
+
 - `gymrat finalize [-m <text>] [--branch <name>]` collapses a session's kept iterations into one
   squash commit on a new branch and closes the session. The squash's tree equals the session
   branch's HEAD; its parent is the pinned baseline. A finalized session refuses `iterate`, `keep`,
@@ -28,6 +43,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   confirmation rerun never re-measured — a bench or `filter` template that stops reporting the
   metric no longer lets the regression through on a warning line alone. The refusal names each
   unmeasured metric and exits 1, where such a keep previously committed.
+
+### Fixed
+
+- `gymrat start` after a finalized session could fail because git's worktree registry retained
+  entries for directories finalize had already removed. The start path now also unwinds on failure
+  instead of leaving half-created state behind.
+- Loop commands run from a subdirectory failed to find the implicit `gymrat.json` at the repo root.
+- A git failure during startup (e.g. not a repository) ran the command unlocked instead of
+  exiting 2.
+- CLI output could be truncated on exit when stdout was a pipe — the process now waits for the write
+  callback before exiting.
+- A bench or prepare command whose output stream errored left the child process running against a
+  worktree the run had finished with. Child stdio is now destroyed after settlement, and a
+  pre-aborted signal is guarded.
+- Worktree cleanup on exit could remove worktrees belonging to other tools. Removal is now scoped to
+  gymrat's own entries.
+- A lockfile with a non-integer or negative PID was treated as live. Such PIDs are now treated as
+  damaged, and lockfile identity is re-checked before advising deletion.
+- `gymrat discard` was blocked after a nothing-measured keep refusal, requiring a redundant
+  `iterate` to unlock the session.
+- An unmeasured primary metric recorded a delta of 0.0% instead of null, making it look like the
+  metric was measured with no change.
+- A failing `checks` command or hook whose output exceeded the byte limit could produce a truncated
+  record. Output is now byte-limited in blocked keep records and in hook stderr.
+- Appending a malformed record to the session log could corrupt the session. Records are now
+  validated before writing.
+- A mitata benchmark whose alias contained a line terminator produced a record gymrat could not read
+  back.
+- The Wilcoxon signed-rank test could return a p-value outside [0, 1] for certain tied-rank
+  distributions.
+- Byte-valued metrics whose samples spanned only one resolution unit (e.g. 1 byte) could produce a
+  spurious verdict. Signal is now gated on the resolution floor.
+- Nested config error paths with empty-string keys rendered as `config..key` instead of
+  `config[""].key`.
+- `--timeout` error messages did not name the 86 400-second cap, and `--config ""` was silently
+  accepted.
+- The verdict color in the report was applied to the noise band instead of the delta when both
+  appeared on the same line.
+- The runbook path validation discarded the original filesystem error, reporting only "path does not
+  exist" even for permission or symlink-loop failures.
 
 ## [0.4.0] - 2026-08-10
 
@@ -221,7 +276,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `--prepare` per-target setup, `--samples`, `--timeout`, and repeatable `--fail-on` conditions for
   failing CI on regressions.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jeffzi/gymrat/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jeffzi/gymrat/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jeffzi/gymrat/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jeffzi/gymrat/compare/v0.1.0...v0.2.0
