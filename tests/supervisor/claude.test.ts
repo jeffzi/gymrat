@@ -5,28 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createClaudeDriver } from "../../src/supervisor/claude.js";
 import type { QueryFn } from "../../src/supervisor/claude.js";
-import type { SessionPrompt } from "../../src/supervisor/driver.js";
-import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makePrompt(overrides: Partial<SessionPrompt> = {}): SessionPrompt {
-  return {
-    kickoff: "do the thing",
-    cwd: "/tmp/test",
-    ...overrides,
-  };
-}
-
-function collectingObserver(): { events: SessionEvent[]; observer: SessionObserver } {
-  const events: SessionEvent[] = [];
-  const observer: SessionObserver = (e) => {
-    events.push(e);
-  };
-  return { events, observer };
-}
+import { capturingQueryFn, collectingObserver, makePrompt } from "../fixtures/supervisor.js";
 
 /**
  * Creates a fake queryFn that yields the given SDK-shaped messages.
@@ -87,39 +66,19 @@ describe("createClaudeDriver", () => {
 describe("start", () => {
   describe("when launching a session", () => {
     it("passes prompt as an AsyncIterable seeded with kickoff, not a plain string", async () => {
-      let capturedOpts: Record<string, unknown> = {};
-      const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-        capturedOpts = opts;
-        async function* empty() {
-          // yield nothing
-        }
-        return {
-          messages: empty(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
-      };
+      const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
       const session = driver.start(makePrompt(), collectingObserver().observer);
       await session.outcome;
 
       // prompt must be an AsyncIterable, not a string
-      expect(typeof capturedOpts["prompt"]).not.toBe("string");
-      expect(Symbol.asyncIterator in (capturedOpts["prompt"] as object)).toBe(true);
+      expect(typeof captured()["prompt"]).not.toBe("string");
+      expect(Symbol.asyncIterator in (captured()["prompt"] as object)).toBe(true);
     });
 
     it("forwards cwd and permissionMode: bypassPermissions", async () => {
-      let capturedOpts: Record<string, unknown> = {};
-      const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-        capturedOpts = opts;
-        async function* empty() {}
-        return {
-          messages: empty(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
-      };
+      const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
       const session = driver.start(
@@ -128,21 +87,12 @@ describe("start", () => {
       );
       await session.outcome;
 
-      expect(capturedOpts["cwd"]).toBe("/my/project");
-      expect(capturedOpts["permissionMode"]).toBe("bypassPermissions");
+      expect(captured()["cwd"]).toBe("/my/project");
+      expect(captured()["permissionMode"]).toBe("bypassPermissions");
     });
 
     it("includes systemPrompt in append-to-preset form when systemPromptAppend is present", async () => {
-      let capturedOpts: Record<string, unknown> = {};
-      const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-        capturedOpts = opts;
-        async function* empty() {}
-        return {
-          messages: empty(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
-      };
+      const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
       const session = driver.start(
@@ -151,42 +101,24 @@ describe("start", () => {
       );
       await session.outcome;
 
-      expect(capturedOpts["systemPrompt"]).toStrictEqual({
+      expect(captured()["systemPrompt"]).toStrictEqual({
         type: "append-to-preset",
         text: "extra instructions",
       });
     });
 
     it("omits systemPrompt when systemPromptAppend is absent", async () => {
-      let capturedOpts: Record<string, unknown> = {};
-      const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-        capturedOpts = opts;
-        async function* empty() {}
-        return {
-          messages: empty(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
-      };
+      const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
       const session = driver.start(makePrompt(), collectingObserver().observer);
       await session.outcome;
 
-      expect(capturedOpts).not.toHaveProperty("systemPrompt");
+      expect(captured()).not.toHaveProperty("systemPrompt");
     });
 
     it("includes model only when given in the prompt", async () => {
-      let capturedOpts: Record<string, unknown> = {};
-      const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-        capturedOpts = opts;
-        async function* empty() {}
-        return {
-          messages: empty(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
-      };
+      const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
       const session = driver.start(
@@ -195,26 +127,17 @@ describe("start", () => {
       );
       await session.outcome;
 
-      expect(capturedOpts["model"]).toBe("claude-sonnet-4-20250514");
+      expect(captured()["model"]).toBe("claude-sonnet-4-20250514");
     });
 
     it("omits model when not given in the prompt", async () => {
-      let capturedOpts: Record<string, unknown> = {};
-      const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-        capturedOpts = opts;
-        async function* empty() {}
-        return {
-          messages: empty(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
-      };
+      const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
       const session = driver.start(makePrompt(), collectingObserver().observer);
       await session.outcome;
 
-      expect(capturedOpts).not.toHaveProperty("model");
+      expect(captured()).not.toHaveProperty("model");
     });
   });
 });

@@ -8,12 +8,12 @@ import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import type { SessionPrompt } from "../../src/supervisor/driver.js";
-import type { LaunchEvent } from "../../src/supervisor/events.js";
 import { createMockDriver } from "../../src/supervisor/mock.js";
 import type { MockStep } from "../../src/supervisor/mock.js";
 import { supervise } from "../../src/supervisor/supervise.js";
+import { commitProject, TUNING_FILE } from "../fixtures/bench-harness.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
+import { makeLaunch, makePrompt } from "../fixtures/supervisor.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -22,11 +22,7 @@ import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js
 /** CLI binary path — the built dist entry point. */
 const CLI = path.resolve("dist/cli.js");
 
-const BENCH_FILE = "bench.js";
-const TUNING_FILE = "tuning.txt";
-const BASELINE_LATENCY = 100;
 const TUNED_LATENCY = 90;
-const SAMPLES = 5;
 
 /** Generous timeout: real git + bench processes run under the mock driver. */
 const LONG_TIMEOUT_MS = 120_000;
@@ -34,29 +30,6 @@ const LONG_TIMEOUT_MS = 120_000;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function makePrompt(cwd: string, overrides: Partial<SessionPrompt> = {}): SessionPrompt {
-  return {
-    kickoff: "optimize the decoder",
-    cwd,
-    ...overrides,
-  };
-}
-
-function makeLaunch(overrides: Partial<LaunchEvent> = {}): LaunchEvent {
-  return {
-    type: "launch",
-    timestamp: Date.now(),
-    headSha: "abc123def",
-    dirty: false,
-    maxMinutes: 10,
-    maxUsd: undefined,
-    model: undefined,
-    runbookPath: "/path/to/runbook.md",
-    kickoffSummary: "integration test",
-    ...overrides,
-  };
-}
 
 function makeTempLogPath(dir: string): string {
   return path.join(dir, "supervisor-events.jsonl");
@@ -68,46 +41,6 @@ function readLogLines(logPath: string): unknown[] {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as unknown);
-}
-
-/**
- * A `metric-lines` bench that reports whatever `tuning.txt` holds, defaulting
- * to the baseline latency when the checkout has no tuning file.
- *
- * Written as CommonJS: the scratch repo has no `package.json`, so node reads
- * a `.js` file there as CommonJS on every platform.
- */
-function benchScript(): string {
-  const lines = [
-    'const fs = require("node:fs");',
-    `const tuned = fs.existsSync(${JSON.stringify(TUNING_FILE)})`,
-    `  ? fs.readFileSync(${JSON.stringify(TUNING_FILE)}, "utf8").trim()`,
-    `  : "${String(BASELINE_LATENCY)}";`,
-    'process.stdout.write("METRIC latency=" + tuned + "\\n");',
-  ];
-  return `${lines.join("\n")}\n`;
-}
-
-/**
- * Commit the bench script, config, and gitignore into the scratch repo so
- * every worktree the loop checks out carries a runnable bench.
- */
-function commitProject(repo: ScratchRepo): void {
-  const files: Record<string, string> = {
-    ".gitignore": ".gymrat/\n",
-    [BENCH_FILE]: benchScript(),
-    "gymrat.json": `${JSON.stringify({
-      bench: `node ${BENCH_FILE}`,
-      adapter: "metric-lines",
-      samples: SAMPLES,
-      timeoutSeconds: 120,
-    })}\n`,
-  };
-  for (const [name, content] of Object.entries(files)) {
-    fs.writeFileSync(path.join(repo.dir, name), content);
-  }
-  execFileSync("git", ["add", ...Object.keys(files)], { cwd: repo.dir, stdio: "pipe" });
-  execFileSync("git", ["commit", "-m", "bench harness"], { cwd: repo.dir, stdio: "pipe" });
 }
 
 /**
@@ -182,7 +115,7 @@ describe("supervise – integration", () => {
 
       result = await supervise({
         driver,
-        prompt: makePrompt(cwd),
+        prompt: makePrompt({ cwd }),
         maxMinutes: 30,
         logPath,
         launch,
@@ -247,7 +180,7 @@ describe("supervise – integration", () => {
 
       const resultPromise = supervise({
         driver,
-        prompt: makePrompt("/tmp/test"),
+        prompt: makePrompt({ cwd: "/tmp/test" }),
         maxMinutes: 1,
         logPath,
         launch: makeLaunch({ maxMinutes: 1 }),

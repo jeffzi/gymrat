@@ -5,38 +5,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Driver, SessionPrompt } from "../../src/supervisor/driver.js";
-import type { LaunchEvent, SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
+import type { Driver } from "../../src/supervisor/driver.js";
+import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
 import { createMockDriver } from "../../src/supervisor/mock.js";
 import type { MockStep } from "../../src/supervisor/mock.js";
 import { supervise } from "../../src/supervisor/supervise.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makePrompt(overrides: Partial<SessionPrompt> = {}): SessionPrompt {
-  return {
-    kickoff: "optimize the decoder",
-    cwd: "/tmp/test",
-    ...overrides,
-  };
-}
-
-function makeLaunch(overrides: Partial<LaunchEvent> = {}): LaunchEvent {
-  return {
-    type: "launch",
-    timestamp: 1000,
-    headSha: "abc123def",
-    dirty: false,
-    maxMinutes: 5,
-    maxUsd: undefined,
-    model: undefined,
-    runbookPath: "/path/to/runbook.md",
-    kickoffSummary: "test kickoff",
-    ...overrides,
-  };
-}
+import { makeLaunch, makePrompt } from "../fixtures/supervisor.js";
 
 function makeTempLogPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "supervise-"));

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { FAILURE_EXIT_CODE } from "../../src/exec.js";
 import type { HookInvocation, HookStage } from "../../src/loop/hooks.js";
@@ -91,10 +91,6 @@ beforeEach(() => {
   experimentDir = path.join(tempDir, "side-experiment");
   fs.mkdirSync(experimentDir, { recursive: true });
   ({ hookCommand, printing } = hookScripts(tempDir));
-});
-
-afterEach(() => {
-  fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 describe("runHook", () => {

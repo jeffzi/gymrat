@@ -360,13 +360,6 @@ describe("cleanupWorktrees", () => {
   describe("when given empty worktree list outside a git repository", () => {
     let nonRepoDir: string | undefined;
 
-    afterEach(() => {
-      if (nonRepoDir !== undefined) {
-        fs.rmSync(nonRepoDir, { recursive: true, force: true, maxRetries: 3 });
-        nonRepoDir = undefined;
-      }
-    });
-
     it("skips the prune sweep and reports no error", () => {
       nonRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-not-a-repo-"));
 
@@ -457,13 +450,6 @@ describe("cleanupWorktrees", () => {
 
   describe("when git cannot remove a worktree", () => {
     let strayDir: string | undefined;
-
-    afterEach(() => {
-      if (strayDir !== undefined) {
-        fs.rmSync(strayDir, { recursive: true, force: true, maxRetries: 3 });
-        strayDir = undefined;
-      }
-    });
 
     function createStrayWorktree(): WorktreeInfo {
       strayDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-stray-"));

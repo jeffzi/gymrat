@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +16,7 @@ import {
 } from "../../src/session/paths.js";
 import type { SessionLogRecord } from "../../src/session/records.js";
 import { appendRecord, readRecords } from "../../src/session/store.js";
+import { BASELINE_LATENCY, commitProject, TUNING_FILE } from "../fixtures/bench-harness.js";
 import {
   captureStdout,
   createRunnableProgram,
@@ -32,8 +32,6 @@ const LONG_RUN_TIMEOUT_MS = 180_000;
 /** Paired samples per iteration — enough to be a real measurement, few enough to stay quick. */
 const SAMPLES = 5;
 
-/** The latency the bench reports from a checkout that carries no tuning file. */
-const BASELINE_LATENCY = 100;
 /** The latency the first edit tunes to, and the one the keep commits. */
 const KEPT_LATENCY = 90;
 /** The latency the second edit tunes to, and the one the discard throws away. */
@@ -42,62 +40,7 @@ const DISCARDED_LATENCY = 80;
 /** Content of the throwaway file the discard must erase, distinctive enough to grep history for. */
 const DISCARD_MARKER = "discarded-edit-marker";
 
-const TUNING_FILE = "tuning.txt";
 const DISCARDED_FILE = "discarded-note.txt";
-const BENCH_FILE = "bench.js";
-
-/**
- * A `metric-lines` bench that reports whatever `tuning.txt` holds, defaulting to
- * the untuned latency when the checkout has no tuning file.
- *
- * Written as CommonJS: the scratch repo has no `package.json`, so node reads a
- * `.js` file there as CommonJS on every platform.
- *
- * With `gateFile`, the bench blocks until that file appears — the only way to
- * hold a run open long enough for a second command to collide with it without
- * betting on a sleep being longer than the first run.
- */
-function benchScript(gateFile?: string): string {
-  const lines = ['const fs = require("node:fs");'];
-  if (gateFile !== undefined) {
-    lines.push(
-      `const gate = ${JSON.stringify(gateFile)};`,
-      "const idle = new Int32Array(new SharedArrayBuffer(4));",
-      "const deadline = Date.now() + 60000;",
-      "while (!fs.existsSync(gate) && Date.now() < deadline) { Atomics.wait(idle, 0, 0, 25); }",
-    );
-  }
-  lines.push(
-    `const tuned = fs.existsSync(${JSON.stringify(TUNING_FILE)})`,
-    `  ? fs.readFileSync(${JSON.stringify(TUNING_FILE)}, "utf8").trim()`,
-    `  : "${String(BASELINE_LATENCY)}";`,
-    'process.stdout.write("METRIC latency=" + tuned + "\\n");',
-  );
-  return `${lines.join("\n")}\n`;
-}
-
-/**
- * Commit the bench, the config, and a gitignore for gymrat's own directory, so
- * every worktree the loop checks out carries a runnable bench and the main tree
- * stays clean while the session runs.
- */
-function commitProject(repo: ScratchRepo, gateFile?: string): void {
-  const files: Record<string, string> = {
-    ".gitignore": ".gymrat/\n",
-    [BENCH_FILE]: benchScript(gateFile),
-    "gymrat.json": `${JSON.stringify({
-      bench: `node ${BENCH_FILE}`,
-      adapter: "metric-lines",
-      samples: SAMPLES,
-      timeoutSeconds: 120,
-    })}\n`,
-  };
-  for (const [name, content] of Object.entries(files)) {
-    fs.writeFileSync(path.join(repo.dir, name), content);
-  }
-  execFileSync("git", ["add", ...Object.keys(files)], { cwd: repo.dir, stdio: "pipe" });
-  execFileSync("git", ["commit", "-m", "bench harness"], { cwd: repo.dir, stdio: "pipe" });
-}
 
 /** Tune the experiment worktree to `latency`, the edit an agent would make between iterations. */
 function tuneExperiment(repo: ScratchRepo, latency: number): void {
@@ -275,7 +218,7 @@ describe("the gymrat loop – integration", () => {
       gateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-gate-"));
       gateFile = path.join(gateDir, "release");
       repo = createScratchRepo();
-      commitProject(repo, gateFile);
+      commitProject(repo, { gateFile });
       process.chdir(repo.dir);
 
       mockProcessExit();

@@ -282,12 +282,7 @@ function createInPlaceDirs(): { root: string; cleanup: () => void } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-unit-"));
   fs.mkdirSync(path.join(root, "old"));
   fs.mkdirSync(path.join(root, "new"));
-  return {
-    root,
-    cleanup: () => {
-      fs.rmSync(root, { recursive: true, force: true });
-    },
-  };
+  return { root, cleanup: () => {} };
 }
 
 /**

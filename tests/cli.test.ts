@@ -33,7 +33,7 @@ import { renderMeasureReport, renderReport } from "../src/report/text.js";
 import type { ComparisonResult, MeasurementResult } from "../src/report/types.js";
 import { CommandError, type CommandErrorContext } from "../src/sampling.js";
 import { lockfilePath, repoRoot, sessionJsonlPath } from "../src/session/paths.js";
-import type { SessionLogRecord, SessionRecord } from "../src/session/records.js";
+import type { SessionLogRecord } from "../src/session/records.js";
 import { appendRecord, readRecords } from "../src/session/store.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
 import type { GeomeanResult } from "../src/verdict/verdict.js";
@@ -148,6 +148,15 @@ vi.mock("../src/eta.js", () => {
 });
 
 /** The settled run configuration both commands read, with `overrides` applied. */
+const CONFIG_FLAG_TABLE = [
+  { flag: "--bench", value: "my-bench", expected: { bench: "my-bench" } },
+  { flag: "--prepare", value: "setup.sh", expected: { prepare: "setup.sh" } },
+  { flag: "--adapter", value: "mitata", expected: { adapter: "mitata" } },
+  { flag: "--samples", value: "100", expected: { samples: 100 } },
+  { flag: "--timeout", value: "5000", expected: { timeout: 5000 } },
+  { flag: "--config", value: "gymrat.json", expected: { config: "gymrat.json" } },
+];
+
 function resolvedConfigFixture(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
     bench: "bench.sh",
@@ -593,24 +602,20 @@ describe("createProgram", () => {
     });
 
     describe("when flags provided", () => {
-      it.each([
-        { flag: "--bench", value: "my-bench", expected: { bench: "my-bench" } },
-        { flag: "--prepare", value: "setup.sh", expected: { prepare: "setup.sh" } },
-        { flag: "--adapter", value: "mitata", expected: { adapter: "mitata" } },
-        { flag: "--samples", value: "100", expected: { samples: 100 } },
-        { flag: "--timeout", value: "5000", expected: { timeout: 5000 } },
-        { flag: "--config", value: "gymrat.json", expected: { config: "gymrat.json" } },
-      ])("passes $flag through to resolveConfig", async ({ flag, value, expected }) => {
-        // Arrange
-        const program = createRunnableProgram();
-        const { resolveConfigMock } = await setupMocks();
+      it.each(CONFIG_FLAG_TABLE)(
+        "passes $flag through to resolveConfig",
+        async ({ flag, value, expected }) => {
+          // Arrange
+          const program = createRunnableProgram();
+          const { resolveConfigMock } = await setupMocks();
 
-        // Act
-        await program.parseAsync(compareArgv("main", "branch", flag, value));
+          // Act
+          await program.parseAsync(compareArgv("main", "branch", flag, value));
 
-        // Assert
-        expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
-      });
+          // Assert
+          expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
+        },
+      );
     });
 
     describe("when the resolved config carries settings compare needs", () => {
@@ -2334,23 +2339,19 @@ describe("createProgram", () => {
     });
 
     describe("when flags provided", () => {
-      it.each([
-        { flag: "--bench", value: "my-bench", expected: { bench: "my-bench" } },
-        { flag: "--prepare", value: "setup.sh", expected: { prepare: "setup.sh" } },
-        { flag: "--adapter", value: "mitata", expected: { adapter: "mitata" } },
-        { flag: "--samples", value: "100", expected: { samples: 100 } },
-        { flag: "--timeout", value: "5000", expected: { timeout: 5000 } },
-        { flag: "--config", value: "gymrat.json", expected: { config: "gymrat.json" } },
-      ])("passes $flag through to resolveConfig", async ({ flag, value, expected }) => {
-        // Arrange
-        const { program, resolveConfigMock } = await startMeasureRun();
+      it.each(CONFIG_FLAG_TABLE)(
+        "passes $flag through to resolveConfig",
+        async ({ flag, value, expected }) => {
+          // Arrange
+          const { program, resolveConfigMock } = await startMeasureRun();
 
-        // Act
-        await program.parseAsync(measureArgv("main", flag, value));
+          // Act
+          await program.parseAsync(measureArgv("main", flag, value));
 
-        // Assert
-        expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
-      });
+          // Assert
+          expect(resolveConfigMock).toHaveBeenCalledWith(expect.objectContaining(expected));
+        },
+      );
 
       it("hands the settled run configuration to measure", async () => {
         // Arrange - whatever resolveConfig settled on is what the run must use,
@@ -2389,13 +2390,7 @@ describe("createProgram", () => {
 
     describe("recording", () => {
       /** The session header a log must open with for a run to have somewhere to record. */
-      const SESSION_HEADER: SessionRecord = {
-        type: "session",
-        schemaVersion: 1,
-        sessionId: "20260808-141530-a3f2",
-        createdAt: "2026-08-08T14:15:30.000Z",
-        baseline: { ref: "main", sha: "a".repeat(40) },
-        branch: "gymrat/20260808-141530-a3f2",
+      const SESSION_HEADER = sessionRecord({
         worktrees: { experiment: "/repo/.gymrat/experiment", baseline: "/repo/.gymrat/baseline" },
         config: {
           bench: "bench.sh",
@@ -2404,7 +2399,7 @@ describe("createProgram", () => {
           timeoutSeconds: 300,
           primary: "geomean",
         },
-      };
+      });
 
       let repo: ScratchRepo;
       // The command records into the repository it runs in, so the run happens in

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import type { ExecOptions, ExecResult, ExecTimeoutError } from "../src/exec.js";
 import { exec } from "../src/exec.js";
@@ -188,9 +188,6 @@ describe.skipIf(process.platform === "win32")("exec", () => {
       // A regular file as cwd fails the lookup before the child exists, so Node
       // throws out of spawn() instead of emitting an "error" event.
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-exec-sync-"));
-      onTestFinished(() => {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      });
       const filePath = path.join(tmpDir, "not-a-directory");
       fs.writeFileSync(filePath, "");
 
@@ -264,7 +261,6 @@ describe.skipIf(process.platform === "win32")("exec", () => {
           // Raced: the group exited between the liveness check and the kill.
         }
       }
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     describe("while the command is running", () => {
@@ -501,9 +497,6 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
     it("kills the whole process group, leaving no grandchild running", async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-exec-stream-"));
-      onTestFinished(() => {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      });
       const running = exec("sleep 30 & echo $! > grandchild.pid; wait", { cwd: tmpDir });
       const child = await waitForSpawnedChild();
       if (child.stdout === null) {

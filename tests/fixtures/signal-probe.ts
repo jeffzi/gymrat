@@ -44,6 +44,13 @@ export function snapshotSignalListeners(): Record<SignalName, readonly unknown[]
   };
 }
 
+/** Undo every listener on every termination signal added since `baseline`. */
+export function removeAllLeakedListeners(baseline: Record<SignalName, readonly unknown[]>): void {
+  for (const signal of TERMINATION_SIGNALS) {
+    removeLeakedListeners(signal, baseline[signal]);
+  }
+}
+
 function isSignalListener(value: unknown): value is (signal: SignalName) => void {
   return typeof value === "function";
 }

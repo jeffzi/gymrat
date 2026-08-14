@@ -73,12 +73,6 @@ function createMockAdapter(
 describe("loadConfigFile", () => {
   let tmpdir: string;
 
-  afterEach(() => {
-    if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
-    }
-  });
-
   describe("when the config file does not exist", () => {
     it("returns an empty config object", () => {
       const nonexistentPath = path.join(os.tmpdir(), `nonexistent-${Date.now()}.json`);
@@ -644,9 +638,6 @@ describe("resolveConfig", () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
-    if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
-    }
   });
 
   describe("when flags and config are empty", () => {
@@ -934,9 +925,6 @@ describe("resolveBenchlessConfig", () => {
 
   afterEach(() => {
     process.chdir(originalCwd);
-    if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
-    }
   });
 
   describe("when the config flag holds an empty string", () => {
@@ -968,14 +956,10 @@ const CONFIG_RESOLVERS = [
 ];
 
 describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) => {
-  let tmpdir: string;
   const originalCwd = process.cwd();
 
   afterEach(() => {
     process.chdir(originalCwd);
-    if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
-    }
   });
 
   /**
@@ -1001,7 +985,6 @@ describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) =
         { bench: "a-bench", checks: "base-checks" },
         { bench: "a-bench", checks: "cwd-checks" },
       );
-      tmpdir = baseDir;
       process.chdir(nestedDir);
 
       // Act
@@ -1019,7 +1002,6 @@ describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) =
         { bench: "a-bench", checks: "base-checks" },
         { bench: "a-bench", checks: "cwd-checks" },
       );
-      tmpdir = baseDir;
       fs.writeFileSync(
         path.join(nestedDir, "custom.json"),
         JSON.stringify({ bench: "a-bench", checks: "named-checks" }),
@@ -1041,9 +1023,6 @@ describe.each(CONFIG_RESOLVERS)("$name, runbook resolution", ({ resolve }) => {
 
   afterEach(() => {
     process.chdir(originalCwd);
-    if (tmpdir && fs.existsSync(tmpdir)) {
-      fs.rmSync(tmpdir, { recursive: true, force: true, maxRetries: 3 });
-    }
   });
 
   describe("when the config file has no runbook key", () => {

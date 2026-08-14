@@ -12,30 +12,7 @@ import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.
 import { summarize, SUMMARY_MAX_CHARS } from "../../src/supervisor/events.js";
 import { createMockDriver } from "../../src/supervisor/mock.js";
 import type { MockStep } from "../../src/supervisor/mock.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makePrompt(overrides: Partial<SessionPrompt> = {}): SessionPrompt {
-  return {
-    kickoff: "do the thing",
-    cwd: "/tmp/test",
-    ...overrides,
-  };
-}
-
-function noopObserver(): SessionObserver {
-  return () => {};
-}
-
-function collectingObserver(): { events: SessionEvent[]; observer: SessionObserver } {
-  const events: SessionEvent[] = [];
-  const observer: SessionObserver = (e) => {
-    events.push(e);
-  };
-  return { events, observer };
-}
+import { collectingObserver, makePrompt, noopObserver } from "../fixtures/supervisor.js";
 
 // ---------------------------------------------------------------------------
 // driver.ts — type-level tests for seam types

@@ -73,7 +73,6 @@ async function withTargetDir<T>(
     return await fn({ root, targetDir });
   } finally {
     process.chdir(savedCwd);
-    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
