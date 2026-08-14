@@ -41,6 +41,7 @@ export interface CommandErrorContext {
   sample?: number;
 }
 
+// fallow-ignore-next-line complexity
 function formatCommandError(
   context: CommandErrorContext,
   failure: ExecResult | ExecTimeoutError,

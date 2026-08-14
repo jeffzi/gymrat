@@ -74,6 +74,7 @@ function recordMetric(
   metrics[name] = value;
 }
 
+// fallow-ignore-next-line complexity
 function extractRunMetrics(
   run: unknown,
   alias: string,

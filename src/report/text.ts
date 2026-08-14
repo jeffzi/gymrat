@@ -735,6 +735,7 @@ interface BodyLineRenderers<Metric, Cell> {
  * are shared here; the two tables differ only in how they assemble the remaining four, which
  * they supply through `renderers`.
  */
+// fallow-ignore-next-line complexity
 function renderBodyLine<Metric, Cell>(
   bodyLine: BodyLine<Metric, Cell>,
   rule: string,

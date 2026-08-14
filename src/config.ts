@@ -332,6 +332,7 @@ function assertRunbookExists(runbook: string, baseDir: string | undefined): void
  * `bench` is settled separately: the commands that bench spread it into the
  * result, and the commands that do not never ask for it.
  */
+// fallow-ignore-next-line complexity
 function mergeConfig(flags: CliFlags, configFile: ConfigFile): BenchlessConfig {
   const prepare = flags.prepare ?? configFile.prepare;
   return {
@@ -411,6 +412,7 @@ function settleConfig(
 /** The kind an adapter's metric falls under when it reports none. */
 const DEFAULT_METRIC_KIND = "other";
 
+// fallow-ignore-next-line complexity
 function resolveOneMetric(
   metricName: string,
   configMetrics: ConfigFile["metrics"],

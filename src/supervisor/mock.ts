@@ -1,7 +1,7 @@
 import { messageOf } from "../errors.js";
+import { createSession } from "./driver.js";
 import type { SessionOutcome } from "./driver.js";
 import type { SessionEvent, SessionObserver } from "./events.js";
-import { summarize, SUMMARY_MAX_CHARS } from "./events.js";
 
 interface EmitStep {
   readonly emit: SessionEvent;
@@ -126,38 +126,16 @@ export function createMockDriver(steps: readonly MockStep[]) {
         return { reason: "completed", costUsd };
       }
 
-      const scriptPromise = runScript();
+      const session = createSession({
+        onMessage: (msg) => injections.push(msg),
+        doInterrupt,
+        getCostUsd: () => costUsd,
+        getInterruptedOutcome: () => interruptedOutcome,
+        runPromise: runScript(),
+        observer,
+      });
 
-      return {
-        injections,
-
-        inject(message: string): void {
-          injections.push(message);
-          observer({
-            type: "inject",
-            timestamp: Date.now(),
-            message,
-            messageSummary: summarize(message, SUMMARY_MAX_CHARS),
-          });
-        },
-
-        interrupt(): Promise<void> {
-          doInterrupt();
-          return Promise.resolve();
-        },
-
-        usage(): { readonly costUsd: number } {
-          return { costUsd };
-        },
-
-        // Getter so interrupt/abort can override the script's result after the IIFE completes.
-        get outcome(): Promise<SessionOutcome> {
-          if (interruptedOutcome) {
-            return Promise.resolve(interruptedOutcome);
-          }
-          return scriptPromise;
-        },
-      };
+      return Object.assign(session, { injections });
     },
   };
 }
