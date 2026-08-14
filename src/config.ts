@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -101,7 +102,7 @@ const configFileSchema = Type.Object(
     checks: optionalNonEmptyStringSchema,
     runbook: optionalNonEmptyStringSchema,
     filter: optionalStringSchema,
-    primary: optionalStringSchema,
+    primary: optionalNonEmptyStringSchema,
     stop: Type.Optional(stopSchema),
     hooks: Type.Optional(hooksSchema),
   },
@@ -216,13 +217,19 @@ function readConfigContent(configPath: string, required: boolean): string | unde
   try {
     return fs.readFileSync(configPath, "utf-8");
   } catch (err) {
-    if (hasErrorCode(err, "ENOENT")) {
-      if (required) {
-        throw new GymratError(`Config file not found at ${configPath}`, undefined, { cause: err });
-      }
-      return undefined;
+    if (!hasErrorCode(err, "ENOENT")) {
+      throw new GymratError(
+        `Cannot read config file at ${configPath}: ${messageOf(err)}`,
+        undefined,
+        {
+          cause: err,
+        },
+      );
     }
-    throw err;
+    if (required) {
+      throw new GymratError(`Config file not found at ${configPath}`, undefined, { cause: err });
+    }
+    return undefined;
   }
 }
 
@@ -234,7 +241,7 @@ function parseJsonContent(content: string, configPath: string): unknown {
     return JSON.parse(json);
   } catch (err) {
     throw new GymratError(
-      `Failed to parse config file at ${configPath}: ${err instanceof Error ? err.message : "unknown error"}`,
+      `Failed to parse config file at ${configPath}: ${messageOf(err)}`,
       undefined,
       { cause: err },
     );
@@ -388,6 +395,25 @@ export function resolveConfig(flags: CliFlags, baseDir?: string): ResolvedConfig
   return { ...config, bench };
 }
 
+/**
+ * Find the anchor directory for the implicit `gymrat.json` lookup.
+ *
+ * Inside a git repository the config lives at the repo root — the file is
+ * authored there and moving cwd into a subdirectory should not lose it.
+ * Outside a repository (or when git is unavailable) the lookup falls back to
+ * the process's cwd, which is where the user invoked the command.
+ */
+function findImplicitBase(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return process.cwd();
+  }
+}
+
 /** Settle the shared configuration, and report what `bench` the sources named — if any. */
 function settleConfig(
   flags: CliFlags,
@@ -397,13 +423,15 @@ function settleConfig(
   assertFlagNotEmpty("prepare", flags.prepare);
   assertFlagNotEmpty("adapter", flags.adapter);
   assertFlagNotEmpty("config", flags.config);
-  const configPath = flags.config ?? path.join(baseDir ?? process.cwd(), "gymrat.json");
+  const configPath = flags.config ?? path.join(baseDir ?? findImplicitBase(), "gymrat.json");
   const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
   const config = mergeConfig(flags, configFile);
   validateLoopKeys(config);
 
   if (config.runbook !== undefined) {
-    assertRunbookExists(config.runbook, baseDir);
+    const configDir = path.dirname(configPath);
+    assertRunbookExists(config.runbook, configDir);
+    config.runbook = path.resolve(configDir, config.runbook);
   }
 
   return { config, bench: flags.bench ?? configFile.bench };

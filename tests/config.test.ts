@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,14 +51,27 @@ const LINE_BREAKS = [
   { description: "a paragraph separator", char: "\u{2029}" },
 ];
 
-function createConfigFile(
-  content: Record<string, unknown>,
-  filename = "gymrat.json",
-): { dir: string; configPath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
-  const configPath = path.join(dir, filename);
-  fs.writeFileSync(configPath, JSON.stringify(content));
+function createTmpDir(prefix = "gymrat-"): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function writeRawConfigFile(content: string): { dir: string; configPath: string } {
+  const dir = createTmpDir();
+  const configPath = path.join(dir, "gymrat.json");
+  fs.writeFileSync(configPath, content);
   return { dir, configPath };
+}
+
+function createConfigFile(content: Record<string, unknown>): { dir: string; configPath: string } {
+  return writeRawConfigFile(JSON.stringify(content));
+}
+
+/** Registers an `afterEach` that restores the process cwd captured at call time. */
+function restoreCwdAfterEach(): void {
+  const originalCwd = process.cwd();
+  afterEach(() => {
+    process.chdir(originalCwd);
+  });
 }
 
 function createMockAdapter(
@@ -71,8 +85,6 @@ function createMockAdapter(
 }
 
 describe("loadConfigFile", () => {
-  let tmpdir: string;
-
   describe("when the config file does not exist", () => {
     it("returns an empty config object", () => {
       const nonexistentPath = path.join(os.tmpdir(), `nonexistent-${Date.now()}.json`);
@@ -96,19 +108,19 @@ describe("loadConfigFile", () => {
 
   describe("when the config path is not a readable file", () => {
     it.each([{ options: undefined }, { options: { required: true } }])(
-      "propagates the filesystem error instead of returning an empty config (options: $options)",
+      "throws a GymratError naming the path (options: $options)",
       ({ options }) => {
-        tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+        const dir = createTmpDir();
 
-        expect(() => loadConfigFile(tmpdir, options)).toThrow(/EISDIR/);
+        expect(() => loadConfigFile(dir, options)).toThrow(GymratError);
+        expect(() => loadConfigFile(dir, options)).toThrow(dir);
       },
     );
   });
 
   describe("when the config file contains valid JSON with known keys", () => {
     it("returns the parsed config with bench key", () => {
-      const { dir, configPath } = createConfigFile({ bench: "custom-bench" });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ bench: "custom-bench" });
 
       const result = loadConfigFile(configPath);
 
@@ -129,8 +141,7 @@ describe("loadConfigFile", () => {
           metric2: { direction: "higher" as const },
         },
       };
-      const { dir, configPath } = createConfigFile(config);
-      tmpdir = dir;
+      const { configPath } = createConfigFile(config);
 
       const result = loadConfigFile(configPath);
 
@@ -144,8 +155,7 @@ describe("loadConfigFile", () => {
           throughput: { gating: true },
         },
       };
-      const { dir, configPath } = createConfigFile(config);
-      tmpdir = dir;
+      const { configPath } = createConfigFile(config);
 
       const result = loadConfigFile(configPath);
 
@@ -155,9 +165,7 @@ describe("loadConfigFile", () => {
 
   describe("when the config file contains invalid JSON", () => {
     it("throws a GymratError that includes the file path", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
-      const configPath = path.join(tmpdir, "gymrat.json");
-      fs.writeFileSync(configPath, "{ invalid json }");
+      const { configPath } = writeRawConfigFile("{ invalid json }");
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -170,9 +178,7 @@ describe("loadConfigFile", () => {
   describe("when the config file is prefixed with a UTF-8 BOM", () => {
     it("parses the config as if the BOM were absent", () => {
       const config = { bench: "bom-bench", samples: 5 };
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
-      const configPath = path.join(tmpdir, "gymrat.json");
-      fs.writeFileSync(configPath, `${UTF8_BOM}${JSON.stringify(config)}`);
+      const { configPath } = writeRawConfigFile(`${UTF8_BOM}${JSON.stringify(config)}`);
 
       const result = loadConfigFile(configPath);
 
@@ -188,9 +194,7 @@ describe("loadConfigFile", () => {
       { description: "a boolean", json: "true" },
       { description: "null", json: "null" },
     ])("throws naming the file and the expected JSON object for $description", ({ json }) => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
-      const configPath = path.join(tmpdir, "gymrat.json");
-      fs.writeFileSync(configPath, json);
+      const { configPath } = writeRawConfigFile(json);
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -202,22 +206,19 @@ describe("loadConfigFile", () => {
 
   describe("when the config file contains unknown top-level keys", () => {
     it("throws an error that names the unknown key", () => {
-      const { dir, configPath } = createConfigFile({ unknownKey: "value" });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ unknownKey: "value" });
 
       expect(() => loadConfigFile(configPath)).toThrow(/unknownKey/);
     });
 
     it("throws when there is an unknown key mixed with known keys", () => {
-      const { dir, configPath } = createConfigFile({ bench: "name", badKey: "value" });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ bench: "name", badKey: "value" });
 
       expect(() => loadConfigFile(configPath)).toThrow(/badKey/);
     });
 
     it("names an empty-string key as a quoted empty key rather than a non-object root", () => {
-      const { dir, configPath } = createConfigFile({ "": 1 });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ "": 1 });
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -229,8 +230,7 @@ describe("loadConfigFile", () => {
 
   describe("when the config file contains an empty object", () => {
     it("returns an empty config object", () => {
-      const { dir, configPath } = createConfigFile({});
-      tmpdir = dir;
+      const { configPath } = createConfigFile({});
 
       const result = loadConfigFile(configPath);
 
@@ -249,8 +249,7 @@ describe("loadConfigFile", () => {
       { key: "filter", description: "an array", value: ["a"] },
       { key: "primary", description: "null", value: null },
     ])("throws naming $key when it is $description", ({ key, value }) => {
-      const { dir, configPath } = createConfigFile({ [key]: value });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ [key]: value });
 
       expect(() => loadConfigFile(configPath)).toThrow(new RegExp(`${key}.*string`));
     });
@@ -263,9 +262,9 @@ describe("loadConfigFile", () => {
       { key: "prepare" },
       { key: "adapter" },
       { key: "runbook" },
+      { key: "primary" },
     ])("throws naming $key and the non-empty requirement", ({ key }) => {
-      const { dir, configPath } = createConfigFile({ [key]: "" });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ [key]: "" });
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -284,8 +283,7 @@ describe("loadConfigFile", () => {
       { key: "timeoutSeconds", description: "a boolean", value: true },
       { key: "timeoutSeconds", description: "null", value: null },
     ])("throws naming $key when it is $description", ({ key, value }) => {
-      const { dir, configPath } = createConfigFile({ [key]: value });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ [key]: value });
 
       expect(() => loadConfigFile(configPath)).toThrow(new RegExp(`${key}.*positive integer`));
     });
@@ -293,8 +291,7 @@ describe("loadConfigFile", () => {
 
   describe("when timeoutSeconds exceeds the millisecond timer cap", () => {
     it("throws naming timeoutSeconds and the cap the flag path reports", () => {
-      const { dir, configPath } = createConfigFile({ timeoutSeconds: 2_147_484 });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ timeoutSeconds: 2_147_484 });
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -307,8 +304,7 @@ describe("loadConfigFile", () => {
 
   describe("when timeoutSeconds sits exactly on the millisecond timer cap", () => {
     it("accepts the value", () => {
-      const { dir, configPath } = createConfigFile({ timeoutSeconds: 2_147_483 });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ timeoutSeconds: 2_147_483 });
 
       const result = loadConfigFile(configPath);
 
@@ -327,8 +323,7 @@ describe("loadConfigFile", () => {
     ])(
       "throws naming unstableNoisePct and the 0.5 noise floor when it is $description",
       ({ value }) => {
-        const { dir, configPath } = createConfigFile({ unstableNoisePct: value });
-        tmpdir = dir;
+        const { configPath } = createConfigFile({ unstableNoisePct: value });
         const act = (): void => {
           loadConfigFile(configPath);
         };
@@ -341,8 +336,7 @@ describe("loadConfigFile", () => {
 
   describe("when unstableNoisePct sits exactly on the noise floor", () => {
     it("accepts the value", () => {
-      const { dir, configPath } = createConfigFile({ unstableNoisePct: 0.5 });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ unstableNoisePct: 0.5 });
 
       const result = loadConfigFile(configPath);
 
@@ -357,8 +351,7 @@ describe("loadConfigFile", () => {
       { description: "a number", value: 3 },
       { description: "null", value: null },
     ])("throws naming metrics when it is $description", ({ value }) => {
-      const { dir, configPath } = createConfigFile({ metrics: value });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ metrics: value });
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics.*object/);
     });
@@ -366,8 +359,7 @@ describe("loadConfigFile", () => {
 
   describe("when a metrics entry is not an object", () => {
     it("throws naming the offending metric", () => {
-      const { dir, configPath } = createConfigFile({ metrics: { latency: "lower" } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ metrics: { latency: "lower" } });
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency.*object/);
     });
@@ -375,8 +367,7 @@ describe("loadConfigFile", () => {
 
   describe("when a metrics entry under an empty-string key has an invalid value", () => {
     it("quotes the empty key so the path does not end with a trailing dot", () => {
-      const { dir, configPath } = createConfigFile({ metrics: { "": 5 } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ metrics: { "": 5 } });
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\."".*object/);
     });
@@ -389,8 +380,7 @@ describe("loadConfigFile", () => {
       { description: "a boolean", value: true },
       { description: "null", value: null },
     ])("throws naming metrics.latency.direction when it is $description", ({ value }) => {
-      const { dir, configPath } = createConfigFile({ metrics: { latency: { direction: value } } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ metrics: { latency: { direction: value } } });
 
       expect(() => loadConfigFile(configPath)).toThrow(
         /metrics\.latency\.direction.*"lower".*"higher"/,
@@ -404,8 +394,7 @@ describe("loadConfigFile", () => {
       { field: "gating", description: "null", value: null },
       { field: "exact", description: "a number", value: 1 },
     ])("throws naming metrics.latency.$field when it is $description", ({ field, value }) => {
-      const { dir, configPath } = createConfigFile({ metrics: { latency: { [field]: value } } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ metrics: { latency: { [field]: value } } });
 
       expect(() => loadConfigFile(configPath)).toThrow(
         new RegExp(`metrics\\.latency\\.${field}.*boolean`),
@@ -415,10 +404,9 @@ describe("loadConfigFile", () => {
 
   describe("when a metrics entry contains an unknown key", () => {
     it("throws an error that names the offending key", () => {
-      const { dir, configPath } = createConfigFile({
+      const { configPath } = createConfigFile({
         metrics: { latency: { direction: "lower", threshold: "higher" } },
       });
-      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/metrics\.latency\.threshold/);
     });
@@ -427,10 +415,9 @@ describe("loadConfigFile", () => {
   describe("when a metrics key embeds a line-break character", () => {
     it.each(LINE_BREAKS)("throws naming metrics when the key embeds $description", ({ char }) => {
       const smuggled = `latency${char}direction: 999, gating: 0`;
-      const { dir, configPath } = createConfigFile({
+      const { configPath } = createConfigFile({
         metrics: { [smuggled]: { direction: "lower" } },
       });
-      tmpdir = dir;
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -443,8 +430,7 @@ describe("loadConfigFile", () => {
   describe("when a kinds key embeds a line-break character", () => {
     it("throws naming kinds", () => {
       const smuggled = "memory\ngating: 999";
-      const { dir, configPath } = createConfigFile({ kinds: { [smuggled]: { gating: false } } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ kinds: { [smuggled]: { gating: false } } });
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -457,8 +443,7 @@ describe("loadConfigFile", () => {
   describe("when the config file has a kinds section", () => {
     it("returns the parsed per-kind overrides", () => {
       const config = { kinds: { memory: { gating: false }, time: {} } };
-      const { dir, configPath } = createConfigFile(config);
-      tmpdir = dir;
+      const { configPath } = createConfigFile(config);
 
       const result = loadConfigFile(configPath);
 
@@ -473,8 +458,7 @@ describe("loadConfigFile", () => {
       { description: "a number", value: 3 },
       { description: "null", value: null },
     ])("throws naming kinds when it is $description", ({ value }) => {
-      const { dir, configPath } = createConfigFile({ kinds: value });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ kinds: value });
 
       expect(() => loadConfigFile(configPath)).toThrow(/kinds.*object/);
     });
@@ -482,8 +466,7 @@ describe("loadConfigFile", () => {
 
   describe("when a kinds entry is not an object", () => {
     it("throws naming the offending kind", () => {
-      const { dir, configPath } = createConfigFile({ kinds: { memory: false } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ kinds: { memory: false } });
 
       expect(() => loadConfigFile(configPath)).toThrow(/kinds\.memory.*object/);
     });
@@ -495,8 +478,7 @@ describe("loadConfigFile", () => {
       { description: "a number", value: 1 },
       { description: "null", value: null },
     ])("throws naming kinds.memory.gating when it is $description", ({ value }) => {
-      const { dir, configPath } = createConfigFile({ kinds: { memory: { gating: value } } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ kinds: { memory: { gating: value } } });
 
       expect(() => loadConfigFile(configPath)).toThrow(/kinds\.memory\.gating.*boolean/);
     });
@@ -504,10 +486,9 @@ describe("loadConfigFile", () => {
 
   describe("when a kinds entry contains an unknown key", () => {
     it("throws an error that names the offending key by its dotted path", () => {
-      const { dir, configPath } = createConfigFile({
+      const { configPath } = createConfigFile({
         kinds: { memory: { gating: false, threshold: 5 } },
       });
-      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(
         /Unknown config key: kinds\.memory\.threshold/,
@@ -517,8 +498,7 @@ describe("loadConfigFile", () => {
 
   describe("when the config file has a runbook key", () => {
     it("returns the parsed runbook value", () => {
-      const { dir, configPath } = createConfigFile({ runbook: "RUNBOOK.md" });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ runbook: "RUNBOOK.md" });
 
       const result = loadConfigFile(configPath);
 
@@ -528,8 +508,7 @@ describe("loadConfigFile", () => {
 
   describe("when the config file has loop keys", () => {
     it("returns the parsed loop configuration", () => {
-      const { dir, configPath } = createConfigFile(LOOP_CONFIG);
-      tmpdir = dir;
+      const { configPath } = createConfigFile(LOOP_CONFIG);
 
       const result = loadConfigFile(configPath);
 
@@ -542,8 +521,7 @@ describe("loadConfigFile", () => {
       { description: "only a before command", hooks: { before: "npm run warm-cache" } },
       { description: "only an after command", hooks: { after: "npm run cool-down" } },
     ])("returns the parsed hooks when it declares $description", ({ hooks }) => {
-      const { dir, configPath } = createConfigFile({ hooks });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ hooks });
 
       const result = loadConfigFile(configPath);
 
@@ -558,8 +536,7 @@ describe("loadConfigFile", () => {
       { description: "a boolean", value: true },
       { description: "null", value: null },
     ])("throws naming hooks when it is $description", ({ value }) => {
-      const { dir, configPath } = createConfigFile({ hooks: value });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ hooks: value });
 
       expect(() => loadConfigFile(configPath)).toThrow(/hooks.*object/);
     });
@@ -572,8 +549,7 @@ describe("loadConfigFile", () => {
       { stage: "before", description: "a number", value: 42 },
       { stage: "after", description: "null", value: null },
     ])("throws naming hooks.$stage when it is $description", ({ stage, value }) => {
-      const { dir, configPath } = createConfigFile({ hooks: { [stage]: value } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ hooks: { [stage]: value } });
       const act = (): void => {
         loadConfigFile(configPath);
       };
@@ -585,10 +561,9 @@ describe("loadConfigFile", () => {
 
   describe("when the hooks section contains an unknown key", () => {
     it("throws an error that names the offending key by its dotted path", () => {
-      const { dir, configPath } = createConfigFile({
+      const { configPath } = createConfigFile({
         hooks: { before: "npm run warm-cache", during: "npm run mid" },
       });
-      tmpdir = dir;
 
       expect(() => loadConfigFile(configPath)).toThrow(/Unknown config key: hooks\.during/);
     });
@@ -615,8 +590,7 @@ describe("loadConfigFile", () => {
         pattern: /stop\.maxIterations.*positive integer/,
       },
     ])("throws naming stop.$field when it is $description", ({ field, value, pattern }) => {
-      const { dir, configPath } = createConfigFile({ stop: { [field]: value } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ stop: { [field]: value } });
 
       expect(() => loadConfigFile(configPath)).toThrow(pattern);
     });
@@ -624,8 +598,7 @@ describe("loadConfigFile", () => {
 
   describe("when the stop section contains an unknown key", () => {
     it("throws an error that names the offending key by its dotted path", () => {
-      const { dir, configPath } = createConfigFile({ stop: { targetValue: 1, patience: 3 } });
-      tmpdir = dir;
+      const { configPath } = createConfigFile({ stop: { targetValue: 1, patience: 3 } });
 
       expect(() => loadConfigFile(configPath)).toThrow(/Unknown config key: stop\.patience/);
     });
@@ -634,16 +607,12 @@ describe("loadConfigFile", () => {
 
 describe("resolveConfig", () => {
   let tmpdir: string;
-  const originalCwd = process.cwd();
-
-  afterEach(() => {
-    process.chdir(originalCwd);
-  });
+  restoreCwdAfterEach();
 
   describe("when flags and config are empty", () => {
     it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct, primary, and no hooks", () => {
       // resolveConfig falls back to ./gymrat.json, so run from a dir that has none
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       process.chdir(tmpdir);
 
       const result = resolveConfig({ bench: "my-bench" });
@@ -704,7 +673,7 @@ describe("resolveConfig", () => {
 
   describe("when flags provide values and no config", () => {
     it("uses flag values over defaults", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       process.chdir(tmpdir);
 
       const result = resolveConfig({
@@ -739,7 +708,7 @@ describe("resolveConfig", () => {
 
   describe("when prepare is provided", () => {
     it("includes prepare in resolved config", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       process.chdir(tmpdir);
 
       const result = resolveConfig({
@@ -758,7 +727,7 @@ describe("resolveConfig", () => {
       { key: "adapter", flags: { bench: "my-bench", adapter: "" } },
       { key: "config", flags: { bench: "my-bench", config: "" } },
     ])("throws naming --$key and the non-empty requirement", ({ key, flags }) => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       process.chdir(tmpdir);
       const act = (): ResolvedConfig => resolveConfig(flags);
 
@@ -770,7 +739,7 @@ describe("resolveConfig", () => {
 
   describe("when config file path is specified", () => {
     it("loads config from the specified path", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       const customConfigPath = path.join(tmpdir, "custom-config.json");
       fs.writeFileSync(customConfigPath, JSON.stringify({ bench: "custom-bench" }));
 
@@ -782,7 +751,7 @@ describe("resolveConfig", () => {
 
   describe("when the specified config file path does not exist", () => {
     it("throws an error naming the missing path instead of falling back to defaults", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       const missingConfigPath = path.join(tmpdir, "typo.json");
 
       expect(() => resolveConfig({ bench: "my-bench", config: missingConfigPath })).toThrow(
@@ -921,15 +890,11 @@ describe("resolveConfig", () => {
 
 describe("resolveBenchlessConfig", () => {
   let tmpdir: string;
-  const originalCwd = process.cwd();
-
-  afterEach(() => {
-    process.chdir(originalCwd);
-  });
+  restoreCwdAfterEach();
 
   describe("when the config flag holds an empty string", () => {
     it("throws naming --config and the non-empty requirement", () => {
-      tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+      tmpdir = createTmpDir();
       process.chdir(tmpdir);
       const act = (): BenchlessConfig => resolveBenchlessConfig({ config: "" });
 
@@ -956,11 +921,7 @@ const CONFIG_RESOLVERS = [
 ];
 
 describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) => {
-  const originalCwd = process.cwd();
-
-  afterEach(() => {
-    process.chdir(originalCwd);
-  });
+  restoreCwdAfterEach();
 
   /**
    * A directory holding a `gymrat.json` of `baseConfig`, with a nested directory
@@ -970,7 +931,7 @@ describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) =
     baseConfig: Record<string, unknown>,
     nestedConfig: Record<string, unknown>,
   ): { baseDir: string; nestedDir: string } {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-"));
+    const baseDir = createTmpDir();
     const nestedDir = path.join(baseDir, "packages", "core");
     fs.mkdirSync(nestedDir, { recursive: true });
     fs.writeFileSync(path.join(baseDir, "gymrat.json"), JSON.stringify(baseConfig));
@@ -1019,11 +980,7 @@ describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) =
 
 describe.each(CONFIG_RESOLVERS)("$name, runbook resolution", ({ resolve }) => {
   let tmpdir: string;
-  const originalCwd = process.cwd();
-
-  afterEach(() => {
-    process.chdir(originalCwd);
-  });
+  restoreCwdAfterEach();
 
   describe("when the config file has no runbook key", () => {
     it("omits runbook from the resolved config", () => {
@@ -1037,14 +994,14 @@ describe.each(CONFIG_RESOLVERS)("$name, runbook resolution", ({ resolve }) => {
   });
 
   describe("when the config file names a runbook that exists as a file", () => {
-    it("carries the runbook path verbatim into the resolved config", () => {
+    it("resolves the runbook path to an absolute path against the config directory", () => {
       tmpdir = createConfigFile({ bench: "a-bench", runbook: "RUNBOOK.md" }).dir;
       fs.writeFileSync(path.join(tmpdir, "RUNBOOK.md"), "# Steps\n");
       process.chdir(tmpdir);
 
       const result = resolve({});
 
-      expect(result.runbook).toBe("RUNBOOK.md");
+      expect(result.runbook).toBe(path.join(tmpdir, "RUNBOOK.md"));
     });
   });
 
@@ -1070,6 +1027,28 @@ describe.each(CONFIG_RESOLVERS)("$name, runbook resolution", ({ resolve }) => {
       expect.soft(act).toThrow(GymratError);
       expect.soft(act).toThrow(/runbook/);
       expect(act).toThrow(/docs/);
+    });
+  });
+});
+
+describe.each(CONFIG_RESOLVERS)("$name, implicit lookup in a git repository", ({ resolve }) => {
+  restoreCwdAfterEach();
+
+  describe("when no baseDir is passed and the cwd is inside a git repository", () => {
+    it("finds gymrat.json at the repository root, not the cwd", () => {
+      const repoRoot = createTmpDir("gymrat-repo-");
+      execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      fs.writeFileSync(
+        path.join(repoRoot, "gymrat.json"),
+        JSON.stringify({ bench: "repo-bench", checks: "repo-checks" }),
+      );
+      const nestedDir = path.join(repoRoot, "packages", "core");
+      fs.mkdirSync(nestedDir, { recursive: true });
+      process.chdir(nestedDir);
+
+      const result = resolve({ bench: "flag-bench" });
+
+      expect(result.checks).toBe("repo-checks");
     });
   });
 });
