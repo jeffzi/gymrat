@@ -5,26 +5,26 @@ installation, usage, and configuration, see the [README](../README.md).
 
 ## Report anatomy
 
-The sample below uses `gymrat compare` with a `gymrat.json` marking `encode/heap` as an exact
+The sample below uses `gymrat compare` with a `gymrat.json` marking `encode-mem` as an exact
 metric:
 
 ```text
 gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
 metric                      │       main │ perf/faster-decode │ vs main
 ────────────────────────────┼────────────┼────────────────────┼──────────────────
-decode/text=digits/time     │  1700 ± 1% │          1400 ± 1% │ ✓  -17.9%  ±2.5%
-decode/text=words/time      │  3100 ± 1% │          3100 ± 3% │ ~   +0.9%  ±2.5%
-encode/time                 │   914 ± 1% │           934 ± 1% │ ✗   +2.2%  ±2.5%
-encode/heap                 │ 49200 ± 0% │         45300 ± 0% │ ✓   -7.9%
+decode/text=digits          │  1700 ± 1% │          1400 ± 1% │ ✓  -17.9%  ±2.5%
+decode/text=words           │  3100 ± 1% │          3100 ± 3% │ ~   +0.9%  ±2.5%
+encode                      │   914 ± 1% │           934 ± 1% │ ✗   +2.2%  ±2.5%
+encode-mem                  │ 49200 ± 0% │         45300 ± 0% │ ✓   -7.9%
 ────────────────────────────┼────────────┼────────────────────┼──────────────────
 geomean (4 stable metrics)  │            │                    │     -6.0%
 
 ✓ 2 improved   ✗ 1 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
 
 highlights
-  ✗ encode/time               +2.2%
-  ✓ decode/text=digits/time  -17.9%
-  ✓ encode/heap               -7.9%  (exact)
+  ✗ encode                     +2.2%
+  ✓ decode/text=digits        -17.9%
+  ✓ encode-mem                 -7.9%  (exact)
 ```
 
 Add `--verbose` to name the method behind each verdict in the footer:
@@ -52,7 +52,9 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
   (windows where both sides reported the metric). When a metric is missing from some windows, the
   two sets can differ.
 - Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
-  `metric-lines` values carry no unit and are rounded to the nearest integer.
+  `metric-lines` values whose names end in `/time` or `/heap` scale to the adapter-assigned unit
+  (`ns` or `bytes`); names without those suffixes carry no unit and are rounded to the nearest
+  integer.
 
 ### Summary and highlights
 
@@ -223,7 +225,7 @@ Example, trimmed to one metric and one candidate:
   "samples": 10,
   "adapter": "metric-lines",
   "metrics": {
-    "decode/text=digits/time": {
+    "decode/text=digits": {
       "unit": null,
       "direction": "lower",
       "gating": true,
@@ -288,7 +290,7 @@ Example, trimmed to one metric:
   "samples": 10,
   "adapter": "metric-lines",
   "metrics": {
-    "decode/text=digits/time": {
+    "decode/text=digits": {
       "median": 1700,
       "spreadPct": 1,
       "unit": null,

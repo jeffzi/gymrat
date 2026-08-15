@@ -296,27 +296,32 @@ METRIC <name>=<value>
   occurrences as the run's value.
 - A run in which **zero** metrics are found is an operational error (exit 2; see
   [Exit codes](#exit-codes)).
-- Every metric defaults to **lower-is-better** and is rounded to the nearest integer, with no unit
-  scaling. Emit nanoseconds or microseconds rather than fractional seconds, or every value collapses
-  to `0` or `1`. Override direction per metric in the config file.
+- Every metric defaults to **lower-is-better**. Override direction per metric in the config file.
+- A metric name ending in **`/time`** is assigned kind `time` and unit `ns`; one ending in
+  **`/heap`** is assigned kind `memory` and unit `bytes`. The report scales those values to
+  human-readable tiers (µs, ms, KB, MB, …) and groups them into sections by kind. Metrics whose
+  names match neither suffix carry no kind or unit — they report under `other`, are rounded to the
+  nearest integer, and are not unit-scaled. Emit nanoseconds or microseconds rather than fractional
+  seconds for plain names, or every value collapses to `0` or `1`.
 
 Example bench command:
 
 ```sh
 #!/bin/sh
 # Print one `METRIC name=value` line per metric; replace the values with your
-# real measurements. Values here are nanoseconds, since gymrat rounds
-# `metric-lines` values to whole numbers. gymrat takes the median across runs.
-echo "METRIC decode/time=1420"
-echo "METRIC encode/time=910"
+# real measurements. Values here are nanoseconds; gymrat rounds plain
+# metric-lines values to whole numbers. gymrat takes the median across runs.
+echo "METRIC decode=1420"
+echo "METRIC encode=910"
 ```
 
 The `mitata` adapter parses the JSON that [mitata](https://github.com/evanwashere/mitata) prints in
 its JSON mode, flattening each benchmark to `<alias>/time` (from `stats.p50`) and `<alias>/heap`
 (from `stats.heap.avg`, when mitata measured it). For parameterized benchmarks, `$name` placeholders
 in the alias are replaced with `name=value`, so an alias of `decode/$text` becomes
-`decode/text=digits/time`. `/time` metrics report under the `time` kind and `/heap` metrics under
-`memory`; `metric-lines` names no kind, so all its metrics report under `other`.
+`decode/text=digits/time`. Both adapters assign kind and unit from the `/time` and `/heap` name
+suffixes: `/time` metrics report under the `time` kind and `/heap` metrics under `memory`.
+`metric-lines` metrics whose names carry neither suffix report under `other`.
 
 ## Configuration
 
@@ -336,14 +341,14 @@ resolves relative to the working directory on every command. All keys are option
   "timeoutSeconds": 1800,
   "unstableNoisePct": 200,
   "metrics": {
-    "decode/time": { "direction": "lower", "gating": true, "exact": false }
+    "decode": { "direction": "lower", "gating": true, "exact": false }
   },
   "kinds": {
     "memory": { "gating": false }
   },
   "checks": "npm test",
   "filter": "npm run bench -- --filter {names}",
-  "primary": "decode/time",
+  "primary": "decode",
   "stop": { "targetValue": 900, "maxIterations": 20 },
   "hooks": { "before": "./scripts/note-start.sh", "after": "./scripts/note-end.sh" },
   "runbook": "skills/gymrat/SKILL.md"
@@ -367,8 +372,9 @@ resolves relative to the working directory on every command. All keys are option
 - A `metrics` key that matches no metric the run produced is ignored without a warning, unlike an
   unknown top-level key. When an override seems to do nothing, check the spelling against the
   report's metric column.
-- `kinds` keys are kind names reported by the adapter (`time`, `memory` for `mitata`; `other` for
-  `metric-lines`). Each entry accepts:
+- `kinds` keys are kind names reported by the adapter (`time`, `memory`, or `other` — both adapters
+  assign `time` and `memory` from `/time` and `/heap` name suffixes; plain `metric-lines`
+  metrics fall under `other`). Each entry accepts:
   - `gating`: whether every metric of this kind counts toward the gated geomean and the
     `--fail-on` gate. Defaults to `true`.
 - A `kinds` key that matches no kind the run produced is silently ignored, the same as an unmatched
