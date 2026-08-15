@@ -228,7 +228,11 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
           keepCount += 1;
           targetReachedAndKept = targetReachedBySeq.get(record.seq) ?? false;
           lastKeptCommit = record.commit ?? lastKeptCommit;
-        } else if (record.reason !== undefined && record.reason !== "checks-failed") {
+        } else if (
+          record.reason !== undefined &&
+          record.reason !== "checks-failed" &&
+          record.reason !== "nothing-measured"
+        ) {
           // A blocked keep leaves the edit uncommitted, so it settles the iteration
           // too — unblocking `iterate` — except for "checks-failed", where the user
           // is expected to fix the failure and retry `keep` on the same iteration.

@@ -476,6 +476,32 @@ describe("foldSession", () => {
       expect(state.unsettled).toBe(true);
     });
   });
+
+  describe("when a keep was blocked for nothing-measured", () => {
+    it("leaves the iteration unsettled", () => {
+      // Arrange
+      const records = [SESSION, ITERATION_1, nothingMeasuredBlock(2)];
+
+      // Act
+      const state = foldSession(records);
+
+      // Assert
+      expect(state.unsettled).toBe(true);
+    });
+  });
+
+  describe("when a keep was blocked for gating-regression", () => {
+    it("clears unsettled", () => {
+      // Arrange
+      const records = [SESSION, ITERATION_1, gatingBlock(1)];
+
+      // Act
+      const state = foldSession(records);
+
+      // Assert
+      expect(state.unsettled).toBe(false);
+    });
+  });
 });
 
 describe("endsOnGatingBlock", () => {
