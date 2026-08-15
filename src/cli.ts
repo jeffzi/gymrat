@@ -728,6 +728,12 @@ function getDirtyFileCount(root: string): number {
   return output.split("\n").length;
 }
 
+function resolveLogPath(root: string, explicitPath: string | undefined): string {
+  if (explicitPath !== undefined) return explicitPath;
+  ensureGitExclude(root);
+  return join(root, ".gymrat", `supervisor-${Date.now()}.jsonl`);
+}
+
 /**
  * The repository a run must serialize against, or `undefined` when there is none.
  *
@@ -1225,6 +1231,55 @@ export function createProgram(): Command {
   });
 
   // ---------------------------------------------------------------------------
+  // supervise helpers
+  // ---------------------------------------------------------------------------
+
+  async function validateWorkingTree(root: string, allowDirty: boolean): Promise<number> {
+    const dirtyFileCount = getDirtyFileCount(root);
+    if (dirtyFileCount > 0 && !allowDirty) {
+      await exitWithError(
+        new GymratError(
+          `Working tree has ${pluralize(dirtyFileCount, "uncommitted file")}.`,
+          "Commit or stash your changes, or pass --allow-dirty to proceed anyway.",
+        ),
+      );
+    }
+    if (dirtyFileCount > 0) {
+      await writeAndFlush(
+        process.stderr,
+        `warning: working tree has ${pluralize(dirtyFileCount, "dirty file")} — proceeding because --allow-dirty was set\n`,
+      );
+    }
+    return dirtyFileCount;
+  }
+
+  async function reportSupervisionResult(
+    result: SupervisionResult,
+    logPath: string,
+  ): Promise<void> {
+    const durationSec = Math.round(result.durationMs / 1000);
+    const minutes = Math.floor(durationSec / 60);
+    const seconds = durationSec % 60;
+    const summary = [
+      `outcome: ${result.outcome.reason}`,
+      `ended by: ${result.endedBy}`,
+      `duration: ${String(minutes)}m ${String(seconds)}s`,
+      `cost: $${result.costUsd.toFixed(2)}`,
+      `log: ${logPath}`,
+    ].join("\n");
+
+    await writeAndFlush(process.stdout, `${summary}\n`);
+
+    if (result.outcome.reason === "error" && result.outcome.message) {
+      await exitWithError(new GymratError(result.outcome.message));
+    }
+
+    if (result.endedBy !== "session") {
+      process.exit(GATE_EXIT_CODE);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // supervise
   // ---------------------------------------------------------------------------
 
@@ -1239,22 +1294,7 @@ export function createProgram(): Command {
     .option("--allow-dirty", "allow launching with uncommitted changes", false)
     .action(async (prompt: string | undefined, options: SuperviseFlags) => {
       const root = await runOrExit(() => Promise.resolve(repoRoot()));
-
-      const dirtyFileCount = getDirtyFileCount(root);
-      if (dirtyFileCount > 0 && !options.allowDirty) {
-        await exitWithError(
-          new GymratError(
-            `Working tree has ${pluralize(dirtyFileCount, "uncommitted file")}.`,
-            "Commit or stash your changes, or pass --allow-dirty to proceed anyway.",
-          ),
-        );
-      }
-      if (dirtyFileCount > 0) {
-        await writeAndFlush(
-          process.stderr,
-          `warning: working tree has ${pluralize(dirtyFileCount, "dirty file")} — proceeding because --allow-dirty was set\n`,
-        );
-      }
+      const dirtyFileCount = await validateWorkingTree(root, options.allowDirty);
 
       const release = await runOrExit(() =>
         Promise.resolve(acquireLock(superviseLockfilePath(root), "supervise")),
@@ -1263,12 +1303,7 @@ export function createProgram(): Command {
       process.once("exit", release);
 
       try {
-        const useDefaultLog = options.log === undefined;
-        const logPath = options.log ?? join(root, ".gymrat", `supervisor-${Date.now()}.jsonl`);
-
-        if (useDefaultLog) {
-          ensureGitExclude(root);
-        }
+        const logPath = resolveLogPath(root, options.log);
 
         const config = resolveBenchlessConfig({}, root);
         const kickoff = composeKickoff(config, import.meta.url, prompt);
@@ -1307,26 +1342,7 @@ export function createProgram(): Command {
           }),
         );
 
-        const durationSec = Math.round(result.durationMs / 1000);
-        const minutes = Math.floor(durationSec / 60);
-        const seconds = durationSec % 60;
-        const summary = [
-          `outcome: ${result.outcome.reason}`,
-          `ended by: ${result.endedBy}`,
-          `duration: ${String(minutes)}m ${String(seconds)}s`,
-          `cost: $${result.costUsd.toFixed(2)}`,
-          `log: ${logPath}`,
-        ].join("\n");
-
-        await writeAndFlush(process.stdout, `${summary}\n`);
-
-        if (result.outcome.reason === "error" && result.outcome.message) {
-          await exitWithError(new GymratError(result.outcome.message));
-        }
-
-        if (result.endedBy !== "session") {
-          process.exit(GATE_EXIT_CODE);
-        }
+        await reportSupervisionResult(result, logPath);
       } finally {
         process.removeListener("exit", release);
         release();

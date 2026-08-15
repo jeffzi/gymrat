@@ -131,6 +131,29 @@ function processToolProgress(msg: Record<string, unknown>, ctx: ProcessingContex
   });
 }
 
+function processAssistantContent(msg: Record<string, unknown>, ctx: ProcessingContext): void {
+  const content = msg["content"];
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (isRecord(block)) {
+      processContentBlock(block, ctx);
+    }
+  }
+}
+
+function extractCostUpdate(
+  msg: Record<string, unknown>,
+  ctx: ProcessingContext,
+  currentCostUsd: number,
+): number {
+  const totalCostUsd = msg["total_cost_usd"];
+  if (typeof totalCostUsd === "number" && totalCostUsd > 0) {
+    ctx.observer({ type: "usage_update", timestamp: Date.now(), costUsd: totalCostUsd });
+    return totalCostUsd;
+  }
+  return currentCostUsd;
+}
+
 /**
  * Processes a single SDK message, updating cost when a `result`-type message
  * carries `total_cost_usd`. Returns the updated cumulative cost.
@@ -144,23 +167,13 @@ function processSdkMessage(
   if (typeof msgType !== "string") return currentCostUsd;
 
   if (msgType === "assistant") {
-    const content = msg["content"];
-    if (!Array.isArray(content)) return currentCostUsd;
-    for (const block of content) {
-      if (isRecord(block)) {
-        processContentBlock(block, ctx);
-      }
-    }
+    processAssistantContent(msg, ctx);
   } else if (msgType === "tool_result") {
     processToolResult(msg, ctx);
   } else if (msgType === "tool_progress") {
     processToolProgress(msg, ctx);
   } else if (msgType === "result") {
-    const totalCostUsd = msg["total_cost_usd"];
-    if (typeof totalCostUsd === "number" && totalCostUsd > 0) {
-      ctx.observer({ type: "usage_update", timestamp: Date.now(), costUsd: totalCostUsd });
-      return totalCostUsd;
-    }
+    return extractCostUpdate(msg, ctx, currentCostUsd);
   }
 
   return currentCostUsd;
