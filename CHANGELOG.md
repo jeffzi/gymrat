@@ -15,21 +15,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reached. A JSONL event log (`--log`) records every agent action for post-session review. The
   kickoff injects the bundled gymrat skill and the repo's runbook (required in supervised mode) into
   the agent's system prompt.
-- Driver seam for agent sessions: a `Driver` interface with `start()` → `DriverSession` exposing
-  `interrupt()` and an `outcome` promise. Ships with a Claude SDK driver (backed by
-  `@anthropic-ai/claude-agent-sdk`, declared as an optional peer dependency and loaded lazily).
-  The mock driver ships in the test fixtures.
+- Pluggable driver API for supervised agent sessions: implement the `Driver` interface to use a
+  custom agent backend. Ships with a Claude SDK driver (`@anthropic-ai/claude-agent-sdk`, optional
+  peer dependency, loaded lazily).
 
 ### Changed
 
 - The Wilcoxon signed-rank verdict now requires the delta to clear the metric's resolution floor
   (`byteFloorPct` for byte-valued metrics) in addition to `p < 0.05`. A one-byte quantization move
   no longer produces a spurious verdict at high sample counts.
-- `supervise`'s numeric flags (`--max-minutes`, `--max-usd`) reject trailing garbage (`10abc`) and
-  non-positive values, where they were previously parsed loosely.
 
 ### Fixed
 
+- `supervise`'s numeric flags (`--max-minutes`, `--max-usd`) reject trailing garbage (`10abc`) and
+  non-positive values, where they were previously parsed loosely.
 - An empty `primary` config value was accepted and silently treated as the geomean default. It is
   now rejected at config load.
 - The resolved runbook path was not made absolute, so a `runbook` value in `gymrat.json` could

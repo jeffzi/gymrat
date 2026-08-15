@@ -126,12 +126,12 @@ missing is put back. Each iteration must be settled — kept or discarded — be
 measures, so the log never holds two settlements against one iteration.
 
 `keep` refuses to commit when nothing has been measured since the last keep or discard, when the
-iteration regressed a gating metric, or — checked last — when the `checks` command fails. The
+iteration regressed a gating metric, or (checked last) when the `checks` command fails. The
 confirmation rerun decides the gating-regression case for inexact metrics: a regression the rerun
 re-measured and would not repeat leaves the keep committable, while one the rerun never reported
-back on blocks it — silence is not evidence the regression went away. An exact metric gates without
+back on blocks it. Silence is not evidence the regression went away. An exact metric gates without
 a rerun (its value is deterministic, so repeating it adds nothing). Every refusal is recorded as a
-blocked keep, which `status` reads back — gymrat never erases a decision from the log. A refused
+blocked keep, which `status` reads back. gymrat never erases a decision from the log. A refused
 keep exits 1.
 
 `finalize` collapses every kept iteration into one squash commit whose tree equals the session
