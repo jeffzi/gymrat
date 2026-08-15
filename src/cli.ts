@@ -48,9 +48,10 @@ import type {
 } from "./report/types.js";
 import type { RunOptions } from "./sampling.js";
 import { acquireLock, type ReleaseLock } from "./session/lock.js";
-import { lockfilePath, repoRoot } from "./session/paths.js";
+import { lockfilePath, repoRoot, superviseLockfilePath } from "./session/paths.js";
 import type { BaselineRecord } from "./session/records.js";
 import { appendRecord, requireOpenSession } from "./session/store.js";
+import { ensureGitExclude } from "./session/workspace.js";
 import { installTerminationCleanup } from "./signals.js";
 import { createClaudeDriver } from "./supervisor/claude.js";
 import type { LaunchEvent } from "./supervisor/events.js";
@@ -123,9 +124,22 @@ function parsePositiveIntegerUpTo(max: number): (value: string) => number {
 }
 
 function parsePositiveNumber(value: string): number {
+  if (!/^\d+(\.\d+)?$/.test(value)) {
+    throw new InvalidArgumentError("must be a positive number.");
+  }
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new InvalidArgumentError("must be a positive number.");
+  }
+  return parsed;
+}
+
+/** `parsePositiveNumber` with an upper bound derived from the 32-bit timer ceiling. */
+function parseMaxMinutes(value: string): number {
+  const parsed = parsePositiveNumber(value);
+  const maxMinutes = Math.floor(MAX_TIMEOUT_SECONDS / 60);
+  if (parsed > maxMinutes) {
+    throw new InvalidArgumentError(`must be at most ${String(maxMinutes)} minutes.`);
   }
   return parsed;
 }
@@ -722,7 +736,7 @@ async function runGuarded<T>(progress: ProgressReporter, execute: () => Promise<
 }
 
 function getDirtyFileCount(root: string): number {
-  const output = runGit(["status", "--porcelain"], root).trim();
+  const output = runGit(["status", "--porcelain", "--untracked-files=all"], root).trim();
   if (output === "") return 0;
   return output.split("\n").length;
 }
@@ -1231,7 +1245,7 @@ export function createProgram(): Command {
     .command("supervise")
     .description("Run a supervised agent session with wall-clock and spend caps")
     .argument("[prompt]", "optimization prompt for the agent")
-    .requiredOption("--max-minutes <number>", "wall-clock cap in minutes", parsePositiveNumber)
+    .requiredOption("--max-minutes <number>", "wall-clock cap in minutes", parseMaxMinutes)
     .option("--max-usd <number>", "spend cap in USD", parsePositiveNumber)
     .option("--log <path>", "path for the JSONL event log")
     .option("--model <name>", "model to use for the agent session")
@@ -1255,59 +1269,80 @@ export function createProgram(): Command {
         );
       }
 
-      const logPath = options.log ?? join(root, ".gymrat", `supervisor-${Date.now()}.jsonl`);
-
-      const config = resolveBenchlessConfig({}, root);
-      const kickoff = composeKickoff(config, import.meta.url, prompt);
-
-      const headSha = runGit(["rev-parse", "HEAD"], root).trim();
-
-      const launch: LaunchEvent = {
-        type: "launch",
-        timestamp: Date.now(),
-        headSha,
-        dirty: dirtyFileCount > 0 ? { fileCount: dirtyFileCount } : false,
-        maxMinutes: options.maxMinutes,
-        maxUsd: options.maxUsd,
-        model: options.model,
-        runbookPath: config.runbook ?? "",
-        kickoffSummary: summarize(kickoff.kickoff, SUMMARY_MAX_CHARS),
-      };
-
-      const driver = createClaudeDriver();
-
-      await writeAndFlush(process.stderr, `log: ${logPath}\n`);
-
-      const result: SupervisionResult = await runOrExit(() =>
-        supervise({
-          driver,
-          prompt: {
-            kickoff: kickoff.kickoff,
-            systemPromptAppend: kickoff.systemPromptAppend,
-            cwd: root,
-            model: options.model,
-          },
-          maxMinutes: options.maxMinutes,
-          maxUsd: options.maxUsd,
-          logPath,
-          launch,
-        }),
+      const release = await runOrExit(() =>
+        Promise.resolve(acquireLock(superviseLockfilePath(root), "supervise")),
       );
 
-      const durationSec = Math.round(result.durationMs / 1000);
-      const minutes = Math.floor(durationSec / 60);
-      const seconds = durationSec % 60;
-      const summary = [
-        `ended by: ${result.endedBy}`,
-        `duration: ${String(minutes)}m ${String(seconds)}s`,
-        `cost: $${result.costUsd.toFixed(2)}`,
-        `log: ${logPath}`,
-      ].join("\n");
+      process.once("exit", release);
 
-      await writeAndFlush(process.stderr, `${summary}\n`);
+      try {
+        const useDefaultLog = options.log === undefined;
+        const logPath = options.log ?? join(root, ".gymrat", `supervisor-${Date.now()}.jsonl`);
 
-      if (result.endedBy !== "session") {
-        process.exit(GATE_EXIT_CODE);
+        if (useDefaultLog) {
+          ensureGitExclude(root);
+        }
+
+        const config = resolveBenchlessConfig({}, root);
+        const kickoff = composeKickoff(config, import.meta.url, prompt);
+
+        const headSha = runGit(["rev-parse", "HEAD"], root).trim();
+
+        const launch: LaunchEvent = {
+          type: "launch",
+          timestamp: Date.now(),
+          headSha,
+          dirty: dirtyFileCount > 0 ? { fileCount: dirtyFileCount } : false,
+          maxMinutes: options.maxMinutes,
+          maxUsd: options.maxUsd,
+          model: options.model,
+          runbookPath: config.runbook ?? "",
+          kickoffSummary: summarize(kickoff.kickoff, SUMMARY_MAX_CHARS),
+        };
+
+        const driver = createClaudeDriver();
+
+        await writeAndFlush(process.stderr, `log: ${logPath}\n`);
+
+        const result: SupervisionResult = await runOrExit(() =>
+          supervise({
+            driver,
+            prompt: {
+              kickoff: kickoff.kickoff,
+              systemPromptAppend: kickoff.systemPromptAppend,
+              cwd: root,
+              model: options.model,
+            },
+            maxMinutes: options.maxMinutes,
+            maxUsd: options.maxUsd,
+            logPath,
+            launch,
+          }),
+        );
+
+        const durationSec = Math.round(result.durationMs / 1000);
+        const minutes = Math.floor(durationSec / 60);
+        const seconds = durationSec % 60;
+        const summary = [
+          `outcome: ${result.outcome.reason}`,
+          `ended by: ${result.endedBy}`,
+          `duration: ${String(minutes)}m ${String(seconds)}s`,
+          `cost: $${result.costUsd.toFixed(2)}`,
+          `log: ${logPath}`,
+        ].join("\n");
+
+        await writeAndFlush(process.stdout, `${summary}\n`);
+
+        if (result.outcome.reason === "error" && result.outcome.message) {
+          await exitWithError(new GymratError(result.outcome.message));
+        }
+
+        if (result.endedBy !== "session") {
+          process.exit(GATE_EXIT_CODE);
+        }
+      } finally {
+        process.removeListener("exit", release);
+        release();
       }
     });
 

@@ -153,14 +153,15 @@ export function combineObservers(...observers: SessionObserver[]): SessionObserv
  */
 export function summarize(text: string, maxChars: number): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
+  const codePoints = Array.from(collapsed);
 
-  if (collapsed.length <= maxChars) {
+  if (codePoints.length <= maxChars) {
     return collapsed;
   }
 
-  const remaining = collapsed.length - maxChars;
+  const remaining = codePoints.length - maxChars;
   const lineCount = text.split("\n").length;
-  return `${collapsed.slice(0, maxChars)}… (${remaining} more chars, ${lineCount} lines)`;
+  return `${codePoints.slice(0, maxChars).join("")}… (${remaining} more chars, ${lineCount} lines)`;
 }
 
 // ---------------------------------------------------------------------------

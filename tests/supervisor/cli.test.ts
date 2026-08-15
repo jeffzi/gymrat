@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +7,7 @@ import type { BenchlessConfig } from "../../src/config.js";
 import { GymratError } from "../../src/errors.js";
 import type { Driver } from "../../src/supervisor/driver.js";
 import type { SupervisionResult } from "../../src/supervisor/supervise.js";
+import { MAX_TIMEOUT_SECONDS } from "../../src/timer-limits.js";
 import {
   createRunnableProgram,
   exitCodeOf,
@@ -55,6 +57,11 @@ vi.mock("../../src/supervisor/supervise.js", () => ({
   }),
 }));
 
+vi.mock("../../src/session/workspace.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../src/session/workspace.js")>();
+  return { ...original, ensureGitExclude: vi.fn() };
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -67,6 +74,23 @@ function stderrText(spy: ReturnType<typeof vi.spyOn>): string {
   // oxlint-disable-next-line no-unsafe-member-access, no-unsafe-type-assertion -- vi.spyOn mock type is loosely typed
   const calls = spy.mock.calls as unknown[][];
   return calls.map((c) => String(c[0])).join("");
+}
+
+/**
+ * Wires a fresh scratch repository as the CWD for every test in the enclosing
+ * `describe` block, cleaning it up afterward. Returns a getter for the
+ * current test's repo, since the repo itself is only created in `beforeEach`.
+ */
+function useScratchRepo(): () => ScratchRepo {
+  let repo: ScratchRepo;
+  beforeEach(() => {
+    repo = createScratchRepo();
+    process.chdir(repo.dir);
+  });
+  afterEach(() => {
+    repo.cleanup();
+  });
+  return () => repo;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +121,8 @@ describe("supervise command", () => {
         { value: "abc", why: "non-numeric" },
         { value: "0", why: "zero" },
         { value: "-5", why: "negative" },
+        { value: "0x10", why: "hex notation" },
+        { value: "1e-9", why: "scientific notation" },
       ])("rejects $value ($why) with a message naming the flag", async ({ value }) => {
         const program = createRunnableProgram({ exitOverride: "all", silent: true });
         mockProcessExit();
@@ -107,11 +133,25 @@ describe("supervise command", () => {
       });
     });
 
+    describe("when --max-minutes exceeds the timer ceiling", () => {
+      it("rejects with a message naming the flag", async () => {
+        const overLimit = String(Math.floor(MAX_TIMEOUT_SECONDS / 60) + 1);
+        const program = createRunnableProgram({ exitOverride: "all", silent: true });
+        mockProcessExit();
+
+        const parsing = program.parseAsync(superviseArgv("my prompt", "--max-minutes", overLimit));
+
+        await expect(parsing).rejects.toThrow(/--max-minutes/);
+      });
+    });
+
     describe("when --max-usd receives an invalid value", () => {
       it.each([
         { value: "abc", why: "non-numeric" },
         { value: "0", why: "zero" },
         { value: "-5", why: "negative" },
+        { value: "0x10", why: "hex notation" },
+        { value: "1e-9", why: "scientific notation" },
       ])("rejects $value ($why) with a message naming the flag", async ({ value }) => {
         const program = createRunnableProgram({ exitOverride: "all", silent: true });
         mockProcessExit();
@@ -125,16 +165,7 @@ describe("supervise command", () => {
     });
 
     describe("when valid flags are provided", () => {
-      let repo: ScratchRepo;
-
-      beforeEach(() => {
-        repo = createScratchRepo();
-        process.chdir(repo.dir);
-      });
-
-      afterEach(() => {
-        repo.cleanup();
-      });
+      useScratchRepo();
 
       it("passes max-minutes through to supervise", async () => {
         const program = createRunnableProgram();
@@ -165,16 +196,7 @@ describe("supervise command", () => {
   });
 
   describe("default log path", () => {
-    let repo: ScratchRepo;
-
-    beforeEach(() => {
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-    });
-
-    afterEach(() => {
-      repo.cleanup();
-    });
+    useScratchRepo();
 
     it("defaults to .gymrat/supervisor-<timestamp>.jsonl under the repository root", async () => {
       const program = createRunnableProgram();
@@ -202,16 +224,7 @@ describe("supervise command", () => {
   });
 
   describe("exit codes", () => {
-    let repo: ScratchRepo;
-
-    beforeEach(() => {
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-    });
-
-    afterEach(() => {
-      repo.cleanup();
-    });
+    useScratchRepo();
 
     it("exits 0 when the session completed on its own", async () => {
       const program = createRunnableProgram();
@@ -262,49 +275,50 @@ describe("supervise command", () => {
       await expect(parsing).rejects.toHaveProperty("exitCode", 2);
       expect(stderrText(stderrSpy)).toContain("config broken");
     });
+
+    it("exits 2 and surfaces the message when the session outcome is error", async () => {
+      const { supervise: superviseFn } = await import("../../src/supervisor/supervise.js");
+      vi.mocked(superviseFn).mockResolvedValueOnce({
+        outcome: { reason: "error", costUsd: 0.03, message: "SDK connection lost" },
+        endedBy: "session",
+        durationMs: 5_000,
+        costUsd: 0.03,
+      });
+      const program = createRunnableProgram({ exitOverride: "all" });
+      stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+      expect(stderrText(stderrSpy)).toContain("SDK connection lost");
+    });
   });
 
   describe("closing summary", () => {
-    let repo: ScratchRepo;
-
-    beforeEach(() => {
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-    });
-
-    afterEach(() => {
-      repo.cleanup();
-    });
+    useScratchRepo();
 
     it("reports how the run ended, duration, final cost estimate, and log path", async () => {
       const program = createRunnableProgram();
       const stderrSpy = stubWrite(process.stderr);
-      stubWrite(process.stdout);
+      const stdoutSpy = stubWrite(process.stdout);
 
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
-      const output = stderrText(stderrSpy);
-      expect.soft(output).toMatch(/session/i);
-      expect.soft(output).toMatch(/duration|time/i);
-      expect.soft(output).toMatch(/\$?\d+\.\d+|cost/i);
-      expect(output).toMatch(/\.jsonl/);
+      const stdoutOutput = stdoutSpy.mock.calls.map((c) => String(c[0])).join("");
+      expect.soft(stdoutOutput).toMatch(/session/i);
+      expect.soft(stdoutOutput).toMatch(/duration|time/i);
+      expect.soft(stdoutOutput).toMatch(/\$?\d+\.\d+|cost/i);
+      expect(stderrText(stderrSpy)).toMatch(/\.jsonl/);
     });
   });
 
   describe("dirty-tree guard", () => {
-    let repo: ScratchRepo;
-
-    beforeEach(() => {
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-    });
-
-    afterEach(() => {
-      repo.cleanup();
-    });
+    const repo = useScratchRepo();
 
     it("exits 2 when the tree is dirty and --allow-dirty is not set", async () => {
-      writeFileSync(`${repo.dir}/uncommitted.txt`, "dirty");
+      writeFileSync(`${repo().dir}/uncommitted.txt`, "dirty");
       const program = createRunnableProgram({ exitOverride: "all" });
       stubWrite(process.stdout);
       const stderrSpy = stubWrite(process.stderr);
@@ -320,7 +334,7 @@ describe("supervise command", () => {
     });
 
     it("proceeds with a warning when --allow-dirty is set and tree is dirty", async () => {
-      writeFileSync(`${repo.dir}/uncommitted.txt`, "dirty");
+      writeFileSync(`${repo().dir}/uncommitted.txt`, "dirty");
       const program = createRunnableProgram();
       stubWrite(process.stdout);
       const stderrSpy = stubWrite(process.stderr);
@@ -346,16 +360,7 @@ describe("supervise command", () => {
   });
 
   describe("driver wiring", () => {
-    let repo: ScratchRepo;
-
-    beforeEach(() => {
-      repo = createScratchRepo();
-      process.chdir(repo.dir);
-    });
-
-    afterEach(() => {
-      repo.cleanup();
-    });
+    useScratchRepo();
 
     it("creates a Claude driver and passes it to supervise", async () => {
       const program = createRunnableProgram();
@@ -401,6 +406,125 @@ describe("supervise command", () => {
         expect.any(String),
         undefined,
       );
+    });
+  });
+
+  describe("dirty-file count with untracked directories", () => {
+    const repo = useScratchRepo();
+
+    it("counts individual files inside an untracked directory, not the directory itself", async () => {
+      const untrackedDir = path.join(repo().dir, "new-dir");
+      mkdirSync(untrackedDir);
+      writeFileSync(path.join(untrackedDir, "a.txt"), "a");
+      writeFileSync(path.join(untrackedDir, "b.txt"), "b");
+      writeFileSync(path.join(untrackedDir, "c.txt"), "c");
+      const program = createRunnableProgram({ exitOverride: "all" });
+      stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+      const output = stderrText(stderrSpy);
+      expect(output).toMatch(/3/);
+    });
+  });
+
+  describe("closing summary output stream", () => {
+    useScratchRepo();
+
+    it("prints the closing summary on stdout", async () => {
+      const program = createRunnableProgram();
+      const stdoutSpy = stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      const stdoutOutput = stdoutSpy.mock.calls.map((c) => String(c[0])).join("");
+      expect.soft(stdoutOutput).toMatch(/session/i);
+      expect.soft(stdoutOutput).toMatch(/duration|time/i);
+      expect(stdoutOutput).toMatch(/\.jsonl/);
+    });
+  });
+
+  describe("git-exclude for default log path", () => {
+    const repo = useScratchRepo();
+
+    it("calls ensureGitExclude before writing the default .gymrat/ log", async () => {
+      const program = createRunnableProgram();
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+      const { ensureGitExclude } = await import("../../src/session/workspace.js");
+
+      await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      expect(vi.mocked(ensureGitExclude)).toHaveBeenCalledWith(repo().dir);
+    });
+
+    it("does not call ensureGitExclude when --log provides a custom path", async () => {
+      const program = createRunnableProgram();
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+      const { ensureGitExclude } = await import("../../src/session/workspace.js");
+
+      await program.parseAsync(
+        superviseArgv("optimize it", "--max-minutes", "10", "--log", "/tmp/custom.jsonl"),
+      );
+
+      expect(vi.mocked(ensureGitExclude)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("supervise lock", () => {
+    const repo = useScratchRepo();
+
+    it("exits 2 when another live process holds the supervise lock", async () => {
+      const { superviseLockfilePath } = (await import("../../src/session/paths.js")) as {
+        superviseLockfilePath?: (root: string) => string;
+      };
+      expect(superviseLockfilePath).toBeDefined();
+      const lockPath = superviseLockfilePath!(repo().dir);
+      mkdirSync(path.dirname(lockPath), { recursive: true });
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.pid, command: "supervise", at: "2026-01-01T00:00:00.000Z" }),
+      );
+
+      const program = createRunnableProgram({ exitOverride: "all" });
+      stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+      const output = stderrText(stderrSpy);
+      expect(output).toMatch(/another gymrat/i);
+    });
+  });
+
+  describe("session outcome in summary", () => {
+    useScratchRepo();
+
+    it("names 'interrupted' in the summary when the session was interrupted", async () => {
+      const { supervise: superviseFn } = await import("../../src/supervisor/supervise.js");
+      vi.mocked(superviseFn).mockResolvedValueOnce({
+        outcome: { reason: "interrupted", costUsd: 0.02 },
+        endedBy: "session",
+        durationMs: 30_000,
+        costUsd: 0.02,
+      });
+      const program = createRunnableProgram();
+      const stdoutSpy = stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+
+      await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+      const stdoutOutput = stdoutSpy.mock.calls.map((c) => String(c[0])).join("");
+      const stderrOutput = stderrText(stderrSpy);
+      const allOutput = stdoutOutput + stderrOutput;
+      expect(allOutput).toMatch(/interrupted/i);
     });
   });
 });

@@ -10,6 +10,14 @@ type CapType = "wall-clock" | "spend-cap";
 
 type EndedBy = "session" | CapType;
 
+/**
+ * The result of a supervised agent session.
+ *
+ * - `outcome`: how the session ended (completed, interrupted, or error).
+ * - `endedBy`: whether the session ended naturally or was stopped by a cap.
+ * - `durationMs`: wall-clock duration from start to settlement.
+ * - `costUsd`: final cost reported by the session.
+ */
 export interface SupervisionResult {
   readonly outcome: SessionOutcome;
   readonly endedBy: EndedBy;
@@ -42,10 +50,10 @@ export async function supervise(options: SuperviseOptions): Promise<SupervisionR
 
   let endedBy: EndedBy = "session";
   let capFired = false;
-  // oxlint-disable-next-line prefer-const -- reassigned on line 82; declared here so triggerCap's closure can see it
+  // oxlint-disable-next-line prefer-const -- reassigned by the `wallClockTimer = setTimeout(…)` call below; declared here so triggerCap's closure can see it
   let wallClockTimer: ReturnType<typeof setTimeout> | undefined;
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
-  // oxlint-disable-next-line prefer-const -- reassigned on line 79; declared here so triggerCap's closure can see it
+  // oxlint-disable-next-line prefer-const -- reassigned by `session = driver.start(…)` below; declared here so triggerCap's closure can see it
   let session: DriverSession | undefined;
   let pendingCap: CapType | undefined;
 
@@ -58,7 +66,11 @@ export async function supervise(options: SuperviseOptions): Promise<SupervisionR
     capFired = true;
     endedBy = cap;
     clearTimeout(wallClockTimer);
-    void session.interrupt();
+    try {
+      void session.interrupt();
+    } catch {
+      // Synchronous throw must not prevent grace timer setup
+    }
     graceTimer = setTimeout(() => {
       abortController.abort();
     }, GRACE_MS);
@@ -70,9 +82,8 @@ export async function supervise(options: SuperviseOptions): Promise<SupervisionR
     }
   };
 
-  const observers: SessionObserver[] = [logWriter];
+  const observers: SessionObserver[] = [costObserver, logWriter];
   if (observer) observers.push(observer);
-  observers.push(costObserver);
   const combined = combineObservers(...observers);
 
   combined(launch);
@@ -81,20 +92,25 @@ export async function supervise(options: SuperviseOptions): Promise<SupervisionR
   session = driver.start(prompt, combined, abortController.signal);
   if (pendingCap) triggerCap(pendingCap);
 
-  wallClockTimer = setTimeout(() => {
-    triggerCap("wall-clock");
-  }, maxMinutes * 60_000);
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- capFired is set by triggerCap when a pending cap fires above
+  if (!capFired) {
+    wallClockTimer = setTimeout(() => {
+      triggerCap("wall-clock");
+    }, maxMinutes * 60_000);
+  }
 
-  const outcome = await session.outcome;
+  try {
+    const outcome = await session.outcome;
 
-  // oxlint-disable-next-line typescript/no-unnecessary-condition -- capFired is mutated by triggerCap during await
-  if (!capFired) clearTimeout(wallClockTimer);
-  clearTimeout(graceTimer);
-
-  return {
-    outcome,
-    endedBy,
-    durationMs: Date.now() - startTime,
-    costUsd: outcome.costUsd,
-  };
+    return {
+      outcome,
+      endedBy,
+      durationMs: Date.now() - startTime,
+      costUsd: outcome.costUsd,
+    };
+  } finally {
+    // oxlint-disable-next-line typescript/no-unnecessary-condition -- capFired is mutated by triggerCap during await
+    if (!capFired) clearTimeout(wallClockTimer);
+    clearTimeout(graceTimer);
+  }
 }

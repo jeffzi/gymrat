@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Driver } from "../../src/supervisor/driver.js";
+import type { Driver, SessionOutcome } from "../../src/supervisor/driver.js";
 import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
 import { createMockDriver } from "../../src/supervisor/mock.js";
 import type { MockStep } from "../../src/supervisor/mock.js";
@@ -320,6 +320,128 @@ describe("supervise", () => {
       );
       expect(lineTypes).toContain("text_delta");
       expect(lineTypes).toContain("usage_update");
+    });
+  });
+
+  describe("cap robustness", () => {
+    it("fires spend-cap even when the user observer throws", async () => {
+      const throwingObserver: SessionObserver = (e) => {
+        if (e.type === "usage_update") throw new Error("observer boom");
+      };
+      const steps: MockStep[] = [{ costUsd: 0.5 }];
+      const driver = createMockDriver(steps);
+      const logPath = makeTempLogPath();
+
+      const result = await supervise({
+        driver,
+        prompt: makePrompt(),
+        maxMinutes: 10,
+        maxUsd: 0.1,
+        logPath,
+        launch: makeLaunch({ maxUsd: 0.1 }),
+        observer: throwingObserver,
+      });
+
+      expect(result.endedBy).toBe("spend-cap");
+    });
+
+    it("captures a synchronous throw from interrupt without crashing", async () => {
+      vi.useFakeTimers();
+      const inner = createMockDriver([{ costUsd: 0.01, delayMs: 120_000 }]);
+      const driver: Driver = {
+        start(prompt, observer, signal) {
+          const session = inner.start(prompt, observer, signal);
+          return {
+            inject: (msg: string) => {
+              session.inject(msg);
+            },
+            interrupt(): Promise<void> {
+              throw new Error("interrupt exploded");
+            },
+            usage: () => session.usage(),
+            outcome: session.outcome,
+          };
+        },
+      };
+      const logPath = makeTempLogPath();
+
+      const resultPromise = supervise({
+        driver,
+        prompt: makePrompt(),
+        maxMinutes: 1,
+        logPath,
+        launch: makeLaunch({ maxMinutes: 1 }),
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(300_000);
+      const result = await resultPromise;
+
+      expect(result.endedBy).toBe("wall-clock");
+    });
+
+    it("clears timers when session outcome rejects", async () => {
+      vi.useFakeTimers();
+      let rejectOutcome!: (reason: Error) => void;
+      const outcomePromise = new Promise<SessionOutcome>((_resolve, reject) => {
+        rejectOutcome = reject;
+      });
+      const driver: Driver = {
+        start() {
+          return {
+            inject: () => {},
+            interrupt: async () => {},
+            usage: () => ({ costUsd: 0 }),
+            outcome: outcomePromise,
+          };
+        },
+      };
+      const logPath = makeTempLogPath();
+
+      const resultPromise = supervise({
+        driver,
+        prompt: makePrompt(),
+        maxMinutes: 5,
+        logPath,
+        launch: makeLaunch(),
+      });
+
+      rejectOutcome(new Error("session crashed"));
+
+      await expect(resultPromise).rejects.toThrow("session crashed");
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not leave a live wall-clock timer when a pending cap fires during start", async () => {
+      vi.useFakeTimers();
+      const driver: Driver = {
+        start(_prompt, observer) {
+          observer({ type: "usage_update", timestamp: Date.now(), costUsd: 5.0 });
+          return {
+            inject: () => {},
+            interrupt: async () => {},
+            usage: () => ({ costUsd: 5.0 }),
+            outcome: Promise.resolve({
+              reason: "interrupted" as const,
+              costUsd: 5.0,
+            }),
+          };
+        },
+      };
+      const logPath = makeTempLogPath();
+
+      const result = await supervise({
+        driver,
+        prompt: makePrompt(),
+        maxMinutes: 1,
+        maxUsd: 1.0,
+        logPath,
+        launch: makeLaunch({ maxMinutes: 1, maxUsd: 1.0 }),
+      });
+
+      expect(result.endedBy).toBe("spend-cap");
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 });

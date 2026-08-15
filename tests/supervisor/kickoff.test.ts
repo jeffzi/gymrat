@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -159,6 +159,28 @@ describe("composeKickoff", () => {
       expect(result).toHaveProperty("kickoff");
       expect(typeof result.systemPromptAppend).toBe("string");
       expect(typeof result.kickoff).toBe("string");
+    });
+  });
+
+  describe("when called with the real installed layout", () => {
+    it("resolves SKILL_RELATIVE_PATH to the real skills/gymrat/SKILL.md", () => {
+      const projectRoot = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
+      const realDistKickoff = join(projectRoot, "dist", "supervisor", "kickoff.js");
+      const importMetaUrl = pathToFileURL(realDistKickoff).href;
+
+      const runbookDir = mkdtempSync(join(tmpdir(), "kickoff-runbook-"));
+      const runbookPath = join(runbookDir, "runbook.md");
+      writeFileSync(runbookPath, "# Runbook\n");
+      const config = makeConfig({ runbook: runbookPath });
+
+      const result = composeKickoff(config, importMetaUrl);
+
+      const realSkillContent = readFileSync(
+        join(projectRoot, "skills", "gymrat", "SKILL.md"),
+        "utf-8",
+      );
+      expect(realSkillContent.length).toBeGreaterThan(0);
+      expect(result.systemPromptAppend).toContain(realSkillContent);
     });
   });
 });

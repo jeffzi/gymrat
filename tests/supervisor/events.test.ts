@@ -223,6 +223,28 @@ describe("summarize", () => {
 
       expect(result).toContain("4 lines");
     });
+
+    it("truncates on code-point boundaries, not UTF-16 code units", () => {
+      // 🎯 is U+1F3AF — a single code point represented as 2 UTF-16 code units.
+      // 8 emoji = 8 code points (but 16 UTF-16 code units).
+      // With maxChars=5, we keep the first 5 code points (5 emoji),
+      // and report 3 remaining code points.
+      const text = "🎯".repeat(8);
+
+      const result = summarize(text, 5);
+
+      expect(result).toBe("🎯🎯🎯🎯🎯… (3 more chars, 1 lines)");
+    });
+
+    it("counts remaining characters by code points when truncating", () => {
+      // Mix ASCII and multi-byte: "ab🎯🎯cd🎯" = 7 code points.
+      // maxChars=3 → keep "ab🎯", remaining = 4 code points.
+      const text = "ab🎯🎯cd🎯";
+
+      const result = summarize(text, 3);
+
+      expect(result).toBe("ab🎯… (4 more chars, 1 lines)");
+    });
   });
 });
 
@@ -253,6 +275,22 @@ describe("summarizeInput", () => {
     const result = summarizeInput(undefined, 200);
 
     expect(result).toBe("undefined");
+  });
+
+  it("falls back to String(input) when JSON.stringify returns undefined for a function", () => {
+    const fn = (): void => {};
+
+    const result = summarizeInput(fn, 200);
+
+    expect(result).toBe(String(fn));
+  });
+
+  it("falls back to String(input) when JSON.stringify returns undefined for a symbol", () => {
+    const sym = Symbol("test");
+
+    const result = summarizeInput(sym, 200);
+
+    expect(result).toBe("Symbol(test)");
   });
 });
 

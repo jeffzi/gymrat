@@ -62,19 +62,34 @@ export function baselineWorktreeDir(root: string): string {
   return path.join(worktreesDir(root), "baseline");
 }
 
+function repoDigest(root: string): string {
+  return crypto.createHash("sha256").update(root).digest("hex").slice(0, LOCK_DIGEST_LENGTH);
+}
+
 /**
- * Lockfile guarding concurrent sessions over the repository at `root`.
+ * A lockfile named `namePrefix`, keyed to the repository at `root`.
  *
- * The name is a digest of the root rather than the root itself so it survives
- * path separators and length limits, and it lives in the system temp dir rather
- * than under `.gymrat` so a repository nobody has started a session in never
- * gains a directory.
+ * The name carries a digest of the root rather than the root itself so it
+ * survives path separators and length limits, and it lives in the system temp
+ * dir rather than under `.gymrat` so a repository nobody has started a
+ * session in never gains a directory.
  */
+function lockPath(namePrefix: string, root: string): string {
+  return path.join(os.tmpdir(), `${namePrefix}-${repoDigest(root)}.json`);
+}
+
+/** Lockfile guarding concurrent sessions over the repository at `root`. */
 export function lockfilePath(root: string): string {
-  const digest = crypto
-    .createHash("sha256")
-    .update(root)
-    .digest("hex")
-    .slice(0, LOCK_DIGEST_LENGTH);
-  return path.join(os.tmpdir(), `gymrat-lock-${digest}.json`);
+  return lockPath("gymrat-lock", root);
+}
+
+/**
+ * Lockfile guarding concurrent `supervise` sessions over the repository at `root`.
+ *
+ * Separate from {@link lockfilePath} so a supervised session does not block
+ * benchmark runs (and vice versa), while still preventing two supervised
+ * sessions from racing each other.
+ */
+export function superviseLockfilePath(root: string): string {
+  return lockPath("gymrat-supervise-lock", root);
 }
