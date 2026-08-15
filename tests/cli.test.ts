@@ -1891,6 +1891,11 @@ describe("createProgram", () => {
         vi.stubEnv("NO_COLOR", "1");
       }
 
+      /** A kind whose metrics gate, aggregating to `gated` both overall and when gated. */
+      function gatingKind(kind: string, gated: GeomeanResult): KindAggregate {
+        return { kind, geomean: gated, groups: [], gatedGeomean: gated };
+      }
+
       it("exits 0 when no gating metric regressed", async () => {
         // Arrange
         const { program, stdoutSpy, exitSpy } = await setupFailOnTest(
@@ -2004,11 +2009,6 @@ describe("createProgram", () => {
       });
 
       describe("when a candidate spans several metric kinds", () => {
-        /** A kind whose metrics gate, aggregating to `gated` both overall and when gated. */
-        function gatingKind(kind: string, gated: GeomeanResult): KindAggregate {
-          return { kind, geomean: gated, groups: [], gatedGeomean: gated };
-        }
-
         /** An informational kind: it aggregates a geomean but nothing of it gates. */
         function informationalKind(kind: string, geomean: GeomeanResult): KindAggregate {
           return { kind, geomean, groups: [] };
@@ -2110,18 +2110,7 @@ describe("createProgram", () => {
         const gated = geomeanOf(5, 1);
         const { program, stdoutSpy } = await setupFailOnTest(
           createComparisonResult({
-            candidates: [
-              createCandidate({
-                kinds: [
-                  {
-                    kind: "time",
-                    geomean: gated,
-                    groups: [],
-                    gatedGeomean: gated,
-                  },
-                ],
-              }),
-            ],
+            candidates: [createCandidate({ kinds: [gatingKind("time", gated)] })],
             metrics: {
               "decode/time": kindMetric({
                 kind: "time",
@@ -2138,7 +2127,7 @@ describe("createProgram", () => {
           program.parseAsync(compareArgv("main", "branch", "--fail-on", "geomean:2")),
         ).rejects.toHaveProperty("exitCode", 1);
         const report = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
-        expect(report).toContain("⚑ time geomean +5.0% exceeded --fail-on geomean:2");
+        expect(report).toContain("⚑ time gated geomean +5.0% exceeded --fail-on geomean:2");
       });
 
       it("trips when any of multiple conditions matches", async () => {

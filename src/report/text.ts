@@ -20,6 +20,7 @@ import {
   formatTableLine,
   formatVariantName,
   formatVerdictDelta,
+  GATED_GEOMEAN_LABEL,
   GEOMEAN_LABEL,
   geomeanLabel,
   geomeanParts,
@@ -72,6 +73,10 @@ import type {
   ReportOptions,
   WorktreeCleanupOutcome,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Single-candidate table
+// ---------------------------------------------------------------------------
 
 /** The metric name, the two measured values, and the verdict, in column order. */
 type Row = readonly [metric: string, baseline: string, candidate: string, verdict: string];
@@ -174,6 +179,11 @@ function alignLeft(content: string): string {
   return ` ${content}`;
 }
 
+/** Widest a column of cells needs a text field to be, zero when the column holds no cells. */
+function maxLength<T>(cells: readonly T[], field: (cell: T) => string): number {
+  return Math.max(0, ...cells.map((cell) => field(cell).length));
+}
+
 /** Widths a value column pads its two fields to, measured on plain text. */
 interface ValueWidths {
   readonly magnitude: number;
@@ -183,8 +193,8 @@ interface ValueWidths {
 /** The widest magnitude and the widest spread a column of value cells holds. */
 function valueWidths(cells: readonly MetricCellParts[]): ValueWidths {
   return {
-    magnitude: Math.max(0, ...cells.map((cell) => cell.magnitude.length)),
-    spread: Math.max(0, ...cells.map((cell) => cell.spread.length)),
+    magnitude: maxLength(cells, (cell) => cell.magnitude),
+    spread: maxLength(cells, (cell) => cell.spread),
   };
 }
 
@@ -271,8 +281,8 @@ interface VerdictWidths {
  */
 function verdictWidths(cells: readonly VerdictParts[]): VerdictWidths {
   return {
-    delta: Math.max(0, ...cells.map((cell) => cell.delta.length)),
-    band: Math.max(0, ...cells.map((cell) => cell.band.length)),
+    delta: maxLength(cells, (cell) => cell.delta),
+    band: maxLength(cells, (cell) => cell.band),
   };
 }
 
@@ -563,11 +573,17 @@ function planBody<Metric, Cell>(
   annotation: (section: SectionPlan<Metric>) => string | undefined,
 ): BodyLine<Metric, Cell>[] {
   if (layout.sections.length <= 1) {
-    const body: BodyLine<Metric, Cell>[] = [
+    const body: BodyLine<Metric, Cell>[] = [];
+    const section = layout.sections[0];
+    if (section !== undefined) {
+      const tag = annotation(section);
+      if (tag !== undefined) body.push({ type: "title", text: tag });
+    }
+    body.push(
       { type: "header" },
       { type: "rule" },
       ...layout.ordered.map((row) => ({ type: "metric" as const, row })),
-    ];
+    );
     if (rows !== undefined) {
       body.push({ type: "rule" }, { type: "aggregate", ...rows.flat(layout.ordered) });
     }
@@ -855,21 +871,19 @@ function renderTable(
   // cells, and `planBody` emits metric lines drawn from `layout.ordered`.
   const cellsByRow = new Map(layout.ordered.map((row) => [row, toMetricRow(row)]));
   const rows = [...cellsByRow.values()];
+  const valueColumnWidth = (index: 1 | 2) =>
+    computeColumnWidth(
+      headers[index].length,
+      rows.map((row) => row.cells[index].length),
+      VALUE_COLUMN_MIN,
+    );
   const widths: Widths = [
     computeMetricColumnWidth(widestHeaderLabel(body), [
       ...rows.map((row) => row.cells[0].length),
       ...aggregateLabelLengths(body),
     ]),
-    computeColumnWidth(
-      headers[1].length,
-      rows.map((row) => row.cells[1].length),
-      VALUE_COLUMN_MIN,
-    ),
-    computeColumnWidth(
-      headers[2].length,
-      rows.map((row) => row.cells[2].length),
-      VALUE_COLUMN_MIN,
-    ),
+    valueColumnWidth(1),
+    valueColumnWidth(2),
     computeColumnWidth(
       headers[3].length,
       [
@@ -918,6 +932,10 @@ function renderTable(
 
   return body.map((bodyLine) => renderBodyLine(bodyLine, rule, border, renderers));
 }
+
+// ---------------------------------------------------------------------------
+// Multi-candidate table
+// ---------------------------------------------------------------------------
 
 /**
  * One candidate's side of a metric: what it measured, how that was judged, and
@@ -1167,6 +1185,10 @@ function renderComparisonTable(result: ComparisonResult): string[] {
   return body.map((bodyLine) => renderBodyLine(bodyLine, rule, border, renderers));
 }
 
+// ---------------------------------------------------------------------------
+// Highlights
+// ---------------------------------------------------------------------------
+
 /** One line tallying every verdict class one candidate earned. */
 function renderSummary(metrics: MetricComparisons, candidateIndex: number): string {
   return verdictSummaryParts(metrics, candidateIndex).join("   ");
@@ -1258,7 +1280,7 @@ function gateTripLines(
     return thresholds
       .filter((pct) => geomean.value >= pct)
       .map((pct) => {
-        const plain = `  ${GATE_TRIP_GLYPH} ${kind.kind} ${GEOMEAN_LABEL} ${delta} exceeded --fail-on geomean:${pct}`;
+        const plain = `  ${GATE_TRIP_GLYPH} ${kind.kind} ${GATED_GEOMEAN_LABEL} ${delta} exceeded --fail-on geomean:${pct}`;
         return styleSpans(plain, [
           { text: GATE_TRIP_GLYPH, style },
           { text: delta, style },
@@ -1342,6 +1364,10 @@ function renderSummaries(result: ComparisonResult): string[] {
     return `${styledLabel}  ${renderSummary(result.metrics, index)}`;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Footers
+// ---------------------------------------------------------------------------
 
 /**
  * The multi-candidate body: one table holding every candidate, then a tally and
@@ -1543,6 +1569,10 @@ export function renderReport(result: ComparisonResult, options: ReportOptions = 
     return lines.join("\n");
   });
 }
+
+// ---------------------------------------------------------------------------
+// Measure table
+// ---------------------------------------------------------------------------
 
 /** The metric name and what the target measured for it, in column order. */
 type MeasureRow = readonly [metric: string, value: string];

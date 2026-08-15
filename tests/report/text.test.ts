@@ -237,6 +237,35 @@ function highlightLines(report: string): string[] {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+/** A single non-gating kind whose informational tag carries the config source. */
+function flatNonGatingResult(overrides: Partial<ComparisonResult> = {}): ComparisonResult {
+  return createComparisonResult({
+    metrics: {
+      "warmup/time": kindMetric({
+        kind: "time",
+        shortName: "warmup",
+        verdict: "improved",
+        delta: -10,
+        gating: false,
+      }),
+      "cooldown/time": kindMetric({
+        kind: "time",
+        shortName: "cooldown",
+        verdict: "no-signal",
+        delta: 0.3,
+        gating: false,
+      }),
+    },
+    candidates: [
+      createCandidate({
+        kinds: [{ kind: "time", geomean: geomeanOf(-5, 2), groups: [] }],
+      }),
+    ],
+    configKinds: { time: { gating: false } },
+    ...overrides,
+  });
+}
+
 beforeEach(() => {
   vi.stubEnv("NO_COLOR", "1");
   vi.stubEnv("FORCE_COLOR", undefined);
@@ -1113,7 +1142,7 @@ describe("renderReport", () => {
         "✗ time · entity.spawn         +4.0%",
         "✓ time · entity.alive_check  -10.0%",
         "✓ memory · encode             -7.0%",
-        "⚑ time geomean +3.1% exceeded --fail-on geomean:2",
+        "⚑ time gated geomean +3.1% exceeded --fail-on geomean:2",
       ]);
     });
 
@@ -1158,7 +1187,7 @@ describe("renderReport", () => {
         when: "the gated geomean trips but the overall one does not",
         geomean: 1,
         gated: 5,
-        expected: ["⚑ time geomean +5.0% exceeded --fail-on geomean:2"],
+        expected: ["⚑ time gated geomean +5.0% exceeded --fail-on geomean:2"],
       },
     ])("judges the gate on the gated geomean when $when", ({ geomean, gated, expected }) => {
       const result = twoKindResult({
@@ -1191,7 +1220,7 @@ describe("renderReport", () => {
         "  candidate-b",
         "    ✗ time · entity.alive_check   +4.0%",
         "    ✓ memory · encode             -2.0%",
-        "    ⚑ time geomean +4.0% exceeded --fail-on geomean:2",
+        "    ⚑ time gated geomean +4.0% exceeded --fail-on geomean:2",
       ]);
     });
 
@@ -2587,6 +2616,46 @@ describe("renderReport", () => {
 
       expect(stylesAt(line, "-3.2%")).toStrictEqual(["1", "32"]);
     });
+
+    describe("when the sole kind gates nothing", () => {
+      it("shows the informational tag before the table header", () => {
+        expect(tableRegion(renderReport(flatNonGatingResult()))).toStrictEqual([
+          "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata",
+          "informational — gating off (config: kinds.time.gating = false)",
+          "metric",
+          "<rule>",
+          "warmup/time",
+          "cooldown/time",
+          "<rule>",
+          "geomean",
+        ]);
+      });
+
+      it.each([
+        {
+          source: "the kind-level config entry",
+          configKinds: { time: { gating: false } } as ComparisonResult["configKinds"],
+          expected: "informational — gating off (config: kinds.time.gating = false)",
+        },
+        {
+          source: "per-metric overrides alone",
+          configKinds: undefined as ComparisonResult["configKinds"],
+          expected: "informational — gating off",
+        },
+      ])("credits $source for the informational tag", ({ configKinds, expected }) => {
+        const report = renderReport(flatNonGatingResult({ configKinds }));
+
+        expect(lineContaining(report, "informational")).toBe(expected);
+      });
+
+      it("dims the informational tag when color is on", () => {
+        vi.stubEnv("FORCE_COLOR", "1");
+
+        const tag = lineContaining(renderReport(flatNonGatingResult()), "informational");
+
+        expect(stylesAt(tag, "informational")).toStrictEqual(["2"]);
+      });
+    });
   });
 
   describe("when labelling the group and geomean rows", () => {
@@ -3108,6 +3177,23 @@ describe("renderReport", () => {
 
       await expect(renderReport(twoKindResult())).toMatchFileSnapshot(
         "../fixtures/report-sectioned-color.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a flat non-gating run", async () => {
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      await expect(renderReport(flatNonGatingResult())).toMatchFileSnapshot(
+        "../fixtures/report-flat-non-gating.golden.txt",
+      );
+    });
+
+    it("matches the recorded bytes for a flat non-gating colored run", async () => {
+      vi.stubEnv("FORCE_COLOR", "1");
+
+      await expect(renderReport(flatNonGatingResult())).toMatchFileSnapshot(
+        "../fixtures/report-flat-non-gating-color.golden.txt",
       );
     });
   });

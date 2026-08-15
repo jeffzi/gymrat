@@ -7,6 +7,7 @@
     "cand",
     "catchable",
     "cdefghij",
+    "cooldown",
     "coprime",
     "denormal",
     "EACCES",
@@ -50,6 +51,7 @@
     "Wilcoxon",
     "worktree",
     "worktrees",
+    "ungated",
     "yocto"
   ],
   "ignoreRegExpList": ["/\\\\x1b\\[[0-9;]*m/g"],

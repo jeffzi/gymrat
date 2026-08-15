@@ -14,6 +14,10 @@ import type {
   MetricComparisons,
 } from "./types.js";
 
+// ---------------------------------------------------------------------------
+// Value and cell formatting
+// ---------------------------------------------------------------------------
+
 type Tier = readonly [threshold: number, divisor: number, suffix: string, decimals: number];
 
 const NS_TIERS: readonly Tier[] = [
@@ -158,6 +162,10 @@ export function formatDelta(delta: number): string {
   return `${delta > 0 ? "+" : "-"}${magnitude}%`;
 }
 
+// ---------------------------------------------------------------------------
+// Verdict classification
+// ---------------------------------------------------------------------------
+
 /**
  * How a verdict presents itself in the report.
  *
@@ -261,8 +269,20 @@ export const QUIET_VERDICTS: ReadonlySet<DisplayClass> = new Set([
   "unstable",
 ]);
 
+// ---------------------------------------------------------------------------
+// Geomean labeling
+// ---------------------------------------------------------------------------
+
 /** The name the geomean row is reported under, in every renderer. */
 export const GEOMEAN_LABEL = "geomean";
+
+/**
+ * The name the gate-trip highlight gives its figure.
+ *
+ * The per-kind geomean row shows the ungated aggregate, but the gate reads
+ * the gated one — naming both "geomean" conflates two different numbers.
+ */
+export const GATED_GEOMEAN_LABEL = "gated geomean";
 
 /** Append an `s` to `noun` when `count` is not exactly one. */
 export function pluralize(count: number, noun: string): string {
@@ -333,6 +353,10 @@ export const NO_STABLE_METRICS = "no stable metrics";
  * would read as "no change measured".
  */
 export const NO_GEOMEAN_CELL = `${NO_GEOMEAN_FIGURE}  ${NO_STABLE_METRICS}`;
+
+// ---------------------------------------------------------------------------
+// Verdict evidence and tallies
+// ---------------------------------------------------------------------------
 
 /**
  * The evidence suffix for a highlighted metric.
@@ -413,26 +437,42 @@ const COUNT_KEY: Record<ApproximateVerdictValue, keyof VerdictCounts> = {
 };
 
 /**
+ * Run `fn` on one candidate's verdict for every metric that reported one.
+ *
+ * Verdicts belong to a candidate, never to the run, so callers always read one
+ * candidate at a time. Metrics that candidate never reported have no verdict
+ * and are skipped rather than counted.
+ */
+function forEachVerdict(
+  metrics: MetricComparisons,
+  candidateIndex: number,
+  fn: (verdict: MetricVerdict) => void,
+): void {
+  for (const metric of Object.values(metrics)) {
+    const verdict = metric.candidates[candidateIndex]?.verdict;
+    if (verdict !== undefined) fn(verdict);
+  }
+}
+
+/**
  * Tally the stored verdict classes one candidate earned against the baseline.
  *
  * These are the verdicts as decided, not as displayed — the JSON report is
  * written from them, so `noSignal` covers every no-signal metric whether the
  * text report shows it as identical or as within noise. The summary line counts
  * through {@link verdictSummaryParts} instead.
- *
- * Verdicts belong to a candidate, never to the run, so the tally is taken one
- * candidate at a time. Metrics that candidate never reported have no verdict
- * and count towards nothing.
  */
 export function countVerdicts(metrics: MetricComparisons, candidateIndex: number): VerdictCounts {
   const counts: VerdictCounts = { improved: 0, regressed: 0, unstable: 0, noSignal: 0 };
-  for (const metric of Object.values(metrics)) {
-    const verdict = metric.candidates[candidateIndex]?.verdict;
-    if (verdict === undefined) continue;
+  forEachVerdict(metrics, candidateIndex, (verdict) => {
     counts[COUNT_KEY[verdict.verdict]] += 1;
-  }
+  });
   return counts;
 }
+
+// ---------------------------------------------------------------------------
+// Highlight selection
+// ---------------------------------------------------------------------------
 
 /** A candidate's side of a metric, known to carry a verdict. */
 interface HighlightedCandidate extends CandidateMetric {
@@ -533,6 +573,10 @@ export interface HighlightBlock {
   readonly unstable: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Table layout
+// ---------------------------------------------------------------------------
+
 /**
  * Width a column needs to hold its header and every cell, never below `minWidth`.
  *
@@ -572,6 +616,10 @@ export function formatTableLine(
   if (styleCell === undefined) return line;
   return line.split("│").map(styleCell).join("│");
 }
+
+// ---------------------------------------------------------------------------
+// Styling and color
+// ---------------------------------------------------------------------------
 
 /** The style-tag union {@link styleText} accepts — the type every renderer's style constants are typed against. */
 export type Style = Parameters<typeof styleText>[0];
@@ -620,6 +668,10 @@ export function withColor<T>(color: boolean | undefined, fn: () => T): T {
     setEnvVar("NO_COLOR", no);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Label truncation
+// ---------------------------------------------------------------------------
 
 /** U+2026, one character wide — three periods would cost two more columns. */
 const ELLIPSIS = "…";
@@ -725,6 +777,10 @@ export function withDisplayLabels(result: ComparisonResult): ComparisonResult {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Variant and verdict styling
+// ---------------------------------------------------------------------------
+
 /** The style a variant name wears where the report names it as a name. */
 export const VARIANT_NAME_STYLE: Style = ["bold", "underline"];
 
@@ -803,6 +859,10 @@ export function styleWithin(
   return cell.slice(0, index) + formatLabel(marker, style) + cell.slice(index + marker.length);
 }
 
+// ---------------------------------------------------------------------------
+// Geomean aggregation and styling
+// ---------------------------------------------------------------------------
+
 /** The geomean's delta and the provenance describing what stands behind it. */
 interface GeomeanParts {
   readonly delta: string;
@@ -878,6 +938,10 @@ function isQuietRow(outcomes: ReadonlyArray<DisplayClass | undefined>): boolean 
   return defined.length > 0 && defined.every((outcome) => QUIET_VERDICTS.has(outcome));
 }
 
+// ---------------------------------------------------------------------------
+// Verdict summary
+// ---------------------------------------------------------------------------
+
 /** How many metrics one candidate landed in each display class. */
 function displayCounts(
   metrics: MetricComparisons,
@@ -891,11 +955,9 @@ function displayCounts(
     "within-noise": 0,
     inconclusive: 0,
   };
-  for (const metric of Object.values(metrics)) {
-    const verdict = metric.candidates[candidateIndex]?.verdict;
-    if (verdict === undefined) continue;
+  forEachVerdict(metrics, candidateIndex, (verdict) => {
     counts[displayClass(verdict)] += 1;
-  }
+  });
   return counts;
 }
 
@@ -929,6 +991,10 @@ export function verdictSummaryParts(metrics: MetricComparisons, candidateIndex: 
     return formatLabel(text, style);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Footer generation
+// ---------------------------------------------------------------------------
 
 const SAMPLES_HINT = `re-run with --samples ${MIN_WILCOXON_N} or more for statistical verdicts`;
 

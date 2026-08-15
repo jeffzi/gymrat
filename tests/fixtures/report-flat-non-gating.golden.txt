@@ -1,0 +1,13 @@
+gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata
+informational — gating off (config: kinds.time.gating = false)
+metric          │       main │ perf/faster-decode │ vs main
+────────────────┼────────────┼────────────────────┼──────────────────────
+warmup/time     │ 100ns ± 1% │          90ns ± 1% │ ✓  -10.0%  ±2.5%
+cooldown/time   │ 100ns ± 1% │         100ns ± 1% │ ~   +0.3%  ±2.5%
+────────────────┼────────────┼────────────────────┼──────────────────────
+geomean         │            │                    │ —  no stable metrics
+
+✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
+
+highlights
+  ✓ warmup/time  -10.0%
