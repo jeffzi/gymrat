@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -7,6 +6,7 @@ import type { Static } from "@sinclair/typebox";
 
 import type { Adapter, MetricDefaults } from "./adapters/types.js";
 import { GymratError, hasErrorCode, messageOf } from "./errors.js";
+import { runGit } from "./git.js";
 import { metricRecord } from "./metric-record.js";
 import {
   compile,
@@ -405,10 +405,7 @@ export function resolveConfig(flags: CliFlags, baseDir?: string): ResolvedConfig
  */
 function findImplicitBase(): string {
   try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    return runGit(["rev-parse", "--show-toplevel"], process.cwd()).trim();
   } catch {
     return process.cwd();
   }
