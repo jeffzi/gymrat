@@ -1,4 +1,4 @@
-import { isRecord, messageOf } from "../errors.js";
+import { GymratError, isRecord, messageOf } from "../errors.js";
 import type { Driver, DriverSession, SessionOutcome, SessionPrompt } from "./driver.js";
 import type { SessionObserver } from "./events.js";
 import { summarize, summarizeInput } from "./events.js";
@@ -15,6 +15,9 @@ export interface ClaudeDriverOptions {
   readonly queryFn?: QueryFn;
 }
 
+/** Rough characters-per-token ratio used to estimate thinking-block token counts. */
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+
 /**
  * Resolves the SDK `query()` function from a dynamic import.
  *
@@ -26,7 +29,9 @@ async function loadSdk(): Promise<QueryFn> {
   const SDK_MODULE = "@anthropic-ai/claude-agent-sdk";
   const mod: unknown = await import(SDK_MODULE);
   if (!isRecord(mod) || typeof mod["query"] !== "function") {
-    throw new Error(`${SDK_MODULE} does not export a query function — is the package installed?`);
+    throw new GymratError(
+      `${SDK_MODULE} does not export a query function — is the package installed?`,
+    );
   }
   // oxlint-disable-next-line no-unsafe-type-assertion -- runtime guard above validates shape; SDK has no typed export
   return mod["query"] as QueryFn;
@@ -76,7 +81,7 @@ function processContentBlock(block: Record<string, unknown>, ctx: ProcessingCont
     const thinking = block["thinking"];
     if (typeof thinking !== "string") return;
 
-    const delta = Math.ceil(thinking.length / 4);
+    const delta = Math.ceil(thinking.length / CHARS_PER_TOKEN_ESTIMATE);
     ctx.thinkingTokens += delta;
     ctx.observer({
       type: "thinking_update",

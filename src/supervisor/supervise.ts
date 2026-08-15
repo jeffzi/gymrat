@@ -68,8 +68,10 @@ export async function supervise(options: SuperviseOptions): Promise<SupervisionR
     clearTimeout(wallClockTimer);
     try {
       void session.interrupt();
-    } catch {
+    } catch (error) {
       // Synchronous throw must not prevent grace timer setup
+      // oxlint-disable-next-line no-console -- last-resort warning; fallback recovery continues via grace timer
+      console.warn("session.interrupt() failed:", error);
     }
     graceTimer = setTimeout(() => {
       abortController.abort();
