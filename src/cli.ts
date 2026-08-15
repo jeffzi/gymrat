@@ -1270,8 +1270,11 @@ export function createProgram(): Command {
 
     await writeAndFlush(process.stdout, `${summary}\n`);
 
-    if (result.outcome.reason === "error" && result.outcome.message) {
-      await exitWithError(new GymratError(result.outcome.message));
+    if (result.outcome.reason === "error") {
+      if (result.outcome.message) {
+        await exitWithError(new GymratError(result.outcome.message));
+      }
+      process.exit(TOOL_FAILURE_EXIT_CODE);
     }
 
     if (result.endedBy !== "session") {

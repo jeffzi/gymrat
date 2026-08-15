@@ -68,7 +68,8 @@ function superviseArgv(...args: string[]): string[] {
   return ["node", "cli.js", "supervise", ...args];
 }
 
-function stderrText(spy: ReturnType<typeof vi.spyOn>): string {
+/** The text a stubbed stream spy was written, in call order. */
+function textWrittenTo(spy: ReturnType<typeof vi.spyOn>): string {
   // oxlint-disable-next-line no-unsafe-member-access, no-unsafe-type-assertion -- vi.spyOn mock type is loosely typed
   const calls = spy.mock.calls as unknown[][];
   return calls.map((c) => String(c[0])).join("");
@@ -203,7 +204,7 @@ describe("supervise command", () => {
 
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect(output).toMatch(/\.gymrat\/supervisor-\d+\.jsonl/);
     });
 
@@ -216,7 +217,7 @@ describe("supervise command", () => {
         superviseArgv("optimize it", "--max-minutes", "10", "--log", "/tmp/custom.jsonl"),
       );
 
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect(output).toContain("/tmp/custom.jsonl");
     });
   });
@@ -271,7 +272,7 @@ describe("supervise command", () => {
       const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
       await expect(parsing).rejects.toHaveProperty("exitCode", 2);
-      expect(stderrText(stderrSpy)).toContain("config broken");
+      expect(textWrittenTo(stderrSpy)).toContain("config broken");
     });
 
     it("exits 2 and surfaces the message when the session outcome is error", async () => {
@@ -290,8 +291,34 @@ describe("supervise command", () => {
       const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
       await expect(parsing).rejects.toHaveProperty("exitCode", 2);
-      expect(stderrText(stderrSpy)).toContain("SDK connection lost");
+      expect(textWrittenTo(stderrSpy)).toContain("SDK connection lost");
     });
+
+    it.each([
+      { label: "undefined (omitted)", outcome: { reason: "error" as const, costUsd: 0.01 } },
+      { label: "empty string", outcome: { reason: "error" as const, costUsd: 0.01, message: "" } },
+    ])(
+      "exits 2 without writing an error to stderr when the error outcome message is $label",
+      async ({ outcome }) => {
+        const { supervise: superviseFn } = await import("../../src/supervisor/supervise.js");
+        vi.mocked(superviseFn).mockResolvedValueOnce({
+          outcome,
+          endedBy: "session",
+          durationMs: 5_000,
+          costUsd: outcome.costUsd,
+        });
+        const program = createRunnableProgram({ exitOverride: "all" });
+        stubWrite(process.stdout);
+        const stderrSpy = stubWrite(process.stderr);
+        mockProcessExit();
+
+        const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
+
+        await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+        const stderr = textWrittenTo(stderrSpy);
+        expect(stderr).not.toMatch(/\berror\b/i);
+      },
+    );
   });
 
   describe("closing summary", () => {
@@ -304,11 +331,11 @@ describe("supervise command", () => {
 
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
-      const stdoutOutput = stdoutSpy.mock.calls.map((c) => String(c[0])).join("");
+      const stdoutOutput = textWrittenTo(stdoutSpy);
       expect.soft(stdoutOutput).toMatch(/session/i);
       expect.soft(stdoutOutput).toMatch(/duration|time/i);
       expect.soft(stdoutOutput).toMatch(/\$?\d+\.\d+|cost/i);
-      expect(stderrText(stderrSpy)).toMatch(/\.jsonl/);
+      expect(textWrittenTo(stderrSpy)).toMatch(/\.jsonl/);
     });
   });
 
@@ -325,7 +352,7 @@ describe("supervise command", () => {
       const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
       await expect(parsing).rejects.toHaveProperty("exitCode", 2);
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect.soft(output).toMatch(/dirty|uncommitted|untracked/i);
       expect.soft(output).toMatch(/commit|stash/i);
       expect(output).toMatch(/--allow-dirty/);
@@ -341,7 +368,7 @@ describe("supervise command", () => {
         superviseArgv("optimize it", "--max-minutes", "10", "--allow-dirty"),
       );
 
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect(output).toMatch(/dirty|uncommitted|untracked/i);
     });
 
@@ -352,7 +379,7 @@ describe("supervise command", () => {
 
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect(output).not.toMatch(/dirty|uncommitted|untracked/i);
     });
   });
@@ -424,7 +451,7 @@ describe("supervise command", () => {
       const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
       await expect(parsing).rejects.toHaveProperty("exitCode", 2);
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect(output).toMatch(/3/);
     });
   });
@@ -439,7 +466,7 @@ describe("supervise command", () => {
 
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
-      const stdoutOutput = stdoutSpy.mock.calls.map((c) => String(c[0])).join("");
+      const stdoutOutput = textWrittenTo(stdoutSpy);
       expect.soft(stdoutOutput).toMatch(/session/i);
       expect.soft(stdoutOutput).toMatch(/duration|time/i);
       expect(stdoutOutput).toMatch(/\.jsonl/);
@@ -497,7 +524,7 @@ describe("supervise command", () => {
       const parsing = program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
       await expect(parsing).rejects.toHaveProperty("exitCode", 2);
-      const output = stderrText(stderrSpy);
+      const output = textWrittenTo(stderrSpy);
       expect(output).toMatch(/another gymrat/i);
     });
   });
@@ -519,8 +546,8 @@ describe("supervise command", () => {
 
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
-      const stdoutOutput = stdoutSpy.mock.calls.map((c) => String(c[0])).join("");
-      const stderrOutput = stderrText(stderrSpy);
+      const stdoutOutput = textWrittenTo(stdoutSpy);
+      const stderrOutput = textWrittenTo(stderrSpy);
       const allOutput = stdoutOutput + stderrOutput;
       expect(allOutput).toMatch(/interrupted/i);
     });
