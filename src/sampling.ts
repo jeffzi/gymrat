@@ -78,14 +78,16 @@ function formatCommandErrorOutput(failure: ExecResult | ExecTimeoutError): strin
     ] satisfies [string, string, number][]
   ).filter(([, text]) => text.length > 0);
 
-  if (streams.length < 2) {
-    const entry = streams[0];
-    if (entry === undefined) return [];
-    const [, text, totalBytes] = entry;
-    const capturedBytes = Buffer.byteLength(text, "utf8");
-    return totalBytes > capturedBytes ? formatStreamEntry(entry[0], text, totalBytes) : [text];
+  const entry = streams[0];
+  if (streams.length !== 1 || entry === undefined) {
+    return streams.flatMap(([label, text, totalBytes]) =>
+      formatStreamEntry(label, text, totalBytes),
+    );
   }
-  return streams.flatMap(([label, text, totalBytes]) => formatStreamEntry(label, text, totalBytes));
+
+  const [label, text, totalBytes] = entry;
+  const capturedBytes = Buffer.byteLength(text, "utf8");
+  return totalBytes > capturedBytes ? formatStreamEntry(label, text, totalBytes) : [text];
 }
 
 function formatCommandError(
@@ -346,11 +348,6 @@ export function pairedOrOwnValues(
   return paired.length > 0 ? paired : ownValues(samples, metricName);
 }
 
-/** Every metric name any target reported, so a one-sided metric still gets a row. */
-function collectMetricNames(sampleSets: readonly Record<string, number>[][]): Set<string> {
-  return new Set(sampleSets.flat().flatMap(Object.keys));
-}
-
 /**
  * Collect metric names from sample sets and resolve their metadata in one step.
  *
@@ -365,7 +362,7 @@ export function resolveMetricMetaFromSamples(
   adapter: Adapter,
   configKinds?: ConfigKinds,
 ): Record<string, ResolvedMetricMeta> {
-  const metricNames = collectMetricNames(sampleSets);
+  const metricNames = new Set(sampleSets.flat().flatMap(Object.keys));
 
   /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
   if (metricNames.size === 0) {

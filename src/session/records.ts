@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { Static, TSchema } from "@sinclair/typebox";
 
-import { GymratError } from "../errors.js";
+import { GymratError, isRecord } from "../errors.js";
 import {
   compile,
   describeKey,
@@ -309,10 +309,6 @@ function isRecordType(type: string): type is SessionLogRecord["type"] {
   return Object.hasOwn(recordParsers, type);
 }
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Validate one parsed session-log line against the schema for its `type`.
  *
@@ -321,7 +317,7 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
  * that type's schema.
  */
 export function parseRecord(value: unknown): SessionLogRecord {
-  if (!isJsonObject(value)) {
+  if (!isRecord(value)) {
     throw new GymratError(
       `Invalid session record: expected a JSON object, got ${JSON.stringify(value)}`,
     );
