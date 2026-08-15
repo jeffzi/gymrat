@@ -328,15 +328,16 @@ describe("runHook", () => {
       expect(run.record.durationMs).toBeLessThan(4000);
     });
 
-    it("records exit code 127 when the hook command does not exist", async () => {
+    it("records a non-zero exit code when the hook command does not exist", async () => {
       // Arrange — a command that cannot be found
       const command = "nonexistent-command-abc123xyz";
 
       // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
-      expect(run.record.exitCode).toBe(127);
+      // Assert — Unix shells return 127; Windows cmd.exe returns 1
+      const expected = process.platform === "win32" ? 1 : 127;
+      expect(run.record.exitCode).toBe(expected);
     });
 
     it("reports a hook that never started instead of raising", async () => {

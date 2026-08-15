@@ -205,7 +205,7 @@ describe("supervise command", () => {
       await program.parseAsync(superviseArgv("optimize it", "--max-minutes", "10"));
 
       const output = textWrittenTo(stderrSpy);
-      expect(output).toMatch(/\.gymrat\/supervisor-\d+\.jsonl/);
+      expect(output).toMatch(/\.gymrat[/\\]supervisor-\d+\.jsonl/);
     });
 
     it("uses the path from --log when provided", async () => {
