@@ -276,10 +276,6 @@ afterEach(() => {
 });
 
 describe("renderReport", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   describe("when rendering the run header", () => {
     it("names the baseline's role, both variants, the sample count and the adapter", () => {
       const result = createComparisonResult({
@@ -1286,13 +1282,14 @@ describe("renderReport", () => {
       const result = createComparisonResult({
         metrics: { "a/time": bandMetric({ verdict: "no-signal", delta: -5, n: 4 }) },
         worktreesRemoved: 1,
-        worktreesLeftBehind: [],
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
       });
 
       const lines = renderReport(result).split("\n");
 
-      expect.soft(lines.at(-2)).toContain("Hint:");
-      expect(lines.at(-1)).toBe("1 worktree removed · 0 left behind");
+      expect.soft(lines.at(-3)).toContain("Hint:");
+      expect.soft(lines.at(-2)).toBe("1 worktree removed · 1 left behind");
+      expect(lines.at(-1)).toBe("  left behind: /tmp/gymrat-abc (is locked)");
     });
   });
 
@@ -1417,8 +1414,43 @@ describe("renderReport", () => {
       expect(output).not.toContain("left behind");
     });
 
+    it("suppresses the footer when every worktree was removed cleanly", () => {
+      const result = createComparisonResult({
+        worktreesRemoved: 3,
+        worktreesLeftBehind: [],
+      });
+
+      const output = renderReport(result);
+
+      expect.soft(output).not.toContain("worktree");
+      expect(output).not.toContain("left behind");
+    });
+
+    it("still renders the footer when leftover worktrees need attention", () => {
+      const result = createComparisonResult({
+        worktreesRemoved: 2,
+        worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],
+      });
+
+      const output = renderReport(result);
+
+      expect.soft(output).toContain("2 worktrees removed · 1 left behind");
+      expect(output).toContain("left behind: /tmp/gymrat-abc (is locked)");
+    });
+
+    it("still renders the footer when only the prune step failed", () => {
+      const result = createComparisonResult({
+        worktreesRemoved: 3,
+        worktreesLeftBehind: [],
+        worktreePruneError: "fatal: not a git repository",
+      });
+
+      const output = renderReport(result);
+
+      expect(output).toContain("worktree prune failed: fatal: not a git repository");
+    });
+
     it.each([
-      { removed: 1, leftBehind: [], expected: "1 worktree removed · 0 left behind" },
       {
         removed: 2,
         leftBehind: [
@@ -2862,11 +2894,6 @@ describe("renderReport", () => {
    */
   describe("when rendering a whole report", () => {
     it("matches the recorded bytes for a representative run", async () => {
-      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
-      // shell would otherwise style them and fail a run that changed nothing.
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       const result = createComparisonResult({
         metrics: {
           "decode/text=digits/time": {
@@ -2990,11 +3017,6 @@ describe("renderReport", () => {
     }
 
     it("matches the recorded bytes for degenerate inputs and a dirty cleanup", async () => {
-      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
-      // shell would otherwise style them and fail a run that changed nothing.
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       await expect(renderReport(degenerateResult())).toMatchFileSnapshot(
         "../fixtures/report-degenerate.golden.txt",
       );
@@ -3083,33 +3105,18 @@ describe("renderReport", () => {
     }
 
     it("matches the recorded bytes for a verbose run with two candidates", async () => {
-      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
-      // shell would otherwise style them and fail a run that changed nothing.
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       await expect(renderReport(twoCandidateResult(), { verbose: true })).toMatchFileSnapshot(
         "../fixtures/report-two-candidates.golden.txt",
       );
     });
 
     it("matches the recorded bytes for a run split into kind sections", async () => {
-      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
-      // shell would otherwise style them and fail a run that changed nothing.
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       await expect(renderReport(twoKindResult())).toMatchFileSnapshot(
         "../fixtures/report-sectioned.golden.txt",
       );
     });
 
     it("matches the recorded bytes for a run of one paired sample", async () => {
-      // The recorded bytes are plain: an ambient FORCE_COLOR in the caller's
-      // shell would otherwise style them and fail a run that changed nothing.
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       await expect(renderReport(singleSampleResult())).toMatchFileSnapshot(
         "../fixtures/report-single-sample.golden.txt",
       );
@@ -3180,9 +3187,6 @@ describe("renderReport", () => {
     });
 
     it("matches the recorded bytes for a flat non-gating run", async () => {
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       await expect(renderReport(flatNonGatingResult())).toMatchFileSnapshot(
         "../fixtures/report-flat-non-gating.golden.txt",
       );
@@ -3199,10 +3203,6 @@ describe("renderReport", () => {
 });
 
 describe("renderMeasureReport", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   describe("when rendering the run header", () => {
     it("names the target, the sample count and the adapter", () => {
       const result = createMeasurementResult({
@@ -3385,9 +3385,6 @@ describe("renderMeasureReport", () => {
    */
   describe("when rendering a whole report", () => {
     it("matches the recorded bytes for a two-kind run", async () => {
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       await expect(renderMeasureReport(twoKindMeasurement())).toMatchFileSnapshot(
         "../fixtures/measure-two-kind.golden.txt",
       );
@@ -3402,9 +3399,6 @@ describe("renderMeasureReport", () => {
     });
 
     it("matches the recorded bytes when the cleanup footer is present", async () => {
-      vi.stubEnv("FORCE_COLOR", undefined);
-      vi.stubEnv("NO_COLOR", "1");
-
       const result = twoKindMeasurement({
         worktreesRemoved: 1,
         worktreesLeftBehind: [{ dir: "/tmp/gymrat-abc", error: "is locked" }],

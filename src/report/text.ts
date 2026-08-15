@@ -1449,15 +1449,16 @@ export function formatCleanupFailures(
 }
 
 /**
- * What cleanup did, but only when it did something worth saying.
+ * What cleanup did, but only when something needs the user's attention.
  *
- * A run that created no worktree, or removed every one it created, has nothing
- * to report — and a standing `0 worktrees removed · 0 left behind` trains the
- * reader to skip the line that matters on the run where it does.
+ * A clean run — whether it created no worktrees or removed every one — has
+ * nothing to report. The footer only appears when a worktree was left behind
+ * or the prune step failed; a standing "N worktrees removed · 0 left behind"
+ * trains the reader to skip the line that matters on the run where it does.
  */
 function renderWorktreeFooter(result: WorktreeCleanupOutcome): string[] {
   const details = formatCleanupFailures(result.worktreesLeftBehind, result.worktreePruneError);
-  if (result.worktreesRemoved === 0 && details.length === 0) return [];
+  if (details.length === 0) return [];
 
   return [
     `${pluralize(result.worktreesRemoved, "worktree")} removed · ${result.worktreesLeftBehind.length} left behind`,
