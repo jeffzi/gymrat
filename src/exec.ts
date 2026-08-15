@@ -76,7 +76,6 @@ interface OutputBuffer {
  */
 function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer {
   const buffer: OutputBuffer = { stdout: "", stderr: "", stdoutBytes: 0, stderrBytes: 0 };
-
   stdout.on("data", (chunk: string) => {
     const chunkBytes = Buffer.byteLength(chunk, "utf8");
     buffer.stdoutBytes += chunkBytes;
@@ -212,6 +211,12 @@ export async function exec(
     // fd exhaustion can leave stdio as null even though spawn did not throw.
     // Settle as a failed run rather than crashing on null streams.
     if (child.stdout === null || child.stderr === null || child.stdin === null) {
+      if (child.pid !== undefined) {
+        killTree(child.pid);
+      }
+      // The promise resolves with EMPTY_FAILURE_RESULT, so a subsequent
+      // async "error" event just needs to not crash the process.
+      child.on("error", () => {});
       resolve(EMPTY_FAILURE_RESULT);
       return;
     }

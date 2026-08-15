@@ -579,6 +579,41 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         expectedResult({ stdout: "", stderr: "", exitCode: FAILURE_EXIT_CODE }),
       );
     });
+
+    it("kills the detached child via its process group before resolving", async () => {
+      const fakeChild = makeFakeChild({ stdout: null, stderr: null, stdin: null });
+      spawnOverride.fn = () => fakeChild;
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      try {
+        await runInTmpdir("echo hello");
+
+        expect(killSpy).toHaveBeenCalledWith(-FAKE_CHILD_PID, "SIGKILL");
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+
+    it("attaches an error listener so an async error event does not become uncaught", async () => {
+      const fakeChild = makeFakeChild({ stdout: null, stderr: null, stdin: null });
+      spawnOverride.fn = () => fakeChild;
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+      try {
+        await runInTmpdir("echo hello");
+
+        // The child should have at least one error listener after the guard fires.
+        // Without it, an async "error" event would crash the process.
+        expect(fakeChild.listenerCount("error")).toBeGreaterThanOrEqual(1);
+
+        // Emitting an error event must not throw (the listener swallows it).
+        expect(() => {
+          fakeChild.emit("error", new Error("EPERM"));
+        }).not.toThrow();
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
   });
 
   describe("when output exceeds the per-stream cap", () => {
