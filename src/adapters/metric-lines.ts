@@ -19,6 +19,11 @@ const LINE_TERMINATOR = /\r\n|[\n\r]/;
  */
 const FORBIDDEN_NAME_CHARS = new RegExp(`[${String.fromCodePoint(0x2028, 0x2029)}]`, "u");
 
+const METRIC_SUFFIXES = [
+  { suffix: "/time", unit: "ns", kind: "time" },
+  { suffix: "/heap", unit: "bytes", kind: "memory" },
+] as const satisfies readonly { suffix: string; unit: MetricDefaults["unit"]; kind: string }[];
+
 function parseMetricLine(line: string, warn: WarnSink): { name: string; value: number } | null {
   const trimmed = line.trim();
 
@@ -54,6 +59,13 @@ function parseMetricLine(line: string, warn: WarnSink): { name: string; value: n
     return reject();
   }
 
+  if (name.includes(`${METRIC_PREFIX} `)) {
+    warn(
+      `Parsed metric name "${name}" embeds the ${METRIC_PREFIX} token — ` +
+        `the line may carry a duplicate ${METRIC_PREFIX} prefix`,
+    );
+  }
+
   return { name, value };
 }
 
@@ -84,7 +96,19 @@ const metricLinesAdapter: Adapter = {
     );
   },
 
-  defaults(_metricName: string): MetricDefaults {
+  defaults(metricName: string): MetricDefaults {
+    for (const { suffix, unit, kind } of METRIC_SUFFIXES) {
+      if (metricName.endsWith(suffix)) {
+        const prefix = metricName.slice(0, -suffix.length);
+        return {
+          direction: "lower",
+          unit,
+          kind,
+          shortName: prefix === "" ? metricName : prefix,
+        };
+      }
+    }
+
     return { direction: "lower" };
   },
 };

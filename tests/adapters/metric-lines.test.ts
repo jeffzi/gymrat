@@ -258,6 +258,19 @@ describe("metric-lines adapter", () => {
         });
       });
     });
+
+    describe("embedded METRIC token warning", () => {
+      it("warns that the parsed name embeds the METRIC token", () => {
+        const warnings: string[] = [];
+
+        metricLinesAdapter.parse("METRIC METRIC foo=42", (message) => {
+          warnings.push(message);
+        });
+
+        expect(warnings.length).toBe(1);
+        expect(warnings[0]).toContain("METRIC ");
+      });
+    });
   });
 
   describe("defaults()", () => {
@@ -268,5 +281,55 @@ describe("metric-lines adapter", () => {
         expect(result).toStrictEqual({ direction: "lower" });
       },
     );
+
+    describe("empty shortName fallback", () => {
+      it.each([
+        { metricName: "/time", kind: "time", unit: "ns" as const },
+        { metricName: "/heap", kind: "memory", unit: "bytes" as const },
+      ])(
+        "falls back to full metric name for $metricName instead of empty shortName",
+        ({ metricName, kind, unit }) => {
+          const result = metricLinesAdapter.defaults(metricName);
+          expect(result).toStrictEqual({
+            direction: "lower",
+            unit,
+            kind,
+            shortName: metricName,
+          });
+        },
+      );
+
+      it.each([
+        {
+          metricName: "bench/time",
+          shortName: "bench",
+          kind: "time",
+          unit: "ns" as const,
+        },
+        {
+          metricName: "bench/heap",
+          shortName: "bench",
+          kind: "memory",
+          unit: "bytes" as const,
+        },
+        {
+          metricName: "a/b/time",
+          shortName: "a/b",
+          kind: "time",
+          unit: "ns" as const,
+        },
+      ])(
+        "returns shortName $shortName for $metricName",
+        ({ metricName, shortName, kind, unit }) => {
+          const result = metricLinesAdapter.defaults(metricName);
+          expect(result).toStrictEqual({
+            direction: "lower",
+            unit,
+            kind,
+            shortName,
+          });
+        },
+      );
+    });
   });
 });
