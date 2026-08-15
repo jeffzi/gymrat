@@ -1,18 +1,24 @@
 import { execFileSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { getEventListeners } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 import type { ExecOptions, ExecResult, ExecTimeoutError } from "../src/exec.js";
-import { exec } from "../src/exec.js";
+import { exec, FAILURE_EXIT_CODE } from "../src/exec.js";
 import { isAlive, readPid, waitForPid } from "./fixtures/process-probe.js";
 
 /** Every child `exec` has spawned, so a test can reach into its stdio pipes. */
 const spawnedChildren = vi.hoisted((): ChildProcess[] => []);
+
+/** One-shot override: when set, the next `spawn` call returns this instead of a real child. */
+const spawnOverride = vi.hoisted(
+  (): { fn: ((command: string, options: SpawnOptions) => ChildProcess) | null } => ({ fn: null }),
+);
 
 // `spawn` stays real — only the Windows-only `execFileSync("taskkill", ...)` is
 // faked, because it is the call whose failure modes are under test.
@@ -22,6 +28,11 @@ vi.mock("node:child_process", async (importOriginal) => {
     ...actual,
     execFileSync: vi.fn(),
     spawn: (command: string, options: SpawnOptions): ChildProcess => {
+      if (spawnOverride.fn !== null) {
+        const override = spawnOverride.fn;
+        spawnOverride.fn = null;
+        return override(command, options);
+      }
       const child = actual.spawn(command, options);
       spawnedChildren.push(child);
       return child;
@@ -87,6 +98,35 @@ function taskkillFailure(status: number): Error {
   return Object.assign(new Error(`taskkill exited with ${status}`), { status });
 }
 
+/** Build an expected ExecResult with byte counts derived from the string fields. */
+function expectedResult(fields: { stdout: string; stderr: string; exitCode: number }): ExecResult {
+  return {
+    ...fields,
+    stdoutBytes: Buffer.byteLength(fields.stdout, "utf-8"),
+    stderrBytes: Buffer.byteLength(fields.stderr, "utf-8"),
+  };
+}
+
+/** The pid a stand-in child reports; no test relies on it being reusable. */
+const FAKE_CHILD_PID = 99999;
+
+/** A stand-in child process for tests that drive `spawnOverride` instead of a real spawn. */
+function makeFakeChild(stdio: {
+  stdout: PassThrough | null;
+  stderr: PassThrough | null;
+  stdin: PassThrough | null;
+}): ChildProcess {
+  // oxlint-disable-next-line no-unsafe-type-assertion -- mock ChildProcess for fd-exhaustion tests
+  return Object.assign(new EventEmitter(), {
+    pid: FAKE_CHILD_PID,
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    kill: vi.fn(),
+    ...stdio,
+  }) as unknown as ChildProcess;
+}
+
 // exec uses POSIX process groups (kill(-pid, SIGKILL)) and the tests drive
 // sh-only constructs ($$, >&2, for/do/done). Neither works under cmd.exe.
 describe.skipIf(process.platform === "win32")("exec", () => {
@@ -98,27 +138,27 @@ describe.skipIf(process.platform === "win32")("exec", () => {
       {
         description: "captures stdout",
         command: "echo hello",
-        expected: { stdout: "hello\n", stderr: "", exitCode: 0 },
+        expected: expectedResult({ stdout: "hello\n", stderr: "", exitCode: 0 }),
       },
       {
         description: "separates stdout from stderr",
         command: "echo stdout && echo stderr >&2",
-        expected: { stdout: "stdout\n", stderr: "stderr\n", exitCode: 0 },
+        expected: expectedResult({ stdout: "stdout\n", stderr: "stderr\n", exitCode: 0 }),
       },
       {
         description: "reports a non-zero exit code",
         command: "exit 42",
-        expected: { stdout: "", stderr: "", exitCode: 42 },
+        expected: expectedResult({ stdout: "", stderr: "", exitCode: 42 }),
       },
       {
         description: "captures every line of multi-line output",
         command: 'echo "line1" && echo "line2" && echo "line3"',
-        expected: { stdout: "line1\nline2\nline3\n", stderr: "", exitCode: 0 },
+        expected: expectedResult({ stdout: "line1\nline2\nline3\n", stderr: "", exitCode: 0 }),
       },
       {
         description: "waits for a slow command with no timeout set",
         command: "sleep 0.1 && echo done",
-        expected: { stdout: "done\n", stderr: "", exitCode: 0 },
+        expected: expectedResult({ stdout: "done\n", stderr: "", exitCode: 0 }),
       },
     ])("$description", async ({ command, expected }) => {
       const result = await runInTmpdir(command);
@@ -131,7 +171,9 @@ describe.skipIf(process.platform === "win32")("exec", () => {
     it("delivers the text to the command's standard input", async () => {
       const result = await runInTmpdir("cat", { stdin: "piped input\n" });
 
-      expect(result).toStrictEqual({ stdout: "piped input\n", stderr: "", exitCode: 0 });
+      expect(result).toStrictEqual(
+        expectedResult({ stdout: "piped input\n", stderr: "", exitCode: 0 }),
+      );
     });
 
     it("settles with the command's own result when the command never reads stdin", async () => {
@@ -141,7 +183,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
 
       const result = await runInTmpdir("exit 3", { stdin: unreadPayload });
 
-      expect(result).toStrictEqual({ stdout: "", stderr: "", exitCode: 3 });
+      expect(result).toStrictEqual(expectedResult({ stdout: "", stderr: "", exitCode: 3 }));
     });
   });
 
@@ -149,7 +191,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
     it("gives the command an immediately closed standard input", async () => {
       const result = await runInTmpdir("cat");
 
-      expect(result).toStrictEqual({ stdout: "", stderr: "", exitCode: 0 });
+      expect(result).toStrictEqual(expectedResult({ stdout: "", stderr: "", exitCode: 0 }));
     });
   });
 
@@ -157,7 +199,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
     it("captures output flushed once the shell has already returned", async () => {
       const result = await runInTmpdir("(sleep 0.2; echo METRIC) &");
 
-      expect(result).toStrictEqual({ stdout: "METRIC\n", stderr: "", exitCode: 0 });
+      expect(result).toStrictEqual(expectedResult({ stdout: "METRIC\n", stderr: "", exitCode: 0 }));
     });
   });
 
@@ -167,7 +209,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
       // they land in separate pipe reads.
       const result = await runInTmpdir("printf '\\302'; sleep 0.2; printf '\\265'");
 
-      expect(result).toStrictEqual({ stdout: "µ", stderr: "", exitCode: 0 });
+      expect(result).toStrictEqual(expectedResult({ stdout: "µ", stderr: "", exitCode: 0 }));
     });
   });
 
@@ -219,6 +261,8 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         stdout: "",
         stderr: "",
         timeoutMs: 500,
+        stdoutBytes: 0,
+        stderrBytes: 0,
       });
     });
 
@@ -300,7 +344,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         // Fully determined: the command redirects its only output to a file, and a
         // SIGKILLed child reports a null code that exec maps to 1. An exact match
         // also rules out the timeout shape, which carries `kind` and `timeoutMs`.
-        expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
+        expect(settled).toStrictEqual(expectedResult({ stdout: "", stderr: "", exitCode: 1 }));
       }, 20_000);
     });
 
@@ -328,7 +372,7 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         // Same shape as a mid-run abort: no output, and exec's failure exit code.
         // An exact match also rules out the timeout shape, which carries `kind`
         // and `timeoutMs`.
-        expect(settled).toStrictEqual({ stdout: "", stderr: "", exitCode: 1 });
+        expect(settled).toStrictEqual(expectedResult({ stdout: "", stderr: "", exitCode: 1 }));
         expect(fs.existsSync(path.join(tmpDir, "completed.marker"))).toBe(false);
       }, 20_000);
     });
@@ -487,11 +531,9 @@ describe.skipIf(process.platform === "win32")("exec", () => {
         pipe.emit("error", new Error("stream exploded"));
 
         const settled = await settleWithin(running, 3000);
-        expect(settled).toStrictEqual({
-          stdout: "",
-          stderr: "stream exploded\n",
-          exitCode: 1,
-        });
+        expect(settled).toStrictEqual(
+          expectedResult({ stdout: "", stderr: "stream exploded\n", exitCode: 1 }),
+        );
       },
     );
 
@@ -514,5 +556,74 @@ describe.skipIf(process.platform === "win32")("exec", () => {
       );
       await running;
     }, 20_000);
+  });
+
+  describe("when spawn returns a child with null stdio (fd exhaustion)", () => {
+    afterEach(() => {
+      spawnOverride.fn = null;
+    });
+
+    it("resolves with FAILURE_EXIT_CODE instead of rejecting", async () => {
+      const fakeChild = makeFakeChild({ stdout: null, stderr: null, stdin: null });
+      spawnOverride.fn = () => fakeChild;
+
+      const resultPromise = runInTmpdir("echo hello");
+      process.nextTick(() => {
+        fakeChild.emit("close", 1, null);
+      });
+
+      const result = await resultPromise;
+      assertIsExecResult(result);
+
+      expect(result).toStrictEqual(
+        expectedResult({ stdout: "", stderr: "", exitCode: FAILURE_EXIT_CODE }),
+      );
+    });
+  });
+
+  describe("when output exceeds the per-stream cap", () => {
+    const OUTPUT_CAP = 64 * 1024 * 1024;
+
+    afterEach(() => {
+      spawnOverride.fn = null;
+    });
+
+    it.each([{ stream: "stdout" as const }, { stream: "stderr" as const }])(
+      "caps $stream accumulation at 64 MiB",
+      async ({ stream }) => {
+        const fakeStdout = new PassThrough();
+        const fakeStderr = new PassThrough();
+        const fakeStdin = new PassThrough();
+        const fakeChild = makeFakeChild({
+          stdout: fakeStdout,
+          stderr: fakeStderr,
+          stdin: fakeStdin,
+        });
+        spawnOverride.fn = () => fakeChild;
+
+        const resultPromise = runInTmpdir("irrelevant");
+
+        const target = stream === "stdout" ? fakeStdout : fakeStderr;
+        const other = stream === "stdout" ? fakeStderr : fakeStdout;
+        const chunk = Buffer.alloc(1024 * 1024, 0x61);
+        for (let i = 0; i < 65; i++) {
+          target.push(chunk);
+        }
+        target.push(null);
+        other.push(null);
+
+        process.nextTick(() => {
+          fakeChild.emit("close", 0, null);
+        });
+
+        const result = await resultPromise;
+        assertIsExecResult(result);
+        expect(result.exitCode).toBe(0);
+        const output = stream === "stdout" ? result.stdout : result.stderr;
+        expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(OUTPUT_CAP);
+        expect(output.length).toBeGreaterThan(0);
+      },
+      30_000,
+    );
   });
 });

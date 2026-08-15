@@ -24,6 +24,8 @@ interface ChecksRun {
 export interface KeepOptions {
   /** The commit message; absent, one is generated from the iteration being kept. */
   message?: string;
+  /** Aborting it kills the in-flight checks command. Omitted, nothing can interrupt the checks. */
+  signal?: AbortSignal;
 }
 
 /** One settled — or refused — keep: what was written to the log, and what to print about it. */
@@ -89,7 +91,7 @@ export async function keepSession(
     );
   }
 
-  const checks = await runChecks(config, session.worktrees.experiment);
+  const checks = await runChecks(config, session.worktrees.experiment, options.signal);
   if (checks !== undefined && !checks.passed) {
     return blockedKeep(
       jsonlPath,
@@ -262,6 +264,7 @@ function gatingRefusal(iteration: IterationRecord): string {
 async function runChecks(
   config: BenchlessConfig,
   experimentDir: string,
+  signal?: AbortSignal,
 ): Promise<ChecksRun | undefined> {
   const command = config.checks;
   if (command === undefined) {
@@ -275,6 +278,7 @@ async function runChecks(
   const result = await exec(command, {
     cwd: experimentDir,
     timeoutMs: config.timeoutSeconds * MS_PER_SECOND,
+    signal,
   });
   const timedOut = "kind" in result;
 

@@ -16,14 +16,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The exit code the handler under test uses for SIGINT: 128 + signum. */
+const SIGINT_EXIT_CODE = 128 + os.constants.signals.SIGINT;
+
+/** Stub the exit path, install a cleanup, and capture the listeners already present. */
+function installedCleanup(): {
+  cleanup: ReturnType<typeof vi.fn>;
+  before: readonly unknown[];
+  uninstall: () => void;
+} {
+  stubProcessExit();
+  const cleanup = vi.fn();
+  const before = process.listeners("SIGINT").slice();
+  const uninstall = installTerminationCleanup(cleanup);
+  return { cleanup, before, uninstall };
+}
+
 describe("installTerminationCleanup", () => {
   describe("before uninstall", () => {
     it("runs cleanup then exits 128+signum on SIGINT", () => {
       // Arrange
-      stubProcessExit();
-      const cleanup = vi.fn();
-      const before = process.listeners("SIGINT").slice();
-      const uninstall = installTerminationCleanup(cleanup);
+      const { cleanup, before, uninstall } = installedCleanup();
 
       try {
         // Act
@@ -31,7 +44,7 @@ describe("installTerminationCleanup", () => {
 
         // Assert
         expect(cleanup).toHaveBeenCalledOnce();
-        expect(code).toBe(128 + os.constants.signals.SIGINT);
+        expect(code).toBe(SIGINT_EXIT_CODE);
       } finally {
         uninstall();
         removeLeakedListeners("SIGINT", before);
@@ -42,10 +55,7 @@ describe("installTerminationCleanup", () => {
   describe("after uninstall", () => {
     it("a signal still exits with 128+signum (exit-only handler remains)", () => {
       // Arrange
-      stubProcessExit();
-      const cleanup = vi.fn();
-      const before = process.listeners("SIGINT").slice();
-      const uninstall = installTerminationCleanup(cleanup);
+      const { before, uninstall } = installedCleanup();
       uninstall();
 
       try {
@@ -53,7 +63,7 @@ describe("installTerminationCleanup", () => {
         const code = raiseSignal("SIGINT", before);
 
         // Assert
-        expect(code).toBe(128 + os.constants.signals.SIGINT);
+        expect(code).toBe(SIGINT_EXIT_CODE);
       } finally {
         removeLeakedListeners("SIGINT", before);
       }
@@ -61,10 +71,7 @@ describe("installTerminationCleanup", () => {
 
     it("does not run cleanup on a post-uninstall signal", () => {
       // Arrange
-      stubProcessExit();
-      const cleanup = vi.fn();
-      const before = process.listeners("SIGINT").slice();
-      const uninstall = installTerminationCleanup(cleanup);
+      const { cleanup, before, uninstall } = installedCleanup();
       uninstall();
 
       try {
@@ -74,9 +81,39 @@ describe("installTerminationCleanup", () => {
         // Assert - the code pins that a handler ran at all: swallowing whatever
         // `raiseSignal` threw would let "no handler installed" pass as "cleanup
         // did not run".
-        expect.soft(code).toBe(130);
+        expect.soft(code).toBe(SIGINT_EXIT_CODE);
         expect(cleanup).not.toHaveBeenCalled();
       } finally {
+        removeLeakedListeners("SIGINT", before);
+      }
+    });
+  });
+
+  describe("when a cleanup throws", () => {
+    it("still runs remaining cleanups and exits with 128+signum", () => {
+      // Arrange
+      stubProcessExit();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const before = process.listeners("SIGINT").slice();
+      const throwingCleanup = vi.fn(() => {
+        throw new Error("cleanup boom");
+      });
+      const survivingCleanup = vi.fn();
+      const uninstall1 = installTerminationCleanup(throwingCleanup);
+      const uninstall2 = installTerminationCleanup(survivingCleanup);
+
+      try {
+        // Act
+        const code = raiseSignal("SIGINT", before);
+
+        // Assert
+        expect.soft(throwingCleanup).toHaveBeenCalledOnce();
+        expect.soft(survivingCleanup).toHaveBeenCalledOnce();
+        expect.soft(console.warn).toHaveBeenCalled();
+        expect(code).toBe(SIGINT_EXIT_CODE);
+      } finally {
+        uninstall1();
+        uninstall2();
         removeLeakedListeners("SIGINT", before);
       }
     });
@@ -99,7 +136,7 @@ describe("installTerminationCleanup", () => {
         // Assert
         expect.soft(secondCleanup).toHaveBeenCalledOnce();
         expect.soft(firstCleanup).not.toHaveBeenCalled();
-        expect(code).toBe(128 + os.constants.signals.SIGINT);
+        expect(code).toBe(SIGINT_EXIT_CODE);
       } finally {
         uninstallSecond();
         removeLeakedListeners("SIGINT", before);

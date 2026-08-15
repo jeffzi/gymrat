@@ -1,5 +1,5 @@
-import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
-import type { Readable, Writable } from "node:stream";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import type { Readable } from "node:stream";
 
 import { hasErrorCode, messageOf } from "./errors.js";
 
@@ -8,6 +8,10 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** Total bytes received on stdout before any cap truncation. */
+  stdoutBytes: number;
+  /** Total bytes received on stderr before any cap truncation. */
+  stderrBytes: number;
 }
 
 /** Shape returned when the command is killed for exceeding `ExecOptions.timeoutMs`. */
@@ -16,6 +20,10 @@ export interface ExecTimeoutError {
   stdout: string;
   stderr: string;
   timeoutMs: number;
+  /** Total bytes received on stdout before any cap truncation. */
+  stdoutBytes: number;
+  /** Total bytes received on stderr before any cap truncation. */
+  stderrBytes: number;
 }
 
 /** Options controlling where a command runs, what it reads, and how it can be stopped early. */
@@ -30,23 +38,55 @@ export interface ExecOptions {
 /** Reported when the child has no exit status of its own: killed, or never started. */
 export const FAILURE_EXIT_CODE = 1;
 
+/**
+ * The result for a run that never produced any output: the signal was already
+ * aborted before the command could spawn, or the spawned child came up with no
+ * usable stdio streams.
+ */
+const EMPTY_FAILURE_RESULT: ExecResult = {
+  stdout: "",
+  stderr: "",
+  exitCode: FAILURE_EXIT_CODE,
+  stdoutBytes: 0,
+  stderrBytes: 0,
+};
+
+/**
+ * Per-stream accumulation cap. A command that exceeds this resolves normally
+ * with truncated capture rather than growing into an OOM or RangeError.
+ */
+export const OUTPUT_CAP_BYTES = 64 * 1024 * 1024;
+
 /** Mutable buffer accumulating a child process's stdout/stderr as it streams in. */
 interface OutputBuffer {
   stdout: string;
   stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
 }
 
 /**
  * Accumulate `stdout` and `stderr` into a buffer as data arrives, so callers can
  * snapshot the output received so far at any point — on close, timeout, or abort
  * — without waiting for the streams to end.
+ *
+ * Each stream is independently capped at `OUTPUT_CAP_BYTES`. Once the cap is
+ * reached, subsequent chunks are silently dropped — the stream stays open so the
+ * child process is not signalled, but the buffer stops growing.
  */
 function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer {
-  const buffer: OutputBuffer = { stdout: "", stderr: "" };
+  const buffer: OutputBuffer = { stdout: "", stderr: "", stdoutBytes: 0, stderrBytes: 0 };
+
   stdout.on("data", (chunk: string) => {
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    buffer.stdoutBytes += chunkBytes;
+    if (buffer.stdoutBytes - chunkBytes >= OUTPUT_CAP_BYTES) return;
     buffer.stdout += chunk;
   });
   stderr.on("data", (chunk: string) => {
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    buffer.stderrBytes += chunkBytes;
+    if (buffer.stderrBytes - chunkBytes >= OUTPUT_CAP_BYTES) return;
     buffer.stderr += chunk;
   });
   return buffer;
@@ -138,14 +178,14 @@ export async function exec(
     // spawning would execute the command text and only then kill it. Settle with the
     // shape a mid-run abort produces, so callers handle cancellation one way.
     if (options.signal?.aborted) {
-      resolve({ stdout: "", stderr: "", exitCode: FAILURE_EXIT_CODE });
+      resolve(EMPTY_FAILURE_RESULT);
       return;
     }
 
     // Some spawn failures are raised here rather than on the "error" event —
     // ENOTDIR from a cwd that is not a directory is one. Both paths report the
     // same way, so a caller never has to handle a rejection as well as a result.
-    let child: ChildProcessByStdio<Writable, Readable, Readable>;
+    let child: ChildProcess;
     try {
       child = spawn(command, {
         shell: true,
@@ -158,28 +198,44 @@ export async function exec(
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
+      const errMsg = `${messageOf(err)}\n`;
       resolve({
         stdout: "",
-        stderr: `${messageOf(err)}\n`,
+        stderr: errMsg,
         exitCode: FAILURE_EXIT_CODE,
+        stdoutBytes: 0,
+        stderrBytes: Buffer.byteLength(errMsg, "utf8"),
       });
       return;
     }
 
+    // fd exhaustion can leave stdio as null even though spawn did not throw.
+    // Settle as a failed run rather than crashing on null streams.
+    if (child.stdout === null || child.stderr === null || child.stdin === null) {
+      resolve(EMPTY_FAILURE_RESULT);
+      return;
+    }
+
+    // Captured after the null guard so closures (settle, onFailure) see the
+    // narrowed non-null type without assertions.
+    const childStdout = child.stdout;
+    const childStderr = child.stderr;
+    const childStdin = child.stdin;
+
     // setEncoding handles multi-byte characters that straddle pipe reads and
     // flushes any partial sequence when the stream ends.
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
+    childStdout.setEncoding("utf8");
+    childStderr.setEncoding("utf8");
 
     // A command is free to ignore its stdin, which closes the pipe under this
     // write and raises EPIPE. Without a listener that would take the whole
     // process down over a command doing something entirely reasonable.
-    child.stdin.on("error", ignoreStdinError);
+    childStdin.on("error", ignoreStdinError);
     // Always end: a command that reads stdin must see end-of-input rather than
     // block on a pipe no one will ever write to.
-    child.stdin.end(options.stdin ?? "");
+    childStdin.end(options.stdin ?? "");
 
-    const output = captureOutput(child.stdout, child.stderr);
+    const output = captureOutput(childStdout, childStderr);
     let timeoutHandle: NodeJS.Timeout | undefined;
     let resolved = false;
 
@@ -191,8 +247,8 @@ export async function exec(
       // The snapshot in `result` is final, but a descendant that survived the group
       // kill still holds the write end of these pipes and would keep appending to
       // `output`. Destroying the read end releases the pipe with the call.
-      child.stdout.destroy();
-      child.stderr.destroy();
+      childStdout.destroy();
+      childStderr.destroy();
 
       // "close", "error", the timeout and the abort can all fire for one run;
       // `resolved` keeps the first of them the only one.
@@ -213,14 +269,27 @@ export async function exec(
       killGroup();
       // Snapshot rather than wait for "close": the caller asked to stop now, and a
       // descendant that outlived the group kill would still be holding the pipe.
-      settle({ stdout: output.stdout, stderr: output.stderr, exitCode: FAILURE_EXIT_CODE });
+      settle({
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exitCode: FAILURE_EXIT_CODE,
+        stdoutBytes: output.stdoutBytes,
+        stderrBytes: output.stderrBytes,
+      });
     }
 
     const { timeoutMs } = options;
     if (timeoutMs) {
       timeoutHandle = setTimeout(() => {
         killGroup();
-        settle({ kind: "timeout", stdout: output.stdout, stderr: output.stderr, timeoutMs });
+        settle({
+          kind: "timeout",
+          stdout: output.stdout,
+          stderr: output.stderr,
+          timeoutMs,
+          stdoutBytes: output.stdoutBytes,
+          stderrBytes: output.stderrBytes,
+        });
       }, timeoutMs);
     }
 
@@ -235,8 +304,9 @@ export async function exec(
       settle({
         stdout: output.stdout,
         stderr: output.stderr,
-        // null when the child was killed by a signal, which is how an abort ends.
         exitCode: code ?? FAILURE_EXIT_CODE,
+        stdoutBytes: output.stdoutBytes,
+        stderrBytes: output.stderrBytes,
       });
     });
 
@@ -246,10 +316,13 @@ export async function exec(
       // itself running: without this it would outlive the call, still holding its
       // cwd.
       killGroup();
+      const errSuffix = `${err.message}\n`;
       settle({
         stdout: output.stdout,
-        stderr: `${output.stderr}${err.message}\n`,
+        stderr: `${output.stderr}${errSuffix}`,
         exitCode: FAILURE_EXIT_CODE,
+        stdoutBytes: output.stdoutBytes,
+        stderrBytes: output.stderrBytes + Buffer.byteLength(errSuffix, "utf8"),
       });
     }
 
@@ -261,7 +334,7 @@ export async function exec(
     // A pipe read can fail on its own (EIO on a closing pty, for one). Without a
     // listener that is an unhandled "error" event, which takes the whole process
     // down instead of failing the one call that owns the pipe.
-    child.stdout.on("error", onFailure);
-    child.stderr.on("error", onFailure);
+    childStdout.on("error", onFailure);
+    childStderr.on("error", onFailure);
   });
 }

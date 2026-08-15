@@ -19,7 +19,12 @@ function createHandler(signal: TerminationSignal): () => void {
 
   return () => {
     for (const cleanup of activeCleanups) {
-      cleanup();
+      try {
+        cleanup();
+      } catch (error) {
+        // oxlint-disable-next-line no-console -- last-resort warning during forced exit
+        console.warn("termination cleanup failed:", error);
+      }
     }
     process.exit(exitCode);
   };

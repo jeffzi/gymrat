@@ -122,6 +122,7 @@ export async function iterateSession(
     session,
     lastIteration: state.lastIteration ?? null,
     iterationCount: state.iterationCount,
+    signal: options.signal,
   });
 
   const first = await benchAndJudge(session, config, options, config.bench);
@@ -176,6 +177,7 @@ export async function iterateSession(
     session,
     lastIteration: record,
     iterationCount: state.iterationCount + 1,
+    signal: options.signal,
   });
 
   const iterationReport = renderIteration(

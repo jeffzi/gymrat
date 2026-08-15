@@ -30,6 +30,10 @@ interface SampleProgressStep {
 /** Structured step info emitted at the start of each prepare or sample step. */
 export type ProgressStep = PrepareProgressStep | SampleProgressStep;
 
+// ---------------------------------------------------------------------------
+// Command-error formatting
+// ---------------------------------------------------------------------------
+
 /** Fields that identify which command failed and where, for structured error reporting. */
 export interface CommandErrorContext {
   phase: "prepare" | "bench";
@@ -41,40 +45,62 @@ export interface CommandErrorContext {
   sample?: number;
 }
 
-// fallow-ignore-next-line complexity
+/** The header line naming the command, its verb, and where it ran. */
+function formatCommandErrorHeader(context: CommandErrorContext, isTimeout: boolean): string {
+  const verb = isTimeout ? "timed out" : "failed";
+  const positionPart = context.position !== undefined ? `${context.position}, ` : "";
+  const samplePart = context.sample !== undefined ? `, sample ${context.sample}` : "";
+  return `${context.phase} command ${verb} (${positionPart}"${context.label}"${samplePart})`;
+}
+
+/** The lines naming where the command ran: a worktree and its ref, or a plain directory. */
+function formatCommandErrorLocation(context: CommandErrorContext): string[] {
+  return context.target.kind === "ref"
+    ? [`  ref:       ${context.target.ref}`, `  worktree:  ${context.dir}`]
+    : [`  dir:       ${context.dir}`];
+}
+
+/**
+ * The captured stdout and stderr, labeled when both are present so a reader can
+ * tell them apart, unlabeled when only one stream has anything to show.
+ */
+function formatStreamEntry(label: string, text: string, totalBytes: number): string[] {
+  const capturedBytes = Buffer.byteLength(text, "utf8");
+  const suffix = totalBytes > capturedBytes ? ` (truncated, ${totalBytes} bytes total)` : "";
+  return [`--- ${label}${suffix} ---`, text];
+}
+
+function formatCommandErrorOutput(failure: ExecResult | ExecTimeoutError): string[] {
+  const streams = (
+    [
+      ["stderr", failure.stderr, failure.stderrBytes],
+      ["stdout", failure.stdout, failure.stdoutBytes],
+    ] satisfies [string, string, number][]
+  ).filter(([, text]) => text.length > 0);
+
+  if (streams.length < 2) {
+    const entry = streams[0];
+    if (entry === undefined) return [];
+    const [, text, totalBytes] = entry;
+    const capturedBytes = Buffer.byteLength(text, "utf8");
+    return totalBytes > capturedBytes ? formatStreamEntry(entry[0], text, totalBytes) : [text];
+  }
+  return streams.flatMap(([label, text, totalBytes]) => formatStreamEntry(label, text, totalBytes));
+}
+
 function formatCommandError(
   context: CommandErrorContext,
   failure: ExecResult | ExecTimeoutError,
 ): string {
   const isTimeout = "kind" in failure;
-  const verb = isTimeout ? "timed out" : "failed";
 
-  const positionPart = context.position !== undefined ? `${context.position}, ` : "";
-  const samplePart = context.sample !== undefined ? `, sample ${context.sample}` : "";
-  const header = `${context.phase} command ${verb} (${positionPart}"${context.label}"${samplePart})`;
-
-  const lines: string[] = [header];
-
-  if (context.target.kind === "ref") {
-    lines.push(`  ref:       ${context.target.ref}`, `  worktree:  ${context.dir}`);
-  } else {
-    lines.push(`  dir:       ${context.dir}`);
-  }
-
-  lines.push(`  command:   ${context.command}`);
-  lines.push(
+  return [
+    formatCommandErrorHeader(context, isTimeout),
+    ...formatCommandErrorLocation(context),
+    `  command:   ${context.command}`,
     isTimeout ? `  timeout:   ${failure.timeoutMs}ms` : `  exit code: ${failure.exitCode}`,
-  );
-
-  if (failure.stderr.length > 0 && failure.stdout.length > 0) {
-    lines.push("--- stderr ---", failure.stderr, "--- stdout ---", failure.stdout);
-  } else if (failure.stderr.length > 0) {
-    lines.push(failure.stderr);
-  } else if (failure.stdout.length > 0) {
-    lines.push(failure.stdout);
-  }
-
-  return lines.join("\n");
+    ...formatCommandErrorOutput(failure),
+  ].join("\n");
 }
 
 /**
@@ -93,6 +119,10 @@ export class CommandError extends GymratError {
     super(formatCommandError(context, failure), hint);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sampling core
+// ---------------------------------------------------------------------------
 
 /**
  * One target of a comparison or measurement run.
@@ -224,6 +254,10 @@ export async function collectSamples(
   return collected;
 }
 
+// ---------------------------------------------------------------------------
+// Target resolution
+// ---------------------------------------------------------------------------
+
 /**
  * Resolve the working directory for a target, creating a worktree for ref targets.
  *
@@ -250,6 +284,10 @@ export function resolveLabel(explicit: string | undefined, resolved: Target): st
   return explicit ?? (resolved.kind === "ref" ? resolved.ref : path.basename(resolved.dir));
 }
 
+// ---------------------------------------------------------------------------
+// Metric statistics
+// ---------------------------------------------------------------------------
+
 /**
  * Half the observed range as a percentage of the median — the run-to-run jitter a
  * verdict's noise band is judged against.
@@ -264,7 +302,8 @@ export function resolveLabel(explicit: string | undefined, resolved: Target): st
  */
 function computeSpread(values: readonly number[], median: number): number | undefined {
   if (values.length < 2 || median === 0) return undefined;
-  return (computeHalfRange(values) / Math.abs(median)) * 100;
+  const ratio = (computeHalfRange(values) / Math.abs(median)) * 100;
+  return Number.isFinite(ratio) ? ratio : undefined;
 }
 
 /** A side's median and spread over the given values, or both undefined when there are none. */
@@ -332,6 +371,10 @@ export function resolveMetricMetaFromSamples(
 
   return resolveMetricMeta(Array.from(metricNames), configMetrics, adapter, configKinds);
 }
+
+// ---------------------------------------------------------------------------
+// Worktree orchestration
+// ---------------------------------------------------------------------------
 
 /**
  * Restate a failed run's error so it also names what cleanup left on disk.

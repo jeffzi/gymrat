@@ -66,21 +66,31 @@ function createContext(overrides: Partial<CommandErrorContext> = {}): CommandErr
 }
 
 function createExecResult(overrides: Partial<ExecResult> = {}): ExecResult {
-  return {
+  const base = {
     exitCode: 1,
     stderr: "Error: benchmark crashed",
     stdout: "",
     ...overrides,
   };
+  return {
+    ...base,
+    stdoutBytes: base.stdoutBytes ?? Buffer.byteLength(base.stdout, "utf-8"),
+    stderrBytes: base.stderrBytes ?? Buffer.byteLength(base.stderr, "utf-8"),
+  };
 }
 
 function createExecTimeout(overrides: Partial<ExecTimeoutError> = {}): ExecTimeoutError {
-  return {
-    kind: "timeout",
+  const base = {
+    kind: "timeout" as const,
     timeoutMs: 30000,
     stderr: "partial output before timeout",
     stdout: "",
     ...overrides,
+  };
+  return {
+    ...base,
+    stdoutBytes: base.stdoutBytes ?? Buffer.byteLength(base.stdout, "utf-8"),
+    stderrBytes: base.stderrBytes ?? Buffer.byteLength(base.stderr, "utf-8"),
   };
 }
 
@@ -256,6 +266,41 @@ describe("CommandError", () => {
       expect.soft(error.message).toContain("bench output here");
       expect.soft(error.message).not.toContain("--- stderr ---");
       expect(error.message).not.toContain("--- stdout ---");
+    });
+  });
+
+  describe("when a single stream was truncated", () => {
+    it("shows the stream under a labeled separator with the total byte count", () => {
+      const ctx = createContext();
+      const failure = createExecResult({
+        stderr: "partial output",
+        stdout: "",
+        stderrBytes: 128_000_000,
+      });
+
+      const error = new CommandError(ctx, failure);
+
+      expect.soft(error.message).toContain("--- stderr (truncated, 128000000 bytes total) ---");
+      expect(error.message).toContain("partial output");
+    });
+  });
+
+  describe("when both streams were truncated", () => {
+    it("shows both under labeled separators with their total byte counts", () => {
+      const ctx = createContext();
+      const failure = createExecResult({
+        stderr: "err chunk",
+        stdout: "out chunk",
+        stderrBytes: 200_000_000,
+        stdoutBytes: 100_000_000,
+      });
+
+      const error = new CommandError(ctx, failure);
+
+      expect.soft(error.message).toContain("--- stderr (truncated, 200000000 bytes total) ---");
+      expect.soft(error.message).toContain("err chunk");
+      expect.soft(error.message).toContain("--- stdout (truncated, 100000000 bytes total) ---");
+      expect(error.message).toContain("out chunk");
     });
   });
 

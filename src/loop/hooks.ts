@@ -20,6 +20,8 @@ export interface HookInvocation {
   iterationCount: number;
   /** Milliseconds before the command is killed. Defaults to {@link HOOK_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** Aborting it kills the hook's process group. Omitted, nothing can interrupt the hook. */
+  signal?: AbortSignal;
 }
 
 /** What one fired hook leaves behind: a line for the log, and a block for the agent. */
@@ -82,6 +84,7 @@ export async function runHook(invocation: HookInvocation): Promise<HookRun> {
   const result = await exec(invocation.command, {
     cwd: invocation.session.worktrees.experiment,
     timeoutMs,
+    signal: invocation.signal,
     stdin: `${payload}\n`,
   });
   const durationMs = performance.now() - startedAt;

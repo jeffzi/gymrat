@@ -291,7 +291,13 @@ function createCommandError(targetKind: "ref" | "in-place"): CommandError {
         : { kind: "in-place", dir: "/tmp/test" },
     dir: "/tmp/test",
   };
-  const failure: ExecResult = { exitCode: 1, stderr: "failed", stdout: "" };
+  const failure: ExecResult = {
+    exitCode: 1,
+    stderr: "failed",
+    stdout: "",
+    stdoutBytes: 0,
+    stderrBytes: Buffer.byteLength("failed", "utf-8"),
+  };
   return new CommandError(context, failure);
 }
 

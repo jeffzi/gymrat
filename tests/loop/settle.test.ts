@@ -196,12 +196,34 @@ function editExperiment(): void {
 
 /** Answer the checks command with a clean run. */
 function checksPass(): void {
-  execMock.mockResolvedValue({ stdout: "10 passed", stderr: "", exitCode: 0 });
+  execMock.mockResolvedValue({
+    stdout: "10 passed",
+    stderr: "",
+    exitCode: 0,
+    stdoutBytes: Buffer.byteLength("10 passed", "utf-8"),
+    stderrBytes: 0,
+  });
 }
 
 /** Answer the checks command with a failing run that wrote to both streams. */
 function checksFail(): void {
-  execMock.mockResolvedValue({ stdout: CHECKS_STDOUT, stderr: CHECKS_STDERR, exitCode: 1 });
+  execMock.mockResolvedValue({
+    stdout: CHECKS_STDOUT,
+    stderr: CHECKS_STDERR,
+    exitCode: 1,
+    stdoutBytes: Buffer.byteLength(CHECKS_STDOUT, "utf-8"),
+    stderrBytes: Buffer.byteLength(CHECKS_STDERR, "utf-8"),
+  });
+}
+
+/** The `checks` a blocked keep records for a failing run that printed `stdout`/`stderr`. */
+function failedChecks(stdout: string, stderr: string): KeepRecord["checks"] {
+  return {
+    configured: true,
+    passed: false,
+    stdoutBytes: Buffer.byteLength(stdout, "utf-8"),
+    stderrBytes: Buffer.byteLength(stderr, "utf-8"),
+  };
 }
 
 /** The record `root`'s log ends on, failing the test when the log is empty. */
@@ -251,6 +273,21 @@ describe("keepSession", () => {
         cwd: experimentWorktreeDir(repo.dir),
         timeoutMs: TIMEOUT_MS,
       });
+    });
+
+    it("passes a provided abort signal to the checks command", async () => {
+      // Arrange
+      const controller = new AbortController();
+
+      // Act
+      const options = { signal: controller.signal };
+      await keepSession(repo.dir, checksConfig(), options);
+
+      // Assert
+      expect(execMock).toHaveBeenCalledWith(
+        CHECKS,
+        expect.objectContaining({ signal: controller.signal }),
+      );
     });
 
     it("commits every tracked and untracked change in the experiment worktree", async () => {
@@ -379,12 +416,7 @@ describe("keepSession", () => {
         at: expect.stringMatching(ISO_PATTERN),
         status: "blocked",
         reason: "checks-failed",
-        checks: {
-          configured: true,
-          passed: false,
-          stdoutBytes: Buffer.byteLength(CHECKS_STDOUT, "utf-8"),
-          stderrBytes: Buffer.byteLength(CHECKS_STDERR, "utf-8"),
-        },
+        checks: failedChecks(CHECKS_STDOUT, CHECKS_STDERR),
       });
       expect(lastRecordOf(repo.dir)).toStrictEqual(result.record);
     });
@@ -418,6 +450,8 @@ describe("keepSession", () => {
         stdout: CHECKS_STDOUT,
         stderr: CHECKS_STDERR,
         timeoutMs: TIMEOUT_MS,
+        stdoutBytes: Buffer.byteLength(CHECKS_STDOUT, "utf-8"),
+        stderrBytes: Buffer.byteLength(CHECKS_STDERR, "utf-8"),
       });
 
       // Act
@@ -426,12 +460,7 @@ describe("keepSession", () => {
       // Assert
       expect.soft(result.record.status).toBe("blocked");
       expect.soft(result.record.reason).toBe("checks-failed");
-      expect(result.record.checks).toStrictEqual({
-        configured: true,
-        passed: false,
-        stdoutBytes: Buffer.byteLength(CHECKS_STDOUT, "utf-8"),
-        stderrBytes: Buffer.byteLength(CHECKS_STDERR, "utf-8"),
-      });
+      expect(result.record.checks).toStrictEqual(failedChecks(CHECKS_STDOUT, CHECKS_STDERR));
     });
   });
 
@@ -439,7 +468,13 @@ describe("keepSession", () => {
     beforeEach(() => {
       startWith([iteration(1)]);
       editExperiment();
-      execMock.mockResolvedValue({ stdout: LONG_STDOUT, stderr: LONG_STDERR, exitCode: 1 });
+      execMock.mockResolvedValue({
+        stdout: LONG_STDOUT,
+        stderr: LONG_STDERR,
+        exitCode: 1,
+        stdoutBytes: Buffer.byteLength(LONG_STDOUT, "utf-8"),
+        stderrBytes: Buffer.byteLength(LONG_STDERR, "utf-8"),
+      });
     });
 
     it.each([
@@ -462,12 +497,7 @@ describe("keepSession", () => {
 
       // Assert - the counts are what the command printed rather than what the
       // report relayed, so a reader of the log can tell the relay was cut.
-      expect.soft(result.record.checks).toStrictEqual({
-        configured: true,
-        passed: false,
-        stdoutBytes: Buffer.byteLength(LONG_STDOUT, "utf-8"),
-        stderrBytes: Buffer.byteLength(LONG_STDERR, "utf-8"),
-      });
+      expect.soft(result.record.checks).toStrictEqual(failedChecks(LONG_STDOUT, LONG_STDERR));
       expect(lastRecordOf(repo.dir)).toStrictEqual(result.record);
     });
   });

@@ -212,12 +212,13 @@ describe("runHook", () => {
       // Assert
       const lines = labeledLines(run.report, "before");
       expect.soft(lines).toStrictEqual(Array.from({ length: 81 }, () => line));
-      expect(run.record.stdoutBytes).toBe(20200);
+      expect(run.record.stdoutBytes).toBe(Buffer.byteLength(text, "utf-8"));
     });
 
     it("stops mid-line without splitting a multi-byte character", async () => {
       // Arrange
-      const command = printingContentOf("one-long-line.txt", "é".repeat(5000));
+      const content = "é".repeat(5000);
+      const command = printingContentOf("one-long-line.txt", content);
 
       // Act
       const run = await runHook(invocationOf(command));
@@ -225,7 +226,7 @@ describe("runHook", () => {
       // Assert
       const lines = labeledLines(run.report, "before");
       expect.soft(lines).toStrictEqual(["é".repeat(RELAY_LIMIT_BYTES / 2)]);
-      expect(run.record.stdoutBytes).toBe(10000);
+      expect(run.record.stdoutBytes).toBe(Buffer.byteLength(content, "utf-8"));
     });
   });
 
@@ -234,8 +235,9 @@ describe("runHook", () => {
       // Arrange
       const outLine = "a".repeat(100);
       const errLine = "b".repeat(100);
+      const stdout = `${outLine}\n`.repeat(200);
       const command = failingContentOf("both-channels", {
-        stdout: `${outLine}\n`.repeat(200),
+        stdout,
         stderr: `${errLine}\n`.repeat(200),
       });
 
@@ -250,7 +252,7 @@ describe("runHook", () => {
           "hook exited 3",
           ...Array.from({ length: 81 }, () => errLine),
         ]);
-      expect(run.record.stdoutBytes).toBe(20200);
+      expect(run.record.stdoutBytes).toBe(Buffer.byteLength(stdout, "utf-8"));
     });
 
     it("stops stderr mid-line without splitting a multi-byte character", async () => {
@@ -343,5 +345,25 @@ describe("runHook", () => {
       expect.soft(run.record.stdoutBytes).toBe(0);
       expect(run.record.timedOut).toBe(false);
     });
+  });
+
+  describe("when the invocation carries an abort signal", () => {
+    it("kills the hook and records the outcome instead of rejecting", async () => {
+      // Arrange
+      const controller = new AbortController();
+      const command = hookCommand("setTimeout(() => {}, 10000);\n");
+      setTimeout(() => {
+        controller.abort();
+      }, 50);
+      const invocation = { ...invocationOf(command), signal: controller.signal };
+
+      // Act
+      const run = await runHook(invocation);
+
+      // Assert
+      expect.soft(run.record.exitCode).toBe(FAILURE_EXIT_CODE);
+      expect.soft(run.record.timedOut).toBe(false);
+      expect(run.record.durationMs).toBeLessThan(4000);
+    }, 15_000);
   });
 });
