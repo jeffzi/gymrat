@@ -18,27 +18,52 @@ function isRecord(val: unknown): val is Record<string, unknown> {
  */
 const FORBIDDEN_NAME_CHARS = /[\n\r\u{2028}\u{2029}]/u;
 
+/**
+ * Find the outermost `{…}` JSON object using a brace/string-aware scan.
+ *
+ * Mitata's banner lines can contain bare braces (`cpu: {model}`) that trip up a
+ * naive first-`{`-to-last-`}` slice. The scan tracks brace depth while skipping
+ * quoted strings, so only a balanced top-level `{…}` pair is returned.
+ */
+// fallow-ignore-next-line complexity
 function extractJson(stdout: string): Record<string, unknown> {
-  const startIdx = stdout.indexOf("{");
-  const endIdx = stdout.lastIndexOf("}");
+  let depth = 0;
+  let start = -1;
+  let lastParseError: unknown;
 
-  if (startIdx < 0 || startIdx >= endIdx) {
-    throw new AdapterError("No JSON object found in stdout");
+  for (let i = 0; i < stdout.length; i++) {
+    const ch = stdout[i];
+    if (ch === '"') {
+      i++;
+      while (i < stdout.length && stdout[i] !== '"') {
+        if (stdout[i] === "\\") i++;
+        i++;
+      }
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        const slice = stdout.slice(start, i + 1);
+        try {
+          const parsed: unknown = JSON.parse(slice);
+          if (isRecord(parsed)) return parsed;
+        } catch (err) {
+          lastParseError = err;
+        }
+        start = -1;
+      }
+      if (depth < 0) depth = 0;
+    }
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout.slice(startIdx, endIdx + 1));
-  } catch (err) {
-    throw new AdapterError(`Failed to parse JSON: ${messageOf(err)}`);
+  if (lastParseError !== undefined) {
+    throw new AdapterError(`Failed to parse JSON: ${messageOf(lastParseError)}`);
   }
-
-  /* v8 ignore next 3 -- first-`{`-to-last-`}` slice cannot parse to a non-object without throwing */
-  if (!isRecord(parsed)) {
-    throw new AdapterError("JSON must be an object");
-  }
-
-  return parsed;
+  throw new AdapterError("No JSON object found in stdout");
 }
 
 function parseBenchmarks(json: Record<string, unknown>): unknown[] {
@@ -74,7 +99,49 @@ function recordMetric(
   metrics[name] = value;
 }
 
-// fallow-ignore-next-line complexity
+/** Read `stats.p50`, warning and returning `null` when it is missing or non-finite. */
+function resolveP50(stats: Record<string, unknown>, alias: string, warn: WarnSink): number | null {
+  const p50 = stats.p50;
+  if (typeof p50 !== "number") {
+    warn(`Skipping run with malformed stats shape: ${alias} (stats.p50 is not a number)`);
+    return null;
+  }
+  if (!Number.isFinite(p50)) {
+    warn(`Skipping run with non-finite p50: ${alias} (${p50})`);
+    return null;
+  }
+  return p50;
+}
+
+/** Build the metric name prefix, warning and returning `null` when it carries a line terminator. */
+function resolveMetricPrefix(
+  alias: string,
+  args: Record<string, unknown>,
+  warn: WarnSink,
+): string | null {
+  const prefix = buildMetricNamePrefix(alias, args);
+  if (FORBIDDEN_NAME_CHARS.test(prefix)) {
+    warn(
+      `Skipping run with a line terminator in its metric name: ${alias} (the alias or one of its argument values carries one)`,
+    );
+    return null;
+  }
+  return prefix;
+}
+
+/** Record `<prefix>/heap` from `stats.heap.avg` when mitata measured it. */
+function recordHeapMetric(
+  stats: Record<string, unknown>,
+  prefix: string,
+  metrics: Record<string, number>,
+  warn: WarnSink,
+): void {
+  const heap = stats.heap;
+  if (isRecord(heap) && typeof heap.avg === "number" && Number.isFinite(heap.avg)) {
+    recordMetric(metrics, `${prefix}/heap`, heap.avg, warn);
+  }
+}
+
 function extractRunMetrics(
   run: unknown,
   alias: string,
@@ -88,26 +155,34 @@ function extractRunMetrics(
   const stats = run.stats;
   if (!isRecord(args) || !isRecord(stats)) return;
 
-  // `1e999` in JSON parses to Infinity, so a reading that overflowed is a number
-  // here. It would poison any median or geomean it entered, so the run counts as
-  // unusable in exactly the way a malformed one does.
-  const p50 = stats.p50;
-  if (typeof p50 !== "number" || !Number.isFinite(p50)) return;
+  const p50 = resolveP50(stats, alias, warn);
+  if (p50 === null) return;
 
-  const prefix = buildMetricNamePrefix(alias, args);
-  if (FORBIDDEN_NAME_CHARS.test(prefix)) {
-    warn(
-      `Skipping run with a line terminator in its metric name: ${alias} (the alias or one of its argument values carries one)`,
-    );
-    return;
-  }
+  const prefix = resolveMetricPrefix(alias, args, warn);
+  if (prefix === null) return;
 
   recordMetric(metrics, `${prefix}/time`, p50, warn);
+  recordHeapMetric(stats, prefix, metrics, warn);
+}
 
-  const heap = stats.heap;
-  if (isRecord(heap) && typeof heap.avg === "number" && Number.isFinite(heap.avg)) {
-    recordMetric(metrics, `${prefix}/heap`, heap.avg, warn);
-  }
+/**
+ * Serialize a run-argument value for inclusion in a metric name.
+ *
+ * Primitives keep their `String()` form; objects and arrays are serialized via
+ * `JSON.stringify` with sorted keys so that two structurally equal objects
+ * always produce the same metric name.
+ */
+function serializeArgValue(value: unknown): string {
+  if (typeof value !== "object" || value === null) return String(value);
+  return JSON.stringify(value, (_key: string, v: unknown) => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(v).toSorted()) {
+      // oxlint-disable-next-line no-unsafe-type-assertion -- v is a non-null, non-array object
+      sorted[k] = (v as Record<string, unknown>)[k];
+    }
+    return sorted;
+  });
 }
 
 /**
@@ -135,7 +210,7 @@ function buildMetricNamePrefix(alias: string, args: Record<string, unknown>): st
       result += alias.slice(cursor, dollar + 1);
       cursor = dollar + 1;
     } else {
-      result += alias.slice(cursor, dollar) + `${key}=${String(args[key])}`;
+      result += alias.slice(cursor, dollar) + `${key}=${serializeArgValue(args[key])}`;
       cursor = dollar + 1 + key.length;
     }
     dollar = alias.indexOf("$", cursor);

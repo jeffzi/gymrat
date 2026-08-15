@@ -390,14 +390,19 @@ describe("mitata adapter", () => {
       it.each([
         ["positive infinity", "1e999"],
         ["negative infinity", "-1e999"],
-      ])("skips a run whose p50 is %s", (_, literal) => {
+      ])("skips and warns about a run whose p50 is %s", (_, literal) => {
         const stdout = `{"benchmarks":[{"alias":"test/$x","runs":[
           {"name":"test/a","args":{"x":"a"},"stats":{"p50":${literal}}},
           {"name":"test/b","args":{"x":"b"},"stats":{"p50":20}}
         ]}]}`;
 
-        const result = mitataAdapter.parse(stdout);
+        let result: Record<string, number> | undefined;
+        const stderr = captureStderr(() => {
+          result = mitataAdapter.parse(stdout);
+        });
 
+        expect.soft(stderr).toContain("test/$x");
+        expect.soft(stderr).toMatch(/non-finite/i);
         expect(result).toStrictEqual(metricRecord({ "test/x=b/time": 20 }));
       });
 
@@ -698,6 +703,204 @@ describe("mitata adapter", () => {
         });
         const result = mitataAdapter.parse(stdout);
         expect(result).toStrictEqual(metricRecord({ "test/time": 10 }));
+      });
+    });
+
+    describe("non-primitive run-argument serialization", () => {
+      it("serializes an object argument value via JSON rather than [object Object]", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "bench/$opts",
+              runs: [
+                {
+                  name: "bench/cfg",
+                  args: { opts: { size: 100 } },
+                  stats: { p50: 5 },
+                },
+              ],
+            },
+          ],
+        });
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ 'bench/opts={"size":100}/time': 5 }));
+      });
+
+      it("keeps distinct metric names for distinct object argument values", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "bench/$opts",
+              runs: [
+                {
+                  name: "bench/a",
+                  args: { opts: { size: 100 } },
+                  stats: { p50: 5 },
+                },
+                {
+                  name: "bench/b",
+                  args: { opts: { size: 200 } },
+                  stats: { p50: 10 },
+                },
+              ],
+            },
+          ],
+        });
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(
+          metricRecord({
+            'bench/opts={"size":100}/time': 5,
+            'bench/opts={"size":200}/time': 10,
+          }),
+        );
+      });
+
+      it("serializes object keys in sorted order for deterministic names", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "bench/$opts",
+              runs: [
+                {
+                  name: "bench/cfg",
+                  args: { opts: { z: 1, a: 2 } },
+                  stats: { p50: 5 },
+                },
+              ],
+            },
+          ],
+        });
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ 'bench/opts={"a":2,"z":1}/time': 5 }));
+      });
+
+      it("serializes an array argument value via JSON", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "bench/$items",
+              runs: [
+                {
+                  name: "bench/list",
+                  args: { items: [1, 2, 3] },
+                  stats: { p50: 7 },
+                },
+              ],
+            },
+          ],
+        });
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ "bench/items=[1,2,3]/time": 7 }));
+      });
+    });
+
+    describe("non-finite p50 or malformed shape warnings", () => {
+      it("warns when stats.p50 is missing (malformed shape)", () => {
+        const stdout = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "test/$x",
+              runs: [
+                { name: "test/a", args: { x: "a" }, stats: {} },
+                { name: "test/b", args: { x: "b" }, stats: { p50: 20 } },
+              ],
+            },
+          ],
+        });
+        let result: Record<string, number> | undefined;
+        const stderr = captureStderr(() => {
+          result = mitataAdapter.parse(stdout);
+        });
+
+        expect.soft(stderr).toContain("test/$x");
+        expect(result).toStrictEqual(metricRecord({ "test/x=b/time": 20 }));
+      });
+
+      it("routes the skip warning to the warn sink, not stderr", () => {
+        const stdout = `{"benchmarks":[{"alias":"test","runs":[
+          {"name":"test","args":{},"stats":{"p50":1e999}},
+          {"name":"test2","args":{},"stats":{"p50":20}}
+        ]}]}`;
+
+        const warnings: string[] = [];
+        const stderr = captureStderr(() => {
+          mitataAdapter.parse(stdout, (message) => warnings.push(message));
+        });
+
+        expect.soft(warnings.length).toBeGreaterThan(0);
+        expect.soft(warnings[0]).toMatch(/non-finite/i);
+        expect(stderr).toBe("");
+      });
+    });
+
+    describe("brace-aware extractJson", () => {
+      it("parses when banner text before the JSON contains braces", () => {
+        const json = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "encode",
+              runs: [{ name: "encode", args: {}, stats: { p50: 42 } }],
+            },
+          ],
+        });
+        const stdout = `cpu: {model}\nruntime: bun {version}\n\n${json}`;
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ "encode/time": 42 }));
+      });
+
+      it("parses when banner text after the JSON contains braces", () => {
+        const json = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "encode",
+              runs: [{ name: "encode", args: {}, stats: { p50: 42 } }],
+            },
+          ],
+        });
+        const stdout = `${json}\nfooter: {info}`;
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ "encode/time": 42 }));
+      });
+
+      it("parses when braces appear both before and after the JSON", () => {
+        const json = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "encode",
+              runs: [{ name: "encode", args: {}, stats: { p50: 42 } }],
+            },
+          ],
+        });
+        const stdout = `cpu: {model}\n${json}\nfooter: {info}`;
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ "encode/time": 42 }));
+      });
+
+      it("still throws AdapterError when no complete JSON object exists", () => {
+        const stdout = "cpu: {model}\nno json here\nfooter: {info}";
+        const parse = () => mitataAdapter.parse(stdout);
+        expect(parse).toThrow(AdapterError);
+        expect(parse).toThrow(/^Failed to parse JSON:/);
+      });
+
+      it("handles braces inside JSON string values without splitting", () => {
+        const json = JSON.stringify({
+          benchmarks: [
+            {
+              alias: "encode",
+              runs: [
+                {
+                  name: "encode",
+                  args: {},
+                  stats: { p50: 42 },
+                },
+              ],
+            },
+          ],
+        });
+        const stdout = `banner {x}\n${json}\ntrailer {y}`;
+        const result = mitataAdapter.parse(stdout);
+        expect(result).toStrictEqual(metricRecord({ "encode/time": 42 }));
       });
     });
 
