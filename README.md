@@ -102,14 +102,15 @@ gymrat measure --bench "npm run bench" --record
 gymrat pins a baseline, gives you an experiment worktree to edit, and keeps a log of every
 measurement and every decision so an agent (or you) can pick the work up in a fresh process.
 
-| Command                    | What it does                                                                                           |
-| -------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `gymrat start [ref]`       | Create the repository's session, or resume the one it has. Pins the baseline at `ref` (default `HEAD`) |
-| `gymrat iterate`           | Bench the experiment worktree against the baseline worktree, record the result, print the verdict      |
-| `gymrat keep [-m msg]`     | Commit the measured edit once the checks pass, and advance the baseline to that commit                 |
-| `gymrat discard`           | Revert the experiment worktree to its last commit                                                      |
-| `gymrat finalize [-m msg]` | Collapse kept iterations into one squash commit on a new branch and close the session                  |
-| `gymrat status`            | Print the session's history, read back from the log                                                    |
+| Command                     | What it does                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `gymrat start [ref]`        | Create the repository's session, or resume the one it has. Pins the baseline at `ref` (default `HEAD`) |
+| `gymrat iterate`            | Bench the experiment worktree against the baseline worktree, record the result, print the verdict      |
+| `gymrat keep [-m msg]`      | Commit the measured edit once the checks pass, and advance the baseline to that commit                 |
+| `gymrat discard`            | Revert the experiment worktree to its last commit                                                      |
+| `gymrat finalize [-m msg]`  | Collapse kept iterations into one squash commit on a new branch and close the session                  |
+| `gymrat status`             | Print the session's history, read back from the log                                                    |
+| `gymrat supervise [prompt]` | Launch a supervised agent session with wall-clock and spend caps                                       |
 
 ```sh
 gymrat start                     # pin the baseline at HEAD, create the worktrees
@@ -141,9 +142,20 @@ renders the full history plus a closing line naming the final branch. The next `
 closed log and opens a fresh session. Pass `-m <text>` for a custom squash message; without it,
 gymrat generates one listing the kept commits.
 
-Every command except `status` holds a per-repository lock for the duration. A second gymrat run
-against the same repository exits 2 rather than benchmarking alongside the first, since concurrent
-runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
+`supervise` launches an AI agent that drives the session loop autonomously, bounded by a wall-clock
+cap (`--max-minutes`, required) and an optional spend cap (`--max-usd`). The agent receives the
+bundled gymrat skill and the repo's runbook (required in supervised mode) in its system prompt. A
+JSONL event log (`--log <path>`, or auto-generated under `.gymrat/`) records every agent action.
+`--model <name>` selects the model; `--allow-dirty` permits launching with uncommitted changes
+(default: refuse). When the agent session ends naturally (the agent decides it is done), `supervise`
+exits 0; when a cap fires or an error occurs, it exits 1 (cap) or 2 (error). The summary block
+prints on stdout; the `log:` path and warnings print on stderr.
+
+Every command except `status` holds a per-repository lock for the duration. `supervise` holds its
+own lock (separate from the session lock) so two supervised runs cannot drive one session, while
+the agent's nested `iterate`/`keep` calls still acquire the ordinary session lock. A second gymrat
+run against the same repository exits 2 rather than benchmarking alongside the first, since
+concurrent runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
 
 ### Options
 
@@ -173,10 +185,11 @@ through the shell with the working directory set to the target's directory.
 ### Exit codes
 
 - `0`: a report was produced and no gate tripped.
-- `1`: a gate tripped. Three things trip one: a `--fail-on` condition on `compare`, a keep the loop
-  refused (`gymrat keep`), and a stop condition that refuses another iteration (`gymrat iterate`).
-  The full report is printed before the exit, so you can inspect the results. A regressed verdict
-  from `iterate` is not a gate — the verdict block says so, and the command still exits 0.
+- `1`: a gate tripped. Four things trip one: a `--fail-on` condition on `compare`, a keep the loop
+  refused (`gymrat keep`), a stop condition that refuses another iteration (`gymrat iterate`), and a
+  `supervise` session ended by a wall-clock or spend cap. The full report is printed before the
+  exit, so you can inspect the results. A regressed verdict from `iterate` is not a gate — the
+  verdict block says so, and the command still exits 0.
 - `2`: an operational error (unresolvable target, nonzero bench/prepare exit, timeout, zero metrics
   parsed, config error, or invalid usage). gymrat surfaces the captured command output so you can
   see what went wrong.
@@ -213,9 +226,10 @@ block. Glyphs are direction-aware (`✓` improved, `✗` regressed, `≈` unstab
 within noise, `?` inconclusive), so you never do better-is-higher math yourself, and the delta prints
 even under `~`.
 
-Verdicts come from a two-sided Wilcoxon signed-rank test at ≥ 6 nonzero paired differences, a
-half-range noise band below that, and direct median comparison for config-flagged `exact` metrics.
-Add `--verbose` to name the method behind each verdict in the footer. With multiple candidates, the
+Verdicts come from a two-sided Wilcoxon signed-rank test at ≥ 6 nonzero paired differences (signal
+requires `p < 0.05` _and_ the delta clearing the metric's resolution floor), a half-range noise
+band below that, and direct median comparison for config-flagged `exact` metrics. Add `--verbose`
+to name the method behind each verdict in the footer. With multiple candidates, the
 baseline column summarizes every sampling round that any candidate paired on — the union gives the
 strongest estimate of the baseline's central tendency, while each candidate's delta is computed
 from its own paired rounds alone.
@@ -332,7 +346,7 @@ resolves relative to the working directory on every command. All keys are option
   "primary": "decode/time",
   "stop": { "targetValue": 900, "maxIterations": 20 },
   "hooks": { "before": "./scripts/note-start.sh", "after": "./scripts/note-end.sh" },
-  "runbook": ".claude/skills/ecstatic-bench/SKILL.md"
+  "runbook": "skills/gymrat/SKILL.md"
 }
 ```
 

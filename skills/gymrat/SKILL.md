@@ -107,8 +107,9 @@ exists). A finalized session refuses `iterate`, `keep`, `discard`, and `measure 
 2. **Act on hook failures.** Hooks cannot fail the loop, but ignoring their output accumulates
    technical debt.
 
-3. **Never run concurrent sessions.** Every mutating command holds a per-repository lock. A second
-   gymrat process exits 2 — concurrent benchmarks perturb each other.
+3. **Never run concurrent sessions.** Every mutating command holds a per-repository lock;
+   `supervise` holds its own separate lock. A second gymrat process exits 2 — concurrent benchmarks
+   perturb each other.
 
 4. **Discard decisively.** A NO-SIGNAL or REGRESSED iteration that cannot be salvaged should be
    discarded immediately. Reworking without discarding first conflates the old and new changes.

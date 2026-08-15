@@ -56,8 +56,7 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 
 ### Summary and highlights
 
-- The **summary line** (`✓ 2 improved  ✗ 1 regressed ...`) tallies every verdict class at a glance,
-  and doubles as the legend for the glyphs used throughout the report.
+- The **summary line** tallies every verdict class at a glance and doubles as the glyph legend.
 - The **highlights** block lists regressions first, then improvements, with the delta and method
   evidence. Exact metrics show `(exact)`.
 - Metrics marked `≈ unstable` (noise band wider than `unstableNoisePct`) show the noise in the
@@ -139,6 +138,22 @@ highlights
   Chinese, Japanese, Korean (CJK) or other wide characters in metric names or labels may
   misalign columns; label truncation can split a multi-byte character. A display-width
   dependency is not planned.
+- **Metric ordering:** metrics whose names are digit-only sort before alphabetic names. This is a
+  consequence of JavaScript's default sort order and is not configurable.
+- **`status` medians:** `gymrat status` prints medians in the metric's raw units without scaling
+  (e.g. nanoseconds, not milliseconds), unlike `compare` and `measure` which scale byte and
+  time values.
+
+### Known limitations
+
+- The `/heap` byte-resolution floor is derived from a single byte relative to each side's median.
+  For `mitata`'s `heap.avg` statistic — an average of heap snapshots — this floor may be overly
+  conservative, since the average can change by a fraction of a byte even when individual snapshots
+  are byte-quantized.
+- The per-kind **geomean row** in a sectioned report aggregates all of the kind's metrics (gating
+  and non-gating alike), while the `--fail-on geomean:<pct>` gate evaluates a separate **gated
+  geomean** that covers only gating metrics. The two figures can differ when a kind mixes gating
+  and non-gating metrics.
 
 ## How verdicts are decided
 
@@ -146,12 +161,15 @@ Per metric, sample window _i_ pairs target-A run _i_ with target-B run _i_. `del
 from the per-side medians.
 
 - **Signed-rank** (≥ 6 nonzero differences): a two-sided Wilcoxon signed-rank test. Signal when
-  `p < 0.05`.
+  `p < 0.05` _and_ the delta clears the metric's resolution floor (`byteFloorPct` for byte-valued
+  metrics, zero otherwise). A delta that does not clear the floor reads as no-signal even when
+  the test is significant, preventing a one-step quantization move from producing a spurious verdict
+  at any sample count.
 - **Noise band** (fewer than 6 nonzero differences): the band is
   `max(150% × max(halfRange/median over both sides), 0.5%, byteFloorPct)`, and `|delta%|` must
   exceed it to count as signal. `byteFloorPct` applies only to byte-valued metrics (`bytes` unit):
   it is the percentage one byte represents against each side's median, ensuring a one-step
-  quantization move is never called a signal. With fewer than 2 pairs, the band is meaningless and
+  quantization move is never called a signal. The same floor gates the signed-rank path above. With fewer than 2 pairs, the band is meaningless and
   the metric reads _inconclusive_ regardless of delta — the band has no observable spread to measure
   against. Rendered as e.g. `~  -1.9%  ±3.0%  n=4` (glyph, delta, band, and pair count when it
   differs from `--samples`). Runs of 6 or more samples land here too when ties leave fewer than 6
