@@ -1,7 +1,7 @@
 import { isRecord, messageOf } from "../errors.js";
 import { metricRecord } from "../metric-record.js";
-import type { Adapter, MetricDefaults, WarnSink } from "./types.js";
-import { AdapterError, warnToStderr } from "./types.js";
+import type { Adapter, WarnSink } from "./types.js";
+import { AdapterError, defaultsFromSuffixes, warnToStderr } from "./types.js";
 
 /**
  * Characters a metric name may not carry.
@@ -231,11 +231,6 @@ function extractBenchmarkMetrics(
   }
 }
 
-const METRIC_SUFFIXES = [
-  { suffix: "/time", unit: "ns", kind: "time" },
-  { suffix: "/heap", unit: "bytes", kind: "memory" },
-] as const satisfies readonly { suffix: string; unit: MetricDefaults["unit"]; kind: string }[];
-
 /**
  * Adapter for bench scripts that print the JSON `mitata --json` writes.
  *
@@ -281,20 +276,7 @@ const mitataAdapter: Adapter = {
     return metrics;
   },
 
-  defaults(metricName: string): MetricDefaults {
-    for (const { suffix, unit, kind } of METRIC_SUFFIXES) {
-      if (metricName.endsWith(suffix)) {
-        return {
-          direction: "lower",
-          unit,
-          kind,
-          shortName: metricName.slice(0, -suffix.length),
-        };
-      }
-    }
-
-    return { direction: "lower" };
-  },
+  defaults: defaultsFromSuffixes,
 };
 
 export default mitataAdapter;

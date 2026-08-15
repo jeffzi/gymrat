@@ -60,3 +60,32 @@ export interface MetricDefaults {
  * Adapters should raise this and nothing else for unparseable output.
  */
 export class AdapterError extends GymratError {}
+
+/** Suffix→metadata table walked by {@link defaultsFromSuffixes}; first match wins. */
+export const METRIC_SUFFIXES = [
+  { suffix: "/time", unit: "ns", kind: "time" },
+  { suffix: "/heap", unit: "bytes", kind: "memory" },
+] as const satisfies readonly { suffix: string; unit: MetricDefaults["unit"]; kind: string }[];
+
+/**
+ * Derive {@link MetricDefaults} from a metric name by matching against
+ * {@link METRIC_SUFFIXES}.
+ *
+ * When the prefix before the suffix is empty (the metric name equals the
+ * suffix, e.g. `/time`), `shortName` is the full metric name so the report
+ * renders a visible label.
+ */
+export function defaultsFromSuffixes(metricName: string): MetricDefaults {
+  for (const { suffix, unit, kind } of METRIC_SUFFIXES) {
+    if (metricName.endsWith(suffix)) {
+      const prefix = metricName.slice(0, -suffix.length);
+      return {
+        direction: "lower",
+        unit,
+        kind,
+        shortName: prefix === "" ? metricName : prefix,
+      };
+    }
+  }
+  return { direction: "lower" };
+}

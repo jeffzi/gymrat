@@ -1,7 +1,7 @@
 import { computeMedian } from "../math.js";
 import { metricRecord } from "../metric-record.js";
-import type { Adapter, MetricDefaults, WarnSink } from "./types.js";
-import { AdapterError, warnToStderr } from "./types.js";
+import type { Adapter, WarnSink } from "./types.js";
+import { AdapterError, defaultsFromSuffixes, warnToStderr } from "./types.js";
 
 const METRIC_PREFIX = "METRIC";
 
@@ -18,11 +18,6 @@ const LINE_TERMINATOR = /\r\n|[\n\r]/;
  * record it cannot read back.
  */
 const FORBIDDEN_NAME_CHARS = new RegExp(`[${String.fromCodePoint(0x2028, 0x2029)}]`, "u");
-
-const METRIC_SUFFIXES = [
-  { suffix: "/time", unit: "ns", kind: "time" },
-  { suffix: "/heap", unit: "bytes", kind: "memory" },
-] as const satisfies readonly { suffix: string; unit: MetricDefaults["unit"]; kind: string }[];
 
 function parseMetricLine(line: string, warn: WarnSink): { name: string; value: number } | null {
   const trimmed = line.trim();
@@ -96,21 +91,7 @@ const metricLinesAdapter: Adapter = {
     );
   },
 
-  defaults(metricName: string): MetricDefaults {
-    for (const { suffix, unit, kind } of METRIC_SUFFIXES) {
-      if (metricName.endsWith(suffix)) {
-        const prefix = metricName.slice(0, -suffix.length);
-        return {
-          direction: "lower",
-          unit,
-          kind,
-          shortName: prefix === "" ? metricName : prefix,
-        };
-      }
-    }
-
-    return { direction: "lower" };
-  },
+  defaults: defaultsFromSuffixes,
 };
 
 export default metricLinesAdapter;

@@ -970,5 +970,23 @@ describe("mitata adapter", () => {
         expect(result).toStrictEqual({ direction: "lower" });
       },
     );
+
+    describe("empty shortName fallback", () => {
+      it.each([
+        { metricName: "/time", kind: "time", unit: "ns" as const },
+        { metricName: "/heap", kind: "memory", unit: "bytes" as const },
+      ])(
+        "falls back to full metric name for $metricName instead of empty shortName",
+        ({ metricName, kind, unit }) => {
+          const result = mitataAdapter.defaults(metricName);
+          expect(result).toStrictEqual({
+            direction: "lower",
+            unit,
+            kind,
+            shortName: metricName,
+          });
+        },
+      );
+    });
   });
 });
