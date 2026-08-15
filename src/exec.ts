@@ -74,21 +74,37 @@ interface OutputBuffer {
  * reached, subsequent chunks are silently dropped — the stream stays open so the
  * child process is not signalled, but the buffer stops growing.
  */
+function attachCapped(
+  stream: Readable,
+  buffer: OutputBuffer,
+  textKey: "stdout" | "stderr",
+  bytesKey: "stdoutBytes" | "stderrBytes",
+): void {
+  stream.on("data", (chunk: string) => {
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    buffer[bytesKey] += chunkBytes;
+    if (buffer[bytesKey] - chunkBytes >= OUTPUT_CAP_BYTES) return;
+    buffer[textKey] += chunk;
+  });
+}
+
 function captureOutput(stdout: Readable, stderr: Readable): OutputBuffer {
   const buffer: OutputBuffer = { stdout: "", stderr: "", stdoutBytes: 0, stderrBytes: 0 };
-  stdout.on("data", (chunk: string) => {
-    const chunkBytes = Buffer.byteLength(chunk, "utf8");
-    buffer.stdoutBytes += chunkBytes;
-    if (buffer.stdoutBytes - chunkBytes >= OUTPUT_CAP_BYTES) return;
-    buffer.stdout += chunk;
-  });
-  stderr.on("data", (chunk: string) => {
-    const chunkBytes = Buffer.byteLength(chunk, "utf8");
-    buffer.stderrBytes += chunkBytes;
-    if (buffer.stderrBytes - chunkBytes >= OUTPUT_CAP_BYTES) return;
-    buffer.stderr += chunk;
-  });
+  attachCapped(stdout, buffer, "stdout", "stdoutBytes");
+  attachCapped(stderr, buffer, "stderr", "stderrBytes");
   return buffer;
+}
+
+/** Snapshot the four output fields shared by every `ExecResult`/`ExecTimeoutError` variant. */
+function snapshotOutput(
+  buf: OutputBuffer,
+): Pick<ExecResult, "stdout" | "stderr" | "stdoutBytes" | "stderrBytes"> {
+  return {
+    stdout: buf.stdout,
+    stderr: buf.stderr,
+    stdoutBytes: buf.stdoutBytes,
+    stderrBytes: buf.stderrBytes,
+  };
 }
 
 /** The status taskkill exits with when no process carries the given pid. */
@@ -274,27 +290,14 @@ export async function exec(
       killGroup();
       // Snapshot rather than wait for "close": the caller asked to stop now, and a
       // descendant that outlived the group kill would still be holding the pipe.
-      settle({
-        stdout: output.stdout,
-        stderr: output.stderr,
-        exitCode: FAILURE_EXIT_CODE,
-        stdoutBytes: output.stdoutBytes,
-        stderrBytes: output.stderrBytes,
-      });
+      settle({ ...snapshotOutput(output), exitCode: FAILURE_EXIT_CODE });
     }
 
     const { timeoutMs } = options;
     if (timeoutMs) {
       timeoutHandle = setTimeout(() => {
         killGroup();
-        settle({
-          kind: "timeout",
-          stdout: output.stdout,
-          stderr: output.stderr,
-          timeoutMs,
-          stdoutBytes: output.stdoutBytes,
-          stderrBytes: output.stderrBytes,
-        });
+        settle({ kind: "timeout", ...snapshotOutput(output), timeoutMs });
       }, timeoutMs);
     }
 
@@ -306,13 +309,7 @@ export async function exec(
     // "close", not "exit": it waits for the stdio pipes, which the shell's
     // descendants can still be writing to after the shell itself is gone.
     child.on("close", (code) => {
-      settle({
-        stdout: output.stdout,
-        stderr: output.stderr,
-        exitCode: code ?? FAILURE_EXIT_CODE,
-        stdoutBytes: output.stdoutBytes,
-        stderrBytes: output.stderrBytes,
-      });
+      settle({ ...snapshotOutput(output), exitCode: code ?? FAILURE_EXIT_CODE });
     });
 
     function onFailure(err: Error): void {
@@ -323,10 +320,9 @@ export async function exec(
       killGroup();
       const errSuffix = `${err.message}\n`;
       settle({
-        stdout: output.stdout,
+        ...snapshotOutput(output),
         stderr: `${output.stderr}${errSuffix}`,
         exitCode: FAILURE_EXIT_CODE,
-        stdoutBytes: output.stdoutBytes,
         stderrBytes: output.stderrBytes + Buffer.byteLength(errSuffix, "utf8"),
       });
     }
