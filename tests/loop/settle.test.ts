@@ -531,6 +531,37 @@ describe("keepSession", () => {
     });
   });
 
+  describe("when the checks output exceeded the exec output cap", () => {
+    /** Byte count that would result from measuring the capped string alone. */
+    const CAPPED_STDOUT = "capped stdout";
+    const CAPPED_STDERR = "capped stderr";
+    /** Pre-cap totals far larger than the capped strings. */
+    const PRE_CAP_STDOUT_BYTES = 200_000;
+    const PRE_CAP_STDERR_BYTES = 150_000;
+
+    beforeEach(() => {
+      startWith([iteration(1)]);
+      editExperiment();
+      execMock.mockResolvedValue({
+        stdout: CAPPED_STDOUT,
+        stderr: CAPPED_STDERR,
+        exitCode: 1,
+        stdoutBytes: PRE_CAP_STDOUT_BYTES,
+        stderrBytes: PRE_CAP_STDERR_BYTES,
+      });
+    });
+
+    it("records the pre-cap byte counts from exec, not the capped string lengths", async () => {
+      // Act
+      const result = await keepSession(repo.dir, checksConfig());
+
+      // Assert — the keep record carries the original byte counts so a log
+      // reader can tell the output was truncated by the exec cap.
+      expect.soft(result.record.checks.stdoutBytes).toBe(PRE_CAP_STDOUT_BYTES);
+      expect(result.record.checks.stderrBytes).toBe(PRE_CAP_STDERR_BYTES);
+    });
+  });
+
   describe("when the last iteration's gating regression was confirmed", () => {
     it("blocks the keep before the checks ever run", async () => {
       // Arrange

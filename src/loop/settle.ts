@@ -381,8 +381,8 @@ async function runChecks(
       .join("\n"),
     // What the command wrote, not what was relayed: a figure above the relay
     // limit is how a reader of the log learns the report was cut short.
-    stdoutBytes: Buffer.byteLength(result.stdout, "utf-8"),
-    stderrBytes: Buffer.byteLength(result.stderr, "utf-8"),
+    stdoutBytes: result.stdoutBytes,
+    stderrBytes: result.stderrBytes,
   };
 }
 
