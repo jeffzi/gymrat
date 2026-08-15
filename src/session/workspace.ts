@@ -21,6 +21,10 @@ export interface WorkspaceResult {
   baseline: BaselineRef;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace lifecycle
+// ---------------------------------------------------------------------------
+
 /**
  * Create the branch and both worktrees a session runs in.
  *
@@ -129,6 +133,71 @@ export function recreateWorkspace(root: string, branch: string, baselineSha: str
 }
 
 /**
+ * Drop git's bookkeeping for worktrees whose directories are no longer there.
+ *
+ * git keeps the admin entry of a worktree whose directory vanished, and refuses
+ * to add that path back — or to check its branch out again — until the entry
+ * goes. Only entries with nothing on disk behind them go, so a worktree the user
+ * is still working in is left alone.
+ *
+ * @throws GymratError when git refuses to prune.
+ */
+function pruneStaleWorktrees(root: string): void {
+  runGitStep(
+    ["worktree", "prune"],
+    root,
+    "Cannot clear the session's stale worktree entries",
+    "Inspect them with: git worktree list",
+  );
+}
+
+function addExperimentWorktree(root: string, branch: string): void {
+  const dir = experimentWorktreeDir(root);
+  runGitStep(
+    ["worktree", "add", dir, branch],
+    root,
+    `Cannot create the experiment worktree at ${dir}`,
+    `Check whether ${branch} is already checked out elsewhere: git worktree list`,
+  );
+}
+
+function addBaselineWorktree(root: string, sha: string): void {
+  const dir = baselineWorktreeDir(root);
+  runGitStep(
+    ["worktree", "add", "--detach", dir, sha],
+    root,
+    `Cannot create the baseline worktree at ${dir}`,
+    `Check that ${sha} is a commit this repository has: git cat-file -t ${sha}`,
+  );
+}
+
+/**
+ * Take back the branch and worktrees a failed {@link createWorkspace} had made.
+ *
+ * A directory listed in `standing` was there before the attempt began — what a
+ * session whose log was lost leaves behind — so it stays, uncommitted work and
+ * all. The error the caller is about to throw names the path, which is the only
+ * notice the user gets that something is in the way.
+ *
+ * The worktrees go before the branch: git refuses to delete a branch one of them
+ * still has checked out. Every step is best-effort — the caller is about to see
+ * the git step that broke the session, and a cleanup that cannot finish must not
+ * speak in its place.
+ */
+function unwindWorkspace(root: string, branch: string, standing: readonly string[]): void {
+  for (const dir of [experimentWorktreeDir(root), baselineWorktreeDir(root)]) {
+    if (isDirectory(dir) && !standing.includes(dir)) {
+      tryGit(["worktree", "remove", "--force", dir], root);
+    }
+  }
+  tryGit(["branch", "-D", branch], root);
+}
+
+// ---------------------------------------------------------------------------
+// Experiment tree
+// ---------------------------------------------------------------------------
+
+/**
  * Commit everything standing in the experiment worktree, and report the commit.
  *
  * Staging is `add -A` so the commit holds what the agent produced whether it
@@ -144,13 +213,13 @@ export function commitWorkspace(experimentDir: string, message: string): string 
     ["add", "-A"],
     experimentDir,
     `Cannot stage the experiment worktree at ${experimentDir}`,
-    "Inspect what is standing there with: git status",
+    INSPECT_STATUS_HINT,
   );
   runGitStep(
     ["commit", "-m", message],
     experimentDir,
     `Cannot commit the experiment worktree at ${experimentDir}`,
-    "Inspect what is standing there with: git status",
+    INSPECT_STATUS_HINT,
   );
   return runGitStep(
     ["rev-parse", "HEAD"],
@@ -175,13 +244,70 @@ export function revertWorkspace(experimentDir: string): void {
     ["reset", "--hard", "HEAD"],
     experimentDir,
     `Cannot revert the experiment worktree at ${experimentDir}`,
-    "Inspect what is standing there with: git status",
+    INSPECT_STATUS_HINT,
   );
   runGitStep(
     ["clean", "-fd"],
     experimentDir,
     `Cannot remove the untracked files in ${experimentDir}`,
     "Inspect what is standing there with: git status --ignored",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Worktree queries
+// ---------------------------------------------------------------------------
+
+/**
+ * The commit `dir` currently has checked out, as a full hex SHA.
+ *
+ * @throws GymratError when git refuses to read the HEAD.
+ */
+export function worktreeHead(dir: string): string {
+  return runGitStep(
+    ["rev-parse", "HEAD"],
+    dir,
+    `Cannot read the HEAD of the worktree at ${dir}`,
+    "Inspect what is standing there with: git log -1",
+  ).trim();
+}
+
+/**
+ * Whether `dir` holds work git has not committed — untracked files included.
+ *
+ * A directory that is not there reads as clean: a worktree the user deleted
+ * carries no uncommitted work anyone can still act on, and refusing to finalize
+ * over a directory that cannot be inspected would strand the session.
+ */
+export function isWorktreeDirty(dir: string): boolean {
+  if (!isDirectory(dir)) {
+    return false;
+  }
+  return (
+    runGitStep(
+      ["status", "--porcelain"],
+      dir,
+      `Cannot read the status of the worktree at ${dir}`,
+      INSPECT_STATUS_HINT,
+    ).trim() !== ""
+  );
+}
+
+/**
+ * Move the baseline worktree onto `sha`, detached as it was created.
+ *
+ * Detached is not incidental: `sha` is a commit on the session branch, which the
+ * experiment worktree has checked out, and git refuses to check the same branch
+ * out twice.
+ *
+ * @throws GymratError when git refuses the checkout.
+ */
+export function advanceBaseline(baselineDir: string, sha: string): void {
+  runGitStep(
+    ["checkout", "--detach", sha],
+    baselineDir,
+    `Cannot move the baseline worktree at ${baselineDir} to ${sha}`,
+    `Check that ${sha} is a commit this repository has: git cat-file -t ${sha}`,
   );
 }
 
@@ -219,105 +345,12 @@ export function removeWorktrees(
   return warnings;
 }
 
-/**
- * Whether `dir` holds work git has not committed — untracked files included.
- *
- * A directory that is not there reads as clean: a worktree the user deleted
- * carries no uncommitted work anyone can still act on, and refusing to finalize
- * over a directory that cannot be inspected would strand the session.
- */
-export function isWorktreeDirty(dir: string): boolean {
-  if (!isDirectory(dir)) {
-    return false;
-  }
-  return (
-    runGitStep(
-      ["status", "--porcelain"],
-      dir,
-      `Cannot read the status of the worktree at ${dir}`,
-      "Inspect what is standing there with: git status",
-    ).trim() !== ""
-  );
-}
+// ---------------------------------------------------------------------------
+// Git plumbing
+// ---------------------------------------------------------------------------
 
-/**
- * Move the baseline worktree onto `sha`, detached as it was created.
- *
- * Detached is not incidental: `sha` is a commit on the session branch, which the
- * experiment worktree has checked out, and git refuses to check the same branch
- * out twice.
- *
- * @throws GymratError when git refuses the checkout.
- */
-export function advanceBaseline(baselineDir: string, sha: string): void {
-  runGitStep(
-    ["checkout", "--detach", sha],
-    baselineDir,
-    `Cannot move the baseline worktree at ${baselineDir} to ${sha}`,
-    `Check that ${sha} is a commit this repository has: git cat-file -t ${sha}`,
-  );
-}
-
-/**
- * Drop git's bookkeeping for worktrees whose directories are no longer there.
- *
- * git keeps the admin entry of a worktree whose directory vanished, and refuses
- * to add that path back — or to check its branch out again — until the entry
- * goes. Only entries with nothing on disk behind them go, so a worktree the user
- * is still working in is left alone.
- *
- * @throws GymratError when git refuses to prune.
- */
-function pruneStaleWorktrees(root: string): void {
-  runGitStep(
-    ["worktree", "prune"],
-    root,
-    "Cannot clear the session's stale worktree entries",
-    "Inspect them with: git worktree list",
-  );
-}
-
-function addExperimentWorktree(root: string, branch: string): void {
-  const dir = experimentWorktreeDir(root);
-  runGitStep(
-    ["worktree", "add", dir, branch],
-    root,
-    `Cannot create the experiment worktree at ${dir}`,
-    `Check whether ${branch} is already checked out elsewhere: git worktree list`,
-  );
-}
-
-/**
- * Take back the branch and worktrees a failed {@link createWorkspace} had made.
- *
- * A directory listed in `standing` was there before the attempt began — what a
- * session whose log was lost leaves behind — so it stays, uncommitted work and
- * all. The error the caller is about to throw names the path, which is the only
- * notice the user gets that something is in the way.
- *
- * The worktrees go before the branch: git refuses to delete a branch one of them
- * still has checked out. Every step is best-effort — the caller is about to see
- * the git step that broke the session, and a cleanup that cannot finish must not
- * speak in its place.
- */
-function unwindWorkspace(root: string, branch: string, standing: readonly string[]): void {
-  for (const dir of [experimentWorktreeDir(root), baselineWorktreeDir(root)]) {
-    if (isDirectory(dir) && !standing.includes(dir)) {
-      tryGit(["worktree", "remove", "--force", dir], root);
-    }
-  }
-  tryGit(["branch", "-D", branch], root);
-}
-
-function addBaselineWorktree(root: string, sha: string): void {
-  const dir = baselineWorktreeDir(root);
-  runGitStep(
-    ["worktree", "add", "--detach", dir, sha],
-    root,
-    `Cannot create the baseline worktree at ${dir}`,
-    `Check that ${sha} is a commit this repository has: git cat-file -t ${sha}`,
-  );
-}
+/** Hint repeated by every git step whose failure leaves the worktree worth inspecting as-is. */
+const INSPECT_STATUS_HINT = "Inspect what is standing there with: git status";
 
 /**
  * Absolute path of the repository's shared git directory.

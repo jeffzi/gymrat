@@ -4,7 +4,13 @@ import { exec } from "../exec.js";
 import { formatDelta } from "../report/format.js";
 import type { DiscardRecord, IterationRecord, KeepRecord } from "../session/records.js";
 import { appendRecord, requireOpenSession } from "../session/store.js";
-import { advanceBaseline, commitWorkspace, revertWorkspace } from "../session/workspace.js";
+import {
+  advanceBaseline,
+  commitWorkspace,
+  isWorktreeDirty,
+  revertWorkspace,
+  worktreeHead,
+} from "../session/workspace.js";
 import { limitOutput } from "./output-limit.js";
 
 const MS_PER_SECOND = 1000;
@@ -91,7 +97,24 @@ export async function keepSession(
     );
   }
 
-  const checks = await runChecks(config, session.worktrees.experiment, options.signal);
+  const experimentDir = session.worktrees.experiment;
+
+  if (!isWorktreeDirty(experimentDir)) {
+    // The worktree is clean — either the agent made no changes (nothing to
+    // commit), or a prior keep already committed the work but failed before
+    // recording it (retry). The baseline's current position distinguishes them.
+    return keepCleanWorktree(
+      jsonlPath,
+      experimentDir,
+      session.worktrees.baseline,
+      state.lastKeptCommit ?? session.baseline.sha,
+      iteration,
+      configured,
+      options,
+    );
+  }
+
+  const checks = await runChecks(config, experimentDir, options.signal);
   if (checks !== undefined && !checks.passed) {
     return blockedKeep(
       jsonlPath,
@@ -108,27 +131,92 @@ export async function keepSession(
   }
 
   const message = options.message ?? generatedMessage(iteration);
-  const commit = commitWorkspace(session.worktrees.experiment, message);
+  const commit = commitWorkspace(experimentDir, message);
+  const checksField: KeepRecord["checks"] =
+    checks === undefined ? { configured: false } : { configured: true, passed: true };
 
+  return commitKeep(
+    jsonlPath,
+    session.worktrees.baseline,
+    iteration.seq,
+    commit,
+    message,
+    checksField,
+  );
+}
+
+/**
+ * Settle a keep against a worktree that has nothing left to commit: either
+ * nothing was measured (agent never edited the tree) or a prior keep already
+ * committed the work but failed before recording it, in which case the commit
+ * already made is picked up rather than repeated.
+ */
+function keepCleanWorktree(
+  jsonlPath: string,
+  experimentDir: string,
+  baselineDir: string,
+  baselinePosition: string,
+  iteration: IterationRecord,
+  configured: boolean,
+  options: KeepOptions,
+): KeepResult {
+  const head = worktreeHead(experimentDir);
+
+  if (head === baselinePosition) {
+    // HEAD matches the baseline: the agent measured an iteration but never
+    // edited the worktree. There is nothing to commit, and running checks
+    // or git-commit would waste time on a tree that has nothing to give.
+    return blockedKeep(
+      jsonlPath,
+      iteration.seq,
+      "nothing-to-commit",
+      { configured },
+      "Keep refused: the experiment worktree has nothing to commit.\nHint: edit the code in the experiment worktree, then run gymrat keep again.",
+    );
+  }
+
+  // HEAD is ahead of the baseline: a prior call committed the work but
+  // failed at advanceBaseline or appendRecord. Skip the commit and pick up
+  // where the prior call left off — the checks already passed on the first
+  // attempt, and the commit is already made.
+  const message = options.message ?? generatedMessage(iteration);
+  return commitKeep(jsonlPath, baselineDir, iteration.seq, head, message, { configured });
+}
+
+/**
+ * Record a keep that committed, advance the baseline to it, and phrase the report.
+ *
+ * Both the fresh commit made by `keepSession` and the one recovered by
+ * {@link keepCleanWorktree} on retry settle through here, so the record shape
+ * and the report wording stay identical whichever path produced the commit.
+ */
+function commitKeep(
+  jsonlPath: string,
+  baselineDir: string,
+  seq: number,
+  commit: string,
+  message: string,
+  checks: KeepRecord["checks"],
+): KeepResult {
   const record: KeepRecord = {
     type: "keep",
-    seq: iteration.seq,
+    seq,
     at: new Date().toISOString(),
     status: "committed",
     commit,
     message,
-    checks: checks === undefined ? { configured: false } : { configured: true, passed: true },
+    checks,
   };
   // Move the baseline before recording the keep: a record written first would
   // settle the iteration even when git refuses the advance, leaving the loop
   // sampling a baseline the log says it has already left behind. Failing with
   // the iteration still unsettled lets the agent retry the keep.
-  advanceBaseline(session.worktrees.baseline, commit);
+  advanceBaseline(baselineDir, commit);
   appendRecord(jsonlPath, record);
 
   return {
     record,
-    report: `Kept iteration ${iteration.seq} as ${commit}\n  message: ${message}\n  the baseline now measures against this commit`,
+    report: `Kept iteration ${seq} as ${commit}\n  message: ${message}\n  the baseline now measures against this commit`,
   };
 }
 

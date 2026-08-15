@@ -280,6 +280,20 @@ describe("readRecords", () => {
       expect.soft(messageOf(error)).toMatch(/session/i);
     });
   });
+
+  describe("when the log's final line is unterminated", () => {
+    it("skips the torn line and returns the complete records before it", () => {
+      // Arrange
+      const jsonlPath = jsonlHolding([JSON.stringify(SESSION)]);
+      fs.appendFileSync(jsonlPath, '{"type":"iter');
+
+      // Act
+      const records = readRecords(jsonlPath);
+
+      // Assert
+      expect(records).toStrictEqual([SESSION]);
+    });
+  });
 });
 
 describe("foldSession", () => {

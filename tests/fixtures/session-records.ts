@@ -109,6 +109,7 @@ export function expectedHookRecord(
   return {
     type: "hook",
     timedOut: false,
+    stderrBytes: 0,
     ...overrides,
     // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
     durationMs: expect.any(Number),

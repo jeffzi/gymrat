@@ -30,6 +30,23 @@ function settleStateOf(record: KeepRecord | DiscardRecord): SettleState {
     : { kind: "keep-blocked", reason: record.reason };
 }
 
+/** The iteration a settling record is still waiting to hear about. */
+interface PendingIteration {
+  position: number;
+  seq: number;
+}
+
+/**
+ * The last keep-blocked that settled the pending iteration, so a discard
+ * that supersedes it can relocate the block to a standalone line and take
+ * the iteration's display for itself.
+ */
+interface LastGatingBlock {
+  iterationPosition: number;
+  blockPosition: number;
+  blockState: SettleState;
+}
+
 /**
  * The settle state each record's own line states, keyed by that record's
  * position in the log.
@@ -50,26 +67,61 @@ function settleStateOf(record: KeepRecord | DiscardRecord): SettleState {
  */
 function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleState> {
   const states = new Map<number, SettleState>();
-  let pending: { position: number; seq: number } | undefined;
+  let pending: PendingIteration | undefined;
+  let lastBlock: LastGatingBlock | undefined;
 
   for (const [position, record] of records.entries()) {
     switch (record.type) {
       case "iteration":
         pending = { position, seq: record.seq };
+        lastBlock = undefined;
         break;
       case "keep":
       case "discard":
-        if (pending !== undefined && pending.seq === record.seq) {
-          states.set(pending.position, settleStateOf(record));
-        } else {
-          states.set(position, settleStateOf(record));
-        }
+        lastBlock = applySettleRecord(states, pending, lastBlock, position, record);
         break;
       default:
         break;
     }
   }
   return states;
+}
+
+/**
+ * Record `record`'s settle state and report the gating block still standing
+ * afterwards, if any.
+ *
+ * A record settling the pending iteration writes there directly, and starts
+ * tracking the block if it is one. A discard with no pending match instead
+ * looks for a standing block: that is a discard that follows a gating block,
+ * which supersedes the block's claim on the iteration it refused — the block
+ * moves to its own position and the iteration shows as discarded. Anything
+ * else settles no iteration and keeps its own line.
+ */
+function applySettleRecord(
+  states: Map<number, SettleState>,
+  pending: PendingIteration | undefined,
+  lastBlock: LastGatingBlock | undefined,
+  position: number,
+  record: KeepRecord | DiscardRecord,
+): LastGatingBlock | undefined {
+  const settle = settleStateOf(record);
+
+  if (pending !== undefined && pending.seq === record.seq) {
+    states.set(pending.position, settle);
+    return settle.kind === "keep-blocked"
+      ? { iterationPosition: pending.position, blockPosition: position, blockState: settle }
+      : undefined;
+  }
+
+  if (record.type === "discard" && lastBlock !== undefined) {
+    states.set(lastBlock.iterationPosition, settle);
+    states.set(lastBlock.blockPosition, lastBlock.blockState);
+    return undefined;
+  }
+
+  states.set(position, settle);
+  return lastBlock;
 }
 
 /**

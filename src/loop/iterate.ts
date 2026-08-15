@@ -538,9 +538,10 @@ function resolvePrimary(
 ): LoopPrimary {
   if (primary === GEOMEAN_PRIMARY) {
     const gating = metricRecord(Object.entries(metricMeta).filter(([, meta]) => meta.gating));
+    const geomean = computeGeomean(verdicts, gating);
     return {
       kind: GEOMEAN_PRIMARY,
-      deltaPct: recordedDelta(computeGeomean(verdicts, gating).value),
+      deltaPct: geomean.n === 0 ? null : recordedDelta(geomean.value),
     };
   }
   const measured = verdicts[primary];

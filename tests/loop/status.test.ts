@@ -248,6 +248,50 @@ describe("statusSession", () => {
     });
   });
 
+  describe("when a gating block was superseded by a discard", () => {
+    it("renders both: the iteration shows the final settle and the block keeps its line", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, sessionRecord(root), [
+        iteration(1, 9.4, "regressed"),
+        blockedKeep(1, { reason: "gating-regression", checks: { configured: true } }),
+        discardRecord(2),
+      ]);
+
+      // Act
+      const report = statusSession(root, resolvedConfig());
+
+      // Assert
+      expect(bodyLines(report)).toStrictEqual([
+        "iteration 1 · ✗ +9.4% · discarded",
+        "keep-blocked (gating-regression)",
+        "1 iteration · 0 kept · 1 discarded",
+      ]);
+    });
+  });
+
+  describe("when the log's final line is torn from a concurrent append", () => {
+    it("renders the session from the complete records before the torn line", () => {
+      // Arrange
+      const root = freshRoot();
+      writeSessionLog(root, sessionRecord(root), [
+        iteration(1, -7.2, "improved"),
+        committedKeep(1, { commit: KEEP_COMMIT }),
+      ]);
+      // cspell:disable-next-line -- intentionally truncated JSON simulating a torn write
+      fs.appendFileSync(sessionJsonlPath(root), '{"type":"itera');
+
+      // Act
+      const report = statusSession(root, resolvedConfig());
+
+      // Assert
+      expect(bodyLines(report)).toStrictEqual([
+        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+        "1 iteration · 1 kept · 0 discarded",
+      ]);
+    });
+  });
+
   describe("when the session was finalized", () => {
     it("closes the report under the totals with the branch and commit it squashed onto", () => {
       // Arrange

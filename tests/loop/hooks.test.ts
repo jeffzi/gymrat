@@ -197,6 +197,20 @@ describe("runHook", () => {
         expectedHookRecord({ stage: "before", seq: 2, exitCode: 0, stdoutBytes: 6 }),
       );
     });
+
+    it("records stderrBytes from the hook's actual stderr", async () => {
+      // Arrange
+      const command = hookCommand(
+        `process.stdout.write("hello\\n");\nprocess.stderr.write("warning\\n");\n`,
+      );
+
+      // Act
+      const run = await runHook(invocationOf(command));
+
+      // Assert
+      expect.soft(run.record.stdoutBytes).toBe(6);
+      expect(run.record).toHaveProperty("stderrBytes", 8);
+    });
   });
 
   describe("when the hook prints more than the 8 KiB gymrat will relay", () => {
@@ -290,7 +304,13 @@ describe("runHook", () => {
         .soft(labeledLines(run.report, "before"))
         .toStrictEqual(["checked the cache", "hook exited 3", "no warm copy"]);
       expect(run.record).toStrictEqual(
-        expectedHookRecord({ stage: "before", seq: 2, exitCode: 3, stdoutBytes: 18 }),
+        expectedHookRecord({
+          stage: "before",
+          seq: 2,
+          exitCode: 3,
+          stdoutBytes: 18,
+          stderrBytes: 13,
+        }),
       );
     });
 

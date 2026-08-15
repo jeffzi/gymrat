@@ -170,8 +170,10 @@ const iterationRecordSchema = Type.Object(
 /**
  * Counter shared by the records that settle an iteration.
  *
- * A keep blocked before anything was measured, and the hooks that run around the first
- * iteration, carry `0` — no iteration has been minted yet.
+ * `minimum: 0` is the schema's admissible range, not a value the current code produces: every
+ * settling record's seq traces back to an iteration minted as `lastSeq + 1`, so the lowest seq
+ * seen in practice is `1`. The wider range is there to accept logs from other code paths or
+ * earlier versions.
  */
 const settledSeqSchema = Type.Integer({ ...expected("a non-negative integer"), minimum: 0 });
 
@@ -194,8 +196,9 @@ const keepRecordSchema = Type.Object(
           Type.Literal("checks-failed"),
           Type.Literal("gating-regression"),
           Type.Literal("nothing-measured"),
+          Type.Literal("nothing-to-commit"),
         ],
-        expected(`"checks-failed", "gating-regression" or "nothing-measured"`),
+        expected(`"checks-failed", "gating-regression", "nothing-measured" or "nothing-to-commit"`),
       ),
     ),
     checks: Type.Object(
@@ -230,6 +233,7 @@ const hookRecordSchema = Type.Object(
     exitCode: Type.Integer(expected("an integer")),
     durationMs: numberSchema,
     stdoutBytes: Type.Integer(expected("an integer")),
+    stderrBytes: Type.Optional(Type.Integer(expected("an integer"))),
     timedOut: booleanSchema,
   },
   strictObjectOptions,

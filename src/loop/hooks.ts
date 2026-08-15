@@ -90,6 +90,8 @@ export async function runHook(invocation: HookInvocation): Promise<HookRun> {
   const durationMs = performance.now() - startedAt;
   const outcome = describeOutcome(result);
 
+  const stderrBytes = Buffer.byteLength(outcome.stderr, "utf-8");
+
   return {
     record: {
       type: "hook",
@@ -97,9 +99,8 @@ export async function runHook(invocation: HookInvocation): Promise<HookRun> {
       seq: invocation.seq,
       exitCode: outcome.exitCode,
       durationMs,
-      // What the hook wrote, not what was relayed: a figure above the limit is
-      // how a reader of the log learns the report was cut short.
       stdoutBytes: Buffer.byteLength(outcome.stdout, "utf-8"),
+      stderrBytes,
       timedOut: outcome.timedOut,
     },
     report: formatReport(invocation.stage, outcome, timeoutMs),

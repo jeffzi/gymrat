@@ -113,6 +113,26 @@ function filteredRounds(name: string, values: readonly number[]): Record<string,
 /** The confirm-rerun template a consumer configures when their bench can be narrowed. */
 const FILTER = "npm run bench -- --filter {names}";
 
+/** The verdict a signed-rank metric carries after moving `deltaPct` percent, however it settled. */
+function signedRankVerdict(
+  deltaPct: number,
+  verdict: "improved" | "regressed" | "no-signal",
+  confirmed: boolean,
+): Record<string, unknown> {
+  return {
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    deltaPct: expect.closeTo(deltaPct, 6),
+    verdict,
+    method: "signed-rank",
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    p: expect.any(Number),
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    noisePct: expect.any(Number),
+    gating: true,
+    confirmed,
+  };
+}
+
 /**
  * A session header whose worktrees sit beside the default paths rather than on
  * them, so a run that recomputed the paths instead of reading them off the
@@ -626,18 +646,9 @@ describe("iterateSession", () => {
       const result = await iterateSession(repo.dir, resolved);
 
       // Assert
-      expect.soft(result.record.metrics.total_ms).toStrictEqual({
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        deltaPct: expect.closeTo(10, 6),
-        verdict: "regressed",
-        method: "signed-rank",
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        p: expect.any(Number),
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        noisePct: expect.any(Number),
-        gating: true,
-        confirmed: true,
-      });
+      expect
+        .soft(result.record.metrics.total_ms)
+        .toStrictEqual(signedRankVerdict(10, "regressed", true));
       expect.soft(result.record.outcome).toBe("regressed");
       expect(trimmedReportLines(result.report)).toContain(
         "total_ms: regression confirmed on rerun",
@@ -667,18 +678,9 @@ describe("iterateSession", () => {
         const result = await iterateSession(repo.dir, resolved);
 
         // Assert
-        expect.soft(result.record.metrics.total_ms).toStrictEqual({
-          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-          deltaPct: expect.closeTo(10, 6),
-          verdict: "no-signal",
-          method: "signed-rank",
-          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-          p: expect.any(Number),
-          // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-          noisePct: expect.any(Number),
-          gating: true,
-          confirmed: false,
-        });
+        expect
+          .soft(result.record.metrics.total_ms)
+          .toStrictEqual(signedRankVerdict(10, "no-signal", false));
         expect.soft(result.record.outcome).toBe("no-signal");
         expect(trimmedReportLines(result.report)).toContain(
           "total_ms: regression not confirmed on rerun",
@@ -790,18 +792,9 @@ describe("iterateSession", () => {
       const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
 
       // Assert
-      expect.soft(result.record.metrics.alloc_bytes).toStrictEqual({
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        deltaPct: expect.closeTo(10, 6),
-        verdict: "regressed",
-        method: "signed-rank",
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        p: expect.any(Number),
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        noisePct: expect.any(Number),
-        gating: true,
-        confirmed: false,
-      });
+      expect
+        .soft(result.record.metrics.alloc_bytes)
+        .toStrictEqual(signedRankVerdict(10, "regressed", false));
       expect(result.record.outcome).toBe("regressed");
     });
 
@@ -916,18 +909,7 @@ describe("iterateSession", () => {
 
     /** The verdict an improved signed-rank metric carries, having moved `deltaPct`. */
     function improvedVerdict(deltaPct: number): Record<string, unknown> {
-      return {
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        deltaPct: expect.closeTo(deltaPct, 6),
-        verdict: "improved",
-        method: "signed-rank",
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        p: expect.any(Number),
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        noisePct: expect.any(Number),
-        gating: true,
-        confirmed: false,
-      };
+      return signedRankVerdict(deltaPct, "improved", false);
     }
 
     beforeEach(() => {
@@ -1075,6 +1057,55 @@ describe("iterateSession", () => {
       // Assert
       const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
       expect(primary).toBe("primary: · verdict: NO-SIGNAL");
+    });
+  });
+
+  describe("when the geomean primary has no qualifying inputs", () => {
+    beforeEach(() => {
+      writeSessionLog(repo.dir, sessionRecord(repo.dir));
+      stubSamples(repo.dir, improvedRounds(), baselineRounds());
+    });
+
+    it("records null delta when every metric is non-gating", async () => {
+      // Act
+      const result = await iterateSession(
+        repo.dir,
+        resolvedConfig({
+          metrics: { total_ms: { gating: false }, alloc_bytes: { gating: false } },
+        }),
+      );
+
+      // Assert
+      expect(result.record.primary).toStrictEqual({
+        kind: "geomean",
+        deltaPct: null,
+      });
+    });
+
+    it("records null delta when every metric exceeds the unstable noise threshold", async () => {
+      // Act
+      const result = await iterateSession(repo.dir, resolvedConfig({ unstableNoisePct: 0 }));
+
+      // Assert
+      expect(result.record.primary).toStrictEqual({
+        kind: "geomean",
+        deltaPct: null,
+      });
+    });
+
+    it("states no percentage beside the geomean verdict it reports", async () => {
+      // Act
+      const result = await iterateSession(
+        repo.dir,
+        resolvedConfig({
+          metrics: { total_ms: { gating: false }, alloc_bytes: { gating: false } },
+        }),
+      );
+
+      // Assert
+      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
+      expect.soft(primary).toContain("NO-SIGNAL");
+      expect(primary).not.toMatch(/NaN|0\.0%/);
     });
   });
 
@@ -1258,11 +1289,15 @@ describe("iterateSession", () => {
       expect
         .soft(trimmedReportLines(result.report).slice(0, 2))
         .toStrictEqual(["[before] hook exited 3", "[before] no warm copy"]);
-      expect
-        .soft(hookRecords())
-        .toStrictEqual([
-          expectedHookRecord({ stage: "before", seq: 2, exitCode: 3, stdoutBytes: 0 }),
-        ]);
+      expect.soft(hookRecords()).toStrictEqual([
+        expectedHookRecord({
+          stage: "before",
+          seq: 2,
+          exitCode: 3,
+          stdoutBytes: 0,
+          stderrBytes: 13,
+        }),
+      ]);
       expect.soft(lastIterationOf(repo.dir).seq).toBe(2);
       expect(result.record.outcome).toBe("improved");
     });

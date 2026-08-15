@@ -205,8 +205,20 @@ describe("parseRecord", () => {
           checks: { configured: false },
         }),
       },
+      {
+        description: "a keep blocked because nothing was committed",
+        record: patching(blockedKeepRecord, {
+          seq: 1,
+          reason: "nothing-to-commit",
+          checks: { configured: true },
+        }),
+      },
       { description: "a discard", record: discardRecord },
       { description: "a hook", record: hookRecord },
+      {
+        description: "a hook carrying stderrBytes",
+        record: patching(hookRecord, { stderrBytes: 42 }),
+      },
       { description: "a finalize", record: finalizeRecord },
     ])("returns $description record unchanged", ({ record }) => {
       const result = parseRecord(record);

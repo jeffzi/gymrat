@@ -24,7 +24,7 @@ import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
-  AT,
+  blockedKeep,
   committedKeep,
   discardRecord,
   finalizeRecord,
@@ -167,13 +167,42 @@ function rerunConfirm(confirm: IterationRecord["confirm"]): IterationRecord {
 
 /** The keep a gating regression refused, numbered with the iteration it refused. */
 function gatingBlock(seq: number): KeepRecord {
+  return blockedKeep(seq, { reason: "gating-regression", checks: { configured: true } });
+}
+
+/** The keep result a gating regression refuses before the checks ever run. */
+function gatingRegressionBlock(seq: number): Record<string, unknown> {
   return {
     type: "keep",
     seq,
-    at: AT,
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    at: expect.stringMatching(ISO_PATTERN),
     status: "blocked",
     reason: "gating-regression",
     checks: { configured: true },
+  };
+}
+
+/** The keep result blocked because the experiment worktree had nothing to commit. */
+function nothingToCommitBlock(seq: number): Record<string, unknown> {
+  return {
+    type: "keep",
+    seq,
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    at: expect.stringMatching(ISO_PATTERN),
+    status: "blocked",
+    reason: "nothing-to-commit",
+    checks: { configured: true },
+  };
+}
+
+/** The discard result settling the iteration numbered `seq`. */
+function discardResult(seq: number): Record<string, unknown> {
+  return {
+    type: "discard",
+    seq,
+    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
+    at: expect.stringMatching(ISO_PATTERN),
   };
 }
 
@@ -515,15 +544,7 @@ describe("keepSession", () => {
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
       expect.soft(statusOf(experimentWorktreeDir(repo.dir))).not.toBe("");
-      expect(result.record).toStrictEqual({
-        type: "keep",
-        seq: 1,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        at: expect.stringMatching(ISO_PATTERN),
-        status: "blocked",
-        reason: "gating-regression",
-        checks: { configured: true },
-      });
+      expect(result.record).toStrictEqual(gatingRegressionBlock(1));
     });
 
     it("refuses without claiming anything went unmeasured", async () => {
@@ -601,15 +622,7 @@ describe("keepSession", () => {
 
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
-      expect(result.record).toStrictEqual({
-        type: "keep",
-        seq: 1,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        at: expect.stringMatching(ISO_PATTERN),
-        status: "blocked",
-        reason: "gating-regression",
-        checks: { configured: true },
-      });
+      expect(result.record).toStrictEqual(gatingRegressionBlock(1));
     });
   });
 
@@ -626,15 +639,7 @@ describe("keepSession", () => {
 
       // Assert
       expect.soft(execMock).not.toHaveBeenCalled();
-      expect(result.record).toStrictEqual({
-        type: "keep",
-        seq: 1,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        at: expect.stringMatching(ISO_PATTERN),
-        status: "blocked",
-        reason: "gating-regression",
-        checks: { configured: true },
-      });
+      expect(result.record).toStrictEqual(gatingRegressionBlock(1));
     });
 
     it("names the unmeasured metric and points the agent at the filter", async () => {
@@ -706,6 +711,74 @@ describe("keepSession", () => {
       // Assert
       await expect.soft(keeping).rejects.toThrow();
       expect(lastRecordOf(repo.dir)).toMatchObject({ type: "iteration", seq: 1 });
+    });
+  });
+
+  describe.skipIf(process.platform === "win32")(
+    "when the commit landed but the baseline advance failed",
+    () => {
+      it("recovers the keep on retry instead of dying in git commit", async () => {
+        // Arrange
+        startWith([iteration(1)]);
+        editExperiment();
+        checksPass();
+        const worktree = experimentWorktreeDir(repo.dir);
+        const baseline = baselineWorktreeDir(repo.dir);
+        const gitPointer = fs.readFileSync(path.join(baseline, ".git"), "utf-8");
+        const headBefore = headOf(worktree);
+
+        // Sabotage baseline to fail at advance
+        fs.writeFileSync(path.join(baseline, ".git"), "gitdir: /nonexistent\n");
+
+        // First attempt: commits but fails at advance
+        await expect(keepSession(repo.dir, checksConfig())).rejects.toThrow();
+
+        // The commit landed — worktree is clean, HEAD moved forward
+        const committed = headOf(worktree);
+        expect.soft(statusOf(worktree)).toBe("");
+        expect.soft(committed).not.toBe(headBefore);
+
+        // Restore baseline
+        fs.writeFileSync(path.join(baseline, ".git"), gitPointer);
+
+        // Act — retry
+        const result = await keepSession(repo.dir, checksConfig());
+
+        // Assert
+        expect.soft(result.record.status).toBe("committed");
+        expect.soft(result.record.commit).toBe(committed);
+        expect(headOf(baseline)).toBe(committed);
+      });
+    },
+  );
+
+  describe("when the experiment worktree has nothing to commit", () => {
+    it("appends a nothing-to-commit blocked record when HEAD matches the baseline", async () => {
+      // Arrange — iterate measured something but the agent made no changes
+      startWith([iteration(1)]);
+      checksPass();
+
+      // Act
+      const result = await keepSession(repo.dir, checksConfig());
+
+      // Assert
+      expect.soft(execMock).not.toHaveBeenCalled();
+      expect(result.record).toStrictEqual(nothingToCommitBlock(1));
+    });
+
+    it("appends a nothing-to-commit blocked record after a prior committed keep", async () => {
+      // Arrange — iteration 1 was kept, iteration 2 was measured, no new edits
+      startWith([iteration(1)]);
+      editExperiment();
+      checksPass();
+      await keepSession(repo.dir, checksConfig());
+      appendRecord(sessionJsonlPath(repo.dir), iteration(2));
+
+      // Act
+      const result = await keepSession(repo.dir, checksConfig());
+
+      // Assert
+      expect(result.record).toStrictEqual(nothingToCommitBlock(2));
     });
   });
 
@@ -798,12 +871,7 @@ describe("discardSession", () => {
       const result = discardSession(repo.dir);
 
       // Assert
-      expect.soft(result.record).toStrictEqual({
-        type: "discard",
-        seq: 1,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        at: expect.stringMatching(ISO_PATTERN),
-      });
+      expect.soft(result.record).toStrictEqual(discardResult(1));
       expect(lastRecordOf(repo.dir)).toStrictEqual(result.record);
     });
   });
@@ -860,12 +928,7 @@ describe("discardSession", () => {
       // number no iteration has used yet. Reusing 1 would overwrite the block in
       // `status`, which reports the last settling record to carry an iteration's
       // number, and the block is history the log has to keep showing.
-      expect.soft(result.record).toStrictEqual({
-        type: "discard",
-        seq: 2,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        at: expect.stringMatching(ISO_PATTERN),
-      });
+      expect.soft(result.record).toStrictEqual(discardResult(2));
       expect(readRecords(sessionJsonlPath(repo.dir)).slice(-2)).toStrictEqual([
         gatingBlock(1),
         result.record,
@@ -884,12 +947,7 @@ describe("discardSession", () => {
 
       // Assert
       expect.soft(statusOf(experimentWorktreeDir(repo.dir))).toBe("");
-      expect(result.record).toStrictEqual({
-        type: "discard",
-        seq: 2,
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        at: expect.stringMatching(ISO_PATTERN),
-      });
+      expect(result.record).toStrictEqual(discardResult(2));
     });
   });
 
@@ -1008,6 +1066,26 @@ describe("the settle commands", () => {
     const record = lastRecordOf(repo.dir);
     expect.soft(record).toMatchObject({ type: "keep", status: "committed" });
     expect(stdout()).toContain(headOf(experimentWorktreeDir(repo.dir)).slice(0, 7));
+  });
+
+  it("exits 1 when nothing to commit blocks the keep", async () => {
+    // Arrange
+    startWith([iteration(1)]);
+    writeConfigFile();
+    process.chdir(repo.dir);
+    const program = createRunnableProgram({ exitOverride: "all", silent: true });
+    captureStdout();
+    mockProcessExit();
+
+    // Act
+    const parsing = program.parseAsync(["node", "cli.js", "keep"]);
+
+    // Assert
+    await expect(parsing).rejects.toHaveProperty("exitCode", 1);
+    expect(lastRecordOf(repo.dir)).toMatchObject({
+      status: "blocked",
+      reason: "nothing-to-commit",
+    });
   });
 
   it("exits 1 when the checks block the keep", async () => {

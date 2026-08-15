@@ -128,18 +128,33 @@ function serializeRecord(record: SessionLogRecord): string {
  * when the first record is not a session header. Every message names the log and the
  * 1-based line at fault.
  */
+// fallow-ignore-next-line complexity
 export function readRecords(jsonlPath: string): SessionLogRecord[] {
   if (!fs.existsSync(jsonlPath)) {
     return [];
   }
 
   const records: SessionLogRecord[] = [];
-  const lines = fs.readFileSync(jsonlPath, "utf-8").split("\n");
+  const content = fs.readFileSync(jsonlPath, "utf-8");
+  const lines = content.split("\n");
+
+  // A file whose last byte is not `\n` ends on a line the writer never
+  // finished — a torn write from a concurrent append or a crash mid-flush.
+  // Skipping it is safe: appendRecord writes each record as a single
+  // `appendFileSync` call terminated by `\n`, so a line that lacks the
+  // terminator was never completed and must not be trusted.
+  const lastUnterminated = content.length > 0 && !content.endsWith("\n");
 
   for (const [index, line] of lines.entries()) {
     if (line.trim() === "") {
       continue;
     }
+
+    const isLastLine = index === lines.length - 1;
+    if (isLastLine && lastUnterminated) {
+      break;
+    }
+
     const at = `${jsonlPath}:${index + 1}`;
 
     let value: unknown;
