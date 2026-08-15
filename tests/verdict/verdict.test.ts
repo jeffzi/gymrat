@@ -634,7 +634,6 @@ describe("computeVerdicts", () => {
 
       const verdict = getBandVerdict(result, "metric");
       expect(verdict.noisePct).toBeCloseTo(30, 5);
-      expect(verdict.noisePct).toBeCloseTo(30, 5);
     });
 
     it("treats spread as 0 when median is 0 (band = floor)", () => {
