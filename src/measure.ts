@@ -1,6 +1,5 @@
 import { getAdapter } from "./adapters/index.js";
 import type { ResolvedMetricMeta } from "./config.js";
-import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import type { MeasurementResult, MetricMeasurement } from "./report/types.js";
 import {
@@ -94,12 +93,6 @@ export async function measure(options: MeasureOptions): Promise<MeasurementResul
       };
 
       const [collected] = await collectSamples(adapter, [ctx], options, signal);
-
-      /* v8 ignore if -- defensive check; collectSamples returns one result per target given */
-      if (collected === undefined) {
-        throw new GymratError("collectSamples returned no result for the target");
-      }
-
       const samples = collected.samples;
 
       const measurement: Measurement = {

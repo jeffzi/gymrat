@@ -1,8 +1,6 @@
-import { execFileSync, type StdioOptions } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 import { GymratError, stderrTextOf } from "./errors.js";
-
-const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 /**
  * Run git with suppressed output, returning stdout.
@@ -16,7 +14,7 @@ export function runGit(args: readonly string[], cwd: string): string {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf-8",
-    stdio: GIT_STDIO,
+    stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, LC_ALL: "C" },
     maxBuffer: 50 * 1024 * 1024,
   });

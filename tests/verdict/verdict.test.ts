@@ -35,7 +35,7 @@ function getSignedRankVerdict(
 }
 
 /**
- * Fetch a verdict that must have come from the band path, so `band` is readable.
+ * Fetch a verdict that must have come from the band path.
  */
 function getBandVerdict(result: Record<string, MetricVerdict>, key: string): BandVerdict {
   const verdict = getVerdict(result, key);
@@ -551,9 +551,6 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getBandVerdict(result, "metric");
-      expect(verdict.band).toBeCloseTo(30, 1);
-      // The band a delta is judged against is the metric's own noise, so a band
-      // verdict reports the same number twice.
       expect(verdict.noisePct).toBeCloseTo(30, 1);
     });
 
@@ -569,7 +566,7 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getBandVerdict(result, "metric");
-      expect(verdict.band).toBeCloseTo(0.5, 1);
+      expect(verdict.noisePct).toBeCloseTo(0.5, 1);
     });
 
     it.each([
@@ -636,7 +633,7 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getBandVerdict(result, "metric");
-      expect(verdict.band).toBeCloseTo(30, 5);
+      expect(verdict.noisePct).toBeCloseTo(30, 5);
       expect(verdict.noisePct).toBeCloseTo(30, 5);
     });
 
@@ -653,7 +650,7 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getBandVerdict(result, "metric");
-      expect(verdict.band).toBeCloseTo(0.5, 1);
+      expect(verdict.noisePct).toBeCloseTo(0.5, 1);
     });
   });
 
@@ -709,7 +706,7 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getBandVerdict(result, "metric");
-      expect(verdict.band).toBeCloseTo(75, 0);
+      expect(verdict.noisePct).toBeCloseTo(75, 0);
       expect(verdict.verdict).toBe("no-signal");
     });
 
@@ -720,7 +717,7 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(samplesA, samplesB, METRIC_APPROX_LOWER);
 
       const verdict = getBandVerdict(result, "metric");
-      expect(verdict.band).toBeCloseTo(0.5, 1);
+      expect(verdict.noisePct).toBeCloseTo(0.5, 1);
     });
   });
 
@@ -947,7 +944,7 @@ describe("computeVerdicts", () => {
           METRIC_BYTES_LOWER,
         );
 
-        expect(getBandVerdict(result, "metric").band).toBeCloseTo(expectedBand, 5);
+        expect(getBandVerdict(result, "metric").noisePct).toBeCloseTo(expectedBand, 5);
       },
     );
 
@@ -971,7 +968,7 @@ describe("computeVerdicts", () => {
       const result = computeVerdicts(createSamples(2, 4), createSamples(2, 3), { metric: meta });
 
       const verdict = getBandVerdict(result, "metric");
-      expect.soft(verdict.band).toBeCloseTo(0.5, 5);
+      expect.soft(verdict.noisePct).toBeCloseTo(0.5, 5);
       expect(verdict.verdict).toBe("improved");
     });
   });
@@ -1054,7 +1051,6 @@ function gatingVerdictsWithNoise(noise: readonly (number | null)[]): {
             delta: -50,
             n: 4,
             usableN: 4,
-            band: noisePct,
             noisePct,
             noiseAbs: noisePct / 2,
           };
@@ -1244,7 +1240,6 @@ describe("computeGeomean", () => {
             delta: -50,
             n: 4,
             usableN: 4,
-            band: 250,
             noisePct: 250,
             noiseAbs: 25,
           },
@@ -1269,7 +1264,6 @@ describe("computeGeomean", () => {
             delta: Number.NaN,
             n: 4,
             usableN: 4,
-            band: 300,
             noisePct: 300,
             noiseAbs: 30,
           },
@@ -1332,7 +1326,6 @@ describe("computeGeomean", () => {
             delta: -50,
             n: 4,
             usableN: 4,
-            band: 250,
             noisePct: 250,
             noiseAbs: 25,
           },
@@ -1345,7 +1338,6 @@ describe("computeGeomean", () => {
             delta: -50,
             n: 4,
             usableN: 4,
-            band: 4,
             noisePct: 4,
             noiseAbs: 2,
           },

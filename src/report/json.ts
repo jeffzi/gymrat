@@ -157,7 +157,7 @@ function serializeCandidateMetric(candidate: CandidateMetric, label: string): Js
     delta: verdict.delta,
     noisePct: verdict.method === "exact" ? null : verdict.noisePct,
     p: verdict.method === "signed-rank" ? verdict.p : null,
-    band: verdict.method === "band" ? verdict.band : null,
+    band: verdict.method === "band" ? verdict.noisePct : null,
   };
 }
 

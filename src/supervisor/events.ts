@@ -112,7 +112,7 @@ export function combineObservers(...observers: SessionObserver[]): SessionObserv
  * maxChars, returns it unchanged. Otherwise truncates and appends a suffix
  * with remaining char count and original line count.
  */
-export function summarize(text: string, maxChars: number): string {
+export function summarize(text: string, maxChars: number = SUMMARY_MAX_CHARS): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   const codePoints = Array.from(collapsed);
 
@@ -136,7 +136,7 @@ export function summarize(text: string, maxChars: number): string {
  * If JSON.stringify throws (e.g., circular reference) or returns undefined,
  * falls back to summarize(String(input), maxChars).
  */
-export function summarizeInput(input: unknown, maxChars: number): string {
+export function summarizeInput(input: unknown, maxChars: number = SUMMARY_MAX_CHARS): string {
   if (input === undefined) return summarize("undefined", maxChars);
   try {
     return summarize(JSON.stringify(input), maxChars);

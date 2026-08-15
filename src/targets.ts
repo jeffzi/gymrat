@@ -76,10 +76,8 @@ export interface CleanupResult {
  * with a file named `fix` in the working directory — and stat reports that as
  * ENOTDIR. Both leave ref resolution as the input's only remaining reading.
  */
-const ABSENT_PATH_CODES = ["ENOENT", "ENOTDIR"] as const;
-
 function isAbsentPathError(error: unknown): boolean {
-  return ABSENT_PATH_CODES.some((code) => hasErrorCode(error, code));
+  return hasErrorCode(error, "ENOENT") || hasErrorCode(error, "ENOTDIR");
 }
 
 /** The failure a target the tool cannot make sense of is reported as. */

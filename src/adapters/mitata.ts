@@ -1,11 +1,7 @@
-import { messageOf } from "../errors.js";
+import { isRecord, messageOf } from "../errors.js";
 import { metricRecord } from "../metric-record.js";
 import type { Adapter, MetricDefaults, WarnSink } from "./types.js";
 import { AdapterError, warnToStderr } from "./types.js";
-
-function isRecord(val: unknown): val is Record<string, unknown> {
-  return typeof val === "object" && val !== null;
-}
 
 /**
  * Characters a metric name may not carry.

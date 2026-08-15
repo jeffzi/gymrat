@@ -167,22 +167,15 @@ const iterationRecordSchema = Type.Object(
   strictObjectOptions,
 );
 
-/**
- * Counter shared by the records that settle an iteration.
- *
- * `minimum: 0` is the schema's admissible range, not a value the current code produces: every
- * settling record's seq traces back to an iteration minted as `lastSeq + 1`, so the lowest seq
- * seen in practice is `1`. The wider range is there to accept logs from other code paths or
- * earlier versions.
- */
-const settledSeqSchema = Type.Integer({ ...expected("a non-negative integer"), minimum: 0 });
-
-const byteCountSchema = Type.Integer({ ...expected("a non-negative integer"), minimum: 0 });
+const nonNegativeIntegerSchema = Type.Integer({
+  ...expected("a non-negative integer"),
+  minimum: 0,
+});
 
 const keepRecordSchema = Type.Object(
   {
     type: Type.Literal("keep"),
-    seq: settledSeqSchema,
+    seq: nonNegativeIntegerSchema,
     at: stringSchema,
     status: Type.Union(
       [Type.Literal("committed"), Type.Literal("blocked")],
@@ -208,8 +201,8 @@ const keepRecordSchema = Type.Object(
         // Carried by a keep the checks blocked, whose report relays the command's
         // output cut to the relay limit: the counts are what the command wrote,
         // so a reader of the log can tell the relay was cut.
-        stdoutBytes: Type.Optional(byteCountSchema),
-        stderrBytes: Type.Optional(byteCountSchema),
+        stdoutBytes: Type.Optional(nonNegativeIntegerSchema),
+        stderrBytes: Type.Optional(nonNegativeIntegerSchema),
       },
       strictObjectOptions,
     ),
@@ -218,7 +211,7 @@ const keepRecordSchema = Type.Object(
 );
 
 const discardRecordSchema = Type.Object(
-  { type: Type.Literal("discard"), seq: settledSeqSchema, at: stringSchema },
+  { type: Type.Literal("discard"), seq: nonNegativeIntegerSchema, at: stringSchema },
   strictObjectOptions,
 );
 
@@ -229,7 +222,7 @@ const hookRecordSchema = Type.Object(
       [Type.Literal("before"), Type.Literal("after")],
       expected(`"before" or "after"`),
     ),
-    seq: settledSeqSchema,
+    seq: nonNegativeIntegerSchema,
     exitCode: Type.Integer(expected("an integer")),
     durationMs: numberSchema,
     stdoutBytes: Type.Integer(expected("an integer")),

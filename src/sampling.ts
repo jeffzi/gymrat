@@ -224,6 +224,24 @@ async function runCommand(
  */
 export async function collectSamples(
   adapter: Adapter,
+  targets: readonly [TargetContext],
+  options: SamplingOptions,
+  signal: AbortSignal,
+): Promise<[TargetSamples]>;
+export async function collectSamples(
+  adapter: Adapter,
+  targets: readonly [TargetContext, TargetContext],
+  options: SamplingOptions,
+  signal: AbortSignal,
+): Promise<[TargetSamples, TargetSamples]>;
+export async function collectSamples(
+  adapter: Adapter,
+  targets: readonly TargetContext[],
+  options: SamplingOptions,
+  signal: AbortSignal,
+): Promise<TargetSamples[]>;
+export async function collectSamples(
+  adapter: Adapter,
   targets: readonly TargetContext[],
   options: SamplingOptions,
   signal: AbortSignal,

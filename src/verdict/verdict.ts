@@ -101,7 +101,6 @@ export type SignedRankVerdict = ApproximateVerdictBase & { method: "signed-rank"
  */
 export type BandVerdict = ApproximateVerdictBase & {
   method: "band";
-  band: number;
   usableN: number;
 };
 
@@ -211,17 +210,6 @@ export function pairSamples(
 }
 
 /**
- * Compute the exact-path verdict: any difference between medians is a signal.
- */
-function computeExactVerdict(
-  delta: number,
-  direction: "lower" | "higher",
-  n: number,
-): ExactVerdict {
-  return { verdict: determineVerdict(delta, direction), method: "exact", delta, n };
-}
-
-/**
  * Percentage delta between two medians, normalized by the magnitude of `medianA`.
  *
  * Normalizing by the magnitude keeps the sign of the delta tied to the
@@ -304,7 +292,12 @@ export function computeVerdicts(
     const delta = computeDelta(medianA, medianB);
 
     result[metric] = meta.exact
-      ? computeExactVerdict(delta, meta.direction, pairedA.length)
+      ? {
+          verdict: determineVerdict(delta, meta.direction),
+          method: "exact" as const,
+          delta,
+          n: pairedA.length,
+        }
       : computeApproximateVerdict(
           pairedA,
           pairedB,
@@ -363,28 +356,10 @@ function computeApproximateVerdict(
     };
   }
 
-  return applyUnstableOverride(result, unstableNoisePct);
-}
-
-/**
- * Replace a method's verdict with "unstable" when the metric's noise band is too
- * wide to judge against.
- *
- * Applied after the method has had its say, because the override does not depend
- * on what the method concluded: signal or no signal, a band wider than the
- * threshold makes the call meaningless. The comparison is strict, so a metric
- * sitting exactly on the threshold keeps its verdict.
- *
- * @param verdict Verdict produced by the signed-rank or band method
- * @param unstableNoisePct Noise band width above which the verdict is "unstable"
- * @returns The verdict unchanged, or the same record marked "unstable"
- */
-function applyUnstableOverride(
-  verdict: SignedRankVerdict | BandVerdict,
-  unstableNoisePct: number,
-): SignedRankVerdict | BandVerdict {
-  if (verdict.noisePct <= unstableNoisePct) return verdict;
-  return { ...verdict, verdict: "unstable" };
+  if (result.noisePct > unstableNoisePct) {
+    return { ...result, verdict: "unstable" };
+  }
+  return result;
 }
 
 /** The measurement noise of a metric, in both the forms a report can show. */
@@ -501,7 +476,6 @@ function computeBandMethod(
     delta,
     n: pairedA.length,
     usableN,
-    band: noise.pct,
     noisePct: noise.pct,
     noiseAbs: noise.abs,
   };

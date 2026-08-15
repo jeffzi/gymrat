@@ -416,7 +416,7 @@ async function measure(
   options: IterateOptions,
   bench: string,
 ): Promise<readonly [baseline: TargetSamples, experiment: TargetSamples]> {
-  const contexts: TargetContext[] = [
+  const contexts: [TargetContext, TargetContext] = [
     worktreeContext(session.worktrees.baseline, "baseline", "old"),
     worktreeContext(session.worktrees.experiment, "experiment", "new"),
   ];
@@ -430,18 +430,13 @@ async function measure(
   };
 
   const adapter = getAdapter(config.adapter);
-  const [baseline, experiment] = await collectSamples(
+  const result = await collectSamples(
     adapter,
     contexts,
     samplingOptions,
     options.signal ?? new AbortController().signal,
   );
-
-  /* v8 ignore if -- defensive check; collectSamples returns one result per target given */
-  if (baseline === undefined || experiment === undefined) {
-    throw new GymratError("collectSamples returned no result for one of the session's worktrees");
-  }
-  return [baseline, experiment];
+  return result;
 }
 
 /** A session worktree, benched where it sits: it is checked out for the whole session. */

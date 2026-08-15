@@ -55,7 +55,7 @@ import { ensureGitExclude } from "./session/workspace.js";
 import { installTerminationCleanup } from "./signals.js";
 import { createClaudeDriver } from "./supervisor/claude.js";
 import type { LaunchEvent } from "./supervisor/events.js";
-import { summarize, SUMMARY_MAX_CHARS } from "./supervisor/events.js";
+import { summarize } from "./supervisor/events.js";
 import { composeKickoff } from "./supervisor/kickoff.js";
 import { supervise } from "./supervisor/supervise.js";
 import type { SupervisionResult } from "./supervisor/supervise.js";
@@ -330,9 +330,6 @@ const GATE_EXIT_CODE = 1;
 /** The exit code of a tool failure, the convention every unhandled error exits on. */
 const TOOL_FAILURE_EXIT_CODE = 2;
 
-/** Default exit-code mapper: every uncaught error is a tool failure. */
-const defaultExitCodeOf = (): number => TOOL_FAILURE_EXIT_CODE;
-
 /** Print a formatted error to stderr and exit on `code`. */
 async function exitWithError(error: unknown, code = TOOL_FAILURE_EXIT_CODE): Promise<never> {
   try {
@@ -391,19 +388,17 @@ function renderProgressLine(
   return etaSuffix === undefined ? line : line + style.eta(` · ${etaSuffix}`);
 }
 
-const IDENTITY_PROGRESS_LINE_STYLE: ProgressLineStyle = {
-  label: (text) => text,
-  counter: (text) => text,
-  eta: (text) => text,
-};
-
 /**
  * Each line names the target so the user can tell which one is running;
  * samples also show their position in the total.
  * When an ETA estimate is available, it is appended as plain text.
  */
 function formatProgressLine(step: ProgressStep, etaMs?: number): string {
-  return renderProgressLine(step, etaMs, IDENTITY_PROGRESS_LINE_STYLE);
+  return renderProgressLine(step, etaMs, {
+    label: (text) => text,
+    counter: (text) => text,
+    eta: (text) => text,
+  });
 }
 
 /**
@@ -712,14 +707,6 @@ function beginRun(options: SharedFlags, targetCount: number): ProgressReporter {
 }
 
 /**
- * `--no-color` is a veto, never a force: left unset, each renderer keeps its own
- * detection rather than being told what the stream supports.
- */
-function noColorOverride(colorFlag: boolean): boolean | undefined {
-  return colorFlag ? undefined : false;
-}
-
-/**
  * Run `execute`, guarded by `progress`: stop the reporter once the run settles,
  * whether it succeeds or throws. `compare` and `measure` share this so neither
  * command's action can forget to stop the progress reporter before a failure
@@ -773,7 +760,7 @@ function lockableRepoRoot(): string | undefined {
  */
 async function runOrExit<T>(
   execute: () => Promise<T>,
-  exitCodeOf: (error: unknown) => number = defaultExitCodeOf,
+  exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
 ): Promise<T> {
   try {
     return await execute();
@@ -801,7 +788,7 @@ async function runOrExit<T>(
 async function withRepoLock<T>(
   command: string,
   run: () => Promise<T>,
-  exitCodeOf: (error: unknown) => number = defaultExitCodeOf,
+  exitCodeOf: (error: unknown) => number = () => TOOL_FAILURE_EXIT_CODE,
 ): Promise<T> {
   let root: string | undefined;
   try {
@@ -1025,7 +1012,7 @@ export function createProgram(): Command {
         { json: renderJson, text: renderReport },
         {
           verbose: options.verbose,
-          color: noColorOverride(options.color),
+          color: options.color ? undefined : false,
           failOn: options.failOn,
         },
       );
@@ -1091,7 +1078,7 @@ export function createProgram(): Command {
         run.result,
         options,
         { json: renderMeasureJson, text: renderMeasureReport },
-        { color: noColorOverride(options.color) },
+        { color: options.color ? undefined : false },
       );
 
       if (run.recording !== undefined) {
@@ -1297,7 +1284,7 @@ export function createProgram(): Command {
           maxUsd: options.maxUsd,
           model: options.model,
           runbookPath: config.runbook ?? "",
-          kickoffSummary: summarize(kickoff.kickoff, SUMMARY_MAX_CHARS),
+          kickoffSummary: summarize(kickoff.kickoff),
         };
 
         const driver = createClaudeDriver();

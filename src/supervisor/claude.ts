@@ -1,7 +1,7 @@
-import { messageOf } from "../errors.js";
+import { isRecord, messageOf } from "../errors.js";
 import type { Driver, DriverSession, SessionOutcome, SessionPrompt } from "./driver.js";
 import type { SessionObserver } from "./events.js";
-import { summarize, summarizeInput, SUMMARY_MAX_CHARS } from "./events.js";
+import { summarize, summarizeInput } from "./events.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -13,14 +13,6 @@ export type QueryFn = (opts: Record<string, unknown>) => AsyncIterable<Record<st
 /** Options for {@link createClaudeDriver}. */
 export interface ClaudeDriverOptions {
   readonly queryFn?: QueryFn;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -78,7 +70,7 @@ function processContentBlock(block: Record<string, unknown>, ctx: ProcessingCont
       toolUseId,
       toolName,
       input,
-      inputSummary: summarizeInput(input, SUMMARY_MAX_CHARS),
+      inputSummary: summarizeInput(input),
     });
   } else if (blockType === "thinking") {
     const thinking = block["thinking"];
@@ -121,7 +113,7 @@ function processToolResult(msg: Record<string, unknown>, ctx: ProcessingContext)
     toolName,
     durationMs,
     result,
-    resultSummary: summarize(result, SUMMARY_MAX_CHARS),
+    resultSummary: summarize(result),
   });
 }
 

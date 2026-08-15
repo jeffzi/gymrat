@@ -3057,7 +3057,6 @@ describe("renderReport", () => {
                   delta: 31.3,
                   n: 4,
                   usableN: 4,
-                  band: 30,
                   noisePct: 30,
                   noiseAbs: 30,
                 }),

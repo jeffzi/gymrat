@@ -1,5 +1,5 @@
 import { GymratError } from "../errors.js";
-import { runGit } from "../git.js";
+import { tryGit } from "../git.js";
 import { pluralize } from "../report/format.js";
 import { SHORT_SHA_LENGTH } from "../report/loop.js";
 import type { FinalizeRecord, KeepRecord, SessionLogRecord } from "../session/records.js";
@@ -64,7 +64,7 @@ export function finalizeSession(root: string, options: FinalizeOptions = {}): Fi
   }
 
   const branch = options.branch ?? `${session.branch}-final`;
-  if (branchExists(root, branch)) {
+  if (tryGit(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], root) === undefined) {
     throw new GymratError(
       `Finalize refused: the branch '${branch}' already exists.`,
       `Name another with --branch <name>, or delete it with: git branch -D ${branch}`,
@@ -123,16 +123,6 @@ function squashOntoBaseline(
     `Cannot build the squash commit from ${sessionBranch} onto ${baselineSha}`,
     `Check that ${baselineSha} is a commit this repository has: git cat-file -t ${baselineSha}`,
   ).trim();
-}
-
-/** Whether `root` already has a local branch named `branch`. */
-function branchExists(root: string, branch: string): boolean {
-  try {
-    runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], root);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** The body line a committed keep gets when it names neither a message nor a commit. */

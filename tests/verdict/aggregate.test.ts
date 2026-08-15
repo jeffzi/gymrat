@@ -165,7 +165,6 @@ describe("computeKindAggregates", () => {
           delta: -50,
           n: 4,
           usableN: 4,
-          band: 250,
           noisePct: 250,
           noiseAbs: 25,
         } satisfies MetricVerdict,
