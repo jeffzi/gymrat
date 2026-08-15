@@ -1376,9 +1376,9 @@ function resolveEntryUrl(entryPath: string | undefined): string | undefined {
 
 const isEntryPoint = resolveEntryUrl(process.argv[1]) === import.meta.url;
 
-/* v8 ignore next 13 -- entry point. The "executes CLI when invoked through symlink"
+/* istanbul ignore next -- entry point. The "executes CLI when invoked through symlink"
    test in tests/cli.test.ts does run this block, but it spawns a child process, and
-   in-process v8 coverage cannot attribute execution that happens outside the worker. */
+   in-process coverage cannot attribute execution that happens outside the worker. */
 if (isEntryPoint) {
   try {
     const program = createProgram();

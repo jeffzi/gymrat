@@ -115,7 +115,7 @@ function killTree(pid: number): void {
     const alreadyGone =
       process.platform === "win32"
         ? err instanceof Error && "status" in err && err.status === TASKKILL_NOT_FOUND_STATUS
-        : /* v8 ignore next -- ESRCH and EPERM need a group that dies between the kill and here */
+        : /* istanbul ignore next -- ESRCH and EPERM need a group that dies between the kill and here */
           hasErrorCode(err, "ESRCH");
     if (!alreadyGone) {
       process.emitWarning(err instanceof Error ? err : String(err));

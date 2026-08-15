@@ -5,7 +5,7 @@
  * @throws {Error} If `values` is empty.
  */
 export function computeMedian(values: readonly number[]): number {
-  /* v8 ignore if -- defensive check; never called with empty array */
+  /* istanbul ignore if -- defensive check; never called with empty array */
   if (values.length === 0) {
     throw new Error("Cannot compute median of empty array");
   }
@@ -28,7 +28,7 @@ export function computeMedian(values: readonly number[]): number {
  * @throws {Error} If `values` is empty.
  */
 export function computeHalfRange(values: readonly number[]): number {
-  /* v8 ignore if -- defensive check; never called with empty array */
+  /* istanbul ignore if -- defensive check; never called with empty array */
   if (values.length === 0) {
     throw new Error("Cannot compute half-range of empty array");
   }

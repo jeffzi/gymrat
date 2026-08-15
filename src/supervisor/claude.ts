@@ -21,7 +21,7 @@ export interface ClaudeDriverOptions {
  * The module path is a runtime variable so TypeScript does not attempt
  * static resolution — the SDK may not be installed at build time.
  */
-/* v8 ignore start -- dynamic import exercised in production, not unit tests */
+/* istanbul ignore next -- dynamic import exercised in production, not unit tests */
 async function loadSdk(): Promise<QueryFn> {
   const SDK_MODULE = "@anthropic-ai/claude-agent-sdk";
   const mod: unknown = await import(SDK_MODULE);
@@ -31,7 +31,6 @@ async function loadSdk(): Promise<QueryFn> {
   // oxlint-disable-next-line no-unsafe-type-assertion -- runtime guard above validates shape; SDK has no typed export
   return mod["query"] as QueryFn;
 }
-/* v8 ignore stop */
 
 // ---------------------------------------------------------------------------
 // SDK message processing
@@ -224,7 +223,7 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
       async function run(): Promise<SessionOutcome> {
         if (interruptedOutcome) return interruptedOutcome;
 
-        /* v8 ignore next -- loadSdk fallback exercised in production, not unit tests */
+        /* istanbul ignore next -- loadSdk fallback exercised in production, not unit tests */
         const queryFn = options.queryFn ?? (await loadSdk());
 
         const queryOpts: Record<string, unknown> = {

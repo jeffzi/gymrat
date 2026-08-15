@@ -7,6 +7,7 @@ export default defineConfig({
     // give every file its own process, so the redirect cannot bleed across files.
     setupFiles: ["tests/setup/temp-root.ts"],
     coverage: {
+      provider: "istanbul",
       include: ["src/**/*.ts"],
       thresholds: {
         lines: 95,

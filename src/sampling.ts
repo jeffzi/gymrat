@@ -353,7 +353,7 @@ export function pairedOrOwnValues(
  *
  * Every call site that measures — `measure`, `compare`, `iterate` — runs the
  * same sequence: collect names, guard against an empty set, resolve metadata.
- * The `v8 ignore` guard covers the empty-set branch that adapters' own
+ * The `istanbul ignore` guard covers the empty-set branch that adapters' own
  * validation makes unreachable in practice.
  */
 export function resolveMetricMetaFromSamples(
@@ -364,7 +364,7 @@ export function resolveMetricMetaFromSamples(
 ): Record<string, ResolvedMetricMeta> {
   const metricNames = new Set(sampleSets.flat().flatMap(Object.keys));
 
-  /* v8 ignore if -- defensive check; adapters throw AdapterError for no metrics */
+  /* istanbul ignore if -- defensive check; adapters throw AdapterError for no metrics */
   if (metricNames.size === 0) {
     throw new GymratError("No metrics found in benchmark output");
   }
