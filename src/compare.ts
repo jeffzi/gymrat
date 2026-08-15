@@ -1,6 +1,5 @@
 import { getAdapter } from "./adapters/index.js";
 import type { ResolvedMetricMeta } from "./config.js";
-import { GymratError } from "./errors.js";
 import { metricRecord } from "./metric-record.js";
 import type { ComparisonResult, MetricComparison } from "./report/types.js";
 import {
@@ -212,11 +211,6 @@ export async function compare(options: CompareOptions): Promise<ComparisonResult
         options,
         signal,
       );
-
-      /* v8 ignore if -- defensive check; collectSamples returns one result per target given */
-      if (baseline === undefined) {
-        throw new GymratError("collectSamples returned no result for the baseline target");
-      }
 
       const metricMeta = resolveMetricMetaFromSamples(
         [baseline.samples, ...candidates.map(({ samples }) => samples)],

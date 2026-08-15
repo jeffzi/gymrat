@@ -222,30 +222,12 @@ async function runCommand(
  * The caller decides the ordering and assigns roles — the sampling core treats
  * every target identically.
  */
-export async function collectSamples(
+export async function collectSamples<const T extends readonly TargetContext[]>(
   adapter: Adapter,
-  targets: readonly [TargetContext],
+  targets: T,
   options: SamplingOptions,
   signal: AbortSignal,
-): Promise<[TargetSamples]>;
-export async function collectSamples(
-  adapter: Adapter,
-  targets: readonly [TargetContext, TargetContext],
-  options: SamplingOptions,
-  signal: AbortSignal,
-): Promise<[TargetSamples, TargetSamples]>;
-export async function collectSamples(
-  adapter: Adapter,
-  targets: readonly TargetContext[],
-  options: SamplingOptions,
-  signal: AbortSignal,
-): Promise<TargetSamples[]>;
-export async function collectSamples(
-  adapter: Adapter,
-  targets: readonly TargetContext[],
-  options: SamplingOptions,
-  signal: AbortSignal,
-): Promise<TargetSamples[]> {
+): Promise<{ [K in keyof T]: TargetSamples }> {
   const timeoutMs = options.timeoutSeconds * 1000;
   const collected: TargetSamples[] = targets.map((ctx) => ({ ctx, samples: [] }));
 
@@ -269,7 +251,10 @@ export async function collectSamples(
     }
   }
 
-  return collected;
+  // Array.map always returns U[], not a mapped tuple — the cast is structurally
+  // sound because map preserves the input's length.
+  // oxlint-disable-next-line no-unsafe-type-assertion -- Array.map returns U[], not a mapped tuple; length is preserved
+  return collected as { [K in keyof T]: TargetSamples };
 }
 
 // ---------------------------------------------------------------------------
