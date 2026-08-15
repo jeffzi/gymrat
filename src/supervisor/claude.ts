@@ -41,6 +41,7 @@ interface ProcessingContext {
   readonly observer: SessionObserver;
   readonly toolStartTimes: Map<string, number>;
   readonly toolNames: Map<string, string>;
+  thinkingTokens: number;
 }
 
 function processContentBlock(block: Record<string, unknown>, ctx: ProcessingContext): void {
@@ -76,12 +77,13 @@ function processContentBlock(block: Record<string, unknown>, ctx: ProcessingCont
     const thinking = block["thinking"];
     if (typeof thinking !== "string") return;
 
-    const estimatedTokens = Math.ceil(thinking.length / 4);
+    const delta = Math.ceil(thinking.length / 4);
+    ctx.thinkingTokens += delta;
     ctx.observer({
       type: "thinking_update",
       timestamp: Date.now(),
-      estimatedTokens,
-      delta: estimatedTokens,
+      estimatedTokens: ctx.thinkingTokens,
+      delta,
     });
   }
 }
@@ -215,6 +217,7 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
         observer,
         toolStartTimes: new Map(),
         toolNames: new Map(),
+        thinkingTokens: 0,
       };
 
       // fallow-ignore-next-line complexity

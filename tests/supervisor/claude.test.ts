@@ -31,6 +31,20 @@ function fakeQueryFn(
   return fn;
 }
 
+/** A queryFn that yields one text delta, then hangs well past any test's own timeout. */
+function hangingQueryFn(): QueryFn {
+  const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
+    async function* generate() {
+      yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
+      await new Promise<void>((r) => {
+        setTimeout(r, 10_000);
+      });
+    }
+    return generate();
+  };
+  return fn;
+}
+
 // ---------------------------------------------------------------------------
 // SDK as optional peer dependency
 // ---------------------------------------------------------------------------
@@ -486,6 +500,59 @@ describe("SDK message mapping", () => {
         type: "thinking_update",
       });
     });
+
+    it("reports estimatedTokens equal to delta for a single thinking block", async () => {
+      // "abcd" = 4 chars → Math.ceil(4/4) = 1 token
+      const sdkMessages = [
+        {
+          type: "assistant",
+          content: [{ type: "thinking", thinking: "abcd" }],
+        },
+      ];
+      const driver = createClaudeDriver({ queryFn: fakeQueryFn(sdkMessages) });
+      const { events, observer } = collectingObserver();
+
+      const session = driver.start(makePrompt(), observer);
+      await session.outcome;
+
+      const thinkingEvents = events.filter((e) => e.type === "thinking_update");
+      expect(thinkingEvents).toHaveLength(1);
+      expect(thinkingEvents[0]).toMatchObject({
+        estimatedTokens: 1,
+        delta: 1,
+      });
+    });
+
+    it("accumulates estimatedTokens across multiple thinking blocks while delta stays per-block", async () => {
+      // Block 1: "abcd" = 4 chars → delta = 1, cumulative = 1
+      // Block 2: "abcdefgh" = 8 chars → delta = 2, cumulative = 3
+      const sdkMessages = [
+        {
+          type: "assistant",
+          content: [{ type: "thinking", thinking: "abcd" }],
+        },
+        {
+          type: "assistant",
+          content: [{ type: "thinking", thinking: "abcdefgh" }],
+        },
+      ];
+      const driver = createClaudeDriver({ queryFn: fakeQueryFn(sdkMessages) });
+      const { events, observer } = collectingObserver();
+
+      const session = driver.start(makePrompt(), observer);
+      await session.outcome;
+
+      const thinkingEvents = events.filter((e) => e.type === "thinking_update");
+      expect(thinkingEvents).toHaveLength(2);
+      expect(thinkingEvents[0]).toMatchObject({
+        estimatedTokens: 1,
+        delta: 1,
+      });
+      expect(thinkingEvents[1]).toMatchObject({
+        estimatedTokens: 3,
+        delta: 2,
+      });
+    });
   });
 });
 
@@ -571,16 +638,7 @@ describe("interrupt", () => {
 
   it("resolves outcome as interrupted after interrupt()", async () => {
     vi.useFakeTimers();
-    const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
-      async function* generate() {
-        yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
-        await new Promise<void>((r) => {
-          setTimeout(r, 10_000);
-        });
-      }
-      return generate();
-    };
-    const driver = createClaudeDriver({ queryFn: fn });
+    const driver = createClaudeDriver({ queryFn: hangingQueryFn() });
 
     const session = driver.start(makePrompt(), collectingObserver().observer);
     await session.interrupt();
@@ -598,16 +656,7 @@ describe("abort signal", () => {
   it("resolves outcome as interrupted when abort signal fires", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
-    const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
-      async function* generate() {
-        yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
-        await new Promise<void>((r) => {
-          setTimeout(r, 10_000);
-        });
-      }
-      return generate();
-    };
-    const driver = createClaudeDriver({ queryFn: fn });
+    const driver = createClaudeDriver({ queryFn: hangingQueryFn() });
 
     const session = driver.start(makePrompt(), collectingObserver().observer, controller.signal);
     controller.abort();
