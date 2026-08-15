@@ -1,6 +1,5 @@
 import { messageOf } from "../errors.js";
-import { createSession } from "./driver.js";
-import type { Driver, SessionOutcome, SessionPrompt } from "./driver.js";
+import type { Driver, DriverSession, SessionOutcome, SessionPrompt } from "./driver.js";
 import type { SessionObserver } from "./events.js";
 import { summarize, summarizeInput, SUMMARY_MAX_CHARS } from "./events.js";
 
@@ -8,15 +7,8 @@ import { summarize, summarizeInput, SUMMARY_MAX_CHARS } from "./events.js";
 // Public types
 // ---------------------------------------------------------------------------
 
-/** Handle returned by a {@link QueryFn} call. */
-export interface QueryHandle {
-  readonly messages: AsyncIterable<Record<string, unknown>>;
-  interrupt(): void;
-  readonly result: { readonly total_cost_usd: number };
-}
-
 /** Signature of the SDK `query()` function or its injectable replacement. */
-export type QueryFn = (opts: Record<string, unknown>) => QueryHandle;
+export type QueryFn = (opts: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>;
 
 /** Options for {@link createClaudeDriver}. */
 export interface ClaudeDriverOptions {
@@ -48,57 +40,6 @@ async function loadSdk(): Promise<QueryFn> {
   return mod["query"] as QueryFn;
 }
 /* v8 ignore stop */
-
-// ---------------------------------------------------------------------------
-// Internal message queue — AsyncIterable that feeds user messages to the SDK
-// ---------------------------------------------------------------------------
-
-interface MessageQueue {
-  readonly iterable: AsyncIterable<{ role: string; content: string }>;
-  push(message: string): void;
-  close(): void;
-}
-
-function createMessageQueue(initialMessage: string): MessageQueue {
-  const pending: string[] = [initialMessage];
-  let waiter: (() => void) | null = null;
-  let closed = false;
-
-  const iterable: AsyncIterable<{ role: string; content: string }> = {
-    [Symbol.asyncIterator]() {
-      return {
-        async next(): Promise<IteratorResult<{ role: string; content: string }>> {
-          for (;;) {
-            if (pending.length > 0) {
-              const msg = pending.shift()!;
-              return { value: { role: "user", content: msg }, done: false };
-            }
-            if (closed) {
-              return { value: undefined, done: true } as IteratorReturnResult<undefined>;
-            }
-            await new Promise<void>((r) => {
-              waiter = r;
-            });
-          }
-        },
-      };
-    },
-  };
-
-  return {
-    iterable,
-    push(message: string): void {
-      pending.push(message);
-      waiter?.();
-      waiter = null;
-    },
-    close(): void {
-      closed = true;
-      waiter?.();
-      waiter = null;
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // SDK message processing
@@ -198,13 +139,21 @@ function processToolProgress(msg: Record<string, unknown>, ctx: ProcessingContex
   });
 }
 
-function processSdkMessage(msg: Record<string, unknown>, ctx: ProcessingContext): void {
+/**
+ * Processes a single SDK message, updating cost when a `result`-type message
+ * carries `total_cost_usd`. Returns the updated cumulative cost.
+ */
+function processSdkMessage(
+  msg: Record<string, unknown>,
+  ctx: ProcessingContext,
+  currentCostUsd: number,
+): number {
   const msgType = msg["type"];
-  if (typeof msgType !== "string") return;
+  if (typeof msgType !== "string") return currentCostUsd;
 
   if (msgType === "assistant") {
     const content = msg["content"];
-    if (!Array.isArray(content)) return;
+    if (!Array.isArray(content)) return currentCostUsd;
     for (const block of content) {
       if (isRecord(block)) {
         processContentBlock(block, ctx);
@@ -214,7 +163,15 @@ function processSdkMessage(msg: Record<string, unknown>, ctx: ProcessingContext)
     processToolResult(msg, ctx);
   } else if (msgType === "tool_progress") {
     processToolProgress(msg, ctx);
+  } else if (msgType === "result") {
+    const totalCostUsd = msg["total_cost_usd"];
+    if (typeof totalCostUsd === "number" && totalCostUsd > 0) {
+      ctx.observer({ type: "usage_update", timestamp: Date.now(), costUsd: totalCostUsd });
+      return totalCostUsd;
+    }
   }
+
+  return currentCostUsd;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,16 +188,14 @@ function processSdkMessage(msg: Record<string, unknown>, ctx: ProcessingContext)
  */
 export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
   return {
-    start(prompt: SessionPrompt, observer: SessionObserver, signal?: AbortSignal) {
-      const queue = createMessageQueue(prompt.kickoff);
+    start(prompt: SessionPrompt, observer: SessionObserver, signal?: AbortSignal): DriverSession {
       let costUsd = 0;
       let interruptedOutcome: SessionOutcome | undefined;
-      let sdkQuery: QueryHandle | undefined;
+      const queryAbortController = new AbortController();
 
       function doInterrupt(): void {
         interruptedOutcome = { reason: "interrupted", costUsd };
-        sdkQuery?.interrupt();
-        queue.close();
+        queryAbortController.abort();
       }
 
       if (signal) {
@@ -265,9 +220,10 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
         const queryFn = options.queryFn ?? (await loadSdk());
 
         const queryOpts: Record<string, unknown> = {
-          prompt: queue.iterable,
+          prompt: prompt.kickoff,
           cwd: prompt.cwd,
           permissionMode: "bypassPermissions",
+          abortController: queryAbortController,
         };
 
         if (prompt.systemPromptAppend !== undefined) {
@@ -282,21 +238,16 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
         }
 
         const q = queryFn(queryOpts);
-        sdkQuery = q;
 
         try {
-          for await (const msg of q.messages) {
+          for await (const msg of q) {
             // oxlint-disable-next-line no-unnecessary-condition -- interruptedOutcome is externally mutated during await
             if (interruptedOutcome) return interruptedOutcome;
             if (isRecord(msg)) {
-              processSdkMessage(msg, ctx);
+              costUsd = processSdkMessage(msg, ctx, costUsd);
             }
           }
 
-          costUsd = q.result.total_cost_usd;
-          if (costUsd > 0) {
-            observer({ type: "usage_update", timestamp: Date.now(), costUsd });
-          }
           return { reason: "completed", costUsd };
         } catch (err: unknown) {
           // oxlint-disable-next-line no-unnecessary-condition -- interruptedOutcome is externally mutated during await
@@ -305,16 +256,19 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
         }
       }
 
-      return createSession({
-        onMessage: (msg) => {
-          queue.push(msg);
+      const runPromise = run();
+
+      return {
+        interrupt(): Promise<void> {
+          doInterrupt();
+          return Promise.resolve();
         },
-        doInterrupt,
-        getCostUsd: () => costUsd,
-        getInterruptedOutcome: () => interruptedOutcome,
-        runPromise: run(),
-        observer,
-      });
+
+        get outcome(): Promise<SessionOutcome> {
+          if (interruptedOutcome) return Promise.resolve(interruptedOutcome);
+          return runPromise;
+        },
+      };
     },
   };
 }

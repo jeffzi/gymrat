@@ -76,6 +76,14 @@
     "typescript": "^7.0.0",
     "vitest": "^4.1.0"
   },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "*"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    }
+  },
   "engines": {
     "node": ">=22.12.0"
   }

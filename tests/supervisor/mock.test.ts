@@ -1,4 +1,7 @@
 /* oxlint-disable typescript/require-await -- mock action steps are typed () => Promise<void>; async without await is the ergonomic way to satisfy the interface in tests */
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type {
@@ -9,9 +12,8 @@ import type {
   SessionPrompt,
 } from "../../src/supervisor/driver.js";
 import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
-import { summarize, SUMMARY_MAX_CHARS } from "../../src/supervisor/events.js";
-import { createMockDriver } from "../../src/supervisor/mock.js";
-import type { MockStep } from "../../src/supervisor/mock.js";
+import { createMockDriver } from "../fixtures/mock-driver.js";
+import type { MockStep } from "../fixtures/mock-driver.js";
 import { collectingObserver, makePrompt, noopObserver } from "../fixtures/supervisor.js";
 
 // ---------------------------------------------------------------------------
@@ -46,17 +48,17 @@ describe("SessionOutcome", () => {
 });
 
 describe("DriverSession", () => {
-  it("has inject, interrupt, usage, and outcome", () => {
-    expectTypeOf<DriverSession>()
-      .toHaveProperty("inject")
-      .toEqualTypeOf<(message: string) => void>();
+  it("has interrupt and outcome only", () => {
     expectTypeOf<DriverSession>().toHaveProperty("interrupt").toEqualTypeOf<() => Promise<void>>();
-    expectTypeOf<DriverSession>()
-      .toHaveProperty("usage")
-      .toEqualTypeOf<() => { readonly costUsd: number }>();
     expectTypeOf<DriverSession>()
       .toHaveProperty("outcome")
       .toEqualTypeOf<Promise<SessionOutcome>>();
+  });
+
+  it("does not have inject or usage", () => {
+    type HasKey<T, K extends string> = K extends keyof T ? true : false;
+    expectTypeOf<HasKey<DriverSession, "inject">>().toEqualTypeOf<false>();
+    expectTypeOf<HasKey<DriverSession, "usage">>().toEqualTypeOf<false>();
   });
 });
 
@@ -67,6 +69,48 @@ describe("Driver", () => {
       .toEqualTypeOf<
         (prompt: SessionPrompt, observer: SessionObserver, signal?: AbortSignal) => DriverSession
       >();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SessionEvent union — removed events
+// ---------------------------------------------------------------------------
+
+describe("SessionEvent union after cleanup", () => {
+  it("does not include agent_start, agent_end, or agent_error events", () => {
+    expectTypeOf<Extract<SessionEvent, { type: "agent_start" }>>().toBeNever();
+    expectTypeOf<Extract<SessionEvent, { type: "agent_end" }>>().toBeNever();
+    expectTypeOf<Extract<SessionEvent, { type: "agent_error" }>>().toBeNever();
+  });
+
+  it("does not include inject events", () => {
+    expectTypeOf<Extract<SessionEvent, { type: "inject" }>>().toBeNever();
+  });
+
+  it("covers only the remaining event types", () => {
+    expectTypeOf<SessionEvent["type"]>().toEqualTypeOf<
+      | "thinking_update"
+      | "tool_start"
+      | "tool_progress"
+      | "tool_end"
+      | "text_delta"
+      | "usage_update"
+      | "launch"
+    >();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mock driver relocation
+// ---------------------------------------------------------------------------
+
+describe("mock driver relocation", () => {
+  it("lives under tests/fixtures, not src/supervisor", () => {
+    const newPath = resolve(import.meta.dirname, "../fixtures/mock-driver.ts");
+    const oldPath = resolve(import.meta.dirname, "../../src/supervisor/mock.ts");
+
+    expect(existsSync(newPath)).toBe(true);
+    expect(existsSync(oldPath)).toBe(false);
   });
 });
 
@@ -84,8 +128,8 @@ describe("createMockDriver", () => {
   describe("when the script runs to completion", () => {
     it("emits each emit-step event to the observer in order", async () => {
       const events: SessionEvent[] = [
-        { type: "agent_start", timestamp: 1, prompt: "hi", promptSummary: "hi", model: null },
-        { type: "text_delta", timestamp: 2, chunk: "hello" },
+        { type: "text_delta", timestamp: 1, chunk: "hello" },
+        { type: "text_delta", timestamp: 2, chunk: "world" },
       ];
       const steps: MockStep[] = [{ emit: events[0]! }, { emit: events[1]! }];
       const { events: collected, observer } = collectingObserver();
@@ -119,7 +163,7 @@ describe("createMockDriver", () => {
       expect(order).toStrictEqual([1, 2]);
     });
 
-    it("emits usage_update for cost steps and updates usage()", async () => {
+    it("emits usage_update for cost steps", async () => {
       const { events, observer } = collectingObserver();
       const steps: MockStep[] = [{ costUsd: 0.05 }, { costUsd: 0.1 }];
       const driver = createMockDriver(steps);
@@ -190,61 +234,6 @@ describe("createMockDriver", () => {
     });
   });
 
-  // usage()
-
-  describe("usage()", () => {
-    it("returns costUsd 0 before any cost step", () => {
-      const steps: MockStep[] = [{ costUsd: 0.05 }];
-      const driver = createMockDriver(steps);
-
-      const session = driver.start(makePrompt(), noopObserver());
-
-      expect(session.usage()).toStrictEqual({ costUsd: 0 });
-    });
-
-    it("returns the latest reported cost after cost steps run", async () => {
-      const steps: MockStep[] = [{ costUsd: 0.05 }, { costUsd: 0.15 }];
-      const driver = createMockDriver(steps);
-
-      const session = driver.start(makePrompt(), noopObserver());
-      await session.outcome;
-
-      expect(session.usage()).toStrictEqual({ costUsd: 0.15 });
-    });
-  });
-
-  // inject()
-
-  describe("inject()", () => {
-    it("records the message in the injections list", async () => {
-      const driver = createMockDriver([]);
-
-      const session = driver.start(makePrompt(), noopObserver());
-      session.inject("hello");
-      session.inject("world");
-      await session.outcome;
-
-      expect(session.injections).toStrictEqual(["hello", "world"]);
-    });
-
-    it("emits an inject event with summarized message", async () => {
-      const { events, observer } = collectingObserver();
-      const driver = createMockDriver([]);
-
-      const session = driver.start(makePrompt(), observer);
-      session.inject("hello world");
-      await session.outcome;
-
-      const injectEvents = events.filter((e) => e.type === "inject");
-      expect(injectEvents).toHaveLength(1);
-      expect(injectEvents[0]).toMatchObject({
-        type: "inject",
-        message: "hello world",
-        messageSummary: summarize("hello world", SUMMARY_MAX_CHARS),
-      });
-    });
-  });
-
   // interrupt()
 
   describe("interrupt()", () => {
@@ -297,7 +286,6 @@ describe("createMockDriver", () => {
       const session = driver.start(makePrompt(), noopObserver());
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(session.usage().costUsd).toBe(0.07);
       await session.interrupt();
 
       const outcome = await session.outcome;
@@ -457,7 +445,6 @@ describe("createMockDriver", () => {
       const session = driver.start(makePrompt(), noopObserver(), controller.signal);
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(session.usage().costUsd).toBe(0.12);
       controller.abort();
 
       const outcome = await session.outcome;

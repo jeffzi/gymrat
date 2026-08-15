@@ -1,7 +1,6 @@
-import { messageOf } from "../errors.js";
-import { createSession } from "./driver.js";
-import type { SessionOutcome } from "./driver.js";
-import type { SessionEvent, SessionObserver } from "./events.js";
+import { messageOf } from "../../src/errors.js";
+import type { DriverSession, SessionOutcome } from "../../src/supervisor/driver.js";
+import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
 
 interface EmitStep {
   readonly emit: SessionEvent;
@@ -54,16 +53,16 @@ function interruptibleDelay(ms: number, signal: AbortSignal): Promise<void> {
  * Creates a driver whose `start` method runs a caller-supplied script of steps
  * in order. Designed for testing supervisor orchestration without a real agent
  * backend.
- *
- * The returned session exposes an `injections` list for test inspection and
- * supports interrupt/abort to cancel remaining steps.
  */
 export function createMockDriver(steps: readonly MockStep[]) {
   return {
-    start(_prompt: unknown, observer: SessionObserver, externalSignal?: AbortSignal) {
+    start(
+      _prompt: unknown,
+      observer: SessionObserver,
+      externalSignal?: AbortSignal,
+    ): DriverSession {
       const controller = new AbortController();
       const { signal } = controller;
-      const injections: string[] = [];
       let costUsd = 0;
       let interruptedOutcome: SessionOutcome | undefined;
 
@@ -126,16 +125,19 @@ export function createMockDriver(steps: readonly MockStep[]) {
         return { reason: "completed", costUsd };
       }
 
-      const session = createSession({
-        onMessage: (msg) => injections.push(msg),
-        doInterrupt,
-        getCostUsd: () => costUsd,
-        getInterruptedOutcome: () => interruptedOutcome,
-        runPromise: runScript(),
-        observer,
-      });
+      const runPromise = runScript();
 
-      return Object.assign(session, { injections });
+      return {
+        interrupt(): Promise<void> {
+          doInterrupt();
+          return Promise.resolve();
+        },
+
+        get outcome(): Promise<SessionOutcome> {
+          if (interruptedOutcome) return Promise.resolve(interruptedOutcome);
+          return runPromise;
+        },
+      };
     },
   };
 }

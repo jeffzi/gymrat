@@ -8,10 +8,10 @@ import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createMockDriver } from "../../src/supervisor/mock.js";
-import type { MockStep } from "../../src/supervisor/mock.js";
 import { supervise } from "../../src/supervisor/supervise.js";
 import { commitProject, TUNING_FILE } from "../fixtures/bench-harness.js";
+import { createMockDriver } from "../fixtures/mock-driver.js";
+import type { MockStep } from "../fixtures/mock-driver.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import { makeLaunch, makePrompt } from "../fixtures/supervisor.js";
 

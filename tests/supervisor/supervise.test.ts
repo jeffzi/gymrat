@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Driver, SessionOutcome } from "../../src/supervisor/driver.js";
 import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
-import { createMockDriver } from "../../src/supervisor/mock.js";
-import type { MockStep } from "../../src/supervisor/mock.js";
 import { supervise } from "../../src/supervisor/supervise.js";
+import { createMockDriver } from "../fixtures/mock-driver.js";
+import type { MockStep } from "../fixtures/mock-driver.js";
 import { makeLaunch, makePrompt } from "../fixtures/supervisor.js";
 
 function makeTempLogPath(): string {
@@ -249,14 +249,10 @@ describe("supervise", () => {
         start(prompt, observer, signal) {
           const session = inner.start(prompt, observer, signal);
           return {
-            inject: (msg: string) => {
-              session.inject(msg);
-            },
             interrupt: async () => {
               interruptCount++;
               return session.interrupt();
             },
-            usage: () => session.usage(),
             outcome: session.outcome,
           };
         },
@@ -352,13 +348,9 @@ describe("supervise", () => {
         start(prompt, observer, signal) {
           const session = inner.start(prompt, observer, signal);
           return {
-            inject: (msg: string) => {
-              session.inject(msg);
-            },
             interrupt(): Promise<void> {
               throw new Error("interrupt exploded");
             },
-            usage: () => session.usage(),
             outcome: session.outcome,
           };
         },
@@ -390,9 +382,7 @@ describe("supervise", () => {
       const driver: Driver = {
         start() {
           return {
-            inject: () => {},
             interrupt: async () => {},
-            usage: () => ({ costUsd: 0 }),
             outcome: outcomePromise,
           };
         },
@@ -419,9 +409,7 @@ describe("supervise", () => {
         start(_prompt, observer) {
           observer({ type: "usage_update", timestamp: Date.now(), costUsd: 5.0 });
           return {
-            inject: () => {},
             interrupt: async () => {},
-            usage: () => ({ costUsd: 5.0 }),
             outcome: Promise.resolve({
               reason: "interrupted" as const,
               costUsd: 5.0,

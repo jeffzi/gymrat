@@ -40,9 +40,7 @@ vi.mock("../../src/supervisor/kickoff.js", () => ({
 vi.mock("../../src/supervisor/claude.js", () => ({
   createClaudeDriver: vi.fn().mockReturnValue({
     start: vi.fn().mockReturnValue({
-      inject: vi.fn(),
       interrupt: vi.fn().mockResolvedValue(undefined),
-      usage: vi.fn().mockReturnValue({ costUsd: 0.05 }),
       outcome: Promise.resolve({ reason: "completed", costUsd: 0.05 }),
     }),
   } satisfies Driver),

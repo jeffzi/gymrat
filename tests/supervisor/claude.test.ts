@@ -1,51 +1,63 @@
 /* oxlint-disable require-yield -- async generators used as AsyncIterable adapters for the SDK message stream; yield is not always needed */
 /* oxlint-disable typescript/require-await -- mock action callbacks are async to match the interface but have no awaitable work */
 /* oxlint-disable typescript/no-unsafe-type-assertion -- narrowing test assertions on partial event objects */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createClaudeDriver } from "../../src/supervisor/claude.js";
 import type { QueryFn } from "../../src/supervisor/claude.js";
 import { capturingQueryFn, collectingObserver, makePrompt } from "../fixtures/supervisor.js";
 
-/**
- * Creates a fake queryFn that yields the given SDK-shaped messages.
- *
- * The returned function matches the QueryFn signature: it accepts query options
- * and returns an object with an async iterable of messages, an interrupt method,
- * and a result accessor providing per-turn usage.
- */
+/** Creates a fake queryFn that yields the given SDK-shaped messages. */
 function fakeQueryFn(
   messages: Array<Record<string, unknown>>,
   options?: {
-    resultCostUsd?: number;
-    onInterrupt?: () => void;
     throwError?: Error;
   },
 ): QueryFn {
-  let interrupted = false;
-  return (_opts: Record<string, unknown>) => {
+  const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
     async function* generate() {
       for (const msg of messages) {
-        if (interrupted) return;
         yield msg;
       }
       if (options?.throwError) {
         throw options.throwError;
       }
     }
-
-    return {
-      messages: generate(),
-      interrupt(): void {
-        interrupted = true;
-        options?.onInterrupt?.();
-      },
-      result: {
-        total_cost_usd: options?.resultCostUsd ?? 0,
-      },
-    };
+    return generate();
   };
+  return fn;
 }
+
+// ---------------------------------------------------------------------------
+// SDK as optional peer dependency
+// ---------------------------------------------------------------------------
+
+describe("SDK peer dependency", () => {
+  it("declares @anthropic-ai/claude-agent-sdk as an optional peer dependency", () => {
+    const pkgPath = resolve(import.meta.dirname, "../../package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
+    const peerDeps = pkg["peerDependencies"] as Record<string, string> | undefined;
+    const peerMeta = pkg["peerDependenciesMeta"] as
+      | Record<string, { optional?: boolean }>
+      | undefined;
+
+    expect(peerDeps?.["@anthropic-ai/claude-agent-sdk"]).toBeDefined();
+    expect(peerMeta?.["@anthropic-ai/claude-agent-sdk"]?.optional).toBe(true);
+  });
+
+  it("does not list the SDK in dependencies or devDependencies", () => {
+    const pkgPath = resolve(import.meta.dirname, "../../package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
+    const deps = pkg["dependencies"] as Record<string, string> | undefined;
+    const devDeps = pkg["devDependencies"] as Record<string, string> | undefined;
+
+    expect(deps?.["@anthropic-ai/claude-agent-sdk"]).toBeUndefined();
+    expect(devDeps?.["@anthropic-ai/claude-agent-sdk"]).toBeUndefined();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // createClaudeDriver
@@ -65,16 +77,18 @@ describe("createClaudeDriver", () => {
 
 describe("start", () => {
   describe("when launching a session", () => {
-    it("passes prompt as an AsyncIterable seeded with kickoff, not a plain string", async () => {
+    it("passes prompt.kickoff as a plain string, not an AsyncIterable", async () => {
       const { queryFn, captured } = capturingQueryFn();
       const driver = createClaudeDriver({ queryFn });
 
-      const session = driver.start(makePrompt(), collectingObserver().observer);
+      const session = driver.start(
+        makePrompt({ kickoff: "hello agent" }),
+        collectingObserver().observer,
+      );
       await session.outcome;
 
-      // prompt must be an AsyncIterable, not a string
-      expect(typeof captured()["prompt"]).not.toBe("string");
-      expect(Symbol.asyncIterator in (captured()["prompt"] as object)).toBe(true);
+      expect(typeof captured()["prompt"]).toBe("string");
+      expect(captured()["prompt"]).toBe("hello agent");
     });
 
     it("forwards cwd and permissionMode: bypassPermissions", async () => {
@@ -139,37 +153,16 @@ describe("start", () => {
 
       expect(captured()).not.toHaveProperty("model");
     });
-  });
-});
 
-// ---------------------------------------------------------------------------
-// inject()
-// ---------------------------------------------------------------------------
+    it("passes an AbortController as options.abortController", async () => {
+      const { queryFn, captured } = capturingQueryFn();
+      const driver = createClaudeDriver({ queryFn });
 
-describe("inject", () => {
-  it("pushes a user message and emits an inject event", async () => {
-    const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
-      async function* generate() {
-        // Yield nothing — just let the session start and complete
-      }
-      return {
-        messages: generate(),
-        interrupt(): void {},
-        result: { total_cost_usd: 0 },
-      };
-    };
-    const driver = createClaudeDriver({ queryFn });
-    const { events, observer } = collectingObserver();
+      const session = driver.start(makePrompt(), collectingObserver().observer);
+      await session.outcome;
 
-    const session = driver.start(makePrompt(), observer);
-    session.inject("feedback message");
-    await session.outcome;
-
-    const injectEvents = events.filter((e) => e.type === "inject");
-    expect(injectEvents).toHaveLength(1);
-    expect(injectEvents[0]).toMatchObject({
-      type: "inject",
-      message: "feedback message",
+      const ac = captured()["abortController"];
+      expect(ac).toBeInstanceOf(AbortController);
     });
   });
 });
@@ -238,7 +231,7 @@ describe("SDK message mapping", () => {
       vi.useFakeTimers({ now: 1000 });
 
       let yieldGate: (() => void) | undefined;
-      const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
+      const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
         async function* generate() {
           yield {
             type: "assistant",
@@ -246,8 +239,8 @@ describe("SDK message mapping", () => {
               { type: "tool_use", id: "tu_1", name: "Read", input: { file_path: "/foo.ts" } },
             ],
           };
-          await new Promise<void>((resolve) => {
-            yieldGate = resolve;
+          await new Promise<void>((r) => {
+            yieldGate = r;
           });
           yield {
             type: "tool_result",
@@ -255,14 +248,10 @@ describe("SDK message mapping", () => {
             content: "file contents here",
           };
         }
-        return {
-          messages: generate(),
-          interrupt(): void {},
-          result: { total_cost_usd: 0 },
-        };
+        return generate();
       };
 
-      const driver = createClaudeDriver({ queryFn });
+      const driver = createClaudeDriver({ queryFn: fn });
       const { events, observer } = collectingObserver();
       const session = driver.start(makePrompt(), observer);
 
@@ -501,45 +490,67 @@ describe("SDK message mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// usage tracking
+// cost from result-type messages
 // ---------------------------------------------------------------------------
 
-describe("usage tracking", () => {
-  it("returns the latest total_cost_usd from the SDK result and emits usage_update", async () => {
-    const driver = createClaudeDriver({
-      queryFn: fakeQueryFn([], { resultCostUsd: 0.05 }),
-    });
+describe("cost tracking from result messages", () => {
+  it("emits usage_update for each result-type message with total_cost_usd", async () => {
+    const sdkMessages = [
+      { type: "assistant", content: [{ type: "text", text: "working..." }] },
+      { type: "result", total_cost_usd: 0.03 },
+      { type: "assistant", content: [{ type: "text", text: "done" }] },
+      { type: "result", total_cost_usd: 0.07 },
+    ];
+    const driver = createClaudeDriver({ queryFn: fakeQueryFn(sdkMessages) });
     const { events, observer } = collectingObserver();
 
     const session = driver.start(makePrompt(), observer);
     await session.outcome;
-
-    expect(session.usage()).toStrictEqual({ costUsd: 0.05 });
 
     const usageEvents = events.filter((e) => e.type === "usage_update");
-    expect(usageEvents).toHaveLength(1);
-    expect(usageEvents[0]).toMatchObject({
-      type: "usage_update",
-      costUsd: 0.05,
-    });
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]).toMatchObject({ type: "usage_update", costUsd: 0.03 });
+    expect(usageEvents[1]).toMatchObject({ type: "usage_update", costUsd: 0.07 });
   });
 
-  it("does not emit usage_update when cost is zero", async () => {
-    const driver = createClaudeDriver({
-      queryFn: fakeQueryFn([], { resultCostUsd: 0 }),
-    });
+  it("reports the final cost in the outcome from the last result message", async () => {
+    const sdkMessages = [
+      { type: "result", total_cost_usd: 0.02 },
+      { type: "result", total_cost_usd: 0.05 },
+    ];
+    const driver = createClaudeDriver({ queryFn: fakeQueryFn(sdkMessages) });
+    const { observer } = collectingObserver();
+
+    const session = driver.start(makePrompt(), observer);
+    const outcome = await session.outcome;
+
+    expect(outcome.costUsd).toBe(0.05);
+  });
+
+  it("does not emit usage_update when no result messages appear", async () => {
+    const sdkMessages = [{ type: "assistant", content: [{ type: "text", text: "hello" }] }];
+    const driver = createClaudeDriver({ queryFn: fakeQueryFn(sdkMessages) });
     const { events, observer } = collectingObserver();
 
     const session = driver.start(makePrompt(), observer);
     await session.outcome;
 
-    expect(session.usage()).toStrictEqual({ costUsd: 0 });
     expect(events.filter((e) => e.type === "usage_update")).toHaveLength(0);
+  });
+
+  it("reports costUsd 0 in outcome when no result messages provide cost", async () => {
+    const driver = createClaudeDriver({ queryFn: fakeQueryFn([]) });
+    const { observer } = collectingObserver();
+
+    const session = driver.start(makePrompt(), observer);
+    const outcome = await session.outcome;
+
+    expect(outcome.costUsd).toBe(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// interrupt and abort
+// interrupt via AbortController
 // ---------------------------------------------------------------------------
 
 describe("interrupt", () => {
@@ -547,31 +558,34 @@ describe("interrupt", () => {
     vi.useRealTimers();
   });
 
+  it("aborts the internal controller when interrupt() is called", async () => {
+    const { queryFn, captured } = capturingQueryFn();
+    const driver = createClaudeDriver({ queryFn });
+
+    const session = driver.start(makePrompt(), collectingObserver().observer);
+    await session.interrupt();
+
+    const ac = captured()["abortController"] as AbortController;
+    expect(ac.signal.aborted).toBe(true);
+  });
+
   it("resolves outcome as interrupted after interrupt()", async () => {
     vi.useFakeTimers();
-    let interruptCalled = false;
-    const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
+    const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
       async function* generate() {
         yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 10_000);
+        await new Promise<void>((r) => {
+          setTimeout(r, 10_000);
         });
       }
-      return {
-        messages: generate(),
-        interrupt(): void {
-          interruptCalled = true;
-        },
-        result: { total_cost_usd: 0.01 },
-      };
+      return generate();
     };
-    const driver = createClaudeDriver({ queryFn });
+    const driver = createClaudeDriver({ queryFn: fn });
 
     const session = driver.start(makePrompt(), collectingObserver().observer);
     await session.interrupt();
     const outcome = await session.outcome;
 
-    expect(interruptCalled).toBe(true);
     expect(outcome.reason).toBe("interrupted");
   });
 });
@@ -584,20 +598,16 @@ describe("abort signal", () => {
   it("resolves outcome as interrupted when abort signal fires", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
-    const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
+    const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
       async function* generate() {
         yield { type: "assistant", content: [{ type: "text", text: "hi" }] };
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 10_000);
+        await new Promise<void>((r) => {
+          setTimeout(r, 10_000);
         });
       }
-      return {
-        messages: generate(),
-        interrupt(): void {},
-        result: { total_cost_usd: 0 },
-      };
+      return generate();
     };
-    const driver = createClaudeDriver({ queryFn });
+    const driver = createClaudeDriver({ queryFn: fn });
 
     const session = driver.start(makePrompt(), collectingObserver().observer, controller.signal);
     controller.abort();
@@ -666,84 +676,16 @@ describe("outcome", () => {
 describe("lazy SDK loading", () => {
   it("does not import the SDK module at driver construction time", () => {
     let queryFnCalled = false;
-    const queryFn: QueryFn = (_opts: Record<string, unknown>) => {
+    const fn = (_opts: Record<string, unknown>): AsyncIterable<Record<string, unknown>> => {
       queryFnCalled = true;
       async function* empty() {}
-      return {
-        messages: empty(),
-        interrupt(): void {},
-        result: { total_cost_usd: 0 },
-      };
+      return empty();
     };
 
-    const driver = createClaudeDriver({ queryFn });
+    const driver = createClaudeDriver({ queryFn: fn });
 
     expect(queryFnCalled).toBe(false);
     expect(driver).toHaveProperty("start");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// message queue edge cases
-// ---------------------------------------------------------------------------
-
-describe("message queue", () => {
-  it("closes the queue on interrupt so the SDK prompt iterable ends", async () => {
-    let promptIterator: AsyncIterator<{ role: string; content: string }> | undefined;
-    const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-      const prompt = opts["prompt"] as AsyncIterable<{ role: string; content: string }>;
-      promptIterator = prompt[Symbol.asyncIterator]();
-      async function* generate() {
-        // consume first message then stall
-        await promptIterator!.next();
-      }
-      return {
-        messages: generate(),
-        interrupt(): void {},
-        result: { total_cost_usd: 0 },
-      };
-    };
-    const driver = createClaudeDriver({ queryFn });
-    const session = driver.start(makePrompt(), collectingObserver().observer);
-    await session.interrupt();
-    // After interrupt, the queue is closed; subsequent iteration should return done
-    const result = await promptIterator!.next();
-    expect(result.done).toBe(true);
-  });
-
-  it("delivers injected messages to the SDK prompt iterable after waiting", async () => {
-    const consumed: string[] = [];
-    let resolveGate: (() => void) | undefined;
-    const gate = new Promise<void>((r) => {
-      resolveGate = r;
-    });
-    const queryFn: QueryFn = (opts: Record<string, unknown>) => {
-      const prompt = opts["prompt"] as AsyncIterable<{ role: string; content: string }>;
-      async function* generate() {
-        const iter = prompt[Symbol.asyncIterator]();
-        // Consume the initial kickoff message
-        const first = await iter.next();
-        if (!first.done) consumed.push(first.value.content);
-        // Signal that we're ready for the next message — this will await inside the queue
-        resolveGate!();
-        const second = await iter.next();
-        if (!second.done) consumed.push(second.value.content);
-      }
-      return {
-        messages: generate(),
-        interrupt(): void {},
-        result: { total_cost_usd: 0 },
-      };
-    };
-    const driver = createClaudeDriver({ queryFn });
-    const session = driver.start(makePrompt({ kickoff: "initial" }), collectingObserver().observer);
-    // Wait until the generator has consumed the first message and is waiting for the second
-    await gate;
-    // Now inject — the queue iterator should resolve its waiter
-    session.inject("followup");
-    await session.outcome;
-
-    expect(consumed).toStrictEqual(["initial", "followup"]);
   });
 });
 

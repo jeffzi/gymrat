@@ -5,15 +5,6 @@
 /** Maximum character length for session event summaries. */
 export const SUMMARY_MAX_CHARS = 200;
 
-/** Emitted once when a session begins, before the first turn. */
-export interface AgentStartEvent {
-  readonly type: "agent_start";
-  readonly timestamp: number;
-  readonly prompt: string;
-  readonly promptSummary: string;
-  readonly model: string | null;
-}
-
 /** Emitted as the model's extended-thinking token estimate changes mid-turn. */
 export interface ThinkingUpdateEvent {
   readonly type: "thinking_update";
@@ -58,37 +49,11 @@ export interface TextDeltaEvent {
   readonly chunk: string;
 }
 
-/** Emitted when a session completes successfully. */
-export interface AgentEndEvent {
-  readonly type: "agent_end";
-  readonly timestamp: number;
-  readonly durationMs: number;
-  readonly costUsd: number;
-}
-
-/** Emitted in place of {@link AgentEndEvent} when a session fails. */
-export interface AgentErrorEvent {
-  readonly type: "agent_error";
-  readonly timestamp: number;
-  readonly durationMs: number;
-  readonly costUsd: number | undefined;
-  readonly subtype: string;
-  readonly message: string;
-}
-
 /** Emitted when the driver observes updated cumulative cost. */
 export interface UsageUpdateEvent {
   readonly type: "usage_update";
   readonly timestamp: number;
   readonly costUsd: number;
-}
-
-/** Emitted when a message is queued into the running session via inject(). */
-export interface InjectEvent {
-  readonly type: "inject";
-  readonly timestamp: number;
-  readonly message: string;
-  readonly messageSummary: string;
 }
 
 /** Written by the supervisor as the log's first line: launch provenance. */
@@ -106,16 +71,12 @@ export interface LaunchEvent {
 
 /** The union of every event a session can emit to a {@link SessionObserver}. */
 export type SessionEvent =
-  | AgentStartEvent
   | ThinkingUpdateEvent
   | ToolStartEvent
   | ToolProgressEvent
   | ToolEndEvent
   | TextDeltaEvent
-  | AgentEndEvent
-  | AgentErrorEvent
   | UsageUpdateEvent
-  | InjectEvent
   | LaunchEvent;
 
 /** Receives {@link SessionEvent}s as a session streams them. */

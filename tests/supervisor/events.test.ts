@@ -13,30 +13,23 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("SessionEvent", () => {
-  it("covers all expected event types", () => {
+  it("covers only the retained event types", () => {
     expectTypeOf<SessionEvent["type"]>().toEqualTypeOf<
-      | "agent_start"
       | "thinking_update"
       | "tool_start"
       | "tool_progress"
       | "tool_end"
       | "text_delta"
-      | "agent_end"
-      | "agent_error"
       | "usage_update"
-      | "inject"
       | "launch"
     >();
   });
 
-  it("agent_start carries prompt, promptSummary, model, and timestamp", () => {
-    expectTypeOf<Extract<SessionEvent, { type: "agent_start" }>>().toEqualTypeOf<{
-      readonly type: "agent_start";
-      readonly timestamp: number;
-      readonly prompt: string;
-      readonly promptSummary: string;
-      readonly model: string | null;
-    }>();
+  it("does not include removed event types", () => {
+    expectTypeOf<Extract<SessionEvent, { type: "agent_start" }>>().toBeNever();
+    expectTypeOf<Extract<SessionEvent, { type: "agent_end" }>>().toBeNever();
+    expectTypeOf<Extract<SessionEvent, { type: "agent_error" }>>().toBeNever();
+    expectTypeOf<Extract<SessionEvent, { type: "inject" }>>().toBeNever();
   });
 
   it("thinking_update carries estimatedTokens and delta", () => {
@@ -88,40 +81,11 @@ describe("SessionEvent", () => {
     }>();
   });
 
-  it("agent_end carries durationMs and costUsd", () => {
-    expectTypeOf<Extract<SessionEvent, { type: "agent_end" }>>().toEqualTypeOf<{
-      readonly type: "agent_end";
-      readonly timestamp: number;
-      readonly durationMs: number;
-      readonly costUsd: number;
-    }>();
-  });
-
-  it("agent_error carries durationMs, costUsd (optional), subtype, and message", () => {
-    expectTypeOf<Extract<SessionEvent, { type: "agent_error" }>>().toEqualTypeOf<{
-      readonly type: "agent_error";
-      readonly timestamp: number;
-      readonly durationMs: number;
-      readonly costUsd: number | undefined;
-      readonly subtype: string;
-      readonly message: string;
-    }>();
-  });
-
   it("usage_update carries costUsd", () => {
     expectTypeOf<Extract<SessionEvent, { type: "usage_update" }>>().toEqualTypeOf<{
       readonly type: "usage_update";
       readonly timestamp: number;
       readonly costUsd: number;
-    }>();
-  });
-
-  it("inject carries message and messageSummary", () => {
-    expectTypeOf<Extract<SessionEvent, { type: "inject" }>>().toEqualTypeOf<{
-      readonly type: "inject";
-      readonly timestamp: number;
-      readonly message: string;
-      readonly messageSummary: string;
     }>();
   });
 
