@@ -467,7 +467,7 @@ describe("cleanupWorktrees", () => {
       expect(result.failures[0]?.error).not.toContain("Command failed");
     });
 
-    it("prunes the registry entries of worktrees whose directories have vanished", () => {
+    it("does not prune stale registry entries unrelated to the failure", () => {
       repo = createScratchRepo();
       const absent = registerAbsentWorktree(repo.dir);
       const stray = createStrayWorktree();
@@ -475,7 +475,7 @@ describe("cleanupWorktrees", () => {
       const result = cleanupWorktrees([stray], repo.dir);
 
       expect.soft(result.failures).toHaveLength(1);
-      expect(listWorktreeDirs(repo.dir)).not.toContain(absent);
+      expect(listWorktreeDirs(repo.dir)).toContain(absent);
     });
 
     it("still removes the worktrees listed after the failing one", () => {
@@ -530,6 +530,20 @@ describe("cleanupWorktrees", () => {
       expect.soft(listWorktreeDirs(repo.dir)).toHaveLength(1);
       expect.soft(second.removed).toBe(0);
       expect(second.failures).toStrictEqual([]);
+    });
+
+    it("does not prune unrelated absent worktrees on a second sweep", () => {
+      repo = createScratchRepo();
+      const worktree = createHeadWorktree(repo.dir);
+      const absent = registerAbsentWorktree(repo.dir);
+
+      cleanupWorktrees([worktree], repo.dir);
+      const second = cleanupWorktrees([worktree], repo.dir);
+
+      expect.soft(second.removed).toBe(0);
+      expect.soft(second.failures).toStrictEqual([]);
+      expect.soft(second.pruneError).toBeUndefined();
+      expect(listWorktreeDirs(repo.dir)).toContain(absent);
     });
   });
 });

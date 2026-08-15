@@ -13,7 +13,13 @@ const GIT_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
  * @throws whatever `execFileSync` throws — callers decide how to wrap it.
  */
 export function runGit(args: readonly string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: GIT_STDIO });
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: GIT_STDIO,
+    env: { ...process.env, LC_ALL: "C" },
+    maxBuffer: 50 * 1024 * 1024,
+  });
 }
 
 /**
@@ -41,8 +47,16 @@ export function tryGit(args: readonly string[], cwd: string): string | undefined
  */
 export class NotAGitRepositoryError extends GymratError {}
 
-/** Git's wording when it places a directory outside every repository. */
-const NOT_A_REPOSITORY_RE = /not a git repository/i;
+/**
+ * Git's wording when it places a directory outside every repository.
+ *
+ * Anchored to `^fatal:` so a path that embeds the phrase (e.g.
+ * `/tmp/not a git repository/config`) cannot skip the classification.
+ * The `m` flag lets `^` match at line boundaries within multi-line stderr.
+ * `LC_ALL=C` in `runGit` stabilizes the wording across locales, so the
+ * case-insensitive flag is not needed.
+ */
+const NOT_A_REPOSITORY_RE = /^fatal: not a git repository/m;
 
 /**
  * The error a failed repository lookup throws, classified by what git said, so

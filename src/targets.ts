@@ -136,9 +136,14 @@ export function resolveTarget(input: string, repoDir: string): Target {
   }
 
   try {
-    // `^{commit}` peels the ref, so a tag resolves to the commit it points at and
-    // a tree or blob sha fails instead of yielding a sha no worktree can check out.
-    const resolvedSha = runGit(["rev-parse", "--verify", `${input}^{commit}`], repoDir).trim();
+    // `--end-of-options` prevents a leading-dash input from being parsed as a
+    // git option. `^{commit}` peels the ref, so a tag resolves to the commit it
+    // points at and a tree or blob sha fails instead of yielding a sha no
+    // worktree can check out.
+    const resolvedSha = runGit(
+      ["rev-parse", "--verify", "--end-of-options", `${input}^{commit}`],
+      repoDir,
+    ).trim();
     return {
       kind: "ref",
       ref: input,
@@ -217,6 +222,9 @@ function removeWorktree(worktree: WorktreeInfo, repoDir: string): RemovalOutcome
     // already gone, so a refusal there is a reason to sweep, not to report.
     return onDisk ? { dir: worktree.dir, error } : "stale";
   }
+  // The entry is gone — mark the worktree so a subsequent sweep treats it as
+  // untouched rather than reclassifying it as stale.
+  worktree.created = false;
   return onDisk ? "removed" : "deregistered";
 }
 
@@ -252,7 +260,6 @@ export function cleanupWorktrees(
         break;
       default:
         failures.push(outcome);
-        mayHaveStaleEntry = true;
     }
   }
 
