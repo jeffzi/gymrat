@@ -6,9 +6,20 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { isRecord } from "../../src/errors.js";
 import { createClaudeDriver } from "../../src/supervisor/claude.js";
 import type { QueryFn } from "../../src/supervisor/claude.js";
 import { capturingQueryFn, collectingObserver, makePrompt } from "../fixtures/supervisor.js";
+
+/** Reads and parses package.json, narrowing the result to a plain object. */
+function readPackageJson(): Record<string, unknown> {
+  const pkgPath = resolve(import.meta.dirname, "../../package.json");
+  const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  if (!isRecord(parsed)) {
+    throw new Error("package.json did not parse to an object");
+  }
+  return parsed;
+}
 
 /** Creates a fake queryFn that yields the given SDK-shaped messages. */
 function fakeQueryFn(
@@ -51,25 +62,25 @@ function hangingQueryFn(): QueryFn {
 
 describe("SDK peer dependency", () => {
   it("declares @anthropic-ai/claude-agent-sdk as an optional peer dependency", () => {
-    const pkgPath = resolve(import.meta.dirname, "../../package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
-    const peerDeps = pkg["peerDependencies"] as Record<string, string> | undefined;
-    const peerMeta = pkg["peerDependenciesMeta"] as
-      | Record<string, { optional?: boolean }>
-      | undefined;
+    const pkg = readPackageJson();
+    const peerDeps = pkg["peerDependencies"];
+    const peerMeta = pkg["peerDependenciesMeta"];
 
-    expect(peerDeps?.["@anthropic-ai/claude-agent-sdk"]).toBeDefined();
-    expect(peerMeta?.["@anthropic-ai/claude-agent-sdk"]?.optional).toBe(true);
+    const sdkPeerDep = isRecord(peerDeps) ? peerDeps["@anthropic-ai/claude-agent-sdk"] : undefined;
+    expect(sdkPeerDep).toBeDefined();
+    const sdkMeta = isRecord(peerMeta) ? peerMeta["@anthropic-ai/claude-agent-sdk"] : undefined;
+    expect(isRecord(sdkMeta) ? sdkMeta["optional"] : undefined).toBe(true);
   });
 
   it("does not list the SDK in dependencies or devDependencies", () => {
-    const pkgPath = resolve(import.meta.dirname, "../../package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
-    const deps = pkg["dependencies"] as Record<string, string> | undefined;
-    const devDeps = pkg["devDependencies"] as Record<string, string> | undefined;
+    const pkg = readPackageJson();
+    const deps = pkg["dependencies"];
+    const devDeps = pkg["devDependencies"];
 
-    expect(deps?.["@anthropic-ai/claude-agent-sdk"]).toBeUndefined();
-    expect(devDeps?.["@anthropic-ai/claude-agent-sdk"]).toBeUndefined();
+    expect(isRecord(deps) ? deps["@anthropic-ai/claude-agent-sdk"] : undefined).toBeUndefined();
+    expect(
+      isRecord(devDeps) ? devDeps["@anthropic-ai/claude-agent-sdk"] : undefined,
+    ).toBeUndefined();
   });
 });
 
@@ -632,8 +643,11 @@ describe("interrupt", () => {
     const session = driver.start(makePrompt(), collectingObserver().observer);
     await session.interrupt();
 
-    const ac = captured()["abortController"] as AbortController;
-    expect(ac.signal.aborted).toBe(true);
+    const abortController = captured()["abortController"];
+    if (!(abortController instanceof AbortController)) {
+      throw new Error("expected queryFn to be called with an abortController");
+    }
+    expect(abortController.signal.aborted).toBe(true);
   });
 
   it("resolves outcome as interrupted after interrupt()", async () => {

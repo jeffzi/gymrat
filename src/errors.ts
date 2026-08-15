@@ -71,3 +71,11 @@ export function assertNever(value: never): never {
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+/**
+ * `Omit<T, K>` without the type-safety hole: `Omit` accepts any string for `K`,
+ * so a typo or a renamed field in `T` silently produces `T` unchanged instead of
+ * a compile error. Constraining `K extends keyof T` forces the mistake to surface
+ * at the call site.
+ */
+export type StrictOmit<T, K extends keyof T> = Omit<T, K>;

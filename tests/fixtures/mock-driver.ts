@@ -1,5 +1,5 @@
 import { messageOf } from "../../src/errors.js";
-import type { DriverSession, SessionOutcome } from "../../src/supervisor/driver.js";
+import type { Driver, DriverSession, SessionOutcome } from "../../src/supervisor/driver.js";
 import type { SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
 
 interface EmitStep {
@@ -54,7 +54,7 @@ function interruptibleDelay(ms: number, signal: AbortSignal): Promise<void> {
  * in order. Designed for testing supervisor orchestration without a real agent
  * backend.
  */
-export function createMockDriver(steps: readonly MockStep[]) {
+export function createMockDriver(steps: readonly MockStep[]): Driver {
   return {
     start(
       _prompt: unknown,

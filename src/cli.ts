@@ -17,7 +17,7 @@ import {
   type CliFlags,
   type ResolvedConfig,
 } from "./config.js";
-import { assertNever, GymratError, messageOf } from "./errors.js";
+import { assertNever, GymratError, messageOf, type StrictOmit } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { NotAGitRepositoryError, runGit } from "./git.js";
 import { finalizeSession } from "./loop/finalize.js";
@@ -582,7 +582,7 @@ interface SharedFlags extends CliFlags {
 }
 
 /** The status command's flags: the shared set minus the format choice status does not offer. */
-type StatusFlags = Omit<SharedFlags, "format">;
+type StatusFlags = StrictOmit<SharedFlags, "format">;
 
 /** The keep command's flags: the configuration set plus the message the commit carries. */
 interface KeepFlags extends CliFlags {
@@ -987,6 +987,10 @@ export function createProgram(): Command {
       noFailOnConditions,
     )
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
+      // Commander's `--no-color` sets `options.color` to false; anything else
+      // defers to the renderer's own color detection.
+      const colorOverride = options.color ? undefined : false;
+
       /*
        * Everything after the lock only reads the result the lock already
        * protected: the report describes a finished measurement, so holding the
@@ -1018,7 +1022,7 @@ export function createProgram(): Command {
         { json: renderJson, text: renderReport },
         {
           verbose: options.verbose,
-          color: options.color ? undefined : false,
+          color: colorOverride,
           failOn: options.failOn,
         },
       );
@@ -1043,6 +1047,10 @@ export function createProgram(): Command {
   )
     .option("-r, --record", "append the run to the session log as a baseline", false)
     .action(async (target: TargetSpec, options: MeasureFlags) => {
+      // Commander's `--no-color` sets `options.color` to false; anything else
+      // defers to the renderer's own color detection.
+      const colorOverride = options.color ? undefined : false;
+
       /*
        * The lock covers the measurement and the append it produces — every
        * repository write — and nothing beyond. The report describes a run that
@@ -1084,7 +1092,7 @@ export function createProgram(): Command {
         run.result,
         options,
         { json: renderMeasureJson, text: renderMeasureReport },
-        { color: options.color ? undefined : false },
+        { color: colorOverride },
       );
 
       if (run.recording !== undefined) {

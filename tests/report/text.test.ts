@@ -2666,12 +2666,12 @@ describe("renderReport", () => {
       it.each([
         {
           source: "the kind-level config entry",
-          configKinds: { time: { gating: false } } as ComparisonResult["configKinds"],
+          configKinds: { time: { gating: false } } satisfies ComparisonResult["configKinds"],
           expected: "informational — gating off (config: kinds.time.gating = false)",
         },
         {
           source: "per-metric overrides alone",
-          configKinds: undefined as ComparisonResult["configKinds"],
+          configKinds: undefined satisfies ComparisonResult["configKinds"],
           expected: "informational — gating off",
         },
       ])("credits $source for the informational tag", ({ configKinds, expected }) => {
