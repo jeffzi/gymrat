@@ -7,11 +7,13 @@
 Standalone A/B benchmark runner with paired sampling and benchstat-style reports.
 
 `gymrat compare` runs a benchmark command against a baseline revision and one or more candidates,
-cycling samples across them so every target sees the same machine noise, and prints a report that
-tells you, per metric, whether each candidate is a real improvement, a real regression, or noise.
+cycling samples so every target sees the same machine noise, and tells you whether each candidate is
+a real improvement, a real regression, or noise. `gymrat measure` runs the same sampling against a
+single target and reports its figures with nothing to compare them to. No session state, no config
+required to start.
+
 Verdicts come from a two-sided Wilcoxon signed-rank test once there are enough samples, and from a
-noise band below that. `gymrat measure` runs the same sampling against a single target and reports
-its figures with nothing to compare them to. No session state, no config required to start.
+noise band below that. See [Reading the report](#reading-the-report) for the full verdict rules.
 
 ## Install
 
@@ -67,7 +69,7 @@ gymrat compare main my-branch \
   --samples 20
 ```
 
-### `measure`
+### measure
 
 ```text
 gymrat measure [[label=]<ref|dir>] [options]
@@ -75,10 +77,8 @@ gymrat measure [[label=]<ref|dir>] [options]
 
 The target is optional and defaults to the current directory; when given, it is a git ref or
 directory path resolved the same way as a `compare` target, with the same optional `label=` prefix.
-`measure` accepts the shared options — `--bench`, `--prepare`, `--adapter`, `--samples`,
-`--timeout`, `--config`, `--format`, and `--no-color` — but not `--verbose` or `--fail-on`: there is
-no baseline for `--verbose` to name a verdict method against, and no candidate for `--fail-on` to
-gate.
+`measure` accepts the shared options above except `--verbose` and `--fail-on`, which require a
+baseline and a candidate respectively.
 
 `-r, --record` appends the run to the repository's session log as a baseline record, so a later
 `gymrat status` reads it back alongside the session's iterations. It requires a session (see
@@ -159,28 +159,49 @@ concurrent runs perturb each other's measurements. `status` only reads the log, 
 
 ### Options
 
-| Option                  | Default         | Description                                                                               |
-| ----------------------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `--bench <cmd>`         | — (required\*)  | Bench command run in each target directory                                                |
-| `--prepare <script>`    | none            | Per-target setup, e.g. `"npm ci && npm run build"`                                        |
-| `--adapter <type>`      | `metric-lines`  | Output parser: `metric-lines` or `mitata`                                                 |
-| `--samples <number>`    | `10`            | Paired samples per target                                                                 |
-| `--timeout <number>`    | `1800`          | Timeout in seconds per `prepare`, per bench run, and per `checks` run                     |
-| `--config <file>`       | `./gymrat.json` | Config file (loaded automatically when present)                                           |
-| `--format <value>`      | `text`          | Output format: `text` or `json` (`compare` and `measure` only)                            |
-| `--no-color`            | auto            | Print the report without ANSI styles                                                      |
-| `--verbose`             | off             | `compare` only: name the statistical method behind each verdict                           |
-| `--fail-on <condition>` | none            | `compare` only: exit 1 when a condition trips (repeatable; see [Exit codes](#exit-codes)) |
-| `-r, --record`          | off             | `measure` only: append the run to the session log as a baseline                           |
+| Option                   | Default         | Description                                                                                               |
+| ------------------------ | --------------- | --------------------------------------------------------------------------------------------------------- |
+| `-b, --bench <cmd>`      | — (required\*)  | Bench command run in each target directory                                                                |
+| `-p, --prepare <script>` | none            | Per-target setup, e.g. `"npm ci && npm run build"`                                                        |
+| `-a, --adapter <type>`   | `metric-lines`  | Output parser: `metric-lines` or `mitata`                                                                 |
+| `-s, --samples <number>` | `10`            | Paired samples per target                                                                                 |
+| `-t, --timeout <number>` | `1800`          | Timeout in seconds per `prepare`, per bench run, and per `checks` run                                     |
+| `-c, --config <file>`    | `./gymrat.json` | Config file (loaded automatically when present)                                                           |
+| `--format <value>`       | `text`          | Output format: `text` or `json` (`compare` and `measure` only)                                            |
+| `--no-color`             | auto            | Print the report without ANSI styles                                                                      |
+| `--verbose`              | off             | `compare` only: name the statistical method behind each verdict                                           |
+| `--fail-on <condition>`  | none            | `compare` only: exit 1 when a condition trips (repeatable; see [Fail-on conditions](#fail-on-conditions)) |
+| `-r, --record`           | off             | `measure` only: append the run to the session log as a baseline                                           |
+| `-d, --debug`            | off             | Show stack traces in error output                                                                         |
 
 \*`--bench` is required either on the command line or in the config file.
 
 `gymrat --version` prints the installed version; `gymrat compare --help` prints these options from
-the binary.
+the binary. `gymrat -d` / `gymrat --debug` includes stack traces in error output.
 
 Sampling is strictly sequential: for each of N windows gymrat runs the bench command once per
 target, baseline first, then each candidate in the order given. Both `bench` and `prepare` run
 through the shell with the working directory set to the target's directory.
+
+### Environment variables
+
+`GYMRAT_*` environment variables sit between flags and the config file in the
+[precedence chain](#configuration). In CI, exporting a variable once covers every gymrat invocation
+in the pipeline.
+
+| Variable         | Equivalent flag | Validation                                 |
+| ---------------- | --------------- | ------------------------------------------ |
+| `GYMRAT_BENCH`   | `--bench`       | Non-empty string                           |
+| `GYMRAT_PREPARE` | `--prepare`     | Non-empty string                           |
+| `GYMRAT_ADAPTER` | `--adapter`     | Non-empty string                           |
+| `GYMRAT_SAMPLES` | `--samples`     | Positive integer                           |
+| `GYMRAT_TIMEOUT` | `--timeout`     | Positive integer, at most 2 147 483        |
+| `GYMRAT_CONFIG`  | `--config`      | Non-empty string; file must exist when set |
+
+The remaining flags (`--format`, `--verbose`, `--fail-on`, `--record`, `--debug`) have no env-var
+equivalents. An empty string is always an error — unset the variable instead of blanking it.
+`GYMRAT_CONFIG` selects an alternate config file the same way `--config` does: when set, the
+implicit `gymrat.json` in the working directory is bypassed entirely.
 
 ### Exit codes
 
@@ -195,7 +216,7 @@ through the shell with the working directory set to the target's directory.
   see what went wrong.
 - `129` / `130` / `143`: interrupted by `SIGHUP`, `SIGINT`, or `SIGTERM`. No report is produced.
 
-#### `--fail-on` conditions
+### Fail-on conditions
 
 `--fail-on` is repeatable. Each condition is checked against every candidate independently:
 
@@ -329,8 +350,10 @@ gymrat loads `gymrat.json` automatically when present (override with `--config <
 commands (`start`, `iterate`, `keep`, `status`) look for it at the repository root — the same root
 the session lives at — so a `checks` gate configured there applies even when you run from a
 subdirectory. `measure` and `compare` look in the working directory. An explicit `--config` path
-resolves relative to the working directory on every command. All keys are optional. Precedence is
-**flags > config file > built-in defaults**. Unknown top-level keys are an error, to catch typos.
+resolves relative to the working directory on every command.
+
+All keys are optional. Precedence is **flags > environment variables > config file > built-in
+defaults**. Unknown top-level keys are an error, to catch typos.
 
 ```json
 {

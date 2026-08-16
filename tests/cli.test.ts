@@ -32,7 +32,12 @@ import { renderJson, renderMeasureJson } from "../src/report/json.js";
 import { renderMeasureReport, renderReport } from "../src/report/text.js";
 import type { ComparisonResult, MeasurementResult } from "../src/report/types.js";
 import { CommandError, type CommandErrorContext } from "../src/sampling.js";
-import { lockfilePath, repoRoot, sessionJsonlPath } from "../src/session/paths.js";
+import {
+  experimentWorktreeDir,
+  lockfilePath,
+  repoRoot,
+  sessionJsonlPath,
+} from "../src/session/paths.js";
 import type { SessionLogRecord } from "../src/session/records.js";
 import { appendRecord, readRecords } from "../src/session/store.js";
 import type { KindAggregate } from "../src/verdict/aggregate.js";
@@ -102,6 +107,14 @@ vi.mock("../src/config.js", () => ({
   resolveBenchlessConfig: vi.fn(),
 }));
 
+const { mockConfirmAction } = vi.hoisted(() => ({
+  mockConfirmAction: vi.fn<(message: string, stream: NodeJS.ReadableStream) => Promise<boolean>>(),
+}));
+
+vi.mock("../src/confirm.js", () => ({
+  confirmAction: mockConfirmAction,
+}));
+
 vi.mock("../src/report/json.js", () => ({
   renderJson: vi.fn().mockReturnValue('{"report": true}'),
   renderMeasureJson: vi.fn().mockReturnValue('{"measurement": true}'),
@@ -155,6 +168,12 @@ const CONFIG_FLAG_TABLE = [
   { flag: "--samples", value: "100", expected: { samples: 100 } },
   { flag: "--timeout", value: "5000", expected: { timeout: 5000 } },
   { flag: "--config", value: "gymrat.json", expected: { config: "gymrat.json" } },
+  { flag: "-b", value: "my-bench", expected: { bench: "my-bench" } },
+  { flag: "-p", value: "setup.sh", expected: { prepare: "setup.sh" } },
+  { flag: "-a", value: "mitata", expected: { adapter: "mitata" } },
+  { flag: "-s", value: "100", expected: { samples: 100 } },
+  { flag: "-t", value: "5000", expected: { timeout: 5000 } },
+  { flag: "-c", value: "gymrat.json", expected: { config: "gymrat.json" } },
 ];
 
 function resolvedConfigFixture(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
@@ -533,6 +552,57 @@ describe("createProgram", () => {
       expect.soft(borderCharsOf(compareHelp)).not.toStrictEqual([]);
       expect(borderCharsOf(rootHelp)).toStrictEqual(borderCharsOf(compareHelp));
     });
+
+    it("ends with an examples block, a docs URL, and a bugs URL", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+      // Assert
+      expect.soft(helpOutput).toContain("Examples:");
+      expect.soft(helpOutput).toContain("• gymrat compare main my-branch --bench");
+      expect.soft(helpOutput).toContain("• gymrat compare old=main new=perf/decode --bench");
+      expect.soft(helpOutput).toContain("• gymrat measure --bench");
+      expect.soft(helpOutput).toContain("Docs: https://github.com/jeffzi/gymrat#readme");
+      expect(helpOutput).toContain("Bugs: https://github.com/jeffzi/gymrat/issues");
+    });
+
+    it("separates examples with blank lines and uses bullet markers", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+      // Assert — each example is preceded by a blank line (except the first after the header)
+      const lines = helpOutput.split("\n");
+      const bulletIndices = lines
+        .map((line, i) => (line.trim().startsWith("•") ? i : -1))
+        .filter((i) => i >= 0);
+      expect.soft(bulletIndices.length).toBeGreaterThanOrEqual(3);
+      // After the first bullet, each subsequent bullet should be preceded by a blank line
+      for (const idx of bulletIndices.slice(1)) {
+        expect(lines[idx - 1]!.trim()).toBe("");
+      }
+    });
+
+    it("renders epilogue without ANSI escapes when stdout is not a TTY", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+      // Assert — captureHelp captures via configureOutput (not a real TTY),
+      // so the epilogue text must be ANSI-free
+      const epilogueStart = helpOutput.indexOf("Examples:");
+      expect.soft(epilogueStart).toBeGreaterThan(-1);
+      const epilogue = helpOutput.slice(epilogueStart);
+      expect(epilogue).not.toMatch(ANSI_RE);
+    });
   });
 
   describe("compare command", () => {
@@ -680,7 +750,7 @@ describe("createProgram", () => {
 
         // Assert - Commander renders the flag and the coercion reason
         await expect(parsing).rejects.toThrow(
-          new RegExp(`option '${flag}[^']*'.*is invalid\\..*positive integer`),
+          new RegExp(`option '[^']*${flag}[^']*'.*is invalid\\..*positive integer`),
         );
       });
     });
@@ -708,7 +778,7 @@ describe("createProgram", () => {
 
         // Assert - Commander renders the flag, and the reason names the bound
         await expect(parsing).rejects.toThrow(
-          new RegExp(`option '${flag}[^']*' argument '${value}' is invalid\\..*${bound}`),
+          new RegExp(`option '[^']*${flag}[^']*' argument '${value}' is invalid\\..*${bound}`),
         );
       });
 
@@ -782,6 +852,25 @@ describe("createProgram", () => {
         expect.soft(helpOutput).toContain("Usage: gymrat compare");
         expect.soft(helpOutput).toContain("<baseline> <candidates...>");
         expect(helpOutput).toContain("judged against the baseline");
+      });
+
+      it("ends with a compare-specific examples block", async () => {
+        // Arrange
+        vi.stubEnv("FORCE_COLOR", undefined);
+
+        // Act
+        const helpOutput = await captureCompareHelp();
+
+        // Assert
+        expect.soft(helpOutput).toContain("Examples:");
+        expect.soft(helpOutput).toContain("• gymrat compare main perf/faster-decode --bench");
+        expect
+          .soft(helpOutput)
+          .toContain("• gymrat compare main perf/simd perf/lookup-table --bench");
+        expect
+          .soft(helpOutput)
+          .toContain("• gymrat compare old=main new=perf/faster-decode --bench");
+        expect(helpOutput).toContain("• gymrat compare main my-branch --bench");
       });
     });
 
@@ -2257,18 +2346,14 @@ describe("createProgram", () => {
     ];
 
     /**
-     * The long flags a help text declares, sorted, minus `--help` and the flags
-     * one command carries alone — the verdict-only ones on `compare`, the
-     * recording one on `measure`.
-     *
-     * Reading them off the rendered help is what lets one assertion compare two
-     * commands' option sets without either one naming the other's.
+     * Extract the long flags a subcommand declares, sorted, minus `--help` and
+     * the flags one command carries alone. Uses Commander's programmatic API
+     * instead of parsing rendered help text.
      */
-    function declaredOptions(helpOutput: string): string[] {
+    function declaredOptions(command: Command): string[] {
       const commandSpecific = new Set(["--help", "--verbose", "--fail-on", "--record"]);
-      return helpOutput
-        .split("\n")
-        .map((line) => /^\s*│(?:-\w, )?(--[a-z-]+)/.exec(line)?.[1])
+      return command.options
+        .map((o) => o.long)
         .filter((flag): flag is string => flag !== undefined && !commandSpecific.has(flag))
         .toSorted();
     }
@@ -2685,21 +2770,31 @@ describe("createProgram", () => {
         expect(helpOutput).toContain("-r, --record");
       });
 
-      it("offers the same shared options as compare", async () => {
+      it("offers the same shared options as compare", () => {
+        // Arrange
+        const program = createProgram();
+        const measure = program.commands.find((c) => c.name() === "measure")!;
+        const compare = program.commands.find((c) => c.name() === "compare")!;
+
+        // Assert — the parsed list is non-empty, so a broken parse can't pass vacuously
+        expect.soft(declaredOptions(measure)).toStrictEqual(SHARED_FLAGS.toSorted());
+
+        // Assert — one definition feeds both, so neither can drift from the other
+        expect(declaredOptions(measure)).toStrictEqual(declaredOptions(compare));
+      });
+
+      it("ends with a measure-specific examples block", async () => {
         // Arrange
         vi.stubEnv("FORCE_COLOR", undefined);
 
         // Act
-        const [measureHelp, compareHelp] = await Promise.all([
-          captureHelp(measureArgv("--help")),
-          captureCompareHelp(),
-        ]);
+        const helpOutput = await captureHelp(measureArgv("--help"));
 
-        // Assert - the parsed list is non-empty, so a broken parse can't pass vacuously
-        expect.soft(declaredOptions(measureHelp)).toStrictEqual(SHARED_FLAGS.toSorted());
-
-        // Assert - one definition feeds both, so neither can drift from the other
-        expect(declaredOptions(measureHelp)).toStrictEqual(declaredOptions(compareHelp));
+        // Assert
+        expect.soft(helpOutput).toContain("Examples:");
+        expect.soft(helpOutput).toContain("• gymrat measure --bench");
+        expect.soft(helpOutput).toContain("• gymrat measure release=v2.0.0 --bench");
+        expect(helpOutput).toContain('• gymrat measure --bench "npm run bench" --record');
       });
     });
   });
@@ -2872,6 +2967,121 @@ describe("createProgram", () => {
         expect(readRepoLock()).toBeUndefined();
       },
     );
+  });
+});
+
+describe("the discard command", () => {
+  let repo: ScratchRepo;
+  const originalStdinIsTTY = process.stdin.isTTY;
+
+  beforeEach(() => {
+    repo = createScratchRepo();
+    process.chdir(repo.dir);
+    // Start a real session so requireOpenSession finds it, and add an
+    // unsettled iteration so discardSession has something to discard.
+    startSession(repo.dir, "main", resolvedConfigFixture());
+    appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
+  });
+
+  afterEach(() => {
+    process.stdin.isTTY = originalStdinIsTTY;
+    rmSync(lockfilePath(repo.dir), { force: true });
+    repo.cleanup();
+  });
+
+  it("documents --force in its help text", async () => {
+    // Arrange
+    vi.stubEnv("FORCE_COLOR", undefined);
+
+    // Act
+    const helpOutput = await captureHelp(["node", "cli.js", "discard", "--help"]);
+
+    // Assert
+    expect(helpOutput).toContain("-f, --force");
+  });
+
+  describe("when stdin is a TTY and --force is not passed", () => {
+    it("prompts naming the experiment worktree path and proceeds when confirmed", async () => {
+      // Arrange
+      process.stdin.isTTY = true;
+      mockConfirmAction.mockResolvedValue(true);
+      const program = createRunnableProgram();
+      const readStdout = captureStdout();
+
+      // Act
+      await program.parseAsync(["node", "cli.js", "discard"]);
+
+      // Assert — the prompt was called with the worktree path, and the discard proceeded
+      expect(mockConfirmAction).toHaveBeenCalledWith(
+        expect.stringContaining(experimentWorktreeDir(repo.dir)),
+        process.stdin,
+      );
+      expect(readStdout()).toContain("Discarded");
+    });
+
+    it("cancels with exit 1 and a stderr message when the user declines", async () => {
+      // Arrange
+      process.stdin.isTTY = true;
+      mockConfirmAction.mockResolvedValue(false);
+      const program = createRunnableProgram({ exitOverride: "all" });
+      captureStdout();
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      // Act
+      const parsing = program.parseAsync(["node", "cli.js", "discard"]);
+
+      // Assert
+      await expect(parsing).rejects.toHaveProperty("exitCode", 1);
+      expect(stderrWrites(stderrSpy).map(String).join("")).toContain("discard cancelled");
+    });
+  });
+
+  describe("when --force is passed", () => {
+    it("skips the prompt and proceeds", async () => {
+      // Arrange
+      process.stdin.isTTY = true;
+      const program = createRunnableProgram();
+      const readStdout = captureStdout();
+
+      // Act
+      await program.parseAsync(["node", "cli.js", "discard", "--force"]);
+
+      // Assert
+      expect(mockConfirmAction).not.toHaveBeenCalled();
+      expect(readStdout()).toContain("Discarded");
+    });
+
+    it("accepts -f as a short alias", async () => {
+      // Arrange
+      process.stdin.isTTY = true;
+      const program = createRunnableProgram();
+      const readStdout = captureStdout();
+
+      // Act
+      await program.parseAsync(["node", "cli.js", "discard", "-f"]);
+
+      // Assert
+      expect(mockConfirmAction).not.toHaveBeenCalled();
+      expect(readStdout()).toContain("Discarded");
+    });
+  });
+
+  describe("when stdin is not a TTY", () => {
+    it("skips the prompt and proceeds without confirming", async () => {
+      // Arrange
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- node leaves isTTY undefined on non-TTY streams
+      process.stdin.isTTY = undefined as unknown as boolean;
+      const program = createRunnableProgram();
+      const readStdout = captureStdout();
+
+      // Act
+      await program.parseAsync(["node", "cli.js", "discard"]);
+
+      // Assert — confirm was not called, but discard ran and reported success
+      expect(mockConfirmAction).not.toHaveBeenCalled();
+      expect(readStdout()).toContain("Discarded iteration");
+    });
   });
 });
 
@@ -3115,30 +3325,71 @@ describe("the loop commands, run from a subdirectory of the repository", () => {
 });
 
 describe("formatCliError", () => {
-  it("labels an adapter failure with its error class", () => {
-    // Arrange - adapter messages name the parse failure but not the layer it came from
-    const error = new AdapterError("No valid METRIC lines found");
+  describe("Error: label", () => {
+    it("opens every error with a plain Error: label when NO_COLOR is set", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new Error("git rev-parse failed");
 
-    // Act
-    const rendered = formatCliError(error);
+      // Act
+      const rendered = formatCliError(error);
 
-    // Assert
-    expect(rendered).toBe("AdapterError: No valid METRIC lines found");
-  });
+      // Assert
+      expect(rendered).toMatch(/^Error: git rev-parse failed/);
+    });
 
-  it.each([
-    {
-      description: "a plain Error",
-      error: new Error("git rev-parse failed"),
-      expected: "git rev-parse failed",
-    },
-    { description: "a non-Error throwable", error: "boom", expected: "boom" },
-  ])("renders $description unlabelled", ({ error, expected }) => {
-    // Act
-    const rendered = formatCliError(error);
+    it("opens AdapterError with Error: followed by the class-name prefix", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new AdapterError("No valid METRIC lines found");
 
-    // Assert
-    expect(rendered).toBe(expected);
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert
+      expect(rendered).toMatch(/^Error: AdapterError: No valid METRIC lines found/);
+    });
+
+    it("styles the Error label with ANSI red when color is forced", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", "1");
+      const error = new Error("something broke");
+
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert - \x1b[31m = red
+      expect.soft(rendered).toContain("\x1b[31m");
+      expect(rendered).toContain("Error");
+    });
+
+    it("renders Error: as plain text when NO_COLOR is set", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new Error("something broke");
+
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert
+      expect.soft(rendered).toMatch(/^Error: /);
+      expect(rendered).not.toMatch(ANSI_RE);
+    });
+
+    it("renders Error: as plain text for a non-Error throwable", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      // Act
+      const rendered = formatCliError("boom");
+
+      // Assert
+      expect(rendered).toMatch(/^Error: boom/);
+    });
   });
 
   it("does not append a hint line when CommandError has undefined hint", () => {
@@ -3188,7 +3439,197 @@ describe("formatCliError", () => {
 
     // Assert
     expect.soft(rendered).toContain("\nHint: ");
-    expect(rendered).not.toContain("\x1b[");
+    expect(rendered).not.toMatch(ANSI_RE);
+  });
+
+  describe("--debug stack trace", () => {
+    /** Matches a V8 stack frame line: optional whitespace, then "at ". */
+    const STACK_FRAME_RE = /^\s+at /m;
+
+    it("includes the stack trace when debug is true", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new Error("something broke");
+
+      // Act
+      const rendered = formatCliError(error, { debug: true });
+
+      // Assert
+      expect.soft(rendered).toContain("something broke");
+      expect(rendered).toMatch(STACK_FRAME_RE);
+    });
+
+    it("omits the stack trace when debug is false", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new Error("something broke");
+
+      // Act
+      const rendered = formatCliError(error, { debug: false });
+
+      // Assert
+      expect(rendered).not.toMatch(STACK_FRAME_RE);
+    });
+
+    it("omits the stack trace when debug is omitted", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new Error("something broke");
+
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert
+      expect(rendered).not.toMatch(STACK_FRAME_RE);
+    });
+
+    it("places the stack trace between the message and any hint", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = createCommandError("ref");
+
+      // Act
+      const rendered = formatCliError(error, { debug: true });
+
+      // Assert — a stack frame line appears before the Hint: label
+      const stackMatch = STACK_FRAME_RE.exec(rendered);
+      const hintIndex = rendered.indexOf("Hint:");
+      expect.soft(stackMatch).not.toBeNull();
+      expect.soft(hintIndex).toBeGreaterThan(0);
+      expect(stackMatch!.index).toBeLessThan(hintIndex);
+    });
+  });
+
+  describe("bug-report footer", () => {
+    it("appends a bug-report footer for a plain Error (unexpected)", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new Error("unexpected crash");
+
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert
+      expect.soft(rendered).toContain("gymrat --debug");
+      expect(rendered).toContain("https://github.com/jeffzi/gymrat/issues");
+    });
+
+    it("does not append a bug-report footer for GymratError", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = createCommandError("in-place");
+
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert
+      expect(rendered).not.toContain("https://github.com/jeffzi/gymrat/issues");
+    });
+
+    it("does not append a bug-report footer for AdapterError", () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+      const error = new AdapterError("parse failed");
+
+      // Act
+      const rendered = formatCliError(error);
+
+      // Assert
+      expect(rendered).not.toContain("https://github.com/jeffzi/gymrat/issues");
+    });
+
+    it("appends a bug-report footer for a non-Error throwable", () => {
+      // Arrange — a thrown string is unexpected but not an Error instance
+      vi.stubEnv("FORCE_COLOR", undefined);
+      vi.stubEnv("NO_COLOR", "1");
+
+      // Act
+      const rendered = formatCliError("boom");
+
+      // Assert
+      expect.soft(rendered).toContain("gymrat --debug");
+      expect(rendered).toContain("https://github.com/jeffzi/gymrat/issues");
+    });
+  });
+});
+
+describe("global --debug option", () => {
+  /** Matches a V8 stack frame line: optional whitespace, then "at ". */
+  const STACK_FRAME_RE = /^\s+at /m;
+
+  it("is listed in the root --help output", async () => {
+    // Arrange
+    vi.stubEnv("FORCE_COLOR", undefined);
+
+    // Act
+    const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+    // Assert
+    expect.soft(helpOutput).toContain("-d");
+    expect(helpOutput).toContain("--debug");
+  });
+
+  it("defaults to false and does not include a stack trace on error", async () => {
+    // Arrange
+    const program = createRunnableProgram({ exitOverride: "all" });
+    await setupMocks(new Error("Compare failed"));
+    stubWrite(process.stdout);
+    const stderrSpy = stubWrite(process.stderr);
+    mockProcessExit();
+
+    // Act
+    await expect(program.parseAsync(compareArgv("main", "branch"))).rejects.toHaveProperty(
+      "exitCode",
+      2,
+    );
+
+    // Assert
+    const errorOutput = stderrWrites(stderrSpy).join("");
+    expect(errorOutput).not.toMatch(STACK_FRAME_RE);
+  });
+
+  it("includes a stack trace when --debug is passed", async () => {
+    // Arrange
+    const program = createRunnableProgram({ exitOverride: "all" });
+    await setupMocks(new Error("Compare failed"));
+    stubWrite(process.stdout);
+    const stderrSpy = stubWrite(process.stderr);
+    mockProcessExit();
+
+    // Act
+    await expect(
+      program.parseAsync(compareArgv("main", "branch", "--debug")),
+    ).rejects.toHaveProperty("exitCode", 2);
+
+    // Assert
+    const errorOutput = stderrWrites(stderrSpy).join("");
+    expect.soft(errorOutput).toContain("Compare failed");
+    expect(errorOutput).toMatch(STACK_FRAME_RE);
+  });
+
+  it("accepts -d as a short alias for --debug", async () => {
+    // Arrange
+    const program = createRunnableProgram({ exitOverride: "all" });
+    await setupMocks(new Error("Compare failed"));
+    stubWrite(process.stdout);
+    const stderrSpy = stubWrite(process.stderr);
+    mockProcessExit();
+
+    // Act
+    await expect(program.parseAsync(compareArgv("main", "branch", "-d"))).rejects.toHaveProperty(
+      "exitCode",
+      2,
+    );
+
+    // Assert
+    expect(stderrWrites(stderrSpy).join("")).toMatch(STACK_FRAME_RE);
   });
 });
 

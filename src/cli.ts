@@ -17,6 +17,7 @@ import {
   type CliFlags,
   type ResolvedConfig,
 } from "./config.js";
+import { confirmAction } from "./confirm.js";
 import { assertNever, GymratError, messageOf, type StrictOmit } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
 import { NotAGitRepositoryError, runGit } from "./git.js";
@@ -255,6 +256,14 @@ async function warnEmptyGeomeanGates(
 }
 
 /**
+ * `@types/node` declares `isTTY` as `boolean`, but Node leaves it `undefined`
+ * on non-TTY streams — the comparison is what makes the boolean honest.
+ */
+function isTTY(stream: { isTTY?: boolean }): boolean {
+  return stream.isTTY === true;
+}
+
+/**
  * Veto color unconditionally: `styleText` resolves `FORCE_COLOR` before `NO_COLOR`, so a
  * `FORCE_COLOR` left over from the caller's shell would otherwise defeat `NO_COLOR` and leak
  * ANSI escapes into non-interactive output.
@@ -265,29 +274,44 @@ function suppressColor(): void {
 }
 
 /**
- * Render an error for stderr: either an adapter failure labelled with its
- * class name, or any other error with a styled hint line appended when it
- * carries one. The two are mutually exclusive — the adapter branch returns
- * before the hint block runs, so an adapter error never gets a hint.
+ * Render an error for stderr with a red `Error:` label, the message body,
+ * and optional diagnostic sections in order:
  *
- * An adapter message states what could not be parsed ("No valid METRIC lines
- * found") without saying which layer produced it, so the class name is what
- * tells the user the bench script's output — rather than gymrat's git or config
- * handling — is at fault. Errors raised elsewhere already name their own
- * subsystem, so prefixing them would only add noise.
+ * 1. **Error: label** — always present, styled red via `formatLabel`.
+ * 2. **Body** — `AdapterError` keeps its class-name prefix after the label
+ *    (`Error: AdapterError: <message>`); everything else is the bare message.
+ * 3. **Stack trace** — included when `options.debug` is true and the error
+ *    carries a stack.
+ * 4. **Hint** — appended for `GymratError` instances that carry a hint.
+ * 5. **Bug-report footer** — appended for errors that are NOT `GymratError`
+ *    (unexpected errors the user should report).
  *
  * Color is governed by `styleText` auto-detection: `NO_COLOR` / `FORCE_COLOR`
  * env vars and the stream's TTY status.
  */
-export function formatCliError(error: unknown): string {
+export function formatCliError(error: unknown, options: { debug?: boolean } = {}): string {
+  const errorLabel = `${formatLabel("Error", "red", process.stderr)}: `;
+
+  let body: string;
   if (error instanceof AdapterError) {
-    return `${error.name}: ${error.message}`;
+    body = `${error.name}: ${error.message}`;
+  } else {
+    body = messageOf(error);
   }
 
-  let output = messageOf(error);
+  let output = `${errorLabel}${body}`;
+
+  if (options.debug === true && error instanceof Error && error.stack !== undefined) {
+    output += `\n${error.stack}`;
+  }
 
   if (error instanceof GymratError && error.hint !== undefined) {
     output += `\n${formatHintLabel(process.stderr)} ${error.hint}`;
+  }
+
+  if (!(error instanceof GymratError)) {
+    const debugCmd = formatLabel("gymrat --debug", "yellow", process.stderr);
+    output += `\nRun with \`${debugCmd}\` for details. If this is a bug, please report it at\n${BUGS_URL}`;
   }
 
   return output;
@@ -330,10 +354,13 @@ const GATE_EXIT_CODE = 1;
 /** The exit code of a tool failure, the convention every unhandled error exits on. */
 const TOOL_FAILURE_EXIT_CODE = 2;
 
+/** Whether the global `--debug` flag was passed on the command line. */
+let debugMode = false;
+
 /** Print a formatted error to stderr and exit on `code`. */
 async function exitWithError(error: unknown, code = TOOL_FAILURE_EXIT_CODE): Promise<never> {
   try {
-    await writeAndFlush(process.stderr, `${formatCliError(error)}\n`);
+    await writeAndFlush(process.stderr, `${formatCliError(error, { debug: debugMode })}\n`);
   } catch {
     /*
      * stderr is the reporting channel, so a write failure (closed pipe, EPIPE)
@@ -573,6 +600,14 @@ function createProgressReporter(
   };
 }
 
+/**
+ * Translate Commander's `--no-color` flag into the color override the report
+ * renderer reads: `false` vetoes color, `undefined` defers to auto-detection.
+ */
+function colorOverrideOf(options: { color: boolean }): false | undefined {
+  return options.color ? undefined : false;
+}
+
 /** The flags every command carries: everything `resolveConfig` reads, plus how to print. */
 interface SharedFlags extends CliFlags {
   /** Commander's `--no-color` counterpart: true unless the flag was passed. */
@@ -635,20 +670,20 @@ interface SuperviseFlags {
  */
 function addConfigOptions(command: Command): Command {
   return command
-    .option("--bench <cmd>", "bench command")
-    .option("--prepare <script>", "preparation script to run before each revision")
-    .option("--adapter <type>", "adapter type for parsing benchmark output")
+    .option("-b, --bench <cmd>", "bench command")
+    .option("-p, --prepare <script>", "preparation script to run before each revision")
+    .option("-a, --adapter <type>", "adapter type for parsing benchmark output")
     .option(
-      "--samples <number>",
+      "-s, --samples <number>",
       "paired samples per target",
       parsePositiveIntegerUpTo(Number.MAX_SAFE_INTEGER),
     )
     .option(
-      "--timeout <number>",
+      "-t, --timeout <number>",
       "timeout in seconds",
       parsePositiveIntegerUpTo(MAX_TIMEOUT_SECONDS),
     )
-    .option("--config <file>", "configuration file path");
+    .option("-c, --config <file>", "configuration file path");
 }
 
 /**
@@ -698,10 +733,7 @@ function beginRun(options: SharedFlags, targetCount: number): ProgressReporter {
   if (!options.color) {
     suppressColor();
   }
-  // `@types/node` declares `isTTY` as boolean, but node leaves it `undefined`
-  // when the stream is not a TTY, so the comparison is what makes the boolean
-  // honest.
-  const tty = (process.stderr.isTTY as boolean | undefined) === true;
+  const tty = isTTY(process.stderr);
   const colorSuppressed = process.env.NO_COLOR !== undefined;
   return createProgressReporter(tty && !colorSuppressed, tty, targetCount);
 }
@@ -943,6 +975,44 @@ function readPackageVersion(): string {
   return manifest.version;
 }
 
+const DOCS_URL = "https://github.com/jeffzi/gymrat#readme";
+const BUGS_URL = "https://github.com/jeffzi/gymrat/issues";
+
+const ROOT_EPILOGUE = `
+Examples:
+
+  • gymrat compare main my-branch --bench "npm run bench"
+
+  • gymrat compare old=main new=perf/decode --bench "npm run bench" --fail-on regressed
+
+  • gymrat measure --bench "npm run bench"
+
+Docs: ${DOCS_URL}
+Bugs: ${BUGS_URL}
+`;
+
+const COMPARE_EPILOGUE = `
+Examples:
+
+  • gymrat compare main perf/faster-decode --bench "npm run bench"
+
+  • gymrat compare main perf/simd perf/lookup-table --bench "npm run bench"
+
+  • gymrat compare old=main new=perf/faster-decode --bench "npm run bench"
+
+  • gymrat compare main my-branch --bench "npm run bench" --fail-on geomean:2 --format json
+`;
+
+const MEASURE_EPILOGUE = `
+Examples:
+
+  • gymrat measure --bench "npm run bench"
+
+  • gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
+
+  • gymrat measure --bench "npm run bench" --record
+`;
+
 /**
  * Build the `gymrat` program: fully wired but inert until the caller invokes
  * `parseAsync` on it.
@@ -962,9 +1032,17 @@ export function createProgram(): Command {
     .name("gymrat")
     .description("Performance comparison tool for benchmarks")
     .version(readPackageVersion())
+    .option("-d, --debug", "show stack traces on errors", false)
     .configureHelp(createHelpConfig())
     .exitOverride((err) => {
-      throw new CommanderError(err.exitCode === 0 ? 0 : 2, err.code, err.message);
+      throw new CommanderError(
+        err.exitCode === 0 ? 0 : TOOL_FAILURE_EXIT_CODE,
+        err.code,
+        err.message,
+      );
+    })
+    .hook("preSubcommand", (thisCommand) => {
+      debugMode = thisCommand.opts<{ debug: boolean }>().debug;
     });
 
   addSharedOptions(
@@ -987,9 +1065,7 @@ export function createProgram(): Command {
       noFailOnConditions,
     )
     .action(async (baseline: TargetSpec, candidates: TargetSpec[], options: CompareFlags) => {
-      // Commander's `--no-color` sets `options.color` to false; anything else
-      // defers to the renderer's own color detection.
-      const colorOverride = options.color ? undefined : false;
+      const colorOverride = colorOverrideOf(options);
 
       /*
        * Everything after the lock only reads the result the lock already
@@ -1047,9 +1123,7 @@ export function createProgram(): Command {
   )
     .option("-r, --record", "append the run to the session log as a baseline", false)
     .action(async (target: TargetSpec, options: MeasureFlags) => {
-      // Commander's `--no-color` sets `options.color` to false; anything else
-      // defers to the renderer's own color detection.
-      const colorOverride = options.color ? undefined : false;
+      const colorOverride = colorOverrideOf(options);
 
       /*
        * The lock covers the measurement and the append it produces — every
@@ -1186,10 +1260,23 @@ export function createProgram(): Command {
   program
     .command("discard")
     .description("Revert the session's experiment worktree to its last commit")
-    .action(async () => {
-      const result = await withRepoLock("discard", () =>
-        Promise.resolve(discardSession(repoRoot())),
-      );
+    .option("-f, --force", "skip the confirmation prompt")
+    .action(async (options: { force?: boolean }) => {
+      const root = repoRoot();
+
+      if (isTTY(process.stdin) && options.force !== true) {
+        const { session } = requireOpenSession(root, "discard");
+        const confirmed = await confirmAction(
+          `discard will revert uncommitted changes in ${session.worktrees.experiment}.\nProceed?`,
+          process.stdin,
+        );
+        if (!confirmed) {
+          await writeAndFlush(process.stderr, "discard cancelled\n");
+          process.exit(GATE_EXIT_CODE);
+        }
+      }
+
+      const result = await withRepoLock("discard", () => Promise.resolve(discardSession(root)));
 
       await writeAndFlush(process.stdout, `${result.report}\n`);
     });
@@ -1359,6 +1446,18 @@ export function createProgram(): Command {
         release();
       }
     });
+
+  program.addHelpText("after", ROOT_EPILOGUE);
+  const subcommandEpilogues: Record<string, string> = {
+    compare: COMPARE_EPILOGUE,
+    measure: MEASURE_EPILOGUE,
+  };
+  for (const sub of program.commands) {
+    const epilogue = subcommandEpilogues[sub.name()];
+    if (epilogue !== undefined) {
+      sub.addHelpText("after", epilogue);
+    }
+  }
 
   return program;
 }
