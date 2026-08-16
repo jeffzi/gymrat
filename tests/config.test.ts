@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, it, expect, afterEach } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Adapter } from "../src/adapters/types.js";
 import type { BenchlessConfig, CliFlags, ResolvedConfig } from "../src/config.js";
@@ -884,6 +884,231 @@ describe("resolveConfig", () => {
       const result = resolveConfig({});
 
       expect(result.stop).toStrictEqual({ maxIterations: 5 });
+    });
+  });
+});
+
+describe("resolveConfig, GYMRAT_* environment variables", () => {
+  let tmpdir: string;
+  restoreCwdAfterEach();
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("when a GYMRAT_* env var is set and its corresponding flag is absent", () => {
+    it.each([
+      {
+        envVar: "GYMRAT_BENCH",
+        envValue: "env-bench",
+        flags: {},
+        field: "bench",
+        expected: "env-bench",
+      },
+      {
+        envVar: "GYMRAT_PREPARE",
+        envValue: "env-prepare",
+        flags: { bench: "b" },
+        field: "prepare",
+        expected: "env-prepare",
+      },
+      {
+        envVar: "GYMRAT_ADAPTER",
+        envValue: "env-adapter",
+        flags: { bench: "b" },
+        field: "adapter",
+        expected: "env-adapter",
+      },
+      {
+        envVar: "GYMRAT_SAMPLES",
+        envValue: "42",
+        flags: { bench: "b" },
+        field: "samples",
+        expected: 42,
+      },
+      {
+        envVar: "GYMRAT_TIMEOUT",
+        envValue: "900",
+        flags: { bench: "b" },
+        field: "timeoutSeconds",
+        expected: 900,
+      },
+    ])("uses $envVar as $field", ({ envVar, envValue, flags, field, expected }) => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      vi.stubEnv(envVar, envValue);
+
+      const result = resolveConfig(flags);
+
+      expect(result).toHaveProperty(field, expected);
+    });
+  });
+
+  describe("when a GYMRAT_* env var is set and the config file provides the same field", () => {
+    it.each([
+      {
+        envVar: "GYMRAT_BENCH",
+        envValue: "env-bench",
+        config: { bench: "config-bench" },
+        field: "bench",
+        expected: "env-bench",
+      },
+      {
+        envVar: "GYMRAT_PREPARE",
+        envValue: "env-prepare",
+        config: { bench: "b", prepare: "config-prepare" },
+        field: "prepare",
+        expected: "env-prepare",
+      },
+      {
+        envVar: "GYMRAT_ADAPTER",
+        envValue: "env-adapter",
+        config: { bench: "b", adapter: "config-adapter" },
+        field: "adapter",
+        expected: "env-adapter",
+      },
+      {
+        envVar: "GYMRAT_SAMPLES",
+        envValue: "42",
+        config: { bench: "b", samples: 20 },
+        field: "samples",
+        expected: 42,
+      },
+      {
+        envVar: "GYMRAT_TIMEOUT",
+        envValue: "900",
+        config: { bench: "b", timeoutSeconds: 3600 },
+        field: "timeoutSeconds",
+        expected: 900,
+      },
+    ])(
+      "uses $envVar over the config file for $field",
+      ({ envVar, envValue, config, field, expected }) => {
+        tmpdir = createConfigFile(config).dir;
+        process.chdir(tmpdir);
+        vi.stubEnv(envVar, envValue);
+
+        const result = resolveConfig({});
+
+        expect(result).toHaveProperty(field, expected);
+      },
+    );
+  });
+
+  describe("when a string GYMRAT_* env var holds an empty string", () => {
+    it.each([
+      { envVar: "GYMRAT_BENCH", flags: {} },
+      { envVar: "GYMRAT_PREPARE", flags: { bench: "b" } },
+      { envVar: "GYMRAT_ADAPTER", flags: { bench: "b" } },
+    ])("throws a GymratError naming $envVar", ({ envVar, flags }) => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      vi.stubEnv(envVar, "");
+      const act = (): ResolvedConfig => resolveConfig(flags);
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(new RegExp(`${envVar}.*non-empty`));
+    });
+  });
+
+  describe("when GYMRAT_SAMPLES holds an invalid value", () => {
+    it.each([
+      { description: "a non-numeric string", value: "abc" },
+      { description: "a non-integer", value: "1.5" },
+      { description: "zero", value: "0" },
+      { description: "a negative number", value: "-1" },
+      { description: "an empty string", value: "" },
+    ])("throws a GymratError naming GYMRAT_SAMPLES when it is $description", ({ value }) => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_SAMPLES", value);
+      const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/GYMRAT_SAMPLES.*positive integer/);
+    });
+  });
+
+  describe("when GYMRAT_TIMEOUT holds an invalid value", () => {
+    it.each([
+      { description: "a non-numeric string", value: "abc" },
+      { description: "a non-integer", value: "1.5" },
+      { description: "zero", value: "0" },
+      { description: "a negative number", value: "-1" },
+      { description: "an empty string", value: "" },
+    ])("throws a GymratError naming GYMRAT_TIMEOUT when it is $description", ({ value }) => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_TIMEOUT", value);
+      const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/GYMRAT_TIMEOUT.*positive integer/);
+    });
+  });
+
+  describe("when GYMRAT_TIMEOUT exceeds the millisecond timer cap", () => {
+    it("throws a GymratError naming GYMRAT_TIMEOUT and the cap", () => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_TIMEOUT", "2147484");
+      const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
+
+      expect.soft(act).toThrow(GymratError);
+      expect.soft(act).toThrow(/GYMRAT_TIMEOUT/);
+      expect(act).toThrow(/no greater than 2147483/);
+    });
+  });
+
+  describe("when GYMRAT_CONFIG names an existing config file and --config is absent", () => {
+    it("loads config from the env-specified path", () => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      const envConfigPath = path.join(tmpdir, "env-config.json");
+      fs.writeFileSync(envConfigPath, JSON.stringify({ bench: "env-config-bench" }));
+      vi.stubEnv("GYMRAT_CONFIG", envConfigPath);
+
+      const result = resolveConfig({});
+
+      expect(result.bench).toBe("env-config-bench");
+    });
+  });
+
+  describe("when GYMRAT_CONFIG names a file that does not exist", () => {
+    it("throws an error naming the missing path", () => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      const missingPath = path.join(tmpdir, "typo.json");
+      vi.stubEnv("GYMRAT_CONFIG", missingPath);
+
+      expect(() => resolveConfig({ bench: "my-bench" })).toThrow(missingPath);
+    });
+  });
+
+  describe("when GYMRAT_CONFIG is set", () => {
+    it("bypasses the implicit gymrat.json in the working directory", () => {
+      tmpdir = createConfigFile({ bench: "implicit-bench", adapter: "implicit-adapter" }).dir;
+      process.chdir(tmpdir);
+      const envConfigPath = path.join(tmpdir, "alt-config.json");
+      fs.writeFileSync(envConfigPath, JSON.stringify({ bench: "alt-bench" }));
+      vi.stubEnv("GYMRAT_CONFIG", envConfigPath);
+
+      const result = resolveConfig({});
+
+      expect(result.bench).toBe("alt-bench");
+      // adapter falls back to default, not the implicit gymrat.json value
+      expect(result.adapter).toBe("metric-lines");
+    });
+  });
+
+  describe("when GYMRAT_CONFIG holds an empty string", () => {
+    it("throws a GymratError naming GYMRAT_CONFIG", () => {
+      tmpdir = createTmpDir();
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_CONFIG", "");
+      const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
+
+      expect.soft(act).toThrow(GymratError);
+      expect(act).toThrow(/GYMRAT_CONFIG.*non-empty/);
     });
   });
 });

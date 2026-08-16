@@ -309,6 +309,60 @@ function assertFlagNotEmpty(field: string, value: string | undefined): void {
 }
 
 /**
+ * Read a `GYMRAT_*` string env var, rejecting empty values.
+ *
+ * Returns `undefined` when the variable is unset so the next source in the
+ * precedence chain (config file, then built-in default) can supply the value.
+ */
+function readEnvString(envVar: string): string | undefined {
+  const value = process.env[envVar];
+  if (value === undefined) return undefined;
+  if (value === "") {
+    throw new GymratError(`Invalid value for ${envVar}: expected a non-empty string, got ""`);
+  }
+  return value;
+}
+
+/**
+ * Read a `GYMRAT_*` numeric env var, validating it as a positive integer.
+ *
+ * When `max` is supplied the cap is included in the error phrase so the user
+ * sees the allowed range in a single message.
+ */
+function readEnvPositiveInt(envVar: string, max?: number): number | undefined {
+  const raw = process.env[envVar];
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  const phrase =
+    max !== undefined ? `a positive integer no greater than ${max}` : "a positive integer";
+  if (!Number.isInteger(n) || n < 1 || (max !== undefined && n > max)) {
+    throw new GymratError(
+      `Invalid value for ${envVar}: expected ${phrase}, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return n;
+}
+
+/**
+ * Read `GYMRAT_*` environment variables for fields whose CLI flag is absent.
+ *
+ * Only env vars whose corresponding flag is `undefined` are consulted, so a
+ * flag always wins without the env var's validation ever firing.  `GYMRAT_CONFIG`
+ * is handled separately in {@link settleConfig} because it affects which file is
+ * loaded, not a field in the resolved config.
+ */
+function readEnvFlags(flags: CliFlags): CliFlags {
+  const result: CliFlags = {};
+  if (flags.bench === undefined) result.bench = readEnvString("GYMRAT_BENCH");
+  if (flags.prepare === undefined) result.prepare = readEnvString("GYMRAT_PREPARE");
+  if (flags.adapter === undefined) result.adapter = readEnvString("GYMRAT_ADAPTER");
+  if (flags.samples === undefined) result.samples = readEnvPositiveInt("GYMRAT_SAMPLES");
+  if (flags.timeout === undefined)
+    result.timeout = readEnvPositiveInt("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS);
+  return result;
+}
+
+/**
  * Reject a `runbook` that does not resolve to an existing file.
  *
  * Resolved relative to `baseDir` rather than the process's cwd, matching how
@@ -326,7 +380,6 @@ function assertRunbookExists(runbook: string, baseDir: string | undefined): void
         cause: err,
       });
     }
-    // Missing path — fall through to the error below.
   }
   if (stat === undefined || !stat.isFile()) {
     throw new GymratError(invalidValueMessage("runbook", "a path to an existing file", runbook));
@@ -412,6 +465,7 @@ function findImplicitBase(): string {
 }
 
 /** Settle the shared configuration, and report what `bench` the sources named — if any. */
+// fallow-ignore-next-line complexity
 function settleConfig(
   flags: CliFlags,
   baseDir?: string,
@@ -420,9 +474,17 @@ function settleConfig(
   assertFlagNotEmpty("prepare", flags.prepare);
   assertFlagNotEmpty("adapter", flags.adapter);
   assertFlagNotEmpty("config", flags.config);
-  const configPath = flags.config ?? path.join(baseDir ?? findImplicitBase(), "gymrat.json");
-  const configFile = loadConfigFile(configPath, { required: flags.config !== undefined });
-  const config = mergeConfig(flags, configFile);
+
+  // Env vars fill in for absent flags: flag > env > file > default.
+  const effective: CliFlags = { ...flags, ...readEnvFlags(flags) };
+
+  // --config > GYMRAT_CONFIG > implicit gymrat.json
+  const envConfigPath = flags.config === undefined ? readEnvString("GYMRAT_CONFIG") : undefined;
+  const explicitConfig = flags.config ?? envConfigPath;
+  const configPath = explicitConfig ?? path.join(baseDir ?? findImplicitBase(), "gymrat.json");
+  const configFile = loadConfigFile(configPath, { required: explicitConfig !== undefined });
+
+  const config = mergeConfig(effective, configFile);
   validateLoopKeys(config);
 
   if (config.runbook !== undefined) {
@@ -431,7 +493,7 @@ function settleConfig(
     config.runbook = path.resolve(configDir, config.runbook);
   }
 
-  return { config, bench: flags.bench ?? configFile.bench };
+  return { config, bench: effective.bench ?? configFile.bench };
 }
 
 /** The kind an adapter's metric falls under when it reports none. */
