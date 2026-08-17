@@ -26,6 +26,14 @@ npm install -g gymrat
 Then, from inside the project you want to benchmark:
 
 ```sh
+gymrat init --bench "npm run bench"
+gymrat compare main my-branch
+```
+
+`gymrat init` scaffolds a `gymrat.json`, installs the agent skill, and creates a runbook stub —
+everything `gymrat doctor` checks for. Or skip init and pass flags directly:
+
+```sh
 gymrat compare main my-branch --bench "npm run bench"
 ```
 
@@ -96,6 +104,43 @@ gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
 gymrat measure --bench "npm run bench" --record
 ```
 
+### init
+
+```text
+gymrat init [options]
+```
+
+Scaffold a working gymrat setup in one run: a valid `gymrat.json`, the bundled agent skill installed
+into `.claude/skills/gymrat/`, and an optional runbook stub. Every prompt has a flag twin, and
+`--yes` (or a non-TTY stdin) answers everything unflagged with its default — so scripts and agents
+can run init without interaction.
+
+When `gymrat.json` already exists, init refuses (exit 2) and points at editing the file directly and
+at `gymrat doctor` for what is missing.
+
+| Flag                                | Default                       | Description                                                   |
+| ----------------------------------- | ----------------------------- | ------------------------------------------------------------- |
+| `--bench <cmd>`                     | — (prompted)                  | Bench command (required; reprompts until non-empty)           |
+| `--adapter <name>`                  | `metric-lines`                | Output parser (omitted from config when it is the default)    |
+| `--checks <cmd>`                    | none                          | Checks command for `gymrat keep`                              |
+| `--stop-target <number>`            | none                          | Stop target value (requires `--primary`)                      |
+| `--stop-max-iterations <number>`    | none                          | Maximum iterations before the loop stops                      |
+| `--primary <metric>`                | none                          | Primary metric name (required when `--stop-target` set)       |
+| `--runbook [path]` / `--no-runbook` | create at `gymrat-runbook.md` | Create a runbook stub; bare `--runbook` uses the default path |
+| `--skill` / `--no-skill`            | install                       | Copy the bundled skill to `.claude/skills/gymrat/`            |
+| `-y, --yes`                         | off                           | Non-interactive: use defaults for every unflagged answer      |
+
+```sh
+# Interactive — prompts for each answer
+gymrat init
+
+# Non-interactive — everything from flags
+gymrat init --bench "npm run bench" --checks "npm test" --yes
+
+# Skip the runbook and skill
+gymrat init --bench "npm run bench" --no-runbook --no-skill --yes
+```
+
 ### The session loop
 
 `compare` and `measure` answer one question and forget it. The session loop is the stateful path:
@@ -156,6 +201,35 @@ own lock (separate from the session lock) so two supervised runs cannot drive on
 the agent's nested `iterate`/`keep` calls still acquire the ordinary session lock. A second gymrat
 run against the same repository exits 2 rather than benchmarking alongside the first, since
 concurrent runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
+
+### doctor
+
+```text
+gymrat doctor [options]
+```
+
+Diagnose the project's gymrat setup without running a full comparison. `doctor` inspects the
+environment (git availability), config file validity, workflow completeness (skill file, checks
+command, stop condition, runbook), and optionally runs a bench smoke test to verify the adapter can
+parse the output.
+
+`--no-bench` skips the smoke run. `--format json` outputs machine-readable JSON instead of the
+default styled text report. `--no-color` strips ANSI escapes from the text output. `doctor` accepts
+the same config options as other commands (`--bench`, `--adapter`, `--config`, etc.) so you can
+check a specific configuration.
+
+The exit code is 0 when no failures are found, 1 when at least one check fails.
+
+```sh
+# Quick check — skip the bench smoke run
+gymrat doctor --no-bench
+
+# Full check with a specific bench command
+gymrat doctor --bench "npm run bench" --adapter mitata
+
+# Machine-readable output
+gymrat doctor --format json
+```
 
 ### Options
 

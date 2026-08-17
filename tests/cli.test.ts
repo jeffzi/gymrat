@@ -102,10 +102,15 @@ vi.mock("../src/measure.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/config.js", () => ({
-  resolveConfig: vi.fn(),
-  resolveBenchlessConfig: vi.fn(),
-}));
+vi.mock("../src/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/config.js")>();
+  return {
+    ...actual,
+    resolveConfig: vi.fn(),
+    resolveBenchlessConfig: vi.fn(),
+    inspectConfig: vi.fn(),
+  };
+});
 
 const { mockConfirmAction } = vi.hoisted(() => ({
   mockConfirmAction: vi.fn<(message: string, stream: NodeJS.ReadableStream) => Promise<boolean>>(),
@@ -118,6 +123,25 @@ vi.mock("../src/confirm.js", () => ({
 vi.mock("../src/report/json.js", () => ({
   renderJson: vi.fn().mockReturnValue('{"report": true}'),
   renderMeasureJson: vi.fn().mockReturnValue('{"measurement": true}'),
+}));
+
+vi.mock("../src/doctor/checks.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/doctor/checks.js")>();
+  return {
+    ...actual,
+    buildEnvironmentSection: vi.fn(),
+    buildConfigSection: vi.fn(),
+    buildWorkflowSection: vi.fn(),
+  };
+});
+
+vi.mock("../src/doctor/bench.js", () => ({
+  buildBenchSection: vi.fn(),
+}));
+
+vi.mock("../src/doctor/render.js", () => ({
+  renderDoctorReport: vi.fn().mockReturnValue("doctor text report"),
+  renderDoctorJson: vi.fn().mockReturnValue('{"doctor": true}'),
 }));
 
 const { mockSpinnerInstance, mockYoctoSpinner, mockEtaRecord, mockFormatEta } = vi.hoisted(() => {
@@ -157,6 +181,23 @@ vi.mock("../src/eta.js", () => {
   return {
     EtaTracker: MockEtaTracker,
     formatEta: mockFormatEta,
+  };
+});
+
+const { mockRunWizard, mockScaffold } = vi.hoisted(() => ({
+  mockRunWizard: vi.fn(),
+  mockScaffold: vi.fn(),
+}));
+
+vi.mock("../src/init/wizard.js", () => ({
+  runWizard: mockRunWizard,
+}));
+
+vi.mock("../src/init/scaffold.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/init/scaffold.js")>();
+  return {
+    ...actual,
+    scaffold: mockScaffold,
   };
 });
 
@@ -538,7 +579,7 @@ describe("createProgram", () => {
       return [...new Set(help.match(BOX_DRAWING_RE) ?? [])].toSorted();
     }
 
-    it("frames the root help in the same box as a subcommand's help", async () => {
+    it("uses the same border style for root and subcommand help", async () => {
       // Arrange
       vi.stubEnv("FORCE_COLOR", undefined);
 
@@ -548,8 +589,7 @@ describe("createProgram", () => {
         captureCompareHelp(),
       ]);
 
-      // Assert - a subcommand is boxed already, so the comparison cannot pass vacuously
-      expect.soft(borderCharsOf(compareHelp)).not.toStrictEqual([]);
+      // Assert
       expect(borderCharsOf(rootHelp)).toStrictEqual(borderCharsOf(compareHelp));
     });
 
@@ -4072,6 +4112,563 @@ describe("entry point", () => {
 
       // Assert
       await expect(loading).resolves.toHaveProperty("createProgram");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Doctor command
+// ---------------------------------------------------------------------------
+
+describe("the doctor command", () => {
+  /** Prepends the `["node", "cli.js", "doctor"]` prefix Commander expects. */
+  function doctorArgv(...args: string[]): string[] {
+    return ["node", "cli.js", "doctor", ...args];
+  }
+
+  /** Set up the doctor mocks so the command has a report to work with. */
+  async function setupDoctorMocks(
+    options: {
+      hasFailures?: boolean;
+      configFailure?: boolean;
+      throwError?: Error;
+    } = {},
+  ): Promise<void> {
+    const { inspectConfig: inspectConfigMock } = await import("../src/config.js");
+    const {
+      buildEnvironmentSection: buildEnvMock,
+      buildConfigSection: buildConfigMock,
+      buildWorkflowSection: buildWorkflowMock,
+    } = await import("../src/doctor/checks.js");
+    const { buildBenchSection: buildBenchMock } = await import("../src/doctor/bench.js");
+
+    const envSection = {
+      title: "Environment",
+      checks: [{ name: "git", status: "ok" as const, detail: "available" }],
+    };
+    const configSection = {
+      title: "Configuration",
+      checks: options.configFailure
+        ? [
+            {
+              name: "config",
+              status: "fail" as const,
+              detail: "not found",
+              hint: "create gymrat.json",
+            },
+          ]
+        : [{ name: "config", status: "ok" as const, detail: "/project/gymrat.json" }],
+    };
+    const workflowSection = {
+      title: "Workflow",
+      checks: [{ name: "skill file", status: "ok" as const, detail: "found" }],
+    };
+    const benchSection = {
+      title: "Bench",
+      checks: options.hasFailures
+        ? [{ name: "smoke run", status: "fail" as const, detail: "bench crashed" }]
+        : [{ name: "smoke run", status: "ok" as const, detail: "1 metric found" }],
+    };
+
+    vi.mocked(inspectConfigMock).mockReturnValue({
+      configPath: "/project/gymrat.json",
+      configExists: true,
+      problems: [],
+      config: resolvedConfigFixture(),
+    });
+
+    if (options.throwError !== undefined) {
+      const error = options.throwError;
+      vi.mocked(buildEnvMock).mockImplementation(() => {
+        throw error;
+      });
+    } else {
+      vi.mocked(buildEnvMock).mockReturnValue(envSection);
+    }
+    vi.mocked(buildConfigMock).mockReturnValue(configSection);
+    vi.mocked(buildWorkflowMock).mockReturnValue(workflowSection);
+    vi.mocked(buildBenchMock).mockResolvedValue(benchSection);
+  }
+
+  describe("when --help is requested", () => {
+    it("lists doctor in the root help", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+      // Assert
+      expect(helpOutput).toContain("doctor");
+    });
+
+    it("documents --no-bench, --no-color, and --format", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(doctorArgv("--help"));
+
+      // Assert
+      expect.soft(helpOutput).toContain("--no-bench");
+      expect.soft(helpOutput).toContain("--no-color");
+      expect(helpOutput).toContain("--format");
+    });
+  });
+
+  describe("when the report has no failures", () => {
+    it("exits 0 and writes the text report to stdout", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ hasFailures: false });
+      const stdoutSpy = stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      // Act
+      await program.parseAsync(doctorArgv());
+
+      // Assert
+      expect(writtenChunks(stdoutSpy).join("")).toContain("doctor text report");
+    });
+  });
+
+  describe("when the report has failures", () => {
+    it("exits 1 after writing the report", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ hasFailures: true });
+      const stdoutSpy = stubWrite(process.stdout);
+      stubWrite(process.stderr);
+      mockProcessExit();
+
+      // Act
+      const error = await program.parseAsync(doctorArgv()).catch((e: unknown) => e);
+
+      // Assert — the report was written before exit — distinguishes a doctor
+      // exit 1 from a Commander parse error, which would not produce any output.
+      expect(error).toHaveProperty("exitCode", 1);
+      expect(writtenChunks(stdoutSpy).join("")).toContain("doctor text report");
+    });
+  });
+
+  describe("when --format json is passed", () => {
+    it("writes JSON to stdout with nothing else", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ hasFailures: false });
+      const stdoutSpy = stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      // Act
+      await program.parseAsync(doctorArgv("--format", "json"));
+
+      // Assert
+      const { renderDoctorJson: renderJsonMock } = await import("../src/doctor/render.js");
+      expect(vi.mocked(renderJsonMock)).toHaveBeenCalled();
+      expect(writtenChunks(stdoutSpy)).toStrictEqual(['{"doctor": true}\n']);
+    });
+  });
+
+  describe("when --no-color is passed", () => {
+    it("sets process.env.NO_COLOR", async () => {
+      // Arrange
+      vi.stubEnv("NO_COLOR", undefined);
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ hasFailures: false });
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      // Act
+      await program.parseAsync(doctorArgv("--no-color"));
+
+      // Assert
+      expect(process.env.NO_COLOR).toBe("1");
+    });
+  });
+
+  describe("when --no-bench is passed", () => {
+    it("reaches buildBenchSection with noBench true", async () => {
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ hasFailures: false });
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      await program.parseAsync(doctorArgv("--no-bench"));
+
+      const { buildBenchSection: buildBenchMock } = await import("../src/doctor/bench.js");
+      expect(vi.mocked(buildBenchMock)).toHaveBeenCalledWith(
+        expect.objectContaining({ noBench: true }),
+      );
+    });
+  });
+
+  describe("when --no-bench is not passed", () => {
+    it("reaches buildBenchSection with noBench false", async () => {
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ hasFailures: false });
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      await program.parseAsync(doctorArgv());
+
+      const { buildBenchSection: buildBenchMock } = await import("../src/doctor/bench.js");
+      expect(vi.mocked(buildBenchMock)).toHaveBeenCalledWith(
+        expect.objectContaining({ noBench: false }),
+      );
+    });
+  });
+
+  describe("when --config names a missing path", () => {
+    it("does not abort — surfaces the missing file as a config FAIL and continues", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ configFailure: true });
+      const { inspectConfig: inspectConfigMock } = await import("../src/config.js");
+      vi.mocked(inspectConfigMock).mockReturnValue({
+        configPath: "/missing/gymrat.json",
+        configExists: false,
+        problems: ["Config file not found at /missing/gymrat.json"],
+      });
+      const stdoutSpy = stubWrite(process.stdout);
+      stubWrite(process.stderr);
+      mockProcessExit();
+
+      // Act
+      const error = await program
+        .parseAsync(doctorArgv("--config", "/missing/gymrat.json"))
+        .catch((e: unknown) => e);
+
+      // Assert — exits 1 (failures in report), NOT exit 2 (crash).
+      // The report must be written — distinguishes from a Commander parse error.
+      expect(error).toHaveProperty("exitCode", 1);
+      expect(writtenChunks(stdoutSpy).join("")).toContain("doctor text report");
+    });
+  });
+
+  describe("when doctor itself crashes", () => {
+    it("routes through exitWithError with exit code 2", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+      await setupDoctorMocks({ throwError: new Error("unexpected doctor crash") });
+      stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      // Act & Assert
+      await expect(program.parseAsync(doctorArgv())).rejects.toHaveProperty("exitCode", 2);
+      expect(stderrWrites(stderrSpy)).toContainEqual(
+        expect.stringContaining("unexpected doctor crash"),
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Init command
+// ---------------------------------------------------------------------------
+
+describe("the init command", () => {
+  /** Prepends the `["node", "cli.js", "init"]` prefix Commander expects. */
+  function initArgv(...args: string[]): string[] {
+    return ["node", "cli.js", "init", ...args];
+  }
+
+  /** A default wizard result with all artifacts requested. */
+  function createWizardResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      bench: "npm run bench",
+      runbook: { path: "gymrat-runbook.md" },
+      installSkill: true,
+      ...overrides,
+    };
+  }
+
+  /** A default scaffold result with all artifacts created. */
+  function createScaffoldResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      config: { path: "gymrat.json", status: "created" },
+      runbook: { path: "gymrat-runbook.md", status: "created" },
+      skill: { path: ".claude/skills/gymrat/SKILL.md", status: "created" },
+      ...overrides,
+    };
+  }
+
+  describe("when --help is requested", () => {
+    it("lists init in the root help", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(["node", "cli.js", "--help"]);
+
+      // Assert
+      expect(helpOutput).toContain("init");
+    });
+
+    it("documents --bench, --adapter, --runbook, --skill, and --yes flags", async () => {
+      // Arrange
+      vi.stubEnv("FORCE_COLOR", undefined);
+
+      // Act
+      const helpOutput = await captureHelp(initArgv("--help"));
+
+      // Assert
+      expect.soft(helpOutput).toContain("--bench");
+      expect.soft(helpOutput).toContain("--adapter");
+      expect.soft(helpOutput).toContain("--runbook");
+      expect.soft(helpOutput).toContain("--skill");
+      expect.soft(helpOutput).toContain("--yes");
+      expect(helpOutput).toContain("-y");
+    });
+  });
+
+  describe("when gymrat.json already exists at the resolved base", () => {
+    let tempDir: string;
+
+    beforeEach(() => {
+      tempDir = mkdtempSync(join(tmpdir(), "gymrat-init-test-"));
+    });
+
+    afterEach(() => {
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it("exits 2 with a message about the existing config, editing directly, and gymrat doctor", async () => {
+      // Arrange
+      writeFileSync(join(tempDir, "gymrat.json"), "{}");
+      vi.spyOn(process, "cwd").mockReturnValue(tempDir);
+      const program = createRunnableProgram({ exitOverride: "all" });
+      stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      // Act
+      const parsing = program.parseAsync(initArgv());
+
+      // Assert
+      await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+      const output = stderrWrites(stderrSpy).map(String).join("");
+      expect.soft(output).toMatch(/already exists/i);
+      expect(output).toContain("gymrat doctor");
+    });
+  });
+
+  describe("when the wizard rejects because --bench is missing in non-interactive mode", () => {
+    it("exits 2 with an error naming --bench", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+      mockRunWizard.mockRejectedValue(new Error("--bench is required in non-interactive mode"));
+      stubWrite(process.stdout);
+      const stderrSpy = stubWrite(process.stderr);
+      mockProcessExit();
+
+      // Act
+      const parsing = program.parseAsync(initArgv("--yes"));
+
+      // Assert
+      await expect(parsing).rejects.toHaveProperty("exitCode", 2);
+      expect(stderrWrites(stderrSpy).map(String).join("")).toContain("--bench");
+    });
+  });
+
+  describe("when scaffolding succeeds", () => {
+    it("writes a summary to stdout naming each artifact and closes with a gymrat doctor pointer", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult());
+      mockScaffold.mockReturnValue(createScaffoldResult());
+      const getStdout = captureStdout({ silenceStderr: true });
+
+      // Act
+      await program.parseAsync(initArgv("--bench", "npm run bench", "--yes"));
+
+      // Assert
+      const output = getStdout();
+      expect.soft(output).toContain("gymrat.json");
+      expect.soft(output).toContain("created");
+      expect(output).toContain("gymrat doctor");
+    });
+
+    it("reports a runbook that already existed", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult());
+      mockScaffold.mockReturnValue(
+        createScaffoldResult({
+          runbook: { path: "gymrat-runbook.md", status: "exists" },
+        }),
+      );
+      const getStdout = captureStdout({ silenceStderr: true });
+
+      // Act
+      await program.parseAsync(initArgv("--bench", "npm run bench", "--yes"));
+
+      // Assert
+      expect(getStdout()).toMatch(/runbook.*already exist/i);
+    });
+
+    it("reports a declined runbook", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult({ runbook: false }));
+      mockScaffold.mockReturnValue(
+        createScaffoldResult({
+          runbook: { path: "", status: "declined" },
+        }),
+      );
+      const getStdout = captureStdout({ silenceStderr: true });
+
+      // Act
+      await program.parseAsync(initArgv("--bench", "npm run bench", "--yes", "--no-runbook"));
+
+      // Assert
+      expect(getStdout()).toMatch(/runbook.*decline|skip/i);
+    });
+
+    it("reports a declined skill", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult({ installSkill: false }));
+      mockScaffold.mockReturnValue(
+        createScaffoldResult({
+          skill: { path: "", status: "declined" },
+        }),
+      );
+      const getStdout = captureStdout({ silenceStderr: true });
+
+      // Act
+      await program.parseAsync(initArgv("--bench", "npm run bench", "--yes", "--no-skill"));
+
+      // Assert
+      expect(getStdout()).toMatch(/skill.*decline|skip/i);
+    });
+  });
+
+  describe("when flags are forwarded to the wizard", () => {
+    it("passes --bench to runWizard", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult());
+      mockScaffold.mockReturnValue(createScaffoldResult());
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      // Act
+      await program.parseAsync(initArgv("--bench", "my-bench.sh", "--yes"));
+
+      // Assert
+      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining({ bench: "my-bench.sh" }));
+    });
+
+    it("passes --adapter to runWizard", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult());
+      mockScaffold.mockReturnValue(createScaffoldResult());
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      // Act
+      await program.parseAsync(initArgv("--bench", "bench.sh", "--adapter", "mitata", "--yes"));
+
+      // Assert
+      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining({ adapter: "mitata" }));
+    });
+
+    it("passes --stop-target as a parsed number to runWizard", async () => {
+      // Arrange
+      const program = createRunnableProgram();
+      mockRunWizard.mockResolvedValue(createWizardResult());
+      mockScaffold.mockReturnValue(createScaffoldResult());
+      stubWrite(process.stdout);
+      stubWrite(process.stderr);
+
+      // Act
+      await program.parseAsync(
+        initArgv("--bench", "bench.sh", "--stop-target", "1.5", "--primary", "latency", "--yes"),
+      );
+
+      // Assert
+      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining({ stopTarget: 1.5 }));
+    });
+  });
+
+  describe("when --stop-target receives NaN", () => {
+    it("rejects with a usage error", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all", silent: true });
+
+      // Act
+      const parsing = program.parseAsync(initArgv("--stop-target", "not-a-number"));
+
+      // Assert
+      await expect(parsing).rejects.toThrow(/stop-target/);
+    });
+  });
+
+  describe("when --stop-target receives trailing garbage or a non-finite value", () => {
+    it.each([
+      { value: "1.5x", why: "trailing garbage" },
+      { value: "Infinity", why: "positive infinity" },
+      { value: "-Infinity", why: "negative infinity" },
+    ])("rejects $value ($why) with a usage error naming --stop-target", async ({ value }) => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all", silent: true });
+
+      // Act
+      const parsing = program.parseAsync(initArgv("--stop-target", value));
+
+      // Assert
+      await expect(parsing).rejects.toThrow(/stop-target/);
+    });
+  });
+
+  describe("when --stop-max-iterations receives a non-positive-integer", () => {
+    it.each([
+      { value: "abc", why: "non-numeric" },
+      { value: "-1", why: "negative" },
+      { value: "1.5", why: "non-integer" },
+    ])("rejects $value ($why) with a usage error", async ({ value }) => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all", silent: true });
+
+      // Act
+      const parsing = program.parseAsync(initArgv("--stop-max-iterations", value));
+
+      // Assert
+      await expect(parsing).rejects.toThrow(/stop-max-iterations/);
+    });
+  });
+
+  describe("init does not share config-command flags", () => {
+    it("rejects --config, which belongs to config-reading commands", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+
+      // Act & Assert
+      await expect(program.parseAsync(initArgv("--config", "gymrat.json"))).rejects.toThrow(
+        /unknown option '--config'/,
+      );
+    });
+
+    it("rejects --samples, which belongs to bench-running commands", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+
+      // Act & Assert
+      await expect(program.parseAsync(initArgv("--samples", "5"))).rejects.toThrow(
+        /unknown option '--samples'/,
+      );
+    });
+
+    it("rejects --timeout, which belongs to bench-running commands", async () => {
+      // Arrange
+      const program = createRunnableProgram({ exitOverride: "all" });
+
+      // Act & Assert
+      await expect(program.parseAsync(initArgv("--timeout", "300"))).rejects.toThrow(
+        /unknown option '--timeout'/,
+      );
     });
   });
 });

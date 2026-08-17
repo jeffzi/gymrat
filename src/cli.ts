@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -12,15 +12,33 @@ import { AdapterError } from "./adapters/index.js";
 import { compare } from "./compare.js";
 import type { CompareOptions, ProgressStep, TargetSpec } from "./compare.js";
 import {
+  CONFIG_DEFAULTS,
+  CONFIG_FILENAME,
+  inspectConfig,
   resolveBenchlessConfig,
   resolveConfig,
   type CliFlags,
   type ResolvedConfig,
 } from "./config.js";
 import { confirmAction } from "./confirm.js";
-import { assertNever, GymratError, messageOf, type StrictOmit } from "./errors.js";
+import { buildBenchSection } from "./doctor/bench.js";
+import {
+  buildConfigSection,
+  buildEnvironmentSection,
+  buildWorkflowSection,
+  createDoctorReport,
+} from "./doctor/checks.js";
+import { renderDoctorJson, renderDoctorReport } from "./doctor/render.js";
+import { assertNever, GymratError, hintOf, messageOf, type StrictOmit } from "./errors.js";
 import { EtaTracker, formatEta } from "./eta.js";
-import { NotAGitRepositoryError, runGit } from "./git.js";
+import { NotAGitRepositoryError, runGit, tryGit } from "./git.js";
+import {
+  scaffold,
+  SKILL_RELATIVE_PATH,
+  type ArtifactStatus,
+  type ScaffoldResult,
+} from "./init/scaffold.js";
+import { runWizard } from "./init/wizard.js";
 import { finalizeSession } from "./loop/finalize.js";
 import { iterateSession, LoopStopError } from "./loop/iterate.js";
 import { discardSession, keepSession } from "./loop/settle.js";
@@ -33,6 +51,7 @@ import {
   countVerdicts,
   formatHintLabel,
   formatLabel,
+  highlightInlineCode,
   pluralize,
   shortenLabel,
 } from "./report/format.js";
@@ -91,7 +110,7 @@ function parsePositional(positional: string): TargetSpec {
     );
   }
 
-  return { label, target };
+  return { ...(label !== undefined && { label }), target };
 }
 
 /** Accumulate parsed candidate positionals as Commander walks the variadic argument. */
@@ -122,6 +141,14 @@ function parsePositiveIntegerUpTo(max: number): (value: string) => number {
     }
     return parsed;
   };
+}
+
+/** Accept a complete finite decimal — reject trailing garbage, Infinity, and NaN. */
+function parseStopTargetValue(value: string): number {
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(value)) {
+    throw new InvalidArgumentError("must be a finite number.");
+  }
+  return Number(value);
 }
 
 function parsePositiveNumber(value: string): number {
@@ -305,13 +332,16 @@ export function formatCliError(error: unknown, options: { debug?: boolean } = {}
     output += `\n${error.stack}`;
   }
 
-  if (error instanceof GymratError && error.hint !== undefined) {
-    output += `\n${formatHintLabel(process.stderr)} ${error.hint}`;
+  const hint = hintOf(error);
+  if (hint !== undefined) {
+    output += `\n${formatHintLabel(process.stderr)} ${highlightInlineCode(hint, process.stderr)}`;
   }
 
   if (!(error instanceof GymratError)) {
-    const debugCmd = formatLabel("gymrat --debug", "yellow", process.stderr);
-    output += `\nRun with \`${debugCmd}\` for details. If this is a bug, please report it at\n${BUGS_URL}`;
+    output += highlightInlineCode(
+      `\nRun with \`gymrat --debug\` for details. If this is a bug, please report it at\n${BUGS_URL}`,
+      process.stderr,
+    );
   }
 
   return output;
@@ -556,7 +586,7 @@ function createProgressReporter(
     emit(step: ProgressStep): void {
       const etaMs = eta.record(step);
       if (!spinner) {
-        drawnStep = tty ? { step, etaMs } : undefined;
+        drawnStep = tty ? { step, ...(etaMs !== undefined && { etaMs }) } : undefined;
         writeProgress(formatProgressLine(step, etaMs), tty);
         return;
       }
@@ -648,6 +678,33 @@ interface CompareFlags extends SharedFlags {
   failOn: FailOnCondition[];
   /** Name the statistical method behind each verdict in the report footer. */
   verbose: boolean;
+}
+
+/**
+ * The doctor command's flags: config options plus format, color, and the bench skip.
+ *
+ * `--bench <cmd>` and `--no-bench` share Commander's `bench` attribute: `-b <cmd>`
+ * writes a string, `--no-bench` writes `false`, and neither flag leaves it
+ * `undefined` — `--bench` having a positive counterpart means Commander does not
+ * apply its usual "lone negated option defaults to true" rule. `inspectConfig`
+ * receives the flags as-is; a boolean `bench` is not a valid bench command, so
+ * the inspector treats it the same as absent.
+ */
+interface DoctorFlags extends StrictOmit<SharedFlags, "bench"> {
+  bench: string | boolean | undefined;
+}
+
+/** The init command's flags: wizard inputs, not config overrides. */
+interface InitFlags {
+  bench?: string;
+  adapter?: string;
+  checks?: string;
+  stopTarget?: number;
+  stopMaxIterations?: number;
+  primary?: string;
+  runbook?: string | boolean;
+  skill?: boolean;
+  yes: boolean;
 }
 
 /** The supervise command's flags: session caps plus where to write the event log. */
@@ -947,6 +1004,33 @@ function formatStartSummary(result: StartResult, runbook?: string): string {
   ].join("\n");
 }
 
+function formatInitArtifact(
+  label: string,
+  artifact: { path: string; status: ArtifactStatus },
+): string {
+  switch (artifact.status) {
+    case "created":
+      return `  ${label} created at ${artifact.path}`;
+    case "exists":
+      return `  ${label} already exists at ${artifact.path}`;
+    case "declined":
+      return `  ${label} declined`;
+    default:
+      return assertNever(artifact.status);
+  }
+}
+
+/** Format the summary printed after a successful `gymrat init`. */
+function formatInitSummary(result: ScaffoldResult): string {
+  return [
+    formatInitArtifact("Config:", result.config),
+    formatInitArtifact("Runbook:", result.runbook),
+    formatInitArtifact("Skill:", result.skill),
+    "",
+    highlightInlineCode("Run `gymrat doctor` to verify the setup."),
+  ].join("\n");
+}
+
 /**
  * `import ... with { type: "json" }` would be tidier, but package.json sits
  * outside `rootDir`, so importing it would pull an extra directory level into
@@ -1012,6 +1096,29 @@ Examples:
 
   • gymrat measure --bench "npm run bench" --record
 `;
+
+interface GitEnvironment {
+  gitAvailable: boolean;
+  insideGitRepo: boolean;
+  repoRootDir?: string;
+}
+
+/** Probe git's availability and repository status from `cwd`, without throwing. */
+function detectGitEnvironment(cwd: string): GitEnvironment {
+  const gitAvailable = tryGit(["--version"], cwd) === undefined;
+  if (!gitAvailable) {
+    return { gitAvailable: false, insideGitRepo: false };
+  }
+
+  try {
+    return { gitAvailable: true, insideGitRepo: true, repoRootDir: repoRoot(cwd) };
+  } catch (error) {
+    if (error instanceof NotAGitRepositoryError) {
+      return { gitAvailable: true, insideGitRepo: false };
+    }
+    return { gitAvailable: true, insideGitRepo: true };
+  }
+}
 
 /**
  * Build the `gymrat` program: fully wired but inert until the caller invokes
@@ -1240,7 +1347,7 @@ export function createProgram(): Command {
     const result = await withRepoLock("keep", async () => {
       const root = repoRoot();
       return keepSession(root, resolveBenchlessConfig(options, root), {
-        message: options.message,
+        ...(options.message !== undefined && { message: options.message }),
       });
     });
 
@@ -1293,7 +1400,10 @@ export function createProgram(): Command {
     .action(async (options: FinalizeFlags) => {
       const result = await withRepoLock("finalize", () =>
         Promise.resolve(
-          finalizeSession(repoRoot(), { message: options.message, branch: options.branch }),
+          finalizeSession(repoRoot(), {
+            ...(options.message !== undefined && { message: options.message }),
+            ...(options.branch !== undefined && { branch: options.branch }),
+          }),
         ),
       );
 
@@ -1323,6 +1433,145 @@ export function createProgram(): Command {
     });
 
     await writeAndFlush(process.stdout, `${report}\n`);
+  });
+
+  /*
+   * Init takes no repository lock — it writes config files, not benchmark data.
+   */
+  program
+    .command("init")
+    .description("Scaffold a gymrat.json, skill file, and runbook")
+    .option("--bench <cmd>", "bench command")
+    .option("--adapter <name>", "adapter type")
+    .option("--checks <cmd>", "checks command")
+    .option("--stop-target <number>", "stop target value", parseStopTargetValue)
+    .option(
+      "--stop-max-iterations <number>",
+      "stop max iterations",
+      parsePositiveIntegerUpTo(Number.MAX_SAFE_INTEGER),
+    )
+    .option("--primary <metric>", "primary metric name")
+    .addOption(new Option("--runbook [path]", "create runbook").preset(true))
+    .addOption(new Option("--no-runbook", "skip runbook"))
+    .option("--skill", "install skill")
+    .option("--no-skill", "skip skill")
+    .option("-y, --yes", "non-interactive mode", false)
+    .action(async (options: InitFlags) => {
+      const cwd = process.cwd();
+      const { repoRootDir } = detectGitEnvironment(cwd);
+      const baseDir = repoRootDir ?? cwd;
+
+      const configPath = join(baseDir, CONFIG_FILENAME);
+      if (existsSync(configPath)) {
+        await exitWithError(
+          new GymratError(
+            `${configPath} already exists.`,
+            "Edit it directly, or run `gymrat doctor` to verify the setup.",
+          ),
+        );
+      }
+
+      const result = await runOrExit(async () => {
+        const wizardResult = await runWizard({
+          bench: options.bench,
+          adapter: options.adapter,
+          checks: options.checks,
+          stopTarget: options.stopTarget,
+          stopMaxIterations: options.stopMaxIterations,
+          primary: options.primary,
+          runbook: options.runbook,
+          skill: options.skill,
+          yes: options.yes,
+          input: process.stdin,
+          output: process.stderr,
+        });
+        return scaffold(baseDir, wizardResult, import.meta.url);
+      });
+
+      await writeAndFlush(process.stdout, `${formatInitSummary(result)}\n`);
+    });
+
+  /*
+   * Doctor takes no repository lock — it is read-only and reports problems
+   * instead of dying of them.
+   */
+  addSharedOptions(
+    program
+      .command("doctor")
+      .description("Check the project setup and report any problems")
+      .option("--no-bench", "skip the smoke-run bench section"),
+  ).action(async (options: DoctorFlags) => {
+    if (!options.color) {
+      suppressColor();
+    }
+
+    const report = await runOrExit(async () => {
+      const version = readPackageVersion();
+
+      const cwd = process.cwd();
+      const { gitAvailable, insideGitRepo, repoRootDir } = detectGitEnvironment(cwd);
+      const baseDir = repoRootDir ?? cwd;
+
+      // Config inspection — never throws, collects problems instead.
+      // Extract the CliFlags subset: a boolean `bench` (from --no-bench) is not
+      // a bench command, so pass it as undefined to the inspector.
+      const { bench: rawBench, ...rest } = options;
+      const configFlags: CliFlags = {
+        ...rest,
+        ...(typeof rawBench === "string" && { bench: rawBench }),
+      };
+      const inspection = inspectConfig(configFlags, baseDir);
+
+      const envSection = buildEnvironmentSection({ gitAvailable, insideGitRepo });
+      const configSection = buildConfigSection(inspection);
+      const workflowSection = buildWorkflowSection({
+        config: inspection.config ?? CONFIG_DEFAULTS,
+        problems: inspection.problems,
+        skillFileExists: existsSync(join(baseDir, SKILL_RELATIVE_PATH)),
+      });
+
+      const configHasFailures = inspection.problems.length > 0;
+      const benchSection = await buildBenchSection({
+        bench: inspection.bench,
+        adapter: inspection.config?.adapter ?? CONFIG_DEFAULTS.adapter,
+        timeoutSeconds: inspection.config?.timeoutSeconds ?? CONFIG_DEFAULTS.timeoutSeconds,
+        primary: inspection.config?.primary ?? CONFIG_DEFAULTS.primary,
+        ...(inspection.config?.metrics !== undefined && { metrics: inspection.config.metrics }),
+        ...(inspection.config?.kinds !== undefined && { kinds: inspection.config.kinds }),
+        repoRoot: baseDir,
+        // `false` only when `--no-bench` was passed; `undefined` (no flag) and a
+        // string (`-b <cmd>`) both mean the smoke run should proceed.
+        noBench: options.bench === false,
+        configFailed: configHasFailures,
+      });
+
+      return createDoctorReport(
+        {
+          gymratVersion: version,
+          nodeVersion: process.versions.node,
+          platform: process.platform,
+        },
+        [envSection, configSection, workflowSection, benchSection],
+      );
+    });
+
+    let output: string;
+    switch (options.format) {
+      case "json":
+        output = renderDoctorJson(report);
+        break;
+      case "text":
+        output = renderDoctorReport(report);
+        break;
+      default:
+        assertNever(options.format);
+    }
+
+    await writeAndFlush(process.stdout, output + "\n");
+
+    if (report.hasFailures) {
+      process.exit(GATE_EXIT_CODE);
+    }
   });
 
   // ---------------------------------------------------------------------------
@@ -1431,10 +1680,10 @@ export function createProgram(): Command {
               kickoff: kickoff.kickoff,
               systemPromptAppend: kickoff.systemPromptAppend,
               cwd: root,
-              model: options.model,
+              ...(options.model !== undefined && { model: options.model }),
             },
             maxMinutes: options.maxMinutes,
-            maxUsd: options.maxUsd,
+            ...(options.maxUsd !== undefined && { maxUsd: options.maxUsd }),
             logPath,
             launch,
           }),
