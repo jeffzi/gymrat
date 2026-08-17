@@ -58,17 +58,18 @@ export function createDoctorReport(
   sections: CheckSection[],
 ): DoctorReport {
   const allChecks = sections.flatMap((s) => s.checks);
-  const okCount = allChecks.filter((c) => c.status === "ok").length;
-  const warnCount = allChecks.filter((c) => c.status === "warn").length;
-  const failCount = allChecks.filter((c) => c.status === "fail").length;
+  const counts: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0 };
+  for (const check of allChecks) {
+    counts[check.status]++;
+  }
 
   return {
     environment,
     sections,
-    okCount,
-    warnCount,
-    failCount,
-    hasFailures: failCount > 0,
+    okCount: counts.ok,
+    warnCount: counts.warn,
+    failCount: counts.fail,
+    hasFailures: counts.fail > 0,
   };
 }
 
@@ -79,9 +80,13 @@ export function createDoctorReport(
 interface EnvironmentInput {
   gitAvailable: boolean;
   insideGitRepo: boolean;
+  gitError?: string;
 }
 
-/** FAILs when git is absent from PATH; WARNs when cwd is not inside a git repository. */
+/**
+ * FAILs when git is absent from PATH; WARNs when cwd is not inside a git
+ * repository, or when the repository root could not be resolved.
+ */
 export function buildEnvironmentSection(input: EnvironmentInput): CheckSection {
   const checks: Check[] = [];
 
@@ -106,6 +111,17 @@ export function buildEnvironmentSection(input: EnvironmentInput): CheckSection {
           "The compare command resolves refs against a git repository",
         ),
   );
+
+  if (input.gitError !== undefined) {
+    checks.push(
+      issueCheck(
+        "git repository root",
+        "warn",
+        `could not determine the repository root: ${input.gitError}`,
+        "Falling back to the current directory; commands may operate on the wrong path",
+      ),
+    );
+  }
 
   return { title: "Environment", checks };
 }

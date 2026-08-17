@@ -171,6 +171,21 @@ describe("buildEnvironmentSection", () => {
       expect(repoCheck!.status).toBe("warn");
     });
   });
+
+  describe("when the repository root could not be resolved", () => {
+    it("produces a WARN check surfacing the error message", () => {
+      const section = buildEnvironmentSection({
+        gitAvailable: true,
+        insideGitRepo: true,
+        gitError: "permission denied",
+      });
+
+      const rootCheck = section.checks.find((c) => c.name === "git repository root");
+      expect(rootCheck).toBeDefined();
+      expect(rootCheck!.status).toBe("warn");
+      expect(rootCheck!.detail).toContain("permission denied");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -298,7 +313,7 @@ describe("buildWorkflowSection", () => {
     });
 
     describe("when the skill file is missing", () => {
-      it("produces a WARN check with hint naming install routes", () => {
+      it("produces a WARN check with hint naming install routes and the fresh-setup fix", () => {
         const section = buildWorkflowSection({
           config: benchlessConfig(),
 
@@ -308,17 +323,7 @@ describe("buildWorkflowSection", () => {
         const skillCheck = section.checks.find((c) => c.name === "skill file");
         expect(skillCheck).toBeDefined();
         expect(skillCheck!.status).toBe("warn");
-        expect(skillCheck!.hint).toContain("npx skills add jeffzi/gymrat");
-      });
-
-      it("mentions gymrat init as the fresh-setup fix", () => {
-        const section = buildWorkflowSection({
-          config: benchlessConfig(),
-
-          skillFileExists: false,
-        });
-
-        const skillCheck = section.checks.find((c) => c.name === "skill file");
+        expect.soft(skillCheck!.hint).toContain("npx skills add jeffzi/gymrat");
         expect(skillCheck!.hint).toContain("gymrat init");
       });
     });
@@ -447,7 +452,7 @@ describe("buildWorkflowSection", () => {
     });
 
     describe("when runbook is unset", () => {
-      it("produces a WARN check with hint about supervise", () => {
+      it("produces a WARN check with hint about supervise and the fresh-setup fix", () => {
         const section = buildWorkflowSection({
           config: benchlessConfig(),
 
@@ -457,17 +462,7 @@ describe("buildWorkflowSection", () => {
         const runbookCheck = section.checks.find((c) => c.name === "runbook");
         expect(runbookCheck).toBeDefined();
         expect(runbookCheck!.status).toBe("warn");
-        expect(runbookCheck!.hint).toMatch(/supervise/i);
-      });
-
-      it("mentions gymrat init as the fresh-setup fix", () => {
-        const section = buildWorkflowSection({
-          config: benchlessConfig(),
-
-          skillFileExists: true,
-        });
-
-        const runbookCheck = section.checks.find((c) => c.name === "runbook");
+        expect.soft(runbookCheck!.hint).toMatch(/supervise/i);
         expect(runbookCheck!.hint).toContain("gymrat init");
       });
     });

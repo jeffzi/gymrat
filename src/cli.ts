@@ -1101,6 +1101,7 @@ interface GitEnvironment {
   gitAvailable: boolean;
   insideGitRepo: boolean;
   repoRootDir?: string;
+  gitError?: string;
 }
 
 /** Probe git's availability and repository status from `cwd`, without throwing. */
@@ -1116,7 +1117,8 @@ function detectGitEnvironment(cwd: string): GitEnvironment {
     if (error instanceof NotAGitRepositoryError) {
       return { gitAvailable: true, insideGitRepo: false };
     }
-    return { gitAvailable: true, insideGitRepo: true };
+    const message = error instanceof Error ? error.message : String(error);
+    return { gitAvailable: true, insideGitRepo: true, gitError: message };
   }
 }
 
@@ -1509,7 +1511,7 @@ export function createProgram(): Command {
       const version = readPackageVersion();
 
       const cwd = process.cwd();
-      const { gitAvailable, insideGitRepo, repoRootDir } = detectGitEnvironment(cwd);
+      const { gitAvailable, insideGitRepo, repoRootDir, gitError } = detectGitEnvironment(cwd);
       const baseDir = repoRootDir ?? cwd;
 
       // Config inspection — never throws, collects problems instead.
@@ -1522,7 +1524,11 @@ export function createProgram(): Command {
       };
       const inspection = inspectConfig(configFlags, baseDir);
 
-      const envSection = buildEnvironmentSection({ gitAvailable, insideGitRepo });
+      const envSection = buildEnvironmentSection({
+        gitAvailable,
+        insideGitRepo,
+        ...(gitError !== undefined && { gitError }),
+      });
       const configSection = buildConfigSection(inspection);
       const workflowSection = buildWorkflowSection({
         config: inspection.config ?? CONFIG_DEFAULTS,
