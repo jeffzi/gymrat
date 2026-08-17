@@ -1,9 +1,37 @@
-node_modules/
-dist
-coverage
-*.tsbuildinfo
-*.tgz
+# Logs
 *.log
-.env*
+
+# Runtime data
+*.pid
+*.pid.lock
+*.seed
+
+# Coverage
+coverage
+*.lcov
+
+# Dependency directories
+node_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Output of 'npm pack'
+*.tgz
+
+# dotenv environment variable files
+.env
+.env.*
 !.env.example
-.cache
+
+# Build output
+dist
+
+# Vite files
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+.vite/
+
+# Claude Code personal overrides
+.agents/settings.local.json
+.claude/settings.local.json

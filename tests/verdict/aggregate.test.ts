@@ -51,7 +51,6 @@ describe("computeKindAggregates", () => {
           kind: "time",
           geomean: { value: 0, n: 1, excluded: [], band: 0 },
           groups: [],
-          gatedGeomean: undefined,
         },
       ]);
     });

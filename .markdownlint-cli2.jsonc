@@ -6,5 +6,13 @@
       "siblings_only": true,
     },
   },
-  "ignores": [".claude/**", ".planning/**", "CLAUDE.md", "node_modules/**"],
+  "ignores": [
+    ".agents/**",
+    ".claude/**",
+    ".planning/**",
+    ".research/**",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "node_modules/**",
+  ],
 }

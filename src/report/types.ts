@@ -5,9 +5,9 @@ import type { MetricVerdict } from "../verdict/verdict.js";
 
 /** One candidate's side of a metric, and the verdict it earned against the baseline. */
 export interface CandidateMetric {
-  median?: number;
-  spread?: number;
-  verdict?: MetricVerdict;
+  median?: number | undefined;
+  spread?: number | undefined;
+  verdict?: MetricVerdict | undefined;
 }
 
 /**
@@ -17,8 +17,8 @@ export interface CandidateMetric {
  * `candidates` is positional — entry _i_ belongs to `ComparisonResult.candidates[i]`.
  */
 export interface MetricComparison {
-  baselineMedian?: number;
-  baselineSpread?: number;
+  baselineMedian?: number | undefined;
+  baselineSpread?: number | undefined;
   candidates: readonly CandidateMetric[];
   meta: ResolvedMetricMeta;
 }
@@ -77,7 +77,7 @@ export interface ComparisonResult extends WorktreeCleanupOutcome {
    * them a config line did it, so it needs the config to name that line rather
    * than guess between a kind-level entry and per-metric overrides.
    */
-  configKinds?: ConfigKinds;
+  configKinds?: ConfigKinds | undefined;
 }
 
 /**
@@ -88,8 +88,8 @@ export interface ComparisonResult extends WorktreeCleanupOutcome {
  * jitter to report, and a zero median has no scale to be a percentage of.
  */
 export interface MetricMeasurement {
-  median?: number;
-  spread?: number;
+  median?: number | undefined;
+  spread?: number | undefined;
   meta: ResolvedMetricMeta;
 }
 
@@ -127,7 +127,7 @@ export interface MeasurementResult extends WorktreeCleanupOutcome {
    * Carried for the same reason `ComparisonResult` carries it: metadata is
    * resolved per metric, which loses which config line decided a whole section.
    */
-  configKinds?: ConfigKinds;
+  configKinds?: ConfigKinds | undefined;
 }
 
 /**
@@ -151,7 +151,7 @@ export interface ReportOptions {
    * Off by default — the glyphs and the summary line carry the reading, and the
    * method only matters once a reader questions a verdict.
    */
-  verbose?: boolean;
+  verbose?: boolean | undefined;
 
   /**
    * Force ANSI color on (`true`) or off (`false`) rather than detecting it.
@@ -161,7 +161,7 @@ export interface ReportOptions {
    * gives plain text a pipe or a file can hold verbatim; `true` keeps the color
    * through a pager that would otherwise look like a non-TTY.
    */
-  color?: boolean;
+  color?: boolean | undefined;
 
   /**
    * The `--fail-on` conditions the run is gated on, so the report can say which
@@ -170,7 +170,7 @@ export interface ReportOptions {
    * Display only. The renderer re-derives the check from the same aggregates the
    * table already shows; the exit code remains the caller's decision alone.
    */
-  failOn?: readonly FailOnCondition[];
+  failOn?: readonly FailOnCondition[] | undefined;
 
   /**
    * The run header to open the report with, in place of the one the renderer

@@ -26,8 +26,8 @@ function settleStateOf(record: KeepRecord | DiscardRecord): SettleState {
     return { kind: "discarded" };
   }
   return record.status === "committed"
-    ? { kind: "kept", commit: record.commit }
-    : { kind: "keep-blocked", reason: record.reason };
+    ? { kind: "kept", ...(record.commit !== undefined && { commit: record.commit }) }
+    : { kind: "keep-blocked", ...(record.reason !== undefined && { reason: record.reason }) };
 }
 
 /** The iteration a settling record is still waiting to hear about. */

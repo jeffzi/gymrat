@@ -70,7 +70,7 @@ function iteration(seq: number, targetReached: boolean): IterationRecord {
 
 /** A blocked keep of the iteration numbered `seq` that never recorded why it was blocked. */
 function blockedKeepWithoutReason(seq: number): KeepRecord {
-  return blockedKeep(seq, { reason: undefined });
+  return blockedKeep(seq, {});
 }
 
 /** The keep a gating regression refused, numbered with the iteration it refused. */

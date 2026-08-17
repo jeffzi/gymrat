@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderMeasureReport, renderReport } from "../../src/report/text.js";
 import type { ComparisonResult, MeasurementResult, ReportOptions } from "../../src/report/types.js";
+import type { KindAggregate } from "../../src/verdict/aggregate.js";
 import {
   bandMetric,
   bandVerdict,
@@ -32,6 +33,11 @@ import {
   measuredMetric,
   twoKindMeasurement,
 } from "../fixtures/measurement-result.js";
+
+function withoutGatedGeomean(kind: KindAggregate): KindAggregate {
+  const { gatedGeomean: _, ...rest } = kind;
+  return rest;
+}
 
 /** Character offsets of every occurrence of `glyph` in a rendered table line. */
 function offsetsOf(line: string, glyph: string): number[] {
@@ -1162,7 +1168,7 @@ describe("renderReport", () => {
       const result = twoKindResult({
         candidates: [
           createCandidate({
-            kinds: [timeKind(), otherKind(9, 1, {}, { gatedGeomean: undefined })],
+            kinds: [timeKind(), withoutGatedGeomean(otherKind(9, 1))],
           }),
         ],
       });
@@ -2346,16 +2352,19 @@ describe("renderReport", () => {
     it.each([
       {
         source: "the kind-level config entry",
-        configKinds: { memory: { gating: false } },
+        makeResult: () => twoKindResult({ configKinds: { memory: { gating: false } } }),
         expected: "informational — gating off (config: kinds.memory.gating = false)",
       },
       {
         source: "per-metric overrides alone",
-        configKinds: undefined,
+        makeResult: (): ComparisonResult => {
+          const { configKinds: _, ...rest } = twoKindResult();
+          return rest;
+        },
         expected: "informational — gating off",
       },
-    ])("credits $source for a non-gating kind's informational tag", ({ configKinds, expected }) => {
-      const report = renderReport(twoKindResult({ configKinds }));
+    ])("credits $source for a non-gating kind's informational tag", ({ makeResult, expected }) => {
+      const report = renderReport(makeResult());
 
       expect(lineContaining(report, "informational")).toBe(expected);
     });
@@ -2455,14 +2464,13 @@ describe("renderReport", () => {
       {
         gating: "several kinds gate",
         makeResult: (): ComparisonResult =>
-          twoKindResult({
+          createComparisonResult({
             metrics: twoKindMetrics({ memoryGates: true }),
             candidates: [
               createCandidate({
                 kinds: [timeKind(), memoryKind({ gatedGeomean: geomeanOf(6.1, 1) })],
               }),
             ],
-            configKinds: undefined,
           }),
       },
       {
@@ -2472,7 +2480,7 @@ describe("renderReport", () => {
             metrics: twoKindMetrics({ timeGates: false }),
             candidates: [
               createCandidate({
-                kinds: [timeKind({ gatedGeomean: undefined }), memoryKind()],
+                kinds: [withoutGatedGeomean(timeKind()), memoryKind()],
               }),
             ],
           }),
@@ -2666,16 +2674,19 @@ describe("renderReport", () => {
       it.each([
         {
           source: "the kind-level config entry",
-          configKinds: { time: { gating: false } } satisfies ComparisonResult["configKinds"],
+          makeResult: () => flatNonGatingResult({ configKinds: { time: { gating: false } } }),
           expected: "informational — gating off (config: kinds.time.gating = false)",
         },
         {
           source: "per-metric overrides alone",
-          configKinds: undefined satisfies ComparisonResult["configKinds"],
+          makeResult: (): ComparisonResult => {
+            const { configKinds: _, ...rest } = flatNonGatingResult();
+            return rest;
+          },
           expected: "informational — gating off",
         },
-      ])("credits $source for the informational tag", ({ configKinds, expected }) => {
-        const report = renderReport(flatNonGatingResult({ configKinds }));
+      ])("credits $source for the informational tag", ({ makeResult, expected }) => {
+        const report = renderReport(makeResult());
 
         expect(lineContaining(report, "informational")).toBe(expected);
       });
@@ -3323,16 +3334,19 @@ describe("renderMeasureReport", () => {
     it.each([
       {
         source: "the kind-level config entry",
-        configKinds: { memory: { gating: false } },
+        makeResult: () => twoKindMeasurement({ configKinds: { memory: { gating: false } } }),
         expected: "informational — gating off (config: kinds.memory.gating = false)",
       },
       {
         source: "per-metric overrides alone",
-        configKinds: undefined,
+        makeResult: (): MeasurementResult => {
+          const { configKinds: _, ...rest } = twoKindMeasurement();
+          return rest;
+        },
         expected: "informational — gating off",
       },
-    ])("credits $source for a non-gating kind's informational tag", ({ configKinds, expected }) => {
-      const report = renderMeasureReport(twoKindMeasurement({ configKinds }));
+    ])("credits $source for a non-gating kind's informational tag", ({ makeResult, expected }) => {
+      const report = renderMeasureReport(makeResult());
 
       expect(lineContaining(report, "informational")).toBe(expected);
     });

@@ -46,7 +46,7 @@ jobs:
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          pipx install zizmor==1.27.0
+          pipx install zizmor==1.29.0
           echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
 
       - name: Build

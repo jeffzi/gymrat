@@ -1,6 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
   "version": "0.2",
+  "language": "en",
+  "files": ["**/*.{ts,tsx,mts,cts,md}"],
   "words": [
     "benchless",
     "benchstat",
@@ -38,6 +40,9 @@
     "nlink",
     "oxlint",
     "pairable",
+    "reinstall",
+    "reprompt",
+    "reprompts",
     "Pctᵢ",
     "stringifying",
     "sublabel",
@@ -56,5 +61,15 @@
     "yocto"
   ],
   "ignoreRegExpList": ["/\\\\x1b\\[[0-9;]*m/g"],
-  "ignorePaths": [".claude", ".planning", "node_modules", "coverage", "dist"]
+  "ignorePaths": [
+    ".agents",
+    ".claude",
+    ".planning",
+    ".research",
+    "*.tsbuildinfo",
+    "coverage",
+    "dist",
+    "node_modules",
+    "package-lock.json"
+  ]
 }

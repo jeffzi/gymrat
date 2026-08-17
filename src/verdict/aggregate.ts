@@ -136,7 +136,7 @@ export function computeKindAggregates(
         group,
         geomean: geomeanOver(members, verdicts),
       })),
-      gatedGeomean: gating.length > 0 ? geomeanOver(gating, verdicts) : undefined,
+      ...(gating.length > 0 && { gatedGeomean: geomeanOver(gating, verdicts) }),
     };
   });
 }

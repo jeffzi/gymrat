@@ -57,8 +57,7 @@ function buildMeasurementResult(
   for (const [metricName, meta] of Object.entries(measurement.metricMeta)) {
     const stats = computeMetricStats(ownValues(measurement.samples, metricName));
     result.metrics[metricName] = {
-      median: stats.median,
-      spread: stats.spread,
+      ...stats,
       meta,
     };
   }

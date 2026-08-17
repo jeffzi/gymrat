@@ -194,7 +194,11 @@ describe("renderJson", () => {
     ] as const)("serializes unit as $expected when unit is $unit", ({ unit, expected }) => {
       const result = createComparisonResult({
         metrics: {
-          "decode/time": signedRankMetric({ verdict: "improved", delta: -5, unit }),
+          "decode/time": signedRankMetric({
+            verdict: "improved",
+            delta: -5,
+            ...(unit !== undefined && { unit }),
+          }),
         },
       });
 
@@ -353,12 +357,8 @@ describe("renderJson", () => {
         candidates: [createCandidate({ label: "alpha" })],
         metrics: {
           "sparse/time": {
-            baselineMedian: undefined,
-            baselineSpread: undefined,
             candidates: [
               {
-                median: undefined,
-                spread: undefined,
                 verdict: {
                   verdict: "improved",
                   method: "signed-rank",

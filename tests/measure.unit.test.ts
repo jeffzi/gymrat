@@ -119,7 +119,7 @@ describe("measure", () => {
   beforeEach(() => {
     benchOutput.queue = [{ latency: 100 }];
     benchOutput.runs = 0;
-    cleanupStub.result = undefined;
+    delete cleanupStub.result;
   });
 
   describe("when the bench reports metrics over several samples", () => {

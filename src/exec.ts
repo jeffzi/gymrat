@@ -30,9 +30,9 @@ export interface ExecTimeoutError {
 export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   /** Text written to the command's stdin, which is then closed. Omitted means no input at all. */
-  stdin?: string;
+  stdin?: string | undefined;
 }
 
 /** Reported when the child has no exit status of its own: killed, or never started. */

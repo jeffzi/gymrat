@@ -10,8 +10,8 @@ import { metricMeta } from "./comparison-result.js";
  */
 export function measuredMetric(
   options: {
-    median?: number;
-    spread?: number;
+    median?: number | undefined;
+    spread?: number | undefined;
     shortName?: string;
     kind?: string;
     unit?: "ns" | "bytes";
@@ -19,9 +19,11 @@ export function measuredMetric(
   } = {},
 ): MetricMeasurement {
   const { shortName = "time", kind = "other", unit, gating = true } = options;
+  const median = "median" in options ? options.median : 100;
+  const spread = "spread" in options ? options.spread : 1;
   return {
-    median: "median" in options ? options.median : 100,
-    spread: "spread" in options ? options.spread : 1,
+    ...(median !== undefined && { median }),
+    ...(spread !== undefined && { spread }),
     meta: metricMeta(shortName, { kind, unit, gating }),
   };
 }

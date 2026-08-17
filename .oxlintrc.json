@@ -5,6 +5,15 @@
     "perf": "error",
     "suspicious": "error"
   },
+  "ignorePatterns": [
+    ".agents",
+    ".claude",
+    ".planning",
+    ".research",
+    "coverage",
+    "dist",
+    "node_modules"
+  ],
   "overrides": [
     {
       "files": ["src/adapters/types.ts"],
@@ -17,6 +26,7 @@
       "rules": {
         "no-console": "off",
         "no-control-regex": "off",
+        "typescript/no-unsafe-type-assertion": "off",
         "unicorn/consistent-function-scoping": "off"
       }
     }
@@ -29,8 +39,9 @@
     "import/no-cycle": ["error", { "ignoreTypes": true }],
     "import/no-duplicates": "error",
     "import/no-namespace": "error",
+    "import/no-self-import": "error",
     "no-await-in-loop": "off",
-    "no-console": "error",
+    "no-console": "warn",
     "no-constructor-return": "error",
     "no-else-return": ["error", { "allowElseIf": false }],
     "no-empty": "error",
@@ -48,28 +59,42 @@
     ],
     "no-var": "error",
     "prefer-const": "error",
+    "typescript/await-thenable": "error",
     "typescript/ban-ts-comment": ["error", { "ts-expect-error": "allow-with-description" }],
+    "typescript/no-array-delete": "error",
+    "typescript/no-base-to-string": "error",
     "typescript/no-confusing-void-expression": "error",
     "typescript/no-explicit-any": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-for-in-array": "error",
+    "typescript/no-implied-eval": "error",
     "typescript/no-misused-promises": "error",
+    "typescript/no-misused-spread": "error",
+    "typescript/no-redundant-type-constituents": "error",
     "typescript/no-unnecessary-condition": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
     "typescript/no-unsafe-argument": "error",
     "typescript/no-unsafe-assignment": "error",
     "typescript/no-unsafe-call": "error",
     "typescript/no-unsafe-member-access": "error",
     "typescript/no-unsafe-return": "error",
+    "typescript/no-unsafe-type-assertion": "error",
     "typescript/only-throw-error": "error",
     "typescript/prefer-nullish-coalescing": "error",
     "typescript/prefer-promise-reject-errors": "error",
     "typescript/require-await": "error",
     "typescript/restrict-plus-operands": "error",
+    "typescript/restrict-template-expressions": "error",
     "typescript/return-await": ["error", "error-handling-correctness-only"],
     "typescript/switch-exhaustiveness-check": [
       "error",
       { "considerDefaultExhaustiveForUnions": true }
     ],
+    "typescript/unbound-method": "error",
+    "unicorn/no-unnecessary-await": "error",
     "unicorn/no-useless-promise-resolve-reject": "error",
     "unicorn/prefer-node-protocol": "error",
+    "unicorn/prefer-set-has": "error",
     "vitest/expect-expect": ["error", { "assertFunctionNames": ["expect", "expect*", "assert*"] }],
     "vitest/require-mock-type-parameters": "off",
     "vitest/require-to-throw-message": "off"

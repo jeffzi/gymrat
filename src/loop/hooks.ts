@@ -21,7 +21,7 @@ export interface HookInvocation {
   /** Milliseconds before the command is killed. Defaults to {@link HOOK_TIMEOUT_MS}. */
   timeoutMs?: number;
   /** Aborting it kills the hook's process group. Omitted, nothing can interrupt the hook. */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }
 
 /** What one fired hook leaves behind: a line for the log, and a block for the agent. */
