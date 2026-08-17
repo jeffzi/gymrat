@@ -10,6 +10,7 @@ const adapters: ReadonlyMap<string, Adapter> = new Map([
   ["mitata", mitataAdapter],
 ]);
 
+/** Every built-in adapter name, sorted for stable display in errors and prompts. */
 export const adapterNames: readonly string[] = Array.from(adapters.keys()).toSorted();
 
 /**

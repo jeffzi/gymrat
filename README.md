@@ -241,7 +241,7 @@ gymrat doctor --format json
 | `-s, --samples <number>` | `10`            | Paired samples per target                                                                                 |
 | `-t, --timeout <number>` | `1800`          | Timeout in seconds per `prepare`, per bench run, and per `checks` run                                     |
 | `-c, --config <file>`    | `./gymrat.json` | Config file (loaded automatically when present)                                                           |
-| `--format <value>`       | `text`          | Output format: `text` or `json` (`compare` and `measure` only)                                            |
+| `--format <value>`       | `text`          | Output format: `text` or `json` (`compare`, `measure`, and `doctor`)                                      |
 | `--no-color`             | auto            | Print the report without ANSI styles                                                                      |
 | `--verbose`              | off             | `compare` only: name the statistical method behind each verdict                                           |
 | `--fail-on <condition>`  | none            | `compare` only: exit 1 when a condition trips (repeatable; see [Fail-on conditions](#fail-on-conditions)) |

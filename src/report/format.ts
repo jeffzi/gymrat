@@ -284,7 +284,10 @@ export const GEOMEAN_LABEL = "geomean";
  */
 export const GATED_GEOMEAN_LABEL = "gated geomean";
 
-/** Append an `s` to `noun` when `count` is not exactly one. */
+/**
+ * Append an `s` to `noun` when `count` is not exactly one, or use `plural`
+ * in its place when the plural form isn't a simple suffix.
+ */
 export function pluralize(count: number, noun: string, plural?: string): string {
   return `${count} ${count === 1 ? noun : (plural ?? `${noun}s`)}`;
 }

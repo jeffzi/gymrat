@@ -5,12 +5,23 @@ import { adapterNames, getAdapter } from "../adapters/index.js";
 import { CONFIG_DEFAULTS, GEOMEAN_PRIMARY } from "../config.js";
 import { GymratError } from "../errors.js";
 
+/** The runbook filename scaffolded when the wizard creates one without a user-supplied path. */
 export const DEFAULT_RUNBOOK_PATH = "gymrat-runbook.md";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Pre-filled answers and I/O streams for the init wizard.
+ *
+ * Any field left `undefined` is prompted for interactively (unless `yes` is set, in which case
+ * a default is applied instead). `runbook` is tri-state: `false` skips the runbook, `true` writes
+ * it to {@link DEFAULT_RUNBOOK_PATH}, and a string writes it to that path.
+ *
+ * `input`/`output` are the streams the wizard reads prompts from and writes to — pass
+ * `process.stdin`/`process.stdout` in normal operation, or in-memory streams in tests.
+ */
 export interface WizardOptions {
   bench?: string | undefined;
   adapter?: string | undefined;
@@ -25,6 +36,12 @@ export interface WizardOptions {
   output: Writable;
 }
 
+/**
+ * The settled wizard output, consumed by {@link scaffold} to write config and runbook files.
+ *
+ * Unlike {@link WizardOptions}, every field here is resolved: `runbook` is either `false` (skip)
+ * or the concrete `{ path }` to write, with no remaining tri-state ambiguity.
+ */
 export interface WizardResult {
   bench: string;
   adapter?: string;

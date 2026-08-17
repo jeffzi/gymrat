@@ -14,6 +14,7 @@ import type { Check, CheckSection } from "./checks.js";
 const MAX_STDERR_EXCERPT_LINES = 5;
 const MAX_METRIC_NAMES_SHOWN = 5;
 
+/** Inputs for building the benchmark section of the doctor report. */
 export interface BenchSectionInput {
   bench: string | undefined;
   adapter: string;
