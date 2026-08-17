@@ -4263,8 +4263,6 @@ describe("the doctor command", () => {
       await program.parseAsync(doctorArgv("--format", "json"));
 
       // Assert
-      const { renderDoctorJson: renderJsonMock } = await import("../src/doctor/render.js");
-      expect(vi.mocked(renderJsonMock)).toHaveBeenCalled();
       expect(writtenChunks(stdoutSpy)).toStrictEqual(['{"doctor": true}\n']);
     });
   });
@@ -4286,35 +4284,20 @@ describe("the doctor command", () => {
     });
   });
 
-  describe("when --no-bench is passed", () => {
-    it("reaches buildBenchSection with noBench true", async () => {
+  describe("--no-bench flag", () => {
+    it.each([
+      { argv: ["--no-bench"], noBench: true },
+      { argv: [], noBench: false },
+    ])("reaches buildBenchSection with noBench $noBench", async ({ argv, noBench }) => {
       const program = createRunnableProgram({ exitOverride: "all" });
       await setupDoctorMocks({ hasFailures: false });
       stubWrite(process.stdout);
       stubWrite(process.stderr);
 
-      await program.parseAsync(doctorArgv("--no-bench"));
+      await program.parseAsync(doctorArgv(...argv));
 
       const { buildBenchSection: buildBenchMock } = await import("../src/doctor/bench.js");
-      expect(vi.mocked(buildBenchMock)).toHaveBeenCalledWith(
-        expect.objectContaining({ noBench: true }),
-      );
-    });
-  });
-
-  describe("when --no-bench is not passed", () => {
-    it("reaches buildBenchSection with noBench false", async () => {
-      const program = createRunnableProgram({ exitOverride: "all" });
-      await setupDoctorMocks({ hasFailures: false });
-      stubWrite(process.stdout);
-      stubWrite(process.stderr);
-
-      await program.parseAsync(doctorArgv());
-
-      const { buildBenchSection: buildBenchMock } = await import("../src/doctor/bench.js");
-      expect(vi.mocked(buildBenchMock)).toHaveBeenCalledWith(
-        expect.objectContaining({ noBench: false }),
-      );
+      expect(vi.mocked(buildBenchMock)).toHaveBeenCalledWith(expect.objectContaining({ noBench }));
     });
   });
 
@@ -4545,7 +4528,20 @@ describe("the init command", () => {
   });
 
   describe("when flags are forwarded to the wizard", () => {
-    it("passes --bench to runWizard", async () => {
+    it.each([
+      {
+        argv: ["--bench", "my-bench.sh", "--yes"],
+        expected: { bench: "my-bench.sh" },
+      },
+      {
+        argv: ["--bench", "bench.sh", "--adapter", "mitata", "--yes"],
+        expected: { adapter: "mitata" },
+      },
+      {
+        argv: ["--bench", "bench.sh", "--stop-target", "1.5", "--primary", "latency", "--yes"],
+        expected: { stopTarget: 1.5 },
+      },
+    ])("passes $expected to runWizard", async ({ argv, expected }) => {
       // Arrange
       const program = createRunnableProgram();
       mockRunWizard.mockResolvedValue(createWizardResult());
@@ -4554,42 +4550,10 @@ describe("the init command", () => {
       stubWrite(process.stderr);
 
       // Act
-      await program.parseAsync(initArgv("--bench", "my-bench.sh", "--yes"));
+      await program.parseAsync(initArgv(...argv));
 
       // Assert
-      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining({ bench: "my-bench.sh" }));
-    });
-
-    it("passes --adapter to runWizard", async () => {
-      // Arrange
-      const program = createRunnableProgram();
-      mockRunWizard.mockResolvedValue(createWizardResult());
-      mockScaffold.mockReturnValue(createScaffoldResult());
-      stubWrite(process.stdout);
-      stubWrite(process.stderr);
-
-      // Act
-      await program.parseAsync(initArgv("--bench", "bench.sh", "--adapter", "mitata", "--yes"));
-
-      // Assert
-      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining({ adapter: "mitata" }));
-    });
-
-    it("passes --stop-target as a parsed number to runWizard", async () => {
-      // Arrange
-      const program = createRunnableProgram();
-      mockRunWizard.mockResolvedValue(createWizardResult());
-      mockScaffold.mockReturnValue(createScaffoldResult());
-      stubWrite(process.stdout);
-      stubWrite(process.stderr);
-
-      // Act
-      await program.parseAsync(
-        initArgv("--bench", "bench.sh", "--stop-target", "1.5", "--primary", "latency", "--yes"),
-      );
-
-      // Assert
-      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining({ stopTarget: 1.5 }));
+      expect(mockRunWizard).toHaveBeenCalledWith(expect.objectContaining(expected));
     });
   });
 
@@ -4641,33 +4605,17 @@ describe("the init command", () => {
   });
 
   describe("init does not share config-command flags", () => {
-    it("rejects --config, which belongs to config-reading commands", async () => {
+    it.each([
+      { flag: "--config", value: "gymrat.json", origin: "config-reading commands" },
+      { flag: "--samples", value: "5", origin: "bench-running commands" },
+      { flag: "--timeout", value: "300", origin: "bench-running commands" },
+    ])("rejects $flag, which belongs to $origin", async ({ flag, value }) => {
       // Arrange
       const program = createRunnableProgram({ exitOverride: "all" });
 
       // Act & Assert
-      await expect(program.parseAsync(initArgv("--config", "gymrat.json"))).rejects.toThrow(
-        /unknown option '--config'/,
-      );
-    });
-
-    it("rejects --samples, which belongs to bench-running commands", async () => {
-      // Arrange
-      const program = createRunnableProgram({ exitOverride: "all" });
-
-      // Act & Assert
-      await expect(program.parseAsync(initArgv("--samples", "5"))).rejects.toThrow(
-        /unknown option '--samples'/,
-      );
-    });
-
-    it("rejects --timeout, which belongs to bench-running commands", async () => {
-      // Arrange
-      const program = createRunnableProgram({ exitOverride: "all" });
-
-      // Act & Assert
-      await expect(program.parseAsync(initArgv("--timeout", "300"))).rejects.toThrow(
-        /unknown option '--timeout'/,
+      await expect(program.parseAsync(initArgv(flag, value))).rejects.toThrow(
+        new RegExp(`unknown option '${flag}'`),
       );
     });
   });

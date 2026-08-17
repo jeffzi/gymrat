@@ -179,11 +179,11 @@ describe("scaffold", () => {
       );
 
       const content = readFileSync(join(baseDir, "gymrat-runbook.md"), "utf-8");
-      expect(content).toContain("# Optimization Runbook");
-      expect(content).toContain("## Goal");
-      expect(content).toContain("## Gating metrics");
-      expect(content).toContain("## Constraints");
-      expect(content).toContain("## Approaches to try");
+      expect.soft(content).toContain("# Optimization Runbook");
+      expect.soft(content).toContain("## Goal");
+      expect.soft(content).toContain("## Gating metrics");
+      expect.soft(content).toContain("## Constraints");
+      expect.soft(content).toContain("## Approaches to try");
       expect(content).toContain("gymrat supervise");
     });
   });

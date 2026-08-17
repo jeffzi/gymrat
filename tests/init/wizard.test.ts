@@ -67,6 +67,16 @@ function interactiveOptions(lines: string[], overrides?: Partial<WizardOptions>)
   };
 }
 
+/**
+ * Inject a value of the wrong runtime type into a typed field, simulating
+ * Commander passing raw, unconverted CLI input (e.g. a string where a number
+ * is expected).
+ */
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- single documented cast, intentional invalid-input injection
+function asRawInput(value: unknown): number {
+  return value as number;
+}
+
 // ---------------------------------------------------------------------------
 // runWizard — non-interactive mode
 // ---------------------------------------------------------------------------
@@ -127,8 +137,7 @@ describe("runWizard", () => {
           runWizard(
             nonInteractiveOptions({
               bench: "npm run bench",
-              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- simulates Commander passing raw CLI input without coercion
-              stopTarget: "abc" as unknown as number,
+              stopTarget: asRawInput("abc"),
             }),
           ),
         ).rejects.toThrow();
@@ -207,8 +216,7 @@ describe("runWizard", () => {
         const result = await runWizard(
           nonInteractiveOptions({
             bench: "npm run bench",
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- simulates Commander passing boolean flag as string
-            runbook: true as unknown as string,
+            runbook: true,
           }),
         );
 
