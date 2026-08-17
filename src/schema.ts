@@ -95,6 +95,7 @@ export function describeKey(path: string): string {
 export interface Validator<T extends TSchema> {
   check: (value: unknown) => value is Static<T>;
   firstIssue: (value: unknown) => SchemaIssue | undefined;
+  issues: (value: unknown) => SchemaIssue[];
 }
 
 /**
@@ -110,6 +111,12 @@ function toDottedPath(pointer: string): string {
     .split("/")
     .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"))
     .join(".");
+}
+
+/** Whether `other` names a location nested inside `issue`'s — a more specific failure. */
+function isMoreSpecificThan(other: SchemaIssue, issue: SchemaIssue): boolean {
+  if (issue.path === "") return other.path !== "";
+  return other.path.startsWith(issue.path + ".");
 }
 
 function toIssue(error: ValueError): SchemaIssue {
@@ -137,6 +144,12 @@ export function compile<T extends TSchema>(schema: T): Validator<T> {
     firstIssue: (value: unknown): SchemaIssue | undefined => {
       const error = compiled.Errors(value).First();
       return error === undefined ? undefined : toIssue(error);
+    },
+    issues: (value: unknown): SchemaIssue[] => {
+      const all = [...compiled.Errors(value)].map(toIssue);
+      return all.filter(
+        (issue) => !all.some((other) => other !== issue && isMoreSpecificThan(other, issue)),
+      );
     },
   };
 }

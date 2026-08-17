@@ -210,6 +210,85 @@ describe("Validator.firstIssue", () => {
   });
 });
 
+describe("Validator.issues", () => {
+  describe("when the value satisfies the schema", () => {
+    it("returns an empty array", () => {
+      const validator = compile(benchSchema);
+
+      const issues = validator.issues({ bench: "my-bench" });
+
+      expect(issues).toStrictEqual([]);
+    });
+  });
+
+  describe("when several fields fail independently", () => {
+    it("returns an issue for every failing field", () => {
+      const schema = Type.Object({ bench: Type.String(), adapter: Type.String() });
+      const validator = compile(schema);
+
+      const issues = validator.issues({ bench: 1, adapter: 2 });
+
+      const paths = issues.map((i) => i.path).toSorted();
+      expect(paths).toStrictEqual(["adapter", "bench"]);
+    });
+  });
+
+  describe("when failures are nested inside a container", () => {
+    it("drops container-level issues whose path is a strict prefix of a deeper issue", () => {
+      const schema = Type.Object({
+        metrics: Type.Object({ latency: Type.String(), throughput: Type.Number() }),
+      });
+      const validator = compile(schema);
+
+      const issues = validator.issues({ metrics: { latency: 1, throughput: "x" } });
+      const paths = issues.map((i) => i.path);
+
+      // Only deepest paths survive — no path in the result is a strict prefix of another
+      for (const a of paths) {
+        for (const b of paths) {
+          if (a === b) continue;
+          const aIsPrefix = a === "" ? b !== "" : b.startsWith(a + ".");
+          expect(
+            aIsPrefix,
+            `"${a}" is a strict prefix of "${b}" — deduplication should have removed it`,
+          ).toBe(false);
+        }
+      }
+      // The leaf-level issues are present
+      expect(paths).toContain("metrics.latency");
+      expect(paths).toContain("metrics.throughput");
+    });
+  });
+
+  describe("when each issue is examined", () => {
+    it("carries the same shape as firstIssue", () => {
+      const validator = compile(benchSchema);
+
+      const issues = validator.issues({ bench: 42 });
+
+      expect(issues).toHaveLength(1);
+      const issue = issues[0]!;
+      expect(issue).toStrictEqual(
+        expect.objectContaining({
+          path: "bench",
+          kind: "invalid-value",
+          value: 42,
+        }),
+      );
+      expect(issue.expected).toBeTypeOf("string");
+      expect(issue.error).toBeDefined();
+    });
+  });
+
+  describe("return type", () => {
+    it("is SchemaIssue[]", () => {
+      const validator = compile(benchSchema);
+
+      expectTypeOf(validator.issues).returns.toEqualTypeOf<SchemaIssue[]>();
+    });
+  });
+});
+
 describe("parse", () => {
   describe("when the value satisfies the schema", () => {
     it("returns the caller's own object typed as the schema's static type", () => {
