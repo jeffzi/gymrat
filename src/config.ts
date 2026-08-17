@@ -109,6 +109,7 @@ const configFileSchema = Type.Object(
   strictObjectOptions,
 );
 
+/** Validator compiled from the config-file schema; used to check a scaffolded or loaded config file. */
 export const configFileValidator = compile(configFileSchema);
 
 /** The shape of `gymrat.json` after schema validation — every field optional, since CLI flags can supply any of them. */
@@ -432,12 +433,30 @@ function envPositiveIntResult(envVar: string, max?: number): { value?: number; p
   return { value: n };
 }
 
-/** Throwing wrapper around {@link envPositiveIntResult}. */
-function readEnvPositiveInt(envVar: string, max?: number): number | undefined {
-  const { value, problem } = envPositiveIntResult(envVar, max);
-  if (problem !== undefined) throw new GymratError(problem);
-  return value;
-}
+/** One `GYMRAT_*` string field's association between its `CliFlags` key, env var name, and reader. */
+const STRING_ENV_FIELDS: readonly {
+  field: "bench" | "prepare" | "adapter";
+  envVar: string;
+  reader: (envVar: string) => { value?: string; problem?: string };
+}[] = [
+  { field: "bench", envVar: "GYMRAT_BENCH", reader: envStringResult },
+  { field: "prepare", envVar: "GYMRAT_PREPARE", reader: envStringResult },
+  { field: "adapter", envVar: "GYMRAT_ADAPTER", reader: envStringResult },
+];
+
+/** One `GYMRAT_*` numeric field's association between its `CliFlags` key, env var name, and reader. */
+const NUMBER_ENV_FIELDS: readonly {
+  field: "samples" | "timeout";
+  envVar: string;
+  reader: (envVar: string) => { value?: number; problem?: string };
+}[] = [
+  { field: "samples", envVar: "GYMRAT_SAMPLES", reader: envPositiveIntResult },
+  {
+    field: "timeout",
+    envVar: "GYMRAT_TIMEOUT",
+    reader: (n) => envPositiveIntResult(n, MAX_TIMEOUT_SECONDS),
+  },
+];
 
 /**
  * Read `GYMRAT_*` environment variables for fields whose CLI flag is absent.
@@ -449,15 +468,20 @@ function readEnvPositiveInt(envVar: string, max?: number): number | undefined {
  */
 function readEnvFlags(flags: CliFlags): CliFlags {
   const result: CliFlags = {};
-  if (flags.bench === undefined) assignDefined(result, "bench", readEnvString("GYMRAT_BENCH"));
-  if (flags.prepare === undefined)
-    assignDefined(result, "prepare", readEnvString("GYMRAT_PREPARE"));
-  if (flags.adapter === undefined)
-    assignDefined(result, "adapter", readEnvString("GYMRAT_ADAPTER"));
-  if (flags.samples === undefined)
-    assignDefined(result, "samples", readEnvPositiveInt("GYMRAT_SAMPLES"));
-  if (flags.timeout === undefined)
-    assignDefined(result, "timeout", readEnvPositiveInt("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS));
+  for (const { field, envVar, reader } of STRING_ENV_FIELDS) {
+    if (flags[field] === undefined) {
+      const { value, problem } = reader(envVar);
+      if (problem !== undefined) throw new GymratError(problem);
+      assignDefined(result, field, value);
+    }
+  }
+  for (const { field, envVar, reader } of NUMBER_ENV_FIELDS) {
+    if (flags[field] === undefined) {
+      const { value, problem } = reader(envVar);
+      if (problem !== undefined) throw new GymratError(problem);
+      assignDefined(result, field, value);
+    }
+  }
   return result;
 }
 
@@ -478,28 +502,16 @@ function collectOneEnv<T>(
 function collectEnvFlags(flags: CliFlags): { flags: CliFlags; problems: string[] } {
   const problems: string[] = [];
   const result: CliFlags = {};
-  if (flags.bench === undefined)
-    assignDefined(result, "bench", collectOneEnv("GYMRAT_BENCH", envStringResult, problems));
-  if (flags.prepare === undefined)
-    assignDefined(result, "prepare", collectOneEnv("GYMRAT_PREPARE", envStringResult, problems));
-  if (flags.adapter === undefined)
-    assignDefined(result, "adapter", collectOneEnv("GYMRAT_ADAPTER", envStringResult, problems));
-  if (flags.samples === undefined)
-    assignDefined(
-      result,
-      "samples",
-      collectOneEnv("GYMRAT_SAMPLES", envPositiveIntResult, problems),
-    );
-  if (flags.timeout === undefined)
-    assignDefined(
-      result,
-      "timeout",
-      collectOneEnv(
-        "GYMRAT_TIMEOUT",
-        (n) => envPositiveIntResult(n, MAX_TIMEOUT_SECONDS),
-        problems,
-      ),
-    );
+  for (const { field, envVar, reader } of STRING_ENV_FIELDS) {
+    if (flags[field] === undefined) {
+      assignDefined(result, field, collectOneEnv(envVar, reader, problems));
+    }
+  }
+  for (const { field, envVar, reader } of NUMBER_ENV_FIELDS) {
+    if (flags[field] === undefined) {
+      assignDefined(result, field, collectOneEnv(envVar, reader, problems));
+    }
+  }
   return { flags: result, problems };
 }
 
@@ -685,9 +697,8 @@ function resolveConfigSource(
     envConfigPath = r.value;
   }
 
-  const explicitConfig =
-    (flags.config !== undefined && flags.config !== "" ? flags.config : undefined) ?? envConfigPath;
-  const skipLoading = (flags.config !== undefined && flags.config === "") || envConfigFailed;
+  const explicitConfig = (flags.config !== "" ? flags.config : undefined) ?? envConfigPath;
+  const skipLoading = flags.config === "" || envConfigFailed;
 
   if (skipLoading) {
     return { configPath: undefined, configExists: false, configFile: {}, problems };

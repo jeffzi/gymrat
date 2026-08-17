@@ -4,7 +4,6 @@ import { dirname, join, resolve } from "node:path";
 import { readBundledSkill } from "../bundled-skill.js";
 import {
   CONFIG_FILENAME,
-  type ConfigStop,
   configFileValidator,
   GEOMEAN_PRIMARY,
   loopKeyProblems,
@@ -16,8 +15,10 @@ import { DEFAULT_RUNBOOK_PATH, type WizardResult } from "./wizard.js";
 // Types
 // ---------------------------------------------------------------------------
 
+/** The outcome of writing one scaffold artifact: newly written, already present, or user-declined. */
 export type ArtifactStatus = "created" | "exists" | "declined";
 
+/** The return shape of {@link scaffold}: one entry per artifact it may write. */
 export interface ScaffoldResult {
   config: { path: string; status: "created" };
   runbook: { path: string; status: ArtifactStatus };
@@ -28,6 +29,7 @@ export interface ScaffoldResult {
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Path, relative to the project root, where init writes and doctor checks for the skill file. */
 export const SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md";
 
 const RUNBOOK_STUB = `# Optimization Runbook
@@ -91,24 +93,15 @@ function buildConfig(wizardResult: WizardResult): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 function validateConfig(config: Record<string, unknown>): void {
-  const issue = configFileValidator.firstIssue(config);
-  if (issue !== undefined) {
+  if (!configFileValidator.check(config)) {
+    const issue = configFileValidator.firstIssue(config)!;
     throw new GymratError(`Invalid config: ${issue.path} must be ${issue.expected}`);
   }
 
-  const primary = typeof config.primary === "string" ? config.primary : GEOMEAN_PRIMARY;
-  const rawStop = config.stop;
-  let stop: ConfigStop | undefined;
-  if (rawStop != null && typeof rawStop === "object" && !Array.isArray(rawStop)) {
-    stop = {};
-    if ("targetValue" in rawStop && typeof rawStop.targetValue === "number") {
-      stop.targetValue = rawStop.targetValue;
-    }
-    if ("maxIterations" in rawStop && typeof rawStop.maxIterations === "number") {
-      stop.maxIterations = rawStop.maxIterations;
-    }
-  }
-  const problems = loopKeyProblems({ primary, ...(stop !== undefined && { stop }) });
+  const problems = loopKeyProblems({
+    primary: config.primary ?? GEOMEAN_PRIMARY,
+    ...(config.stop !== undefined && { stop: config.stop }),
+  });
   if (problems.length > 0) {
     throw new GymratError(problems[0]!);
   }
