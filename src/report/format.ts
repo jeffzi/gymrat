@@ -285,8 +285,8 @@ export const GEOMEAN_LABEL = "geomean";
 export const GATED_GEOMEAN_LABEL = "gated geomean";
 
 /** Append an `s` to `noun` when `count` is not exactly one. */
-export function pluralize(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+export function pluralize(count: number, noun: string, plural?: string): string {
+  return `${count} ${count === 1 ? noun : (plural ?? `${noun}s`)}`;
 }
 
 /**
@@ -634,6 +634,18 @@ export type Style = Parameters<typeof styleText>[0];
  */
 export function formatLabel(label: string, style: Style, stream?: NodeJS.WriteStream): string {
   return stream !== undefined ? styleText(style, label, { stream }) : styleText(style, label);
+}
+
+/**
+ * Replace every `` `...` `` span in `text` with its content styled yellow.
+ *
+ * Backticks are stripped regardless of whether color is active, so callers can
+ * embed backtick-marked command names in user-facing strings and let the render
+ * layer decide how to present them. When `stream` is provided, `styleText`
+ * targets that stream's TTY/color detection (same semantics as {@link formatLabel}).
+ */
+export function highlightInlineCode(text: string, stream?: NodeJS.WriteStream): string {
+  return text.replace(/`([^`]+)`/g, (_match, code: string) => formatLabel(code, "yellow", stream));
 }
 
 /** Set `name`, or unset it when `value` is `undefined` — assigning `undefined` would store the string. */

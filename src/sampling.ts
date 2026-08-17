@@ -4,7 +4,7 @@ import { AdapterError } from "./adapters/index.js";
 import type { Adapter, WarnSink } from "./adapters/types.js";
 import type { ConfigKinds, ConfigMetrics, ResolvedMetricMeta } from "./config.js";
 import { resolveMetricMeta } from "./config.js";
-import { GymratError, messageOf } from "./errors.js";
+import { GymratError, hintOf, messageOf } from "./errors.js";
 import { exec } from "./exec.js";
 import type { ExecResult, ExecTimeoutError } from "./exec.js";
 import { computeHalfRange, computeMedian } from "./math.js";
@@ -42,7 +42,7 @@ export interface CommandErrorContext {
   command: string;
   target: Target;
   dir: string;
-  sample?: number;
+  sample?: number | undefined;
 }
 
 /** The header line naming the command, its verb, and where it ran. */
@@ -161,12 +161,12 @@ export interface TargetSamples {
 export interface SamplingOptions {
   /** Run through the shell in each target's directory. */
   bench: string;
-  prepare?: string;
+  prepare?: string | undefined;
   /** How many rounds to run; each round runs `bench` once per target. */
   samples: number;
   timeoutSeconds: number;
   /** Fire-and-forget callback invoked at the start of each prepare or sample step. */
-  onProgress?: (step: ProgressStep) => void;
+  onProgress?: ((step: ProgressStep) => void) | undefined;
   /**
    * Where the adapter's complaints about unreadable bench output go. Omitted,
    * the adapter falls back to stderr.
@@ -186,8 +186,8 @@ export interface SamplingOptions {
 export interface RunOptions extends SamplingOptions {
   /** Which output format `bench` writes: `"metric-lines"` or `"mitata"`. */
   adapter: string;
-  configMetrics?: ConfigMetrics;
-  configKinds?: ConfigKinds;
+  configMetrics?: ConfigMetrics | undefined;
+  configKinds?: ConfigKinds | undefined;
 }
 
 /**
@@ -204,7 +204,12 @@ async function runCommand(
   signal: AbortSignal,
   sample?: number,
 ): Promise<string> {
-  const context: CommandErrorContext = { ...ctx, phase, command, sample };
+  const context: CommandErrorContext = {
+    ...ctx,
+    phase,
+    command,
+    sample,
+  };
 
   const result = await exec(command, { cwd: ctx.dir, timeoutMs, signal });
 
@@ -313,14 +318,15 @@ function computeSpread(values: readonly number[], median: number): number | unde
 
 /** A side's median and spread over the given values, or both undefined when there are none. */
 export function computeMetricStats(values: readonly number[]): {
-  median?: number;
-  spread?: number;
+  median?: number | undefined;
+  spread?: number | undefined;
 } {
   if (values.length === 0) {
     return {};
   }
   const median = computeMedian(values);
-  return { median, spread: computeSpread(values, median) };
+  const spread = computeSpread(values, median);
+  return { median, spread };
 }
 
 /** Every value a side reported for a metric, regardless of what the other side has. */
@@ -398,7 +404,7 @@ function withCleanupFailures(
 
   const combinedMessage = [messageOf(error), "", "cleanup did not finish:", ...details].join("\n");
 
-  const hint = error instanceof GymratError ? error.hint : undefined;
+  const hint = hintOf(error);
 
   return error instanceof AdapterError
     ? new AdapterError(combinedMessage, hint, { cause: error })

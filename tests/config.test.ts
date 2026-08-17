@@ -8,14 +8,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Adapter } from "../src/adapters/types.js";
 import type { BenchlessConfig, CliFlags, ResolvedConfig } from "../src/config.js";
 import {
+  inspectConfig,
   loadConfigFile,
   resolveBenchlessConfig,
   resolveConfig,
   resolveMetricMeta,
 } from "../src/config.js";
 import { GymratError } from "../src/errors.js";
+import { createMockAdapter as createMockAdapterBase } from "./fixtures/adapter.js";
 import { metricMeta } from "./fixtures/comparison-result.js";
 import { metricRecord } from "./fixtures/metrics.js";
+import { freshRoot } from "./fixtures/scratch-repo.js";
 
 /** Byte-order mark that editors on Windows prepend to UTF-8 files: `EF BB BF`. */
 const UTF8_BOM = "\u{FEFF}";
@@ -51,12 +54,8 @@ const LINE_BREAKS = [
   { description: "a paragraph separator", char: "\u{2029}" },
 ];
 
-function createTmpDir(prefix = "gymrat-"): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
-
 function writeRawConfigFile(content: string): { dir: string; configPath: string } {
-  const dir = createTmpDir();
+  const dir = freshRoot("gymrat-");
   const configPath = path.join(dir, "gymrat.json");
   fs.writeFileSync(configPath, content);
   return { dir, configPath };
@@ -77,11 +76,7 @@ function restoreCwdAfterEach(): void {
 function createMockAdapter(
   defaults: Adapter["defaults"] = () => ({ direction: "lower" as const }),
 ): Adapter {
-  return {
-    name: "test-adapter",
-    parse: () => ({}),
-    defaults,
-  };
+  return createMockAdapterBase({ name: "test-adapter", defaults });
 }
 
 describe("loadConfigFile", () => {
@@ -110,7 +105,7 @@ describe("loadConfigFile", () => {
     it.each([{ options: undefined }, { options: { required: true } }])(
       "throws a GymratError naming the path (options: $options)",
       ({ options }) => {
-        const dir = createTmpDir();
+        const dir = freshRoot("gymrat-");
 
         expect(() => loadConfigFile(dir, options)).toThrow(GymratError);
         expect(() => loadConfigFile(dir, options)).toThrow(dir);
@@ -612,7 +607,7 @@ describe("resolveConfig", () => {
   describe("when flags and config are empty", () => {
     it("returns defaults for adapter, samples, timeoutSeconds, unstableNoisePct, primary, and no hooks", () => {
       // resolveConfig falls back to ./gymrat.json, so run from a dir that has none
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
 
       const result = resolveConfig({ bench: "my-bench" });
@@ -673,7 +668,7 @@ describe("resolveConfig", () => {
 
   describe("when flags provide values and no config", () => {
     it("uses flag values over defaults", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
 
       const result = resolveConfig({
@@ -708,7 +703,7 @@ describe("resolveConfig", () => {
 
   describe("when prepare is provided", () => {
     it("includes prepare in resolved config", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
 
       const result = resolveConfig({
@@ -727,7 +722,7 @@ describe("resolveConfig", () => {
       { key: "adapter", flags: { bench: "my-bench", adapter: "" } },
       { key: "config", flags: { bench: "my-bench", config: "" } },
     ])("throws naming --$key and the non-empty requirement", ({ key, flags }) => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       const act = (): ResolvedConfig => resolveConfig(flags);
 
@@ -739,7 +734,7 @@ describe("resolveConfig", () => {
 
   describe("when config file path is specified", () => {
     it("loads config from the specified path", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       const customConfigPath = path.join(tmpdir, "custom-config.json");
       fs.writeFileSync(customConfigPath, JSON.stringify({ bench: "custom-bench" }));
 
@@ -751,7 +746,7 @@ describe("resolveConfig", () => {
 
   describe("when the specified config file path does not exist", () => {
     it("throws an error naming the missing path instead of falling back to defaults", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       const missingConfigPath = path.join(tmpdir, "typo.json");
 
       expect(() => resolveConfig({ bench: "my-bench", config: missingConfigPath })).toThrow(
@@ -933,7 +928,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
         expected: 900,
       },
     ])("uses $envVar as $field", ({ envVar, envValue, flags, field, expected }) => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       vi.stubEnv(envVar, envValue);
 
@@ -1000,7 +995,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
       { envVar: "GYMRAT_PREPARE", flags: { bench: "b" } },
       { envVar: "GYMRAT_ADAPTER", flags: { bench: "b" } },
     ])("throws a GymratError naming $envVar", ({ envVar, flags }) => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       vi.stubEnv(envVar, "");
       const act = (): ResolvedConfig => resolveConfig(flags);
@@ -1018,7 +1013,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
       { description: "a negative number", value: "-1" },
       { description: "an empty string", value: "" },
     ])("throws a GymratError naming GYMRAT_SAMPLES when it is $description", ({ value }) => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       vi.stubEnv("GYMRAT_SAMPLES", value);
       const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
@@ -1036,7 +1031,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
       { description: "a negative number", value: "-1" },
       { description: "an empty string", value: "" },
     ])("throws a GymratError naming GYMRAT_TIMEOUT when it is $description", ({ value }) => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       vi.stubEnv("GYMRAT_TIMEOUT", value);
       const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
@@ -1048,7 +1043,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
 
   describe("when GYMRAT_TIMEOUT exceeds the millisecond timer cap", () => {
     it("throws a GymratError naming GYMRAT_TIMEOUT and the cap", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       vi.stubEnv("GYMRAT_TIMEOUT", "2147484");
       const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
@@ -1061,7 +1056,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
 
   describe("when GYMRAT_CONFIG names an existing config file and --config is absent", () => {
     it("loads config from the env-specified path", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       const envConfigPath = path.join(tmpdir, "env-config.json");
       fs.writeFileSync(envConfigPath, JSON.stringify({ bench: "env-config-bench" }));
@@ -1075,7 +1070,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
 
   describe("when GYMRAT_CONFIG names a file that does not exist", () => {
     it("throws an error naming the missing path", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       const missingPath = path.join(tmpdir, "typo.json");
       vi.stubEnv("GYMRAT_CONFIG", missingPath);
@@ -1102,7 +1097,7 @@ describe("resolveConfig, GYMRAT_* environment variables", () => {
 
   describe("when GYMRAT_CONFIG holds an empty string", () => {
     it("throws a GymratError naming GYMRAT_CONFIG", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       vi.stubEnv("GYMRAT_CONFIG", "");
       const act = (): ResolvedConfig => resolveConfig({ bench: "my-bench" });
@@ -1119,7 +1114,7 @@ describe("resolveBenchlessConfig", () => {
 
   describe("when the config flag holds an empty string", () => {
     it("throws naming --config and the non-empty requirement", () => {
-      tmpdir = createTmpDir();
+      tmpdir = freshRoot("gymrat-");
       process.chdir(tmpdir);
       const act = (): BenchlessConfig => resolveBenchlessConfig({ config: "" });
 
@@ -1156,7 +1151,7 @@ describe.each(CONFIG_RESOLVERS)("$name, given a base directory", ({ resolve }) =
     baseConfig: Record<string, unknown>,
     nestedConfig: Record<string, unknown>,
   ): { baseDir: string; nestedDir: string } {
-    const baseDir = createTmpDir();
+    const baseDir = freshRoot("gymrat-");
     const nestedDir = path.join(baseDir, "packages", "core");
     fs.mkdirSync(nestedDir, { recursive: true });
     fs.writeFileSync(path.join(baseDir, "gymrat.json"), JSON.stringify(baseConfig));
@@ -1261,7 +1256,7 @@ describe.each(CONFIG_RESOLVERS)("$name, implicit lookup in a git repository", ({
 
   describe("when no baseDir is passed and the cwd is inside a git repository", () => {
     it("finds gymrat.json at the repository root, not the cwd", () => {
-      const repoRoot = createTmpDir("gymrat-repo-");
+      const repoRoot = freshRoot("gymrat-repo-");
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(
         path.join(repoRoot, "gymrat.json"),
@@ -1489,6 +1484,391 @@ describe("resolveMetricMeta", () => {
           "bench-a/rss": metricMeta("rss", { kind: "memory", gating: false }),
         }),
       );
+    });
+  });
+});
+
+describe("inspectConfig", () => {
+  let tmpdir: string;
+  restoreCwdAfterEach();
+
+  describe("when no config file exists and flags are empty", () => {
+    it("returns all defaults with no problems, no bench, and no config path", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect(result).toStrictEqual({
+        configPath: undefined,
+        configExists: false,
+        problems: [],
+        config: {
+          adapter: "metric-lines",
+          samples: 10,
+          timeoutSeconds: 1800,
+          unstableNoisePct: 200,
+          primary: "geomean",
+        },
+      });
+    });
+  });
+
+  describe("when flags provide bench and no config file exists", () => {
+    it("includes bench alongside the default settled config", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({ bench: "flag-bench" });
+
+      expect.soft(result.problems).toStrictEqual([]);
+      expect.soft(result.config).toStrictEqual({
+        adapter: "metric-lines",
+        samples: 10,
+        timeoutSeconds: 1800,
+        unstableNoisePct: 200,
+        primary: "geomean",
+      });
+      expect(result.bench).toBe("flag-bench");
+    });
+  });
+
+  describe("when a valid config file provides values and bench", () => {
+    it("returns the settled config with bench and the config path", () => {
+      const fileConfig = {
+        bench: "config-bench",
+        adapter: "custom-adapter",
+        samples: 20,
+        timeoutSeconds: 3600,
+        unstableNoisePct: 150.5,
+      };
+      tmpdir = createConfigFile(fileConfig).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect.soft(result.configPath).toBe(path.join(tmpdir, "gymrat.json"));
+      expect.soft(result.configExists).toBe(true);
+      expect.soft(result.problems).toStrictEqual([]);
+      expect.soft(result.config).toStrictEqual({
+        adapter: "custom-adapter",
+        samples: 20,
+        timeoutSeconds: 3600,
+        unstableNoisePct: 150.5,
+        primary: "geomean",
+      });
+      expect(result.bench).toBe("config-bench");
+    });
+  });
+
+  describe("when flags override config file values", () => {
+    it("uses flag values in the settled config", () => {
+      tmpdir = createConfigFile({
+        bench: "config-bench",
+        adapter: "config-adapter",
+        samples: 20,
+      }).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({ bench: "flag-bench", adapter: "flag-adapter" });
+
+      expect.soft(result.problems).toStrictEqual([]);
+      expect.soft(result.config?.adapter).toBe("flag-adapter");
+      expect.soft(result.config?.samples).toBe(20);
+      expect(result.bench).toBe("flag-bench");
+    });
+  });
+
+  describe("when the config file has loop keys", () => {
+    it("includes them in the settled config", () => {
+      tmpdir = createConfigFile({ bench: "config-bench", ...LOOP_CONFIG }).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect.soft(result.problems).toStrictEqual([]);
+      expect.soft(result.config).toStrictEqual({
+        adapter: "metric-lines",
+        samples: 10,
+        timeoutSeconds: 1800,
+        unstableNoisePct: 200,
+        ...LOOP_CONFIG,
+      });
+      expect(result.bench).toBe("config-bench");
+    });
+  });
+
+  describe("when the config file names a runbook that exists", () => {
+    it("resolves the runbook path in the settled config", () => {
+      tmpdir = createConfigFile({ bench: "config-bench", runbook: "RUNBOOK.md" }).dir;
+      fs.writeFileSync(path.join(tmpdir, "RUNBOOK.md"), "# Steps\n");
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect.soft(result.problems).toStrictEqual([]);
+      expect(result.config?.runbook).toBe(path.join(tmpdir, "RUNBOOK.md"));
+    });
+  });
+
+  describe("when --config names a path that does not exist", () => {
+    it("reports a problem naming the missing path and omits the settled config", () => {
+      tmpdir = freshRoot("gymrat-");
+      const missingPath = path.join(tmpdir, "typo.json");
+
+      const result = inspectConfig({ bench: "my-bench", config: missingPath });
+
+      expect.soft(result.configPath).toBe(missingPath);
+      expect.soft(result.configExists).toBe(false);
+      expect
+        .soft(result.problems)
+        .toEqual(expect.arrayContaining([expect.stringContaining(missingPath)]));
+      expect(result).not.toHaveProperty("config");
+    });
+  });
+
+  describe("when the config file contains invalid JSON", () => {
+    it("reports a problem that includes the file path", () => {
+      const { dir, configPath } = writeRawConfigFile("{ invalid json }");
+      process.chdir(dir);
+
+      const result = inspectConfig({});
+
+      expect.soft(result.configPath).toBe(configPath);
+      expect.soft(result.configExists).toBe(true);
+      expect
+        .soft(result.problems)
+        .toEqual(expect.arrayContaining([expect.stringContaining(configPath)]));
+      expect(result).not.toHaveProperty("config");
+    });
+  });
+
+  describe("when the config file JSON root is not an object", () => {
+    it("reports a problem mentioning JSON object", () => {
+      const { dir } = writeRawConfigFile("[]");
+      process.chdir(dir);
+
+      const result = inspectConfig({});
+
+      expect
+        .soft(result.problems)
+        .toEqual(expect.arrayContaining([expect.stringMatching(/JSON object/)]));
+      expect(result).not.toHaveProperty("config");
+    });
+  });
+
+  describe("when the config file has multiple schema issues", () => {
+    it("collects all issues instead of stopping at the first", () => {
+      tmpdir = createConfigFile({
+        bench: 42,
+        samples: "bad",
+        adapter: 123,
+      }).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect(result.problems.length).toBeGreaterThanOrEqual(3);
+      expect(result.problems).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/bench/),
+          expect.stringMatching(/samples/),
+          expect.stringMatching(/adapter/),
+        ]),
+      );
+      expect(result).not.toHaveProperty("config");
+    });
+  });
+
+  describe("when filter omits the {names} placeholder", () => {
+    it("reports a problem naming filter and the required placeholder", () => {
+      tmpdir = createConfigFile({
+        bench: "config-bench",
+        filter: "npm run bench",
+      }).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringMatching(/filter.*\{names\}/)]),
+      );
+    });
+  });
+
+  describe("when stop.targetValue is combined with a geomean primary", () => {
+    it("reports a problem naming targetValue and geomean", () => {
+      tmpdir = createConfigFile({
+        bench: "config-bench",
+        stop: { targetValue: 1.5 },
+      }).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/targetValue.*geomean|geomean.*targetValue/),
+        ]),
+      );
+    });
+  });
+
+  describe("when the runbook path does not resolve to an existing file", () => {
+    it("reports a problem naming the field and the path", () => {
+      tmpdir = createConfigFile({
+        bench: "config-bench",
+        runbook: "missing.md",
+      }).dir;
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({});
+
+      expect
+        .soft(result.problems)
+        .toEqual(expect.arrayContaining([expect.stringMatching(/runbook/)]));
+      expect(result.problems.join("\n")).toMatch(/missing\.md/);
+    });
+  });
+
+  describe("when a flag holds an empty string", () => {
+    it.each([
+      { key: "bench", flags: { bench: "" } },
+      { key: "prepare", flags: { bench: "my-bench", prepare: "" } },
+      { key: "adapter", flags: { bench: "my-bench", adapter: "" } },
+      { key: "config", flags: { bench: "my-bench", config: "" } },
+    ])("reports a problem naming --$key", ({ key, flags }) => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+
+      const result = inspectConfig(flags);
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringMatching(new RegExp(`--${key}.*non-empty`))]),
+      );
+    });
+  });
+
+  describe("when multiple flags hold empty strings", () => {
+    it("collects all empty-string problems", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({ bench: "", adapter: "" });
+
+      expect(result.problems.length).toBeGreaterThanOrEqual(2);
+      expect(result.problems).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/--bench.*non-empty/),
+          expect.stringMatching(/--adapter.*non-empty/),
+        ]),
+      );
+    });
+  });
+
+  describe("when a base directory is provided", () => {
+    it("reads the base directory's gymrat.json instead of the cwd's", () => {
+      const baseDir = freshRoot("gymrat-");
+      fs.writeFileSync(
+        path.join(baseDir, "gymrat.json"),
+        JSON.stringify({ bench: "base-bench", checks: "base-checks" }),
+      );
+      tmpdir = freshRoot("gymrat-");
+      fs.writeFileSync(
+        path.join(tmpdir, "gymrat.json"),
+        JSON.stringify({ bench: "cwd-bench", checks: "cwd-checks" }),
+      );
+      process.chdir(tmpdir);
+
+      const result = inspectConfig({}, baseDir);
+
+      expect.soft(result.bench).toBe("base-bench");
+      expect(result.configPath).toBe(path.join(baseDir, "gymrat.json"));
+    });
+  });
+});
+
+describe("inspectConfig, GYMRAT_* environment variables", () => {
+  let tmpdir: string;
+  restoreCwdAfterEach();
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("when a string GYMRAT_* env var holds an empty string", () => {
+    it.each([
+      { envVar: "GYMRAT_BENCH", flags: {} },
+      { envVar: "GYMRAT_PREPARE", flags: { bench: "b" } },
+      { envVar: "GYMRAT_ADAPTER", flags: { bench: "b" } },
+      { envVar: "GYMRAT_CONFIG", flags: { bench: "b" } },
+    ])("reports a problem naming $envVar", ({ envVar, flags }) => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+      vi.stubEnv(envVar, "");
+
+      const result = inspectConfig(flags);
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringMatching(new RegExp(`${envVar}.*non-empty`))]),
+      );
+    });
+  });
+
+  describe("when GYMRAT_CONFIG names a file that does not exist", () => {
+    it("reports a problem naming the missing path", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+      const missingPath = path.join(tmpdir, "typo.json");
+      vi.stubEnv("GYMRAT_CONFIG", missingPath);
+
+      const result = inspectConfig({ bench: "my-bench" });
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringContaining(missingPath)]),
+      );
+    });
+  });
+
+  describe("when GYMRAT_SAMPLES holds an invalid value", () => {
+    it("reports a problem naming GYMRAT_SAMPLES", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_SAMPLES", "abc");
+
+      const result = inspectConfig({ bench: "my-bench" });
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringMatching(/GYMRAT_SAMPLES.*positive integer/)]),
+      );
+    });
+  });
+
+  describe("when GYMRAT_TIMEOUT holds an invalid value", () => {
+    it("reports a problem naming GYMRAT_TIMEOUT", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_TIMEOUT", "abc");
+
+      const result = inspectConfig({ bench: "my-bench" });
+
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringMatching(/GYMRAT_TIMEOUT.*positive integer/)]),
+      );
+    });
+  });
+
+  describe("when GYMRAT_TIMEOUT exceeds the millisecond timer cap", () => {
+    it("reports a problem naming GYMRAT_TIMEOUT and the cap", () => {
+      tmpdir = freshRoot("gymrat-");
+      process.chdir(tmpdir);
+      vi.stubEnv("GYMRAT_TIMEOUT", "2147484");
+
+      const result = inspectConfig({ bench: "my-bench" });
+
+      expect
+        .soft(result.problems)
+        .toEqual(expect.arrayContaining([expect.stringMatching(/GYMRAT_TIMEOUT/)]));
+      expect(result.problems.join("\n")).toMatch(/no greater than 2147483/);
     });
   });
 });

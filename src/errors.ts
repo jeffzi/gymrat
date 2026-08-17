@@ -36,6 +36,11 @@ export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Extract the hint from a {@link GymratError}, or `undefined` for any other thrown value. */
+export function hintOf(error: unknown): string | undefined {
+  return error instanceof GymratError ? error.hint : undefined;
+}
+
 function hasStderr(error: unknown): error is Error & { stderr: string } {
   return error instanceof Error && "stderr" in error && typeof error.stderr === "string";
 }

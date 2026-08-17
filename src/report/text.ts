@@ -1602,14 +1602,11 @@ function formatMeasureRow(row: MeasureRow, widths: MeasureWidths, styleCell?: Ce
  * than with empty ones.
  */
 function renderMeasureTable(result: MeasurementResult, label: string): string[] {
-  const layout = planSections(
-    result.metrics,
-    (name, group, metric): MeasureMetricRow => ({
-      name,
-      label: indentedSectionLabel(metric.meta.shortName, group),
-      value: formatMetricCellParts(metric.median, metric.spread, metric.meta.unit),
-    }),
-  );
+  const layout = planSections(result.metrics, (name, group, metric): MeasureMetricRow => ({
+    name,
+    label: indentedSectionLabel(metric.meta.shortName, group),
+    value: formatMetricCellParts(metric.median, metric.spread, metric.meta.unit),
+  }));
   const sectioned = layout.sections.length > 1;
 
   const valueFields = valueWidths(layout.ordered.map((row) => row.value));

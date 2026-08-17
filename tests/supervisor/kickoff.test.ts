@@ -1,47 +1,20 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import type { BenchlessConfig } from "../../src/config.js";
 import { GymratError } from "../../src/errors.js";
 import { composeKickoff } from "../../src/supervisor/kickoff.js";
+import { createPackageLayout } from "../fixtures/package-layout.js";
+import { freshRoot } from "../fixtures/scratch-repo.js";
+import { benchlessConfig } from "../fixtures/session-records.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const SKILL_CONTENT = "# Test Skill\n\nDo the optimization.\n";
 const RUNBOOK_CONTENT = "# My Runbook\n\nStep 1: run benchmarks.\n";
-
-/**
- * Build a temp directory that mirrors the installed package layout:
- *
- *     <root>/dist/supervisor/kickoff.js   (mock import.meta.url target)
- *     <root>/skills/gymrat/SKILL.md       (bundled skill)
- *
- * Returns the file URL pointing at the mock `kickoff.js` location, which
- * the function under test uses to resolve the skill path relative to itself.
- */
-function createPackageLayout(options?: { skipSkill?: boolean }): {
-  root: string;
-  importMetaUrl: string;
-} {
-  const root = mkdtempSync(join(tmpdir(), "kickoff-"));
-  const distDir = join(root, "dist", "supervisor");
-  mkdirSync(distDir, { recursive: true });
-
-  if (!options?.skipSkill) {
-    const skillDir = join(root, "skills", "gymrat");
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "SKILL.md"), SKILL_CONTENT);
-  }
-
-  const importMetaUrl = pathToFileURL(join(distDir, "kickoff.js")).href;
-  return { root, importMetaUrl };
-}
 
 function createRunbook(root: string, content = RUNBOOK_CONTENT): string {
   const runbookPath = join(root, "runbook.md");
@@ -49,22 +22,20 @@ function createRunbook(root: string, content = RUNBOOK_CONTENT): string {
   return runbookPath;
 }
 
-function makeConfig(overrides: Partial<BenchlessConfig> = {}): BenchlessConfig {
-  return {
+/** Build a package layout with a bundled skill and a configured runbook. */
+function setupHappyPath(): {
+  config: ReturnType<typeof benchlessConfig>;
+  importMetaUrl: string;
+} {
+  const { importMetaUrl, root } = createPackageLayout("kickoff-");
+  const runbookPath = createRunbook(root);
+  const config = benchlessConfig({
     adapter: "mitata",
     samples: 30,
     timeoutSeconds: 60,
     unstableNoisePct: 5,
-    primary: "geomean",
-    ...overrides,
-  };
-}
-
-/** Build a package layout with a bundled skill and a configured runbook. */
-function setupHappyPath(): { config: BenchlessConfig; importMetaUrl: string } {
-  const { importMetaUrl, root } = createPackageLayout();
-  const runbookPath = createRunbook(root);
-  const config = makeConfig({ runbook: runbookPath });
+    runbook: runbookPath,
+  });
   return { config, importMetaUrl };
 }
 
@@ -79,15 +50,21 @@ describe("composeKickoff", () => {
 
       const result = composeKickoff(config, importMetaUrl);
 
-      expect(result.systemPromptAppend).toContain(SKILL_CONTENT);
+      expect(result.systemPromptAppend).toContain("# Test Skill");
     });
   });
 
   describe("when the bundled skill file is missing", () => {
     it("throws a GymratError indicating a broken installation", () => {
-      const { importMetaUrl, root } = createPackageLayout({ skipSkill: true });
+      const { importMetaUrl, root } = createPackageLayout("kickoff-", { skipSkill: true });
       const runbookPath = createRunbook(root);
-      const config = makeConfig({ runbook: runbookPath });
+      const config = benchlessConfig({
+        adapter: "mitata",
+        samples: 30,
+        timeoutSeconds: 60,
+        unstableNoisePct: 5,
+        runbook: runbookPath,
+      });
 
       expect(() => composeKickoff(config, importMetaUrl)).toThrow(GymratError);
     });
@@ -109,7 +86,7 @@ describe("composeKickoff", () => {
 
       const result = composeKickoff(config, importMetaUrl);
 
-      const skillIdx = result.systemPromptAppend.indexOf(SKILL_CONTENT);
+      const skillIdx = result.systemPromptAppend.indexOf("# Test Skill");
       const runbookIdx = result.systemPromptAppend.indexOf(`## Runbook:`);
       expect(skillIdx).toBeLessThan(runbookIdx);
     });
@@ -117,8 +94,13 @@ describe("composeKickoff", () => {
 
   describe("when config has no runbook", () => {
     it("throws a GymratError mentioning both runbook and gymrat.json", () => {
-      const { importMetaUrl } = createPackageLayout();
-      const config = makeConfig();
+      const { importMetaUrl } = createPackageLayout("kickoff-");
+      const config = benchlessConfig({
+        adapter: "mitata",
+        samples: 30,
+        timeoutSeconds: 60,
+        unstableNoisePct: 5,
+      });
 
       expect(() => composeKickoff(config, importMetaUrl)).toThrow(GymratError);
       expect(() => composeKickoff(config, importMetaUrl)).toThrow(/runbook/i);
@@ -165,13 +147,19 @@ describe("composeKickoff", () => {
   describe("when called with the real installed layout", () => {
     it("resolves SKILL_RELATIVE_PATH to the real skills/gymrat/SKILL.md", () => {
       const projectRoot = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
-      const realDistKickoff = join(projectRoot, "dist", "supervisor", "kickoff.js");
-      const importMetaUrl = pathToFileURL(realDistKickoff).href;
+      const realDistEntry = join(projectRoot, "dist", "bundled-skill.js");
+      const importMetaUrl = pathToFileURL(realDistEntry).href;
 
-      const runbookDir = mkdtempSync(join(tmpdir(), "kickoff-runbook-"));
+      const runbookDir = freshRoot("kickoff-runbook-");
       const runbookPath = join(runbookDir, "runbook.md");
       writeFileSync(runbookPath, "# Runbook\n");
-      const config = makeConfig({ runbook: runbookPath });
+      const config = benchlessConfig({
+        adapter: "mitata",
+        samples: 30,
+        timeoutSeconds: 60,
+        unstableNoisePct: 5,
+        runbook: runbookPath,
+      });
 
       const result = composeKickoff(config, importMetaUrl);
 

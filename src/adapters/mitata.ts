@@ -15,44 +15,69 @@ import { AdapterError, defaultsFromSuffixes, warnToStderr } from "./types.js";
 const FORBIDDEN_NAME_CHARS = /[\n\r\u{2028}\u{2029}]/u;
 
 /**
- * Find the outermost `{…}` JSON object using a brace/string-aware scan.
- *
- * Mitata's banner lines can contain bare braces (`cpu: {model}`) that trip up a
- * naive first-`{`-to-last-`}` slice. The scan tracks brace depth while skipping
- * quoted strings, so only a balanced top-level `{…}` pair is returned.
+ * Advance past a double-quoted string, starting one position after the opening
+ * `"`. Returns the index of the closing `"`, or the end of `input` when the
+ * string is unterminated.
  */
-// fallow-ignore-next-line complexity
-function extractJson(stdout: string): Record<string, unknown> {
+function skipQuotedString(input: string, pos: number): number {
+  let i = pos;
+  while (i < input.length && input[i] !== '"') {
+    if (input[i] === "\\") i++;
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Scan `input` for balanced top-level `{…}` substrings, skipping braces that
+ * appear inside double-quoted strings.
+ *
+ * Returns every balanced slice as-is — no JSON validation is performed.
+ */
+export function findJsonCandidates(input: string): string[] {
+  const candidates: string[] = [];
   let depth = 0;
   let start = -1;
-  let lastParseError: unknown;
 
-  for (let i = 0; i < stdout.length; i++) {
-    const ch = stdout[i];
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
     if (ch === '"') {
-      i++;
-      while (i < stdout.length && stdout[i] !== '"') {
-        if (stdout[i] === "\\") i++;
-        i++;
-      }
+      i = skipQuotedString(input, i + 1);
       continue;
     }
     if (ch === "{") {
       if (depth === 0) start = i;
       depth++;
-    } else if (ch === "}") {
+    } else if (ch === "}" && depth > 0) {
       depth--;
-      if (depth === 0 && start !== -1) {
-        const slice = stdout.slice(start, i + 1);
-        try {
-          const parsed: unknown = JSON.parse(slice);
-          if (isRecord(parsed)) return parsed;
-        } catch (err) {
-          lastParseError = err;
-        }
+      if (depth === 0) {
+        candidates.push(input.slice(start, i + 1));
         start = -1;
       }
-      if (depth < 0) depth = 0;
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Find the first valid JSON object in `stdout` by parsing each balanced
+ * `{…}` candidate the scanner produces.
+ *
+ * Mitata's banner lines can contain bare braces (`cpu: {model}`) that trip up a
+ * naive first-`{`-to-last-`}` slice. The scanner tracks brace depth while
+ * skipping quoted strings, so only balanced top-level `{…}` pairs are tried.
+ */
+function extractJson(stdout: string): Record<string, unknown> {
+  const candidates = findJsonCandidates(stdout);
+  let lastParseError: unknown;
+
+  for (const slice of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(slice);
+      if (isRecord(parsed)) return parsed;
+    } catch (err) {
+      lastParseError = err;
     }
   }
 
@@ -244,8 +269,10 @@ const mitataAdapter: Adapter = {
    * Reads mitata's JSON output — a `benchmarks` array whose entries carry an
    * `alias` and a list of `runs`.
    *
-   * The JSON is located by slicing between the first `{` and the last `}` so that
-   * banner text mitata prints around it does not have to be stripped by the user.
+   * The JSON is located by scanning for balanced top-level `{…}` candidates (see
+   * {@link findJsonCandidates}), skipping braces inside quoted strings, so banner
+   * text mitata prints around it — including bare braces like `cpu: {model}` —
+   * does not have to be stripped by the user.
    *
    * Each run yields `<alias>/time` from `stats.p50` and, when mitata measured it,
    * `<alias>/heap` from `stats.heap.avg`. For parameterized benchmarks the `$name`

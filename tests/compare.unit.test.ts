@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
@@ -13,6 +12,8 @@ import { CommandError } from "../src/sampling.js";
 import type { CommandErrorContext } from "../src/sampling.js";
 import type { InPlaceTarget, RefTarget } from "../src/targets.js";
 import { REF_TARGET_HINT } from "./fixtures/constants.js";
+import { createExecResult, createExecTimeout } from "./fixtures/exec.js";
+import { freshRoot } from "./fixtures/scratch-repo.js";
 
 /**
  * What every `parse` call hands back, whichever target produced the output.
@@ -65,33 +66,10 @@ function createContext(overrides: Partial<CommandErrorContext> = {}): CommandErr
   };
 }
 
-function createExecResult(overrides: Partial<ExecResult> = {}): ExecResult {
-  const base = {
-    exitCode: 1,
-    stderr: "Error: benchmark crashed",
-    stdout: "",
-    ...overrides,
-  };
-  return {
-    ...base,
-    stdoutBytes: base.stdoutBytes ?? Buffer.byteLength(base.stdout, "utf-8"),
-    stderrBytes: base.stderrBytes ?? Buffer.byteLength(base.stderr, "utf-8"),
-  };
-}
-
-function createExecTimeout(overrides: Partial<ExecTimeoutError> = {}): ExecTimeoutError {
-  const base = {
-    kind: "timeout" as const,
-    timeoutMs: 30000,
-    stderr: "partial output before timeout",
-    stdout: "",
-    ...overrides,
-  };
-  return {
-    ...base,
-    stdoutBytes: base.stdoutBytes ?? Buffer.byteLength(base.stdout, "utf-8"),
-    stderrBytes: base.stderrBytes ?? Buffer.byteLength(base.stderr, "utf-8"),
-  };
+function failedExecResult(
+  overrides: Parameters<typeof createExecResult>[0] = {},
+): ReturnType<typeof createExecResult> {
+  return createExecResult({ exitCode: 1, stderr: "Error: benchmark crashed", ...overrides });
 }
 
 describe("CommandError", () => {
@@ -199,7 +177,7 @@ describe("CommandError", () => {
   describe("when phase is bench", () => {
     it("includes the 1-indexed sample number in the message", () => {
       const ctx = createContext({ sample: 3 });
-      const failure = createExecResult();
+      const failure = failedExecResult();
 
       const error = new CommandError(ctx, failure);
 
@@ -210,7 +188,7 @@ describe("CommandError", () => {
   describe("when target is a ref", () => {
     it("does not include the hint text in the message", () => {
       const ctx = createContext();
-      const failure = createExecResult();
+      const failure = failedExecResult();
 
       const error = new CommandError(ctx, failure);
 
@@ -220,7 +198,7 @@ describe("CommandError", () => {
 
     it("carries the worktree hint", () => {
       const ctx = createContext({ target: createRefTarget() });
-      const failure = createExecResult();
+      const failure = failedExecResult();
 
       const error = new CommandError(ctx, failure);
 
@@ -231,7 +209,7 @@ describe("CommandError", () => {
   describe("when target is in-place", () => {
     it("carries no hint", () => {
       const ctx = createContext({ target: createInPlaceTarget() });
-      const failure = createExecResult();
+      const failure = failedExecResult();
 
       const error = new CommandError(ctx, failure);
 
@@ -242,7 +220,7 @@ describe("CommandError", () => {
   describe("when stderr and stdout are both non-empty", () => {
     it("shows both under labeled separators", () => {
       const ctx = createContext();
-      const failure = createExecResult({
+      const failure = failedExecResult({
         stderr: "error output here",
         stdout: "normal output here",
       });
@@ -259,7 +237,7 @@ describe("CommandError", () => {
   describe("when only stdout is non-empty", () => {
     it("shows stdout without separators", () => {
       const ctx = createContext();
-      const failure = createExecResult({ stderr: "", stdout: "bench output here" });
+      const failure = failedExecResult({ stderr: "", stdout: "bench output here" });
 
       const error = new CommandError(ctx, failure);
 
@@ -272,7 +250,7 @@ describe("CommandError", () => {
   describe("when a single stream was truncated", () => {
     it("shows the stream under a labeled separator with the total byte count", () => {
       const ctx = createContext();
-      const failure = createExecResult({
+      const failure = failedExecResult({
         stderr: "partial output",
         stdout: "",
         stderrBytes: 128_000_000,
@@ -288,7 +266,7 @@ describe("CommandError", () => {
   describe("when both streams were truncated", () => {
     it("shows both under labeled separators with their total byte counts", () => {
       const ctx = createContext();
-      const failure = createExecResult({
+      const failure = failedExecResult({
         stderr: "err chunk",
         stdout: "out chunk",
         stderrBytes: 200_000_000,
@@ -307,7 +285,7 @@ describe("CommandError", () => {
   describe("when stderr and stdout are both empty", () => {
     it("does not include any output separator or body", () => {
       const ctx = createContext();
-      const failure = createExecResult({ stderr: "", stdout: "" });
+      const failure = failedExecResult({ stderr: "", stdout: "" });
 
       const error = new CommandError(ctx, failure);
 
@@ -324,7 +302,7 @@ describe("CommandError", () => {
  * enough to drive a whole comparison run.
  */
 function createInPlaceDirs(): { root: string; cleanup: () => void } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gymrat-unit-"));
+  const root = freshRoot("gymrat-unit-");
   fs.mkdirSync(path.join(root, "old"));
   fs.mkdirSync(path.join(root, "new"));
   return { root, cleanup: () => {} };

@@ -10,6 +10,8 @@ const adapters: ReadonlyMap<string, Adapter> = new Map([
   ["mitata", mitataAdapter],
 ]);
 
+export const adapterNames: readonly string[] = Array.from(adapters.keys()).toSorted();
+
 /**
  * Look up a built-in adapter by the name used in config and `--adapter`.
  *
@@ -23,10 +25,9 @@ const adapters: ReadonlyMap<string, Adapter> = new Map([
 export function getAdapter(name: string): Adapter {
   const adapter = adapters.get(name);
   if (!adapter) {
-    const validNames = Array.from(adapters.keys()).toSorted();
     throw new GymratError(
       `Unknown adapter: "${name}".`,
-      `valid adapters are: ${validNames.join(", ")}`,
+      `valid adapters are: ${adapterNames.join(", ")}`,
     );
   }
 

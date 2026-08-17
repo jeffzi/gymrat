@@ -1,12 +1,8 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
+import { readBundledSkill } from "../bundled-skill.js";
 import type { BenchlessConfig } from "../config.js";
 import { GymratError } from "../errors.js";
-
-/** Relative path from the compiled `dist/supervisor/kickoff.js` to the bundled skill. */
-const SKILL_RELATIVE_PATH = "../../skills/gymrat/SKILL.md";
 
 const DEFAULT_KICKOFF =
   "Drive the optimization session. Follow the skill instructions and the runbook to guide your work.";
@@ -53,19 +49,4 @@ export function composeKickoff(
     systemPromptAppend,
     kickoff: prompt ?? DEFAULT_KICKOFF,
   };
-}
-
-function readBundledSkill(importMetaUrl: string): string {
-  const callerDir = fileURLToPath(new URL(".", importMetaUrl));
-  const skillPath = resolve(callerDir, SKILL_RELATIVE_PATH);
-
-  try {
-    return readFileSync(skillPath, "utf8");
-  } catch (error) {
-    throw new GymratError(
-      `Bundled skill not found at ${skillPath} — the gymrat installation may be broken.`,
-      "Reinstall the package to restore the bundled skill file.",
-      { cause: error },
-    );
-  }
 }

@@ -12,6 +12,7 @@ import {
   formatValue,
   geomeanValueStyle,
   getGlyph,
+  highlightInlineCode,
   shortenLabel,
   scopedGeomeanLabel,
   selectHighlights,
@@ -1096,5 +1097,81 @@ describe("withColor", () => {
 
       expect(colorEnv()).toStrictEqual({ FORCE_COLOR: "1", NO_COLOR: "0" });
     });
+  });
+});
+
+describe("highlightInlineCode", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("when the text contains backtick-wrapped spans", () => {
+    it("strips the backticks and styles the content yellow when color is forced", () => {
+      forceColor();
+
+      const result = highlightInlineCode("Run `gymrat doctor` to verify.");
+
+      // \x1b[33m = yellow
+      expect.soft(result).toContain("\x1b[33m");
+      expect.soft(result).toContain("gymrat doctor");
+      expect(result).not.toContain("`");
+    });
+
+    it("strips the backticks and returns the bare content when color is suppressed", () => {
+      suppressColor();
+
+      const result = highlightInlineCode("Run `gymrat doctor` to verify.");
+
+      expect.soft(result).toBe("Run gymrat doctor to verify.");
+      expect(result).not.toContain("\x1b[");
+    });
+  });
+
+  describe("when the text contains multiple backtick spans", () => {
+    it("styles each span independently", () => {
+      forceColor();
+
+      const result = highlightInlineCode("Use `gymrat compare` or `gymrat measure`.");
+
+      expect.soft(result).not.toContain("`");
+      expect.soft(result).toContain("gymrat compare");
+      expect(result).toContain("gymrat measure");
+    });
+
+    it("strips backticks from all spans when color is suppressed", () => {
+      suppressColor();
+
+      expect(highlightInlineCode("Use `gymrat compare` or `gymrat measure`.")).toBe(
+        "Use gymrat compare or gymrat measure.",
+      );
+    });
+  });
+
+  describe("when the text has no backtick pairs", () => {
+    it("returns the text unchanged", () => {
+      forceColor();
+
+      expect(highlightInlineCode("No inline code here.")).toBe("No inline code here.");
+    });
+  });
+
+  it.each([
+    { desc: "a command with spaces", text: "`gymrat doctor`", expected: "gymrat doctor" },
+    { desc: "a flag", text: "`--bench`", expected: "--bench" },
+    { desc: "a path", text: "`gymrat.json`", expected: "gymrat.json" },
+    { desc: "a single word", text: "`runbook`", expected: "runbook" },
+  ])("handles $desc", ({ text, expected }) => {
+    suppressColor();
+
+    expect(highlightInlineCode(text)).toBe(expected);
+  });
+
+  it("targets the stream's color detection when a stream is provided", () => {
+    forceColor();
+
+    const result = highlightInlineCode("Run `gymrat doctor`.", process.stderr);
+
+    expect.soft(result).toContain("\x1b[33m");
+    expect(result).not.toContain("`");
   });
 });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import mitataAdapter from "../../src/adapters/mitata.js";
+import mitataAdapter, { findJsonCandidates } from "../../src/adapters/mitata.js";
 import { AdapterError } from "../../src/adapters/types.js";
 import { captureStderr } from "../fixtures/console.js";
 import { metricRecord } from "../fixtures/metrics.js";
@@ -39,61 +39,37 @@ describe("mitata adapter", () => {
     });
 
     describe("metric naming for parameterized benchmarks", () => {
-      it("replaces $key with key=value in alias", () => {
+      it.each([
+        {
+          description: "replaces $key with key=value in alias",
+          alias: "decode/$text",
+          name: "decode/digits",
+          args: { text: "digits" },
+          p50: 42,
+          metricName: "decode/text=digits/time",
+        },
+        {
+          description: "handles multiple parameters",
+          alias: "op/$a/$b",
+          name: "op/x/y",
+          args: { a: "x", b: "y" },
+          p50: 50,
+          metricName: "op/a=x/b=y/time",
+        },
+        {
+          description: "replaces multiple occurrences of same parameter",
+          alias: "test/$x/sep/$x",
+          name: "test/1/sep/1",
+          args: { x: "1" },
+          p50: 99,
+          metricName: "test/x=1/sep/x=1/time",
+        },
+      ])("$description", ({ alias, name, args, p50, metricName }) => {
         const stdout = JSON.stringify({
-          benchmarks: [
-            {
-              alias: "decode/$text",
-              runs: [
-                {
-                  name: "decode/digits",
-                  args: { text: "digits" },
-                  stats: { p50: 42 },
-                },
-              ],
-            },
-          ],
+          benchmarks: [{ alias, runs: [{ name, args, stats: { p50 } }] }],
         });
         const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual(metricRecord({ "decode/text=digits/time": 42 }));
-      });
-
-      it("handles multiple parameters", () => {
-        const stdout = JSON.stringify({
-          benchmarks: [
-            {
-              alias: "op/$a/$b",
-              runs: [
-                {
-                  name: "op/x/y",
-                  args: { a: "x", b: "y" },
-                  stats: { p50: 50 },
-                },
-              ],
-            },
-          ],
-        });
-        const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual(metricRecord({ "op/a=x/b=y/time": 50 }));
-      });
-
-      it("replaces multiple occurrences of same parameter", () => {
-        const stdout = JSON.stringify({
-          benchmarks: [
-            {
-              alias: "test/$x/sep/$x",
-              runs: [
-                {
-                  name: "test/1/sep/1",
-                  args: { x: "1" },
-                  stats: { p50: 99 },
-                },
-              ],
-            },
-          ],
-        });
-        const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual(metricRecord({ "test/x=1/sep/x=1/time": 99 }));
+        expect(result).toStrictEqual(metricRecord({ [metricName]: p50 }));
       });
     });
 
@@ -234,19 +210,14 @@ describe("mitata adapter", () => {
         ],
       });
 
-      it("warns naming the metric two runs of one benchmark collide on", () => {
+      it("warns about the collision and keeps the last value written", () => {
+        let result: Record<string, number> | undefined;
         const stderr = captureStderr(() => {
-          mitataAdapter.parse(aliasMissingPlaceholder);
+          result = mitataAdapter.parse(aliasMissingPlaceholder);
         });
 
-        expect(stderr).toContain("Duplicate metric name: decode/time");
-      });
-
-      it("keeps the last value written for a colliding metric", () => {
-        captureStderr(() => {
-          const result = mitataAdapter.parse(aliasMissingPlaceholder);
-          expect(result).toStrictEqual(metricRecord({ "decode/time": 20 }));
-        });
+        expect.soft(stderr).toContain("Duplicate metric name: decode/time");
+        expect(result).toStrictEqual(metricRecord({ "decode/time": 20 }));
       });
 
       it("routes the collision warning to the warn sink it is given, not stderr", () => {
@@ -882,26 +853,6 @@ describe("mitata adapter", () => {
         expect(parse).toThrow(AdapterError);
         expect(parse).toThrow(/^Failed to parse JSON:/);
       });
-
-      it("handles braces inside JSON string values without splitting", () => {
-        const json = JSON.stringify({
-          benchmarks: [
-            {
-              alias: "encode",
-              runs: [
-                {
-                  name: "encode",
-                  args: {},
-                  stats: { p50: 42 },
-                },
-              ],
-            },
-          ],
-        });
-        const stdout = `banner {x}\n${json}\ntrailer {y}`;
-        const result = mitataAdapter.parse(stdout);
-        expect(result).toStrictEqual(metricRecord({ "encode/time": 42 }));
-      });
     });
 
     describe("real fixture", () => {
@@ -988,5 +939,54 @@ describe("mitata adapter", () => {
         },
       );
     });
+  });
+});
+
+describe("findJsonCandidates", () => {
+  it("extracts a single JSON object from a plain string", () => {
+    const input = '{"key": "value"}';
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual(['{"key": "value"}']);
+  });
+
+  it("extracts multiple top-level JSON candidates", () => {
+    const input = '{"a": 1} some text {"b": 2}';
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual(['{"a": 1}', '{"b": 2}']);
+  });
+
+  it("ignores braces inside double-quoted strings", () => {
+    const input = '{"key": "value with {braces} inside"}';
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual(['{"key": "value with {braces} inside"}']);
+  });
+
+  it("handles escaped quotes within strings", () => {
+    const input = '{"key": "value with \\"escaped\\" quotes and {braces}"}';
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual(['{"key": "value with \\"escaped\\" quotes and {braces}"}']);
+  });
+
+  it("handles nested braces correctly", () => {
+    const input = '{"outer": {"inner": {"deep": 1}}}';
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual(['{"outer": {"inner": {"deep": 1}}}']);
+  });
+
+  it("returns an empty array when input contains no braces", () => {
+    const result = findJsonCandidates("no braces here at all");
+    expect(result).toStrictEqual([]);
+  });
+
+  it("skips unbalanced opening braces", () => {
+    const input = "prefix { incomplete";
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual([]);
+  });
+
+  it("extracts a candidate surrounded by non-JSON text with braces", () => {
+    const input = 'cpu: {model}\n{"benchmarks": []}\nfooter: {info}';
+    const result = findJsonCandidates(input);
+    expect(result).toStrictEqual(["{model}", '{"benchmarks": []}', "{info}"]);
   });
 });

@@ -24,6 +24,7 @@ import { ISO_PATTERN } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
 import { createScratchRepo, git, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
+  type LoosePartial,
   blockedKeep,
   committedKeep,
   discardRecord,
@@ -54,7 +55,7 @@ const CHECKS_STDOUT = "3 tests failed";
 const CHECKS_STDERR = "AssertionError: expected 2 to be 3";
 
 /** `resolvedConfig`, defaulted to the checks command every settle test exercises. */
-function checksConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
+function checksConfig(overrides: LoosePartial<ResolvedConfig> = {}): ResolvedConfig {
   return resolvedConfig({ checks: CHECKS, ...overrides });
 }
 
@@ -100,7 +101,7 @@ function metric(overrides: Partial<MetricVerdict> = {}): MetricVerdict {
 }
 
 /** A measured iteration numbered `seq`, improved unless a test says otherwise. */
-function iteration(seq: number, overrides: Partial<IterationRecord> = {}): IterationRecord {
+function iteration(seq: number, overrides: LoosePartial<IterationRecord> = {}): IterationRecord {
   return iterationRecord({ seq, ...overrides });
 }
 
@@ -274,7 +275,7 @@ afterEach(() => {
   repo.cleanup();
 });
 
-describe("keepSession", () => {
+describe("keepSession: preconditions and checks", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
       // Act
@@ -561,7 +562,9 @@ describe("keepSession", () => {
       expect(result.record.checks.stderrBytes).toBe(PRE_CAP_STDERR_BYTES);
     });
   });
+});
 
+describe("keepSession: regression gate", () => {
   describe("when the last iteration's gating regression was confirmed", () => {
     it("blocks the keep before the checks ever run", async () => {
       // Arrange
@@ -716,7 +719,9 @@ describe("keepSession", () => {
       },
     );
   });
+});
 
+describe("keepSession: commit edge cases", () => {
   describe("when the baseline worktree cannot advance", () => {
     it("writes no keep record, leaving the iteration unsettled", async () => {
       // Arrange

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { assertNever, GymratError, messageOf } from "../errors.js";
+import { assertNever, GymratError, hintOf, messageOf } from "../errors.js";
 import { sessionJsonlPath } from "./paths.js";
 import type {
   FinalizeRecord,
@@ -170,8 +170,7 @@ export function readRecords(jsonlPath: string): SessionLogRecord[] {
     try {
       record = parseRecord(value);
     } catch (error) {
-      const hint = error instanceof GymratError ? error.hint : undefined;
-      throw new GymratError(`${messageOf(error)} (at ${at})`, hint, { cause: error });
+      throw new GymratError(`${messageOf(error)} (at ${at})`, hintOf(error), { cause: error });
     }
 
     if (records.length === 0 && record.type !== "session") {
