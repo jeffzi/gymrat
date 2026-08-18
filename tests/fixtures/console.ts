@@ -1,16 +1,16 @@
 import { vi } from "vitest";
 
 /**
- * Run `fn` with `console.warn` spied out and return everything it warned.
+ * Run `fn` with `process.stderr.write` spied out and return everything it wrote.
  *
  * Callers must restore the spy from a suite-level `afterEach`
  * (`vi.restoreAllMocks()`), so an early return or throw inside `fn` cannot leak
- * the patched console into the next test.
+ * the patched stderr into the next test.
  */
 export function captureStderr(fn: () => void): string {
-  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
   fn();
 
-  return warnSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+  return writeSpy.mock.calls.map((args) => String(args[0])).join("");
 }

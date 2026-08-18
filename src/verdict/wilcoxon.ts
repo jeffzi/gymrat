@@ -24,7 +24,10 @@ export interface WilcoxonResult {
 export function wilcoxonSignedRank(x: readonly number[], y: readonly number[]): WilcoxonResult {
   let n = 0;
   for (let i = 0; i < x.length; i++) {
-    if (y[i]! - x[i]! !== 0) n++;
+    const xi = x[i];
+    const yi = y[i];
+    if (xi === undefined || yi === undefined) break;
+    if (yi - xi !== 0) n++;
   }
 
   if (n === 0 || x.length < 2) {

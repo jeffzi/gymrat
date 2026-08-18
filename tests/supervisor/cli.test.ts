@@ -509,7 +509,9 @@ describe("supervise command", () => {
         superviseLockfilePath?: (root: string) => string;
       };
       expect(superviseLockfilePath).toBeDefined();
-      const lockPath = superviseLockfilePath!(repo().dir);
+      if (superviseLockfilePath === undefined)
+        throw new Error("superviseLockfilePath not exported");
+      const lockPath = superviseLockfilePath(repo().dir);
       mkdirSync(path.dirname(lockPath), { recursive: true });
       writeFileSync(
         lockPath,

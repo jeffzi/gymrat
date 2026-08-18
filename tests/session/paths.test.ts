@@ -38,16 +38,13 @@ const LOCKFILE_NAMES = [
 describe("repoRoot", () => {
   describe("when the directory is inside a git repository", () => {
     it("returns the top level of the repository, not the directory itself", () => {
-      // Arrange
       const repo = createScratchRepo();
       try {
         const nested = path.join(repo.dir, "packages", "core");
         fs.mkdirSync(nested, { recursive: true });
 
-        // Act
         const root = repoRoot(nested);
 
-        // Assert
         expect(path.normalize(root)).toBe(path.normalize(repo.dir));
       } finally {
         repo.cleanup();
@@ -55,28 +52,22 @@ describe("repoRoot", () => {
     });
 
     it("falls back to the process working directory when no directory is given", () => {
-      // Arrange
       const expected = execFileSync("git", ["rev-parse", "--show-toplevel"], {
         encoding: "utf-8",
       }).trim();
 
-      // Act
       const root = repoRoot();
 
-      // Assert
       expect(path.normalize(root)).toBe(path.normalize(expected));
     });
   });
 
   describe("when the directory is not inside a git repository", () => {
     it("throws a GymratError naming the missing repository", () => {
-      // Arrange
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), "not-a-repo-"));
 
-      // Act
       const error = captureThrown(() => repoRoot(outside));
 
-      // Assert
       expect.soft(error).toBeInstanceOf(GymratError);
       expect.soft(messageOf(error)).toMatch(/git repository/i);
     });
@@ -104,20 +95,16 @@ describe("session layout", () => {
       relative: [".gymrat", `session-${SESSION_ID}.jsonl`],
     },
   ])("$label places $relative under the repo root", ({ derive, relative }) => {
-    // Act
     const result = derive(ROOT);
 
-    // Assert
     expect(result).toBe(path.join(ROOT, ...relative));
   });
 });
 
 describe("lockfilePath", () => {
   it.each(LOCKFILE_NAMES)("maps $root to $name in the system temp dir", ({ root, name }) => {
-    // Act
     const result = lockfilePath(root);
 
-    // Assert
     expect(result).toBe(path.join(os.tmpdir(), name));
   });
 });

@@ -1,5 +1,3 @@
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 
@@ -9,24 +7,14 @@ import { GymratError } from "../../src/errors.js";
 import { iterateSession } from "../../src/loop/iterate.js";
 import type { TargetContext } from "../../src/sampling.js";
 import { sessionJsonlPath } from "../../src/session/paths.js";
-import type { HookRecord, IterationRecord, SessionRecord } from "../../src/session/records.js";
-import { appendRecord, readRecords } from "../../src/session/store.js";
-import {
-  captureStdout,
-  createRunnableProgram,
-  mockProcessExit,
-  stubWrite,
-} from "../fixtures/cli-harness.js";
+import type { IterationRecord, SessionRecord } from "../../src/session/records.js";
+import { readRecords } from "../../src/session/store.js";
 import { ISO_PATTERN, SESSION_ID, reportLines } from "../fixtures/constants.js";
 import { captureRejectedGymratError } from "../fixtures/errors.js";
-import type { HookScripts } from "../fixtures/hook-scripts.js";
-import { hookScripts } from "../fixtures/hook-scripts.js";
-import { metricRecord } from "../fixtures/metrics.js";
 import { createScratchRepo, type ScratchRepo } from "../fixtures/scratch-repo.js";
 import {
   committedKeep,
   discardRecord as discardOf,
-  expectedHookRecord,
   finalizeRecord,
   iterationRecord,
   resolvedConfig,
@@ -63,17 +51,6 @@ function scaled(values: readonly number[], factor: number): number[] {
   return values.map((value) => value * factor);
 }
 
-/**
- * Nudge alternate rounds up by `up` and the rest down by `down`.
- *
- * The mixed signs leave the signed-rank test nothing to call, while the larger
- * upward nudge still drags the median above the baseline's — a run that moved
- * the wrong way without saying anything, which is what `no-signal` means.
- */
-function jittered(values: readonly number[], up: number, down: number): number[] {
-  return values.map((value, index) => (index % 2 === 0 ? value + up : value - down));
-}
-
 /** One round per entry, pairing each metric with the value it reported that round. */
 function rounds(
   totalMs: readonly number[],
@@ -93,44 +70,6 @@ function baselineRounds(): Record<string, number>[] {
 /** Ten rounds 10% faster and 20% leaner than the baseline's. */
 function improvedRounds(): Record<string, number>[] {
   return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8));
-}
-
-/** Ten rounds 10% slower and 10% fatter than the baseline's. */
-function regressedRounds(): Record<string, number>[] {
-  return rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1));
-}
-
-/** Ten rounds that drift half a percent the wrong way without ever settling. */
-function noisyRounds(): Record<string, number>[] {
-  return rounds(jittered(BASELINE_MS, 2, 1), jittered(BASELINE_BYTES, 20, 10));
-}
-
-/** Rounds reporting `name` alone, the shape a bench filtered to that metric reports. */
-function filteredRounds(name: string, values: readonly number[]): Record<string, number>[] {
-  return values.map((value) => ({ [name]: value }));
-}
-
-/** The confirm-rerun template a consumer configures when their bench can be narrowed. */
-const FILTER = "npm run bench -- --filter {names}";
-
-/** The verdict a signed-rank metric carries after moving `deltaPct` percent, however it settled. */
-function signedRankVerdict(
-  deltaPct: number,
-  verdict: "improved" | "regressed" | "no-signal",
-  confirmed: boolean,
-): Record<string, unknown> {
-  return {
-    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-    deltaPct: expect.closeTo(deltaPct, 6),
-    verdict,
-    method: "signed-rank",
-    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-    p: expect.any(Number),
-    // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-    noisePct: expect.any(Number),
-    gating: true,
-    confirmed,
-  };
 }
 
 /**
@@ -285,12 +224,10 @@ afterEach(() => {
 describe("iterateSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", async () => {
-      // Act
       const error = await captureRejectedGymratError(() =>
         iterateSession(repo.dir, resolvedConfig()),
       );
 
-      // Assert
       expect.soft(error.hint).toContain("gymrat start");
       expect(collectSamplesMock).not.toHaveBeenCalled();
     });
@@ -298,19 +235,16 @@ describe("iterateSession", () => {
 
   describe("when the session on disk was finalized", () => {
     it("refuses with a hint pointing at a fresh start", async () => {
-      // Arrange
       writeSessionLog(repo.dir, sessionRecord(repo.dir), [
         iteration(1),
         committedKeep(1),
         finalizeRecord(),
       ]);
 
-      // Act
       const error = await captureRejectedGymratError(() =>
         iterateSession(repo.dir, resolvedConfig()),
       );
 
-      // Assert
       expect.soft(error.hint).toContain("gymrat start");
       expect(collectSamplesMock).not.toHaveBeenCalled();
     });
@@ -318,15 +252,12 @@ describe("iterateSession", () => {
 
   describe("when the last iteration is neither kept nor discarded", () => {
     it("refuses with a hint naming both ways to settle it", async () => {
-      // Arrange
       writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1)]);
 
-      // Act
       const error = await captureRejectedGymratError(() =>
         iterateSession(repo.dir, resolvedConfig()),
       );
 
-      // Assert
       expect.soft(error.hint).toContain("gymrat keep");
       expect.soft(error.hint).toContain("gymrat discard");
       expect(collectSamplesMock).not.toHaveBeenCalled();
@@ -335,7 +266,6 @@ describe("iterateSession", () => {
 
   describe("when a configured stop condition has already been met", () => {
     it("refuses once the configured maximum of iterations is on file", async () => {
-      // Arrange
       writeSessionLog(repo.dir, sessionRecord(repo.dir), [
         iteration(1),
         committedKeep(1),
@@ -344,12 +274,10 @@ describe("iterateSession", () => {
       ]);
       stubRuns(repo.dir, []);
 
-      // Act
       const error = await captureRejectedGymratError(() =>
         iterateSession(repo.dir, resolvedConfig({ stop: { maxIterations: 2 } })),
       );
 
-      // Assert
       expect.soft(error.message).toContain("max iterations");
       expect.soft(error.message).toContain("2");
       expect.soft(collectSamplesMock).not.toHaveBeenCalled();
@@ -357,11 +285,9 @@ describe("iterateSession", () => {
     });
 
     it("refuses once a target-reaching iteration has been kept", async () => {
-      // Arrange
       writeSessionLog(repo.dir, sessionRecord(repo.dir), [onTargetIteration(1), committedKeep(1)]);
       stubRuns(repo.dir, []);
 
-      // Act
       const error = await captureRejectedGymratError(() =>
         iterateSession(
           repo.dir,
@@ -369,7 +295,6 @@ describe("iterateSession", () => {
         ),
       );
 
-      // Assert
       expect.soft(error.message).toContain("target reached");
       expect.soft(collectSamplesMock).not.toHaveBeenCalled();
       expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(3);
@@ -382,23 +307,19 @@ describe("iterateSession", () => {
     });
 
     it("measures again after that iteration was discarded", async () => {
-      // Arrange
       writeSessionLog(repo.dir, sessionRecord(repo.dir), [onTargetIteration(1), discardOf(1)]);
 
-      // Act
       const result = await iterateSession(
         repo.dir,
         resolvedConfig({ primary: "total_ms", stop: { targetValue: 95 } }),
       );
 
-      // Assert
       expect(result.record.seq).toBe(2);
     });
   });
 
   describe("when no stop condition is configured", () => {
     it("measures again past a kept target and past any number of iterations", async () => {
-      // Arrange
       writeSessionLog(repo.dir, sessionRecord(repo.dir), [
         onTargetIteration(1),
         committedKeep(1),
@@ -407,10 +328,8 @@ describe("iterateSession", () => {
       ]);
       stubSamples(repo.dir, improvedRounds(), baselineRounds());
 
-      // Act
       const result = await iterateSession(repo.dir, resolvedConfig());
 
-      // Assert
       expect(result.record.seq).toBe(3);
     });
   });
@@ -422,10 +341,8 @@ describe("iterateSession", () => {
     });
 
     it("benches the session's two worktrees, baseline first", async () => {
-      // Act
       await iterateSession(repo.dir, resolvedConfig());
 
-      // Assert
       const worktrees = sessionRecord(repo.dir).worktrees;
       expect(sampledTargets()).toStrictEqual([
         {
@@ -444,10 +361,8 @@ describe("iterateSession", () => {
     });
 
     it("appends the measurement as the iteration after the last one settled", async () => {
-      // Act
       await iterateSession(repo.dir, resolvedConfig());
 
-      // Assert
       expect(lastIterationOf(repo.dir)).toStrictEqual({
         type: "iteration",
         seq: 2,
@@ -488,18 +403,14 @@ describe("iterateSession", () => {
     });
 
     it("hands back the record it appended", async () => {
-      // Act
       const result = await iterateSession(repo.dir, resolvedConfig());
 
-      // Assert
       expect(asLogged(result.record)).toStrictEqual(lastIterationOf(repo.dir));
     });
 
     it("reads the iteration on a named primary metric alone", async () => {
-      // Act
       const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
 
-      // Assert
       expect(result.record.primary).toStrictEqual({
         kind: "metric",
         name: "total_ms",
@@ -513,36 +424,29 @@ describe("iterateSession", () => {
       { description: "the target is still ahead", stop: { targetValue: 85 }, expected: false },
       { description: "the target is met", stop: { targetValue: 95 }, expected: true },
     ])("records targetReached as $expected when $description", async ({ stop, expected }) => {
-      // Act
       const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms", stop }));
 
-      // Assert
       expect(result.record.targetReached).toBe(expected);
     });
 
     it("reads a higher-is-better target from the other side", async () => {
-      // Arrange
       const resolved = resolvedConfig({
         primary: "total_ms",
         stop: { targetValue: 85 },
         metrics: { total_ms: { direction: "higher" } },
       });
 
-      // Act
       const result = await iterateSession(repo.dir, resolved);
 
-      // Assert
       expect(result.record.targetReached).toBe(true);
     });
 
     it("calls the target in the verdict block, right above the next step", async () => {
-      // Act
       const result = await iterateSession(
         repo.dir,
         resolvedConfig({ primary: "total_ms", stop: { targetValue: 95 } }),
       );
 
-      // Assert
       expect(trimmedReportLines(result.report).at(-2)).toBe("target reached — keep it");
     });
 
@@ -550,833 +454,19 @@ describe("iterateSession", () => {
       { description: "the target is still ahead", stop: { targetValue: 85 } },
       { description: "no stop condition is configured", stop: undefined },
     ])("leaves the target out of the report when $description", async ({ stop }) => {
-      // Act
       const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms", stop }));
 
-      // Assert
       expect(stripAnsi(result.report)).not.toContain("target reached");
     });
 
     it("opens the report on the loop's own header, above the comparison table", async () => {
-      // Act
       const result = await iterateSession(repo.dir, resolvedConfig());
 
-      // Assert
       const report = stripAnsi(result.report);
       expect
         .soft(report.split("\n")[0])
         .toBe("iteration 2 · experiment vs baseline · 10 paired samples");
       expect(report).toContain("total_ms");
     });
-  });
-
-  describe("when a gating metric comes back regressed", () => {
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-    });
-
-    it("reruns the same paired sampling through the filter template", async () => {
-      // Arrange
-      stubRuns(repo.dir, [
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-      ]);
-
-      // Act
-      await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
-
-      // Assert
-      expect.soft(collectSamplesMock).toHaveBeenCalledTimes(2);
-      expect.soft(samplingCall(1).targets).toStrictEqual(samplingCall(0).targets);
-      expect(samplingCall(1).bench).toBe("npm run bench -- --filter total_ms alloc_bytes");
-    });
-
-    it("reruns the whole bench command when no filter template is configured", async () => {
-      // Arrange
-      stubRuns(repo.dir, [
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-      ]);
-
-      // Act
-      await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      expect(samplingCall(1).bench).toBe("npm run bench");
-    });
-
-    it("records the rerun's raw samples beside the metrics it re-measured", async () => {
-      // Arrange
-      const rerun = {
-        experiment: filteredRounds("total_ms", scaled(BASELINE_MS, 1.2)),
-        baseline: filteredRounds("total_ms", BASELINE_MS),
-      };
-      stubRuns(repo.dir, [{ experiment: regressedRounds(), baseline: baselineRounds() }, rerun]);
-      const resolved = resolvedConfig({
-        filter: FILTER,
-        metrics: { alloc_bytes: { gating: false } },
-      });
-
-      // Act
-      const result = await iterateSession(repo.dir, resolved);
-
-      // Assert
-      expect(result.record.confirm).toStrictEqual({
-        ran: true,
-        filtered: ["total_ms"],
-        samples: { experiment: rerun.experiment, baseline: rerun.baseline },
-      });
-    });
-
-    it("marks the metric confirmed and reads the iteration as regressed when the rerun agrees", async () => {
-      // Arrange
-      stubRuns(repo.dir, [
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-        {
-          experiment: filteredRounds("total_ms", scaled(BASELINE_MS, 1.2)),
-          baseline: filteredRounds("total_ms", BASELINE_MS),
-        },
-      ]);
-      const resolved = resolvedConfig({
-        filter: FILTER,
-        metrics: { alloc_bytes: { gating: false } },
-      });
-
-      // Act
-      const result = await iterateSession(repo.dir, resolved);
-
-      // Assert
-      expect
-        .soft(result.record.metrics.total_ms)
-        .toStrictEqual(signedRankVerdict(10, "regressed", true));
-      expect.soft(result.record.outcome).toBe("regressed");
-      expect(trimmedReportLines(result.report)).toContain(
-        "total_ms: regression confirmed on rerun",
-      );
-    });
-
-    it.each([
-      { rerun: "improved", experiment: scaled(BASELINE_MS, 0.9) },
-      { rerun: "no-signal", experiment: jittered(BASELINE_MS, 2, 1) },
-    ])(
-      "demotes the metric to no-signal when the rerun comes back $rerun",
-      async ({ experiment }) => {
-        // Arrange
-        stubRuns(repo.dir, [
-          { experiment: regressedRounds(), baseline: baselineRounds() },
-          {
-            experiment: filteredRounds("total_ms", experiment),
-            baseline: filteredRounds("total_ms", BASELINE_MS),
-          },
-        ]);
-        const resolved = resolvedConfig({
-          filter: FILTER,
-          metrics: { alloc_bytes: { gating: false } },
-        });
-
-        // Act
-        const result = await iterateSession(repo.dir, resolved);
-
-        // Assert
-        expect
-          .soft(result.record.metrics.total_ms)
-          .toStrictEqual(signedRankVerdict(10, "no-signal", false));
-        expect.soft(result.record.outcome).toBe("no-signal");
-        expect(trimmedReportLines(result.report)).toContain(
-          "total_ms: regression not confirmed on rerun",
-        );
-      },
-    );
-
-    it("fails the iterate and records nothing when the rerun's bench fails", async () => {
-      // Arrange
-      stubRuns(repo.dir, [
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-        new GymratError("bench command failed"),
-      ]);
-      const resolved = resolvedConfig({
-        filter: FILTER,
-        metrics: { alloc_bytes: { gating: false } },
-      });
-
-      // Act
-      const error = await captureRejectedGymratError(() => iterateSession(repo.dir, resolved));
-
-      // Assert
-      expect.soft(error.message).toBe("bench command failed");
-      expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(1);
-    });
-
-    // The filter command reaches a POSIX shell, which is what decides where one
-    // argument ends and the next begins; Windows is skipped for the same reason
-    // the exec suite is.
-    describe.skipIf(process.platform === "win32")(
-      "when a regressed metric's name would not survive a shell unquoted",
-      () => {
-        /** A stand-in bench printing each argument it was handed on its own line. */
-        const ARGS_SCRIPT = '#!/bin/sh\nfor arg in "$@"; do\n  echo "$arg"\ndone\n';
-
-        /** The confirm-rerun template pointed at that stand-in bench. */
-        const ARGS_FILTER = "sh args.sh {names}";
-
-        /** One round per entry, reporting `name` beside a plainly named metric. */
-        function pairedWith(name: string, values: readonly number[]): Record<string, number>[] {
-          return values.map((value) => ({ [name]: value, total_ms: value }));
-        }
-
-        /**
-         * The arguments a POSIX shell hands the stand-in bench when it runs `command`.
-         *
-         * The rerun's bench string is handed to a shell verbatim, so running it
-         * through one is the only assertion that speaks to what the bench is
-         * really given — a string comparison would pass for a command the shell
-         * refuses outright.
-         */
-        function shellArgs(dir: string, command: string): string[] {
-          const printed = execFileSync("sh", ["-c", command], {
-            cwd: dir,
-            encoding: "utf-8",
-            stdio: "pipe",
-          });
-          return printed.split("\n").filter(Boolean);
-        }
-
-        beforeEach(() => {
-          fs.writeFileSync(path.join(repo.dir, "args.sh"), ARGS_SCRIPT);
-        });
-
-        it.each([
-          { shape: "parentheses and an equals sign", name: "sort(n=1000)/time" },
-          { shape: "a space", name: "decode large payload" },
-          { shape: "a single quote", name: "o'clock/time" },
-        ])("hands the bench a name carrying $shape as one argument", async ({ name }) => {
-          // Arrange
-          const regressed = {
-            experiment: pairedWith(name, scaled(BASELINE_MS, 1.1)),
-            baseline: pairedWith(name, BASELINE_MS),
-          };
-          stubRuns(repo.dir, [regressed, regressed]);
-
-          // Act
-          await iterateSession(repo.dir, resolvedConfig({ filter: ARGS_FILTER }));
-
-          // Assert
-          expect(shellArgs(repo.dir, samplingCall(1).bench)).toStrictEqual([name, "total_ms"]);
-        });
-      },
-    );
-  });
-
-  describe("when the rerun never measures one of the regressed metrics", () => {
-    /**
-     * The rerun a filtered bench reports when it only ever emits `total_ms`.
-     *
-     * `alloc_bytes` was regressed on the first run and named in the filter, but
-     * the rerun comes back without it — silence, not disagreement.
-     */
-    const PARTIAL_RERUN = {
-      experiment: filteredRounds("total_ms", scaled(BASELINE_MS, 1.2)),
-      baseline: filteredRounds("total_ms", BASELINE_MS),
-    };
-
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubRuns(repo.dir, [
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-        PARTIAL_RERUN,
-      ]);
-    });
-
-    it("leaves that metric regressed rather than demoting it to no-signal", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
-
-      // Assert
-      expect
-        .soft(result.record.metrics.alloc_bytes)
-        .toStrictEqual(signedRankVerdict(10, "regressed", false));
-      expect(result.record.outcome).toBe("regressed");
-    });
-
-    it("names that metric in the confirm section it records and logs", async () => {
-      // Arrange
-      const expected = {
-        ran: true,
-        filtered: ["total_ms", "alloc_bytes"],
-        absent: ["alloc_bytes"],
-        samples: { experiment: PARTIAL_RERUN.experiment, baseline: PARTIAL_RERUN.baseline },
-      };
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
-
-      // Assert
-      expect.soft(result.record.confirm).toStrictEqual(expected);
-      expect(lastIterationOf(repo.dir).confirm).toStrictEqual(expected);
-    });
-
-    it("reports it as unmeasured rather than as a regression the rerun disowned", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ filter: FILTER }));
-
-      // Assert
-      const lines = trimmedReportLines(result.report);
-      expect.soft(lines).toContain("alloc_bytes: not measured on rerun");
-      expect.soft(lines).toContain("total_ms: regression confirmed on rerun");
-      expect(lines).not.toContain("alloc_bytes: regression not confirmed on rerun");
-    });
-  });
-
-  describe("when the regressed metric is one a rerun cannot inform", () => {
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-    });
-
-    it("gates an exact metric on the first run alone", async () => {
-      // Arrange
-      stubSamples(repo.dir, regressedRounds(), baselineRounds());
-      const resolved = resolvedConfig({
-        metrics: { total_ms: { exact: true }, alloc_bytes: { gating: false } },
-      });
-
-      // Act
-      const result = await iterateSession(repo.dir, resolved);
-
-      // Assert
-      expect.soft(collectSamplesMock).toHaveBeenCalledTimes(1);
-      expect.soft(result.record.metrics.total_ms).toStrictEqual({
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        deltaPct: expect.closeTo(10, 6),
-        verdict: "regressed",
-        method: "exact",
-        gating: true,
-        confirmed: false,
-      });
-      expect(result.record.outcome).toBe("regressed");
-    });
-
-    it("leaves an exact metric out of the rerun's filter list", async () => {
-      // Arrange
-      stubRuns(repo.dir, [
-        { experiment: regressedRounds(), baseline: baselineRounds() },
-        {
-          experiment: filteredRounds("alloc_bytes", scaled(BASELINE_BYTES, 1.2)),
-          baseline: filteredRounds("alloc_bytes", BASELINE_BYTES),
-        },
-      ]);
-
-      // Act
-      await iterateSession(
-        repo.dir,
-        resolvedConfig({ filter: FILTER, metrics: { total_ms: { exact: true } } }),
-      );
-
-      // Assert
-      expect(samplingCall(1).bench).toBe("npm run bench -- --filter alloc_bytes");
-    });
-
-    it("leaves a non-gating metric to inform without rerunning", async () => {
-      // Arrange
-      const experiment = rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 1.1));
-      stubSamples(repo.dir, experiment, baselineRounds());
-
-      // Act
-      const result = await iterateSession(
-        repo.dir,
-        resolvedConfig({ metrics: { alloc_bytes: { gating: false } } }),
-      );
-
-      // Assert
-      expect.soft(collectSamplesMock).toHaveBeenCalledTimes(1);
-      expect.soft(result.record).not.toHaveProperty("confirm");
-      expect.soft(result.record.metrics.alloc_bytes?.verdict).toBe("regressed");
-      expect(result.record.outcome).toBe("improved");
-    });
-  });
-
-  describe("when the bench names a metric after an Object.prototype member", () => {
-    // A plain object literal would read `__proto__` as its prototype rather than
-    // as a metric name, so the key reaches every object here through a variable.
-    const PROTO = "__proto__";
-
-    /** One round per entry, pairing `total_ms` with the metric named `__proto__`. */
-    function protoRounds(
-      totalMs: readonly number[],
-      proto: readonly number[],
-    ): Record<string, number>[] {
-      return totalMs.map((value, index) => ({ total_ms: value, [PROTO]: proto[index] ?? 0 }));
-    }
-
-    /** The verdict an improved signed-rank metric carries, having moved `deltaPct`. */
-    function improvedVerdict(deltaPct: number): Record<string, unknown> {
-      return signedRankVerdict(deltaPct, "improved", false);
-    }
-
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubSamples(
-        repo.dir,
-        protoRounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8)),
-        protoRounds(BASELINE_MS, BASELINE_BYTES),
-      );
-    });
-
-    it("keeps that metric's verdict as an own key of the record it writes", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      expect(result.record.metrics).toStrictEqual(
-        metricRecord({ total_ms: improvedVerdict(-10), [PROTO]: improvedVerdict(-20) }),
-      );
-    });
-
-    it("counts that metric in the geomean the primary reads", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      expect(result.record.primary).toStrictEqual({
-        kind: "geomean",
-        // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
-        deltaPct: expect.closeTo(-15.1472, 3),
-      });
-    });
-  });
-
-  describe("when a metric's baseline median is zero", () => {
-    /** The baseline's ten rounds, but with `total_ms` flat at zero. */
-    function zeroBaselineRounds(): Record<string, number>[] {
-      return rounds(
-        BASELINE_MS.map(() => 0),
-        BASELINE_BYTES,
-      );
-    }
-
-    /** The iteration numbered `seq`, its deltas already written as the nulls a zero median yields. */
-    function undefinedDeltaIteration(seq: number): IterationRecord {
-      return iterationRecord({
-        seq,
-        metrics: {
-          total_ms: {
-            deltaPct: null,
-            verdict: "no-signal",
-            method: "signed-rank",
-            p: 0.005,
-            noisePct: 3,
-            gating: true,
-            confirmed: false,
-          },
-        },
-        primary: { kind: "geomean", deltaPct: null },
-        outcome: "no-signal",
-      });
-    }
-
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubSamples(repo.dir, improvedRounds(), zeroBaselineRounds());
-    });
-
-    it("records that metric's delta as null, beside the delta the other metric moved by", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      expect.soft(result.record.metrics.total_ms?.deltaPct).toBeNull();
-      expect(result.record.metrics.alloc_bytes?.deltaPct).toBeCloseTo(-20, 6);
-    });
-
-    it("leaves the iteration it appended readable off the log", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      expect(lastIterationOf(repo.dir)).toStrictEqual(asLogged(result.record));
-    });
-
-    it("records the primary's own delta as null rather than as no change", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
-
-      // Assert
-      expect.soft(result.record.primary).toStrictEqual({
-        kind: "metric",
-        name: "total_ms",
-        deltaPct: null,
-      });
-      expect(result.record.outcome).toBe("no-signal");
-    });
-
-    it("states no percentage beside the verdict it reports", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
-
-      // Assert
-      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
-      expect.soft(primary).toContain("verdict: NO-SIGNAL");
-      expect(primary).not.toMatch(/NaN|null|%/);
-    });
-
-    it("measures again after an iteration the log already holds a null delta for", async () => {
-      // Arrange
-      appendRecord(sessionJsonlPath(repo.dir), undefinedDeltaIteration(1));
-      appendRecord(sessionJsonlPath(repo.dir), committedKeep(1));
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      expect(result.record.seq).toBe(2);
-    });
-  });
-
-  describe("when the named primary metric is one the bench never reported", () => {
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubSamples(repo.dir, improvedRounds(), baselineRounds());
-    });
-
-    it("records the primary's delta as null rather than as no change", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "startup_ms" }));
-
-      // Assert
-      expect.soft(result.record.primary).toStrictEqual({
-        kind: "metric",
-        name: "startup_ms",
-        deltaPct: null,
-      });
-      expect(result.record.outcome).toBe("no-signal");
-    });
-
-    it("states no percentage beside the verdict it reports", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "startup_ms" }));
-
-      // Assert
-      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
-      expect(primary).toBe("primary: · verdict: NO-SIGNAL");
-    });
-  });
-
-  describe("when the geomean primary has no qualifying inputs", () => {
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubSamples(repo.dir, improvedRounds(), baselineRounds());
-    });
-
-    it("records null delta when every metric is non-gating", async () => {
-      // Act
-      const result = await iterateSession(
-        repo.dir,
-        resolvedConfig({
-          metrics: { total_ms: { gating: false }, alloc_bytes: { gating: false } },
-        }),
-      );
-
-      // Assert
-      expect(result.record.primary).toStrictEqual({
-        kind: "geomean",
-        deltaPct: null,
-      });
-    });
-
-    it("records null delta when every metric exceeds the unstable noise threshold", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ unstableNoisePct: 0 }));
-
-      // Assert
-      expect(result.record.primary).toStrictEqual({
-        kind: "geomean",
-        deltaPct: null,
-      });
-    });
-
-    it("states no percentage beside the geomean verdict it reports", async () => {
-      // Act
-      const result = await iterateSession(
-        repo.dir,
-        resolvedConfig({
-          metrics: { total_ms: { gating: false }, alloc_bytes: { gating: false } },
-        }),
-      );
-
-      // Assert
-      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
-      expect.soft(primary).toContain("NO-SIGNAL");
-      expect(primary).not.toMatch(/NaN|0\.0%/);
-    });
-  });
-
-  describe("when the named primary metric came back exactly where it started", () => {
-    beforeEach(() => {
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubSamples(repo.dir, baselineRounds(), baselineRounds());
-    });
-
-    it("records that measured zero and states it as a percentage", async () => {
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ primary: "total_ms" }));
-
-      // Assert
-      expect.soft(result.record.primary).toStrictEqual({
-        kind: "metric",
-        name: "total_ms",
-        deltaPct: 0,
-      });
-      const primary = trimmedReportLines(result.report).find((line) => line.startsWith("primary:"));
-      expect(primary).toBe("primary: 0.0% · verdict: NO-SIGNAL");
-    });
-  });
-
-  describe.each([
-    {
-      outcome: "improved",
-      word: "IMPROVED",
-      experiment: improvedRounds(),
-      nextStep: "Hint: gymrat keep",
-    },
-    {
-      outcome: "regressed",
-      word: "REGRESSED",
-      experiment: regressedRounds(),
-      nextStep: "Hint: fix or gymrat discard",
-    },
-    {
-      outcome: "no-signal",
-      word: "NO-SIGNAL",
-      experiment: noisyRounds(),
-      nextStep: "Hint: gymrat keep or gymrat discard",
-    },
-  ])("when the measurement comes out $outcome", ({ outcome, word, experiment, nextStep }) => {
-    it("closes the report on that verdict and the step it calls for", async () => {
-      // Arrange
-      writeSessionLog(repo.dir, sessionRecord(repo.dir));
-      stubSamples(repo.dir, experiment, baselineRounds());
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig());
-
-      // Assert
-      const lines = stripAnsi(result.report).split("\n");
-      expect.soft(result.record.outcome).toBe(outcome);
-      expect.soft(lines.at(-2)).toContain(word);
-      expect(lines.at(-1)).toBe(nextStep);
-    });
-  });
-
-  describe("when the config declares a command for a stage", () => {
-    /** The experiment worktree the hooks run in, laid down so a command can start there. */
-    let experimentDir: string;
-    let hookCommand: HookScripts["hookCommand"];
-    let printing: HookScripts["printing"];
-
-    /** A command filing its payload away where the assertions can read it back. */
-    function capturingPayload(stage: "before" | "after"): string {
-      return hookCommand(
-        `import fs from "node:fs";\n` +
-          `const chunks = [];\n` +
-          `process.stdin.on("data", (chunk) => chunks.push(chunk));\n` +
-          `process.stdin.on("end", () => {\n` +
-          `  fs.writeFileSync(${JSON.stringify(`${stage}.json`)}, Buffer.concat(chunks));\n` +
-          `});\n`,
-      );
-    }
-
-    /**
-     * The payload the `stage` hook was handed, as the hook itself saw it.
-     *
-     * The capturing command names the file relatively, so reading it back out of
-     * the experiment worktree is also what proves the hook ran there.
-     */
-    function payloadOf(stage: "before" | "after"): unknown {
-      return JSON.parse(fs.readFileSync(path.join(experimentDir, `${stage}.json`), "utf-8"));
-    }
-
-    /** Every hook record the session log holds, oldest first. */
-    function hookRecords(): HookRecord[] {
-      return readRecords(sessionJsonlPath(repo.dir)).filter((record) => record.type === "hook");
-    }
-
-    beforeEach(() => {
-      experimentDir = sessionRecord(repo.dir).worktrees.experiment;
-      fs.mkdirSync(experimentDir, { recursive: true });
-      ({ hookCommand, printing } = hookScripts(repo.dir));
-      writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1), committedKeep(1)]);
-      stubSamples(repo.dir, improvedRounds(), baselineRounds());
-    });
-
-    it("fires the before hook ahead of the measurement and the after hook once it is on file", async () => {
-      // Arrange
-      const hooks = { before: printing("hi"), after: printing("bye") };
-
-      // Act
-      await iterateSession(repo.dir, resolvedConfig({ hooks }));
-
-      // Assert
-      const records = readRecords(sessionJsonlPath(repo.dir));
-      expect
-        .soft(records.map((record) => record.type))
-        .toStrictEqual(["session", "iteration", "keep", "hook", "iteration", "hook"]);
-      expect(records.filter((record) => record.type === "hook")).toStrictEqual([
-        expectedHookRecord({ stage: "before", seq: 2, exitCode: 0, stdoutBytes: 3 }),
-        expectedHookRecord({ stage: "after", seq: 2, exitCode: 0, stdoutBytes: 4 }),
-      ]);
-    });
-
-    it("tells each hook which iteration it sits next to", async () => {
-      // Arrange
-      const hooks = { before: capturingPayload("before"), after: capturingPayload("after") };
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ hooks }));
-
-      // Assert
-      expect.soft(payloadOf("before")).toStrictEqual({
-        stage: "before",
-        experimentDir,
-        seq: 2,
-        lastIteration: iteration(1),
-        session: {
-          sessionId: SESSION_ID,
-          baseline: sessionRecord(repo.dir).baseline,
-          branch: `gymrat/${SESSION_ID}`,
-          iterationCount: 1,
-        },
-      });
-      expect(payloadOf("after")).toStrictEqual({
-        stage: "after",
-        experimentDir,
-        seq: 2,
-        lastIteration: asLogged(result.record),
-        session: {
-          sessionId: SESSION_ID,
-          baseline: sessionRecord(repo.dir).baseline,
-          branch: `gymrat/${SESSION_ID}`,
-          iterationCount: 2,
-        },
-      });
-    });
-
-    it("prints each hook's output around the measurement it brackets", async () => {
-      // Arrange
-      const hooks = {
-        before: printing("warmed the cache"),
-        after: printing("archived the samples"),
-      };
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ hooks }));
-
-      // Assert
-      const lines = trimmedReportLines(result.report);
-      expect.soft(lines[0]).toBe("[before] warmed the cache");
-      expect.soft(lines.at(-1)).toBe("[after] archived the samples");
-      expect(lines[1]).toBe("iteration 2 · experiment vs baseline · 10 paired samples");
-    });
-
-    it("measures on past a hook that failed, reporting and recording the failure", async () => {
-      // Arrange
-      const before = hookCommand(
-        `process.stderr.write("no warm copy\\n");\nprocess.exitCode = 3;\n`,
-      );
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ hooks: { before } }));
-
-      // Assert
-      expect
-        .soft(trimmedReportLines(result.report).slice(0, 2))
-        .toStrictEqual(["[before] hook exited 3", "[before] no warm copy"]);
-      expect.soft(hookRecords()).toStrictEqual([
-        expectedHookRecord({
-          stage: "before",
-          seq: 2,
-          exitCode: 3,
-          stdoutBytes: 0,
-          stderrBytes: 13,
-        }),
-      ]);
-      expect.soft(lastIterationOf(repo.dir).seq).toBe(2);
-      expect(result.record.outcome).toBe("improved");
-    });
-
-    it.each([
-      { description: "the config declares no hooks at all", withAfter: false },
-      { description: "the config declares only the other stage", withAfter: true },
-    ])("runs nothing for the before stage when $description", async ({ withAfter }) => {
-      // Arrange
-      const hooks = withAfter ? { after: printing("bye") } : undefined;
-
-      // Act
-      const result = await iterateSession(repo.dir, resolvedConfig({ hooks }));
-
-      // Assert
-      expect
-        .soft(hookRecords().map((record) => record.stage))
-        .toStrictEqual(withAfter ? ["after"] : []);
-      expect(
-        trimmedReportLines(result.report).filter((line) => line.startsWith("[before]")),
-      ).toStrictEqual([]);
-    });
-  });
-});
-
-describe("the iterate command", () => {
-  it("measures the session in the repository it runs in and reports it on stdout", async () => {
-    // Arrange
-    writeSessionLog(repo.dir, sessionRecord(repo.dir));
-    stubSamples(repo.dir, improvedRounds(), baselineRounds());
-    process.chdir(repo.dir);
-    const program = createRunnableProgram({ exitOverride: "all", silent: true });
-    const readStdout = captureStdout();
-
-    // Act
-    await program.parseAsync(["node", "cli.js", "iterate", "--bench", "npm run bench"]);
-
-    // Assert
-    const lines = stripAnsi(readStdout()).split("\n").filter(Boolean);
-    expect.soft(lines[0]).toBe("iteration 1 · experiment vs baseline · 10 paired samples");
-    expect.soft(lines.at(-1)).toBe("Hint: gymrat keep");
-    expect(readRecords(sessionJsonlPath(repo.dir))).toHaveLength(2);
-  });
-
-  it("exits 1 when a configured stop condition has already been met", async () => {
-    // Arrange
-    writeSessionLog(repo.dir, sessionRecord(repo.dir), [iteration(1), committedKeep(1)]);
-    fs.writeFileSync(
-      path.join(repo.dir, "gymrat.json"),
-      JSON.stringify({ bench: "npm run bench", stop: { maxIterations: 1 } }),
-    );
-    process.chdir(repo.dir);
-    const program = createRunnableProgram({ exitOverride: "all", silent: true });
-    const stderrSpy = stubWrite(process.stderr);
-    mockProcessExit();
-
-    // Act
-    const parsing = program.parseAsync(["node", "cli.js", "iterate"]);
-
-    // Assert
-    await expect(parsing).rejects.toHaveProperty("exitCode", 1);
-    const stderrText = stderrSpy.mock.calls.map((call) => String(call[0])).join("");
-    expect.soft(stderrText).toContain("max iterations");
-    expect(collectSamplesMock).not.toHaveBeenCalled();
-  });
-
-  it("exits 2 with a start hint when the repository holds no session", async () => {
-    // Arrange
-    process.chdir(repo.dir);
-    const program = createRunnableProgram({ exitOverride: "all", silent: true });
-    const stderrSpy = stubWrite(process.stderr);
-    mockProcessExit();
-
-    // Act
-    const parsing = program.parseAsync(["node", "cli.js", "iterate", "--bench", "npm run bench"]);
-
-    // Assert
-    await expect(parsing).rejects.toHaveProperty("exitCode", 2);
-    const stderrText = stderrSpy.mock.calls.map((call) => String(call[0])).join("");
-    expect(stderrText).toContain("gymrat start");
   });
 });

@@ -35,14 +35,11 @@ function installedCleanup(): {
 describe("installTerminationCleanup", () => {
   describe("before uninstall", () => {
     it("runs cleanup then exits 128+signum on SIGINT", () => {
-      // Arrange
       const { cleanup, before, uninstall } = installedCleanup();
 
       try {
-        // Act
         const code = raiseSignal("SIGINT", before);
 
-        // Assert
         expect(cleanup).toHaveBeenCalledOnce();
         expect(code).toBe(SIGINT_EXIT_CODE);
       } finally {
@@ -54,15 +51,12 @@ describe("installTerminationCleanup", () => {
 
   describe("after uninstall", () => {
     it("a signal still exits with 128+signum (exit-only handler remains)", () => {
-      // Arrange
       const { before, uninstall } = installedCleanup();
       uninstall();
 
       try {
-        // Act
         const code = raiseSignal("SIGINT", before);
 
-        // Assert
         expect(code).toBe(SIGINT_EXIT_CODE);
       } finally {
         removeLeakedListeners("SIGINT", before);
@@ -70,15 +64,13 @@ describe("installTerminationCleanup", () => {
     });
 
     it("does not run cleanup on a post-uninstall signal", () => {
-      // Arrange
       const { cleanup, before, uninstall } = installedCleanup();
       uninstall();
 
       try {
-        // Act
         const code = raiseSignal("SIGINT", before);
 
-        // Assert - the code pins that a handler ran at all: swallowing whatever
+        // The code pins that a handler ran at all: swallowing whatever
         // `raiseSignal` threw would let "no handler installed" pass as "cleanup
         // did not run".
         expect.soft(code).toBe(SIGINT_EXIT_CODE);
@@ -91,9 +83,8 @@ describe("installTerminationCleanup", () => {
 
   describe("when a cleanup throws", () => {
     it("still runs remaining cleanups and exits with 128+signum", () => {
-      // Arrange
       stubProcessExit();
-      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const before = process.listeners("SIGINT").slice();
       const throwingCleanup = vi.fn(() => {
         throw new Error("cleanup boom");
@@ -103,13 +94,11 @@ describe("installTerminationCleanup", () => {
       const uninstall2 = installTerminationCleanup(survivingCleanup);
 
       try {
-        // Act
         const code = raiseSignal("SIGINT", before);
 
-        // Assert
         expect.soft(throwingCleanup).toHaveBeenCalledOnce();
         expect.soft(survivingCleanup).toHaveBeenCalledOnce();
-        expect.soft(console.warn).toHaveBeenCalled();
+        expect.soft(warnSpy).toHaveBeenCalled();
         expect(code).toBe(SIGINT_EXIT_CODE);
       } finally {
         uninstall1();
@@ -121,7 +110,6 @@ describe("installTerminationCleanup", () => {
 
   describe("across sequential runs", () => {
     it("runs the second run's cleanup on a signal after the first run was uninstalled", () => {
-      // Arrange
       stubProcessExit();
       const firstCleanup = vi.fn();
       const secondCleanup = vi.fn();
@@ -130,10 +118,8 @@ describe("installTerminationCleanup", () => {
       const uninstallSecond = installTerminationCleanup(secondCleanup);
 
       try {
-        // Act
         const code = raiseSignal("SIGINT", before);
 
-        // Assert
         expect.soft(secondCleanup).toHaveBeenCalledOnce();
         expect.soft(firstCleanup).not.toHaveBeenCalled();
         expect(code).toBe(SIGINT_EXIT_CODE);
@@ -144,18 +130,16 @@ describe("installTerminationCleanup", () => {
     });
 
     it("keeps the listener count flat across repeated install/uninstall cycles", () => {
-      // Arrange
       const baseline = snapshotSignalListeners();
       installTerminationCleanup(vi.fn())();
       const afterOneCycle = signalListenerCounts();
 
       try {
-        // Act - well past the 10-listener default that triggers a MaxListeners warning
+        // Well past the 10-listener default that triggers a MaxListeners warning
         for (let cycle = 0; cycle < 12; cycle += 1) {
           installTerminationCleanup(vi.fn())();
         }
 
-        // Assert
         expect(signalListenerCounts()).toStrictEqual(afterOneCycle);
       } finally {
         removeAllLeakedListeners(baseline);

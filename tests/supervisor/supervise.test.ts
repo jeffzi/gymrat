@@ -74,6 +74,7 @@ describe("supervise", () => {
 
       const lines = readLogLines(logPath);
       expect(lines.length).toBeGreaterThanOrEqual(3);
+      // oxlint-disable-next-line vitest/prefer-strict-equal -- launch has optional-undefined keys that JSON.parse strips
       expect(lines[0]).toEqual(launch);
       expect(lines[1]).toMatchObject({ type: "text_delta", chunk: "hello" });
       expect(lines[2]).toMatchObject({ type: "usage_update" });
@@ -176,10 +177,11 @@ describe("supervise", () => {
 
       await vi.advanceTimersByTimeAsync(60_000);
       expect(capturedSignal).toBeDefined();
-      expect(capturedSignal!.aborted).toBe(false);
+      if (capturedSignal === undefined) throw new Error("signal not captured");
+      expect(capturedSignal.aborted).toBe(false);
 
       await vi.advanceTimersByTimeAsync(30_000);
-      expect(capturedSignal!.aborted).toBe(true);
+      expect(capturedSignal.aborted).toBe(true);
 
       await vi.advanceTimersByTimeAsync(300_000);
       const result = await resultPromise;
@@ -310,6 +312,7 @@ describe("supervise", () => {
       expect(result.endedBy).toBe("session");
 
       const lines = readLogLines(logPath);
+      // oxlint-disable-next-line vitest/prefer-strict-equal -- launch has optional-undefined keys that JSON.parse strips
       expect(lines[0]).toEqual(launch);
       const lineTypes = lines.map((l) =>
         typeof l === "object" && l !== null && "type" in l ? l.type : undefined,

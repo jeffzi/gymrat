@@ -1,4 +1,5 @@
-import type { BenchlessConfig, ConfigInspection } from "../config.js";
+import type { ConfigInspection } from "../config-inspect.js";
+import type { BenchlessConfig } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Report model
@@ -200,28 +201,7 @@ export function buildWorkflowSection(input: WorkflowInput): CheckSection {
         ),
   );
 
-  if (
-    config.stop !== undefined &&
-    (config.stop.targetValue !== undefined || config.stop.maxIterations !== undefined)
-  ) {
-    const parts: string[] = [];
-    if (config.stop.targetValue !== undefined) {
-      parts.push(`targetValue: ${String(config.stop.targetValue)}`);
-    }
-    if (config.stop.maxIterations !== undefined) {
-      parts.push(`maxIterations: ${String(config.stop.maxIterations)}`);
-    }
-    checks.push(okCheck("stop", `stop: ${parts.join(", ")}`));
-  } else {
-    checks.push(
-      issueCheck(
-        "stop",
-        "warn",
-        "stop is not configured",
-        "Without stop, a session has no finish line",
-      ),
-    );
-  }
+  checks.push(buildStopCheck(config));
 
   checks.push(
     config.runbook !== undefined
@@ -235,4 +215,26 @@ export function buildWorkflowSection(input: WorkflowInput): CheckSection {
   );
 
   return { title: "Workflow", checks };
+}
+
+function buildStopCheck(config: BenchlessConfig): Check {
+  if (
+    config.stop !== undefined &&
+    (config.stop.targetValue !== undefined || config.stop.maxIterations !== undefined)
+  ) {
+    const parts: string[] = [];
+    if (config.stop.targetValue !== undefined) {
+      parts.push(`targetValue: ${String(config.stop.targetValue)}`);
+    }
+    if (config.stop.maxIterations !== undefined) {
+      parts.push(`maxIterations: ${String(config.stop.maxIterations)}`);
+    }
+    return okCheck("stop", `stop: ${parts.join(", ")}`);
+  }
+  return issueCheck(
+    "stop",
+    "warn",
+    "stop is not configured",
+    "Without stop, a session has no finish line",
+  );
 }

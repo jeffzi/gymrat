@@ -4,6 +4,7 @@ import { vi } from "vitest";
 /** The signals gymrat installs termination cleanup for. */
 export const TERMINATION_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
+/** One of the termination signals gymrat installs cleanup for. */
 export type SignalName = (typeof TERMINATION_SIGNALS)[number];
 
 /** Thrown by the stubbed `process.exit` so a handler unwinds where it really would. */

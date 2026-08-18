@@ -44,8 +44,10 @@ describe("createEventLogWriter", () => {
 
       const lines = readFileSync(logPath, "utf-8").split("\n").filter(Boolean);
       expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0]!)).toStrictEqual(event1);
-      expect(JSON.parse(lines[1]!)).toStrictEqual(event2);
+      const line0 = lines[0] ?? "";
+      const line1 = lines[1] ?? "";
+      expect(JSON.parse(line0)).toStrictEqual(event1);
+      expect(JSON.parse(line1)).toStrictEqual(event2);
     });
 
     it("terminates each line with a newline", () => {
@@ -101,7 +103,8 @@ describe("createEventLogWriter", () => {
 
       const lines = readFileSync(logPath, "utf-8").split("\n").filter(Boolean);
       expect(lines).toHaveLength(1);
-      expect(JSON.parse(lines[0]!)).toStrictEqual(event);
+      const line0 = lines[0] ?? "";
+      expect(JSON.parse(line0)).toStrictEqual(event);
     });
   });
 });

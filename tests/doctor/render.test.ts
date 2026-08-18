@@ -46,7 +46,8 @@ describe("renderDoctorReport", () => {
 
       const output = renderDoctorReport(report);
 
-      const header = reportLines(output)[0]!;
+      const header = reportLines(output)[0] ?? "";
+      expect(header).toBeDefined();
       expect.soft(header).toContain("1.2.3");
       expect.soft(header).toContain("22.12.0");
       expect(header).toContain("linux");
@@ -103,8 +104,9 @@ describe("renderDoctorReport", () => {
 
       const hintLine = output.find((l) => l.includes("gymrat init"));
       expect(hintLine).toBeDefined();
-      expect(stripAnsi(hintLine!)).toMatch(/^ {4}/);
-      expect(stripAnsi(hintLine!)).not.toContain("`");
+      if (hintLine === undefined) throw new Error("hint line not found");
+      expect(stripAnsi(hintLine)).toMatch(/^ {4}/);
+      expect(stripAnsi(hintLine)).not.toContain("`");
     });
 
     it("omits the hint line when a check has no hint", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ConfigInspection } from "../../src/config.js";
+import type { ConfigInspection } from "../../src/config-inspect.js";
 import {
   buildConfigSection,
   buildEnvironmentSection,
@@ -10,6 +10,16 @@ import {
 } from "../../src/doctor/checks.js";
 import { createCheck } from "../fixtures/doctor.js";
 import { benchlessConfig } from "../fixtures/session-records.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function defined<T>(value: T | undefined | null): T {
+  expect(value).toBeDefined();
+  if (value == null) throw new Error("expected defined");
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -135,9 +145,8 @@ describe("buildEnvironmentSection", () => {
     it("produces an OK check", () => {
       const section = buildEnvironmentSection({ gitAvailable: true, insideGitRepo: true });
 
-      const gitCheck = section.checks.find((c) => c.name === "git");
-      expect(gitCheck).toBeDefined();
-      expect(gitCheck!.status).toBe("ok");
+      const gitCheck = defined(section.checks.find((c) => c.name === "git"));
+      expect(gitCheck.status).toBe("ok");
     });
   });
 
@@ -145,10 +154,9 @@ describe("buildEnvironmentSection", () => {
     it("produces a FAIL check with install hint", () => {
       const section = buildEnvironmentSection({ gitAvailable: false, insideGitRepo: false });
 
-      const gitCheck = section.checks.find((c) => c.name === "git");
-      expect(gitCheck).toBeDefined();
-      expect(gitCheck!.status).toBe("fail");
-      expect(gitCheck!.hint).toBeDefined();
+      const gitCheck = defined(section.checks.find((c) => c.name === "git"));
+      expect(gitCheck.status).toBe("fail");
+      expect(gitCheck.hint).toBeDefined();
     });
   });
 
@@ -156,9 +164,8 @@ describe("buildEnvironmentSection", () => {
     it("produces an OK check", () => {
       const section = buildEnvironmentSection({ gitAvailable: true, insideGitRepo: true });
 
-      const repoCheck = section.checks.find((c) => c.name === "git repository");
-      expect(repoCheck).toBeDefined();
-      expect(repoCheck!.status).toBe("ok");
+      const repoCheck = defined(section.checks.find((c) => c.name === "git repository"));
+      expect(repoCheck.status).toBe("ok");
     });
   });
 
@@ -166,9 +173,8 @@ describe("buildEnvironmentSection", () => {
     it("produces a WARN check", () => {
       const section = buildEnvironmentSection({ gitAvailable: true, insideGitRepo: false });
 
-      const repoCheck = section.checks.find((c) => c.name === "git repository");
-      expect(repoCheck).toBeDefined();
-      expect(repoCheck!.status).toBe("warn");
+      const repoCheck = defined(section.checks.find((c) => c.name === "git repository"));
+      expect(repoCheck.status).toBe("warn");
     });
   });
 
@@ -180,10 +186,9 @@ describe("buildEnvironmentSection", () => {
         gitError: "permission denied",
       });
 
-      const rootCheck = section.checks.find((c) => c.name === "git repository root");
-      expect(rootCheck).toBeDefined();
-      expect(rootCheck!.status).toBe("warn");
-      expect(rootCheck!.detail).toContain("permission denied");
+      const rootCheck = defined(section.checks.find((c) => c.name === "git repository root"));
+      expect(rootCheck.status).toBe("warn");
+      expect(rootCheck.detail).toContain("permission denied");
     });
   });
 });
@@ -210,8 +215,9 @@ describe("buildConfigSection", () => {
       const section = buildConfigSection(inspection);
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("ok");
-      expect(section.checks[0]!.detail).toContain("/my/project/gymrat.json");
+      const check = defined(section.checks[0]);
+      expect(check.status).toBe("ok");
+      expect(check.detail).toContain("/my/project/gymrat.json");
     });
   });
 
@@ -227,8 +233,9 @@ describe("buildConfigSection", () => {
       const section = buildConfigSection(inspection);
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("ok");
-      expect(section.checks[0]!.detail).toMatch(/defaults/i);
+      const check = defined(section.checks[0]);
+      expect(check.status).toBe("ok");
+      expect(check.detail).toMatch(/defaults/i);
     });
   });
 
@@ -248,8 +255,8 @@ describe("buildConfigSection", () => {
 
       const failChecks = section.checks.filter((c) => c.status === "fail");
       expect(failChecks).toHaveLength(2);
-      expect(failChecks[0]!.detail).toBe(problems[0]);
-      expect(failChecks[1]!.detail).toBe(problems[1]);
+      expect(defined(failChecks[0]).detail).toBe(problems[0]);
+      expect(defined(failChecks[1]).detail).toBe(problems[1]);
     });
   });
 });
@@ -278,8 +285,9 @@ describe("buildWorkflowSection", () => {
       });
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("ok");
-      expect(section.checks[0]!.detail).toMatch(/fix config/i);
+      const check = defined(section.checks[0]);
+      expect(check.status).toBe("ok");
+      expect(check.detail).toMatch(/fix config/i);
     });
 
     it("does not produce skill file, checks, stop, or runbook warnings", () => {
@@ -306,9 +314,8 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const skillCheck = section.checks.find((c) => c.name === "skill file");
-        expect(skillCheck).toBeDefined();
-        expect(skillCheck!.status).toBe("ok");
+        const skillCheck = defined(section.checks.find((c) => c.name === "skill file"));
+        expect(skillCheck.status).toBe("ok");
       });
     });
 
@@ -320,11 +327,10 @@ describe("buildWorkflowSection", () => {
           skillFileExists: false,
         });
 
-        const skillCheck = section.checks.find((c) => c.name === "skill file");
-        expect(skillCheck).toBeDefined();
-        expect(skillCheck!.status).toBe("warn");
-        expect.soft(skillCheck!.hint).toContain("npx skills add jeffzi/gymrat");
-        expect(skillCheck!.hint).toContain("gymrat init");
+        const skillCheck = defined(section.checks.find((c) => c.name === "skill file"));
+        expect(skillCheck.status).toBe("warn");
+        expect.soft(skillCheck.hint).toContain("npx skills add jeffzi/gymrat");
+        expect(skillCheck.hint).toContain("gymrat init");
       });
     });
   });
@@ -339,10 +345,9 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const checksCheck = section.checks.find((c) => c.name === "checks");
-        expect(checksCheck).toBeDefined();
-        expect(checksCheck!.status).toBe("ok");
-        expect(checksCheck!.detail).toContain("npm test");
+        const checksCheck = defined(section.checks.find((c) => c.name === "checks"));
+        expect(checksCheck.status).toBe("ok");
+        expect(checksCheck.detail).toContain("npm test");
       });
     });
 
@@ -354,10 +359,9 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const checksCheck = section.checks.find((c) => c.name === "checks");
-        expect(checksCheck).toBeDefined();
-        expect(checksCheck!.status).toBe("warn");
-        expect(checksCheck!.hint).toMatch(/keep/i);
+        const checksCheck = defined(section.checks.find((c) => c.name === "checks"));
+        expect(checksCheck.status).toBe("warn");
+        expect(checksCheck.hint).toMatch(/keep/i);
       });
     });
   });
@@ -375,10 +379,9 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const stopCheck = section.checks.find((c) => c.name === "stop");
-        expect(stopCheck).toBeDefined();
-        expect(stopCheck!.status).toBe("ok");
-        expect(stopCheck!.detail).toContain("20");
+        const stopCheck = defined(section.checks.find((c) => c.name === "stop"));
+        expect(stopCheck.status).toBe("ok");
+        expect(stopCheck.detail).toContain("20");
       });
     });
 
@@ -394,11 +397,10 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const stopCheck = section.checks.find((c) => c.name === "stop");
-        expect(stopCheck).toBeDefined();
-        expect(stopCheck!.status).toBe("ok");
-        expect(stopCheck!.detail).toContain("20");
-        expect(stopCheck!.detail).toContain("1.5");
+        const stopCheck = defined(section.checks.find((c) => c.name === "stop"));
+        expect(stopCheck.status).toBe("ok");
+        expect(stopCheck.detail).toContain("20");
+        expect(stopCheck.detail).toContain("1.5");
       });
     });
 
@@ -410,10 +412,9 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const stopCheck = section.checks.find((c) => c.name === "stop");
-        expect(stopCheck).toBeDefined();
-        expect(stopCheck!.status).toBe("warn");
-        expect(stopCheck!.hint).toBeDefined();
+        const stopCheck = defined(section.checks.find((c) => c.name === "stop"));
+        expect(stopCheck.status).toBe("warn");
+        expect(stopCheck.hint).toBeDefined();
       });
     });
 
@@ -426,10 +427,9 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const stopCheck = section.checks.find((c) => c.name === "stop");
-        expect(stopCheck).toBeDefined();
-        expect(stopCheck!.status).toBe("warn");
-        expect(stopCheck!.hint).toBeDefined();
+        const stopCheck = defined(section.checks.find((c) => c.name === "stop"));
+        expect(stopCheck.status).toBe("warn");
+        expect(stopCheck.hint).toBeDefined();
       });
     });
   });
@@ -444,10 +444,9 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const runbookCheck = section.checks.find((c) => c.name === "runbook");
-        expect(runbookCheck).toBeDefined();
-        expect(runbookCheck!.status).toBe("ok");
-        expect(runbookCheck!.detail).toContain("./RUNBOOK.md");
+        const runbookCheck = defined(section.checks.find((c) => c.name === "runbook"));
+        expect(runbookCheck.status).toBe("ok");
+        expect(runbookCheck.detail).toContain("./RUNBOOK.md");
       });
     });
 
@@ -459,11 +458,10 @@ describe("buildWorkflowSection", () => {
           skillFileExists: true,
         });
 
-        const runbookCheck = section.checks.find((c) => c.name === "runbook");
-        expect(runbookCheck).toBeDefined();
-        expect(runbookCheck!.status).toBe("warn");
-        expect.soft(runbookCheck!.hint).toMatch(/supervise/i);
-        expect(runbookCheck!.hint).toContain("gymrat init");
+        const runbookCheck = defined(section.checks.find((c) => c.name === "runbook"));
+        expect(runbookCheck.status).toBe("warn");
+        expect.soft(runbookCheck.hint).toMatch(/supervise/i);
+        expect(runbookCheck.hint).toContain("gymrat init");
       });
     });
   });

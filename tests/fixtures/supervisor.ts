@@ -2,6 +2,7 @@ import type { QueryFn } from "../../src/supervisor/claude.js";
 import type { SessionPrompt } from "../../src/supervisor/driver.js";
 import type { LaunchEvent, SessionEvent, SessionObserver } from "../../src/supervisor/events.js";
 
+/** Build a SessionPrompt with a default kickoff and cwd, overridable per field. */
 export function makePrompt(overrides: Partial<SessionPrompt> = {}): SessionPrompt {
   return {
     kickoff: "do the thing",
@@ -10,6 +11,7 @@ export function makePrompt(overrides: Partial<SessionPrompt> = {}): SessionPromp
   };
 }
 
+/** An observer plus the array of events it has recorded, in order. */
 export function collectingObserver(): { events: SessionEvent[]; observer: SessionObserver } {
   const events: SessionEvent[] = [];
   const observer: SessionObserver = (e) => {
@@ -18,6 +20,7 @@ export function collectingObserver(): { events: SessionEvent[]; observer: Sessio
   return { events, observer };
 }
 
+/** Build a LaunchEvent with sensible defaults, overridable per field. */
 export function makeLaunch(overrides: Partial<LaunchEvent> = {}): LaunchEvent {
   return {
     type: "launch",
@@ -33,6 +36,7 @@ export function makeLaunch(overrides: Partial<LaunchEvent> = {}): LaunchEvent {
   };
 }
 
+/** An observer that discards every event, for tests that don't inspect them. */
 export function noopObserver(): SessionObserver {
   return () => {};
 }

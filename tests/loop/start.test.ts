@@ -112,10 +112,8 @@ afterEach(() => {
 describe("startSession", () => {
   describe("when the repository holds no session yet", () => {
     it("writes a header naming the baseline, branch, worktrees, and config snapshot", () => {
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(readRecords(sessionJsonlPath(repo.dir))).toStrictEqual([
         {
           type: "session",
@@ -137,34 +135,26 @@ describe("startSession", () => {
     });
 
     it("leaves hooks out of the config snapshot when none are configured", () => {
-      // Act
       startSession(repo.dir, "main", CONFIG_WITHOUT_HOOKS);
 
-      // Assert
       expect(sessionHeaderOf(repo.dir).config).not.toHaveProperty("hooks");
     });
 
     it("names the session branch after the session id", () => {
-      // Act
       const result = startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(result.session.branch).toBe(`gymrat/${result.session.sessionId}`);
     });
 
     it("checks out the experiment and baseline worktrees", () => {
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(detectWorkspace(repo.dir)).toBe(true);
     });
 
     it("returns the recorded session with no history behind it", () => {
-      // Act
       const result = startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(result).toStrictEqual({
         session: sessionHeaderOf(repo.dir),
         state: {
@@ -185,25 +175,20 @@ describe("startSession", () => {
     });
 
     it("pins the baseline at HEAD when no ref is given", () => {
-      // Act
       const result = startSession(repo.dir, undefined, CONFIG);
 
-      // Assert
       expect(result.session.baseline).toStrictEqual({ ref: "HEAD", sha: headSha });
     });
   });
 
   describe("when a session is already on disk", () => {
     it("returns the recorded session and its counts without appending a record", () => {
-      // Arrange
       const created = startSession(repo.dir, "main", CONFIG).session;
       appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
       appendRecord(sessionJsonlPath(repo.dir), committedKeep(1));
 
-      // Act
       const result = startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect.soft(result.session).toStrictEqual(created);
       expect.soft(result.resumed).toBe(true);
       expect.soft(result.state.iterationCount).toBe(1);
@@ -212,41 +197,32 @@ describe("startSession", () => {
     });
 
     it("puts back a worktree that went missing", () => {
-      // Arrange
       startSession(repo.dir, "main", CONFIG);
       fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(detectWorkspace(repo.dir)).toBe(true);
     });
   });
 
   describe("when the session on disk was finalized", () => {
     it("moves the closed log aside under the session id it belonged to", () => {
-      // Arrange
       startSession(repo.dir, "main", CONFIG);
       const closed = closeSessionWithOneKeep();
       const closedLog = readRecords(sessionJsonlPath(repo.dir));
 
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(readRecords(archivedSessionPath(repo.dir, closed))).toStrictEqual(closedLog);
     });
 
     it("opens a fresh session in the log the closed one left rather than resuming it", () => {
-      // Arrange
       startSession(repo.dir, "main", CONFIG);
       const closed = closeSessionWithOneKeep();
 
-      // Act
       const result = startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect.soft(result.archived).toBe(closed);
       expect.soft(result.archivedPath).toBe(archivedSessionPath(repo.dir, closed));
       expect.soft(result.resumed).toBe(false);
@@ -256,14 +232,12 @@ describe("startSession", () => {
     });
 
     it("checks out both worktrees at the pinned baseline, carrying no kept commit over", () => {
-      // Arrange - finalize took the closed session's worktrees off disk
+      // Finalize took the closed session's worktrees off disk
       startSession(repo.dir, "main", CONFIG);
       closeSessionWithOneKeep();
 
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect.soft(git(["rev-parse", "HEAD"], experimentWorktreeDir(repo.dir))).toBe(headSha);
       expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(headSha);
     });
@@ -275,17 +249,16 @@ describe("startSession", () => {
     "when the fresh session after a finalize cannot build its workspace",
     () => {
       it("puts the closed log back, failing with the git step that broke", () => {
-        // Arrange - installed once the closed session is settled, so only the
+        // Installed once the closed session is settled, so only the
         // fresh session's worktree checkouts die.
         startSession(repo.dir, "main", CONFIG);
         const closed = closeSessionWithOneKeep();
         const closedLog = readRecords(sessionJsonlPath(repo.dir));
         killGitDuringWorktreeAdd(repo.dir);
 
-        // Act
         const error = captureGymratError(() => startSession(repo.dir, "main", CONFIG));
 
-        // Assert - the rollback's own failure never speaks for the start's.
+        // The rollback's own failure never speaks for the start's.
         expect.soft(error.message).toMatch(/cannot create the experiment worktree/i);
         expect.soft(readRecords(sessionJsonlPath(repo.dir))).toStrictEqual(closedLog);
         expect(fs.existsSync(archivedSessionPath(repo.dir, closed))).toBe(false);
@@ -295,40 +268,32 @@ describe("startSession", () => {
 
   describe("when the baseline worktree went missing", () => {
     it("puts it back at the last kept commit", () => {
-      // Arrange
       startSession(repo.dir, "main", CONFIG);
       const kept = commitInExperiment(repo.dir, "cache the regex");
       appendRecord(sessionJsonlPath(repo.dir), iterationRecord({ seq: 1 }));
       appendRecord(sessionJsonlPath(repo.dir), committedKeep(1, { commit: kept }));
       fs.rmSync(baselineWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(kept);
     });
 
     it("puts it back at the pinned baseline SHA when nothing has been kept yet", () => {
-      // Arrange
       startSession(repo.dir, "main", CONFIG);
       commitInExperiment(repo.dir, "work the agent has not kept");
       fs.rmSync(baselineWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       startSession(repo.dir, "main", CONFIG);
 
-      // Assert
       expect(git(["rev-parse", "HEAD"], baselineWorktreeDir(repo.dir))).toBe(headSha);
     });
   });
 
   describe("when the baseline ref does not resolve", () => {
     it("throws a GymratError naming the ref and leaves no session behind", () => {
-      // Act
       const error = captureGymratError(() => startSession(repo.dir, "no-such-ref", CONFIG));
 
-      // Assert
       expect.soft(error.message).toContain("no-such-ref");
       expect(fs.existsSync(sessionJsonlPath(repo.dir))).toBe(false);
     });
@@ -337,23 +302,19 @@ describe("startSession", () => {
 
 describe("the start command", () => {
   it("creates a session in the repository it runs in and reports it on stdout", async () => {
-    // Arrange
     process.chdir(repo.dir);
     const program = createProgram();
     program.exitOverride();
     const readStdout = captureStdout();
 
-    // Act
     await program.parseAsync(["node", "cli.js", "start", "main", "--bench", "npm run bench"]);
 
-    // Assert
     const session = sessionHeaderOf(repo.dir);
     expect.soft(session.baseline).toStrictEqual({ ref: "main", sha: headSha });
     expect(readStdout()).toContain(session.branch);
   });
 
   it("names the closed session it archived when it opens a fresh one after a finalize", async () => {
-    // Arrange
     startSession(repo.dir, "main", CONFIG);
     const closed = closeSessionWithOneKeep();
     process.chdir(repo.dir);
@@ -361,10 +322,8 @@ describe("the start command", () => {
     program.exitOverride();
     const readStdout = captureStdout();
 
-    // Act
     await program.parseAsync(["node", "cli.js", "start", "main", "--bench", "npm run bench"]);
 
-    // Assert
     const stdout = readStdout();
     expect.soft(stdout).toMatch(/archived/i);
     expect(stdout).toContain(closed);

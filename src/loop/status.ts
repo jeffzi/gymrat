@@ -78,7 +78,7 @@ function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleS
         break;
       case "keep":
       case "discard":
-        lastBlock = applySettleRecord(states, pending, lastBlock, position, record);
+        lastBlock = applySettleRecord({ states, pending, lastBlock, position }, record);
         break;
       default:
         break;
@@ -98,13 +98,18 @@ function settleStates(records: readonly SessionLogRecord[]): Map<number, SettleS
  * moves to its own position and the iteration shows as discarded. Anything
  * else settles no iteration and keeps its own line.
  */
+interface SettleRecordContext {
+  states: Map<number, SettleState>;
+  pending: PendingIteration | undefined;
+  lastBlock: LastGatingBlock | undefined;
+  position: number;
+}
+
 function applySettleRecord(
-  states: Map<number, SettleState>,
-  pending: PendingIteration | undefined,
-  lastBlock: LastGatingBlock | undefined,
-  position: number,
+  ctx: SettleRecordContext,
   record: KeepRecord | DiscardRecord,
 ): LastGatingBlock | undefined {
+  const { states, pending, lastBlock, position } = ctx;
   const settle = settleStateOf(record);
 
   if (pending !== undefined && pending.seq === record.seq) {

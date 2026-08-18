@@ -90,14 +90,11 @@ afterEach(() => {
 describe("finalizeSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", () => {
-      // Arrange
       const empty = createScratchRepo();
 
       try {
-        // Act
         const error = captureGymratError(() => finalizeSession(empty.dir));
 
-        // Assert
         expect(error.hint).toContain("gymrat start");
       } finally {
         empty.cleanup();
@@ -107,14 +104,11 @@ describe("finalizeSession", () => {
 
   describe("when the session was already finalized", () => {
     it("refuses naming the closed session and pointing at a fresh start", () => {
-      // Arrange
       keepIteration(1, "cache the regex");
       finalizeSession(repo.dir);
 
-      // Act
       const error = captureGymratError(() => finalizeSession(repo.dir));
 
-      // Assert
       expect.soft(error.message).toContain(sessionHeader().sessionId);
       expect(error.hint).toContain("gymrat start");
     });
@@ -122,13 +116,10 @@ describe("finalizeSession", () => {
 
   describe("when nothing has been kept", () => {
     it("refuses with a hint to keep some work first, creating no branch and no record", () => {
-      // Arrange
       const before = records().length;
 
-      // Act
       const error = captureGymratError(() => finalizeSession(repo.dir));
 
-      // Assert
       expect.soft(error.hint).toMatch(/keep/i);
       expect.soft(git(["branch", "--list", "*-final"], repo.dir)).toBe("");
       expect(records()).toHaveLength(before);
@@ -137,15 +128,12 @@ describe("finalizeSession", () => {
 
   describe("when the last iteration is neither kept nor discarded", () => {
     it("refuses with a hint to settle it first, writing no record", () => {
-      // Arrange
       keepIteration(1, "cache the regex");
       appendRecord(jsonlPath(), iterationRecord({ seq: 2 }));
       const before = records().length;
 
-      // Act
       const error = captureGymratError(() => finalizeSession(repo.dir));
 
-      // Assert
       expect.soft(error.hint).toMatch(/keep/i);
       expect.soft(error.hint).toMatch(/discard/i);
       expect(records()).toHaveLength(before);
@@ -154,15 +142,12 @@ describe("finalizeSession", () => {
 
   describe("when the experiment worktree carries uncommitted work", () => {
     it("refuses with a hint to settle it first, writing no record", () => {
-      // Arrange
       keepIteration(1, "cache the regex");
       fs.writeFileSync(path.join(experimentWorktreeDir(repo.dir), "scratch.txt"), "notes\n");
       const before = records().length;
 
-      // Act
       const error = captureGymratError(() => finalizeSession(repo.dir));
 
-      // Assert
       expect.soft(error.hint).toMatch(/keep/i);
       expect.soft(error.hint).toMatch(/discard/i);
       expect(records()).toHaveLength(before);
@@ -171,29 +156,23 @@ describe("finalizeSession", () => {
 
   describe("when the experiment worktree is already gone from disk", () => {
     it("finalizes anyway rather than asking about work it cannot see", () => {
-      // Arrange
       keepIteration(1, "cache the regex");
       fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       expect(lastRecord()).toStrictEqual(result.record);
     });
   });
 
   describe("when a committed keep carries no message", () => {
     it("stands the keep's short commit in, leaving one body line per kept iteration", () => {
-      // Arrange
       keepIteration(1, "cache the regex");
       const commit = commitIteration(2, "hoist the loop");
       appendRecord(jsonlPath(), committedKeep(2, { commit, message: undefined }));
 
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       const subject = git(["log", "-1", "--format=%s", result.record.branch], repo.dir);
       const body = git(["log", "-1", "--format=%b", result.record.branch], repo.dir);
       expect.soft(subject).toContain("2 kept iterations");
@@ -201,14 +180,11 @@ describe("finalizeSession", () => {
     });
 
     it("stands a placeholder in when the keep names no commit either", () => {
-      // Arrange
       commitIteration(1, "cache the regex");
       appendRecord(jsonlPath(), committedKeep(1, { commit: undefined, message: undefined }));
 
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       const body = git(["log", "-1", "--format=%b", result.record.branch], repo.dir);
       expect(body.split("\n")).toStrictEqual(["(no message)"]);
     });
@@ -227,36 +203,28 @@ describe("finalizeSession", () => {
     });
 
     it("builds one commit carrying the session branch's tree on the pinned baseline", () => {
-      // Arrange
       const sessionTree = git(["rev-parse", `${sessionHeader().branch}^{tree}`], repo.dir);
 
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       expect.soft(git(["rev-parse", `${finalBranch}^{tree}`], repo.dir)).toBe(sessionTree);
       expect.soft(git(["rev-parse", `${finalBranch}^`], repo.dir)).toBe(baselineSha);
       expect(git(["rev-parse", finalBranch], repo.dir)).toBe(result.record.commit);
     });
 
     it("moves neither the repository's checkout nor the session branch", () => {
-      // Arrange
       const sessionHead = git(["rev-parse", sessionHeader().branch], repo.dir);
 
-      // Act
       finalizeSession(repo.dir);
 
-      // Assert
       expect.soft(git(["rev-parse", "HEAD"], repo.dir)).toBe(baselineSha);
       expect.soft(git(["rev-parse", "--abbrev-ref", "HEAD"], repo.dir)).toBe("main");
       expect(git(["rev-parse", sessionHeader().branch], repo.dir)).toBe(sessionHead);
     });
 
     it("appends a finalize record naming the branch and the squash commit", () => {
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       expect.soft(result.record).toStrictEqual({
         type: "finalize",
         // oxlint-disable-next-line typescript/no-unsafe-assignment -- vitest asymmetric matcher
@@ -270,20 +238,16 @@ describe("finalizeSession", () => {
     });
 
     it("takes both worktrees off disk and out of git's bookkeeping", () => {
-      // Act
       finalizeSession(repo.dir);
 
-      // Assert
       expect.soft(fs.existsSync(experimentWorktreeDir(repo.dir))).toBe(false);
       expect.soft(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
       expect(listWorktreeDirs(repo.dir, { includeMain: false })).toStrictEqual([]);
     });
 
     it("reports the branch, the short commit, the kept count, and the closed session", () => {
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       expect.soft(result.report).toContain(finalBranch);
       expect.soft(result.report).toContain(result.record.commit.slice(0, 7));
       expect.soft(result.report).toContain("2 kept");
@@ -291,10 +255,8 @@ describe("finalizeSession", () => {
     });
 
     it("generates a message naming the kept count over the kept commit messages", () => {
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       const subject = git(["log", "-1", "--format=%s", finalBranch], repo.dir);
       const body = git(["log", "-1", "--format=%b", finalBranch], repo.dir);
       expect.soft(subject).toContain("2 kept iterations");
@@ -303,10 +265,8 @@ describe("finalizeSession", () => {
     });
 
     it("commits the caller's message verbatim when given one", () => {
-      // Act
       const result = finalizeSession(repo.dir, { message: "squash the tuning session" });
 
-      // Assert
       expect
         .soft(git(["log", "-1", "--format=%B", finalBranch], repo.dir))
         .toBe("squash the tuning session");
@@ -314,38 +274,31 @@ describe("finalizeSession", () => {
     });
 
     it("points the caller's branch name at the squash commit when given one", () => {
-      // Act
       const result = finalizeSession(repo.dir, { branch: "perf/regex-cache" });
 
-      // Assert
       expect.soft(result.record.branch).toBe("perf/regex-cache");
       expect(git(["rev-parse", "perf/regex-cache"], repo.dir)).toBe(result.record.commit);
     });
 
     it("refuses when the branch it would create already exists, creating nothing", () => {
-      // Arrange
       git(["branch", finalBranch, baselineSha], repo.dir);
       const before = records().length;
 
-      // Act
       const error = captureGymratError(() => finalizeSession(repo.dir));
 
-      // Assert
       expect.soft(error.message).toContain(finalBranch);
       expect.soft(git(["rev-parse", finalBranch], repo.dir)).toBe(baselineSha);
       expect(records()).toHaveLength(before);
     });
 
     it("closes the session anyway when git refuses to remove a worktree", () => {
-      // Arrange - a locked worktree is the one git declines to take with a
+      // A locked worktree is the one git declines to take with a
       // single --force, standing in for any removal the filesystem blocks.
       const experiment = experimentWorktreeDir(repo.dir);
       git(["worktree", "lock", experiment], repo.dir);
 
-      // Act
       const result = finalizeSession(repo.dir);
 
-      // Assert
       expect.soft(result.report).toContain(experiment);
       expect.soft(result.report).toMatch(/git worktree remove/i);
       expect(lastRecord()).toStrictEqual(result.record);

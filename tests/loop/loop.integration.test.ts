@@ -173,7 +173,7 @@ describe("the gymrat loop – integration", () => {
         experiment: latencySamples(KEPT_LATENCY),
         baseline: latencySamples(BASELINE_LATENCY),
       });
-      expect(second?.samples).toEqual({
+      expect(second?.samples).toStrictEqual({
         experiment: latencySamples(DISCARDED_LATENCY),
         baseline: latencySamples(KEPT_LATENCY),
       });
@@ -236,7 +236,7 @@ describe("the gymrat loop – integration", () => {
     it(
       "refuses the second run with exit code 2 and lets the first one finish",
       async () => {
-        // Arrange - the gated bench holds the first run open until the test releases it.
+        // The gated bench holds the first run open until the test releases it.
         const lockPath = lockfilePath(repo.dir);
         const first = runCli(["iterate"]);
         await vi.waitFor(
@@ -246,11 +246,9 @@ describe("the gymrat loop – integration", () => {
           { timeout: 10_000, interval: 25 },
         );
 
-        // Act
         const second = await runCli(["iterate"]);
         fs.writeFileSync(gateFile, "");
 
-        // Assert
         expect.soft(second).toBe(2);
         expect.soft(await first).toBe(0);
         expect.soft(fs.existsSync(lockPath)).toBe(false);

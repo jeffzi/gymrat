@@ -4,7 +4,10 @@ import { metricRecord } from "./metrics.js";
 
 /** An exact verdict no exclusion rule drops, so ρ is 1 + delta/100 when lower is better. */
 export function exactVerdict(delta: number): MetricVerdict {
-  const verdict = delta < 0 ? "improved" : delta > 0 ? "regressed" : "no-signal";
+  let verdict: MetricVerdict["verdict"];
+  if (delta < 0) verdict = "improved";
+  else if (delta > 0) verdict = "regressed";
+  else verdict = "no-signal";
   return { verdict, method: "exact", delta, n: 1 };
 }
 

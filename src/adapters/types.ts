@@ -11,7 +11,7 @@ export type WarnSink = (message: string) => void;
 
 /** Default {@link WarnSink} for adapters called without an explicit one: prints to stderr. */
 export const warnToStderr: WarnSink = (message) => {
-  console.warn(message);
+  process.stderr.write(`${message}\n`);
 };
 
 /**

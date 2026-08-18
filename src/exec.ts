@@ -189,153 +189,127 @@ export async function exec(
   options: ExecOptions,
 ): Promise<ExecResult | ExecTimeoutError> {
   return new Promise((resolve) => {
-    // A signal already aborted when the call arrives is a cancellation, not a run:
-    // spawning would execute the command text and only then kill it. Settle with the
-    // shape a mid-run abort produces, so callers handle cancellation one way.
-    if (options.signal?.aborted) {
-      resolve(EMPTY_FAILURE_RESULT);
+    const spawned = trySpawn(command, options);
+    if ("exitCode" in spawned) {
+      resolve(spawned);
       return;
     }
+    wireChildEvents(spawned, options, resolve);
+  });
+}
 
-    // Some spawn failures are raised here rather than on the "error" event —
-    // ENOTDIR from a cwd that is not a directory is one. Both paths report the
-    // same way, so a caller never has to handle a rejection as well as a result.
-    let child: ChildProcess;
-    try {
-      child = spawn(command, {
-        shell: true,
-        cwd: options.cwd,
-        // POSIX: detach into its own process group so killTree can SIGKILL
-        // the whole group via negative PID. Windows has no process groups,
-        // and detached: true there allocates a new console that breaks
-        // stdio pipes — stdout/stderr go to the console instead of the pipe.
-        detached: process.platform !== "win32",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (err) {
-      const errMsg = `${messageOf(err)}\n`;
-      resolve({
-        stdout: "",
-        stderr: errMsg,
-        exitCode: FAILURE_EXIT_CODE,
-        stdoutBytes: 0,
-        stderrBytes: Buffer.byteLength(errMsg, "utf8"),
-      });
-      return;
-    }
+interface SpawnedChild {
+  child: ChildProcess;
+  stdout: Readable;
+  stderr: Readable;
+}
 
-    // fd exhaustion can leave stdio as null even though spawn did not throw.
-    // Settle as a failed run rather than crashing on null streams.
-    if (child.stdout === null || child.stderr === null || child.stdin === null) {
-      if (child.pid !== undefined) {
-        killTree(child.pid);
-      }
-      // The promise resolves with EMPTY_FAILURE_RESULT, so a subsequent
-      // async "error" event just needs to not crash the process.
-      child.on("error", () => {});
-      resolve(EMPTY_FAILURE_RESULT);
-      return;
-    }
+function trySpawn(command: string, options: ExecOptions): ExecResult | SpawnedChild {
+  // A signal already aborted when the call arrives is a cancellation, not a run.
+  if (options.signal?.aborted) {
+    return EMPTY_FAILURE_RESULT;
+  }
 
-    // Captured after the null guard so closures (settle, onFailure) see the
-    // narrowed non-null type without assertions.
-    const childStdout = child.stdout;
-    const childStderr = child.stderr;
-    const childStdin = child.stdin;
+  // Some spawn failures are raised here rather than on the "error" event —
+  // ENOTDIR from a cwd that is not a directory is one.
+  let child: ChildProcess;
+  try {
+    child = spawn(command, {
+      shell: true,
+      cwd: options.cwd,
+      // POSIX: detach into its own process group so killTree can SIGKILL
+      // the whole group via negative PID. Windows has no process groups,
+      // and detached: true there allocates a new console that breaks
+      // stdio pipes — stdout/stderr go to the console instead of the pipe.
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    const errMsg = `${messageOf(err)}\n`;
+    return {
+      stdout: "",
+      stderr: errMsg,
+      exitCode: FAILURE_EXIT_CODE,
+      stdoutBytes: 0,
+      stderrBytes: Buffer.byteLength(errMsg, "utf8"),
+    };
+  }
 
-    // setEncoding handles multi-byte characters that straddle pipe reads and
-    // flushes any partial sequence when the stream ends.
-    childStdout.setEncoding("utf8");
-    childStderr.setEncoding("utf8");
-
-    // A command is free to ignore its stdin, which closes the pipe under this
-    // write and raises EPIPE. Without a listener that would take the whole
-    // process down over a command doing something entirely reasonable.
-    childStdin.on("error", ignoreStdinError);
-    // Always end: a command that reads stdin must see end-of-input rather than
-    // block on a pipe no one will ever write to.
-    childStdin.end(options.stdin ?? "");
-
-    const output = captureOutput(childStdout, childStderr);
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    let resolved = false;
-
-    function settle(result: ExecResult | ExecTimeoutError): void {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timeoutHandle);
-      options.signal?.removeEventListener("abort", onAbort);
-      // The snapshot in `result` is final, but a descendant that survived the group
-      // kill still holds the write end of these pipes and would keep appending to
-      // `output`. Destroying the read end releases the pipe with the call.
-      childStdout.destroy();
-      childStderr.destroy();
-
-      // "close", "error", the timeout and the abort can all fire for one run;
-      // `resolved` keeps the first of them the only one.
-      // oxlint-disable-next-line promise/no-multiple-resolved
-      resolve(result);
-    }
-
-    function killGroup(): void {
-      // A spawn that failed outright never made a child, so there is no group to
-      // kill and nothing to report.
-      if (!child.pid) {
-        return;
-      }
+  // fd exhaustion can leave stdio as null even though spawn did not throw.
+  if (child.stdout === null || child.stderr === null || child.stdin === null) {
+    if (child.pid !== undefined) {
       killTree(child.pid);
     }
+    child.on("error", () => {});
+    return EMPTY_FAILURE_RESULT;
+  }
 
-    function onAbort(): void {
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+
+  child.stdin.on("error", ignoreStdinError);
+  child.stdin.end(options.stdin ?? "");
+
+  return { child, stdout: child.stdout, stderr: child.stderr };
+}
+
+function wireChildEvents(
+  spawned: SpawnedChild,
+  options: ExecOptions,
+  resolve: (value: ExecResult | ExecTimeoutError) => void,
+): void {
+  const { child, stdout: childStdout, stderr: childStderr } = spawned;
+  const output = captureOutput(childStdout, childStderr);
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  let resolved = false;
+
+  function settle(result: ExecResult | ExecTimeoutError): void {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(timeoutHandle);
+    options.signal?.removeEventListener("abort", onAbort);
+    childStdout.destroy();
+    childStderr.destroy();
+    // oxlint-disable-next-line promise/no-multiple-resolved
+    resolve(result);
+  }
+
+  function killGroup(): void {
+    if (!child.pid) return;
+    killTree(child.pid);
+  }
+
+  function onAbort(): void {
+    killGroup();
+    settle({ ...snapshotOutput(output), exitCode: FAILURE_EXIT_CODE });
+  }
+
+  const { timeoutMs } = options;
+  if (timeoutMs) {
+    timeoutHandle = setTimeout(() => {
       killGroup();
-      // Snapshot rather than wait for "close": the caller asked to stop now, and a
-      // descendant that outlived the group kill would still be holding the pipe.
-      settle({ ...snapshotOutput(output), exitCode: FAILURE_EXIT_CODE });
-    }
+      settle({ kind: "timeout", ...snapshotOutput(output), timeoutMs });
+    }, timeoutMs);
+  }
 
-    const { timeoutMs } = options;
-    if (timeoutMs) {
-      timeoutHandle = setTimeout(() => {
-        killGroup();
-        settle({ kind: "timeout", ...snapshotOutput(output), timeoutMs });
-      }, timeoutMs);
-    }
+  options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    // Aborting after this point is the only case left to listen for: a signal already
-    // aborted settled the call before the spawn, and nothing between there and here
-    // yields to the event loop.
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-
-    // "close", not "exit": it waits for the stdio pipes, which the shell's
-    // descendants can still be writing to after the shell itself is gone.
-    child.on("close", (code) => {
-      settle({ ...snapshotOutput(output), exitCode: code ?? FAILURE_EXIT_CODE });
-    });
-
-    function onFailure(err: Error): void {
-      // Settling clears the timeout and drops the abort listener, so this is the
-      // last point that can reach the group. A stdio failure leaves the child
-      // itself running: without this it would outlive the call, still holding its
-      // cwd.
-      killGroup();
-      const errSuffix = `${err.message}\n`;
-      settle({
-        ...snapshotOutput(output),
-        stderr: `${output.stderr}${errSuffix}`,
-        exitCode: FAILURE_EXIT_CODE,
-        stderrBytes: output.stderrBytes + Buffer.byteLength(errSuffix, "utf8"),
-      });
-    }
-
-    // A child that never started has nothing to say on its own stderr, so the
-    // spawn failure only reaches the caller if it is written there. Node emits
-    // this before any "close", so the cause survives the single-resolution guard.
-    child.on("error", onFailure);
-
-    // A pipe read can fail on its own (EIO on a closing pty, for one). Without a
-    // listener that is an unhandled "error" event, which takes the whole process
-    // down instead of failing the one call that owns the pipe.
-    childStdout.on("error", onFailure);
-    childStderr.on("error", onFailure);
+  child.on("close", (code) => {
+    settle({ ...snapshotOutput(output), exitCode: code ?? FAILURE_EXIT_CODE });
   });
+
+  function onFailure(err: Error): void {
+    killGroup();
+    const errSuffix = `${err.message}\n`;
+    settle({
+      ...snapshotOutput(output),
+      stderr: `${output.stderr}${errSuffix}`,
+      exitCode: FAILURE_EXIT_CODE,
+      stderrBytes: output.stderrBytes + Buffer.byteLength(errSuffix, "utf8"),
+    });
+  }
+
+  child.on("error", onFailure);
+  childStdout.on("error", onFailure);
+  childStderr.on("error", onFailure);
 }

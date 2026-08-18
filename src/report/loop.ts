@@ -168,6 +168,14 @@ function formatRerunLine(rerun: RerunConfirmation): string {
   return `${rerun.metric}: ${formatLabel(phrase.text, phrase.style)}`;
 }
 
+interface VerdictBlockOptions {
+  outcome: LoopOutcome;
+  primary: LoopPrimary;
+  nextStep: string;
+  reruns?: readonly RerunConfirmation[];
+  targetReached?: boolean;
+}
+
 /**
  * The lines closing an iteration: what a confirmation rerun settled, what the
  * primary figure did, the verdict read off it, and the step that follows.
@@ -183,13 +191,8 @@ function formatRerunLine(rerun: RerunConfirmation): string {
  * Returned as lines rather than a block of text so the caller appends them to
  * the report it already holds as lines.
  */
-export function formatVerdictBlock(
-  outcome: LoopOutcome,
-  primary: LoopPrimary,
-  nextStep: string,
-  reruns: readonly RerunConfirmation[] = [],
-  targetReached = false,
-): readonly string[] {
+export function formatVerdictBlock(options: VerdictBlockOptions): readonly string[] {
+  const { outcome, primary, nextStep, reruns = [], targetReached = false } = options;
   const verdict = formatLabel(OUTCOME_WORDS[outcome], OUTCOME_STYLES[outcome]);
   return [
     ...reruns.map(formatRerunLine),

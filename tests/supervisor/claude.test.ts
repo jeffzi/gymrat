@@ -281,7 +281,8 @@ describe("SDK message mapping", () => {
       const session = driver.start(makePrompt(), observer);
 
       await vi.advanceTimersByTimeAsync(150);
-      yieldGate!();
+      if (yieldGate === undefined) throw new Error("yieldGate not set");
+      yieldGate();
       await session.outcome;
 
       const toolEnds = events.filter((e) => e.type === "tool_end");

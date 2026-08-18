@@ -90,6 +90,8 @@ function buildComparisonResult(
   const candidateSampleSets = candidates.map((candidate) => candidate.samples);
 
   for (const metricName of Object.keys(metricMeta)) {
+    const meta = metricMeta[metricName];
+    if (meta === undefined) throw new Error(`missing meta for ${metricName}`);
     const baseline = computeMetricStats(
       baselinePairableValues(baselineSamples, candidateSampleSets, metricName),
     );
@@ -105,7 +107,7 @@ function buildComparisonResult(
           verdict: candidate.verdicts[metricName],
         };
       }),
-      meta: metricMeta[metricName]!,
+      meta,
     };
   }
 

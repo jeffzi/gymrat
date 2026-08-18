@@ -78,7 +78,7 @@ describe("describeKey", () => {
 describe("compile", () => {
   describe("when the schema uses a construct the compiler cannot handle", () => {
     it("throws at compile time instead of deferring to validation time", () => {
-      expect(() => compile(Type.Unsafe({}))).toThrow();
+      expect(() => compile(Type.Unsafe({}))).toThrow("Unknown type");
     });
   });
 });
@@ -267,7 +267,8 @@ describe("Validator.issues", () => {
       const issues = validator.issues({ bench: 42 });
 
       expect(issues).toHaveLength(1);
-      const issue = issues[0]!;
+      const issue = issues[0];
+      if (issue === undefined) throw new Error("expected at least one issue");
       expect(issue).toStrictEqual(
         expect.objectContaining({
           path: "bench",

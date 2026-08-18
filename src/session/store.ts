@@ -4,8 +4,10 @@ import path from "node:path";
 import { assertNever, GymratError, hintOf, messageOf } from "../errors.js";
 import { sessionJsonlPath } from "./paths.js";
 import type {
+  DiscardRecord,
   FinalizeRecord,
   IterationRecord,
+  KeepRecord,
   SessionLogRecord,
   SessionRecord,
 } from "./records.js";
@@ -192,76 +194,40 @@ export function readRecords(jsonlPath: string): SessionLogRecord[] {
  * a session header — belongs to {@link readRecords}.
  */
 export function foldSession(records: SessionLogRecord[]): SessionState {
-  /** Whether the iteration numbered `seq` reached the target metric. */
-  const targetReachedBySeq = new Map<number, boolean>();
-
-  let session: SessionRecord | undefined;
-  let iterationCount = 0;
-  let lastIteration: IterationRecord | undefined;
-  let unsettled = false;
-  let keepCount = 0;
-  let discardCount = 0;
-  let targetReachedAndKept = false;
-  let lastSeq = 0;
-  let lastKeptCommit: string | undefined;
-  let endsOnGatingBlock = false;
-  let finalized: FinalizeRecord | undefined;
+  const s: FoldState = {
+    targetReachedBySeq: new Map(),
+    session: undefined,
+    iterationCount: 0,
+    lastIteration: undefined,
+    unsettled: false,
+    keepCount: 0,
+    discardCount: 0,
+    targetReachedAndKept: false,
+    lastSeq: 0,
+    lastKeptCommit: undefined,
+    endsOnGatingBlock: false,
+    finalized: undefined,
+  };
 
   for (const record of records) {
     switch (record.type) {
       case "session":
-        session ??= record;
+        s.session ??= record;
         break;
       case "iteration":
-        iterationCount += 1;
-        lastSeq = Math.max(lastSeq, record.seq);
-        lastIteration = record;
-        unsettled = true;
-        endsOnGatingBlock = false;
-        targetReachedBySeq.set(record.seq, record.targetReached);
+        foldIteration(s, record);
         break;
       case "keep":
-        lastSeq = Math.max(lastSeq, record.seq);
-        if (record.status === "committed") {
-          unsettled = false;
-          keepCount += 1;
-          targetReachedAndKept = targetReachedBySeq.get(record.seq) ?? false;
-          lastKeptCommit = record.commit ?? lastKeptCommit;
-        } else if (
-          record.reason !== undefined &&
-          record.reason !== "checks-failed" &&
-          record.reason !== "nothing-measured"
-        ) {
-          // A blocked keep leaves the edit uncommitted, so it settles the iteration
-          // too — unblocking `iterate` — except for "checks-failed", where the user
-          // is expected to fix the failure and retry `keep` on the same iteration.
-          // A blocked keep with no reason at all is held to the same rule: nothing
-          // says the iteration is beyond recovery, so it stays unsettled.
-          unsettled = false;
-        }
-        // A "nothing-measured" refusal commits nothing and settles nothing, so it
-        // leaves the standing edit — and the gating-block window — as it found them.
-        // Every other keep outcome resolves the gating-block state.
-        if (record.reason !== "nothing-measured") {
-          endsOnGatingBlock = record.status === "blocked" && record.reason === "gating-regression";
-        }
+        foldKeep(s, record);
         break;
       case "discard":
-        lastSeq = Math.max(lastSeq, record.seq);
-        unsettled = false;
-        discardCount += 1;
-        endsOnGatingBlock = false;
+        foldDiscard(s, record);
         break;
       case "finalize":
-        // Closing the session settles nothing and measures nothing: it collapses
-        // work the counters have already counted.
-        finalized = record;
+        s.finalized = record;
         break;
       case "baseline":
       case "hook":
-        // A hook's seq names the iteration it runs around rather than claiming a
-        // number of its own: a run whose hook fired and then failed must leave that
-        // number free for the retry.
         break;
       default:
         assertNever(record);
@@ -269,18 +235,73 @@ export function foldSession(records: SessionLogRecord[]): SessionState {
   }
 
   return {
-    session,
-    iterationCount,
-    lastIteration,
-    unsettled,
-    keepCount,
-    discardCount,
-    targetReachedAndKept,
-    lastSeq,
-    lastKeptCommit,
-    endsOnGatingBlock,
-    finalized,
+    session: s.session,
+    iterationCount: s.iterationCount,
+    lastIteration: s.lastIteration,
+    unsettled: s.unsettled,
+    keepCount: s.keepCount,
+    discardCount: s.discardCount,
+    targetReachedAndKept: s.targetReachedAndKept,
+    lastSeq: s.lastSeq,
+    lastKeptCommit: s.lastKeptCommit,
+    endsOnGatingBlock: s.endsOnGatingBlock,
+    finalized: s.finalized,
   };
+}
+
+interface FoldState {
+  targetReachedBySeq: Map<number, boolean>;
+  session: SessionRecord | undefined;
+  iterationCount: number;
+  lastIteration: IterationRecord | undefined;
+  unsettled: boolean;
+  keepCount: number;
+  discardCount: number;
+  targetReachedAndKept: boolean;
+  lastSeq: number;
+  lastKeptCommit: string | undefined;
+  endsOnGatingBlock: boolean;
+  finalized: FinalizeRecord | undefined;
+}
+
+function foldIteration(s: FoldState, record: IterationRecord): void {
+  s.iterationCount += 1;
+  s.lastSeq = Math.max(s.lastSeq, record.seq);
+  s.lastIteration = record;
+  s.unsettled = true;
+  s.endsOnGatingBlock = false;
+  s.targetReachedBySeq.set(record.seq, record.targetReached);
+}
+
+function foldKeep(s: FoldState, record: KeepRecord): void {
+  s.lastSeq = Math.max(s.lastSeq, record.seq);
+  if (record.status === "committed") {
+    s.unsettled = false;
+    s.keepCount += 1;
+    s.targetReachedAndKept = s.targetReachedBySeq.get(record.seq) ?? false;
+    s.lastKeptCommit = record.commit ?? s.lastKeptCommit;
+  } else if (
+    record.reason !== undefined &&
+    record.reason !== "checks-failed" &&
+    record.reason !== "nothing-measured"
+  ) {
+    // A blocked keep settles the iteration — except for "checks-failed" (the user
+    // is expected to fix and retry) and undefined reason (nothing says the
+    // iteration is beyond recovery).
+    s.unsettled = false;
+  }
+  // A "nothing-measured" refusal commits nothing and settles nothing, so it
+  // leaves the standing edit — and the gating-block window — as it found them.
+  if (record.reason !== "nothing-measured") {
+    s.endsOnGatingBlock = record.status === "blocked" && record.reason === "gating-regression";
+  }
+}
+
+function foldDiscard(s: FoldState, record: DiscardRecord): void {
+  s.lastSeq = Math.max(s.lastSeq, record.seq);
+  s.unsettled = false;
+  s.discardCount += 1;
+  s.endsOnGatingBlock = false;
 }
 
 /**

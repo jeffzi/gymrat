@@ -94,7 +94,8 @@ function buildConfig(wizardResult: WizardResult): Record<string, unknown> {
 
 function validateConfig(config: Record<string, unknown>): void {
   if (!configFileValidator.check(config)) {
-    const issue = configFileValidator.firstIssue(config)!;
+    const issue = configFileValidator.firstIssue(config);
+    if (issue === undefined) throw new GymratError("validation failed but no issue was reported");
     throw new GymratError(`Invalid config: ${issue.path} must be ${issue.expected}`);
   }
 
@@ -102,8 +103,9 @@ function validateConfig(config: Record<string, unknown>): void {
     primary: config.primary ?? GEOMEAN_PRIMARY,
     ...(config.stop !== undefined && { stop: config.stop }),
   });
-  if (problems.length > 0) {
-    throw new GymratError(problems[0]!);
+  const firstProblem = problems[0];
+  if (firstProblem !== undefined) {
+    throw new GymratError(firstProblem);
   }
 }
 

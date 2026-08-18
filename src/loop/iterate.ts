@@ -11,11 +11,9 @@ import {
   formatVerdictBlock,
 } from "../report/loop.js";
 import { renderReport } from "../report/text.js";
-import type { ComparisonResult, MetricComparison, MetricComparisons } from "../report/types.js";
+import type { ComparisonResult, MetricComparisons } from "../report/types.js";
 import {
   collectSamples,
-  computeMetricStats,
-  pairedOrOwnValues,
   resolveMetricMetaFromSamples,
   type ProgressStep,
   type SamplingOptions,
@@ -25,11 +23,11 @@ import {
 import type { IterationRecord, SessionRecord } from "../session/records.js";
 import type { SessionState } from "../session/store.js";
 import { appendRecord, requireOpenSession } from "../session/store.js";
-import { computeKindAggregates } from "../verdict/aggregate.js";
 import type { MetricVerdict } from "../verdict/verdict.js";
-import { computeGeomean, computeVerdicts, pairSamples } from "../verdict/verdict.js";
+import { computeGeomean, computeVerdicts } from "../verdict/verdict.js";
 import type { HookInvocation } from "./hooks.js";
 import { runHook } from "./hooks.js";
+import { buildComparisonResult } from "./iterate-compare.js";
 
 /** What the loop tells the agent to do next, one per outcome. */
 const NEXT_STEPS: Record<LoopOutcome, string> = {
@@ -70,6 +68,29 @@ interface Confirmation {
    * neither, which is the rerun measuring it and declining to call it regressed.
    */
   readonly absent: ReadonlySet<string>;
+}
+
+/** The session, config, and caller options that every iteration step shares. */
+interface IterationContext {
+  readonly session: SessionRecord;
+  readonly config: ResolvedConfig;
+  readonly options: IterateOptions;
+}
+
+/** A bench run's measurement outputs: both sides' samples, the verdicts drawn from them, and the metric metadata. */
+export interface BenchRunOutputs {
+  readonly baseline: TargetSamples;
+  readonly experiment: TargetSamples;
+  readonly verdicts: Record<string, MetricVerdict>;
+  readonly metricMeta: Record<string, ResolvedMetricMeta>;
+}
+
+/** The iteration's judgment: what happened, what metric drove it, and whether a target was met. */
+interface IterationJudgment {
+  readonly outcome: LoopOutcome;
+  readonly primary: LoopPrimary;
+  readonly confirmation: Confirmation | undefined;
+  readonly reachedTarget: boolean;
 }
 
 /** One measured iteration: what was written to the log, and what to print about it. */
@@ -125,50 +146,22 @@ export async function iterateSession(
     signal: options.signal,
   });
 
-  const first = await benchAndJudge(session, config, options, config.bench);
-  const metricMeta = first.metricMeta;
-  const firstVerdicts = first.verdicts;
-
-  const confirmation = await confirmRegressions(
-    session,
-    config,
-    options,
-    firstVerdicts,
-    metricMeta,
-  );
-  const verdicts = applyConfirmation(firstVerdicts, confirmation);
-
-  const result = buildComparisonResult(
-    first.baseline,
-    first.experiment,
-    verdicts,
-    metricMeta,
-    config,
-  );
-  const primary = resolvePrimary(config.primary, verdicts, metricMeta);
+  const ctx: IterationContext = { session, config, options };
+  const { run, result, confirmation, samples } = await measureAndJudge(ctx);
+  const primary = resolvePrimary(config.primary, run.verdicts, run.metricMeta);
   const outcome = deriveOutcome(result.metrics, primary);
-
   const reachedTarget = targetReached(config, primary, result.metrics);
-  const record: IterationRecord = {
-    type: "iteration",
+
+  const record = buildIterationRecord({
     seq,
-    at: new Date().toISOString(),
-    samples: first.samples,
-    metrics: recordedVerdicts(verdicts, metricMeta, confirmation),
-    ...(confirmation !== undefined && {
-      confirm: {
-        ran: true,
-        filtered: [...confirmation.filtered],
-        // Left out when the rerun answered for everything it was asked about,
-        // so the common case reads the same as it did before absence was named.
-        ...(confirmation.absent.size > 0 && { absent: [...confirmation.absent] }),
-        samples: confirmation.samples,
-      },
-    }),
+    samples,
+    verdicts: run.verdicts,
+    metricMeta: run.metricMeta,
+    confirmation,
     primary,
     outcome,
-    targetReached: reachedTarget,
-  };
+    reachedTarget,
+  });
   appendRecord(jsonlPath, record);
 
   const afterReport = await fireHook(jsonlPath, config.hooks?.after, {
@@ -180,17 +173,64 @@ export async function iterateSession(
     signal: options.signal,
   });
 
-  const iterationReport = renderIteration(
-    result,
-    seq,
-    outcome,
-    primary,
-    confirmation,
-    reachedTarget,
-  );
+  const judgment: IterationJudgment = { outcome, primary, confirmation, reachedTarget };
+  const iterationReport = renderIteration(result, seq, judgment);
   return {
     record,
     report: [beforeReport, iterationReport, afterReport].filter((part) => part !== "").join("\n"),
+  };
+}
+
+async function measureAndJudge(ctx: IterationContext): Promise<{
+  run: BenchRunOutputs;
+  result: ComparisonResult;
+  confirmation: Confirmation | undefined;
+  samples: IterationRecord["samples"];
+}> {
+  const first = await benchAndJudge(ctx, ctx.config.bench);
+  const confirmation = await confirmRegressions(ctx, first.verdicts, first.metricMeta);
+  const verdicts = applyConfirmation(first.verdicts, confirmation);
+  const run: BenchRunOutputs = {
+    baseline: first.baseline,
+    experiment: first.experiment,
+    verdicts,
+    metricMeta: first.metricMeta,
+  };
+  return {
+    run,
+    result: buildComparisonResult(run, ctx.config),
+    confirmation,
+    samples: first.samples,
+  };
+}
+
+function buildIterationRecord(args: {
+  seq: number;
+  samples: IterationRecord["samples"];
+  verdicts: Record<string, MetricVerdict>;
+  metricMeta: Record<string, ResolvedMetricMeta>;
+  confirmation: Confirmation | undefined;
+  primary: LoopPrimary;
+  outcome: LoopOutcome;
+  reachedTarget: boolean;
+}): IterationRecord {
+  return {
+    type: "iteration",
+    seq: args.seq,
+    at: new Date().toISOString(),
+    samples: args.samples,
+    metrics: recordedVerdicts(args.verdicts, args.metricMeta, args.confirmation),
+    ...(args.confirmation !== undefined && {
+      confirm: {
+        ran: true,
+        filtered: [...args.confirmation.filtered],
+        ...(args.confirmation.absent.size > 0 && { absent: [...args.confirmation.absent] }),
+        samples: args.confirmation.samples,
+      },
+    }),
+    primary: args.primary,
+    outcome: args.outcome,
+    targetReached: args.reachedTarget,
   };
 }
 
@@ -263,9 +303,7 @@ function stopCondition(config: ResolvedConfig, state: SessionState): LoopStopErr
  *   run's failure does — an iteration nobody could confirm is not recorded.
  */
 async function confirmRegressions(
-  session: SessionRecord,
-  config: ResolvedConfig,
-  options: IterateOptions,
+  ctx: IterationContext,
   verdicts: Record<string, MetricVerdict>,
   metricMeta: Record<string, ResolvedMetricMeta>,
 ): Promise<Confirmation | undefined> {
@@ -279,18 +317,12 @@ async function confirmRegressions(
 
   const names = filtered.map(shellQuote).join(" ");
   const bench =
-    config.filter === undefined
-      ? config.bench
+    ctx.config.filter === undefined
+      ? ctx.config.bench
       : // Replaced through a function so a `$&` or `$'` inside a metric name is
         // the name's own text rather than a substitution pattern.
-        config.filter.replaceAll(FILTER_PLACEHOLDER, () => names);
-  const { verdicts: rerun, samples } = await benchAndJudge(
-    session,
-    config,
-    options,
-    bench,
-    metricMeta,
-  );
+        ctx.config.filter.replaceAll(FILTER_PLACEHOLDER, () => names);
+  const { verdicts: rerun, samples } = await benchAndJudge(ctx, bench, metricMeta);
   return {
     filtered,
     samples,
@@ -330,9 +362,7 @@ function shellQuote(value: string): string {
  * from the first run and passes it through unchanged.
  */
 async function benchAndJudge(
-  session: SessionRecord,
-  config: ResolvedConfig,
-  options: IterateOptions,
+  ctx: IterationContext,
   bench: string,
   metricMeta?: Record<string, ResolvedMetricMeta>,
 ): Promise<{
@@ -342,21 +372,21 @@ async function benchAndJudge(
   verdicts: Record<string, MetricVerdict>;
   samples: IterationRecord["samples"];
 }> {
-  const [baseline, experiment] = await measure(session, config, options, bench);
-  const adapter = getAdapter(config.adapter);
+  const [baseline, experiment] = await measure(ctx.session, ctx.config, ctx.options, bench);
+  const adapter = getAdapter(ctx.config.adapter);
   const resolvedMeta =
     metricMeta ??
     resolveMetricMetaFromSamples(
       [baseline.samples, experiment.samples],
-      config.metrics,
+      ctx.config.metrics,
       adapter,
-      config.kinds,
+      ctx.config.kinds,
     );
   const verdicts = computeVerdicts(
     baseline.samples,
     experiment.samples,
     resolvedMeta,
-    config.unstableNoisePct,
+    ctx.config.unstableNoisePct,
   );
   return {
     baseline,
@@ -442,79 +472,6 @@ async function measure(
 /** A session worktree, benched where it sits: it is checked out for the whole session. */
 function worktreeContext(dir: string, label: string, position: "old" | "new"): TargetContext {
   return { target: { kind: "in-place", dir }, dir, label, position };
-}
-
-/**
- * The comparison the report is drawn from: one baseline, one candidate, and no
- * worktrees to account for.
- *
- * A session's worktrees outlive the run, so the cleanup fields state a sweep
- * that never happened rather than one that found nothing to do.
- */
-function buildComparisonResult(
-  baseline: TargetSamples,
-  experiment: TargetSamples,
-  verdicts: Record<string, MetricVerdict>,
-  metricMeta: Record<string, ResolvedMetricMeta>,
-  config: ResolvedConfig,
-): ComparisonResult {
-  const metrics = metricRecord<MetricComparison>();
-  for (const [metricName, meta] of Object.entries(metricMeta)) {
-    metrics[metricName] = compareMetric(metricName, baseline, experiment, verdicts, meta);
-  }
-
-  return {
-    baselineLabel: baseline.ctx.label,
-    candidates: [
-      {
-        label: experiment.ctx.label,
-        kinds: computeKindAggregates(verdicts, metricMeta),
-      },
-    ],
-    samples: Math.min(baseline.samples.length, experiment.samples.length),
-    adapter: config.adapter,
-    configKinds: config.kinds,
-    metrics,
-    worktreesRemoved: 0,
-    worktreesLeftBehind: [],
-    worktreePruneError: undefined,
-  };
-}
-
-/**
- * One metric's two sides, each measured over the rounds the verdict was drawn
- * from, so a displayed median never disagrees with the delta beside it.
- *
- * A metric only one side reported has no pairs and therefore no verdict to stay
- * consistent with, so that side falls back to every round it did report.
- */
-function compareMetric(
-  metricName: string,
-  baseline: TargetSamples,
-  experiment: TargetSamples,
-  verdicts: Record<string, MetricVerdict>,
-  meta: ResolvedMetricMeta,
-): MetricComparison {
-  const { pairedA, pairedB } = pairSamples(metricName, baseline.samples, experiment.samples);
-  const baselineStats = computeMetricStats(
-    pairedOrOwnValues(pairedA, baseline.samples, metricName),
-  );
-  const experimentStats = computeMetricStats(
-    pairedOrOwnValues(pairedB, experiment.samples, metricName),
-  );
-
-  return {
-    baselineMedian: baselineStats.median,
-    baselineSpread: baselineStats.spread,
-    candidates: [
-      {
-        median: experimentStats.median,
-        spread: experimentStats.spread,
-        verdict: verdicts[metricName],
-      },
-    ],
-    meta,
-  };
 }
 
 /**
@@ -623,17 +580,21 @@ function rerunAnswer(confirmation: Confirmation, metric: string): RerunConfirmat
 function renderIteration(
   result: ComparisonResult,
   seq: number,
-  outcome: LoopOutcome,
-  primary: LoopPrimary,
-  confirmation: Confirmation | undefined,
-  reachedTarget: boolean,
+  judgment: IterationJudgment,
 ): string {
+  const { confirmation } = judgment;
   const reruns: RerunConfirmation[] =
     confirmation?.filtered.map((metric) => ({
       metric,
       answer: rerunAnswer(confirmation, metric),
     })) ?? [];
   const report = renderReport(result, { header: formatLoopHeader(seq, result.samples) });
-  const verdict = formatVerdictBlock(outcome, primary, NEXT_STEPS[outcome], reruns, reachedTarget);
+  const verdict = formatVerdictBlock({
+    outcome: judgment.outcome,
+    primary: judgment.primary,
+    nextStep: NEXT_STEPS[judgment.outcome],
+    reruns,
+    targetReached: judgment.reachedTarget,
+  });
   return [report, "", ...verdict].join("\n");
 }

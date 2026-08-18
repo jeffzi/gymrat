@@ -71,41 +71,33 @@ afterEach(() => {
 describe("createWorkspace", () => {
   describe("when the repository has no session workspace", () => {
     it("creates the session branch at the baseline SHA", () => {
-      // Act
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-      // Assert
       expect(git(["rev-parse", BRANCH], repo.dir)).toBe(baselineSha);
     });
 
     it("checks the experiment worktree out on the session branch", () => {
-      // Act
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-      // Assert
       const worktree = experimentWorktreeDir(repo.dir);
       expect.soft(fs.existsSync(worktree)).toBe(true);
       expect.soft(checkedOutRef(worktree)).toBe(BRANCH);
     });
 
     it("pins the baseline worktree detached at the baseline SHA", () => {
-      // Act
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-      // Assert
       const worktree = baselineWorktreeDir(repo.dir);
       expect.soft(git(["rev-parse", "HEAD"], worktree)).toBe(baselineSha);
       expect.soft(checkedOutRef(worktree)).toBe("HEAD");
     });
 
     it("returns the branch, both worktree paths, and the baseline ref and SHA", () => {
-      // Act
       const result = createWorkspace(repo.dir, SESSION_ID, {
         ref: BASELINE_REF,
         sha: baselineSha,
       });
 
-      // Assert
       expect(result).toStrictEqual({
         branch: BRANCH,
         worktrees: {
@@ -117,10 +109,8 @@ describe("createWorkspace", () => {
     });
 
     it("excludes .gymrat/ from the repository's git status", () => {
-      // Act
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-      // Assert
       const lines = fs.readFileSync(excludePath(repo.dir), "utf-8").split("\n");
       expect(lines).toContain(".gymrat/");
     });
@@ -128,17 +118,14 @@ describe("createWorkspace", () => {
 
   describe("when the session branch already exists from an earlier run", () => {
     it("throws a GymratError naming the branch and hinting at a way out", () => {
-      // Arrange
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-      // Act
       const error = asGymratError(
         captureThrown(() =>
           createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha }),
         ),
       );
 
-      // Assert
       expect.soft(error.message).toContain(BRANCH);
       expect.soft(error.hint).toMatch(/git branch -D/i);
     });
@@ -150,18 +137,17 @@ describe("createWorkspace", () => {
     "when a worktree add fails after the session branch was created",
     () => {
       it("unwinds what it made, failing with the git step that broke", () => {
-        // Arrange - installed after the scratch repo's own commit so only the
+        // Installed after the scratch repo's own commit so only the
         // worktree checkouts under test die.
         killGitDuringWorktreeAdd(repo.dir);
 
-        // Act
         const error = asGymratError(
           captureThrown(() =>
             createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha }),
           ),
         );
 
-        // Assert - the unwind's own git steps never speak for it.
+        // The unwind's own git steps never speak for it.
         expect.soft(error.message).toMatch(/cannot create the experiment worktree/i);
         expect.soft(sessionBranches(repo.dir)).toStrictEqual([]);
         expect.soft(listWorktreeDirs(repo.dir, { includeMain: false })).toStrictEqual([]);
@@ -180,26 +166,21 @@ describe("createWorkspace", () => {
     });
 
     it("checks the next session's worktrees out over the stale entries", () => {
-      // Act
       const result = createWorkspace(repo.dir, NEXT_SESSION_ID, {
         ref: BASELINE_REF,
         sha: baselineSha,
       });
 
-      // Assert
       expect.soft(checkedOutRef(result.worktrees.experiment)).toBe(NEXT_BRANCH);
       expect(git(["rev-parse", "HEAD"], result.worktrees.baseline)).toBe(baselineSha);
     });
 
     it("leaves a worktree that is still on disk registered", () => {
-      // Arrange
       const live = path.join(repo.dir, "live-worktree");
       git(["worktree", "add", "--detach", live, baselineSha], repo.dir);
 
-      // Act
       createWorkspace(repo.dir, NEXT_SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-      // Assert
       expect.soft(fs.existsSync(live)).toBe(true);
       expect(listWorktreeDirs(repo.dir, { includeMain: false })).toContain(live);
     });
@@ -207,20 +188,19 @@ describe("createWorkspace", () => {
 
   describe("when a worktree directory from an earlier session is still on disk", () => {
     it("leaves its uncommitted work standing and names the path it left", () => {
-      // Arrange - the earlier session's log is gone, so nothing told this run the
+      // The earlier session's log is gone, so nothing told this run the
       // workspace was already there; its worktree still holds uncommitted work.
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
       const stranded = path.join(experimentWorktreeDir(repo.dir), "README.md");
       fs.writeFileSync(stranded, "# work from the earlier session\n");
 
-      // Act
       const error = asGymratError(
         captureThrown(() =>
           createWorkspace(repo.dir, NEXT_SESSION_ID, { ref: BASELINE_REF, sha: baselineSha }),
         ),
       );
 
-      // Assert - only this attempt's own branch is unwound.
+      // Only this attempt's own branch is unwound.
       expect.soft(fs.readFileSync(stranded, "utf-8")).toBe("# work from the earlier session\n");
       expect.soft(sessionBranches(repo.dir)).toStrictEqual([BRANCH]);
       expect(error.message).toContain(experimentWorktreeDir(repo.dir));
@@ -229,18 +209,15 @@ describe("createWorkspace", () => {
 
   describe("when the directory is not inside a git repository", () => {
     it("throws a GymratError naming the missing repository", () => {
-      // Arrange
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ws-not-a-repo-"));
 
       try {
-        // Act
         const error = asGymratError(
           captureThrown(() =>
             createWorkspace(outside, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha }),
           ),
         );
 
-        // Assert
         expect.soft(error.message).toMatch(/not a git repository/i);
         expect.soft(error.hint).toMatch(/git repository/i);
       } finally {
@@ -253,13 +230,10 @@ describe("createWorkspace", () => {
 describe("ensureGitExclude", () => {
   describe("when the exclude file does not list .gymrat/", () => {
     it("appends the line and keeps the existing entries", () => {
-      // Arrange
       fs.writeFileSync(excludePath(repo.dir), "node_modules/\n");
 
-      // Act
       ensureGitExclude(repo.dir);
 
-      // Assert
       const lines = fs.readFileSync(excludePath(repo.dir), "utf-8").split("\n");
       expect.soft(lines).toContain("node_modules/");
       expect.soft(lines.filter((line) => line === ".gymrat/")).toHaveLength(1);
@@ -268,27 +242,21 @@ describe("ensureGitExclude", () => {
 
   describe("when the exclude file already lists .gymrat/", () => {
     it("leaves the file byte-for-byte unchanged", () => {
-      // Arrange
       const before = "node_modules/\n.gymrat/\n";
       fs.writeFileSync(excludePath(repo.dir), before);
 
-      // Act
       ensureGitExclude(repo.dir);
 
-      // Assert
       expect(fs.readFileSync(excludePath(repo.dir), "utf-8")).toBe(before);
     });
   });
 
   describe("when the exclude file does not exist", () => {
     it("creates it holding the .gymrat/ line", () => {
-      // Arrange
       fs.rmSync(excludePath(repo.dir), { force: true });
 
-      // Act
       ensureGitExclude(repo.dir);
 
-      // Assert
       const lines = fs.readFileSync(excludePath(repo.dir), "utf-8").split("\n");
       expect(lines).toContain(".gymrat/");
     });
@@ -297,15 +265,12 @@ describe("ensureGitExclude", () => {
 
 describe("detectWorkspace", () => {
   it("returns false when neither worktree directory exists", () => {
-    // Act — Assert
     expect(detectWorkspace(repo.dir)).toBe(false);
   });
 
   it("returns true when both worktree directories exist", () => {
-    // Arrange
     createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
 
-    // Act — Assert
     expect(detectWorkspace(repo.dir)).toBe(true);
   });
 
@@ -313,11 +278,9 @@ describe("detectWorkspace", () => {
     { missing: "experiment", locate: experimentWorktreeDir },
     { missing: "baseline", locate: baselineWorktreeDir },
   ])("returns false when only the $missing worktree is gone", ({ locate }) => {
-    // Arrange
     createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
     fs.rmSync(locate(repo.dir), { recursive: true, force: true });
 
-    // Act — Assert
     expect(detectWorkspace(repo.dir)).toBe(false);
   });
 });
@@ -337,10 +300,8 @@ describe("removeWorktrees", () => {
 
   describe("when both worktrees are on disk", () => {
     it("takes them off disk and out of git's bookkeeping, warning about nothing", () => {
-      // Act
       const warnings = removeWorktrees(repo.dir, worktrees());
 
-      // Assert
       expect.soft(warnings).toStrictEqual([]);
       expect.soft(fs.existsSync(experimentWorktreeDir(repo.dir))).toBe(false);
       expect.soft(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
@@ -350,26 +311,21 @@ describe("removeWorktrees", () => {
 
   describe("when one worktree directory is already gone", () => {
     it("removes the other and still warns about nothing", () => {
-      // Arrange
       fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       const warnings = removeWorktrees(repo.dir, worktrees());
 
-      // Assert
       expect.soft(warnings).toStrictEqual([]);
       expect(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
     });
 
     it("deregisters that worktree by name and no other", () => {
-      // Arrange - the user's own worktree, absent only for the moment.
+      // The user's own worktree, absent only for the moment.
       const absent = registerAbsentWorktree(repo.dir);
       fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       removeWorktrees(repo.dir, worktrees());
 
-      // Assert
       const listed = listWorktreeDirs(repo.dir);
       expect.soft(listed).not.toContain(experimentWorktreeDir(repo.dir));
       expect(listed).toContain(absent);
@@ -378,13 +334,11 @@ describe("removeWorktrees", () => {
 
   describe("when git refuses to remove a worktree", () => {
     it("warns naming the worktree it left behind and removes the other", () => {
-      // Arrange - git declines a locked worktree unless --force is passed twice.
+      // git declines a locked worktree unless --force is passed twice.
       git(["worktree", "lock", experimentWorktreeDir(repo.dir)], repo.dir);
 
-      // Act
       const warnings = removeWorktrees(repo.dir, worktrees());
 
-      // Assert
       expect.soft(warnings).toHaveLength(1);
       expect.soft(warnings[0]).toContain(experimentWorktreeDir(repo.dir));
       expect(fs.existsSync(baselineWorktreeDir(repo.dir))).toBe(false);
@@ -400,27 +354,22 @@ describe("isWorktreeDirty", () => {
   ] satisfies { description: string; edit: string | undefined; expected: boolean }[])(
     "reports $expected when $description",
     ({ edit, expected }) => {
-      // Arrange
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
       const worktree = experimentWorktreeDir(repo.dir);
       if (edit !== undefined) {
         fs.writeFileSync(path.join(worktree, edit), "# edited by the agent\n");
       }
 
-      // Act
       const dirty = isWorktreeDirty(worktree);
 
-      // Assert
       expect(dirty).toBe(expected);
     },
   );
 
   describe("when the directory does not exist", () => {
     it("reports clean rather than failing on the missing worktree", () => {
-      // Act
       const dirty = isWorktreeDirty(experimentWorktreeDir(repo.dir));
 
-      // Assert
       expect(dirty).toBe(false);
     });
   });
@@ -429,14 +378,11 @@ describe("isWorktreeDirty", () => {
 describe("recreateWorkspace", () => {
   describe("when the experiment worktree is gone", () => {
     it("puts it back on the session branch", () => {
-      // Arrange
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
       fs.rmSync(experimentWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       recreateWorkspace(repo.dir, BRANCH, baselineSha);
 
-      // Assert
       expect.soft(checkedOutRef(experimentWorktreeDir(repo.dir))).toBe(BRANCH);
       expect.soft(detectWorkspace(repo.dir)).toBe(true);
     });
@@ -444,14 +390,11 @@ describe("recreateWorkspace", () => {
 
   describe("when the baseline worktree is gone", () => {
     it("puts it back detached at the pinned SHA", () => {
-      // Arrange
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
       fs.rmSync(baselineWorktreeDir(repo.dir), { recursive: true, force: true });
 
-      // Act
       recreateWorkspace(repo.dir, BRANCH, baselineSha);
 
-      // Assert
       const worktree = baselineWorktreeDir(repo.dir);
       expect.soft(git(["rev-parse", "HEAD"], worktree)).toBe(baselineSha);
       expect.soft(checkedOutRef(worktree)).toBe("HEAD");
@@ -460,15 +403,12 @@ describe("recreateWorkspace", () => {
 
   describe("when both worktrees are on disk", () => {
     it("leaves the experiment worktree's uncommitted work alone", () => {
-      // Arrange
       createWorkspace(repo.dir, SESSION_ID, { ref: BASELINE_REF, sha: baselineSha });
       const edited = path.join(experimentWorktreeDir(repo.dir), "README.md");
       fs.writeFileSync(edited, "# edited by the agent\n");
 
-      // Act
       recreateWorkspace(repo.dir, BRANCH, baselineSha);
 
-      // Assert
       expect.soft(fs.readFileSync(edited, "utf-8")).toBe("# edited by the agent\n");
       expect.soft(detectWorkspace(repo.dir)).toBe(true);
     });

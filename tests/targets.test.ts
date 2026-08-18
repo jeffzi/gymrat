@@ -181,16 +181,18 @@ describe("resolveTarget", () => {
 
     it("throws error with message naming the input", () => {
       repo = createScratchRepo();
+      const dir = repo.dir;
 
-      expect(() => resolveTarget("nonexistent-ref-xyz", repo!.dir)).toThrow(
+      expect(() => resolveTarget("nonexistent-ref-xyz", dir)).toThrow(
         /Cannot resolve target 'nonexistent-ref-xyz'/,
       );
     });
 
     it("carries git's own error text so the reason is not lost", () => {
       repo = createScratchRepo();
+      const dir = repo.dir;
 
-      const error = captureThrown(() => resolveTarget("definitely-not-a-ref", repo!.dir));
+      const error = captureThrown(() => resolveTarget("definitely-not-a-ref", dir));
 
       expect.soft(error).toBeInstanceOf(GymratError);
       // git words the failure differently depending on the flags rev-parse is
@@ -211,12 +213,13 @@ describe("resolveTarget", () => {
       { objectKind: "blob", rev: "HEAD:README.md" },
     ])("rejects a $objectKind sha", ({ rev }) => {
       repo = createScratchRepo();
+      const dir = repo.dir;
       const sha = execFileSync("git", ["rev-parse", rev], {
-        cwd: repo.dir,
+        cwd: dir,
         encoding: "utf-8",
       }).trim();
 
-      expect(() => resolveTarget(sha, repo!.dir)).toThrow(/Cannot resolve target/);
+      expect(() => resolveTarget(sha, dir)).toThrow(/Cannot resolve target/);
     });
   });
 
@@ -272,9 +275,10 @@ describe("resolveTarget", () => {
         },
       ])("reports $probeFailure as the documented resolve failure", ({ code, arrange }) => {
         repo = createScratchRepo();
+        const dir = repo.dir;
         const input = arrange();
 
-        const error = captureGymratError(() => resolveTarget(input, repo!.dir));
+        const error = captureGymratError(() => resolveTarget(input, dir));
 
         expect.soft(error.message).toContain(`Cannot resolve target '${input}'`);
         expect.soft(error.message).toContain(code);

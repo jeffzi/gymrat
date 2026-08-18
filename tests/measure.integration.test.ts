@@ -95,6 +95,7 @@ describe("measure – integration", () => {
       // The aggregates alone cannot be recorded as history: a baseline record
       // keeps every round's own values.
       // Adapter sample maps are null-prototype (src/metric-record.ts invariant).
+      // oxlint-disable-next-line vitest/prefer-strict-equal -- null-prototype objects don't match plain object literals under toStrictEqual
       expect(result.rounds).toEqual([{ latency: 42 }, { latency: 42 }]);
     });
 

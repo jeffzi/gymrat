@@ -154,39 +154,31 @@ function fourIterations(): SessionLogRecord[] {
 describe("statusSession", () => {
   describe("when the repository holds no session", () => {
     it("refuses with a hint pointing at the command that opens one", () => {
-      // Act
       const error = captureGymratError(() => statusSession(freshRoot(), resolvedConfig()));
 
-      // Assert
       expect(error.hint).toContain("gymrat start");
     });
   });
 
   describe("when a line of the session log is not valid JSON", () => {
     it("surfaces the store's error naming the log and the line number", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root));
       fs.appendFileSync(sessionJsonlPath(root), "{not json\n");
 
-      // Act
       const error = captureGymratError(() => statusSession(root, resolvedConfig()));
 
-      // Assert
       expect(messageOf(error)).toContain(`${sessionJsonlPath(root)}:2`);
     });
   });
 
   describe("when the log holds a whole session's history", () => {
     it("renders the header, every measured record in file order, and the totals", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), fourIterations());
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(reportLines(report)).toStrictEqual([
         `session ${SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines`,
         `branch gymrat/${SESSION_ID}`,
@@ -204,7 +196,6 @@ describe("statusSession", () => {
 
   describe("when a nothing-measured keep took the number a later iteration was minted with", () => {
     it("reads that iteration as unsettled, the blocked keep standing on its own", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
@@ -213,10 +204,8 @@ describe("statusSession", () => {
         iteration(2, -3.1, "improved"),
       ]);
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(bodyLines(report)).toStrictEqual([
         "iteration 1 · ✓ -7.2% · kept b1b2b3b",
         "keep-blocked (nothing-measured)",
@@ -228,7 +217,6 @@ describe("statusSession", () => {
 
   describe("when no iteration ever followed a nothing-measured keep", () => {
     it("renders the blocked keep anyway, counting it as no iteration of its own", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
@@ -236,10 +224,8 @@ describe("statusSession", () => {
         nothingMeasuredKeep(2),
       ]);
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(bodyLines(report)).toStrictEqual([
         "iteration 1 · ✓ -7.2% · kept b1b2b3b",
         "keep-blocked (nothing-measured)",
@@ -250,7 +236,6 @@ describe("statusSession", () => {
 
   describe("when a gating block was superseded by a discard", () => {
     it("renders both: the iteration shows the final settle and the block keeps its line", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), [
         iteration(1, 9.4, "regressed"),
@@ -258,10 +243,8 @@ describe("statusSession", () => {
         discardRecord(2),
       ]);
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(bodyLines(report)).toStrictEqual([
         "iteration 1 · ✗ +9.4% · discarded",
         "keep-blocked (gating-regression)",
@@ -272,7 +255,6 @@ describe("statusSession", () => {
 
   describe("when the log's final line is torn from a concurrent append", () => {
     it("renders the session from the complete records before the torn line", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
@@ -281,10 +263,8 @@ describe("statusSession", () => {
       // cspell:disable-next-line -- intentionally truncated JSON simulating a torn write
       fs.appendFileSync(sessionJsonlPath(root), '{"type":"itera');
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(bodyLines(report)).toStrictEqual([
         "iteration 1 · ✓ -7.2% · kept b1b2b3b",
         "1 iteration · 1 kept · 0 discarded",
@@ -294,7 +274,6 @@ describe("statusSession", () => {
 
   describe("when the session was finalized", () => {
     it("closes the report under the totals with the branch and commit it squashed onto", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), [
         iteration(1, -7.2, "improved"),
@@ -302,10 +281,8 @@ describe("statusSession", () => {
         finalizeRecord(),
       ]);
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(bodyLines(report)).toStrictEqual([
         "iteration 1 · ✓ -7.2% · kept b1b2b3b",
         "1 iteration · 1 kept · 0 discarded",
@@ -316,42 +293,33 @@ describe("statusSession", () => {
 
   describe("when a stop condition is configured", () => {
     it("forwards the configured stop condition to the footer", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), fourIterations());
 
-      // Act
       const report = statusSession(root, resolvedConfig({ stop: { maxIterations: 30 } }));
 
-      // Assert
       expect(reportLines(report)).toContain("stop: 4 of 30 iterations");
     });
   });
 
   describe("when runbook is configured", () => {
     it("includes a runbook line in the header block", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), fourIterations());
 
-      // Act
       const report = statusSession(root, resolvedConfig({ runbook: RUNBOOK_PATH }));
 
-      // Assert
       expect(reportLines(report)).toContain(`runbook ${RUNBOOK_PATH}`);
     });
   });
 
   describe("when runbook is not configured", () => {
     it("omits the runbook line from the header", () => {
-      // Arrange
       const root = freshRoot();
       writeSessionLog(root, sessionRecord(root), fourIterations());
 
-      // Act
       const report = statusSession(root, resolvedConfig());
 
-      // Assert
       expect(reportLines(report)).not.toContainEqual(expect.stringContaining("runbook"));
     });
   });
@@ -379,17 +347,14 @@ describe("the status command", () => {
   }
 
   it("renders the session in the repository it runs in on stdout", async () => {
-    // Arrange
     writeSessionLog(repo.dir, sessionRecord(repo.dir), fourIterations());
     writeConfigFile();
     process.chdir(repo.dir);
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stdout = captureStdout();
 
-    // Act
     await program.parseAsync(["node", "cli.js", "status"]);
 
-    // Assert
     const lines = reportLines(stdout());
     expect.soft(lines[0]).toContain(`session ${SESSION_ID}`);
     expect(lines).toContain("4 iterations · 1 kept · 1 discarded");
@@ -405,7 +370,6 @@ describe("the status command", () => {
     { desc: "the repository holds no session", hasConfigFile: true },
     { desc: "the repository holds neither a session nor a config file", hasConfigFile: false },
   ])("exits 2 with a start hint when $desc", async ({ hasConfigFile }) => {
-    // Arrange
     if (hasConfigFile) {
       writeConfigFile();
     }
@@ -414,10 +378,8 @@ describe("the status command", () => {
     const stderrSpy = stubWrite(process.stderr);
     mockProcessExit();
 
-    // Act
     const parsing = program.parseAsync(["node", "cli.js", "status"]);
 
-    // Assert
     await expect(parsing).rejects.toHaveProperty("exitCode", 2);
     const stderrText = stderrSpy.mock.calls.map((call) => String(call[0])).join("");
     expect(stderrText).toContain("gymrat start");
@@ -438,7 +400,6 @@ describe("the status command", () => {
       ansi: false,
     },
   ])("$desc", async ({ args, color, ansi }) => {
-    // Arrange
     vi.stubEnv("NO_COLOR", undefined);
     vi.stubEnv("FORCE_COLOR", color);
     writeSessionLog(repo.dir, sessionRecord(repo.dir), fourIterations());
@@ -447,10 +408,8 @@ describe("the status command", () => {
     const program = createRunnableProgram({ exitOverride: "all", silent: true });
     const stdout = captureStdout();
 
-    // Act
     await program.parseAsync(["node", "cli.js", "status", ...args]);
 
-    // Assert
     expect(ANSI_RE.test(stdout())).toBe(ansi);
   });
 });

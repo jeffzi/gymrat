@@ -111,15 +111,12 @@ describe("runHook", () => {
     ])(
       "hands the $stage hook a payload naming the stage, the worktree and the session",
       async ({ stage, seq, lastIteration, iterationCount }) => {
-        // Arrange
         const command = hookCommand("process.stdin.pipe(process.stdout);\n");
 
-        // Act
         const run = await runHook(
           invocationOf(command, { stage, seq, lastIteration, iterationCount }),
         );
 
-        // Assert
         const payload: unknown = JSON.parse(labeledLines(run.report, stage).join("\n"));
         expect(payload).toStrictEqual({
           stage,
@@ -137,77 +134,59 @@ describe("runHook", () => {
     );
 
     it("runs the command in the experiment worktree", async () => {
-      // Arrange
       const command = hookCommand(
         `import fs from "node:fs";\nfs.writeFileSync("landed.txt", "here");\n`,
       );
 
-      // Act
       await runHook(invocationOf(command));
 
-      // Assert
       expect(fs.readFileSync(path.join(experimentDir, "landed.txt"), "utf-8")).toBe("here");
     });
 
     it("labels every line the hook printed with its stage", async () => {
-      // Arrange
       const command = printing("archived the samples", "pushed the branch");
 
-      // Act
       const run = await runHook(invocationOf(command, { stage: "after" }));
 
-      // Assert
       expect(run.report).toBe("[after] archived the samples\n[after] pushed the branch");
     });
 
     it("reports nothing at all for a hook that printed nothing", async () => {
-      // Arrange
       const command = hookCommand("");
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect(run.report).toBe("");
     });
 
     it("keeps a successful hook's stderr out of the report", async () => {
-      // Arrange
       const command = hookCommand(
         `process.stdout.write("warmed the cache\\n");\n` +
           `process.stderr.write("cache was already warm\\n");\n`,
       );
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect(run.report).toBe("[before] warmed the cache");
     });
 
     it("records the invocation with the bytes the hook printed", async () => {
-      // Arrange
       const command = printing("hello");
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect(run.record).toStrictEqual(
         expectedHookRecord({ stage: "before", seq: 2, exitCode: 0, stdoutBytes: 6 }),
       );
     });
 
     it("records stderrBytes from the hook's actual stderr", async () => {
-      // Arrange
       const command = hookCommand(
         `process.stdout.write("hello\\n");\nprocess.stderr.write("warning\\n");\n`,
       );
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect.soft(run.record.stdoutBytes).toBe(6);
       expect(run.record).toHaveProperty("stderrBytes", 8);
     });
@@ -215,29 +194,23 @@ describe("runHook", () => {
 
   describe("when the hook prints more than the 8 KiB gymrat will relay", () => {
     it("stops at the last whole line that fits", async () => {
-      // Arrange
       const line = "a".repeat(100);
       const text = `${line}\n`.repeat(200);
       const command = printingContentOf("many-lines.txt", text);
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       const lines = labeledLines(run.report, "before");
       expect.soft(lines).toStrictEqual(Array.from({ length: 81 }, () => line));
       expect(run.record.stdoutBytes).toBe(Buffer.byteLength(text, "utf-8"));
     });
 
     it("stops mid-line without splitting a multi-byte character", async () => {
-      // Arrange
       const content = "é".repeat(5000);
       const command = printingContentOf("one-long-line.txt", content);
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       const lines = labeledLines(run.report, "before");
       expect.soft(lines).toStrictEqual(["é".repeat(RELAY_LIMIT_BYTES / 2)]);
       expect(run.record.stdoutBytes).toBe(Buffer.byteLength(content, "utf-8"));
@@ -246,7 +219,6 @@ describe("runHook", () => {
 
   describe("when a failing hook prints more than the 8 KiB gymrat will relay on either channel", () => {
     it("holds each channel to its own cap, cut at the last whole line that fits", async () => {
-      // Arrange
       const outLine = "a".repeat(100);
       const errLine = "b".repeat(100);
       const stdout = `${outLine}\n`.repeat(200);
@@ -255,10 +227,8 @@ describe("runHook", () => {
         stderr: `${errLine}\n`.repeat(200),
       });
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect
         .soft(labeledLines(run.report, "before"))
         .toStrictEqual([
@@ -270,16 +240,13 @@ describe("runHook", () => {
     });
 
     it("stops stderr mid-line without splitting a multi-byte character", async () => {
-      // Arrange
       const command = failingContentOf("long-stderr-line", {
         stdout: "",
         stderr: "é".repeat(5000),
       });
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect(labeledLines(run.report, "before")).toStrictEqual([
         "hook exited 3",
         "é".repeat(RELAY_LIMIT_BYTES / 2),
@@ -289,17 +256,14 @@ describe("runHook", () => {
 
   describe("when the hook cannot steer the loop the way it meant to", () => {
     it("reports a non-zero exit alongside its stderr instead of failing the iterate", async () => {
-      // Arrange
       const command = hookCommand(
         `process.stdout.write("checked the cache\\n");\n` +
           `process.stderr.write("no warm copy\\n");\n` +
           `process.exitCode = 3;\n`,
       );
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert
       expect
         .soft(labeledLines(run.report, "before"))
         .toStrictEqual(["checked the cache", "hook exited 3", "no warm copy"]);
@@ -315,13 +279,10 @@ describe("runHook", () => {
     });
 
     it("kills a hook that outruns its timeout and says so", async () => {
-      // Arrange
       const command = hookCommand("setTimeout(() => {}, 5000);\n");
 
-      // Act
       const run = await runHook(invocationOf(command, { timeoutMs: 200 }));
 
-      // Assert
       expect.soft(labeledLines(run.report, "before")).toStrictEqual(["hook timed out after 200ms"]);
       expect.soft(run.record.timedOut).toBe(true);
       expect.soft(run.record.exitCode).toBe(FAILURE_EXIT_CODE);
@@ -329,23 +290,20 @@ describe("runHook", () => {
     });
 
     it("records a non-zero exit code when the hook command does not exist", async () => {
-      // Arrange — a command that cannot be found
+      // A command that cannot be found
       const command = "nonexistent-command-abc123xyz";
 
-      // Act
       const run = await runHook(invocationOf(command));
 
-      // Assert — Unix shells return 127; Windows cmd.exe returns 1
+      // Unix shells return 127; Windows cmd.exe returns 1
       const expected = process.platform === "win32" ? 1 : 127;
       expect(run.record.exitCode).toBe(expected);
     });
 
     it("reports a hook that never started instead of raising", async () => {
-      // Arrange
       const command = printing("never runs");
       const vanishedDir = path.join(tempDir, "vanished");
 
-      // Act
       const run = await runHook(
         invocationOf(command, {
           session: sessionRecord({
@@ -358,7 +316,6 @@ describe("runHook", () => {
         }),
       );
 
-      // Assert
       const lines = labeledLines(run.report, "before");
       expect.soft(lines[0]).toBe(`hook exited ${FAILURE_EXIT_CODE}`);
       // Windows maps a missing cwd to ENOTDIR; POSIX to ENOENT.
@@ -370,7 +327,6 @@ describe("runHook", () => {
 
   describe("when the invocation carries an abort signal", () => {
     it("kills the hook and records the outcome instead of rejecting", async () => {
-      // Arrange
       const controller = new AbortController();
       const command = hookCommand("setTimeout(() => {}, 10000);\n");
       setTimeout(() => {
@@ -378,10 +334,8 @@ describe("runHook", () => {
       }, 50);
       const invocation = { ...invocationOf(command), signal: controller.signal };
 
-      // Act
       const run = await runHook(invocation);
 
-      // Assert
       expect.soft(run.record.exitCode).toBe(FAILURE_EXIT_CODE);
       expect.soft(run.record.timedOut).toBe(false);
       expect(run.record.durationMs).toBeLessThan(4000);

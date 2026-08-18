@@ -32,10 +32,12 @@ export type LoosePartial<T> = { [K in keyof T]?: T[K] | undefined };
 export function withDefaults<T extends object>(defaults: T, overrides: LoosePartial<T>): T {
   const result = { ...defaults };
   for (const [key, value] of Object.entries(overrides)) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Object.entries loses key type; cast is safe since key came from T
+    const record = result as Record<string, unknown>;
     if (value !== undefined) {
-      (result as Record<string, unknown>)[key] = value;
+      record[key] = value;
     } else {
-      delete (result as Record<string, unknown>)[key];
+      delete record[key];
     }
   }
   return result;

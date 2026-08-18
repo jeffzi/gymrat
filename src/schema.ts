@@ -176,6 +176,7 @@ export function parse<T extends TSchema>(
   // so the two are separate traversals; TypeBox keeps them in agreement, and a failing
   // check therefore always yields an error. Asserting it beats a fallback branch: this
   // module owns no wording, so it has nothing to say if the impossible happens.
-  const issue = validator.firstIssue(value)!;
+  const issue = validator.firstIssue(value);
+  if (issue === undefined) throw new GymratError("validation failed but no issue was reported");
   throw new GymratError(toMessage(issue), undefined, { cause: issue });
 }

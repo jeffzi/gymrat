@@ -5,6 +5,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 
 import type { Adapter, MetricDefaults } from "./adapters/types.js";
+import { envStringResult, NUMBER_ENV_FIELDS, STRING_ENV_FIELDS } from "./config-env.js";
 import { assertNever, GymratError, hasErrorCode, messageOf } from "./errors.js";
 import { runGit } from "./git.js";
 import { metricRecord } from "./metric-record.js";
@@ -113,7 +114,7 @@ const configFileSchema = Type.Object(
 export const configFileValidator = compile(configFileSchema);
 
 /** The shape of `gymrat.json` after schema validation — every field optional, since CLI flags can supply any of them. */
-type ConfigFile = Static<typeof configFileSchema>;
+export type ConfigFile = Static<typeof configFileSchema>;
 /** A string-keyed record of per-metric overrides (direction, gating, exact), derived from the config file's `metrics` section. */
 export type ConfigMetrics = Static<typeof metricsSchema>;
 /** A kind-keyed record of overrides that apply to every metric of that kind, derived from the config file's `kinds` section. */
@@ -175,7 +176,7 @@ export type ResolvedMetricMeta = {
  * Word an "invalid value" failure the same way whether TypeBox found it while validating
  * the file or {@link resolveConfig} found it while cross-checking two settled fields.
  */
-function invalidValueMessage(field: string, expectedPhrase: string, value: unknown): string {
+export function invalidValueMessage(field: string, expectedPhrase: string, value: unknown): string {
   return `Invalid config value for ${field}: expected ${expectedPhrase}, got ${JSON.stringify(value)}`;
 }
 
@@ -295,7 +296,7 @@ export function loadConfigFile(
  * (or absent-but-optional). When any step fails, `configFile` is `undefined` and the
  * problems array explains why.
  */
-function loadConfigFileCollecting(
+export function loadConfigFileCollecting(
   configFilePath: string,
   required: boolean,
 ): { configFile?: ConfigFile; exists: boolean; problems: string[] } {
@@ -355,7 +356,8 @@ export function loopKeyProblems(config: {
 /** Throw the first cross-field violation, or do nothing when all rules hold. */
 function validateLoopKeys(config: { filter?: string; primary: string; stop?: ConfigStop }): void {
   const problems = loopKeyProblems(config);
-  if (problems.length > 0) throw new GymratError(problems[0]!);
+  const first = problems[0];
+  if (first !== undefined) throw new GymratError(first);
 }
 
 /**
@@ -370,7 +372,7 @@ function validateLoopKeys(config: { filter?: string; primary: string; stop?: Con
  * wins the fallback to `./gymrat.json` and is then loaded as a required path — leaving
  * the user with a missing-file error that names no file.
  */
-function flagProblem(field: string, value: string | undefined): string | undefined {
+export function flagProblem(field: string, value: string | undefined): string | undefined {
   if (value === "") {
     return invalidValueMessage(`--${field}`, "a non-empty string", value);
   }
@@ -383,27 +385,13 @@ function assertFlagNotEmpty(field: string, value: string | undefined): void {
   if (problem !== undefined) throw new GymratError(problem);
 }
 
-function assignDefined<T extends object, K extends keyof T>(
+/** Set `target[key]` to `value` only when `value` is not `undefined`; skip the write otherwise. */
+export function assignDefined<T extends object, K extends keyof T>(
   target: T,
   key: K,
   value: T[K] | undefined,
 ): void {
   if (value !== undefined) target[key] = value;
-}
-
-/**
- * Check a `GYMRAT_*` string env var, returning the value or a problem string.
- *
- * Returns an empty object when the variable is unset so the next source in the
- * precedence chain (config file, then built-in default) can supply the value.
- */
-function envStringResult(envVar: string): { value?: string; problem?: string } {
-  const raw = process.env[envVar];
-  if (raw === undefined) return {};
-  if (raw === "") {
-    return { problem: `Invalid value for ${envVar}: expected a non-empty string, got ""` };
-  }
-  return { value: raw };
 }
 
 /** Throwing wrapper around {@link envStringResult}. */
@@ -412,51 +400,6 @@ function readEnvString(envVar: string): string | undefined {
   if (problem !== undefined) throw new GymratError(problem);
   return value;
 }
-
-/**
- * Check a `GYMRAT_*` numeric env var, returning the parsed value or a problem string.
- *
- * When `max` is supplied the cap is included in the error phrase so the user
- * sees the allowed range in a single message.
- */
-function envPositiveIntResult(envVar: string, max?: number): { value?: number; problem?: string } {
-  const raw = process.env[envVar];
-  if (raw === undefined) return {};
-  const n = Number(raw);
-  const phrase =
-    max !== undefined ? `a positive integer no greater than ${max}` : "a positive integer";
-  if (!Number.isInteger(n) || n < 1 || (max !== undefined && n > max)) {
-    return {
-      problem: `Invalid value for ${envVar}: expected ${phrase}, got ${JSON.stringify(raw)}`,
-    };
-  }
-  return { value: n };
-}
-
-/** One `GYMRAT_*` string field's association between its `CliFlags` key, env var name, and reader. */
-const STRING_ENV_FIELDS: readonly {
-  field: "bench" | "prepare" | "adapter";
-  envVar: string;
-  reader: (envVar: string) => { value?: string; problem?: string };
-}[] = [
-  { field: "bench", envVar: "GYMRAT_BENCH", reader: envStringResult },
-  { field: "prepare", envVar: "GYMRAT_PREPARE", reader: envStringResult },
-  { field: "adapter", envVar: "GYMRAT_ADAPTER", reader: envStringResult },
-];
-
-/** One `GYMRAT_*` numeric field's association between its `CliFlags` key, env var name, and reader. */
-const NUMBER_ENV_FIELDS: readonly {
-  field: "samples" | "timeout";
-  envVar: string;
-  reader: (envVar: string) => { value?: number; problem?: string };
-}[] = [
-  { field: "samples", envVar: "GYMRAT_SAMPLES", reader: envPositiveIntResult },
-  {
-    field: "timeout",
-    envVar: "GYMRAT_TIMEOUT",
-    reader: (n) => envPositiveIntResult(n, MAX_TIMEOUT_SECONDS),
-  },
-];
 
 /**
  * Read `GYMRAT_*` environment variables for fields whose CLI flag is absent.
@@ -486,43 +429,13 @@ function readEnvFlags(flags: CliFlags): CliFlags {
 }
 
 /**
- * Collecting counterpart of {@link readEnvFlags}: returns all valid env-flag
- * values alongside any validation problems, rather than bailing on the first.
- */
-function collectOneEnv<T>(
-  envVar: string,
-  reader: (name: string) => { value?: T; problem?: string },
-  problems: string[],
-): T | undefined {
-  const r = reader(envVar);
-  if (r.problem !== undefined) problems.push(r.problem);
-  return r.value;
-}
-
-function collectEnvFlags(flags: CliFlags): { flags: CliFlags; problems: string[] } {
-  const problems: string[] = [];
-  const result: CliFlags = {};
-  for (const { field, envVar, reader } of STRING_ENV_FIELDS) {
-    if (flags[field] === undefined) {
-      assignDefined(result, field, collectOneEnv(envVar, reader, problems));
-    }
-  }
-  for (const { field, envVar, reader } of NUMBER_ENV_FIELDS) {
-    if (flags[field] === undefined) {
-      assignDefined(result, field, collectOneEnv(envVar, reader, problems));
-    }
-  }
-  return { flags: result, problems };
-}
-
-/**
  * Return a problem string when a `runbook` does not resolve to an existing file.
  *
  * Resolved relative to `baseDir` rather than the process's cwd, matching how
  * the implicit `./gymrat.json` lookup itself is anchored — a runbook path is
  * authored relative to the repo the config lives in.
  */
-function runbookProblem(runbook: string, baseDir: string | undefined): string | undefined {
+export function runbookProblem(runbook: string, baseDir: string | undefined): string | undefined {
   const resolvedPath = path.resolve(baseDir ?? process.cwd(), runbook);
   let stat: fs.Stats | undefined;
   try {
@@ -551,27 +464,27 @@ function assertRunbookExists(runbook: string, baseDir: string | undefined): void
  * result, and the commands that do not never ask for it.
  */
 // fallow-ignore-next-line complexity
-function mergeConfig(flags: CliFlags, configFile: ConfigFile): BenchlessConfig {
-  const prepare = flags.prepare ?? configFile.prepare;
-  return {
+export function mergeConfig(flags: CliFlags, configFile: ConfigFile): BenchlessConfig {
+  const config: BenchlessConfig = {
     adapter: flags.adapter ?? configFile.adapter ?? CONFIG_DEFAULTS.adapter,
     samples: flags.samples ?? configFile.samples ?? CONFIG_DEFAULTS.samples,
     timeoutSeconds: flags.timeout ?? configFile.timeoutSeconds ?? CONFIG_DEFAULTS.timeoutSeconds,
     unstableNoisePct: configFile.unstableNoisePct ?? CONFIG_DEFAULTS.unstableNoisePct,
     primary: configFile.primary ?? CONFIG_DEFAULTS.primary,
-    ...(prepare !== undefined ? { prepare } : undefined),
-    ...(configFile.metrics !== undefined
-      ? { metrics: metricRecord(Object.entries(configFile.metrics)) }
-      : undefined),
-    ...(configFile.kinds !== undefined
-      ? { kinds: metricRecord(Object.entries(configFile.kinds)) }
-      : undefined),
-    ...(configFile.checks !== undefined ? { checks: configFile.checks } : undefined),
-    ...(configFile.runbook !== undefined ? { runbook: configFile.runbook } : undefined),
-    ...(configFile.filter !== undefined ? { filter: configFile.filter } : undefined),
-    ...(configFile.stop !== undefined ? { stop: configFile.stop } : undefined),
-    ...(configFile.hooks !== undefined ? { hooks: configFile.hooks } : undefined),
   };
+  assignDefined(config, "prepare", flags.prepare ?? configFile.prepare);
+  if (configFile.metrics !== undefined) {
+    config.metrics = metricRecord(Object.entries(configFile.metrics));
+  }
+  if (configFile.kinds !== undefined) {
+    config.kinds = metricRecord(Object.entries(configFile.kinds));
+  }
+  assignDefined(config, "checks", configFile.checks);
+  assignDefined(config, "runbook", configFile.runbook);
+  assignDefined(config, "filter", configFile.filter);
+  assignDefined(config, "stop", configFile.stop);
+  assignDefined(config, "hooks", configFile.hooks);
+  return config;
 }
 
 /**
@@ -614,7 +527,7 @@ export function resolveConfig(flags: CliFlags, baseDir?: string): ResolvedConfig
  * Outside a repository (or when git is unavailable) the lookup falls back to
  * the process's cwd, which is where the user invoked the command.
  */
-function findImplicitBase(): string {
+export function findImplicitBase(): string {
   try {
     return runGit(["rev-parse", "--show-toplevel"], process.cwd()).trim();
   } catch {
@@ -652,145 +565,6 @@ function settleConfig(
   }
 
   return { config, bench: effective.bench ?? configFile.bench };
-}
-
-/** The outcome of a non-throwing config inspection. */
-export interface ConfigInspection {
-  /** The resolved path to the config file, or undefined when no file was found. */
-  configPath: string | undefined;
-  /** Whether the resolved config path points to an existing file. */
-  configExists: boolean;
-  /** Human-worded problems found during inspection; empty when the config is clean. */
-  problems: string[];
-  /** The settled configuration, present only when no problems were found. */
-  config?: BenchlessConfig;
-  /** The resolved bench command, present only when clean and a bench value exists. */
-  bench?: string;
-}
-
-/**
- * Resolve which config file to load, load and validate it, and report any problems.
- *
- * When the config source itself is broken (empty `--config` flag, empty
- * `GYMRAT_CONFIG`), file loading is skipped and an empty config file is
- * returned so the merge can still produce defaults.
- */
-function resolveConfigSource(
-  flags: CliFlags,
-  baseDir: string | undefined,
-): {
-  configPath: string | undefined;
-  configExists: boolean;
-  configFile: ConfigFile | undefined;
-  problems: string[];
-} {
-  const problems: string[] = [];
-
-  let envConfigPath: string | undefined;
-  let envConfigFailed = false;
-  if (flags.config === undefined) {
-    const r = envStringResult("GYMRAT_CONFIG");
-    if (r.problem !== undefined) {
-      problems.push(r.problem);
-      envConfigFailed = true;
-    }
-    envConfigPath = r.value;
-  }
-
-  const explicitConfig = (flags.config !== "" ? flags.config : undefined) ?? envConfigPath;
-  const skipLoading = flags.config === "" || envConfigFailed;
-
-  if (skipLoading) {
-    return { configPath: undefined, configExists: false, configFile: {}, problems };
-  }
-
-  const resolvedPath = explicitConfig ?? path.join(baseDir ?? findImplicitBase(), CONFIG_FILENAME);
-  const required = explicitConfig !== undefined;
-  const fileResult = loadConfigFileCollecting(resolvedPath, required);
-  problems.push(...fileResult.problems);
-
-  return {
-    configPath: required || fileResult.exists ? resolvedPath : undefined,
-    configExists: fileResult.exists,
-    configFile: fileResult.configFile,
-    problems,
-  };
-}
-
-/**
- * Inspect the config without throwing, collecting every problem the throwing
- * path would have surfaced as a single {@link GymratError}.
- *
- * The function mirrors the validation that {@link settleConfig} performs —
- * flag, env-var, schema, cross-field, and runbook checks — but accumulates
- * all problems rather than bailing on the first.
- */
-function collectFlagProblems(flags: CliFlags): string[] {
-  const problems: string[] = [];
-  for (const field of ["bench", "prepare", "adapter", "config"] as const) {
-    const p = flagProblem(field, flags[field]);
-    if (p !== undefined) problems.push(p);
-  }
-  return problems;
-}
-
-function buildEffectiveFlags(flags: CliFlags, envFlags: CliFlags): CliFlags {
-  const effective: CliFlags = { ...envFlags };
-  for (const field of ["bench", "prepare", "adapter"] as const) {
-    if (flags[field] !== undefined && flags[field] !== "") effective[field] = flags[field];
-  }
-  if (flags.samples !== undefined) effective.samples = flags.samples;
-  if (flags.timeout !== undefined) effective.timeout = flags.timeout;
-  return effective;
-}
-
-function resolveRunbook(
-  config: BenchlessConfig,
-  configPath: string | undefined,
-  problems: string[],
-): void {
-  if (config.runbook === undefined || configPath === undefined) return;
-  const configDir = path.dirname(configPath);
-  const rp = runbookProblem(config.runbook, configDir);
-  if (rp !== undefined) {
-    problems.push(rp);
-  } else {
-    config.runbook = path.resolve(configDir, config.runbook);
-  }
-}
-
-export function inspectConfig(flags: CliFlags, baseDir?: string): ConfigInspection {
-  const problems = collectFlagProblems(flags);
-
-  const envResult = collectEnvFlags(flags);
-  problems.push(...envResult.problems);
-
-  const effective = buildEffectiveFlags(flags, envResult.flags);
-
-  const source = resolveConfigSource(flags, baseDir);
-  problems.push(...source.problems);
-  const { configPath, configExists, configFile } = source;
-
-  if (configFile === undefined) {
-    return { configPath, configExists, problems };
-  }
-
-  const config = mergeConfig(effective, configFile);
-  problems.push(...loopKeyProblems(config));
-  resolveRunbook(config, configPath, problems);
-
-  if (problems.length > 0) {
-    return { configPath, configExists, problems };
-  }
-
-  const bench = effective.bench ?? configFile.bench;
-  return {
-    configPath,
-    configExists,
-    problems: [],
-    config,
-    ...(bench !== undefined ? { bench } : undefined),
-  };
 }
 
 /** The kind an adapter's metric falls under when it reports none. */

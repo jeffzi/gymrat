@@ -299,10 +299,7 @@ export function computeVerdicts(
           n: pairedA.length,
         }
       : computeApproximateVerdict(
-          pairedA,
-          pairedB,
-          delta,
-          meta.direction,
+          { pairedA, pairedB, delta, direction: meta.direction },
           unstableNoisePct,
           meta.unit,
         );
@@ -327,29 +324,34 @@ export function computeVerdicts(
  * resolution gates the signal; the observed scatter does not, because the
  * p-value already accounts for it.
  */
+type PairedContext = {
+  pairedA: readonly number[];
+  pairedB: readonly number[];
+  delta: number;
+  direction: "lower" | "higher";
+};
+
 function computeApproximateVerdict(
-  pairedA: readonly number[],
-  pairedB: readonly number[],
-  delta: number,
-  direction: "lower" | "higher",
+  ctx: PairedContext,
   unstableNoisePct: number,
   unit: ResolvedMetricMeta["unit"],
 ): SignedRankVerdict | BandVerdict {
-  const wilcoxonResult = wilcoxonSignedRank(pairedA, pairedB);
+  const wilcoxonResult = wilcoxonSignedRank(ctx.pairedA, ctx.pairedB);
 
   let result: SignedRankVerdict | BandVerdict;
   if (wilcoxonResult.n < MIN_WILCOXON_N) {
-    result = computeBandMethod(pairedA, pairedB, delta, direction, wilcoxonResult.n, unit);
+    result = computeBandMethod(ctx, wilcoxonResult.n, unit);
   } else {
-    const noise = computeNoise(pairedA, pairedB, unit);
-    const hasSignal = wilcoxonResult.p < P_VALUE_THRESHOLD && Math.abs(delta) > noise.resolutionPct;
-    const verdict: Verdict = hasSignal ? determineVerdict(delta, direction) : "no-signal";
+    const noise = computeNoise(ctx.pairedA, ctx.pairedB, unit);
+    const hasSignal =
+      wilcoxonResult.p < P_VALUE_THRESHOLD && Math.abs(ctx.delta) > noise.resolutionPct;
+    const verdict: Verdict = hasSignal ? determineVerdict(ctx.delta, ctx.direction) : "no-signal";
 
     result = {
       verdict,
       method: "signed-rank",
-      delta,
-      n: pairedA.length,
+      delta: ctx.delta,
+      n: ctx.pairedA.length,
       p: wilcoxonResult.p,
       noisePct: noise.pct,
       noiseAbs: noise.abs,
@@ -457,24 +459,21 @@ function computeNoise(
  *   band a delta is judged against *is* the metric's own noise.
  */
 function computeBandMethod(
-  pairedA: readonly number[],
-  pairedB: readonly number[],
-  delta: number,
-  direction: "lower" | "higher",
+  ctx: PairedContext,
   usableN: number,
   unit: ResolvedMetricMeta["unit"],
 ): BandVerdict {
-  const noise = computeNoise(pairedA, pairedB, unit);
+  const noise = computeNoise(ctx.pairedA, ctx.pairedB, unit);
 
-  const absDelta = Math.abs(delta);
-  const hasSignal = pairedA.length >= MIN_BAND_N && absDelta > noise.pct;
-  const verdict: Verdict = hasSignal ? determineVerdict(delta, direction) : "no-signal";
+  const absDelta = Math.abs(ctx.delta);
+  const hasSignal = ctx.pairedA.length >= MIN_BAND_N && absDelta > noise.pct;
+  const verdict: Verdict = hasSignal ? determineVerdict(ctx.delta, ctx.direction) : "no-signal";
 
   return {
     verdict,
     method: "band",
-    delta,
-    n: pairedA.length,
+    delta: ctx.delta,
+    n: ctx.pairedA.length,
     usableN,
     noisePct: noise.pct,
     noiseAbs: noise.abs,

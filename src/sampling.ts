@@ -196,14 +196,17 @@ export interface RunOptions extends SamplingOptions {
  * Aborting `signal` kills the command's whole process group; bench commands are
  * spawned detached, so a Ctrl-C delivered to gymrat never reaches them by itself.
  */
-async function runCommand(
-  phase: "prepare" | "bench",
-  ctx: TargetContext,
-  command: string,
-  timeoutMs: number,
-  signal: AbortSignal,
-  sample?: number,
-): Promise<string> {
+interface RunCommandOptions {
+  phase: "prepare" | "bench";
+  ctx: TargetContext;
+  command: string;
+  timeoutMs: number;
+  signal: AbortSignal;
+  sample?: number;
+}
+
+async function runCommand(options: RunCommandOptions): Promise<string> {
+  const { phase, ctx, command, timeoutMs, signal, sample } = options;
   const context: CommandErrorContext = {
     ...ctx,
     phase,
@@ -241,7 +244,7 @@ export async function collectSamples<const T extends readonly TargetContext[]>(
   if (options.prepare) {
     for (const { ctx } of collected) {
       options.onProgress?.({ kind: "prepare", label: ctx.label });
-      await runCommand("prepare", ctx, options.prepare, timeoutMs, signal);
+      await runCommand({ phase: "prepare", ctx, command: options.prepare, timeoutMs, signal });
     }
   }
 
@@ -253,7 +256,14 @@ export async function collectSamples<const T extends readonly TargetContext[]>(
         total: options.samples,
         label: ctx.label,
       });
-      const stdout = await runCommand("bench", ctx, options.bench, timeoutMs, signal, round + 1);
+      const stdout = await runCommand({
+        phase: "bench",
+        ctx,
+        command: options.bench,
+        timeoutMs,
+        signal,
+        sample: round + 1,
+      });
       samples.push(adapter.parse(stdout, options.warn));
     }
   }

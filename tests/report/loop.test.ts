@@ -81,13 +81,21 @@ describe("formatVerdictBlock", () => {
     { outcome: "regressed", word: "REGRESSED" },
     { outcome: "no-signal", word: "NO-SIGNAL" },
   ] as const)("states the primary delta beside the $outcome verdict", ({ outcome, word }) => {
-    const block = formatVerdictBlock(outcome, geomeanPrimary(), "gymrat keep");
+    const block = formatVerdictBlock({
+      outcome,
+      primary: geomeanPrimary(),
+      nextStep: "gymrat keep",
+    });
 
     expect(stripAnsi(block[0] ?? "")).toBe(`primary: -4.2% · verdict: ${word}`);
   });
 
   it("closes the block with the next step", () => {
-    const block = formatVerdictBlock("regressed", geomeanPrimary(3.1), "fix or gymrat discard");
+    const block = formatVerdictBlock({
+      outcome: "regressed",
+      primary: geomeanPrimary(3.1),
+      nextStep: "fix or gymrat discard",
+    });
 
     expect.soft(block).toHaveLength(2);
     expect(stripAnsi(block[1] ?? "")).toBe("Hint: fix or gymrat discard");
@@ -107,7 +115,11 @@ describe("formatVerdictBlock", () => {
       { outcome: "regressed", styled: "\x1b[1m\x1b[31mREGRESSED\x1b[39m\x1b[22m" },
       { outcome: "no-signal", styled: "\x1b[1mNO-SIGNAL\x1b[22m" },
     ] as const)("paints the $outcome verdict word", ({ outcome, styled }) => {
-      const block = formatVerdictBlock(outcome, geomeanPrimary(), "gymrat keep");
+      const block = formatVerdictBlock({
+        outcome,
+        primary: geomeanPrimary(),
+        nextStep: "gymrat keep",
+      });
 
       expect(block[0]).toContain(styled);
     });
@@ -172,12 +184,10 @@ function statusSummary(overrides: Partial<StatusSummary> = {}): StatusSummary {
 
 describe("formatStatusHeader", () => {
   it("names the session, the baseline it forked from, the branch, both worktrees, and the adapter", () => {
-    // Act
     const lines = formatStatusHeader(
       sessionRecord({ baseline: { ref: "main", sha: BASELINE_SHA } }),
     );
 
-    // Assert
     expect(lines.map(stripAnsi)).toStrictEqual([
       `session ${SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines`,
       `branch gymrat/${SESSION_ID}`,
@@ -211,6 +221,11 @@ describe("formatStatusIteration", () => {
       expected: "iteration 1 · ✓ -7.2% · kept b1b2b3b",
     },
     {
+      desc: "a kept iteration whose commit is not yet known",
+      settle: { kind: "kept" },
+      expected: "iteration 1 · ✓ -7.2% · kept",
+    },
+    {
       desc: "an iteration thrown away",
       settle: { kind: "discarded" },
       expected: "iteration 1 · ✓ -7.2% · discarded",
@@ -224,6 +239,11 @@ describe("formatStatusIteration", () => {
       desc: "why a keep was blocked",
       settle: { kind: "keep-blocked", reason: "checks-failed" },
       expected: "iteration 1 · ✓ -7.2% · keep-blocked (checks-failed)",
+    },
+    {
+      desc: "a keep blocked without a reason",
+      settle: { kind: "keep-blocked" },
+      expected: "iteration 1 · ✓ -7.2% · keep-blocked",
     },
   ] satisfies { desc: string; settle: StatusIteration["settle"]; expected: string }[])(
     "states $desc",
@@ -282,7 +302,6 @@ describe("formatStatusIteration", () => {
 
 describe("formatStatusBaseline", () => {
   it("states the label beside the median each metric measured", () => {
-    // Arrange
     const record: BaselineRecord = {
       type: "baseline",
       at: "2026-08-08T14:15:30.000Z",
@@ -293,15 +312,12 @@ describe("formatStatusBaseline", () => {
       ],
     };
 
-    // Act
     const line = formatStatusBaseline(record);
 
-    // Assert
     expect(stripAnsi(line)).toBe("baseline main · total_ms 15192 · alloc_bytes 1520");
   });
 
   it("takes each median over the rounds that reported the metric", () => {
-    // Arrange
     const record: BaselineRecord = {
       type: "baseline",
       at: "2026-08-08T14:15:30.000Z",
@@ -309,10 +325,8 @@ describe("formatStatusBaseline", () => {
       samples: [{ total_ms: 100, alloc_bytes: 40 }, { total_ms: 300 }],
     };
 
-    // Act
     const line = formatStatusBaseline(record);
 
-    // Assert
     expect(stripAnsi(line)).toBe("baseline main · total_ms 200 · alloc_bytes 40");
   });
 });
@@ -359,6 +373,11 @@ describe("formatStatusFooter", () => {
       summary: statusSummary(),
       expected: undefined,
     },
+    {
+      desc: "omits the stop line when stop is present but has no conditions",
+      summary: statusSummary({ stop: {} }),
+      expected: undefined,
+    },
   ])("$desc", ({ summary, expected }) => {
     const lines = formatStatusFooter(summary).map(stripAnsi);
 
@@ -368,10 +387,8 @@ describe("formatStatusFooter", () => {
 
 describe("formatStatusFinalized", () => {
   it("names the branch the squash landed on and the commit it made", () => {
-    // Act
     const line = formatStatusFinalized(finalizeRecord());
 
-    // Assert
     expect(stripAnsi(line)).toBe(`finalized · branch gymrat/${SESSION_ID}-final · commit ccccccc`);
   });
 

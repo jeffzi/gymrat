@@ -75,26 +75,27 @@ export async function keepSession(
 
   const iteration = state.unsettled ? state.lastIteration : undefined;
   if (iteration === undefined) {
-    return blockedKeep(
+    return blockedKeep({
       jsonlPath,
       // The refusal settles nothing, so it takes the number no iteration has used
       // yet: numbering it `lastSeq` would leave the log with two settlement
       // records against an iteration that was already kept or discarded.
-      state.lastSeq + 1,
-      "nothing-measured",
-      { configured },
-      "Keep refused: nothing has been measured since the last keep or discard.\nHint: run gymrat iterate first — an unmeasured commit is one the loop cannot account for.",
-    );
+      seq: state.lastSeq + 1,
+      reason: "nothing-measured",
+      checks: { configured },
+      report:
+        "Keep refused: nothing has been measured since the last keep or discard.\nHint: run gymrat iterate first — an unmeasured commit is one the loop cannot account for.",
+    });
   }
 
   if (hasStandingGatingRegression(iteration)) {
-    return blockedKeep(
+    return blockedKeep({
       jsonlPath,
-      iteration.seq,
-      "gating-regression",
-      { configured },
-      gatingRefusal(iteration),
-    );
+      seq: iteration.seq,
+      reason: "gating-regression",
+      checks: { configured },
+      report: gatingRefusal(iteration),
+    });
   }
 
   const experimentDir = session.worktrees.experiment;
@@ -103,46 +104,25 @@ export async function keepSession(
     // The worktree is clean — either the agent made no changes (nothing to
     // commit), or a prior keep already committed the work but failed before
     // recording it (retry). The baseline's current position distinguishes them.
-    return keepCleanWorktree(
+    return keepCleanWorktree({
       jsonlPath,
       experimentDir,
-      session.worktrees.baseline,
-      state.lastKeptCommit ?? session.baseline.sha,
+      baselineDir: session.worktrees.baseline,
+      baselinePosition: state.lastKeptCommit ?? session.baseline.sha,
       iteration,
       configured,
       options,
-    );
+    });
   }
 
-  const checks = await runChecks(config, experimentDir, options.signal);
-  if (checks !== undefined && !checks.passed) {
-    return blockedKeep(
-      jsonlPath,
-      iteration.seq,
-      "checks-failed",
-      {
-        configured: true,
-        passed: false,
-        stdoutBytes: checks.stdoutBytes,
-        stderrBytes: checks.stderrBytes,
-      },
-      `Keep refused: the checks command failed.\n\n${checks.output}\nHint: fix the failures and run gymrat keep again.`,
-    );
-  }
-
-  const message = options.message ?? generatedMessage(iteration);
-  const commit = commitWorkspace(experimentDir, message);
-  const checksField: KeepRecord["checks"] =
-    checks === undefined ? { configured: false } : { configured: true, passed: true };
-
-  return commitKeep(
+  return keepDirtyWorktree({
     jsonlPath,
-    session.worktrees.baseline,
-    iteration.seq,
-    commit,
-    message,
-    checksField,
-  );
+    config,
+    experimentDir,
+    baselineDir: session.worktrees.baseline,
+    iteration,
+    options,
+  });
 }
 
 /**
@@ -151,28 +131,40 @@ export async function keepSession(
  * committed the work but failed before recording it, in which case the commit
  * already made is picked up rather than repeated.
  */
-function keepCleanWorktree(
-  jsonlPath: string,
-  experimentDir: string,
-  baselineDir: string,
-  baselinePosition: string,
-  iteration: IterationRecord,
-  configured: boolean,
-  options: KeepOptions,
-): KeepResult {
+interface CleanWorktreeArgs {
+  jsonlPath: string;
+  experimentDir: string;
+  baselineDir: string;
+  baselinePosition: string;
+  iteration: IterationRecord;
+  configured: boolean;
+  options: KeepOptions;
+}
+
+function keepCleanWorktree(args: CleanWorktreeArgs): KeepResult {
+  const {
+    jsonlPath,
+    experimentDir,
+    baselineDir,
+    baselinePosition,
+    iteration,
+    configured,
+    options,
+  } = args;
   const head = worktreeHead(experimentDir);
 
   if (head === baselinePosition) {
     // HEAD matches the baseline: the agent measured an iteration but never
     // edited the worktree. There is nothing to commit, and running checks
     // or git-commit would waste time on a tree that has nothing to give.
-    return blockedKeep(
+    return blockedKeep({
       jsonlPath,
-      iteration.seq,
-      "nothing-to-commit",
-      { configured },
-      "Keep refused: the experiment worktree has nothing to commit.\nHint: edit the code in the experiment worktree, then run gymrat keep again.",
-    );
+      seq: iteration.seq,
+      reason: "nothing-to-commit",
+      checks: { configured },
+      report:
+        "Keep refused: the experiment worktree has nothing to commit.\nHint: edit the code in the experiment worktree, then run gymrat keep again.",
+    });
   }
 
   // HEAD is ahead of the baseline: a prior call committed the work but
@@ -180,7 +172,57 @@ function keepCleanWorktree(
   // where the prior call left off — the checks already passed on the first
   // attempt, and the commit is already made.
   const message = options.message ?? generatedMessage(iteration);
-  return commitKeep(jsonlPath, baselineDir, iteration.seq, head, message, { configured });
+  return commitKeep({
+    jsonlPath,
+    baselineDir,
+    seq: iteration.seq,
+    commit: head,
+    message,
+    checks: { configured },
+  });
+}
+
+interface DirtyWorktreeArgs {
+  jsonlPath: string;
+  config: BenchlessConfig;
+  experimentDir: string;
+  baselineDir: string;
+  iteration: IterationRecord;
+  options: KeepOptions;
+}
+
+async function keepDirtyWorktree(args: DirtyWorktreeArgs): Promise<KeepResult> {
+  const { jsonlPath, config, experimentDir, baselineDir, iteration, options } = args;
+
+  const checks = await runChecks(config, experimentDir, options.signal);
+  if (checks !== undefined && !checks.passed) {
+    return blockedKeep({
+      jsonlPath,
+      seq: iteration.seq,
+      reason: "checks-failed",
+      checks: {
+        configured: true,
+        passed: false,
+        stdoutBytes: checks.stdoutBytes,
+        stderrBytes: checks.stderrBytes,
+      },
+      report: `Keep refused: the checks command failed.\n\n${checks.output}\nHint: fix the failures and run gymrat keep again.`,
+    });
+  }
+
+  const message = options.message ?? generatedMessage(iteration);
+  const commit = commitWorkspace(experimentDir, message);
+  const checksField: KeepRecord["checks"] =
+    checks === undefined ? { configured: false } : { configured: true, passed: true };
+
+  return commitKeep({
+    jsonlPath,
+    baselineDir,
+    seq: iteration.seq,
+    commit,
+    message,
+    checks: checksField,
+  });
 }
 
 /**
@@ -190,33 +232,35 @@ function keepCleanWorktree(
  * {@link keepCleanWorktree} on retry settle through here, so the record shape
  * and the report wording stay identical whichever path produced the commit.
  */
-function commitKeep(
-  jsonlPath: string,
-  baselineDir: string,
-  seq: number,
-  commit: string,
-  message: string,
-  checks: KeepRecord["checks"],
-): KeepResult {
+interface CommitKeepArgs {
+  jsonlPath: string;
+  baselineDir: string;
+  seq: number;
+  commit: string;
+  message: string;
+  checks: KeepRecord["checks"];
+}
+
+function commitKeep(args: CommitKeepArgs): KeepResult {
   const record: KeepRecord = {
     type: "keep",
-    seq,
+    seq: args.seq,
     at: new Date().toISOString(),
     status: "committed",
-    commit,
-    message,
-    checks,
+    commit: args.commit,
+    message: args.message,
+    checks: args.checks,
   };
   // Move the baseline before recording the keep: a record written first would
   // settle the iteration even when git refuses the advance, leaving the loop
   // sampling a baseline the log says it has already left behind. Failing with
   // the iteration still unsettled lets the agent retry the keep.
-  advanceBaseline(baselineDir, commit);
-  appendRecord(jsonlPath, record);
+  advanceBaseline(args.baselineDir, args.commit);
+  appendRecord(args.jsonlPath, record);
 
   return {
     record,
-    report: `Kept iteration ${seq} as ${commit}\n  message: ${message}\n  the baseline now measures against this commit`,
+    report: `Kept iteration ${args.seq} as ${args.commit}\n  message: ${args.message}\n  the baseline now measures against this commit`,
   };
 }
 
@@ -386,24 +430,26 @@ async function runChecks(
   };
 }
 
+interface BlockedKeepArgs {
+  jsonlPath: string;
+  seq: number;
+  reason: NonNullable<KeepRecord["reason"]>;
+  checks: KeepRecord["checks"];
+  report: string;
+}
+
 /** Record the refusal so the log carries it, and phrase it for the agent. */
-function blockedKeep(
-  jsonlPath: string,
-  seq: number,
-  reason: NonNullable<KeepRecord["reason"]>,
-  checks: KeepRecord["checks"],
-  report: string,
-): KeepResult {
+function blockedKeep(args: BlockedKeepArgs): KeepResult {
   const record: KeepRecord = {
     type: "keep",
-    seq,
+    seq: args.seq,
     at: new Date().toISOString(),
     status: "blocked",
-    reason,
-    checks,
+    reason: args.reason,
+    checks: args.checks,
   };
-  appendRecord(jsonlPath, record);
-  return { record, report };
+  appendRecord(args.jsonlPath, record);
+  return { record, report: args.report };
 }
 
 /**

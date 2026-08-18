@@ -293,7 +293,7 @@ describe("combineObservers", () => {
     const combined = combineObservers();
     const event = makeEvent();
 
-    // Act & Assert — calling it must not throw
+    // Calling it must not throw
     expect(() => {
       combined(event);
     }).not.toThrow();

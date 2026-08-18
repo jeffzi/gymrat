@@ -27,13 +27,10 @@ describe("EtaTracker", () => {
       { desc: "a prepare step", step: prepare("A") },
       { desc: "the very first sample step (no gap measured)", step: sample(1, 3, "A") },
     ])("returns undefined for $desc", ({ step }) => {
-      // Arrange
       const tracker = new EtaTracker(1, clockSequence(0));
 
-      // Act
       const result = tracker.record(step);
 
-      // Assert
       expect(result).toBeUndefined();
     });
 
@@ -51,14 +48,12 @@ describe("EtaTracker", () => {
         expected: 1100,
       },
     ])("$name", ({ targets, total, expected }) => {
-      // Arrange — constructor-provided target count, gap of 100 between two index-1 steps
+      // Constructor-provided target count, gap of 100 between two index-1 steps
       const tracker = new EtaTracker(targets, clockSequence(0, 100));
 
-      // Act
       tracker.record(sample(1, total, "A")); // t=0, first sample, no gap yet
       const result = tracker.record(sample(1, total, "B")); // t=100, gap=100
 
-      // Assert
       // mean = 100, targetCount from constructor
       // completedSampleSteps before this call = 1, remaining = total*targets - 1
       // estimate = 100 * remaining
@@ -66,15 +61,13 @@ describe("EtaTracker", () => {
     });
 
     it("pools gaps from different targets into a shared mean", () => {
-      // Arrange — target A takes 100ms, target B takes 200ms
+      // Target A takes 100ms, target B takes 200ms
       const tracker = new EtaTracker(2, clockSequence(0, 100, 300));
 
-      // Act
       tracker.record(sample(1, 3, "A")); // t=0
       tracker.record(sample(1, 3, "B")); // t=100, gap=100 (A's duration)
       const result = tracker.record(sample(2, 3, "A")); // t=300, gap=200 (B's duration)
 
-      // Assert
       // durations = [100, 200], mean = 150 (pooled across targets)
       // targetCount = 2, completedSampleSteps before this call = 2, remaining = 3*2 - 2 = 4
       // estimate = 150 * 4 = 600
@@ -82,15 +75,13 @@ describe("EtaTracker", () => {
     });
 
     it("excludes the gap following a prepare step from the mean", () => {
-      // Arrange — prepare introduces a 1000ms gap that must not skew the mean
+      // Prepare introduces a 1000ms gap that must not skew the mean
       const tracker = new EtaTracker(1, clockSequence(0, 1000, 1100));
 
-      // Act
       tracker.record(prepare("A")); // t=0
       tracker.record(sample(1, 3, "A")); // t=1000, gap excluded (after prepare)
       const result = tracker.record(sample(2, 3, "A")); // t=1100, gap=100 included
 
-      // Assert
       // durations = [100] (prepare gap excluded), mean = 100
       // targetCount = 1, completedSampleSteps before this call = 1, remaining = 3*1 - 1 = 2
       // estimate = 100 * 2 = 200
@@ -98,16 +89,14 @@ describe("EtaTracker", () => {
     });
 
     it("excludes mid-run prepare gaps, keying off kind not position", () => {
-      // Arrange — prepare appears between sample steps, not just at the start
+      // Prepare appears between sample steps, not just at the start
       const tracker = new EtaTracker(2, clockSequence(0, 100, 1000, 1100));
 
-      // Act
       tracker.record(sample(1, 3, "A")); // t=0
       tracker.record(prepare("B")); // t=100, prepare returns early
       tracker.record(sample(1, 3, "B")); // t=1000, gap excluded (prevWasPrepare)
       const result = tracker.record(sample(2, 3, "A")); // t=1100, gap=100 included
 
-      // Assert
       // durations = [100] (900ms prepare gap excluded), mean = 100
       // targetCount = 2, completedSampleSteps before this call = 2, remaining = 3*2 - 2 = 4
       // estimate = 100 * 4 = 400
@@ -115,15 +104,13 @@ describe("EtaTracker", () => {
     });
 
     it("ignores a backwards clock step instead of recording a negative duration", () => {
-      // Arrange — the clock jumps backwards from 100 to 50 between the second and third step
+      // The clock jumps backwards from 100 to 50 between the second and third step
       const tracker = new EtaTracker(1, clockSequence(0, 100, 50));
 
-      // Act
       tracker.record(sample(1, 3, "A")); // t=0, first sample, no gap yet
       tracker.record(sample(2, 3, "A")); // t=100, gap=100 included
       const result = tracker.record(sample(3, 3, "A")); // t=50, gap=-50 discarded
 
-      // Assert
       // durations = [100] (the -50 gap contributes nothing), mean = 100
       // targetCount = 1, completedSampleSteps before this call = 2, remaining = 3*1 - 2 = 1
       // estimate = 100 * 1 = 100
@@ -137,15 +124,13 @@ describe("EtaTracker", () => {
     });
 
     it("measures gaps with performance.now so wall-clock shifts cannot skew estimates", () => {
-      // Arrange — the monotonic source, not the wall clock, yields 0 then 100
+      // The monotonic source, not the wall clock, yields 0 then 100
       vi.spyOn(performance, "now").mockImplementation(clockSequence(0, 100));
       const tracker = new EtaTracker(1);
 
-      // Act
       tracker.record(sample(1, 3, "A")); // t=0, first sample, no gap yet
       const result = tracker.record(sample(2, 3, "A")); // t=100, gap=100
 
-      // Assert
       // durations = [100], mean = 100
       // targetCount = 1, completedSampleSteps before this call = 1, remaining = 3*1 - 1 = 2
       // estimate = 100 * 2 = 200

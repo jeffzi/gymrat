@@ -5,7 +5,6 @@ import path from "node:path";
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 
-import { captureStderr } from "../fixtures/console.js";
 import { createScratchRepo } from "../fixtures/scratch-repo.js";
 import type { ScratchRepo } from "../fixtures/scratch-repo.js";
 import { removeTempRoot } from "./temp-root.js";
@@ -78,10 +77,11 @@ describe("per-file temp root", () => {
         throw new Error("EBUSY: resource busy or locked");
       });
 
-      const warned = captureStderr(() => {
-        removeTempRoot(root);
-      });
+      const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
+      removeTempRoot(root);
+
+      const warned = writeSpy.mock.calls.map((args) => String(args[0])).join("");
       expect(warned).toContain(root);
       expect(warned).toContain("EBUSY");
     });

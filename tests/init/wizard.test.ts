@@ -72,8 +72,8 @@ function interactiveOptions(lines: string[], overrides?: Partial<WizardOptions>)
  * Commander passing raw, unconverted CLI input (e.g. a string where a number
  * is expected).
  */
-// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- single documented cast, intentional invalid-input injection
 function asRawInput(value: unknown): number {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- intentional invalid-input injection
   return value as number;
 }
 
@@ -140,7 +140,7 @@ describe("runWizard", () => {
               stopTarget: asRawInput("abc"),
             }),
           ),
-        ).rejects.toThrow();
+        ).rejects.toThrow(/--primary/);
       });
     });
 
@@ -181,7 +181,7 @@ describe("runWizard", () => {
               stopMaxIterations: 0,
             }),
           ),
-        ).rejects.toThrow();
+        ).rejects.toThrow(/stop-max-iterations/);
       });
     });
 
@@ -508,13 +508,11 @@ describe("runWizard", () => {
   describe("EOF at required prompts", () => {
     describe("when input closes before bench is answered", () => {
       it("throws GymratError naming --bench", async () => {
-        // Arrange — stream ends immediately with no lines
+        // Stream ends immediately with no lines
         const { input, output } = makeStreams([], { end: true, isTTY: true });
 
-        // Act
         const promise = runWizard({ input, output });
 
-        // Assert
         await expect(promise).rejects.toThrow(GymratError);
         await expect(promise).rejects.toThrow(/Missing --bench/);
       });
@@ -522,14 +520,13 @@ describe("runWizard", () => {
 
     describe("when input closes before primary is answered", () => {
       it("throws GymratError naming --primary", async () => {
-        // Arrange — bench is pre-answered via flag, stop-target provided via flag,
+        // Bench is pre-answered via flag, stop-target provided via flag,
         // interactive answers: gate (y), adapter, checks — then EOF before primary
         const { input, output } = makeStreams(["y", "metric-lines", ""], {
           end: true,
           isTTY: true,
         });
 
-        // Act
         const promise = runWizard({
           input,
           output,
@@ -537,7 +534,6 @@ describe("runWizard", () => {
           stopTarget: 1.5,
         });
 
-        // Assert
         await expect(promise).rejects.toThrow(GymratError);
         await expect(promise).rejects.toThrow(/Missing --primary/);
       });
@@ -551,7 +547,7 @@ describe("runWizard", () => {
   describe("stop-target strict parsing (interactive)", () => {
     describe("when Infinity is entered for stop-target", () => {
       it("reprompts and accepts a finite decimal", async () => {
-        // Arrange — answers: bench, gate (y), adapter, checks, stop-target "Infinity"
+        // Answers: bench, gate (y), adapter, checks, stop-target "Infinity"
         // (invalid), then "1.5" (valid), primary, max-iterations, runbook, skill
         const { input, output } = makeStreams(
           ["npm run bench", "y", "metric-lines", "", "Infinity", "1.5", "latency", "", "n", "y"],
@@ -559,10 +555,9 @@ describe("runWizard", () => {
         );
         const getOutput = collectOutput(output);
 
-        // Act
         const result = await runWizard({ input, output });
 
-        // Assert — the Infinity input was rejected (error shown), finite input accepted
+        // The Infinity input was rejected (error shown), finite input accepted
         const out = getOutput();
         expect(out).toMatch(/finite|number|invalid/i);
         expect(result.stopTarget).toBe(1.5);

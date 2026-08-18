@@ -397,8 +397,11 @@ describe("compare", () => {
 
       const metric = result.metrics["latency"];
       expect(metric).toBeDefined();
-      expect.soft(metric!.baselineSpread).toBeUndefined();
-      expect(metric!.candidates[0]!.spread).toBeUndefined();
+      if (metric === undefined) throw new Error("latency metric missing");
+      expect.soft(metric.baselineSpread).toBeUndefined();
+      const candidate = metric.candidates[0];
+      if (candidate === undefined) throw new Error("candidate missing");
+      expect(candidate.spread).toBeUndefined();
     });
   });
 

@@ -146,27 +146,21 @@ function jsonlHolding(lines: string[]): string {
 describe("appendRecord", () => {
   describe("when the session directory does not exist yet", () => {
     it("creates it and writes the record as a single JSON line", () => {
-      // Arrange
       const jsonlPath = freshJsonlPath();
 
-      // Act
       appendRecord(jsonlPath, SESSION);
 
-      // Assert
       expect(fs.readFileSync(jsonlPath, "utf-8")).toBe(`${JSON.stringify(SESSION)}\n`);
     });
   });
 
   describe("when the log already holds records", () => {
     it("adds one line, leaving the earlier lines untouched", () => {
-      // Arrange
       const jsonlPath = freshJsonlPath();
       appendRecord(jsonlPath, SESSION);
 
-      // Act
       appendRecord(jsonlPath, ITERATION_1);
 
-      // Assert
       expect(fs.readFileSync(jsonlPath, "utf-8")).toBe(
         `${JSON.stringify(SESSION)}\n${JSON.stringify(ITERATION_1)}\n`,
       );
@@ -175,30 +169,24 @@ describe("appendRecord", () => {
 
   describe("when the record would fail its own schema on read-back", () => {
     it("throws a GymratError naming the record type", () => {
-      // Arrange
       const jsonlPath = freshJsonlPath();
       appendRecord(jsonlPath, SESSION);
 
-      // Act
       const error = captureGymratError(() => {
         appendRecord(jsonlPath, UNREADABLE_ITERATION);
       });
 
-      // Assert
       expect(error.message).toMatch(/\biteration\b/);
     });
 
     it("leaves the log byte-identical", () => {
-      // Arrange
       const jsonlPath = freshJsonlPath();
       appendRecord(jsonlPath, SESSION);
 
-      // Act
       captureGymratError(() => {
         appendRecord(jsonlPath, UNREADABLE_ITERATION);
       });
 
-      // Assert
       expect(fs.readFileSync(jsonlPath, "utf-8")).toBe(`${JSON.stringify(SESSION)}\n`);
     });
   });
@@ -207,30 +195,24 @@ describe("appendRecord", () => {
 describe("readRecords", () => {
   describe("when the log does not exist", () => {
     it("reads as no session", () => {
-      // Arrange
       const jsonlPath = freshJsonlPath();
 
-      // Act
       const records = readRecords(jsonlPath);
 
-      // Assert
       expect(records).toStrictEqual([]);
     });
   });
 
   describe("when the log holds appended records", () => {
     it("returns the same typed records in file order", () => {
-      // Arrange
       const jsonlPath = freshJsonlPath();
       const written = [SESSION, BASELINE, HOOK, ITERATION_1, committedKeep(1), discard(2)];
       for (const record of written) {
         appendRecord(jsonlPath, record);
       }
 
-      // Act
       const records = readRecords(jsonlPath);
 
-      // Assert
       expect(records).toStrictEqual(written);
       expectTypeOf(records).toEqualTypeOf<SessionLogRecord[]>();
     });
@@ -238,13 +220,10 @@ describe("readRecords", () => {
 
   describe("when a line is not valid JSON", () => {
     it("throws a GymratError naming the log and the 1-based line number", () => {
-      // Arrange
       const jsonlPath = jsonlHolding([JSON.stringify(SESSION), "{not json", "{}"]);
 
-      // Act
       const error = captureThrown(() => readRecords(jsonlPath));
 
-      // Assert
       expect.soft(error).toBeInstanceOf(GymratError);
       expect.soft(messageOf(error)).toContain(`${jsonlPath}:2`);
     });
@@ -252,14 +231,11 @@ describe("readRecords", () => {
 
   describe("when a line is JSON that matches no record schema", () => {
     it("throws a GymratError naming the log line and the offending field", () => {
-      // Arrange
       const { metrics: _metrics, ...withoutMetrics } = ITERATION_1;
       const jsonlPath = jsonlHolding([JSON.stringify(SESSION), JSON.stringify(withoutMetrics)]);
 
-      // Act
       const error = captureThrown(() => readRecords(jsonlPath));
 
-      // Assert
       expect.soft(error).toBeInstanceOf(GymratError);
       expect.soft(messageOf(error)).toContain(`${jsonlPath}:2`);
       expect.soft(messageOf(error)).toMatch(/\bmetrics\b/);
@@ -268,13 +244,10 @@ describe("readRecords", () => {
 
   describe("when the first record is not a session header", () => {
     it("throws a GymratError naming the log and its first line", () => {
-      // Arrange
       const jsonlPath = jsonlHolding([JSON.stringify(ITERATION_1), JSON.stringify(discard(1))]);
 
-      // Act
       const error = captureThrown(() => readRecords(jsonlPath));
 
-      // Assert
       expect.soft(error).toBeInstanceOf(GymratError);
       expect.soft(messageOf(error)).toContain(`${jsonlPath}:1`);
       expect.soft(messageOf(error)).toMatch(/session/i);
@@ -283,14 +256,11 @@ describe("readRecords", () => {
 
   describe("when the log's final line is unterminated", () => {
     it("skips the torn line and returns the complete records before it", () => {
-      // Arrange
       const jsonlPath = jsonlHolding([JSON.stringify(SESSION)]);
       fs.appendFileSync(jsonlPath, '{"type":"iter');
 
-      // Act
       const records = readRecords(jsonlPath);
 
-      // Assert
       expect(records).toStrictEqual([SESSION]);
     });
   });
@@ -443,62 +413,48 @@ describe("foldSession", () => {
   ] satisfies { description: string; records: SessionLogRecord[]; expected: SessionState }[])(
     "summarizes $description",
     ({ records, expected }) => {
-      // Act
       const state = foldSession(records);
 
-      // Assert
       expect(state).toStrictEqual(expected);
     },
   );
 
   describe("when a keep was blocked instead of committed", () => {
     it("leaves it out of the keep count", () => {
-      // Arrange
       const records = [SESSION, ITERATION_1, blockedKeep(1)];
 
-      // Act
       const state = foldSession(records);
 
-      // Assert
       expect(state.keepCount).toBe(0);
     });
   });
 
   describe("when a keep was blocked without recording a reason", () => {
     it("leaves the iteration unsettled", () => {
-      // Arrange
       const records = [SESSION, ITERATION_1, blockedKeepWithoutReason(1)];
 
-      // Act
       const state = foldSession(records);
 
-      // Assert
       expect(state.unsettled).toBe(true);
     });
   });
 
   describe("when a keep was blocked for nothing-measured", () => {
     it("leaves the iteration unsettled", () => {
-      // Arrange
       const records = [SESSION, ITERATION_1, nothingMeasuredBlock(2)];
 
-      // Act
       const state = foldSession(records);
 
-      // Assert
       expect(state.unsettled).toBe(true);
     });
   });
 
   describe("when a keep was blocked for gating-regression", () => {
     it("clears unsettled", () => {
-      // Arrange
       const records = [SESSION, ITERATION_1, gatingBlock(1)];
 
-      // Act
       const state = foldSession(records);
 
-      // Assert
       expect(state.unsettled).toBe(false);
     });
   });
@@ -557,10 +513,8 @@ describe("endsOnGatingBlock", () => {
   ] satisfies { description: string; records: SessionLogRecord[]; expected: boolean }[])(
     "reads $description as $expected",
     ({ records, expected }) => {
-      // Act
       const state = foldSession(records);
 
-      // Assert
       expect(state.endsOnGatingBlock).toBe(expected);
     },
   );
@@ -569,16 +523,13 @@ describe("endsOnGatingBlock", () => {
 describe("requireSession", () => {
   describe("when the log holds a session", () => {
     it("hands back the session, the folded state, the log path, and the records", () => {
-      // Arrange
       const root = freshRoot();
       const jsonlPath = sessionJsonlPath(root);
       appendRecord(jsonlPath, SESSION);
       appendRecord(jsonlPath, ITERATION_1);
 
-      // Act
       const required = requireSession(root, "measuring an edit");
 
-      // Assert
       expect(required).toStrictEqual({
         session: SESSION,
         state: {
@@ -599,13 +550,10 @@ describe("requireSession", () => {
     it.each(["measuring an edit", "asking for its status"])(
       "throws a GymratError naming the root and hinting at %s",
       (verb) => {
-        // Arrange
         const root = freshRoot();
 
-        // Act
         const error = captureGymratError(() => requireSession(root, verb));
 
-        // Assert
         expect.soft(error.message).toContain(root);
         expect.soft(error.hint).toBe(`Run gymrat start to open one before ${verb}.`);
       },
@@ -614,13 +562,10 @@ describe("requireSession", () => {
 
   describe("when the session was finalized", () => {
     it("still hands the closed session back", () => {
-      // Arrange
       const root = rootHolding([SESSION, ITERATION_1, committedKeep(1), FINALIZE]);
 
-      // Act
       const required = requireSession(root, "asking for its status");
 
-      // Assert
       expect(required.state.finalized).toStrictEqual(FINALIZE);
     });
   });
@@ -629,13 +574,10 @@ describe("requireSession", () => {
 describe("requireOpenSession", () => {
   describe("when the log holds a session nobody has finalized", () => {
     it("hands back the session, the folded state, the log path, and the records", () => {
-      // Arrange
       const root = rootHolding([SESSION, ITERATION_1]);
 
-      // Act
       const required = requireOpenSession(root, "measuring an edit");
 
-      // Assert
       expect(required).toStrictEqual({
         session: SESSION,
         state: {
@@ -654,13 +596,10 @@ describe("requireOpenSession", () => {
 
   describe("when no session has been opened", () => {
     it("throws the same GymratError requireSession does", () => {
-      // Arrange
       const root = freshRoot();
 
-      // Act
       const error = captureGymratError(() => requireOpenSession(root, "measuring an edit"));
 
-      // Assert
       expect.soft(error.message).toContain(root);
       expect.soft(error.hint).toBe("Run gymrat start to open one before measuring an edit.");
     });
@@ -668,13 +607,10 @@ describe("requireOpenSession", () => {
 
   describe("when the session was finalized", () => {
     it("throws a GymratError naming the closed session and pointing at a fresh start", () => {
-      // Arrange
       const root = rootHolding([SESSION, ITERATION_1, committedKeep(1), FINALIZE]);
 
-      // Act
       const error = captureGymratError(() => requireOpenSession(root, "measuring an edit"));
 
-      // Assert
       expect.soft(error.message).toContain(SESSION.sessionId);
       expect.soft(error.hint).toContain("gymrat start");
     });

@@ -24,18 +24,14 @@ describe("confirmAction", () => {
     { input: "yes\n", desc: "full word 'yes'", expected: false },
     { input: "nope\n", desc: "random text", expected: false },
   ])("returns $expected for $desc", async ({ input, expected }) => {
-    // Act
     const result = await confirmAction("Proceed?", inputStream(input));
 
-    // Assert
     expect(result).toBe(expected);
   });
 
   it("returns false on EOF (empty stream)", async () => {
-    // Act
     const result = await confirmAction("Proceed?", inputStream());
 
-    // Assert
     expect(result).toBe(false);
   });
 });

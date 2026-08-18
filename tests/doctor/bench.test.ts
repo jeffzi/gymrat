@@ -75,10 +75,13 @@ describe("buildBenchSection", () => {
       const section = await buildBenchSection(defaultInput({ bench: undefined }));
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("fail");
-      expect(section.checks[0]!.detail).toMatch(/bench/i);
-      expect(section.checks[0]!.hint).toMatch(/--bench/);
-      expect(section.checks[0]!.hint).toMatch(/bench/);
+      const check = section.checks[0];
+      expect(check).toBeDefined();
+      if (!check) return;
+      expect(check.status).toBe("fail");
+      expect(check.detail).toMatch(/bench/i);
+      expect(check.hint).toMatch(/--bench/);
+      expect(check.hint).toMatch(/bench/);
     });
 
     it("does not call exec", async () => {
@@ -105,9 +108,12 @@ describe("buildBenchSection", () => {
       const section = await buildBenchSection(defaultInput({ adapter: "bogus" }));
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("fail");
-      expect(section.checks[0]!.detail).toMatch(/Unknown adapter/);
-      expect(section.checks[0]!.hint).toBe("valid adapters are: metric-lines, mitata");
+      const check = section.checks[0];
+      expect(check).toBeDefined();
+      if (!check) return;
+      expect(check.status).toBe("fail");
+      expect(check.detail).toMatch(/Unknown adapter/);
+      expect(check.hint).toBe("valid adapters are: metric-lines, mitata");
     });
 
     it("does not call exec when the adapter is unknown", async () => {
@@ -155,7 +161,9 @@ describe("buildBenchSection", () => {
 
         const failChecks = section.checks.filter((c) => c.status === "fail");
         expect(failChecks.length).toBeGreaterThanOrEqual(1);
-        const check = failChecks[0]!;
+        const check = failChecks[0];
+        expect(check).toBeDefined();
+        if (!check) return;
         expect(check.detail).toContain("1");
         expect(check.detail).toMatch(/something broke/);
       });
@@ -170,7 +178,9 @@ describe("buildBenchSection", () => {
 
         const failChecks = section.checks.filter((c) => c.status === "fail");
         expect(failChecks.length).toBeGreaterThanOrEqual(1);
-        const check = failChecks[0]!;
+        const check = failChecks[0];
+        expect(check).toBeDefined();
+        if (!check) return;
         expect(check.detail).toMatch(/30/);
         expect(check.hint).toMatch(/timeout/i);
       });
@@ -196,7 +206,10 @@ describe("buildBenchSection", () => {
 
         const failChecks = section.checks.filter((c) => c.status === "fail");
         expect(failChecks.length).toBeGreaterThanOrEqual(1);
-        expect(failChecks[0]!.detail).toMatch(/No usable metrics/);
+        const check = failChecks[0];
+        expect(check).toBeDefined();
+        if (!check) return;
+        expect(check.detail).toMatch(/No usable metrics/);
       });
     });
 
@@ -214,7 +227,9 @@ describe("buildBenchSection", () => {
 
         const okChecks = section.checks.filter((c) => c.status === "ok");
         expect(okChecks.length).toBeGreaterThanOrEqual(1);
-        const check = okChecks[0]!;
+        const check = okChecks[0];
+        expect(check).toBeDefined();
+        if (!check) return;
         expect(check.detail).toContain("2");
         expect(check.detail).toMatch(/latency/);
         expect(check.detail).toMatch(/throughput/);
@@ -259,7 +274,8 @@ describe("buildBenchSection", () => {
         expect(failChecks.length).toBeGreaterThanOrEqual(1);
         const check = failChecks.find((c) => c.detail.includes("throughput"));
         expect(check).toBeDefined();
-        expect(check!.detail).toMatch(/primary/i);
+        if (!check) return;
+        expect(check.detail).toMatch(/primary/i);
       });
     });
 
@@ -343,8 +359,11 @@ describe("buildBenchSection", () => {
       const section = await buildBenchSection(defaultInput({ noBench: true }));
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("ok");
-      expect(section.checks[0]!.detail).toMatch(/skip/i);
+      const check = section.checks[0];
+      expect(check).toBeDefined();
+      if (!check) return;
+      expect(check.status).toBe("ok");
+      expect(check.detail).toMatch(/skip/i);
       expect(mockExec).not.toHaveBeenCalled();
     });
   });
@@ -354,8 +373,11 @@ describe("buildBenchSection", () => {
       const section = await buildBenchSection(defaultInput({ configFailed: true }));
 
       expect(section.checks).toHaveLength(1);
-      expect(section.checks[0]!.status).toBe("ok");
-      expect(section.checks[0]!.detail).toMatch(/skip|config/i);
+      const check = section.checks[0];
+      expect(check).toBeDefined();
+      if (!check) return;
+      expect(check.status).toBe("ok");
+      expect(check.detail).toMatch(/skip|config/i);
       expect(mockExec).not.toHaveBeenCalled();
     });
   });
@@ -382,9 +404,12 @@ describe("buildBenchSection", () => {
         const section = await buildBenchSection(defaultInput({ adapter: "bogus", ...overrides }));
 
         expect(section.checks).toHaveLength(1);
-        expect(section.checks[0]!.status).toBe("fail");
-        expect(section.checks[0]!.detail).toMatch(/Unknown adapter/);
-        expect(section.checks[0]!.hint).toBe("valid adapters are: metric-lines, mitata");
+        const check = section.checks[0];
+        expect(check).toBeDefined();
+        if (!check) return;
+        expect(check.status).toBe("fail");
+        expect(check.detail).toMatch(/Unknown adapter/);
+        expect(check.hint).toBe("valid adapters are: metric-lines, mitata");
       },
     );
   });

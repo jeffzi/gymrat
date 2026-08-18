@@ -148,8 +148,10 @@ export function createRunnableProgram(
 ): Command {
   const program = createProgram();
   const scope = options.exitOverride ?? "root";
-  const overridden =
-    scope === "all" ? [program, ...program.commands] : scope === "root" ? [program] : [];
+  let overridden: Command[];
+  if (scope === "all") overridden = [program, ...program.commands];
+  else if (scope === "root") overridden = [program];
+  else overridden = [];
   for (const command of overridden) {
     command.exitOverride();
   }

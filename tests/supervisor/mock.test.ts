@@ -127,11 +127,10 @@ describe("createMockDriver", () => {
 
   describe("when the script runs to completion", () => {
     it("emits each emit-step event to the observer in order", async () => {
-      const events: SessionEvent[] = [
-        { type: "text_delta", timestamp: 1, chunk: "hello" },
-        { type: "text_delta", timestamp: 2, chunk: "world" },
-      ];
-      const steps: MockStep[] = [{ emit: events[0]! }, { emit: events[1]! }];
+      const event0: SessionEvent = { type: "text_delta", timestamp: 1, chunk: "hello" };
+      const event1: SessionEvent = { type: "text_delta", timestamp: 2, chunk: "world" };
+      const events: SessionEvent[] = [event0, event1];
+      const steps: MockStep[] = [{ emit: event0 }, { emit: event1 }];
       const { events: collected, observer } = collectingObserver();
       const driver = createMockDriver(steps);
 

@@ -210,11 +210,8 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
       }
 
       if (signal) {
-        if (signal.aborted) {
-          doInterrupt();
-        } else {
-          signal.addEventListener("abort", doInterrupt, { once: true });
-        }
+        if (signal.aborted) doInterrupt();
+        else signal.addEventListener("abort", doInterrupt, { once: true });
       }
 
       const ctx: ProcessingContext = {
@@ -224,58 +221,27 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
         thinkingTokens: 0,
       };
 
-      // fallow-ignore-next-line complexity
-      async function run(): Promise<SessionOutcome> {
-        if (interruptedOutcome) return interruptedOutcome;
-
-        /* istanbul ignore next -- loadSdk fallback exercised in production, not unit tests */
-        const queryFn = options.queryFn ?? (await loadSdk());
-
-        const queryOpts: Record<string, unknown> = {
-          prompt: prompt.kickoff,
-          cwd: prompt.cwd,
-          permissionMode: "bypassPermissions",
-          abortController: queryAbortController,
-        };
-
-        if (prompt.systemPromptAppend !== undefined) {
-          queryOpts["systemPrompt"] = {
-            type: "append-to-preset",
-            text: prompt.systemPromptAppend,
-          };
-        }
-
-        if (prompt.model !== undefined) {
-          queryOpts["model"] = prompt.model;
-        }
-
-        const q = queryFn(queryOpts);
-
-        try {
-          for await (const msg of q) {
-            // oxlint-disable-next-line no-unnecessary-condition -- interruptedOutcome is externally mutated during await
-            if (interruptedOutcome) return interruptedOutcome;
-            if (isRecord(msg)) {
-              costUsd = processSdkMessage(msg, ctx, costUsd);
-            }
-          }
-
-          return { reason: "completed", costUsd };
-        } catch (err: unknown) {
-          // oxlint-disable-next-line no-unnecessary-condition -- interruptedOutcome is externally mutated during await
-          if (interruptedOutcome) return interruptedOutcome;
-          return { reason: "error", costUsd, message: messageOf(err) };
-        }
-      }
-
-      const runPromise = run();
+      const runPromise = runSession(options, prompt, {
+        abortController: queryAbortController,
+        ctx,
+        state: {
+          get interrupted() {
+            return interruptedOutcome;
+          },
+          get cost() {
+            return costUsd;
+          },
+          setCost(v: number) {
+            costUsd = v;
+          },
+        },
+      });
 
       return {
         interrupt(): Promise<void> {
           doInterrupt();
           return Promise.resolve();
         },
-
         get outcome(): Promise<SessionOutcome> {
           if (interruptedOutcome) return Promise.resolve(interruptedOutcome);
           return runPromise;
@@ -283,4 +249,64 @@ export function createClaudeDriver(options: ClaudeDriverOptions = {}): Driver {
       };
     },
   };
+}
+
+interface RunState {
+  readonly interrupted: SessionOutcome | undefined;
+  readonly cost: number;
+  setCost(v: number): void;
+}
+
+interface RunContext {
+  abortController: AbortController;
+  ctx: ProcessingContext;
+  state: RunState;
+}
+
+function buildQueryOptions(
+  prompt: SessionPrompt,
+  abortController: AbortController,
+): Record<string, unknown> {
+  const opts: Record<string, unknown> = {
+    prompt: prompt.kickoff,
+    cwd: prompt.cwd,
+    permissionMode: "bypassPermissions",
+    abortController,
+  };
+  if (prompt.systemPromptAppend !== undefined) {
+    opts["systemPrompt"] = { type: "append-to-preset", text: prompt.systemPromptAppend };
+  }
+  if (prompt.model !== undefined) {
+    opts["model"] = prompt.model;
+  }
+  return opts;
+}
+
+// fallow-ignore-next-line complexity
+async function runSession(
+  options: ClaudeDriverOptions,
+  prompt: SessionPrompt,
+  run: RunContext,
+): Promise<SessionOutcome> {
+  const { abortController, ctx, state } = run;
+  if (state.interrupted) return state.interrupted;
+
+  /* istanbul ignore next -- loadSdk fallback exercised in production, not unit tests */
+  const queryFn = options.queryFn ?? (await loadSdk());
+  const q = queryFn(buildQueryOptions(prompt, abortController));
+
+  try {
+    for await (const msg of q) {
+      // oxlint-disable-next-line no-unnecessary-condition -- state.interrupted is externally mutated during await
+      if (state.interrupted) return state.interrupted;
+      if (isRecord(msg)) {
+        state.setCost(processSdkMessage(msg, ctx, state.cost));
+      }
+    }
+    return { reason: "completed", costUsd: state.cost };
+  } catch (err: unknown) {
+    // oxlint-disable-next-line no-unnecessary-condition -- state.interrupted is externally mutated during await
+    if (state.interrupted) return state.interrupted;
+    return { reason: "error", costUsd: state.cost, message: messageOf(err) };
+  }
 }

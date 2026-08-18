@@ -156,8 +156,10 @@ describe("measure", () => {
     ])("reports no spread because $case", async ({ queue }) => {
       const result = await measureQueue(queue);
 
-      expect(result.metrics["latency"]).toBeDefined();
-      expect(result.metrics["latency"]!.spread).toBeUndefined();
+      const latency = result.metrics["latency"];
+      expect(latency).toBeDefined();
+      if (latency === undefined) throw new Error("latency metric missing");
+      expect(latency.spread).toBeUndefined();
     });
   });
 

@@ -26,7 +26,7 @@ export function removeTempRoot(root: string): void {
   try {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   } catch (error) {
-    console.warn(`could not remove temp root ${root}: ${String(error)}`);
+    process.stderr.write(`could not remove temp root ${root}: ${String(error)}\n`);
   }
 }
 
