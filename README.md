@@ -55,10 +55,10 @@ temporary worktrees created for git-ref targets on success, on error, and on
 `SIGHUP`/`SIGINT`/`SIGTERM`. The report footer states how many were removed and how many were left
 behind, naming each leftover directory with the reason git gave.
 
-An optional `label=` prefix sets the display name. Without it, a git target is labelled with its
-ref and a path target with the directory's base name, resolved through symlinks. Pass `label=`
-when two paths share a base name. The prefix splits at the first `=`, so `label=a=b` passes a
-target containing `=`; a bare `a=b` without a label cannot.
+An optional `label=` prefix sets the display name. Without it, a git target is labelled with its ref
+and a path target with the directory's base name, resolved through symlinks. Pass `label=` when two
+paths share a base name. The prefix splits at the first `=`, so `label=a=b` passes a target
+containing `=`; a bare `a=b` without a label cannot.
 
 ```sh
 # Compare two git refs
@@ -174,10 +174,10 @@ measures, so the log never holds two settlements against one iteration.
 iteration regressed a gating metric, or (checked last) when the `checks` command fails. The
 confirmation rerun decides the gating-regression case for inexact metrics: a regression the rerun
 re-measured and would not repeat leaves the keep committable, while one the rerun never reported
-back on blocks it. Silence is not evidence the regression went away. An exact metric gates without
-a rerun (its value is deterministic, so repeating it adds nothing). Every refusal is recorded as a
-blocked keep, which `status` reads back. gymrat never erases a decision from the log. A refused
-keep exits 1.
+back on blocks it. Silence is not evidence the regression went away. An exact metric gates without a
+rerun (its value is deterministic, so repeating it adds nothing). Every refusal is recorded as a
+blocked keep, which `status` reads back. gymrat never erases a decision from the log. A refused keep
+exits 1.
 
 `finalize` collapses every kept iteration into one squash commit whose tree equals the session
 branch's HEAD and whose parent is the pinned baseline, then points a new branch at it (default
@@ -197,10 +197,10 @@ exits 0; when a cap fires or an error occurs, it exits 1 (cap) or 2 (error). The
 prints on stdout; the `log:` path and warnings print on stderr.
 
 Every command except `status` holds a per-repository lock for the duration. `supervise` holds its
-own lock (separate from the session lock) so two supervised runs cannot drive one session, while
-the agent's nested `iterate`/`keep` calls still acquire the ordinary session lock. A second gymrat
-run against the same repository exits 2 rather than benchmarking alongside the first, since
-concurrent runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
+own lock (separate from the session lock) so two supervised runs cannot drive one session, while the
+agent's nested `iterate`/`keep` calls still acquire the ordinary session lock. A second gymrat run
+against the same repository exits 2 rather than benchmarking alongside the first, since concurrent
+runs perturb each other's measurements. `status` only reads the log, so it takes no lock.
 
 ### doctor
 
@@ -297,9 +297,8 @@ implicit `gymrat.json` in the working directory is bypassed entirely.
 - `regressed` — trips when any gating metric has a `regressed` verdict on any candidate. Unstable
   and non-gating metrics never trip this gate.
 - `geomean:<pct>` — trips when any candidate's gated geomean, on any gating **kind** (the class an
-  adapter assigns a metric, such as `time` or `memory`; see the [`kinds` config
-  key](#configuration) for the full explanation), reaches `<pct>` percent in the
-  costly direction (e.g. `geomean:2` trips
+  adapter assigns a metric, such as `time` or `memory`; see the [`kinds` config key](#configuration)
+  for the full explanation), reaches `<pct>` percent in the costly direction (e.g. `geomean:2` trips
   at +2.0% or worse for lower-is-better metrics). Each kind is evaluated independently: a non-gating
   kind can never trip this gate regardless of its value. A candidate whose gating kinds all have
   zero stable metrics cannot trip this gate; gymrat warns on stderr instead.
@@ -318,16 +317,16 @@ gymrat compare main my-branch --bench "npm run bench" \
 A `compare` report opens with a per-metric table — each side's median and spread, then the delta and
 its verdict — closes each section with a geomean row, and ends with a verdict tally and a highlights
 block. Glyphs are direction-aware (`✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
-within noise, `?` inconclusive), so you never do better-is-higher math yourself, and the delta prints
-even under `~`.
+within noise, `?` inconclusive), so you never do better-is-higher math yourself, and the delta
+prints even under `~`.
 
 Verdicts come from a two-sided Wilcoxon signed-rank test at ≥ 6 nonzero paired differences (signal
-requires `p < 0.05` _and_ the delta clearing the metric's resolution floor), a half-range noise
-band below that, and direct median comparison for config-flagged `exact` metrics. Add `--verbose`
-to name the method behind each verdict in the footer. With multiple candidates, the
-baseline column summarizes every sampling round that any candidate paired on — the union gives the
-strongest estimate of the baseline's central tendency, while each candidate's delta is computed
-from its own paired rounds alone.
+requires `p < 0.05` _and_ the delta clearing the metric's resolution floor), a half-range noise band
+below that, and direct median comparison for config-flagged `exact` metrics. Add `--verbose` to name
+the method behind each verdict in the footer. With multiple candidates, the baseline column
+summarizes every sampling round that any candidate paired on — the union gives the strongest
+estimate of the baseline's central tendency, while each candidate's delta is computed from its own
+paired rounds alone.
 
 The [reference](docs/reference.md#report-anatomy) has an annotated example and the full anatomy —
 noise bands, spread columns, multi-kind sections, one-sided metrics — plus the exact verdict rules.
@@ -358,8 +357,8 @@ increment on breaking changes. Field-by-field schemas are in the
 
 ## The `metric-lines` format
 
-The default adapter, `metric-lines`, is the universal "just printf your numbers" path. No
-benchmark library required. gymrat scans bench **stdout** (never stderr) for lines matching:
+The default adapter, `metric-lines`, is the universal "just printf your numbers" path. No benchmark
+library required. gymrat scans bench **stdout** (never stderr) for lines matching:
 
 ```text
 METRIC <name>=<value>
@@ -373,9 +372,9 @@ METRIC <name>=<value>
   may themselves contain `=` (e.g. `decode/text=digits`).
 - The left side becomes the metric name verbatim, whitespace included. `METRIC decode time=1.4`
   yields a metric named `decode time`. Check the report's metric column when a name looks wrong.
-- A line starting with `METRIC` but missing the separating space — `METRICS foo=1`,
-  `METRICbar=2`, `METRIC_foo=1` — produces a warning on gymrat's stderr, since it looks like a
-  near-miss. Completely unrelated lines are silently ignored.
+- A line starting with `METRIC` but missing the separating space — `METRICS foo=1`, `METRICbar=2`,
+  `METRIC_foo=1` — produces a warning on gymrat's stderr, since it looks like a near-miss.
+  Completely unrelated lines are silently ignored.
 - The right side goes through JavaScript's `Number()`, which accepts more than decimal notation
   (`0x1f` parses as 31); non-finite results are rejected.
 - An **empty right side** (`METRIC name=`, the shape an unset shell variable produces) is skipped,
@@ -457,8 +456,8 @@ defaults**. Unknown top-level keys are an error, to catch typos.
   a metric is too noisy to judge: its verdict becomes `unstable` (tallied under `≈` in the summary,
   serialized as `"unstable"` in JSON) and it drops out of the geomean. The comparison is strict — a
   metric sitting exactly on the threshold keeps its verdict. Values below `0.5` are rejected because
-  the noise band is floored at 0.5%, so a lower threshold would mark every metric unstable. It has no
-  flag — set it in the config file or leave the default.
+  the noise band is floored at 0.5%, so a lower threshold would mark every metric unstable. It has
+  no flag — set it in the config file or leave the default.
 - `metrics` keys are exact metric names. Per-metric config overrides the adapter's defaults:
   - `direction`: `"lower"` or `"higher"` (which way is better).
   - `gating`: whether the metric counts toward the gated geomean (the one `--fail-on geomean:<pct>`
@@ -470,10 +469,10 @@ defaults**. Unknown top-level keys are an error, to catch typos.
   unknown top-level key. When an override seems to do nothing, check the spelling against the
   report's metric column.
 - `kinds` keys are kind names reported by the adapter (`time`, `memory`, or `other` — both adapters
-  assign `time` and `memory` from `/time` and `/heap` name suffixes; plain `metric-lines`
-  metrics fall under `other`). Each entry accepts:
-  - `gating`: whether every metric of this kind counts toward the gated geomean and the
-    `--fail-on` gate. Defaults to `true`.
+  assign `time` and `memory` from `/time` and `/heap` name suffixes; plain `metric-lines` metrics
+  fall under `other`). Each entry accepts:
+  - `gating`: whether every metric of this kind counts toward the gated geomean and the `--fail-on`
+    gate. Defaults to `true`.
 - A `kinds` key that matches no kind the run produced is silently ignored, the same as an unmatched
   `metrics` key.
 - An unknown sub-key inside a `metrics` or `kinds` entry is an error, the same as an unknown

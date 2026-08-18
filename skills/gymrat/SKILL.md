@@ -1,14 +1,13 @@
 ---
 name: gymrat
 description: >-
-  Use when driving a gymrat optimization session toward a performance target.
-  Not for one-shot comparisons (gymrat compare) or standalone measurements
-  (gymrat measure without --record).
+  Use when driving a gymrat optimization session toward a performance target. Not for one-shot
+  comparisons (gymrat compare) or standalone measurements (gymrat measure without --record).
 when_to_use: >-
-  Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard,
-  gymrat finalize, gymrat status, or gymrat supervise; when a repo has a gymrat.json;
-  when asked to optimize a benchmark toward a target or budget; or on errors like
-  "has not been settled", "Keep refused", or "Stop condition met".
+  Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard, gymrat finalize,
+  gymrat status, or gymrat supervise; when a repo has a gymrat.json; when asked to optimize a
+  benchmark toward a target or budget; or on errors like "has not been settled", "Keep refused", or
+  "Stop condition met".
 ---
 
 # Driving a gymrat optimization session
@@ -84,9 +83,9 @@ gymrat status
 gymrat finalize [-m "squash message"] [--branch <name>]
 ```
 
-Collapses kept iterations into one squash commit on a new branch (default
-`<session-branch>-final`). Requires every iteration settled, at least one keep, and a clean
-experiment worktree. A finalized session refuses all mutating commands.
+Collapses kept iterations into one squash commit on a new branch (default `<session-branch>-final`).
+Requires every iteration settled, at least one keep, and a clean experiment worktree. A finalized
+session refuses all mutating commands.
 
 ### 6. Supervised mode
 
@@ -95,8 +94,8 @@ gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--log <path>] [--mo
 ```
 
 Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.json` and
-`--max-minutes`. `--allow-dirty` permits uncommitted changes. Holds its own lock, separate from
-the session lock.
+`--max-minutes`. `--allow-dirty` permits uncommitted changes. Holds its own lock, separate from the
+session lock.
 
 ## Loop discipline
 
@@ -105,14 +104,13 @@ the session lock.
    runbook's goal is the criterion. Report and stop when a target proves unreachable after sustained
    NO-SIGNAL.
 
-2. **Act on hook failures.** Hooks cannot fail the loop, but ignoring their output accumulates
-   debt.
+2. **Act on hook failures.** Hooks cannot fail the loop, but ignoring their output accumulates debt.
 
 3. **Never run concurrent sessions.** Every mutating command holds a per-repository lock;
    `supervise` holds its own separate lock. A second gymrat process exits 2.
 
-4. **Discard decisively.** A NO-SIGNAL or REGRESSED iteration that cannot be salvaged gets
-   discarded immediately — reworking without discarding first conflates the changes.
+4. **Discard decisively.** A NO-SIGNAL or REGRESSED iteration that cannot be salvaged gets discarded
+   immediately — reworking without discarding first conflates the changes.
 
 5. **Finalize when the work is done.** The squash commit is the deliverable.
 

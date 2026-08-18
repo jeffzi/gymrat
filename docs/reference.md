@@ -5,8 +5,7 @@ installation, usage, and configuration, see the [README](../README.md).
 
 ## Report anatomy
 
-The sample below uses `gymrat compare` with a `gymrat.json` marking `encode-mem` as an exact
-metric:
+The sample below uses `gymrat compare` with a `gymrat.json` marking `encode-mem` as an exact metric:
 
 ```text
 gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
@@ -38,8 +37,8 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 - The **`±` noise band** in the verdict column is the half-range-derived spread the signed-rank and
   noise-band methods both compute. The band decides the verdict only on the band path; signed-rank
   decides on `p`. It appears only for non-exact metrics in the single-candidate table —
-  multi-candidate tables drop the band from cells to save width. Unstable metrics omit the band
-  (the word `unstable` replaces it).
+  multi-candidate tables drop the band from cells to save width. Unstable metrics omit the band (the
+  word `unstable` replaces it).
 - The **delta is always shown**, even under `~`, so "-0.9% but no signal" is visible rather than
   hidden.
 - The **glyph is direction-aware**: `✓` improved, `✗` regressed, `≈` unstable, `=` identical, `~`
@@ -47,10 +46,10 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 - The **± spread** in the value columns is the cross-run half-range of the per-run values as a
   percentage of the median, the same dispersion the noise band uses. Past 100%, the spread is
   restated in the metric's own units (e.g. `5B ± 381B` instead of `5B ± 7620%`).
-- **Value columns vs. delta/verdict:** the value columns show each side's median and spread over
-  the windows that reported the metric; the delta and verdict come from paired windows only
-  (windows where both sides reported the metric). When a metric is missing from some windows, the
-  two sets can differ.
+- **Value columns vs. delta/verdict:** the value columns show each side's median and spread over the
+  windows that reported the metric; the delta and verdict come from paired windows only (windows
+  where both sides reported the metric). When a metric is missing from some windows, the two sets
+  can differ.
 - Values **scale to units** only when the adapter supplies one (`mitata` emits `ns`/`bytes`);
   `metric-lines` values whose names end in `/time` or `/heap` scale to the adapter-assigned unit
   (`ns` or `bytes`); names without those suffixes carry no unit and are rounded to the nearest
@@ -62,10 +61,10 @@ verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05
 - The **highlights** block lists regressions first, then improvements, with the delta and method
   evidence. Exact metrics show `(exact)`.
 - Metrics marked `≈ unstable` (noise band wider than `unstableNoisePct`) show the noise in the
-  metric's own units (`±<noise> noise on a <median> median`); the `noise ±N%` form appears only
-  when the relative spread stays below 100%. Unstable metrics are too jittery to judge and are
-  excluded from the geomean. A candidate with an unstable metric closes the block with a note that
-  unstable metrics won't stabilize with more samples.
+  metric's own units (`±<noise> noise on a <median> median`); the `noise ±N%` form appears only when
+  the relative spread stays below 100%. Unstable metrics are too jittery to judge and are excluded
+  from the geomean. A candidate with an unstable metric closes the block with a note that unstable
+  metrics won't stabilize with more samples.
 - In a multi-kind run, each highlight is prefixed with its kind (`✗ time · encode  +2.2%`);
   single-kind runs omit the prefix.
 - When `--fail-on geomean:<pct>` would trip, the highlights close with a **gate-trip echo** per
@@ -137,14 +136,14 @@ highlights
   noise band for want of samples. The text reads
   `Hint: re-run with --samples 6 or more for statistical verdicts`.
 - **Display-width limitation:** column alignment assumes one character equals one display column.
-  Chinese, Japanese, Korean (CJK) or other wide characters in metric names or labels may
-  misalign columns; label truncation can split a multi-byte character. A display-width
-  dependency is not planned.
+  Chinese, Japanese, Korean (CJK) or other wide characters in metric names or labels may misalign
+  columns; label truncation can split a multi-byte character. A display-width dependency is not
+  planned.
 - **Metric ordering:** metrics whose names are digit-only sort before alphabetic names. This is a
   consequence of JavaScript's default sort order and is not configurable.
 - **`status` medians:** `gymrat status` prints medians in the metric's raw units without scaling
-  (e.g. nanoseconds, not milliseconds), unlike `compare` and `measure` which scale byte and
-  time values.
+  (e.g. nanoseconds, not milliseconds), unlike `compare` and `measure` which scale byte and time
+  values.
 
 ### Known limitations
 
@@ -154,8 +153,8 @@ highlights
   are byte-quantized.
 - The per-kind **geomean row** in a sectioned report aggregates all of the kind's metrics (gating
   and non-gating alike), while the `--fail-on geomean:<pct>` gate evaluates a separate **gated
-  geomean** that covers only gating metrics. The two figures can differ when a kind mixes gating
-  and non-gating metrics.
+  geomean** that covers only gating metrics. The two figures can differ when a kind mixes gating and
+  non-gating metrics.
 
 ## How verdicts are decided
 
@@ -164,18 +163,18 @@ from the per-side medians.
 
 - **Signed-rank** (≥ 6 nonzero differences): a two-sided Wilcoxon signed-rank test. Signal when
   `p < 0.05` _and_ the delta clears the metric's resolution floor (`byteFloorPct` for byte-valued
-  metrics, zero otherwise). A delta that does not clear the floor reads as no-signal even when
-  the test is significant, preventing a one-step quantization move from producing a spurious verdict
-  at any sample count.
+  metrics, zero otherwise). A delta that does not clear the floor reads as no-signal even when the
+  test is significant, preventing a one-step quantization move from producing a spurious verdict at
+  any sample count.
 - **Noise band** (fewer than 6 nonzero differences): the band is
   `max(150% × max(halfRange/median over both sides), 0.5%, byteFloorPct)`, and `|delta%|` must
   exceed it to count as signal. `byteFloorPct` applies only to byte-valued metrics (`bytes` unit):
   it is the percentage one byte represents against each side's median, ensuring a one-step
-  quantization move is never called a signal. The same floor gates the signed-rank path above. With fewer than 2 pairs, the band is meaningless and
-  the metric reads _inconclusive_ regardless of delta — the band has no observable spread to measure
-  against. Rendered as e.g. `~  -1.9%  ±3.0%  n=4` (glyph, delta, band, and pair count when it
-  differs from `--samples`). Runs of 6 or more samples land here too when ties leave fewer than 6
-  nonzero differences.
+  quantization move is never called a signal. The same floor gates the signed-rank path above. With
+  fewer than 2 pairs, the band is meaningless and the metric reads _inconclusive_ regardless of
+  delta — the band has no observable spread to measure against. Rendered as e.g.
+  `~  -1.9%  ±3.0%  n=4` (glyph, delta, band, and pair count when it differs from `--samples`). Runs
+  of 6 or more samples land here too when ties leave fewer than 6 nonzero differences.
 - **Exact metrics** (config-flagged, e.g. binary size): any difference between medians is a signal;
   a single sample suffices.
 
@@ -211,8 +210,8 @@ Each candidate's `kinds` array contains one aggregate object per kind, with fiel
   is `false`.
 
 Each candidate's verdict includes `method` (`signed-rank`, `band`, or `exact`), `delta`, `p` (for
-signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a method are `null`.
-A `NaN` delta (zero baseline median, non-zero candidate) serializes as `null`; it is distinguished
+signed-rank), `band` (for band), and `noisePct`. Fields that don't apply to a method are `null`. A
+`NaN` delta (zero baseline median, non-zero candidate) serializes as `null`; it is distinguished
 from a missing verdict by the non-null `verdict` field.
 
 Example, trimmed to one metric and one candidate:
@@ -326,6 +325,6 @@ with a `type` field discriminating the record kind. The `finalize` record closes
   "at": "2026-08-11T14:30:00.000Z",
   "branch": "gymrat/20260811-143000-a1b2-final",
   "commit": "abc123def456789...",
-  "message": "gymrat: squash 3 kept iterations\n\ncache the regex\nflatten the lookup\ninline the hot path"
+  "message": "gymrat: squash 3 kept iterations\n\ncache the regex\nflatten the lookup"
 }
 ```
