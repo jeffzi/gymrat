@@ -28,6 +28,10 @@ import gymrat_py
 import gymrat_py.stats
 import gymrat_py.model
 import gymrat_py.adapters
+import gymrat_py.exec
+import gymrat_py.signals
+import gymrat_py.sampling
+import gymrat_py.targets
 heavy = sorted(
     name
     for name in sys.modules
