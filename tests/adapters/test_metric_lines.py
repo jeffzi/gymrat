@@ -193,6 +193,18 @@ def test_parse_when_metric_value_malformed_does_warn_and_skip(offending: str):
     assert f"Failed to parse METRIC line: {offending}" in warnings
 
 
+def test_parse_when_radix_value_overflows_float_does_warn_and_skip():
+    # A radix literal matches the number grammar but names an integer too large
+    # to convert to a float; the conversion overflows and the line is skipped.
+    offending = f"METRIC big=0x{'f' * 300}"
+    warnings: list[str] = []
+
+    result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)
+
+    assert result == {"valid": 1.0}
+    assert f"Failed to parse METRIC line: {offending}" in warnings
+
+
 @pytest.mark.parametrize(
     "stdout",
     [
