@@ -137,6 +137,88 @@ def format_delta(effect: Effect) -> str:
     return f"{sign}{magnitude}%"
 
 
+def _delta_of(value: float) -> str:
+    """A raw percentage figure as a signed delta, wrapping it in a percent effect.
+
+    The aggregate figures carry a bare ratio rather than an :class:`Effect`, so
+    they reuse :func:`format_delta` through this adapter.
+    """
+    return format_delta(Effect(value=value, unit="percent"))
+
+
+#: The sign every spread and noise band is stated behind.
+PLUS_MINUS = "±"
+
+#: What separates a value from the spread that follows it. Exported because the
+#: text table pads a cell's magnitude and spread into fields of their own and has
+#: to rebuild the join around them.
+SPREAD_SEPARATOR = f" {PLUS_MINUS} "
+
+
+@dataclass(frozen=True, slots=True)
+class MetricCellParts:
+    """A value cell taken apart, so a table can pad each field to its own column width.
+
+    Both fields are empty when the side reported nothing, and the spread alone is
+    empty when the measurement carries no scatter.
+
+    Attributes:
+        magnitude: The scaled measurement.
+        spread: What follows the ``±``: a percentage, or absolute units once it
+            outgrows the median.
+    """
+
+    magnitude: str
+    spread: str
+
+
+def format_metric_cell_parts(
+    median: float | None = None,
+    spread: float | None = None,
+    unit: MetricUnit | None = None,
+) -> MetricCellParts:
+    """A value cell's fields: the scaled measurement and the spread stated behind it.
+
+    A spread past :data:`_RELATIVE_SPREAD_CAP_PCT` is restated in absolute units,
+    so ``5B ± 7620%`` reads ``5B ± 381B`` instead.
+
+    Args:
+        median: The measurement, or ``None`` when the side reported nothing.
+        spread: The half-range around the median, or ``None`` when none measured.
+        unit: The metric's unit, or ``None`` when unitless.
+
+    Returns:
+        The magnitude and spread, each empty where there was nothing to state.
+    """
+    if median is None:
+        return MetricCellParts(magnitude="", spread="")
+    magnitude = format_value(median, unit)
+    if spread is None:
+        return MetricCellParts(magnitude=magnitude, spread="")
+    if spread > _RELATIVE_SPREAD_CAP_PCT:
+        return MetricCellParts(
+            magnitude=magnitude, spread=format_value(abs(median * spread / 100), unit)
+        )
+    return MetricCellParts(magnitude=magnitude, spread=f"{spread:.0f}%")
+
+
+def baseline_cell_parts(metric: MetricComparison) -> MetricCellParts:
+    """A metric's baseline figure, taken apart the way :func:`format_metric_cell_parts` does."""
+    return format_metric_cell_parts(
+        metric.baseline_median, metric.baseline_spread, metric.meta.unit
+    )
+
+
+def candidate_cell_parts(
+    side: CandidateMetric | None,
+    unit: MetricUnit | None = None,
+) -> MetricCellParts:
+    """One candidate's side of a metric, taken apart into padded fields."""
+    if side is None:
+        return format_metric_cell_parts(None, None, unit)
+    return format_metric_cell_parts(side.median, side.spread, unit)
+
+
 # ---------------------------------------------------------------------------
 # Verdict classification
 # ---------------------------------------------------------------------------
@@ -213,6 +295,16 @@ def get_glyph(shown: DisplayClass) -> str:
     return _GLYPHS[shown]
 
 
+def shown_class(verdict: MetricVerdict | None) -> DisplayClass | None:
+    """:func:`display_class`, or ``None`` when there is no verdict to show one for."""
+    return None if verdict is None else display_class(verdict)
+
+
+def format_verdict_delta(verdict: MetricVerdict) -> str:
+    """The delta cell: the word ``unstable`` for a verdict too noisy to trust, else the delta."""
+    return "unstable" if verdict.verdict == "unstable" else format_delta(verdict.delta)
+
+
 #: The word each display class reads as, shared by the summary line and the legend.
 VERDICT_GLOSSES: dict[DisplayClass, str] = {
     "improved": "improved",
@@ -238,8 +330,6 @@ QUIET_VERDICTS: frozenset[DisplayClass] = frozenset(
 # evidence restates it in the metric's own units instead.
 _RELATIVE_SPREAD_CAP_PCT = 100
 
-_PLUS_MINUS = "±"
-
 
 def format_noise_band_value(noise_pct: float) -> str:
     """A noise band's figure, without the sign it is stated behind."""
@@ -248,7 +338,7 @@ def format_noise_band_value(noise_pct: float) -> str:
 
 def _format_noise_band(noise_pct: float) -> str:
     """A metric's noise band as the ``±N%`` the rows and highlights share."""
-    return f"{_PLUS_MINUS}{format_noise_band_value(noise_pct)}"
+    return f"{PLUS_MINUS}{format_noise_band_value(noise_pct)}"
 
 
 def format_pair_count(n: int) -> str:
@@ -283,7 +373,7 @@ def format_evidence(
         return ""
     if verdict.noise_pct > _RELATIVE_SPREAD_CAP_PCT and baseline_median is not None:
         noise = format_value(verdict.noise_abs, unit)
-        return f"{_PLUS_MINUS}{noise} noise on a {format_value(baseline_median, unit)} median"
+        return f"{PLUS_MINUS}{noise} noise on a {format_value(baseline_median, unit)} median"
     return f"noise {_format_noise_band(verdict.noise_pct)}"
 
 
@@ -458,7 +548,34 @@ def _rank_key(entry: _RankedHighlight) -> tuple[int, float, int]:
 #: The name the geomean row is reported under, in every renderer.
 GEOMEAN_LABEL = "geomean"
 
+#: The figure standing in for a geomean with nothing to aggregate.
+NO_GEOMEAN_FIGURE = "—"
+
+#: What an empty geomean says in place of the count behind a figure.
+NO_STABLE_METRICS = "no stable metrics"
+
+#: The whole cell a geomean with nothing left to aggregate prints, so it says so
+#: rather than printing the ``0.0%`` an empty geomean computes to.
+NO_GEOMEAN_CELL = f"{NO_GEOMEAN_FIGURE}  {NO_STABLE_METRICS}"
+
 _SCOPE_SEPARATOR = "·"
+
+
+def pluralize(count: int, noun: str, plural: str | None = None) -> str:
+    """Append an ``s`` to ``noun`` for a count other than one, or use ``plural`` instead."""
+    if count == 1:
+        return f"{count} {noun}"
+    return f"{count} {plural if plural is not None else f'{noun}s'}"
+
+
+def geomean_label(n: int) -> str:
+    """The geomean row's label, carrying the count of metrics behind the figure.
+
+    A table with one candidate names the count here, which frees its cells of
+    everything but the aggregate itself. An empty geomean has no count to name
+    and takes :data:`GEOMEAN_LABEL` alone.
+    """
+    return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({pluralize(n, 'stable metric')})"
 
 
 def geomean_scope_label(scope: str) -> str:
@@ -479,6 +596,44 @@ def _geomean_provenance(geomean: GeomeanResult) -> str:
 def scoped_geomean_label(scope: str, geomean: GeomeanResult) -> str:
     """A sectioned table's aggregate label with the provenance behind its figure."""
     return f"{geomean_scope_label(scope)} {_geomean_provenance(geomean)}"
+
+
+@dataclass(frozen=True, slots=True)
+class GeomeanParts:
+    """The geomean's delta, the count behind it, and the band propagated from its metrics.
+
+    Attributes:
+        delta: The signed percentage the geomean moved.
+        provenance: How many stable metrics stand behind the figure.
+        band: The propagated band's figure, without the ``±`` a column pins in
+            front of it, and empty where the metrics left it nothing to state.
+    """
+
+    delta: str
+    provenance: str
+    band: str
+
+
+def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
+    """The geomean's delta, band, and provenance, or ``None`` when nothing survived.
+
+    A band of zero is what an aggregate over exact-only metrics propagates: there
+    is no noise to state, and ``±0.0%`` would read as a measurement, so the band
+    field is left empty.
+
+    Args:
+        geomean: The aggregate to take apart.
+
+    Returns:
+        The parts, or ``None`` when the geomean covers no metrics.
+    """
+    if geomean.n == 0:
+        return None
+    return GeomeanParts(
+        delta=_delta_of(geomean.value),
+        provenance=pluralize(geomean.n, "stable metric"),
+        band=format_noise_band_value(geomean.band) if geomean.band > 0 else "",
+    )
 
 
 def _is_quiet_row(outcomes: Sequence[DisplayClass | None]) -> bool:
