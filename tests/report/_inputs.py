@@ -480,6 +480,98 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricEntry:
     )
 
 
+def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
+    """A multi-candidate comparison with one metric judged per candidate.
+
+    With three candidates (the default): ``candidate-a`` improved,
+    ``candidate-b`` regressed, ``candidate-c`` unstable (band method). With two:
+    the first pair alone.
+    """
+    candidates = [
+        create_candidate(label="candidate-a", kinds=[other_kind(-10, 1)]),
+        create_candidate(label="candidate-b", kinds=[other_kind(4, 1)]),
+    ]
+    metric_candidates = [
+        CandidateMetric(
+            median=90.0,
+            spread=1.0,
+            verdict=SignedRankVerdict(
+                method="signed-rank",
+                verdict="improved",
+                p=0.002,
+                noise_pct=2.5,
+                noise_abs=2.5,
+                delta=_percent(-10),
+                n=10,
+            ),
+        ),
+        CandidateMetric(
+            median=104.0,
+            spread=1.0,
+            verdict=SignedRankVerdict(
+                method="signed-rank",
+                verdict="regressed",
+                p=0.002,
+                noise_pct=2.5,
+                noise_abs=2.5,
+                delta=_percent(4),
+                n=10,
+            ),
+        ),
+    ]
+    if candidate_count == 3:
+        candidates.append(create_candidate(label="candidate-c", kinds=[other_kind(0, 1)]))
+        metric_candidates.append(
+            CandidateMetric(
+                median=150.0,
+                spread=3.0,
+                verdict=BandVerdict(
+                    method="band",
+                    verdict="unstable",
+                    usable_n=3,
+                    noise_pct=30,
+                    noise_abs=30,
+                    delta=_percent(50),
+                    n=10,
+                ),
+            )
+        )
+    return create_comparison_result(
+        baseline_label="main",
+        candidates=candidates,
+        metrics={
+            "decode/time": MetricComparison(
+                baseline_median=100.0,
+                baseline_spread=1.0,
+                candidates=tuple(metric_candidates),
+                meta=ResolvedMetricMeta(
+                    direction="lower",
+                    gating=True,
+                    exact=False,
+                    unit="ns",
+                    kind="other",
+                    short_name="decode/time",
+                ),
+            ),
+        },
+    )
+
+
+def n_way_kind_metric(
+    *,
+    kind: str,
+    short_name: str,
+    candidates: Sequence[NWayCandidate],
+    gating: bool = True,
+) -> MetricEntry:
+    """A metric of ``kind``, displayed under ``short_name``, judged once per candidate."""
+    metric = n_way_metric(candidates)
+    return replace(
+        metric,
+        meta=replace(metric.meta, kind=kind, short_name=short_name, gating=gating),
+    )
+
+
 def kind_metric(
     *,
     kind: str,
@@ -568,6 +660,72 @@ def two_kind_result() -> ComparisonResult:
     return create_comparison_result(
         metrics=two_kind_metrics(),
         candidates=[create_candidate(kinds=[time_kind(), memory_kind()])],
+        config_kinds={"memory": KindEntry(gating=False)},
+    )
+
+
+def without_gated_geomean(kind: KindAggregate) -> KindAggregate:
+    """The kind with its gated geomean cleared, as a non-gating kind carries."""
+    return replace(kind, gated_geomean=None)
+
+
+def grouped_comparison() -> ComparisonResult:
+    """A two-candidate run spanning a grouped ``time`` kind and a ``memory`` kind.
+
+    A run of a single kind renders flat and drops its group rows, so the second
+    kind is what makes the ``entity`` group render at all.
+    """
+    return create_comparison_result(
+        metrics={
+            "entity.alive_check/time": n_way_kind_metric(
+                kind="time",
+                short_name="entity.alive_check",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+            ),
+            "encode/heap": n_way_kind_metric(
+                kind="memory",
+                short_name="encode",
+                gating=False,
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-7, median=93),
+                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                ],
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label="candidate-a",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(-10, 1),
+                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-10, 1)),),
+                        gated_geomean=geomean_of(-10, 1),
+                    ),
+                    memory_kind(),
+                ],
+            ),
+            create_candidate(
+                label="candidate-b",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(4, 1),
+                        groups=(GroupAggregate(group="entity", geomean=geomean_of(4, 1)),),
+                        gated_geomean=geomean_of(4, 1),
+                    ),
+                    KindAggregate(
+                        kind="memory",
+                        geomean=geomean_of(-2, 1),
+                        groups=(),
+                        gated_geomean=None,
+                    ),
+                ],
+            ),
+        ],
         config_kinds={"memory": KindEntry(gating=False)},
     )
 
@@ -737,6 +895,16 @@ def styles_at(line: str, marker: str, *, last: bool = False) -> list[str]:
     return params
 
 
+def offsets_of(line: str, glyph: str) -> list[int]:
+    """Character offsets of every occurrence of ``glyph`` in a rendered line."""
+    offsets: list[int] = []
+    start = line.find(glyph)
+    while start != -1:
+        offsets.append(start)
+        start = line.find(glyph, start + 1)
+    return offsets
+
+
 def separator_offsets(line: str) -> list[int]:
     """Character offsets of every column separator in a rendered table line.
 
@@ -825,6 +993,7 @@ __all__ = [
     "exact_metric",
     "exact_verdict",
     "geomean_of",
+    "grouped_comparison",
     "kind_metric",
     "line_containing",
     "line_starting_with",
@@ -832,7 +1001,10 @@ __all__ = [
     "memory_kind",
     "metric_for",
     "metric_meta",
+    "multi_candidate_result",
+    "n_way_kind_metric",
     "n_way_metric",
+    "offsets_of",
     "one_sided_metric",
     "other_kind",
     "separator_offsets",
@@ -849,4 +1021,5 @@ __all__ = [
     "two_kind_measurement",
     "two_kind_metrics",
     "two_kind_result",
+    "without_gated_geomean",
 ]

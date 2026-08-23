@@ -25,6 +25,9 @@ from rich.table import Table
 from rich.text import Text
 
 from gymrat_py.report.format import (
+    NO_GEOMEAN_CELL,
+    NO_GEOMEAN_FIGURE,
+    NO_STABLE_METRICS,
     PLUS_MINUS,
     SPREAD_SEPARATOR,
     VERDICT_GLOSSES,
@@ -32,6 +35,8 @@ from gymrat_py.report.format import (
     format_delta,
     format_noise_band_value,
     format_pair_count,
+    geomean_parts,
+    geomean_value_style,
     get_glyph,
 )
 from gymrat_py.report.sections import (
@@ -46,8 +51,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from gymrat_py.config import KindEntry
-    from gymrat_py.model import MetricVerdict
-    from gymrat_py.report.format import MetricCellParts
+    from gymrat_py.model import GeomeanResult, MetricVerdict
+    from gymrat_py.report.format import DisplayClass, MetricCellParts
     from gymrat_py.report.sections import SectionLayout, SectionPlan
 
 # ---------------------------------------------------------------------------
@@ -261,6 +266,73 @@ def _join_styled(fields: Sequence[str], plain_fields: Sequence[str]) -> str:
     """
     kept = [styled for styled, plain in zip(fields, plain_fields, strict=True) if plain != ""]
     return CELL_GUTTER.join(kept).rstrip()
+
+
+# ---------------------------------------------------------------------------
+# Aggregate column cells
+# ---------------------------------------------------------------------------
+
+# The `·` separating a candidate column's aggregate figure from its provenance.
+_PROVENANCE_SEPARATOR = "·"
+
+
+@dataclass(frozen=True, slots=True)
+class StyledSpan:
+    """A run of an already-built cell, and the style it wears."""
+
+    text: str
+    style: str
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateColumnCell:
+    """One candidate column's aggregate cell: its text, and the spans that style it.
+
+    Attributes:
+        text: The cell's plain text, which the column is sized on.
+        spans: The runs of that text carrying a style, in the order they appear.
+    """
+
+    text: str
+    spans: tuple[StyledSpan, ...]
+
+
+def geomean_column_cell(
+    geomean: GeomeanResult,
+    outcomes: Sequence[DisplayClass | None],
+) -> AggregateColumnCell:
+    """The geomean of one candidate column: the aggregate, then how many metrics back it.
+
+    The multi-candidate table names the scope once in its label column and states
+    each candidate's own figure and count in the candidate columns, so this builds
+    one column's cell — the empty case falling back to the ``no stable metrics``
+    stand-in rather than the ``0.0%`` an empty geomean computes to.
+
+    Args:
+        geomean: The candidate's aggregate over the scope's metrics.
+        outcomes: The display class of each metric behind the figure, for vetoing
+            the figure's color when every one is quiet.
+
+    Returns:
+        The cell's text, and the spans styling it: the delta by
+        :func:`~gymrat_py.report.format.geomean_value_style`, the provenance dimmed.
+    """
+    parts = geomean_parts(geomean)
+    if parts is None:
+        return AggregateColumnCell(
+            text=NO_GEOMEAN_CELL,
+            spans=(
+                StyledSpan(text=NO_GEOMEAN_FIGURE, style="bold"),
+                StyledSpan(text=NO_STABLE_METRICS, style="dim"),
+            ),
+        )
+    return AggregateColumnCell(
+        text=f"{parts.delta} {_PROVENANCE_SEPARATOR} {parts.provenance}",
+        spans=(
+            StyledSpan(text=parts.delta, style=geomean_value_style(geomean, outcomes)),
+            StyledSpan(text=parts.provenance, style="dim"),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

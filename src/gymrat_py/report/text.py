@@ -1,9 +1,10 @@
 """The human-readable text reports: the compare report and the measure report.
 
-This module owns only the run header and the table dispatch. The verdict summary,
-highlights, gate trips and footers that sit around a full comparison report are
-added by a later task; a comparison report here is the header and the
-single-candidate table alone, and a measure report the header and the measurement
+This module owns only the run header and the table dispatch: one candidate draws
+the single-candidate table, two or more the multi-candidate table. The verdict
+summary, highlights, gate trips and footers that sit around a full comparison
+report are added by a later task; a comparison report here is the header and the
+comparison table alone, and a measure report the header and the measurement
 table.
 """
 
@@ -19,6 +20,7 @@ from gymrat_py.report.format import pluralize
 from gymrat_py.report.style import VARIANT_NAME_STYLE, render_lines, truncate_labels
 from gymrat_py.report.table import markup
 from gymrat_py.report.text_measure import render_measure_table
+from gymrat_py.report.text_multi import render_comparison_table
 from gymrat_py.report.text_single import render_table
 from gymrat_py.report.types import ReportOptions
 
@@ -91,11 +93,13 @@ def _compare_header(display: ComparisonResult) -> str:
 
 
 def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OPTIONS) -> str:
-    """Render a comparison report: the run header and the single-candidate table.
+    """Render a comparison report: the run header and the comparison table.
 
-    The verdict summary, highlights, gate trips and footers arrive with a later
-    task. ``options.header`` replaces the run header verbatim; ``options.color``
-    forces color on or off, or defers to the environment when ``None``.
+    One candidate draws the single-candidate table; two or more draw the
+    multi-candidate table. The verdict summary, highlights, gate trips and footers
+    arrive with a later task. ``options.header`` replaces the run header verbatim;
+    ``options.color`` forces color on or off, or defers to the environment when
+    ``None``.
 
     Args:
         result: The comparison to draw.
@@ -114,6 +118,8 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
 
     if len(display.candidates) == 1:
         lines.extend(render_table(display, display.candidates[0], 0, color=color))
+    elif len(display.candidates) > 1:
+        lines.extend(render_comparison_table(display, color=color))
 
     return "\n".join(lines)
 
