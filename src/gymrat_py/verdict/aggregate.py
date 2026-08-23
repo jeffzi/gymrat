@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from gymrat_py.model import GeomeanResult, MetricVerdict, ResolvedMetricMeta
 from gymrat_py.verdict.geomean import compute_geomean
 
-# A metric name paired with the metadata resolved for it.
 MetricEntry = tuple[str, ResolvedMetricMeta]
+"""A metric name paired with the metadata resolved for it."""
 
 
 @dataclass(frozen=True, slots=True)

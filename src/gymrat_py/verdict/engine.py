@@ -37,9 +37,9 @@ from gymrat_py.model import (
 from gymrat_py.stats import compute_half_range, compute_median, wilcoxon_signed_rank
 from gymrat_py.warn import WarnSink, warn_to_stderr
 
-# One byte expressed as a percentage of a one-byte median: what a whole-byte
-# metric cannot measure below.
 ONE_BYTE_PCT = 100.0
+"""One byte expressed as a percentage of a one-byte median: what a whole-byte metric
+cannot measure below."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -35,7 +35,7 @@ class ResolvedMetricMeta(MetricMeta):
     ``ResolvedMetricMeta`` is usable anywhere a :class:`MetricMeta` is.
 
     Attributes:
-        kind: The metric's classification (e.g. ``"time"``, ``"mem"``).
+        kind: The metric's classification (e.g. ``"time"``, ``"memory"``).
         short_name: The metric's display label.
     """
 
