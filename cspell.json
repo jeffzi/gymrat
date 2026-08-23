@@ -5,6 +5,7 @@
   "files": ["**/*.{py,pyi,md}"],
   "words": [
     "cand",
+    "capsys",
     "delenv",
     "diffable",
     "excinfo",
@@ -23,6 +24,7 @@
     "Taskfile",
     "testpaths",
     "unitless",
+    "unparseable",
     "venv",
     "virtualenvs",
     "wilcoxon",
