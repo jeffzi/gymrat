@@ -17,11 +17,17 @@ from gymrat_py.model.methods import (
     Method,
     MethodDescriptor,
 )
-from gymrat_py.model.metrics import Direction, MetricMeta, MetricUnit
+from gymrat_py.model.metrics import (
+    Direction,
+    MetricMeta,
+    MetricUnit,
+    ResolvedMetricMeta,
+)
 from gymrat_py.model.observations import (
     DROP_UNPAIRED,
     Observations,
     PairingKey,
+    PairResult,
     Repeat,
     UnpairedPolicy,
     pair_metric,
@@ -59,8 +65,10 @@ __all__ = [
     "MetricUnit",
     "MetricVerdict",
     "Observations",
+    "PairResult",
     "PairingKey",
     "Repeat",
+    "ResolvedMetricMeta",
     "SignedRankVerdict",
     "UnpairedPolicy",
     "Verdict",

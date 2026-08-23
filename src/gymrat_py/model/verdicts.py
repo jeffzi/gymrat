@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from gymrat_py.model.effect import Effect
+
 Verdict = Literal["improved", "regressed", "no-signal"]
 """Outcome of a comparison that cannot be flagged unstable."""
 
@@ -20,6 +22,8 @@ class SignedRankVerdict:
         p: The signed-rank test p-value.
         noise_pct: Estimated noise as a percentage.
         noise_abs: Estimated noise in absolute units.
+        delta: The unit-tagged effect size of the comparison.
+        n: Number of paired samples.
     """
 
     method: Literal["signed-rank"]
@@ -27,6 +31,8 @@ class SignedRankVerdict:
     p: float
     noise_pct: float
     noise_abs: float
+    delta: Effect
+    n: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +45,8 @@ class BandVerdict:
         usable_n: Number of usable samples.
         noise_pct: Estimated noise as a percentage.
         noise_abs: Estimated noise in absolute units.
+        delta: The unit-tagged effect size of the comparison.
+        n: Number of paired samples.
     """
 
     method: Literal["band"]
@@ -46,6 +54,8 @@ class BandVerdict:
     usable_n: int
     noise_pct: float
     noise_abs: float
+    delta: Effect
+    n: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,13 +65,13 @@ class ExactVerdict:
     Attributes:
         method: Discriminant tag, always ``"exact"``.
         verdict: The (non-approximate) outcome.
-        delta: The exact difference between compared values.
+        delta: The unit-tagged effect size of the comparison.
         n: Number of samples.
     """
 
     method: Literal["exact"]
     verdict: Verdict
-    delta: float
+    delta: Effect
     n: int
 
 

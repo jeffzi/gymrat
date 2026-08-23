@@ -20,6 +20,7 @@ from gymrat_py.model import (
     MethodDescriptor,
     MetricMeta,
     MetricVerdict,
+    ResolvedMetricMeta,
     SignedRankVerdict,
     Verdict,
 )
@@ -83,6 +84,55 @@ def test_metric_meta_when_field_assigned_does_raise_frozen_instance_error():
 
 
 # ---------------------------------------------------------------------------
+# ResolvedMetricMeta
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def resolved_meta() -> ResolvedMetricMeta:
+    return ResolvedMetricMeta(
+        direction="lower",
+        gating=True,
+        exact=False,
+        unit="ns",
+        kind="time",
+        short_name="decode",
+    )
+
+
+def test_resolved_metric_meta_when_constructed_does_store_six_fields(
+    resolved_meta: ResolvedMetricMeta,
+):
+    assert resolved_meta.direction == "lower"
+    assert resolved_meta.gating is True
+    assert resolved_meta.exact is False
+    assert resolved_meta.unit == "ns"
+    assert resolved_meta.kind == "time"
+    assert resolved_meta.short_name == "decode"
+
+
+def test_resolved_metric_meta_when_constructed_does_satisfy_metric_meta(
+    resolved_meta: ResolvedMetricMeta,
+):
+    assert isinstance(resolved_meta, MetricMeta)
+
+
+def test_resolved_metric_meta_when_inspected_does_have_exactly_six_named_fields():
+    names = [field.name for field in dataclasses.fields(ResolvedMetricMeta)]
+
+    assert names == ["direction", "gating", "exact", "unit", "kind", "short_name"]
+
+
+def test_resolved_metric_meta_when_field_assigned_does_raise_frozen_instance_error(
+    resolved_meta: ResolvedMetricMeta,
+):
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        # The write is rejected at runtime; the type checker flags it statically, so the
+        # suppression documents the intentional frozen-field violation under test.
+        resolved_meta.kind = "mem"  # pyrefly: ignore
+
+
+# ---------------------------------------------------------------------------
 # Method descriptors and noise constants
 # ---------------------------------------------------------------------------
 
@@ -117,6 +167,11 @@ def test_noise_constants_when_referenced_does_match_model_defaults():
 # ---------------------------------------------------------------------------
 
 
+def _percent(value: float) -> Effect:
+    """Build an ``Effect`` with an arbitrary, unit-under-test-irrelevant "percent" unit."""
+    return Effect(value=value, unit="percent")
+
+
 def test_signed_rank_verdict_when_constructed_does_store_fields():
     verdict = SignedRankVerdict(
         method="signed-rank",
@@ -124,6 +179,8 @@ def test_signed_rank_verdict_when_constructed_does_store_fields():
         p=0.01,
         noise_pct=1.2,
         noise_abs=3.4,
+        delta=_percent(5.5),
+        n=8,
     )
 
     assert verdict.method == "signed-rank"
@@ -131,6 +188,8 @@ def test_signed_rank_verdict_when_constructed_does_store_fields():
     assert verdict.p == 0.01
     assert verdict.noise_pct == 1.2
     assert verdict.noise_abs == 3.4
+    assert verdict.delta == _percent(5.5)
+    assert verdict.n == 8
 
 
 def test_band_verdict_when_constructed_does_store_fields():
@@ -140,6 +199,8 @@ def test_band_verdict_when_constructed_does_store_fields():
         usable_n=4,
         noise_pct=2.0,
         noise_abs=5.0,
+        delta=_percent(-7.0),
+        n=6,
     )
 
     assert verdict.method == "band"
@@ -147,14 +208,21 @@ def test_band_verdict_when_constructed_does_store_fields():
     assert verdict.usable_n == 4
     assert verdict.noise_pct == 2.0
     assert verdict.noise_abs == 5.0
+    assert verdict.delta == _percent(-7.0)
+    assert verdict.n == 6
 
 
 def test_exact_verdict_when_constructed_does_store_fields():
-    verdict = ExactVerdict(method="exact", verdict="regressed", delta=-1.5, n=10)
+    verdict = ExactVerdict(
+        method="exact",
+        verdict="regressed",
+        delta=_percent(-1.5),
+        n=10,
+    )
 
     assert verdict.method == "exact"
     assert verdict.verdict == "regressed"
-    assert verdict.delta == -1.5
+    assert verdict.delta == _percent(-1.5)
     assert verdict.n == 10
 
 
@@ -171,7 +239,12 @@ def _accept_verdict(value: Verdict) -> Verdict:
 
 
 def test_exact_verdict_verdict_when_passed_to_verdict_sink_does_round_trip():
-    verdict = ExactVerdict(method="exact", verdict="no-signal", delta=0.0, n=3)
+    verdict = ExactVerdict(
+        method="exact",
+        verdict="no-signal",
+        delta=_percent(0.0),
+        n=3,
+    )
 
     assert _accept_verdict(verdict.verdict) == "no-signal"
 
@@ -199,6 +272,8 @@ def describe(verdict: MetricVerdict) -> str:
                 p=0.01,
                 noise_pct=1.0,
                 noise_abs=2.0,
+                delta=_percent(1.0),
+                n=6,
             ),
             "signed-rank",
         ),
@@ -209,10 +284,20 @@ def describe(verdict: MetricVerdict) -> str:
                 usable_n=3,
                 noise_pct=1.0,
                 noise_abs=2.0,
+                delta=_percent(2.0),
+                n=4,
             ),
             "band",
         ),
-        (ExactVerdict(method="exact", verdict="improved", delta=1.0, n=5), "exact"),
+        (
+            ExactVerdict(
+                method="exact",
+                verdict="improved",
+                delta=_percent(1.0),
+                n=5,
+            ),
+            "exact",
+        ),
     ],
 )
 def test_describe_when_given_each_variant_does_return_method_tag(

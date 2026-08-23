@@ -30,6 +30,23 @@ drops.
 
 
 @dataclass(frozen=True, slots=True)
+class PairResult:
+    """Aligned metric values for two containers, plus the count of shared keys that were dropped.
+
+    Attributes:
+        left: Values from the left container, in shared-key order.
+        right: Values from the right container, aligned one-to-one with ``left``.
+        dropped: Count of shared keys where exactly one side carried the metric. A shared key where
+            neither side has the metric is not a drop; a key present in only one container is not
+            shared and is not counted.
+    """
+
+    left: list[float]
+    right: list[float]
+    dropped: int
+
+
+@dataclass(frozen=True, slots=True)
 class Observations:
     """A frozen wrapper over an ordered mapping from pairing-axis key to a tuple of repeats."""
 
@@ -62,13 +79,17 @@ def pair_metric(
     metric: str,
     *,
     policy: UnpairedPolicy = DROP_UNPAIRED,
-) -> tuple[list[float], list[float]]:
+) -> PairResult:
     """Align two containers on their shared keys, in order, for a single metric.
 
     Iterates the keys ``left`` and ``right`` share, in ``left``'s order. A shared key where either
     side's repeat lacks ``metric`` is dropped from both output sequences. The two returned sequences
     are always equal length. A metric absent from every shared key yields two empty sequences — the
     caller's skip-metric signal.
+
+    The returned :class:`PairResult` also reports ``dropped``: the count of shared keys where
+    exactly one side carried the metric. A shared key where neither side has the metric is not a
+    drop.
 
     Both containers must be single-repeat; a multi-repeat container raises ``ValueError``.
     """
@@ -80,14 +101,18 @@ def pair_metric(
 
     left_values: list[float] = []
     right_values: list[float] = []
+    dropped = 0
     for key, left_repeats in left.by_key.items():
         right_repeats = right.by_key.get(key)
         if right_repeats is None:
             continue
         left_repeat = left_repeats[0]
         right_repeat = right_repeats[0]
-        if metric not in left_repeat or metric not in right_repeat:
-            continue
-        left_values.append(left_repeat[metric])
-        right_values.append(right_repeat[metric])
-    return left_values, right_values
+        in_left = metric in left_repeat
+        in_right = metric in right_repeat
+        if in_left and in_right:
+            left_values.append(left_repeat[metric])
+            right_values.append(right_repeat[metric])
+        elif in_left != in_right:
+            dropped += 1
+    return PairResult(left=left_values, right=right_values, dropped=dropped)

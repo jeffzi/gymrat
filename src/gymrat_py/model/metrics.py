@@ -25,3 +25,19 @@ class MetricMeta:
     gating: bool
     exact: bool
     unit: MetricUnit | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedMetricMeta(MetricMeta):
+    """A :class:`MetricMeta` resolved against a concrete metric, with display metadata.
+
+    Extends the static metadata with the metric's classification and label. Being a subclass, a
+    ``ResolvedMetricMeta`` is usable anywhere a :class:`MetricMeta` is.
+
+    Attributes:
+        kind: The metric's classification (e.g. ``"time"``, ``"mem"``).
+        short_name: The metric's display label.
+    """
+
+    kind: str
+    short_name: str
