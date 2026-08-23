@@ -8,6 +8,7 @@
     "capsys",
     "delenv",
     "diffable",
+    "dunder",
     "excinfo",
     "geomean",
     "gpgsign",
