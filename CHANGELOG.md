@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-23
+
 ### Added
 
 - Per-metric verdicts for a benchmark comparison (`gymrat_py.verdict`): pair two runs by round and
@@ -19,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skewing the summary.
 - A warning when a metric present in only some rounds thins the paired sample: the comparison still
   runs on the rounds where the metric appears, and reports how many were dropped.
+
+### Fixed
+
+- Parsing a `METRIC` line with an out-of-range radix value (e.g. a very long hex literal) no longer
+  crashes; the value is skipped with a warning like any other unparseable one.
 
 ## [0.4.0] - 2026-08-23
 
@@ -62,7 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured errors for every gymrat failure: each derives from `GymratError` and can carry a
   `hint`; failed subprocesses raise `CommandError`.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jeffzi/gymrat-py/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jeffzi/gymrat-py/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jeffzi/gymrat-py/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jeffzi/gymrat-py/compare/v0.1.0...v0.2.0
