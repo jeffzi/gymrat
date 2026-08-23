@@ -146,6 +146,28 @@ def _delta_of(value: float) -> str:
     return format_delta(Effect(value=value, unit="percent"))
 
 
+def is_improvement(effect: Effect) -> bool:
+    """Whether an effect's move counts as an improvement, keyed on its unit.
+
+    This is the single place the sign-of-improvement rule lives, so a caller
+    judging a direction-aware metric combines this with the metric's own
+    direction rather than re-deriving the sign.
+
+    For a ``"percent"`` delta the default is lower-is-better: a strictly negative
+    value improves. A value of exactly zero does not — at rest a figure moved in
+    no direction to call good.
+
+    Args:
+        effect: The effect to judge; its ``unit`` selects the rule.
+
+    Returns:
+        ``True`` when the effect's value is an improvement for its unit.
+    """
+    if effect.unit == "percent":
+        return effect.value < 0
+    assert_never(effect.unit)
+
+
 #: The sign every spread and noise band is stated behind.
 PLUS_MINUS = "±"
 
