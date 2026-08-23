@@ -22,7 +22,7 @@ from gymrat_py.verdict import compute_verdicts
 from gymrat_py.warn import WarnSink
 
 # ---------------------------------------------------------------------------
-# Metric-meta fixtures mirroring the reference suite
+# Metric-meta fixtures shared across the verdict-engine cases
 # ---------------------------------------------------------------------------
 
 METRIC_EXACT_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=True, unit=None)}
@@ -41,7 +41,7 @@ METRIC_NS_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=Fa
 
 
 def _noop_warn(_message: str) -> None:
-    """Swallow divergence warnings so ported cases stay silent on stderr."""
+    """Swallow divergence warnings so these cases stay silent on stderr."""
 
 
 def run(
