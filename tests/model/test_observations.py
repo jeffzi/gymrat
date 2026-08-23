@@ -102,14 +102,6 @@ def test_pair_metric_when_metric_missing_on_one_side_does_drop_from_both():
     assert result.left == [1.0, 3.0]
     assert result.right == [10.0, 30.0]
     assert len(result.left) == len(result.right)
-
-
-def test_pair_metric_when_metric_missing_on_one_side_does_increment_dropped():
-    left = Observations.from_rounds([{"t": 1.0}, {"t": 2.0}, {"t": 3.0}])
-    right = Observations.from_rounds([{"t": 10.0}, {"other": 99.0}, {"t": 30.0}])
-
-    result = pair_metric(left, right, "t")
-
     assert result.dropped == 1
 
 
