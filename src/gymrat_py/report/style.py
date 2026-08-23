@@ -23,6 +23,7 @@ code points of a combined emoji. Such clusters are out of scope here.
 from __future__ import annotations
 
 import io
+import os
 import re
 from typing import TYPE_CHECKING, cast
 
@@ -250,9 +251,12 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
       capture a terminal with color enabled.
     - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` defers to rich's own detection, which reads ``NO_COLOR`` /
-      ``FORCE_COLOR`` and then TTY-ness; a captured buffer is not a TTY, so the
-      output is plain unless ``FORCE_COLOR`` is set.
+    - ``color=None`` reads the environment then TTY-ness, matching the oracle's
+      precedence: ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces
+      color on even when ``NO_COLOR`` is also set, ``NO_COLOR`` alone forces it
+      off, and with neither a captured buffer is not a TTY, so the output is
+      plain. ``FORCE_COLOR`` winning over ``NO_COLOR`` is the one place rich's own
+      detection differs, so that case is resolved here rather than deferred.
 
     Wide content is never wrapped or cropped (``soft_wrap``), so the width only
     bounds justification, never the text.
@@ -277,7 +281,28 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
         )
     if color is False:
         return Console(file=buffer, width=width, no_color=True, soft_wrap=True)
+    if _force_color_env():
+        return Console(
+            file=buffer,
+            width=width,
+            force_terminal=True,
+            no_color=False,
+            soft_wrap=True,
+        )
     return Console(file=buffer, width=width, soft_wrap=True)
+
+
+def _force_color_env() -> bool:
+    """Whether ``FORCE_COLOR`` in the environment asks for color, without mutating it.
+
+    Mirrors the oracle's precedence, where ``FORCE_COLOR`` wins over ``NO_COLOR``:
+    any value other than ``0``, ``false`` or the empty string enables color. Only
+    the ``color=None`` branch consults this; an explicit choice never does.
+    """
+    value = os.environ.get("FORCE_COLOR")
+    if value is None:
+        return False
+    return value.lower() not in {"", "0", "false"}
 
 
 def render_lines(

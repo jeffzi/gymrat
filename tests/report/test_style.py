@@ -313,6 +313,18 @@ def test_render_lines_when_color_none_and_force_color_env_does_emit_ansi(
     assert "\x1b[" in result
 
 
+def test_render_lines_when_color_none_and_both_env_set_does_let_force_color_win(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Parity with the oracle: FORCE_COLOR beats NO_COLOR when both are set.
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = render_lines("[red]hi[/red]", color=None, width=80)
+
+    assert "\x1b[" in result
+
+
 def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain(
     monkeypatch: pytest.MonkeyPatch,
 ):
