@@ -26,6 +26,8 @@
     "pyrefly",
     "pytest",
     "pytestmark",
+    "renderable",
+    "renderables",
     "strerror",
     "taskkill",
     "Taskfile",
