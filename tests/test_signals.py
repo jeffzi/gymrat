@@ -39,7 +39,7 @@ def _reset_registry() -> Iterator[None]:
     """
     yield
     signals._registry.clear()
-    signals.handling = False
+    signals._handling = False
 
 
 @pytest.fixture

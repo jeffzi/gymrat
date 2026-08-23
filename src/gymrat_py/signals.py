@@ -36,7 +36,7 @@ _installed_signals: set[int] = set()
 
 # True while the handler is draining the registry. A second signal arriving
 # mid-drain must exit immediately rather than re-enter the cleanups.
-handling = False
+_handling = False
 
 
 def _exit_process(code: int) -> NoReturn:
@@ -60,14 +60,14 @@ def _run_cleanups() -> None:
 
 
 def _handler(signal_number: int, _frame: FrameType | None) -> None:
-    global handling  # noqa: PLW0603 - module-level re-entry guard the handler owns
+    global _handling  # noqa: PLW0603 - module-level re-entry guard the handler owns
 
-    if not handling:
-        handling = True
+    if not _handling:
+        _handling = True
         try:
             _run_cleanups()
         finally:
-            handling = False
+            _handling = False
 
     _exit_process(128 + signal_number)
 
