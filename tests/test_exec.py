@@ -616,13 +616,21 @@ async def test_exec_when_win32_taskkill_fails_otherwise_does_warn(
     assert_taskkill_invoked(calls)
 
 
-def test_kill_group_when_killpg_fails_otherwise_does_warn_not_raise(
+async def test_exec_when_killpg_fails_otherwise_does_warn_not_raise(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def raise_eperm(group_pid: int, sig: int) -> None:
         raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
 
-    monkeypatch.setattr(os, "killpg", raise_eperm)
+    abort = asyncio.Event()
+    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
+    await wait_for_spawned(spawned_processes)
 
+    monkeypatch.setattr(os, "killpg", raise_eperm)
+    # exec runs as a separate task, so it cannot process the abort until the
+    # awaited wait_for yields control inside the warns block.
+    abort.set()
     with pytest.warns(RuntimeWarning):
-        exec_mod._kill_group(12345)
+        await asyncio.wait_for(task, 5)
