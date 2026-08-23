@@ -5,6 +5,7 @@
   "files": ["**/*.{py,pyi,md}"],
   "words": [
     "autouse",
+    "benchless",
     "cand",
     "capsys",
     "delenv",
