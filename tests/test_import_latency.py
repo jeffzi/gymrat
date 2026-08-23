@@ -27,6 +27,7 @@ import sys
 import gymrat_py
 import gymrat_py.stats
 import gymrat_py.model
+import gymrat_py.adapters
 heavy = sorted(
     name
     for name in sys.modules
