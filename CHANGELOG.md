@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-23
+
+### Added
+
+- Statistics module (`gymrat_py.stats`): descriptive helpers for median, half-range, ratio
+  normalization, and geometric-mean combination, plus Wilcoxon signed-rank and exact sign-flip
+  permutation significance tests.
+- Core model value types (`gymrat_py.model`): effect sizes, metric metadata, verdict records, and
+  aggregate results for comparing paired benchmark samples.
+
 ## [0.1.0] - 2026-08-22
 
 ### Added
 
 - `GymratError` exception hierarchy with an optional `hint` field, plus `CommandError` for failed subprocesses.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jeffzi/gymrat-py/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jeffzi/gymrat-py/releases/tag/v0.1.0
