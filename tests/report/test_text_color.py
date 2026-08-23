@@ -1,31 +1,42 @@
-"""Tests for the single-target measurement text report.
+"""Tests for the colored comparison and measurement text reports.
 
-These port the ``renderMeasureReport`` cases from ``text-color.test.ts`` — the
-report's header, its flat and sectioned tables, and how it styles them. The
-byte-exact golden snapshots and the worktree-cleanup footer are out of this
-task's scope (the footer arrives with the comparison footers), so those cases are
-left for a later task. Where the TypeScript suite pinned column alignment by byte
-offset, the port keeps the offset check only where it proves cross-section
-alignment; content is pinned by parsed cell.
+These port the ``renderReport`` and ``renderMeasureReport`` color cases from
+``text-color.test.ts``. The ``renderReport`` block pins how the assembled report
+paints its verdict rows, run and column headers, the verdict summary, the
+highlights block, and the verbose method footer and hint. The
+``renderMeasureReport`` block pins the measure report's header and tables. Where
+the TypeScript suite pinned column alignment by byte offset, the port keeps the
+offset check only where it proves cross-section alignment; content is pinned by
+parsed cell.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.report.text import render_measure_report
+from gymrat_py.model import Exclusion
+from gymrat_py.report.text import render_measure_report, render_report
 from gymrat_py.report.types import MeasurementResult, ReportOptions
+from gymrat_py.targets import WorktreeRemovalFailure
 from tests.report._inputs import (
+    band_metric,
     cells_of,
+    create_candidate,
+    create_comparison_result,
     create_measurement_result,
+    exact_metric,
+    highlight_lines,
     line_containing,
     line_starting_with,
     measured_metric,
+    other_kind,
     separator_offsets,
     separator_styles,
+    signed_rank_metric,
     strip_ansi,
     styles_at,
     table_region,
@@ -35,6 +46,46 @@ from tests.report._inputs import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from gymrat_py.model import ApproximateVerdict
+    from gymrat_py.report.types import ComparisonResult
+
+# A line dimmed end to end: opens with SGR 2 and closes with a reset. Rich closes
+# a dim span with a full reset (SGR 0) rather than SGR 22.
+_DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[0m$")
+
+
+def _delta_cell_of(line: str) -> str:
+    """The last cell of a rendered table line — the delta column."""
+    return cells_of(line)[-1]
+
+
+def _colorful_result() -> ComparisonResult:
+    """A run whose rows cover every verdict class, plus a geomean figure."""
+    return create_comparison_result(
+        metrics={
+            "faster/time": signed_rank_metric(verdict="improved", delta=-17.5, unit="ns"),
+            "slower/time": signed_rank_metric(verdict="regressed", delta=2.4, unit="ns"),
+            "flat/time": signed_rank_metric(verdict="no-signal", delta=0.3, unit="ns"),
+            "tied/heap": band_metric(verdict="no-signal", delta=-0.5, n=10, usable_n=0),
+            "single-pair/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns"),
+            "jittery/time": signed_rank_metric(verdict="unstable", delta=-50, noise_pct=30),
+        },
+        candidates=[
+            create_candidate(
+                kinds=[
+                    other_kind(
+                        -5.8,
+                        3,
+                        excluded=[Exclusion(metric="jittery/time", reason="unstable")],
+                    )
+                ]
+            )
+        ],
+        worktrees_removed=1,
+        worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="is locked")],
+        worktree_prune_error="fatal: not a git repository",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -296,3 +347,507 @@ def test_render_measure_report_when_color_option_set_does_override_the_environme
     output = render_measure_report(two_kind_measurement(), ReportOptions(color=color))
 
     assert ("\x1b[" in output) is styled
+
+
+# ===========================================================================
+# render_report — colored comparison report
+# ===========================================================================
+
+
+def test_render_report_when_no_color_is_set_does_leave_the_report_unstyled():
+    assert "\x1b[" not in render_report(_colorful_result())
+
+
+def test_render_report_when_colored_does_pad_on_plain_text_so_columns_line_up(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    bare = strip_ansi(render_report(_colorful_result()))
+    header_offsets = separator_offsets(line_starting_with(bare, "metric"))
+
+    assert separator_offsets(line_starting_with(bare, "faster/time")) == header_offsets
+    assert separator_offsets(line_starting_with(bare, "geomean")) == header_offsets
+
+
+def test_render_report_when_colored_does_measure_verdict_subfields_on_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={
+            "improved/time": signed_rank_metric(
+                verdict="improved", delta=-12.4, noise_pct=2.5, unit="ns"
+            ),
+            "flat/time": signed_rank_metric(
+                verdict="no-signal", delta=0.4, noise_pct=100, unit="ns"
+            ),
+        }
+    )
+
+    bare = strip_ansi(render_report(result))
+
+    assert cells_of(line_starting_with(bare, "improved/time"))[-1].strip() == "✓  -12.4%  ±  2.5%"
+    assert cells_of(line_starting_with(bare, "flat/time"))[-1].strip() == "~   +0.4%  ±100.0%"
+
+
+@pytest.mark.parametrize(
+    ("metric", "glyph", "code"),
+    [
+        pytest.param("faster/time", "✓", "32", id="improved-green"),
+        pytest.param("slower/time", "✗", "31", id="regressed-red"),
+        pytest.param("jittery/time", "≈", "33", id="unstable-yellow"),
+        pytest.param("tied/heap", "=", "36", id="identical-cyan"),
+        pytest.param("flat/time", "~", "2", id="within-noise-dim"),
+        pytest.param("single-pair/time", "?", "2", id="inconclusive-dim"),
+    ],
+)
+def test_render_report_when_colored_does_paint_each_verdict_on_its_row(
+    monkeypatch: pytest.MonkeyPatch, metric: str, glyph: str, code: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    row = line_containing(render_report(_colorful_result()), metric)
+
+    assert code in styles_at(row, glyph)
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        pytest.param("flat/time", id="within-noise"),
+        pytest.param("tied/heap", id="identical"),
+        pytest.param("single-pair/time", id="inconclusive"),
+        pytest.param("jittery/time", id="unstable"),
+    ],
+)
+def test_render_report_when_colored_does_leave_name_and_value_cells_unstyled(
+    monkeypatch: pytest.MonkeyPatch, metric: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    row = line_containing(render_report(_colorful_result()), metric)
+
+    assert "\x1b[" not in "│".join(cells_of(row)[:-1])
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        pytest.param("faster/time", id="improved"),
+        pytest.param("slower/time", id="regressed"),
+    ],
+)
+def test_render_report_when_colored_does_leave_a_bright_row_without_end_to_end_dim(
+    monkeypatch: pytest.MonkeyPatch, metric: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    row = line_containing(render_report(_colorful_result()), metric)
+
+    assert not _DIMMED_LINE.match(row)
+
+
+def test_render_report_when_colored_does_embolden_the_geomean_figure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    report = render_report(_colorful_result())
+
+    assert "1" in styles_at(line_containing(report, "geomean"), "-5.8%")
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        pytest.param("gymrat compare", id="run-header"),
+        pytest.param("metric  ", id="column-header"),
+    ],
+)
+def test_render_report_when_colored_does_embolden_and_underline_variant_names(
+    monkeypatch: pytest.MonkeyPatch, anchor: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    line = line_containing(render_report(_colorful_result()), anchor)
+
+    assert styles_at(line, "main") == ["1", "4"]
+    assert styles_at(line, "perf/faster-decode") == ["1", "4"]
+
+
+def test_render_report_when_colored_does_embolden_the_baseline_in_the_delta_header(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    header = line_containing(render_report(_colorful_result()), "metric  ")
+
+    assert styles_at(_delta_cell_of(header), "main") == ["1", "4"]
+
+
+@pytest.mark.parametrize(
+    "baseline",
+    [
+        pytest.param("v", id="v"),
+        pytest.param("s", id="s"),
+        pytest.param("vs", id="vs"),
+    ],
+)
+def test_render_report_when_colored_does_embolden_the_baseline_after_the_vs_prefix(
+    monkeypatch: pytest.MonkeyPatch, baseline: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        baseline_label=baseline,
+        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")},
+    )
+
+    delta_cell = _delta_cell_of(line_containing(render_report(result), "metric  "))
+
+    assert f"vs \x1b[1;4m{baseline}\x1b[0m" in delta_cell
+
+
+def test_render_report_when_colored_does_leave_the_rest_of_the_column_header_unstyled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    header = line_containing(render_report(_colorful_result()), "metric  ")
+
+    assert not re.match(r"^\x1b\[1m", header)
+    assert styles_at(header, "metric") == []
+
+
+def test_render_report_when_colored_does_embolden_gymrat_compare_in_the_header(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    header = line_containing(render_report(_colorful_result()), "gymrat compare")
+
+    assert "1" in styles_at(header, "gymrat compare")
+
+
+def test_render_report_when_colored_does_dim_each_separator_in_the_header(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    header = line_containing(render_report(_colorful_result()), "gymrat compare")
+
+    assert "2" in styles_at(header, "·")
+
+
+def test_render_report_when_colored_does_leave_a_dotted_variant_name_out_of_dimming(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        baseline_label="main·1",  # cspell:disable-line
+        candidates=[create_candidate(label="perf·2")],  # cspell:disable-line
+    )
+
+    header = line_containing(render_report(result), "gymrat compare")
+
+    assert "\x1b[1;4mmain·1\x1b[0m" in header  # cspell:disable-line
+    assert "\x1b[1;4mperf·2\x1b[0m" in header  # cspell:disable-line
+
+
+def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimming(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(adapter="metric·lines")  # cspell:disable-line
+
+    header = line_containing(render_report(result), "gymrat compare")
+
+    assert "adapter: metric·lines" in header  # cspell:disable-line
+
+
+# ---------------------------------------------------------------------------
+# verdict summary color
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("glyph", "code"),
+    [
+        pytest.param("✓", "32", id="improved-green"),
+        pytest.param("✗", "31", id="regressed-red"),
+        pytest.param("≈", "33", id="unstable-yellow"),
+    ],
+)
+def test_render_report_when_colored_does_style_the_non_zero_tally_in_the_summary(
+    monkeypatch: pytest.MonkeyPatch, glyph: str, code: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    summary = line_containing(render_report(_colorful_result()), "improved")
+
+    assert code in styles_at(summary, glyph)
+
+
+@pytest.mark.parametrize(
+    "glyph", [pytest.param("✗", id="regressed"), pytest.param("=", id="identical")]
+)
+def test_render_report_when_colored_does_dim_a_zero_count_segment_in_the_summary(
+    monkeypatch: pytest.MonkeyPatch, glyph: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"faster/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")}
+    )
+    summary = line_containing(render_report(result), "improved")
+
+    assert "2" in styles_at(summary, glyph)
+
+
+def test_render_report_when_colored_does_paint_the_non_zero_identical_tally_cyan(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"tied/heap": band_metric(verdict="no-signal", delta=-0.5, n=10, usable_n=0)}
+    )
+    summary = line_containing(render_report(result), "identical")
+
+    assert "36" in styles_at(summary, "=")
+
+
+def test_render_report_when_colored_does_dim_the_within_noise_segment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    summary = line_containing(render_report(_colorful_result()), "within noise")
+
+    assert "2" in styles_at(summary, "~")
+
+
+# ---------------------------------------------------------------------------
+# highlights color
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_colored_does_embolden_the_highlights_heading(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    heading = next(
+        line
+        for line in render_report(_colorful_result()).split("\n")
+        if strip_ansi(line) == "highlights"
+    )
+
+    assert re.match(r"^\x1b\[1m", heading)
+
+
+# The glyph and SGR color each highlight verdict class carries in a colored entry.
+_HIGHLIGHT_GLYPH_COLOR: dict[ApproximateVerdict, tuple[str, str]] = {
+    "improved": ("✓", "32"),
+    "regressed": ("✗", "31"),
+}
+
+
+@pytest.mark.parametrize(
+    ("verdict", "metric", "delta"),
+    [
+        pytest.param("improved", "faster/time", -17.5, id="improved-green"),
+        pytest.param("regressed", "slower/time", 2.2, id="regressed-red"),
+    ],
+)
+def test_render_report_when_colored_does_style_a_highlight_glyph_and_delta(
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: ApproximateVerdict,
+    metric: str,
+    delta: float,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={metric: signed_rank_metric(verdict=verdict, delta=delta, unit="ns")}
+    )
+    entry = highlight_lines(render_report(result))[0]
+
+    glyph, code = _HIGHLIGHT_GLYPH_COLOR[verdict]
+    delta_text = f"{'+' if delta > 0 else ''}{delta:.1f}%"
+    assert code in styles_at(entry, glyph)
+    assert code in styles_at(entry, delta_text)
+
+
+def test_render_report_when_colored_does_style_the_unstable_highlight_glyph_and_word(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+    )
+    entry = highlight_lines(render_report(result))[0]
+
+    assert "33" in styles_at(entry, "≈")
+    assert "33" in styles_at(entry, "unstable")
+
+
+def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+    )
+    entry = highlight_lines(render_report(result))[0]
+
+    assert strip_ansi(entry).strip() == "≈ unstable-parse/time  unstable  noise ±30.0%"
+    assert "33" in styles_at(entry, "unstable", last=True)
+
+
+def test_render_report_when_colored_does_dim_the_evidence_suffixes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={
+            "cheaper/heap": exact_metric(delta=-7.9),
+            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30),
+        }
+    )
+    highlights = highlight_lines(render_report(result))
+    exact_entry = next(line for line in highlights if "cheaper/heap" in line)
+    unstable_entry = next(line for line in highlights if "jittery/time" in line)
+
+    assert "2" in styles_at(exact_entry, "(exact)")
+    assert "2" in styles_at(unstable_entry, "noise")
+
+
+def test_render_report_when_colored_does_dim_the_futility_note(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+    )
+    note = line_containing(render_report(result), "won't stabilize")
+
+    assert "2" in styles_at(note, "unstable metrics")
+
+
+# ---------------------------------------------------------------------------
+# method footer and hint color
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_colored_does_dim_the_verdict_method_description(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")}
+    )
+    method = line_containing(render_report(result, ReportOptions(verbose=True)), "Wilcoxon")
+
+    assert _DIMMED_LINE.match(method)
+
+
+def _band_fallback_result() -> ComparisonResult:
+    """A single no-signal metric that fell back to the band, so the hint and footer render."""
+    return create_comparison_result(metrics={"a/time": band_metric(verdict="no-signal", delta=-5)})
+
+
+def test_render_report_when_colored_does_dim_the_noise_band_description(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    band = line_containing(
+        render_report(_band_fallback_result(), ReportOptions(verbose=True)), "noise band"
+    )
+
+    assert _DIMMED_LINE.match(band)
+
+
+def test_render_report_when_colored_does_style_the_hint_word_yellow_and_underlined(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    hint = line_containing(render_report(_band_fallback_result()), "Hint")
+
+    assert "33" in styles_at(hint, "Hint")
+    assert "4" in styles_at(hint, "Hint")
+
+
+def test_render_report_when_colored_does_style_the_hint_colon_yellow_without_underline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    hint = line_containing(render_report(_band_fallback_result()), "Hint")
+
+    assert "33" in styles_at(hint, ":")
+    assert "4" not in styles_at(hint, ":")
+
+
+def test_render_report_when_colored_does_render_the_hint_sentence_plain(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    hint = line_containing(render_report(_band_fallback_result()), "Hint")
+    after_label = hint[hint.index("some rounds") :]
+
+    assert "\x1b[" not in after_label
+
+
+def test_render_report_when_color_off_does_render_the_hint_line_plain():
+    hint = line_containing(render_report(_band_fallback_result()), "Hint:")
+
+    assert "\x1b[" not in hint
+
+
+def test_render_report_when_colored_does_dim_the_band_annotation_on_bright_rows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    report = render_report(_colorful_result())
+
+    assert "2" in styles_at(line_containing(report, "faster/time"), "±2.5%")
+    assert "2" in styles_at(line_containing(report, "slower/time"), "±2.5%")
+
+
+def test_render_report_when_colored_does_color_the_delta_not_the_band_on_a_shared_digits_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        metrics={"collision/time": band_metric(delta=0, noise_pct=10, n=10, usable_n=0)}
+    )
+
+    row = line_containing(render_report(result), "collision/time")
+
+    assert "36" in styles_at(row, "0.0%")
+    assert "2" in styles_at(row, "±10.0%")
+
+
+def test_render_report_when_colored_does_leave_the_floor_band_off_an_inconclusive_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    row = line_containing(render_report(_colorful_result()), "single-pair/time")
+
+    assert "±" not in strip_ansi(cells_of(row)[-1])
+
+
+def test_render_report_when_color_option_false_does_override_force_color(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    output = render_report(_colorful_result(), ReportOptions(color=False))
+
+    assert "\x1b[" not in output
+
+
+def test_render_report_when_color_option_true_does_override_no_color():
+    output = render_report(_colorful_result(), ReportOptions(color=True))
+
+    assert "\x1b[" in output

@@ -978,6 +978,28 @@ def table_region(report: str) -> list[str]:
     return table_shape(report)[: last + 1]
 
 
+def highlight_lines(report: str) -> list[str]:
+    """The lines of the ``highlights`` block, its heading excluded.
+
+    The block runs from the line after the ``highlights`` heading down to the
+    next blank line (or the end of the report). Lines keep their styling, so the
+    color tests can read the SGR parameters off a highlight entry. An absent
+    block yields an empty list.
+    """
+    lines = report.split("\n")
+    start = next(
+        (index for index, line in enumerate(lines) if strip_ansi(line) == "highlights"), -1
+    )
+    if start == -1:
+        return []
+    rest = lines[start + 1 :]
+    try:
+        end = rest.index("")
+    except ValueError:
+        return rest
+    return rest[:end]
+
+
 __all__ = [
     "CandidateSpec",
     "MetricEntry",
@@ -994,6 +1016,7 @@ __all__ = [
     "exact_verdict",
     "geomean_of",
     "grouped_comparison",
+    "highlight_lines",
     "kind_metric",
     "line_containing",
     "line_starting_with",

@@ -280,7 +280,10 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
             soft_wrap=True,
         )
     if color is False:
-        return Console(file=buffer, width=width, no_color=True, soft_wrap=True)
+        # `no_color=True` only strips colors, leaving bold/underline/dim intact
+        # when FORCE_COLOR has forced a terminal; disabling the color system drops
+        # every SGR code, so color=False fully overrides the environment.
+        return Console(file=buffer, width=width, color_system=None, soft_wrap=True)
     if _force_color_env():
         return Console(
             file=buffer,
@@ -333,7 +336,10 @@ def render_lines(
     """
     console = make_capture_console(color=color, width=width)
     for renderable in renderables:
-        console.print(renderable, soft_wrap=True)
+        # The report styles every span deliberately; rich's repr highlighter would
+        # otherwise embolden bare numbers (a delta, a sample count) and split a
+        # styled `-17.5%` at the `%`, so it is switched off here.
+        console.print(renderable, soft_wrap=True, highlight=False)
 
     buffer = cast("io.StringIO", console.file)
     lines = buffer.getvalue().split("\n")

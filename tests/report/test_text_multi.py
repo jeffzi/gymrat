@@ -19,8 +19,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat_py.config import KindEntry
 from gymrat_py.model import Exclusion
 from gymrat_py.report.text import render_report
+from gymrat_py.report.types import ReportOptions
+from gymrat_py.verdict import KindAggregate
 from tests.report._inputs import (
     NWayCandidate,
     cells_of,
@@ -28,14 +31,18 @@ from tests.report._inputs import (
     create_comparison_result,
     geomean_of,
     grouped_comparison,
+    highlight_lines,
     line_containing,
     line_starting_with,
     memory_kind,
     multi_candidate_result,
+    n_way_kind_metric,
     n_way_metric,
     offsets_of,
+    other_kind,
     separator_offsets,
     separator_styles,
+    signed_rank_metric,
     strip_ansi,
     styles_at,
     table_region,
@@ -535,3 +542,231 @@ def test_render_report_when_colored_does_leave_separators_in_the_default_color(
     inherited = [row for row in rows if any(styles for styles in separator_styles(row))]
 
     assert inherited == []
+
+
+# ---------------------------------------------------------------------------
+# section ordering: table, summary, highlights, method block
+# ---------------------------------------------------------------------------
+
+
+def _ordered_result() -> ComparisonResult:
+    """A two-metric run whose only footer content is the signed-rank method line."""
+    return create_comparison_result(
+        baseline_label="main",
+        metrics={
+            "metric1/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns"),
+            "metric2/time": signed_rank_metric(
+                verdict="no-signal", delta=2, gating=False, unit="ns"
+            ),
+        },
+        candidates=[create_candidate(label="faster", kinds=[other_kind(-5, 1)])],
+    )
+
+
+def test_render_report_when_ordering_does_emit_table_summary_highlights_and_close():
+    lines = render_report(_ordered_result()).split("\n")
+
+    assert "gymrat compare · baseline main ↔ faster" in lines[0]
+    assert re.match(r"^metric\s+│", lines[1])
+    assert re.match(r"^─+┼", lines[2])
+    assert "metric1/time" in lines[3]
+    assert "metric2/time" in lines[4]
+    assert re.match(r"^─+┼", lines[5])
+    assert "geomean" in lines[6]
+    assert lines[7] == ""
+    assert "✓ 1 improved" in lines[8]
+    assert lines[9] == ""
+    assert lines[10] == "highlights"
+    assert "metric1/time" in lines[11]
+    assert len(lines) == 12
+
+
+def test_render_report_when_verbose_does_add_the_method_block_below_a_blank_line():
+    lines = render_report(_ordered_result(), ReportOptions(verbose=True)).split("\n")
+
+    assert "metric1/time" in lines[11]
+    assert lines[12] == ""
+    assert "Wilcoxon signed-rank" in lines[13]
+    assert len(lines) == 14
+
+
+# ---------------------------------------------------------------------------
+# per-candidate summary and highlights
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_many_candidates_does_summarize_each_on_its_own_line():
+    summaries = [
+        line
+        for line in render_report(multi_candidate_result()).split("\n")
+        if re.search(r"✓ \d+ improved", line)
+    ]
+
+    assert summaries == [
+        (
+            "candidate-a  ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   "
+            "= 0 identical   ~ 0 within noise   ? 0 inconclusive"
+        ),
+        (
+            "candidate-b  ✓ 0 improved   ✗ 1 regressed   ≈ 0 unstable   "
+            "= 0 identical   ~ 0 within noise   ? 0 inconclusive"
+        ),
+        (
+            "candidate-c  ✓ 0 improved   ✗ 0 regressed   ≈ 1 unstable   "
+            "= 0 identical   ~ 0 within noise   ? 0 inconclusive"
+        ),
+    ]
+
+
+def test_render_report_when_many_candidates_does_group_highlights_per_candidate():
+    highlights = highlight_lines(render_report(multi_candidate_result()))
+
+    assert highlights == [
+        "  candidate-a",
+        "    ✓ decode/time  -10.0%",
+        "  candidate-b",
+        "    ✗ decode/time   +4.0%",
+        "  candidate-c",
+        "    ≈ decode/time  unstable  noise ±30.0%",
+        "  unstable metrics won't stabilize with more samples",
+    ]
+
+
+def test_render_report_when_no_candidate_has_a_highlight_does_drop_the_section():
+    result = create_comparison_result(
+        candidates=[
+            create_candidate(label="candidate-a"),
+            create_candidate(label="candidate-b"),
+        ],
+        metrics={
+            "decode/time": n_way_metric(
+                [
+                    NWayCandidate(verdict="no-signal", delta=0.4, median=100),
+                    NWayCandidate(verdict="no-signal", delta=-0.3, median=100),
+                ]
+            ),
+        },
+    )
+
+    report = render_report(result)
+
+    assert "highlights" not in report
+    assert "candidate-a  ✓ 0 improved" in report
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        pytest.param("candidate-a", id="a"),
+        pytest.param("candidate-b", id="b"),
+        pytest.param("candidate-c", id="c"),
+    ],
+)
+def test_render_report_when_colored_does_embolden_the_candidate_summary_label(
+    monkeypatch: pytest.MonkeyPatch, label: str
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    summary = next(
+        line
+        for line in render_report(multi_candidate_result()).split("\n")
+        if re.search(r"✓ \d+ improved", line) and label in strip_ansi(line)
+    )
+
+    assert "1" in styles_at(summary, label)
+
+
+def test_render_report_when_colored_does_embolden_the_candidate_highlight_sub_labels(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    highlights = highlight_lines(render_report(multi_candidate_result()))
+    sub_labels = [
+        line
+        for line in highlights
+        if strip_ansi(line).strip() in {"candidate-a", "candidate-b", "candidate-c"}
+    ]
+
+    assert len(sub_labels) == 3
+    for sub_label in sub_labels:
+        assert "\x1b[1m" in sub_label
+
+
+# ---------------------------------------------------------------------------
+# sectioned highlights: kind-prefixed names
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_sectioned_does_name_each_highlight_by_kind_and_short_metric():
+    highlights = [line.strip() for line in highlight_lines(render_report(two_kind_result()))]
+
+    assert highlights == [
+        "✗ time · entity.spawn         +4.0%",
+        "✓ time · entity.alive_check  -10.0%",
+        "✓ memory · encode             -7.0%",
+    ]
+
+
+def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_per_subsection():
+    result = create_comparison_result(
+        metrics={
+            "entity.alive_check/time": n_way_kind_metric(
+                kind="time",
+                short_name="entity.alive_check",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+            ),
+            "encode/heap": n_way_kind_metric(
+                kind="memory",
+                short_name="encode",
+                gating=False,
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-7, median=93),
+                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                ],
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label="candidate-a",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(-10, 1),
+                        groups=(),
+                        gated_geomean=geomean_of(-10, 1),
+                    ),
+                    memory_kind(),
+                ],
+            ),
+            create_candidate(
+                label="candidate-b",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(4, 1),
+                        groups=(),
+                        gated_geomean=geomean_of(4, 1),
+                    ),
+                    KindAggregate(
+                        kind="memory", geomean=geomean_of(-2, 1), groups=(), gated_geomean=None
+                    ),
+                ],
+            ),
+        ],
+        config_kinds={"memory": KindEntry(gating=False)},
+    )
+
+    assert highlight_lines(render_report(result)) == [
+        "  candidate-a",
+        "    ✓ time · entity.alive_check  -10.0%",
+        "    ✓ memory · encode             -7.0%",
+        "  candidate-b",
+        "    ✗ time · entity.alive_check   +4.0%",
+        "    ✓ memory · encode             -2.0%",
+    ]

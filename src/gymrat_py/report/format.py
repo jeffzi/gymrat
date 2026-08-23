@@ -541,12 +541,64 @@ def _rank_key(entry: _RankedHighlight) -> tuple[int, float, int]:
     return entry.rank, entry.weight, entry.order
 
 
+#: The note closing a highlights block that held any metric the noise swamped.
+UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"
+
+
+def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
+    """The name a highlight is reported under, its kind named ahead of it when qualified.
+
+    The highlights sit below the table, away from the section titles that told the
+    reader which kind a row belonged to, so a multi-kind run has to carry the kind
+    on the line itself. A single-kind run would say the same word on every line,
+    which tells the reader nothing and only pushes the deltas right, so it stays
+    with the bare metric name.
+
+    Args:
+        highlight: The highlight to name.
+        qualify: Whether to prefix the metric's kind and short name, as a run
+            spanning several kinds does.
+
+    Returns:
+        The reported name.
+    """
+    if qualify:
+        meta = highlight.metric.meta
+        return f"{meta.kind} {_SCOPE_SEPARATOR} {meta.short_name}"
+    return highlight.name
+
+
+def has_unstable_highlight(highlights: Sequence[MetricHighlight]) -> bool:
+    """Whether any highlight is one the noise swamped, so it carries no usable delta."""
+    return any(shown_class(highlight.candidate.verdict) == "unstable" for highlight in highlights)
+
+
+@dataclass(frozen=True, slots=True)
+class HighlightBlock:
+    """One candidate's highlight entries, and whether the noise swamped any of them.
+
+    Attributes:
+        entries: The rendered highlight lines, gate trips included.
+        unstable: Whether any entry is an unstable metric, so the block earns the
+            futility note.
+        label: The candidate sub-label the block sits under, or ``None`` for a
+            single-candidate report that lists its entries directly.
+    """
+
+    entries: tuple[str, ...]
+    unstable: bool
+    label: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Geomean labeling and styling
 # ---------------------------------------------------------------------------
 
 #: The name the geomean row is reported under, in every renderer.
 GEOMEAN_LABEL = "geomean"
+
+#: The label a gate-trip line names the gated geomean under.
+GATED_GEOMEAN_LABEL = "gated geomean"
 
 #: The figure standing in for a geomean with nothing to aggregate.
 NO_GEOMEAN_FIGURE = "—"

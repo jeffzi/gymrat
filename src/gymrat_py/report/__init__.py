@@ -6,6 +6,7 @@ submodules.
 """
 
 from gymrat_py.report.format import (
+    GATED_GEOMEAN_LABEL,
     GEOMEAN_LABEL,
     MIN_BAND_N,
     MIN_WILCOXON_N,
@@ -15,9 +16,11 @@ from gymrat_py.report.format import (
     PLUS_MINUS,
     QUIET_VERDICTS,
     SPREAD_SEPARATOR,
+    UNSTABLE_FUTILITY_NOTE,
     VERDICT_GLOSSES,
     DisplayClass,
     GeomeanParts,
+    HighlightBlock,
     MetricCellParts,
     MetricHighlight,
     VerdictCounts,
@@ -38,6 +41,8 @@ from gymrat_py.report.format import (
     geomean_scope_label,
     geomean_value_style,
     get_glyph,
+    has_unstable_highlight,
+    highlight_label,
     pluralize,
     scoped_geomean_label,
     select_highlights,
@@ -68,6 +73,7 @@ from gymrat_py.report.style import (
     truncate_labels,
 )
 from gymrat_py.report.text import (
+    format_cleanup_failures,
     paired_samples,
     render_measure_report,
     render_report,
@@ -91,6 +97,7 @@ from gymrat_py.report.types import (
 
 __all__ = [
     "AGGREGATE_LABEL_STYLE",
+    "GATED_GEOMEAN_LABEL",
     "GEOMEAN_LABEL",
     "GROUP_LABEL_STYLE",
     "LABEL_DISPLAY_WIDTH",
@@ -102,6 +109,7 @@ __all__ = [
     "PLUS_MINUS",
     "QUIET_VERDICTS",
     "SPREAD_SEPARATOR",
+    "UNSTABLE_FUTILITY_NOTE",
     "VARIANT_NAME_STYLE",
     "VERDICT_GLOSSES",
     "VERDICT_STYLES",
@@ -112,6 +120,7 @@ __all__ = [
     "FailOnCondition",
     "GeomeanFailOn",
     "GeomeanParts",
+    "HighlightBlock",
     "MeasurementResult",
     "MetricCellParts",
     "MetricComparison",
@@ -129,6 +138,7 @@ __all__ = [
     "display_class",
     "flat_geomean_of",
     "footer_lines",
+    "format_cleanup_failures",
     "format_delta",
     "format_evidence",
     "format_hint_label",
@@ -143,7 +153,9 @@ __all__ = [
     "geomean_value_style",
     "get_glyph",
     "group_geomean_of",
+    "has_unstable_highlight",
     "highlight_inline_code",
+    "highlight_label",
     "informational_tag",
     "kind_geomean_of",
     "make_capture_console",
