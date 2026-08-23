@@ -13,6 +13,7 @@
     "dunder",
     "excinfo",
     "geomean",
+    "geomeans",
     "gpgsign",
     "gymrat",
     "isort",

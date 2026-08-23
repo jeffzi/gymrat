@@ -29,6 +29,7 @@ from gymrat_py.report.format import (
     select_highlights,
     verdict_summary_parts,
 )
+from gymrat_py.report.json_doc import render_json, render_measure_json
 from gymrat_py.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
@@ -99,7 +100,9 @@ __all__ = [
     "get_glyph",
     "highlight_inline_code",
     "make_capture_console",
+    "render_json",
     "render_lines",
+    "render_measure_json",
     "scoped_geomean_label",
     "select_highlights",
     "shorten_label",
