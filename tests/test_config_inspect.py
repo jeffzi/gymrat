@@ -37,7 +37,7 @@ def make_adapter(
     return MockAdapter()
 
 
-def metric_meta(  # noqa: PLR0913 -- one keyword per resolved field, so a test pins only what it cares about
+def metric_meta(
     short_name: str,
     *,
     direction: Direction = "lower",

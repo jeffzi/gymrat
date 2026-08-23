@@ -203,6 +203,7 @@ version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
+    { name = "rich" },
     { name = "scipy" },
 ]
 
@@ -218,7 +219,6 @@ dev = [
     { name = "pytest-randomly" },
     { name = "pytest-sugar" },
     { name = "pytest-xdist" },
-    { name = "rich" },
     { name = "ruff" },
     { name = "typer" },
 ]
@@ -226,6 +226,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic", specifier = ">=2,<3" },
+    { name = "rich", specifier = ">=15.0,<16" },
     { name = "scipy", specifier = ">=1.18,<2" },
 ]
 
@@ -241,7 +242,6 @@ dev = [
     { name = "pytest-randomly", specifier = ">=4.1,<5" },
     { name = "pytest-sugar", specifier = ">=1.1,<2" },
     { name = "pytest-xdist", specifier = ">=3.8,<4" },
-    { name = "rich", specifier = ">=15.0,<16" },
     { name = "ruff", specifier = ">=0.16.3,<0.17" },
     { name = "typer", specifier = ">=0.27.1,<0.28" },
 ]
