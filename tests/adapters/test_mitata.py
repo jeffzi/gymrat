@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 import pytest
@@ -6,11 +5,7 @@ import pytest
 from gymrat_py.adapters.mitata import find_json_candidates, mitata_adapter
 from gymrat_py.adapters.types import Adapter, AdapterError, MetricDefaults
 from gymrat_py.model.metrics import MetricUnit
-
-
-def _stdout(benchmarks: list[Any]) -> str:
-    return json.dumps({"benchmarks": benchmarks})
-
+from tests.adapters._inputs import build_stdout
 
 # ---------------------------------------------------------------------------
 # adapter shape
@@ -29,7 +24,7 @@ def test_mitata_adapter_when_checked_does_satisfy_adapter_protocol():
 # basic JSON parsing
 # ---------------------------------------------------------------------------
 
-_BASIC_FIXTURE = _stdout(
+_BASIC_FIXTURE = build_stdout(
     [{"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]}]
 )
 
@@ -69,7 +64,7 @@ def test_parse_when_json_surrounded_by_text_does_extract_metrics(stdout: str):
 def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     alias: str, args: dict[str, Any], p50: int, metric_name: str
 ):
-    stdout = _stdout(
+    stdout = build_stdout(
         [{"alias": alias, "runs": [{"name": alias, "args": args, "stats": {"p50": p50}}]}]
     )
 
@@ -89,7 +84,7 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     ],
 )
 def test_parse_when_arg_is_primitive_does_serialize_js_style(value: Any, serialized: str):
-    stdout = _stdout(
+    stdout = build_stdout(
         [{"alias": "b/$v", "runs": [{"name": "b", "args": {"v": value}, "stats": {"p50": 1}}]}]
     )
 
@@ -111,7 +106,7 @@ def test_parse_when_arg_is_primitive_does_serialize_js_style(value: Any, seriali
     ],
 )
 def test_parse_when_arg_value_holds_regex_replacement_syntax_does_keep_it_literal(value: str):
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "decode/$text",
@@ -124,7 +119,7 @@ def test_parse_when_arg_value_holds_regex_replacement_syntax_does_keep_it_litera
 
 
 def test_parse_when_arg_value_introduces_a_placeholder_does_not_re_substitute_it():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "op/$a/$b",
@@ -151,7 +146,7 @@ _LINE_TERMINATORS = [
 @pytest.mark.parametrize("code_point", _LINE_TERMINATORS)
 def test_parse_when_alias_holds_line_terminator_does_warn_and_skip(code_point: int):
     offending = f"enc{chr(code_point)}ode"
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {"alias": offending, "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]},
             {"alias": "valid", "runs": [{"name": "v", "args": {}, "stats": {"p50": 1}}]},
@@ -170,7 +165,7 @@ def test_parse_when_alias_holds_line_terminator_does_warn_and_skip(code_point: i
 
 @pytest.mark.parametrize("code_point", _LINE_TERMINATORS)
 def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_point: int):
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "decode/$text",
@@ -202,7 +197,7 @@ def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_poin
 
 
 def test_parse_when_run_args_is_not_a_record_does_warn_and_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -222,7 +217,7 @@ def test_parse_when_run_args_is_not_a_record_does_warn_and_skip():
 
 
 def test_parse_when_run_stats_is_not_a_record_does_warn_and_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -239,7 +234,7 @@ def test_parse_when_run_stats_is_not_a_record_does_warn_and_skip():
 
 
 def test_parse_when_run_args_missing_does_treat_as_empty_and_not_warn():
-    stdout = _stdout([{"alias": "test", "runs": [{"stats": {"p50": 5}}]}])
+    stdout = build_stdout([{"alias": "test", "runs": [{"stats": {"p50": 5}}]}])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -249,7 +244,7 @@ def test_parse_when_run_args_missing_does_treat_as_empty_and_not_warn():
 
 
 def test_parse_when_benchmark_alias_is_not_a_string_does_warn_and_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {"alias": 42, "runs": [{"args": {}, "stats": {"p50": 1}}]},
             {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
@@ -264,7 +259,7 @@ def test_parse_when_benchmark_alias_is_not_a_string_does_warn_and_skip():
 
 
 def test_parse_when_benchmark_runs_is_not_an_array_does_warn_and_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [{"alias": "orphan"}, {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]}]
     )
     warnings: list[str] = []
@@ -276,7 +271,7 @@ def test_parse_when_benchmark_runs_is_not_an_array_does_warn_and_skip():
 
 
 def test_parse_when_run_has_error_does_warn_and_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -299,7 +294,7 @@ def test_parse_when_run_has_error_does_warn_and_skip():
 # metric-name collisions
 # ---------------------------------------------------------------------------
 
-_ALIAS_MISSING_PLACEHOLDER = _stdout(
+_ALIAS_MISSING_PLACEHOLDER = build_stdout(
     [
         {
             "alias": "decode",
@@ -335,7 +330,7 @@ def test_parse_when_collision_and_sink_given_does_route_warning_off_stderr(
 def test_parse_when_two_benchmarks_share_alias_does_warn_collision(
     capsys: pytest.CaptureFixture[str],
 ):
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 1}}]},
             {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 2}}]},
@@ -357,7 +352,7 @@ def test_parse_when_two_benchmarks_share_alias_does_warn_collision(
     [pytest.param(123.456, id="decimal"), pytest.param(0.0791015625, id="high-precision")],
 )
 def test_parse_when_p50_present_does_use_it_as_time_metric(p50: float):
-    stdout = _stdout(
+    stdout = build_stdout(
         [{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": p50}}]}]
     )
 
@@ -384,7 +379,7 @@ def test_parse_when_p50_is_bool_does_warn_and_skip():
 
 
 def test_parse_when_heap_avg_present_does_emit_heap_metric():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -397,7 +392,7 @@ def test_parse_when_heap_avg_present_does_emit_heap_metric():
 
 
 def test_parse_when_heap_avg_present_on_parameterized_bench_does_emit_named_heap_metric():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "decode/$text",
@@ -419,7 +414,7 @@ def test_parse_when_heap_avg_present_on_parameterized_bench_does_emit_named_heap
 
 
 def test_parse_when_heap_avg_missing_does_skip_heap_metric():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -477,7 +472,7 @@ def test_parse_when_heap_avg_non_finite_does_keep_time_and_skip_heap():
 
 
 def test_parse_when_benchmark_has_multiple_runs_does_emit_metric_per_run():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "decode/$text",
@@ -496,7 +491,7 @@ def test_parse_when_benchmark_has_multiple_runs_does_emit_metric_per_run():
 
 
 def test_parse_when_runs_have_heap_does_emit_heap_metric_per_run():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "decode/$text",
@@ -525,7 +520,7 @@ def test_parse_when_runs_have_heap_does_emit_heap_metric_per_run():
 
 
 def test_parse_when_multiple_benchmarks_does_emit_metrics_for_all():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]},
             {"alias": "decode", "runs": [{"name": "decode", "args": {}, "stats": {"p50": 100}}]},
