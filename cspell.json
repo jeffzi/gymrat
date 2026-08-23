@@ -25,6 +25,7 @@
     "pyrefly",
     "pytest",
     "pytestmark",
+    "strerror",
     "taskkill",
     "Taskfile",
     "testpaths",

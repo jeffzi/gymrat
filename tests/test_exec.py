@@ -10,6 +10,7 @@ POSIX spawn and stubbing the ``taskkill`` subprocess call — no real Windows.
 import asyncio
 import contextlib
 import dataclasses
+import errno
 import os
 import signal
 import subprocess
@@ -613,3 +614,15 @@ async def test_exec_when_win32_taskkill_fails_otherwise_does_warn(
         await asyncio.wait_for(task, 5)
 
     assert_taskkill_invoked(calls)
+
+
+def test_kill_group_when_killpg_fails_otherwise_does_warn_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_eperm(group_pid: int, sig: int) -> None:
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "killpg", raise_eperm)
+
+    with pytest.warns(RuntimeWarning):
+        exec_mod._kill_group(12345)

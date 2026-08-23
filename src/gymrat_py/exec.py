@@ -152,9 +152,10 @@ def _taskkill(pid: int) -> None:
 def _kill_group(pid: int) -> None:
     """Kill the whole process group led by ``pid``, never raising into the caller.
 
-    On POSIX this signals the group with ``SIGKILL`` and stays silent when the
-    group is already gone. On Windows it delegates to ``taskkill /T /F``, staying
-    silent when the process is already gone and warning on any other failure.
+    On POSIX this signals the group with ``SIGKILL``, staying silent when the
+    group is already gone and warning on any other failure. On Windows it
+    delegates to ``taskkill /T /F``, staying silent when the process is already
+    gone and warning on any other failure.
     """
     if _platform() == "win32":
         try:
@@ -173,8 +174,16 @@ def _kill_group(pid: int) -> None:
                 stacklevel=2,
             )
         return
-    with contextlib.suppress(ProcessLookupError):
+    try:
         os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        warnings.warn(
+            f"killpg failed for pid {pid}: {error}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _terminate(proc: asyncio.subprocess.Process) -> None:
