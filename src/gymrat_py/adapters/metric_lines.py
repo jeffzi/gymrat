@@ -55,21 +55,21 @@ def _js_number(raw: str) -> float | None:
       (or yields a non-finite value that fails the ``isfinite`` guard).
     """
     token = raw.strip()
-    if token == "":
+    # float("1_0") succeeds and is finite, so the isfinite guard below cannot
+    # catch underscore separators — reject them explicitly, alongside the
+    # empty-token case, before either try block runs.
+    if token == "" or "_" in token:
         return None
     if _RADIX_NUMBER.fullmatch(token):
-        return float(int(token, 0))
-    # float("1_0") succeeds and is finite, so the isfinite guard below cannot
-    # catch underscore separators — reject them explicitly.
-    if "_" in token:
-        return None
+        try:
+            return float(int(token, 0))
+        except OverflowError:
+            return None
     try:
         value = float(token)
     except ValueError:
         return None
-    if not math.isfinite(value):
-        return None
-    return value
+    return value if math.isfinite(value) else None
 
 
 class _MetricLinesAdapter:
@@ -101,24 +101,25 @@ class _MetricLinesAdapter:
             trimmed = line.strip()
             if not trimmed.startswith(_PREFIX):
                 continue
+            parse_failure = f"Failed to parse METRIC line: {trimmed}"
             if not trimmed.startswith(_PREFIX_WITH_SPACE):
-                warn(f"Failed to parse METRIC line: {trimmed}")
+                warn(parse_failure)
                 continue
 
             after = trimmed[len(_PREFIX) :].strip()
             last_eq = after.rfind("=")
             if last_eq <= 0:
-                warn(f"Failed to parse METRIC line: {trimmed}")
+                warn(parse_failure)
                 continue
 
             metric_name = after[:last_eq]
             if _FORBIDDEN_NAME_CHAR.search(metric_name):
-                warn(f"Failed to parse METRIC line: {trimmed}")
+                warn(parse_failure)
                 continue
 
             value = _js_number(after[last_eq + 1 :])
             if value is None:
-                warn(f"Failed to parse METRIC line: {trimmed}")
+                warn(parse_failure)
                 continue
 
             if _PREFIX_WITH_SPACE in metric_name:

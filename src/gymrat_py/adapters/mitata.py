@@ -14,6 +14,7 @@ banner text mitata prints around it — including bare braces like ``cpu: {model
 import json
 import math
 import re
+from typing import TypeGuard
 
 from gymrat_py.adapters.defaults import defaults_from_suffixes
 from gymrat_py.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
@@ -218,21 +219,25 @@ def _build_metric_name_prefix(alias: str, args: dict[str, object]) -> str:
     return "".join(result)
 
 
-def _resolve_p50(stats: dict[str, object], alias: str, warn: WarnSink) -> float | None:
-    """Read ``stats.p50``, warning and returning ``None`` when it is unusable.
+def _is_number(value: object) -> TypeGuard[float]:
+    """Return whether ``value`` is a JS-style number: ``bool`` does not count.
 
-    ``bool`` is excluded from the numeric check: mitata never emits one, and
-    Python's ``bool`` is an ``int`` subclass, so treating it as non-numeric mirrors
-    JavaScript's ``typeof p50 !== "number"``.
+    Python's ``bool`` is an ``int`` subclass, so it is excluded to mirror
+    JavaScript's ``typeof value === "number"``.
     """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _resolve_p50(stats: dict[str, object], alias: str, warn: WarnSink) -> float | None:
+    """Read ``stats.p50``, warning and returning ``None`` when it is unusable."""
     p50 = stats.get("p50")
-    if not isinstance(p50, (int, float)) or isinstance(p50, bool):
-        warn(f"Skipping run with malformed stats shape: {alias} (stats.p50 is not a number)")
-        return None
-    if not math.isfinite(p50):
+    if _is_number(p50):
+        if math.isfinite(p50):
+            return p50
         warn(f"Skipping run with non-finite p50: {alias} ({p50})")
         return None
-    return p50
+    warn(f"Skipping run with malformed stats shape: {alias} (stats.p50 is not a number)")
+    return None
 
 
 def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) -> str | None:
@@ -254,7 +259,7 @@ def _record_heap_metric(
     if not isinstance(heap, dict):
         return
     avg = heap.get("avg")
-    if isinstance(avg, (int, float)) and not isinstance(avg, bool) and math.isfinite(avg):
+    if _is_number(avg) and math.isfinite(avg):
         _record_metric(metrics, f"{prefix}/heap", avg, warn)
 
 

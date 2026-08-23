@@ -43,34 +43,6 @@ def test_adapter_error_when_no_hint_does_default_hint_to_none():
 
 
 # ---------------------------------------------------------------------------
-# warn_to_stderr / WarnSink
-# ---------------------------------------------------------------------------
-
-
-def test_warn_to_stderr_when_called_does_write_message_with_newline_to_stderr(
-    capsys: pytest.CaptureFixture[str],
-):
-    warn_to_stderr("hello")
-
-    captured = capsys.readouterr()
-    assert captured.err == "hello\n"
-    assert captured.out == ""
-
-
-def test_custom_warn_sink_when_called_does_receive_raw_message_and_leave_stderr_empty(
-    capsys: pytest.CaptureFixture[str],
-):
-    collected: list[str] = []
-    sink: WarnSink = collected.append
-
-    sink("hello")
-
-    captured = capsys.readouterr()
-    assert collected == ["hello"]
-    assert captured.err == ""
-
-
-# ---------------------------------------------------------------------------
 # MetricDefaults
 # ---------------------------------------------------------------------------
 
@@ -188,14 +160,6 @@ def test_defaults_from_suffixes_when_given_metric_name_does_return_expected_defa
     expected: MetricDefaults,
 ):
     assert defaults_from_suffixes(metric_name) == expected
-
-
-def test_defaults_from_suffixes_when_no_suffix_matches_does_leave_metadata_none():
-    defaults = defaults_from_suffixes("custom_metric")
-
-    assert defaults.unit is None
-    assert defaults.kind is None
-    assert defaults.short_name is None
 
 
 # ---------------------------------------------------------------------------

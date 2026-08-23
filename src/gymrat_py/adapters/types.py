@@ -5,13 +5,20 @@ describing what an adapter knows about a metric, and the warning sink and error
 it uses when output cannot be read.
 """
 
-import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from gymrat_py.errors import GymratError
 from gymrat_py.model.metrics import Direction, MetricUnit
+from gymrat_py.warn import WarnSink, warn_to_stderr
+
+__all__ = [
+    "Adapter",
+    "AdapterError",
+    "MetricDefaults",
+    "WarnSink",
+    "warn_to_stderr",
+]
 
 
 class AdapterError(GymratError):
@@ -23,23 +30,6 @@ class AdapterError(GymratError):
     config handling. Adapters raise this and nothing else for unparseable
     output.
     """
-
-
-type WarnSink = Callable[[str], None]
-"""Where an adapter sends a complaint about output it could not read.
-
-The caller owns the destination so a warning can be interleaved with whatever
-else is on the terminal — the CLI's progress line, for one — instead of landing
-on stderr wherever the cursor happens to be.
-"""
-
-
-def warn_to_stderr(message: str) -> None:
-    """Default :data:`WarnSink` for adapters called without an explicit one.
-
-    Writes ``message`` followed by a newline to stderr.
-    """
-    sys.stderr.write(f"{message}\n")
 
 
 @dataclass(frozen=True, slots=True)

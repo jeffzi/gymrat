@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-metric verdicts for a benchmark comparison (`gymrat_py.verdict`): pair two runs by round and
+  judge each metric improved, regressed, or no clear change in its own direction. A metric too noisy
+  to measure against is reported unstable rather than given a misleading verdict.
+- Headline and per-section aggregates (`gymrat_py.verdict`): combine the per-metric verdicts into
+  one summary, rolled up per kind, per benchmark group, and over only the gating metrics — the ones
+  that decide the overall pass or fail. A metric that cannot be judged — no paired samples, an
+  unstable verdict, or an undefined ratio — is named in an exclusion list instead of silently
+  skewing the summary.
+- A warning when a metric present in only some rounds thins the paired sample: the comparison still
+  runs on the rounds where the metric appears, and reports how many were dropped.
+
 ## [0.4.0] - 2026-08-23
 
 ### Added

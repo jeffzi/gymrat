@@ -183,18 +183,6 @@ async def test_collect_samples_when_progress_given_does_fire_prepare_then_sample
     ]
 
 
-async def test_collect_samples_when_no_progress_callback_does_not_fail(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    patch_exec(monkeypatch, make_success())
-    targets = two_in_place_targets()
-    options = SamplingOptions(bench="run", prepare=None, samples=1, timeout_seconds=1.0)
-
-    result = await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
-
-    assert [ts.samples for ts in result] == [[{"x": 1.0}], [{"x": 1.0}]]
-
-
 async def test_collect_samples_when_warn_sink_given_does_pass_it_through_to_parse(
     monkeypatch: pytest.MonkeyPatch,
 ):

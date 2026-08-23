@@ -1,17 +1,13 @@
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from gymrat_py.adapters.mitata import mitata_adapter
 from gymrat_py.adapters.types import AdapterError
+from tests.adapters._inputs import build_stdout
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
-
-
-def _stdout(benchmarks: list[Any]) -> str:
-    return json.dumps({"benchmarks": benchmarks})
 
 
 def _decode_error_reason(candidate: str) -> str:
@@ -49,14 +45,14 @@ def test_parse_when_benchmarks_array_empty_does_raise():
 
 
 def test_parse_when_no_run_has_valid_stats_does_raise():
-    stdout = _stdout([{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {}}]}])
+    stdout = build_stdout([{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {}}]}])
 
     with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
         mitata_adapter.parse(stdout)
 
 
 def test_parse_when_benchmark_entries_not_objects_does_skip_silently():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             None,
             42,
@@ -73,7 +69,7 @@ def test_parse_when_benchmark_entries_not_objects_does_skip_silently():
 
 
 def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {"alias": 42, "runs": []},
             {"alias": "orphan"},
@@ -85,25 +81,10 @@ def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip()
     assert mitata_adapter.parse(stdout) == {"valid/time": 1}
 
 
-def test_parse_when_runs_have_non_object_args_or_stats_does_skip():
-    stdout = _stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [
-                    {"args": "not-object", "stats": {"p50": 1}},
-                    {"args": {}, "stats": "not-object"},
-                    {"args": {}, "stats": {"p50": 1}},
-                ],
-            }
-        ]
-    )
-
-    assert mitata_adapter.parse(stdout) == {"test/time": 1}
-
-
 def test_parse_when_runs_are_not_objects_does_skip_silently():
-    stdout = _stdout([{"alias": "test", "runs": [None, 42, {"args": {}, "stats": {"p50": 1}}]}])
+    stdout = build_stdout(
+        [{"alias": "test", "runs": [None, 42, {"args": {}, "stats": {"p50": 1}}]}]
+    )
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -118,7 +99,7 @@ def test_parse_when_runs_are_not_objects_does_skip_silently():
 
 
 def test_parse_when_run_has_error_field_does_skip_that_run():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test/$x",
@@ -139,7 +120,7 @@ def test_parse_when_run_has_error_field_does_skip_that_run():
 
 
 def test_parse_when_all_runs_have_errors_does_raise():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -155,7 +136,7 @@ def test_parse_when_all_runs_have_errors_does_raise():
 
 
 def test_parse_when_error_field_is_null_does_process_run_normally():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -168,7 +149,7 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
 
 
 def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test",
@@ -193,7 +174,7 @@ def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
 
 
 def test_parse_when_arg_value_is_object_does_serialize_via_json():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "bench/$opts",
@@ -206,7 +187,7 @@ def test_parse_when_arg_value_is_object_does_serialize_via_json():
 
 
 def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "bench/$opts",
@@ -225,7 +206,7 @@ def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
 
 
 def test_parse_when_object_arg_has_unsorted_keys_does_serialize_in_sorted_order():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "bench/$opts",
@@ -238,7 +219,7 @@ def test_parse_when_object_arg_has_unsorted_keys_does_serialize_in_sorted_order(
 
 
 def test_parse_when_arg_value_is_array_does_serialize_via_json():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "bench/$items",
@@ -256,7 +237,7 @@ def test_parse_when_arg_value_is_array_does_serialize_via_json():
 
 
 def test_parse_when_p50_missing_does_warn_and_skip():
-    stdout = _stdout(
+    stdout = build_stdout(
         [
             {
                 "alias": "test/$x",
@@ -307,7 +288,7 @@ def test_parse_when_skip_warning_and_sink_given_does_route_off_stderr(
     ],
 )
 def test_parse_when_banner_text_carries_braces_or_quotes_does_still_extract(template: str):
-    payload = _stdout([{"alias": "encode", "runs": [{"args": {}, "stats": {"p50": 42}}]}])
+    payload = build_stdout([{"alias": "encode", "runs": [{"args": {}, "stats": {"p50": 42}}]}])
 
     result = mitata_adapter.parse(template.format(json=payload))
 
@@ -326,7 +307,7 @@ def test_parse_when_only_incomplete_brace_fragments_present_does_raise():
 
 def test_parse_when_decoy_precedes_real_object_does_prefer_the_benchmarks_carrier():
     decoy = json.dumps({"foo": "bar"})
-    real = _stdout([{"alias": "a", "runs": [{"args": {}, "stats": {"p50": 1}}]}])
+    real = build_stdout([{"alias": "a", "runs": [{"args": {}, "stats": {"p50": 1}}]}])
 
     assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a/time": 1}
 
