@@ -65,7 +65,7 @@ def test_parse_when_name_contains_bare_carriage_return_does_skip_and_warn():
     result = metric_lines_adapter.parse("METRIC fo\ro=42\nMETRIC valid=1", warnings.append)
 
     assert result == {"valid": 1.0}
-    assert warnings != []
+    assert warnings == ["Failed to parse METRIC line: METRIC fo"]
 
 
 # ---------------------------------------------------------------------------
