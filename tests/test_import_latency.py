@@ -10,7 +10,7 @@ subprocess: the test process has its own imports (pytest pulls in a large
 dependency tree), so inspecting this process's ``sys.modules`` could never prove
 the package itself stayed clean.
 
-Extension point: when v0.8 adds the CLI entry point, extend this guard to import
+Extension point: when a CLI entry point is added, extend this guard to import
 that entry module too — invoking ``--help`` must stay just as cheap as importing
 the package.
 """
@@ -22,17 +22,19 @@ import sys
 def test_importing_package_does_not_import_scipy_or_statsmodels():
     # Assert inside the child so the test process's own dependency tree cannot
     # mask a violation, and so a non-zero exit surfaces the offending modules.
-    probe = (
-        "import sys\n"
-        "import gymrat_py\n"
-        "heavy = sorted(\n"
-        "    name\n"
-        "    for name in sys.modules\n"
-        "    if name in {'scipy', 'statsmodels'}\n"
-        "    or name.startswith(('scipy.', 'statsmodels.'))\n"
-        ")\n"
-        "assert not heavy, f'package import pulled in heavy modules: {heavy}'\n"
-    )
+    probe = """
+import sys
+import gymrat_py
+import gymrat_py.stats
+import gymrat_py.model
+heavy = sorted(
+    name
+    for name in sys.modules
+    if name in {'scipy', 'statsmodels'}
+    or name.startswith(('scipy.', 'statsmodels.'))
+)
+assert not heavy, f'package import pulled in heavy modules: {heavy}'
+"""
 
     result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
         [sys.executable, "-c", probe],
