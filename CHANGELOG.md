@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-23
+
+### Added
+
+- Comparison report tables: a metric-by-metric table pitting a baseline against one
+  candidate — or a column per candidate against a shared baseline — showing each side's value with
+  its spread, the verdict with its noise band, and a geometric-mean row summarizing the run. A run
+  spanning several metric kinds splits into a titled section per kind, each closed by its own
+  geomean, and a kind that only informs (never gates) is labelled as such with the config line that
+  made it so.
+- Measurement report table: a single-target table listing each metric's median and spread,
+  sectioned by kind the same way, for a run with nothing to compare against.
+- Verdict summary and highlights: a one-line tally of how many metrics improved, regressed, stayed
+  within noise, or could not be judged, followed by a highlights block calling out the metrics that
+  moved most — with a note that unstable metrics will not settle with more samples.
+- Gate-trip and cleanup reporting: when a `--fail-on` geomean threshold is crossed the report names
+  the kind, its gated geomean, and the threshold it exceeded; leftover worktrees and prune failures
+  are reported in a closing footer. A verbose run also spells out the statistical method behind the
+  verdicts and hints at when more samples would help.
+- Machine-readable JSON output: comparison and measurement runs render as a stable, versioned JSON
+  document with per-metric metadata, per-candidate verdicts and aggregates, and worktree-cleanup
+  state — parseable by other tools and unaffected by display options.
+- Color control: report output is styled when writing to a terminal and left plain for a pipe or
+  file, forced on or off explicitly, with `FORCE_COLOR` and `NO_COLOR` honored.
+- Loop iteration reporting: the header, primary-figure verdict block, and improved/regressed/
+  no-signal outcome an optimization loop states for each iteration.
+
 ## [0.6.0] - 2026-08-23
 
 ### Added
@@ -89,7 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured errors for every gymrat failure: each derives from `GymratError` and can carry a
   `hint`; failed subprocesses raise `CommandError`.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jeffzi/gymrat-py/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jeffzi/gymrat-py/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jeffzi/gymrat-py/compare/v0.3.0...v0.4.0
