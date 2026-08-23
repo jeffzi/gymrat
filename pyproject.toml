@@ -50,6 +50,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["ALL"]
+# Scientific glyphs that appear verbatim in report output strings; not typos.
+allowed-confusables = ["×", "α"]
 ignore = [
   # --- Docstrings (relaxed for practicality) ---
   "D100", # missing docstring in public module
@@ -80,6 +82,7 @@ ignore = [
   "INP001", # implicit namespace package (tests have no __init__.py)
   "PERF401", # manual list comprehension (perf irrelevant in tests)
   "PLC0415", # import outside top-level (local test imports)
+  "PLR0913", # too many arguments (fixture/builder options mirror TS option objects)
   "PLR2004", # magic value in comparison (assert x == 42)
   "PT012", # pytest.raises block with multiple statements
   "RUF043", # pytest.raises(match) ambiguous pattern
