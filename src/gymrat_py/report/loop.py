@@ -111,6 +111,9 @@ class RerunConfirmation:
 #: The candidate an iteration measures: the experiment, judged against the baseline.
 EXPERIMENT_INDEX = 0
 
+#: How many leading characters of a commit SHA a report abbreviates it to.
+SHORT_SHA_LENGTH = 7
+
 #: What the loop's header says it compared, fixed for every iteration.
 _COMPARED = "experiment vs baseline"
 
