@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-25
+
+### Added
+
+- An optimization-loop workflow driven by six new commands over a per-repository session that pins a
+  baseline and measures an experiment worktree against it, one edit at a time:
+  - `gymrat start [ref]` opens or resumes the session, pinning the baseline at a ref (default `HEAD`)
+    and checking out an experiment and a baseline worktree; a finalized session's log is archived and
+    a fresh session takes its place.
+  - `gymrat iterate` measures the experiment worktree against the baseline and reports the verdict,
+    honouring configurable stop conditions — a maximum iteration count, or a target value for a named
+    metric.
+  - `gymrat keep` commits the measured edit once a configured checks command passes, advancing the
+    baseline onto the kept commit; it refuses a standing gating regression or failing checks and
+    records the block.
+  - `gymrat discard` reverts the experiment worktree to its last commit, with a confirmation prompt
+    on a terminal (skip it with `-f`/`--force`).
+  - `gymrat finalize` collapses the session's kept commits into a single squash commit on the pinned
+    baseline and closes the session, leaving the per-iteration history in place.
+  - `gymrat status` prints the whole session history, rebuilt from its log alone.
+- A confirmation rerun that re-measures a noisy gating regression once and lets it stand only when
+  the rerun agrees; a deterministic (exact) metric is judged on the first run alone.
+- Lifecycle hooks: `before` and `after` commands run around each measurement, receive a JSON
+  description of the loop on their standard input, have their output relayed under a size cap, and
+  are isolated so a failing hook is reported without failing the run.
+
 ## [0.9.0] - 2026-08-24
 
 ### Added
@@ -146,7 +172,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured errors for every gymrat failure: each derives from `GymratError` and can carry a
   `hint`; failed subprocesses raise `CommandError`.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...v0.7.0
