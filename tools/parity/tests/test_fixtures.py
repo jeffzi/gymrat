@@ -30,7 +30,17 @@ _EXPECTED_FIXTURE_NAMES = {
     "one_sided_metric_compare",
     "ref_compare",
     "ref_measure",
+    "measure_record",
+    "measure_record_missing_session",
 }
+
+# measure_record_missing_session drives measure --record with no open session, so
+# the reference binary is meant to reject it (exit 2). It is a compare-only
+# fixture — both sides fail identically and compare's exit-code agreement passes
+# it — so the success-path checks below run every other fixture.
+_ORACLE_SUCCESS_FIXTURES = tuple(
+    fixture for fixture in fixture_matrix() if fixture.name != "measure_record_missing_session"
+)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -188,7 +198,7 @@ def test_fixture_matrix_when_called_does_return_all_named_entries():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fixture", fixture_matrix(), ids=lambda f: f.name)
+@pytest.mark.parametrize("fixture", _ORACLE_SUCCESS_FIXTURES, ids=lambda f: f.name)
 def test_fixture_matrix_entry_when_run_through_oracle_does_return_expected_schema(
     fixture: Fixture, requires_oracle: None, tmp_path: Path
 ):

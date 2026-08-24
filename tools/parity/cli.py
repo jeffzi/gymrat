@@ -29,6 +29,9 @@ from rich.table import Table
 from rich.text import Text
 
 from gymrat_py.errors import GymratError
+from gymrat_py.session.paths import session_jsonl_path
+from gymrat_py.session.records import record_to_wire
+from gymrat_py.session.store import read_records
 from tools.parity.differ import DiffEntry, DiffReport, diff_json
 from tools.parity.fixtures import Fixture, fixture_matrix
 from tools.parity.oracle import (
@@ -214,6 +217,56 @@ def _parse_document(fixture: Fixture, side: str, result: RunResult) -> object:
         raise GymratError(msg) from error
 
 
+def _verify_record_log(
+    oracle: Runner, fixture: Fixture, root: Path, stdout_report: DiffReport
+) -> DiffReport:
+    """Fold a session-log round-trip check into a record fixture's stdout report.
+
+    Precondition: both sides have already run ``measure --record`` in ``root``
+    (oracle first, then port), so the shared open session log holds its seeded
+    header plus one baseline record per side — the oracle's write read back by
+    the port is the TS->Python direction.
+
+    Three checks, each surfaced under a distinguishing ``session_log.`` path so a
+    failure renders red and names its cause:
+
+    - the log holds exactly the header plus one baseline record per run;
+    - the two baseline records are parsed-equal after masking the volatile ``at``
+      timestamp (same label, same deterministic samples);
+    - a fresh oracle run over the now-port-augmented log exits zero, proving the
+      Python->TS read direction.
+
+    The stdout document diff is carried through unchanged; only record-log
+    differences are appended, and the informational p-notes are preserved.
+    """
+    differences = list(stdout_report.differences)
+    records = read_records(session_jsonl_path(str(root)))
+    expected_count = 3  # seeded header + one baseline record from each side
+    if len(records) != expected_count:
+        differences.append(
+            DiffEntry(path="session_log.record_count", left=expected_count, right=len(records))
+        )
+        return DiffReport(differences=tuple(differences), p_notes=stdout_report.p_notes)
+
+    record_report = diff_json(
+        record_to_wire(records[1]),
+        record_to_wire(records[2]),
+        ignore_paths=("at",),
+    )
+    differences.extend(
+        DiffEntry(path=f"session_log.record.{entry.path}", left=entry.left, right=entry.right)
+        for entry in record_report.differences
+    )
+
+    reread = oracle.run(list(fixture.argv), cwd=root)
+    if reread.exit_code != 0:
+        differences.append(
+            DiffEntry(path="session_log.oracle_reread_exit", left=0, right=reread.exit_code)
+        )
+
+    return DiffReport(differences=tuple(differences), p_notes=stdout_report.p_notes)
+
+
 def run_oracle_vs_port(oracle: Runner, port: Runner, fixtures: Sequence[Fixture]) -> CompareOutcome:
     """Compare the oracle against the port for each fixture.
 
@@ -223,6 +276,11 @@ def run_oracle_vs_port(oracle: Runner, port: Runner, fixtures: Sequence[Fixture]
     :func:`~tools.parity.differ.diff_json`; volatile worktree fields are
     normalized by the differ. A fixture is green only when the exit codes agree
     and any document diff is green.
+
+    For a fixture with ``records=True``, the session log both sides wrote to the
+    shared root is additionally verified via :func:`_verify_record_log` and any
+    mismatch folded into that fixture's report, so a broken cross-implementation
+    round-trip renders the fixture red.
 
     Args:
         oracle: The reference-binary runner.
@@ -245,6 +303,8 @@ def run_oracle_vs_port(oracle: Runner, port: Runner, fixtures: Sequence[Fixture]
                     _parse_document(fixture, "oracle", oracle_result),
                     _parse_document(fixture, "port", port_result),
                 )
+                if fixture.records:
+                    report = _verify_record_log(oracle, fixture, root, report)
         results.append(
             CompareResult(
                 name=fixture.name,
