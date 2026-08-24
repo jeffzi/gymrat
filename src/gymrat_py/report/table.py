@@ -1,12 +1,12 @@
 """The shared machinery both text tables draw through.
 
-The data half is ported from the TypeScript ``text-table-core``: the string
-builders that pad a value cell's magnitude and spread, and a verdict cell's
-glyph, delta and band, into fields of their own, plus the body planner that lays
-a :class:`~gymrat_py.report.sections.SectionLayout` out as titles, borders, rules
+The data half builds the string content of each cell: the builders that pad a
+value cell's magnitude and spread, and a verdict cell's glyph, delta and band,
+into fields of their own, plus the body planner that lays a
+:class:`~gymrat_py.report.sections.SectionLayout` out as titles, borders, rules
 and rows.
 
-The rendering half is not a port. The box chrome — column padding, the ``│``
+The rendering half draws the grid. The box chrome — column padding, the ``│``
 separators, the ``─`` rules and their ``┼``/``┬`` junctions — is delegated to a
 :class:`rich.table.Table`, and styling is carried as rich markup that
 :func:`~gymrat_py.report.style.render_lines` resolves to color once. In-cell

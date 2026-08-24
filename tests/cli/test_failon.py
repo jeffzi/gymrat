@@ -1,6 +1,6 @@
 """Tests for fail-on parsing and gate evaluation.
 
-These port the ``parseFailOn`` grammar, the ``shouldFailGate`` trip/no-trip
+These cover the ``parse_fail_on`` grammar, the ``should_fail_gate`` trip/no-trip
 matrix (gating-only, exactly-on, OR semantics), and the empty-geomean warning.
 """
 

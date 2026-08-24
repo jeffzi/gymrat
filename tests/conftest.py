@@ -6,7 +6,7 @@ each in its own ``tempfile.mkdtemp`` slot resolved through ``os.path.realpath``
 ``worktree list``). Every repository is order-independent and safe under
 ``pytest-xdist`` / ``pytest-randomly``.
 
-The helpers mirror the TypeScript fixture surface so later worktree and driver
+The helpers expose a common fixture surface so later worktree and driver
 tests can reuse the same building blocks.
 """
 

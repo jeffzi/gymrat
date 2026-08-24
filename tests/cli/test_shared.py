@@ -1,8 +1,8 @@
 """Tests for the CLI shared infrastructure: parsing, locking, render modes.
 
-These port the surviving cases from the TypeScript ``cli/shared`` suite — the
-positional grammar, the numeric flag coercers, the render-mode resolution, and
-the repository lock wrapper — plus the Python-specific import-latency guard.
+These cover the CLI shared surface — the positional grammar, the numeric flag
+coercers, the render-mode resolution, and the repository lock wrapper — plus the
+import-latency guard.
 """
 
 import io

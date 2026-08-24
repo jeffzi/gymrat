@@ -1,12 +1,11 @@
 """Tests for the single-candidate comparison text report.
 
-These port ``text.test.ts`` (the single-candidate cases). The two-candidate
-blocks — the candidate-column sub-field alignment and the compact
-multi-candidate aggregate cell — belong to the multi-candidate task and are left
-out here. Where the TypeScript suite asserted column alignment by byte offset
-(``separatorOffsets``), the port asserts alignment *within* a parsed cell — the
-``±`` offset shared across value cells, the delta right-aligned across verdict
-cells — since the box chrome is rich's rather than a hand-spliced grid.
+These cover the single-candidate cases. The two-candidate blocks — the
+candidate-column sub-field alignment and the compact multi-candidate aggregate
+cell — belong to the multi-candidate task and are left out here. Column
+alignment is asserted *within* a parsed cell — the ``±`` offset shared across
+value cells, the delta right-aligned across verdict cells — since the box chrome
+is rich's rather than a hand-spliced grid.
 """
 
 from __future__ import annotations

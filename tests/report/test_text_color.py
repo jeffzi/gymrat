@@ -1,13 +1,11 @@
 """Tests for the colored comparison and measurement text reports.
 
-These port the ``renderReport`` and ``renderMeasureReport`` color cases from
-``text-color.test.ts``. The ``renderReport`` block pins how the assembled report
-paints its verdict rows, run and column headers, the verdict summary, the
-highlights block, and the verbose method footer and hint. The
-``renderMeasureReport`` block pins the measure report's header and tables. Where
-the TypeScript suite pinned column alignment by byte offset, the port keeps the
-offset check only where it proves cross-section alignment; content is pinned by
-parsed cell.
+These cover the colored comparison and measurement reports. The comparison
+block pins how the assembled report paints its verdict rows, run and column
+headers, the verdict summary, the highlights block, and the verbose method
+footer and hint. The measure block pins the measure report's header and tables.
+Column alignment is checked by byte offset only where that proves cross-section
+alignment; content is pinned by parsed cell.
 """
 
 from __future__ import annotations

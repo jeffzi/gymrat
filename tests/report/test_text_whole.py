@@ -1,14 +1,13 @@
 """Whole-report assembly and layout tests for the comparison report.
 
-These port ``text-whole.test.ts``. Its structural ``tableRegion`` / ``stylesAt``
-cases port directly. Its twelve ``toMatchFileSnapshot`` golden snapshots cannot
-byte-match the rich output, so each is re-pinned as a content/shape assertion:
-the table layout via :func:`table_region`, the assembled tail via the summary
-line(s), the highlights block, and the footer/worktree lines, plus ``styles_at``
-on the colored markers the snapshot fixed. Highlight entries are compared with their
-internal padding collapsed — that padding is pinned exactly by
-``test_text_verdicts`` — so these tests pin order and content without re-pinning
-column widths a second time.
+These cover whole-report assembly and layout. The structural table-region and
+styles-at cases are asserted directly. Golden snapshots cannot byte-match the
+rich output, so each is pinned as a content/shape assertion: the table layout
+via :func:`table_region`, the assembled tail via the summary line(s), the
+highlights block, and the footer/worktree lines, plus ``styles_at`` on the
+colored markers. Highlight entries are compared with their internal padding
+collapsed — that padding is pinned exactly by ``test_text_verdicts`` — so these
+tests pin order and content without re-pinning column widths a second time.
 """
 
 from __future__ import annotations

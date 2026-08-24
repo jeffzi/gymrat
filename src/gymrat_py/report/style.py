@@ -265,7 +265,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
       capture a terminal with color enabled.
     - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` reads the environment then TTY-ness, matching the oracle's
+    - ``color=None`` reads the environment then TTY-ness, with this
       precedence: ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces
       color on even when ``NO_COLOR`` is also set, ``NO_COLOR`` alone forces it
       off, and with neither a captured buffer is not a TTY, so the output is
@@ -312,7 +312,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
 def _force_color_env() -> bool:
     """Whether ``FORCE_COLOR`` in the environment asks for color, without mutating it.
 
-    Mirrors the oracle's precedence, where ``FORCE_COLOR`` wins over ``NO_COLOR``:
+    ``FORCE_COLOR`` wins over ``NO_COLOR`` when both are set:
     any value other than ``0``, ``false`` or the empty string enables color. Only
     the ``color=None`` branch consults this; an explicit choice never does.
     """

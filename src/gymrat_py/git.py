@@ -59,8 +59,9 @@ def run_git(args: Sequence[str], cwd: str) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        # Match Node's lossy Buffer→string utf-8 decode: invalid bytes in git
-        # output become replacement chars rather than raising UnicodeDecodeError.
+        # Paths, refs, and author names in git output can contain bytes that
+        # are not valid UTF-8; the classification and parsing that consumes
+        # this output needs a string to work with, not a crash.
         errors="replace",
         env=env,
     )

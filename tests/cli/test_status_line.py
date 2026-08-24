@@ -1,8 +1,8 @@
 """Tests for the content-agnostic status-line primitive.
 
-These port the ``createStatusLine`` behaviors: plain newline lines, in-place
-overwrite with clear/redraw on warn, the minimal spinner's first-write start,
-and the periodic tick callback.
+These cover ``create_status_line``: plain newline lines, in-place overwrite with
+clear/redraw on warn, the minimal spinner's first-write start, and the periodic
+tick callback.
 """
 
 import io

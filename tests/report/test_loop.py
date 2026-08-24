@@ -1,16 +1,15 @@
 """Tests for the loop report fragments.
 
-These port the ``formatLoopHeader``, ``formatVerdictBlock``, and ``deriveOutcome``
-describe blocks from the TypeScript ``loop.test.ts``. The header block pins the
-iteration wording and sample pluralization; the verdict block pins the line shape
-and the outcome word; ``deriveOutcome`` pins the full truth table, including the
-gating-regression override, direction-aware metric primaries, the exactly-zero
-cases, and the unmeasured-primary case.
+These cover the loop header, the verdict block, and outcome derivation. The
+header block pins the iteration wording and sample pluralization; the verdict
+block pins the line shape and the outcome word; outcome derivation pins the full
+truth table, including the gating-regression override, direction-aware metric
+primaries, the exactly-zero cases, and the unmeasured-primary case.
 
-Where the TypeScript suite pinned color as Node ANSI byte sequences, the port
-pins the same intent: the loop fragments return rich markup, and the color cases
-resolve that markup with ``render_lines(..., color=True)`` and read the SGR codes
-off it with ``styles_at``.
+Color is pinned by intent rather than by raw byte sequences: the loop fragments
+return rich markup, and the color cases resolve that markup with
+``render_lines(..., color=True)`` and read the SGR codes off it with
+``styles_at``.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Tests for progress-line rendering and the live ETA countdown.
 
-These port ``renderProgressLine`` (prepare vs sample, ETA suffix vs pending
+These cover ``render_progress_line`` (prepare vs sample, ETA suffix vs pending
 label) and the reporter's tick countdown that resets on each emit and
 disappears when an emit yields no ETA.
 """

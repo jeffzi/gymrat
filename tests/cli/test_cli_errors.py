@@ -1,8 +1,8 @@
 """Tests for CLI error rendering and the error-exit path.
 
-These port the ``formatCliError`` structure (red label, adapter class-name
-prefix, debug-only stack, hint, bug footer) and the ``exitWithError`` guarantee
-that a failing stderr write never changes the exit code.
+These cover the ``format_cli_error`` structure (red label, adapter class-name
+prefix, debug-only stack, hint, bug footer) and the ``exit_with_error``
+guarantee that a failing stderr write never changes the exit code.
 """
 
 import io

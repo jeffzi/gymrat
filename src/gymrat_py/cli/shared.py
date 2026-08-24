@@ -121,9 +121,8 @@ def color_override_of(color: bool) -> Literal[False] | None:  # noqa: FBT001 -- 
 def _resolve_stderr_color() -> bool:
     """Resolve whether stderr error output should carry color.
 
-    Mirror the ``styleText(process.stderr)`` precedence: an explicit
-    ``FORCE_COLOR`` wins over ``NO_COLOR``, which wins over the stream's own TTY
-    detection.
+    Precedence: an explicit ``FORCE_COLOR`` wins over ``NO_COLOR``, which wins
+    over the stream's own TTY detection.
     """
     if os.environ.get("FORCE_COLOR"):
         return True

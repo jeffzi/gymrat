@@ -1,8 +1,7 @@
 """Shared comparison/verdict builders for the report formatting tests.
 
-These port the fixtures ``format_test`` needs from the TypeScript
-``comparison-result`` fixture module plus the ``metricFor`` / ``approximateMetric``
-/ ``oneSidedMetric`` helpers that were defined inline in ``format.test.ts``.
+These provide the comparison-result fixtures the format tests need, plus the
+metric, approximate-metric, and one-sided-metric helpers those tests build on.
 
 The builders return the frozen dataclasses declared in
 :mod:`gymrat_py.report.types`, so a test writes one metric's shape once and lets

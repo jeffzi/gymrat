@@ -1,6 +1,6 @@
 """Tests for the verdict summary, highlights, gate trips and footers.
 
-These port ``text-verdicts.test.ts``: the one-line verdict tally below the table,
+These cover the one-line verdict tally below the table,
 the highlights block and its futility note, the ``--fail-on`` geomean gate-trip
 lines, the verbose method footer, and the worktree-cleanup footer. The report
 header and table are pinned by ``test_text`` and ``test_text_multi``; here the

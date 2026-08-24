@@ -1,14 +1,13 @@
 """Tests for the multi-candidate comparison text report.
 
-These port the table-focused cases from ``text-multi.test.ts``: the
-candidate-per-column table, its per-candidate aggregate cells, the sectioned
-layout shared with the single-candidate table, and how all of it is colored. The
-summary, highlight, and footer blocks that ``text-multi.test.ts`` also covers
-belong to the report-assembly task and are left out here.
+These cover the table-focused cases: the candidate-per-column table, its
+per-candidate aggregate cells, the sectioned layout shared with the
+single-candidate table, and how all of it is colored. The summary, highlight,
+and footer blocks belong to the report-assembly task and are left out here.
 
-Where the TypeScript suite asserted column alignment by byte offset, the port
-keeps the offset check, since the multi-candidate columns are laid out on a
-fixed-width grid whose separators must stack across sections.
+Column alignment is asserted by byte offset here, since the multi-candidate
+columns are laid out on a fixed-width grid whose separators must stack across
+sections.
 """
 
 from __future__ import annotations
