@@ -40,6 +40,7 @@ from gymrat_py.report.format import (
 )
 from gymrat_py.report.sections import spans_many_kinds
 from gymrat_py.report.style import (
+    RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint_label,
@@ -63,9 +64,6 @@ if TYPE_CHECKING:
         MetricComparisons,
     )
     from gymrat_py.targets import WorktreeRemovalFailure
-
-# A wide render width so no line soft-wraps.
-_RENDER_WIDTH = 200
 
 # The default presentation flags: detect color, no header override. Immutable, so
 # one shared instance is safe as a default argument.
@@ -94,7 +92,7 @@ def _join_header_parts(parts: list[str]) -> str:
 
 def _render_line(text: str, *, color: bool | None) -> str:
     """Resolve a markup line to text once, deferring wrapping so the line stays whole."""
-    return render_lines(Text.from_markup(text), color=color, width=_RENDER_WIDTH)
+    return render_lines(Text.from_markup(text), color=color, width=RENDER_WIDTH)
 
 
 def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[str]:
@@ -106,7 +104,7 @@ def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[st
     """
     if not markup_lines:
         return []
-    rendered = render_lines(*markup_lines, color=color, width=_RENDER_WIDTH)
+    rendered = render_lines(*markup_lines, color=color, width=RENDER_WIDTH)
     return rendered.split("\n")
 
 

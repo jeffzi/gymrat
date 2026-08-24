@@ -6,10 +6,12 @@ scope) plus the Python-specific color-resolution and capture-rendering tests.
 """
 
 import io
+import os
 
 import pytest
 from rich.markup import escape
 
+from gymrat_py.report.format import DisplayClass
 from gymrat_py.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
@@ -156,7 +158,7 @@ def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it
         pytest.param("inconclusive", "dim", id="inconclusive"),
     ],
 )
-def test_verdict_styles_maps_display_class_to_style(display_class: str, expected: str):
+def test_verdict_styles_maps_display_class_to_style(display_class: DisplayClass, expected: str):
     assert VERDICT_STYLES[display_class] == expected
 
 
@@ -340,8 +342,6 @@ def test_render_lines_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
 
-    import os
-
     render_lines("[red]hi[/red]", color=True, width=80)
 
     assert os.environ.get("NO_COLOR") == "1"
@@ -407,11 +407,9 @@ def test_make_capture_console_honors_color_and_captures_output(color: bool, has_
 # ---------------------------------------------------------------------------
 
 
-def test_report_package_reexports_public_style_names():
-    from gymrat_py import report
-    from gymrat_py.report import style
-
-    names = [
+@pytest.mark.parametrize(
+    "name",
+    [
         "shorten_label",
         "truncate_labels",
         "render_lines",
@@ -423,7 +421,10 @@ def test_report_package_reexports_public_style_names():
         "GROUP_LABEL_STYLE",
         "AGGREGATE_LABEL_STYLE",
         "LABEL_DISPLAY_WIDTH",
-    ]
+    ],
+)
+def test_report_package_reexports_public_style_name(name: str):
+    from gymrat_py import report
+    from gymrat_py.report import style
 
-    for name in names:
-        assert getattr(report, name) is getattr(style, name)
+    assert getattr(report, name) is getattr(style, name)

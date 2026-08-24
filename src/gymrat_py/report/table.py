@@ -45,7 +45,7 @@ from gymrat_py.report.sections import (
     informational_tag,
     section_label,
 )
-from gymrat_py.report.style import render_lines
+from gymrat_py.report.style import RENDER_WIDTH, markup, render_lines
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -72,9 +72,6 @@ CELL_GUTTER = "  "
 
 #: Indent a metric row carries under the group sub-header above it.
 GROUP_INDENT = "  "
-
-# A wide render width so the capture console never soft-wraps a table line.
-_RENDER_WIDTH = 200
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +181,16 @@ def band_field(band: str, width: int) -> str:
     return "" if band == "" else f"{PLUS_MINUS}{band.rjust(width)}"
 
 
+def _empty_band_cell(width: int) -> str:
+    """The blank a row with no band reserves where its column shows one: ``±`` plus figure width."""
+    return " " * (len(PLUS_MINUS) + width)
+
+
 def join_verdict_cell(parts: VerdictParts, widths: VerdictWidths) -> str:
     """A verdict cell, each field padded to the width its column settled on."""
     delta = parts.word if parts.word != "" else parts.delta.rjust(widths.delta)
     band = band_field(parts.band, widths.band)
-    band_cell = " " * (len(PLUS_MINUS) + widths.band) if band == "" and widths.band > 0 else band
+    band_cell = _empty_band_cell(widths.band) if band == "" and widths.band > 0 else band
     fields = [parts.glyph, delta, band_cell, parts.pairs]
     return CELL_GUTTER.join(field for field in fields if field != "").rstrip()
 
@@ -202,11 +204,6 @@ def indented_section_label(short_name: str, group: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Markup helpers
 # ---------------------------------------------------------------------------
-
-
-def markup(text: str, style: str) -> str:
-    """``text`` wrapped in a rich-markup span carrying ``style``, escaping the text."""
-    return f"[{style}]{escape(text)}[/]"
 
 
 def style_verdict_cell(
@@ -242,9 +239,7 @@ def style_verdict_cell(
         delta = f"{pad}{_wrap(parts.delta, delta_style)}" if parts.delta != "" else ""
     band = band_field(parts.band, widths.band)
     styled_band = _wrap(band, band_style)
-    band_cell = (
-        " " * (len(PLUS_MINUS) + widths.band) if band == "" and widths.band > 0 else styled_band
-    )
+    band_cell = _empty_band_cell(widths.band) if band == "" and widths.band > 0 else styled_band
     fields = [glyph, delta, band_cell, escape(parts.pairs)]
     plain_fields = [parts.glyph, parts.delta if parts.word == "" else parts.word, band, parts.pairs]
     return _join_styled(fields, plain_fields)
@@ -621,7 +616,7 @@ def render_body[Metric, Cell](
         table = _make_table(widths)
         for cells in batch:
             table.add_row(*cells)
-        out.extend(render_lines(table, color=color, width=_RENDER_WIDTH).split("\n"))
+        out.extend(render_lines(table, color=color, width=RENDER_WIDTH).split("\n"))
         batch.clear()
 
     for line in body:
@@ -637,7 +632,7 @@ def render_body[Metric, Cell](
             out.append(_horizontal(widths, "┬"))
         elif isinstance(line, TitleLine):
             out.extend(
-                render_lines(Text.from_markup(line.text), color=color, width=_RENDER_WIDTH).split(
+                render_lines(Text.from_markup(line.text), color=color, width=RENDER_WIDTH).split(
                     "\n"
                 )
             )

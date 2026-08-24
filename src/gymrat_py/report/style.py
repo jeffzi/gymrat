@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 
     from rich.console import RenderableType
 
+    from gymrat_py.report.format import DisplayClass
+
 # ---------------------------------------------------------------------------
 # Label truncation
 # ---------------------------------------------------------------------------
@@ -166,9 +168,8 @@ def truncate_labels(labels: Sequence[str]) -> list[str]:
 #: Every style here is worn by the verdict itself — a glyph, a delta, a tally —
 #: never by the row or the values around it: within-noise and inconclusive recede
 #: to dim, identical reads cyan for "measured the same", and unstable keeps its
-#: amber warning. Keyed by display-class name until the ``DisplayClass`` type
-#: lands in a later task.
-VERDICT_STYLES: dict[str, str] = {
+#: amber warning.
+VERDICT_STYLES: dict[DisplayClass, str] = {
     "improved": "green",
     "regressed": "red",
     "unstable": "yellow",
@@ -194,6 +195,15 @@ _HINT_COLON_STYLE = "yellow"
 
 # A backtick-wrapped inline code span; the capture group is its content.
 _INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
+
+
+def markup(text: str, style: str) -> str:
+    """Wrap ``text`` in a rich-markup span carrying ``style``, escaping the text.
+
+    The single markup primitive the report package styles a run of plain text
+    with; :func:`render_lines` resolves the span to ANSI (or strips it) once.
+    """
+    return f"[{style}]{escape(text)}[/]"
 
 
 def format_hint_label() -> str:
@@ -241,6 +251,10 @@ def highlight_inline_code(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Color resolution and capture rendering
 # ---------------------------------------------------------------------------
+
+#: A render width wide enough that a captured line never soft-wraps, whatever the
+#: real terminal is. Every report block and table renders against it.
+RENDER_WIDTH = 200
 
 
 def make_capture_console(*, color: bool | None, width: int) -> Console:

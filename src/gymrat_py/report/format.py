@@ -16,8 +16,6 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, assert_never
 
-from rich.markup import escape
-
 from gymrat_py.model import (
     BAND_DESCRIPTOR,
     SIGNED_RANK_DESCRIPTOR,
@@ -26,7 +24,7 @@ from gymrat_py.model import (
     MetricUnit,
     MetricVerdict,
 )
-from gymrat_py.report.style import VERDICT_STYLES
+from gymrat_py.report.style import VERDICT_STYLES, markup
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -37,11 +35,6 @@ if TYPE_CHECKING:
 MIN_WILCOXON_N = SIGNED_RANK_DESCRIPTOR.min_n
 #: Minimum pairs the band method needs to measure a spread at all.
 MIN_BAND_N = BAND_DESCRIPTOR.min_n
-
-
-def _style(text: str, style: str) -> str:
-    """Wrap ``text`` in a rich-markup span carrying ``style``, escaping the text."""
-    return f"[{style}]{escape(text)}[/]"
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +793,7 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
         padded = str(count).rjust(max_width)
         text = f"{get_glyph(shown)} {padded} {VERDICT_GLOSSES[shown]}"
         style = "dim" if count == 0 else VERDICT_STYLES[shown]
-        parts.append(_style(text, style))
+        parts.append(markup(text, style))
     return parts
 
 
@@ -880,19 +873,19 @@ def _method_lines(data: _FooterData) -> list[str]:
             f"({format_pair_count(min(data.signed_rank))} ≥ {MIN_WILCOXON_N}) "
             f"· ~ = no signal at α=0.05"
         )
-        lines.append(_style(desc, "dim"))
+        lines.append(markup(desc, "dim"))
     if data.shortage:
         desc = (
             f"{_BAND_METHOD} — {format_pair_count(max(data.shortage))} "
             f"below signed-rank floor ({MIN_WILCOXON_N} pairs)"
         )
-        lines.append(_style(desc, "dim"))
+        lines.append(markup(desc, "dim"))
     if data.ties:
         desc = (
             f"{_BAND_METHOD} — ties left {format_pair_count(min(data.ties))} "
             f"usable pairs ({MIN_WILCOXON_N} needed)"
         )
-        lines.append(_style(desc, "dim"))
+        lines.append(markup(desc, "dim"))
     return lines
 
 
