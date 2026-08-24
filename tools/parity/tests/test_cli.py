@@ -15,6 +15,9 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat_py.errors import GymratError
+from gymrat_py.session.paths import session_jsonl_path
+from gymrat_py.session.records import BaselineRecord
+from gymrat_py.session.store import append_record
 from tools.parity import cli
 from tools.parity.cli import app
 from tools.parity.fixtures import fixture_matrix
@@ -47,11 +50,20 @@ class _FakeRunner:
 
 
 def test_self_diff_when_run_over_full_matrix_does_report_green(requires_oracle: None):
-    result = _runner.invoke(app, ["self-diff"])
+    # measure_record_missing_session deliberately fails on both sides (no open
+    # session), so it is a compare-only fixture; self-diff, which requires a
+    # zero-exit document from each run, exercises every other fixture.
+    names = [
+        fixture.name
+        for fixture in fixture_matrix()
+        if fixture.name != "measure_record_missing_session"
+    ]
+
+    result = _runner.invoke(app, ["self-diff", *names])
 
     assert result.exit_code == 0, result.stdout
-    for fixture in fixture_matrix():
-        assert fixture.name in result.stdout
+    for name in names:
+        assert name in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -247,3 +259,144 @@ def test_compare_when_exit_codes_differ_does_exit_one_and_flag_the_mismatch(
 
     assert result.exit_code == 1
     assert "exit" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# record fixtures — matrix registration and cross-implementation log round-trip
+# ---------------------------------------------------------------------------
+
+
+_MEASURE_DOC = json.dumps({"schemaVersion": 1, "label": "target", "samples": 3})
+_MATCHING_SAMPLES: tuple[dict[str, float | int], ...] = (
+    {"latency/time": 100.0},
+    {"latency/time": 101.0},
+)
+
+
+class _RecordingRunner:
+    """Runner that appends a baseline record on each ``--record`` run.
+
+    ``exit_codes`` is indexed by call number and its last element repeats, so a
+    test can make the oracle's later invocation (the Python->TS reread) fail while
+    its first run succeeds. A record is appended only on a successful ``--record``
+    run, into ``session_jsonl_path(cwd)`` so oracle and port write to the shared
+    root the harness set up.
+    """
+
+    def __init__(
+        self,
+        payload: str,
+        samples: tuple[dict[str, float | int], ...],
+        exit_codes: Sequence[int] = (0,),
+    ) -> None:
+        self._payload = payload
+        self._samples = samples
+        self._exit_codes = list(exit_codes)
+        self.calls: list[tuple[list[str], Path]] = []
+
+    def run(self, args: Sequence[str], cwd: Path) -> RunResult:
+        index = len(self.calls)
+        self.calls.append((list(args), cwd))
+        exit_code = self._exit_codes[min(index, len(self._exit_codes) - 1)]
+        if exit_code == 0 and "--record" in args:
+            record = BaselineRecord(
+                type="baseline",
+                at="2026-08-08T14:15:31.000Z",
+                label="target",
+                samples=self._samples,
+            )
+            append_record(session_jsonl_path(str(cwd)), record)
+        return RunResult(exit_code=exit_code, stdout=self._payload, stderr="")
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_records"),
+    [("measure_record", True), ("measure_record_missing_session", False)],
+)
+def test_fixture_matrix_when_built_does_register_record_fixtures(name: str, expected_records: bool):
+    matrix = {fixture.name: fixture for fixture in fixture_matrix()}
+
+    fixture = matrix[name]
+
+    assert fixture.records is expected_records
+
+
+def test_compare_when_record_logs_match_does_exit_zero_and_name_the_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        cli, "_build_oracle_runner", lambda: _RecordingRunner(_MEASURE_DOC, _MATCHING_SAMPLES)
+    )
+    monkeypatch.setattr(
+        cli, "_build_port_runner", lambda: _RecordingRunner(_MEASURE_DOC, _MATCHING_SAMPLES)
+    )
+
+    result = _runner.invoke(app, ["compare", "measure_record"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "measure_record" in result.stdout
+
+
+def test_compare_when_record_samples_differ_does_exit_one_and_name_record_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    oracle_samples: tuple[dict[str, float | int], ...] = (
+        {"latency/time": 100.0},
+        {"latency/time": 101.0},
+    )
+    port_samples: tuple[dict[str, float | int], ...] = (
+        {"latency/time": 100.0},
+        {"latency/time": 999.0},
+    )
+    monkeypatch.setattr(
+        cli, "_build_oracle_runner", lambda: _RecordingRunner(_MEASURE_DOC, oracle_samples)
+    )
+    monkeypatch.setattr(
+        cli, "_build_port_runner", lambda: _RecordingRunner(_MEASURE_DOC, port_samples)
+    )
+
+    result = _runner.invoke(app, ["compare", "measure_record"])
+
+    assert result.exit_code == 1
+    assert "session_log.record." in result.stdout
+
+
+def test_compare_when_oracle_reread_fails_does_exit_one_and_name_reread_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        cli,
+        "_build_oracle_runner",
+        lambda: _RecordingRunner(_MEASURE_DOC, _MATCHING_SAMPLES, exit_codes=(0, 1)),
+    )
+    monkeypatch.setattr(
+        cli, "_build_port_runner", lambda: _RecordingRunner(_MEASURE_DOC, _MATCHING_SAMPLES)
+    )
+
+    result = _runner.invoke(app, ["compare", "measure_record"])
+
+    assert result.exit_code == 1
+    assert "session_log.oracle_reread_exit" in result.stdout
+
+
+def test_compare_when_missing_session_fixture_fails_both_sides_does_exit_zero(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payload = json.dumps({"error": "no open session"})
+    monkeypatch.setattr(cli, "_build_oracle_runner", lambda: _StubRunner(payload, exit_code=2))
+    monkeypatch.setattr(cli, "_build_port_runner", lambda: _StubRunner(payload, exit_code=2))
+
+    result = _runner.invoke(app, ["compare", "measure_record_missing_session"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "measure_record_missing_session" in result.stdout
+
+
+def test_self_diff_when_run_over_record_fixture_does_stay_green(monkeypatch: pytest.MonkeyPatch):
+    fake = _RecordingRunner(_MEASURE_DOC, _MATCHING_SAMPLES)
+    monkeypatch.setattr(cli, "_build_oracle_runner", lambda: fake)
+
+    result = _runner.invoke(app, ["self-diff", "measure_record"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "measure_record" in result.stdout

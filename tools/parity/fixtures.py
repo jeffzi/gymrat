@@ -249,12 +249,17 @@ class Fixture:
         argv: Reference-CLI arguments; the run's cwd is the root directory.
         schema_version: Expected ``schemaVersion`` of the returned JSON document
             (2 for ``compare``, 1 for ``measure``).
+        records: When true, the fixture drives ``measure --record`` against an
+            open session, and the harness additionally verifies the session log
+            each side wrote (a cross-implementation round-trip). Plain fixtures
+            leave it false and are compared on stdout and exit code alone.
     """
 
     name: str
     build: Callable[[Path], None]
     argv: Sequence[str]
     schema_version: int
+    records: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +286,49 @@ def _build_metric_lines_compare_band(root: Path) -> None:
 
 
 def _build_metric_lines_measure(root: Path) -> None:
+    create_scratch_repo(root)
+    _metric_target(root, "target", {"latency/time": 100, "mem/heap": 200, "count": 5})
+
+
+# A minimal, valid open-session header (camelCase, TS session schema). The record
+# fixtures seed it by hand rather than through the port's writer so the fixture
+# stays independent of the code under test; both the reference binary and the
+# port then append baseline records to this open log.
+_SESSION_HEADER: dict[str, object] = {
+    "type": "session",
+    "schemaVersion": 1,
+    "sessionId": "20260808-141530-a3f2",
+    "createdAt": "2026-08-08T14:15:30.000Z",
+    "baseline": {"ref": "main", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "branch": "gymrat/20260808-141530-a3f2",
+    "worktrees": {
+        "experiment": ".gymrat/worktrees/experiment",
+        "baseline": ".gymrat/worktrees/baseline",
+    },
+    "config": {
+        "bench": "sh bench.sh",
+        "adapter": "metric-lines",
+        "samples": 3,
+        "timeoutSeconds": 1800,
+        "primary": "geomean",
+    },
+}
+
+
+def _seed_open_session(root: Path) -> None:
+    """Write a single session-header line into ``root``'s fresh session log."""
+    session_dir = root / ".gymrat"
+    session_dir.mkdir()
+    (session_dir / "session.jsonl").write_text(json.dumps(_SESSION_HEADER) + "\n")
+
+
+def _build_measure_record(root: Path) -> None:
+    create_scratch_repo(root)
+    _metric_target(root, "target", {"latency/time": 100, "mem/heap": 200, "count": 5})
+    _seed_open_session(root)
+
+
+def _build_measure_record_missing_session(root: Path) -> None:
     create_scratch_repo(root)
     _metric_target(root, "target", {"latency/time": 100, "mem/heap": 200, "count": 5})
 
@@ -360,6 +408,19 @@ _STD_COMPARE_ARGV = (
     "compare",
     "base",
     "cand",
+    "--bench",
+    "sh bench.sh",
+    "--samples",
+    "3",
+    *_JSON_FLAGS,
+)
+
+# Shared argv for the record fixtures: measure the target with --record so each
+# side appends a baseline record to the open session log.
+_RECORD_ARGV = (
+    "measure",
+    "target",
+    "--record",
     "--bench",
     "sh bench.sh",
     "--samples",
@@ -501,5 +562,21 @@ def fixture_matrix() -> tuple[Fixture, ...]:
                 *_JSON_FLAGS,
             ),
             schema_version=1,
+        ),
+        # Record fixtures live at the end so the hermetic slice tests, which take
+        # ``fixture_matrix()[:2]`` and ``[0]``, never select them.
+        Fixture(
+            name="measure_record",
+            build=_build_measure_record,
+            argv=_RECORD_ARGV,
+            schema_version=1,
+            records=True,
+        ),
+        Fixture(
+            name="measure_record_missing_session",
+            build=_build_measure_record_missing_session,
+            argv=_RECORD_ARGV,
+            schema_version=1,
+            records=False,
         ),
     )

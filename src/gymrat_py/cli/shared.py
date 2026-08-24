@@ -348,7 +348,9 @@ class CompareFlags(SharedFlags):
 
 @dataclass(frozen=True, slots=True)
 class MeasureFlags(SharedFlags):
-    """The measure command's flags: the shared set, with no extra fields."""
+    """The measure command's flags: the shared set plus whether to record the run."""
+
+    record: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +403,10 @@ NoColorOption = Annotated[
 ]
 FormatOption = Annotated[OutputFormat, typer.Option("--format", help="output format")]
 DebugOption = Annotated[bool, typer.Option("--debug", "-d", help="show stack traces on errors")]
+RecordOption = Annotated[
+    bool,
+    typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
+]
 
 
 # ---------------------------------------------------------------------------

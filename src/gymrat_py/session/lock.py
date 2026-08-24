@@ -15,11 +15,11 @@ import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 from gymrat_py.errors import GymratError, message_of
+from gymrat_py.session.clock import now_iso
 
 # Largest pid a liveness probe can be asked about: signalling rejects anything
 # past int32, and 0/negative address process groups rather than a process.
@@ -443,12 +443,6 @@ def attempt_acquire(lock_path: str, record: str) -> _AttemptOutcome:
     return steal_lock(lock_path, state.identity, record, state.holder.pid)
 
 
-def _now_iso() -> str:
-    """The current UTC time as ISO-8601 with millisecond precision and a ``Z`` suffix."""
-    now = datetime.now(UTC)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
-
-
 def _make_release(lock_path: str, identity: LockIdentity) -> ReleaseLock:
     """Build a release handle that removes only the file this run published."""
 
@@ -482,7 +476,7 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
             refused by the claim of a takeover that never finished.
     """
     pid = os.getpid()
-    record = json.dumps({"pid": pid, "command": command, "at": _now_iso()})
+    record = json.dumps({"pid": pid, "command": command, "at": now_iso()})
 
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
