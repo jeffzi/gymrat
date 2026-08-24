@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-24
+
+### Added
+
+- A `--record` (`-r`) flag for `gymrat measure` that appends the run to a per-repository session log
+  as a labeled baseline, capturing each round's raw samples. Recording requires an open session; a
+  missing or already-finalized session, or a run outside a git repository, stops the command before
+  it benchmarks so a long run is never discarded with nowhere to record it.
+
 ## [0.8.0] - 2026-08-24
 
 ### Added
@@ -136,7 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured errors for every gymrat failure: each derives from `GymratError` and can carry a
   `hint`; failed subprocesses raise `CommandError`.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jeffzi/gymrat-py/compare/v0.5.0...v0.6.0
