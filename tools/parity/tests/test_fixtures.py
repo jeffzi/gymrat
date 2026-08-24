@@ -9,6 +9,7 @@ import pytest
 from tools.parity.fixtures import (
     Fixture,
     create_scratch_repo,
+    create_two_ref_repo,
     fixture_matrix,
     write_config,
     write_counter_emitter,
@@ -27,6 +28,8 @@ _EXPECTED_FIXTURE_NAMES = {
     "zero_diff_compare",
     "nan_delta_compare",
     "one_sided_metric_compare",
+    "ref_compare",
+    "ref_measure",
 }
 
 
@@ -80,6 +83,26 @@ def test_create_scratch_repo_when_run_does_reproduce_the_pinned_recipe(tmp_path:
     assert _git(tmp_path, "rev-list", "--count", "HEAD") == "1"
     assert _git(tmp_path, "ls-files") == "README.md"
     assert (tmp_path / "README.md").read_text() == "# Test Repo\n"
+
+
+# ---------------------------------------------------------------------------
+# create_two_ref_repo
+# ---------------------------------------------------------------------------
+
+
+def test_create_two_ref_repo_when_built_does_bench_each_ref_with_its_own_metrics(tmp_path: Path):
+    create_two_ref_repo(
+        tmp_path,
+        main_metrics={"latency/time": 100.0},
+        feature_metrics={"latency/time": 80.0},
+    )
+
+    assert _git(tmp_path, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+    assert _git(tmp_path, "rev-parse", "main") != _git(tmp_path, "rev-parse", "feature")
+    feature_tree = tmp_path.parent / f"{tmp_path.name}-feature"
+    _git(tmp_path, "worktree", "add", "-q", str(feature_tree), "feature")
+    assert _parse_metric_lines(_run_sh(tmp_path, "bench.sh")) == {"latency/time": 100.0}
+    assert _parse_metric_lines(_run_sh(feature_tree, "bench.sh")) == {"latency/time": 80.0}
 
 
 # ---------------------------------------------------------------------------

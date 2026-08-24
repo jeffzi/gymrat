@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import json
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
-from gymrat_py.model import BandVerdict, SignedRankVerdict
+from gymrat_py.model import BandVerdict, ExactVerdict, SignedRankVerdict
 from gymrat_py.report.format import count_verdicts
 from gymrat_py.report.types import CandidateMetric
 from gymrat_py.verdict import infer_group
@@ -139,12 +139,17 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     noise_pct: float | None = None
     p: float | None = None
     band: float | None = None
-    if isinstance(verdict, SignedRankVerdict):
-        noise_pct = verdict.noise_pct
-        p = verdict.p
-    elif isinstance(verdict, BandVerdict):
-        noise_pct = verdict.noise_pct
-        band = verdict.noise_pct
+    match verdict:
+        case SignedRankVerdict():
+            noise_pct = verdict.noise_pct
+            p = verdict.p
+        case BandVerdict():
+            noise_pct = verdict.noise_pct
+            band = verdict.noise_pct
+        case ExactVerdict():
+            pass
+        case _ as unreachable:  # pragma: no cover
+            assert_never(unreachable)
     return {
         "verdict": verdict.verdict,
         "method": verdict.method,

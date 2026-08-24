@@ -13,16 +13,29 @@ with the same formatted diagnosis.
 
 import asyncio
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from gymrat_py.adapters.types import Adapter, WarnSink
-from gymrat_py.errors import CommandError
+from gymrat_py.config import KindEntry, MetricEntry, resolve_metric_meta
+from gymrat_py.errors import CommandError, GymratError, hint_of, message_of
 from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat_py.exec import exec as exec  # noqa: A004, PLC0414
+from gymrat_py.model import ResolvedMetricMeta
+from gymrat_py.report.text import format_cleanup_failures
+from gymrat_py.signals import install_termination_cleanup
 from gymrat_py.stats.descriptive import compute_half_range, compute_median
-from gymrat_py.targets import RefTarget, Target
+from gymrat_py.targets import (
+    CleanupResult,
+    RefTarget,
+    Target,
+    WorktreeInfo,
+    cleanup_worktrees,
+    materialize_worktree,
+    plan_worktree,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +66,21 @@ class SampleProgressStep:
 
 type ProgressStep = PrepareProgressStep | SampleProgressStep
 """A step the sampler is starting, reported to a progress callback."""
+
+
+@dataclass(frozen=True, slots=True)
+class TargetSpec:
+    """One target a comparison or measurement names, before resolution.
+
+    Attributes:
+        label: An explicit display label, or ``None`` to derive one from the
+            resolved target (a ref's name or a directory's basename).
+        target: A git ref (resolved to a throwaway worktree) or a filesystem
+            directory path (benched in place).
+    """
+
+    label: str | None
+    target: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +132,39 @@ class SamplingOptions:
     prepare: str | None
     samples: int
     timeout_seconds: float
+    on_progress: Callable[[ProgressStep], None] | None = None
+    warn: WarnSink | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunOptions:
+    """The run settings a comparison and a measurement both take.
+
+    Beyond the sampling fields :class:`SamplingOptions` reads, this adds the
+    three inputs a caller needs to turn raw samples into a report: which adapter
+    parses the bench output, and the per-metric and per-kind config overrides
+    that settle each metric's metadata.
+
+    Attributes:
+        bench: The command run once per target per round.
+        prepare: A command run once per target before sampling, or ``None``.
+        adapter: Which output format ``bench`` writes, by adapter name.
+        samples: The number of rounds.
+        timeout_seconds: Per-command wall-clock budget, in seconds.
+        config_metrics: Per-metric overrides from config, or ``None``.
+        config_kinds: Per-kind overrides from config, or ``None``.
+        on_progress: Called at the start of each step, or ``None`` for silence.
+        warn: Where an adapter sends complaints about unreadable output, or
+            ``None`` to use the adapter's own default.
+    """
+
+    bench: str
+    prepare: str | None
+    adapter: str
+    samples: int
+    timeout_seconds: float
+    config_metrics: dict[str, MetricEntry] | None
+    config_kinds: dict[str, KindEntry] | None
     on_progress: Callable[[ProgressStep], None] | None = None
     warn: WarnSink | None = None
 
@@ -412,3 +473,157 @@ def paired_or_own_values(
     if paired:
         return list(paired)
     return own_values(samples, name)
+
+
+def resolve_metric_meta_from_samples(
+    sample_sets: Sequence[list[dict[str, float]]],
+    config_metrics: dict[str, MetricEntry] | None,
+    adapter: Adapter,
+    config_kinds: dict[str, KindEntry] | None = None,
+) -> dict[str, ResolvedMetricMeta]:
+    """Collect every metric name across the sample sets and resolve its metadata.
+
+    The union of names is taken in first-appearance order across the flattened
+    samples, so the resolved metadata — and every report drawn from it — reads in
+    the order the run first reported each metric.
+
+    Args:
+        sample_sets: One list of per-round metric records per target.
+        config_metrics: Per-metric overrides from config, or ``None``.
+        adapter: The adapter whose defaults seed each metric's metadata.
+        config_kinds: Per-kind overrides from config, or ``None``.
+
+    Returns:
+        The resolved metadata for each metric, keyed by metric name.
+
+    Raises:
+        GymratError: No sample set reported any metric. Adapters reject empty
+            output themselves, so this guards the otherwise-unreachable case.
+    """
+    names = dict.fromkeys(name for samples in sample_sets for sample in samples for name in sample)
+    if not names:
+        message = "No metrics found in benchmark output"
+        raise GymratError(message)
+
+    return resolve_metric_meta(list(names), config_metrics, adapter, config_kinds)
+
+
+def resolve_dir(target: Target, repo_dir: str, worktrees: list[WorktreeInfo]) -> str:
+    """The directory a target runs in, materializing a worktree for a ref.
+
+    A ref is benchmarked from its own worktree. The planned worktree is appended
+    to ``worktrees`` before ``git worktree add`` runs, so a caller sweeping the
+    registry on termination can remove a directory a killed add left behind.
+
+    Args:
+        target: The target to locate.
+        repo_dir: The repository the worktree is added from.
+        worktrees: The live registry of claimed worktrees, appended to in place.
+
+    Returns:
+        The directory the benchmark runs in.
+    """
+    if isinstance(target, RefTarget):
+        worktree = plan_worktree(target)
+        worktrees.append(worktree)
+        materialize_worktree(worktree, repo_dir)
+        return worktree.dir
+    return target.dir
+
+
+def resolve_label(explicit: str | None, target: Target) -> str:
+    """The display label for a target.
+
+    Args:
+        explicit: A caller-supplied label, or ``None`` to derive one.
+        target: The target a label is derived from when ``explicit`` is ``None``.
+
+    Returns:
+        ``explicit`` when given, else a ref's name, else an in-place target's
+        directory basename.
+    """
+    if explicit is not None:
+        return explicit
+    if isinstance(target, RefTarget):
+        return target.ref
+    return Path(target.dir).name
+
+
+async def run_with_worktrees[M, R](
+    phase: Callable[[str, list[WorktreeInfo], asyncio.Event], Awaitable[M]],
+    build_result: Callable[[M, CleanupResult], R],
+) -> R:
+    """Run a phase that may claim worktrees, sweeping them on every exit path.
+
+    A termination cleanup is installed before any worktree exists, so a signal
+    arriving mid-run still sweeps whatever was claimed; that cleanup aborts the
+    run and sweeps. The normal path sweeps exactly once whether the phase returns
+    or raises. When the sweep leaves worktrees behind, the phase's error is
+    re-raised wrapped with the cleanup diagnostics.
+
+    Args:
+        phase: The work to run. It receives the repository directory, the
+            registry it appends claimed worktrees to, and an abort event a
+            termination signal sets.
+        build_result: Combines the phase's measurement with the cleanup outcome
+            into the return value.
+
+    Returns:
+        The value ``build_result`` produced from the measurement and cleanup.
+    """
+    repo_dir = str(Path.cwd())
+    worktrees: list[WorktreeInfo] = []
+    abort = asyncio.Event()
+
+    def terminate() -> None:
+        abort.set()
+        cleanup_worktrees(worktrees, repo_dir)
+
+    uninstall = install_termination_cleanup(terminate)
+    try:
+        try:
+            measurement = await phase(repo_dir, worktrees, abort)
+        except Exception as error:
+            cleanup = cleanup_worktrees(worktrees, repo_dir)
+            wrapped = _with_cleanup_failures(error, cleanup)
+            if wrapped is error:
+                raise
+            raise wrapped from error
+        cleanup = cleanup_worktrees(worktrees, repo_dir)
+        return build_result(measurement, cleanup)
+    finally:
+        uninstall()
+
+
+def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exception:
+    """Fold cleanup diagnostics into ``error``, preserving its subclass and hint.
+
+    Returns ``error`` unchanged when the sweep was clean. Otherwise returns a new
+    exception of the same type carrying the original message plus the cleanup
+    diagnostics, with ``error`` chained as its cause.
+
+    ``type(error)(...)`` reconstructs the exact subclass — a
+    :class:`~gymrat_py.errors.CommandError` stays a ``CommandError`` and an
+    ``AdapterError`` stays an ``AdapterError`` — because every
+    :class:`~gymrat_py.errors.GymratError` shares the ``(message, *, hint)``
+    signature. A non-gymrat error has no hint and becomes a plain ``Exception``.
+
+    Args:
+        error: The error the phase raised.
+        cleanup: The outcome of the worktree sweep.
+
+    Returns:
+        ``error`` when the sweep left nothing behind, else a same-typed
+        replacement whose message appends the cleanup diagnostics.
+    """
+    details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
+    if not details:
+        return error
+
+    combined = "\n".join([message_of(error), "", "cleanup did not finish:", *details])
+    if isinstance(error, GymratError):
+        wrapped: Exception = type(error)(combined, hint=hint_of(error))
+    else:
+        wrapped = Exception(combined)
+    wrapped.__cause__ = error
+    return wrapped

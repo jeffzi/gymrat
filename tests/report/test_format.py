@@ -1,11 +1,10 @@
 """Tests for the report formatting and classification primitives.
 
-These port ``format.test.ts``. Where the TypeScript suite pinned Node's exact
-``styleText`` escape bytes, the port asserts the *intent* instead: it renders the
-markup string through :func:`gymrat_py.report.style.render_lines` with color off
-to check the plain content, and with color on to check that the expected SGR
-attribute code is present. Where the TypeScript ``formatDelta`` took a bare
-number, the port wraps it in an :class:`~gymrat_py.model.Effect`.
+These tests assert the *intent* of styling rather than exact escape bytes: they
+render the markup string through :func:`gymrat_py.report.style.render_lines`
+with color off to check the plain content, and with color on to check that the
+expected SGR attribute code is present. ``format_delta`` takes an
+:class:`~gymrat_py.model.Effect` rather than a bare number.
 """
 
 from __future__ import annotations
@@ -147,7 +146,7 @@ def test_format_value_when_no_unit_does_round_to_int(value: float, expected: str
         pytest.param(float("nan"), "ns", "NaN", id="not-a-number"),
     ],
 )
-def test_format_value_when_non_finite_does_use_oracle_token(
+def test_format_value_when_non_finite_does_use_sentinel_token(
     value: float, unit: MetricUnit, expected: str
 ):
     assert format_value(value, unit) == expected
@@ -749,7 +748,15 @@ def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint(
 # ---------------------------------------------------------------------------
 
 
-def test_report_options_carries_an_optional_color_override():
-    assert ReportOptions().color is None
-    assert ReportOptions(color=True).color is True
-    assert ReportOptions(color=False).color is False
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        pytest.param(ReportOptions(), None, id="default-defers"),
+        pytest.param(ReportOptions(color=True), True, id="forced-on"),
+        pytest.param(ReportOptions(color=False), False, id="forced-off"),
+    ],
+)
+def test_report_options_carries_an_optional_color_override(
+    options: ReportOptions, expected: bool | None
+):
+    assert options.color is expected

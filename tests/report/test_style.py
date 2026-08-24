@@ -1,15 +1,17 @@
 """Tests for the report style/color primitives.
 
-These port the surviving cases from the TypeScript ``format-style`` test suite
-(code-point splitting only — the grapheme-cluster/ZWJ-emoji cases are out of
-scope) plus the Python-specific color-resolution and capture-rendering tests.
+These cover the style/color primitives (code-point splitting only — the
+grapheme-cluster/ZWJ-emoji cases are out of scope) plus the color-resolution and
+capture-rendering tests.
 """
 
 import io
+import os
 
 import pytest
 from rich.markup import escape
 
+from gymrat_py.report.format import DisplayClass
 from gymrat_py.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
@@ -29,7 +31,7 @@ def _sgr_params(text: str) -> str:
     """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"4;33"``).
 
     Used to assert which attributes a styled span carries without pinning the
-    exact escape bytes rich emits (which differ from Node's styleText).
+    exact escape bytes rich emits.
     """
     start = text.rindex("\x1b[")
     end = text.index("m", start)
@@ -156,7 +158,7 @@ def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it
         pytest.param("inconclusive", "dim", id="inconclusive"),
     ],
 )
-def test_verdict_styles_maps_display_class_to_style(display_class: str, expected: str):
+def test_verdict_styles_maps_display_class_to_style(display_class: DisplayClass, expected: str):
     assert VERDICT_STYLES[display_class] == expected
 
 
@@ -185,9 +187,9 @@ def test_format_hint_label_when_colored_does_underline_hint_but_not_colon():
     styled = render_lines(format_hint_label(), color=True, width=80)
 
     # Assert the *intent* (underline reaches the word but stops before the
-    # colon), not literal Node styleText bytes: rich renders each styled span as
-    # a combined SGR (e.g. "\x1b[4;33m") followed by a full reset, and never
-    # emits the incremental underline-off "\x1b[24m" that Node's styleText does.
+    # colon), not literal escape bytes: rich renders each styled span as a
+    # combined SGR (e.g. "\x1b[4;33m") followed by a full reset, and never emits
+    # an incremental underline-off "\x1b[24m".
     assert "\x1b[" in styled
     assert "4" in _sgr_params(styled[: styled.index("Hint")])  # underline on the word
     assert "4" not in _sgr_params(styled[: styled.index(":")])  # colon colored, not underlined
@@ -316,7 +318,7 @@ def test_render_lines_when_color_none_and_force_color_env_does_emit_ansi(
 def test_render_lines_when_color_none_and_both_env_set_does_let_force_color_win(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # Parity with the oracle: FORCE_COLOR beats NO_COLOR when both are set.
+    # FORCE_COLOR beats NO_COLOR when both are set.
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setenv("NO_COLOR", "1")
 
@@ -339,8 +341,6 @@ def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain(
 def test_render_lines_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
-
-    import os
 
     render_lines("[red]hi[/red]", color=True, width=80)
 
@@ -407,11 +407,9 @@ def test_make_capture_console_honors_color_and_captures_output(color: bool, has_
 # ---------------------------------------------------------------------------
 
 
-def test_report_package_reexports_public_style_names():
-    from gymrat_py import report
-    from gymrat_py.report import style
-
-    names = [
+@pytest.mark.parametrize(
+    "name",
+    [
         "shorten_label",
         "truncate_labels",
         "render_lines",
@@ -423,7 +421,10 @@ def test_report_package_reexports_public_style_names():
         "GROUP_LABEL_STYLE",
         "AGGREGATE_LABEL_STYLE",
         "LABEL_DISPLAY_WIDTH",
-    ]
+    ],
+)
+def test_report_package_reexports_public_style_name(name: str):
+    from gymrat_py import report
+    from gymrat_py.report import style
 
-    for name in names:
-        assert getattr(report, name) is getattr(style, name)
+    assert getattr(report, name) is getattr(style, name)

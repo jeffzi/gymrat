@@ -1,7 +1,7 @@
 """Tests for the JSON report document builders.
 
-Ported from the TypeScript ``json.test.ts`` suite: the compare document
-(``render_json``) and the measure document (``render_measure_json``), including
+These cover the compare document (``render_json``) and the measure document
+(``render_measure_json``), including
 their schema shapes, per-metric and per-candidate serialization, worktree
 sections, non-finite handling, and the no-ANSI guarantee under forced color.
 """

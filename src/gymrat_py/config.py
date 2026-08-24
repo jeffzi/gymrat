@@ -16,7 +16,6 @@ attributes. Validation error paths always name the camelCase key the user wrote.
 import json
 import os
 import stat
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -34,6 +33,7 @@ from gymrat_py.model import (
     Direction,
     ResolvedMetricMeta,
 )
+from gymrat_py.session.paths import repo_root
 
 MAX_TIMEOUT_SECONDS = 2_147_483
 """Largest ``timeoutSeconds`` a 32-bit millisecond timer can represent."""
@@ -727,15 +727,9 @@ def find_implicit_base() -> str:
     unavailable -- the lookup falls back to the process cwd.
     """
     try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
+        return repo_root()
+    except GymratError:
         return str(Path.cwd())
-    return completed.stdout.strip()
 
 
 def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:

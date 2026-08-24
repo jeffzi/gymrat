@@ -205,6 +205,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "rich" },
     { name = "scipy" },
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -220,7 +221,6 @@ dev = [
     { name = "pytest-sugar" },
     { name = "pytest-xdist" },
     { name = "ruff" },
-    { name = "typer" },
 ]
 
 [package.metadata]
@@ -228,6 +228,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "rich", specifier = ">=15.0,<16" },
     { name = "scipy", specifier = ">=1.18,<2" },
+    { name = "typer", specifier = ">=0.27.1,<0.28" },
 ]
 
 [package.metadata.requires-dev]
@@ -243,7 +244,6 @@ dev = [
     { name = "pytest-sugar", specifier = ">=1.1,<2" },
     { name = "pytest-xdist", specifier = ">=3.8,<4" },
     { name = "ruff", specifier = ">=0.16.3,<0.17" },
-    { name = "typer", specifier = ">=0.27.1,<0.28" },
 ]
 
 [[package]]

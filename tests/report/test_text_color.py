@@ -1,13 +1,11 @@
 """Tests for the colored comparison and measurement text reports.
 
-These port the ``renderReport`` and ``renderMeasureReport`` color cases from
-``text-color.test.ts``. The ``renderReport`` block pins how the assembled report
-paints its verdict rows, run and column headers, the verdict summary, the
-highlights block, and the verbose method footer and hint. The
-``renderMeasureReport`` block pins the measure report's header and tables. Where
-the TypeScript suite pinned column alignment by byte offset, the port keeps the
-offset check only where it proves cross-section alignment; content is pinned by
-parsed cell.
+These cover the colored comparison and measurement reports. The comparison
+block pins how the assembled report paints its verdict rows, run and column
+headers, the verdict summary, the highlights block, and the verbose method
+footer and hint. The measure block pins the measure report's header and tables.
+Column alignment is checked by byte offset only where that proves cross-section
+alignment; content is pinned by parsed cell.
 """
 
 from __future__ import annotations
@@ -23,11 +21,13 @@ from gymrat_py.report.text import render_measure_report, render_report
 from gymrat_py.report.types import MeasurementResult, ReportOptions
 from gymrat_py.targets import WorktreeRemovalFailure
 from tests.report._inputs import (
+    DIMMED_LINE,
     band_metric,
     cells_of,
     create_candidate,
     create_comparison_result,
     create_measurement_result,
+    delta_cell,
     exact_metric,
     highlight_lines,
     line_containing,
@@ -49,15 +49,6 @@ if TYPE_CHECKING:
 
     from gymrat_py.model import ApproximateVerdict
     from gymrat_py.report.types import ComparisonResult
-
-# A line dimmed end to end: opens with SGR 2 and closes with a reset. Rich closes
-# a dim span with a full reset (SGR 0) rather than SGR 22.
-_DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[0m$")
-
-
-def _delta_cell_of(line: str) -> str:
-    """The last cell of a rendered table line — the delta column."""
-    return cells_of(line)[-1]
 
 
 def _colorful_result() -> ComparisonResult:
@@ -86,12 +77,6 @@ def _colorful_result() -> ComparisonResult:
         worktrees_left_behind=[WorktreeRemovalFailure(dir="/tmp/gymrat-abc", error="is locked")],
         worktree_prune_error="fatal: not a git repository",
     )
-
-
-@pytest.fixture(autouse=True)
-def _no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
 
 def _flat_measurement() -> MeasurementResult:
@@ -445,7 +430,7 @@ def test_render_report_when_colored_does_leave_a_bright_row_without_end_to_end_d
 
     row = line_containing(render_report(_colorful_result()), metric)
 
-    assert not _DIMMED_LINE.match(row)
+    assert not DIMMED_LINE.match(row)
 
 
 def test_render_report_when_colored_does_embolden_the_geomean_figure(
@@ -483,7 +468,7 @@ def test_render_report_when_colored_does_embolden_the_baseline_in_the_delta_head
 
     header = line_containing(render_report(_colorful_result()), "metric  ")
 
-    assert styles_at(_delta_cell_of(header), "main") == ["1", "4"]
+    assert styles_at(delta_cell(header), "main") == ["1", "4"]
 
 
 @pytest.mark.parametrize(
@@ -503,9 +488,9 @@ def test_render_report_when_colored_does_embolden_the_baseline_after_the_vs_pref
         metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")},
     )
 
-    delta_cell = _delta_cell_of(line_containing(render_report(result), "metric  "))
+    cell = delta_cell(line_containing(render_report(result), "metric  "))
 
-    assert f"vs \x1b[1;4m{baseline}\x1b[0m" in delta_cell
+    assert f"vs \x1b[1;4m{baseline}\x1b[0m" in cell
 
 
 def test_render_report_when_colored_does_leave_the_rest_of_the_column_header_unstyled(
@@ -743,7 +728,7 @@ def test_render_report_when_colored_does_dim_the_verdict_method_description(
     )
     method = line_containing(render_report(result, ReportOptions(verbose=True)), "Wilcoxon")
 
-    assert _DIMMED_LINE.match(method)
+    assert DIMMED_LINE.match(method)
 
 
 def _band_fallback_result() -> ComparisonResult:
@@ -760,7 +745,7 @@ def test_render_report_when_colored_does_dim_the_noise_band_description(
         render_report(_band_fallback_result(), ReportOptions(verbose=True)), "noise band"
     )
 
-    assert _DIMMED_LINE.match(band)
+    assert DIMMED_LINE.match(band)
 
 
 def test_render_report_when_colored_does_style_the_hint_word_yellow_and_underlined(

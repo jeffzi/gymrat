@@ -38,3 +38,63 @@ class GymratError(Exception):
 
 class CommandError(GymratError):
     """A subprocess command invoked by gymrat failed."""
+
+
+def message_of(error: object) -> str:
+    """Extract a human-readable message from an arbitrary thrown value.
+
+    ``str`` dispatches to ``__str__`` for both exceptions (which yields the
+    message) and plain values, so the exception and non-exception cases share
+    one implementation.
+
+    Args:
+        error: The caught value — an exception or any other object.
+
+    Returns:
+        ``str(error)``: an exception's message, or the stringified value.
+    """
+    return str(error)
+
+
+def hint_of(error: object) -> str | None:
+    """Extract the ``hint`` from a :class:`GymratError`, else ``None``.
+
+    Args:
+        error: The caught value.
+
+    Returns:
+        The error's ``hint`` when it is a :class:`GymratError`, otherwise
+        ``None`` — no other thrown value carries a hint.
+    """
+    return error.hint if isinstance(error, GymratError) else None
+
+
+def stderr_text_of(error: object) -> str:
+    """The diagnostics a failed child process wrote to stderr.
+
+    ``subprocess.CalledProcessError`` and ``TimeoutExpired`` attach the child's
+    captured stderr separately from the exception message, which carries
+    ``Command '...' returned non-zero exit status`` noise. Preferring the raw
+    stderr keeps git's own diagnostics — the text repository-lookup
+    classification keys on — instead of that wrapper noise.
+
+    Falls back to :func:`message_of` for values with no stderr, or whose stderr
+    is blank: git sometimes explains a failure on stdout instead (e.g. "nothing
+    to commit"), leaving stderr an empty or whitespace-only string.
+
+    Args:
+        error: The caught value.
+
+    Returns:
+        The trimmed stderr when it is present and non-blank, else the message.
+    """
+    if isinstance(error, Exception):
+        stderr = getattr(error, "stderr", None)
+        if isinstance(stderr, bytes):
+            # CalledProcessError.stderr is bytes when the call captured bytes;
+            # replace undecodable sequences so diagnostics never raise here.
+            stderr = stderr.decode("utf-8", errors="replace")
+        if isinstance(stderr, str) and stderr.strip():
+            return stderr.strip()
+
+    return message_of(error)

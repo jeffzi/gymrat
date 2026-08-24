@@ -1,14 +1,13 @@
 """Tests for the multi-candidate comparison text report.
 
-These port the table-focused cases from ``text-multi.test.ts``: the
-candidate-per-column table, its per-candidate aggregate cells, the sectioned
-layout shared with the single-candidate table, and how all of it is colored. The
-summary, highlight, and footer blocks that ``text-multi.test.ts`` also covers
-belong to the report-assembly task and are left out here.
+These cover the table-focused cases: the candidate-per-column table, its
+per-candidate aggregate cells, the sectioned layout shared with the
+single-candidate table, and how all of it is colored. The summary, highlight,
+and footer blocks belong to the report-assembly task and are left out here.
 
-Where the TypeScript suite asserted column alignment by byte offset, the port
-keeps the offset check, since the multi-candidate columns are laid out on a
-fixed-width grid whose separators must stack across sections.
+Column alignment is asserted by byte offset here, since the multi-candidate
+columns are laid out on a fixed-width grid whose separators must stack across
+sections.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from gymrat_py.report.text import render_report
 from gymrat_py.report.types import ReportOptions
 from gymrat_py.verdict import KindAggregate
 from tests.report._inputs import (
+    DIMMED_LINE,
     NWayCandidate,
     cells_of,
     create_candidate,
@@ -32,6 +32,7 @@ from tests.report._inputs import (
     geomean_of,
     grouped_comparison,
     highlight_lines,
+    last_table_row,
     line_containing,
     line_starting_with,
     memory_kind,
@@ -46,7 +47,6 @@ from tests.report._inputs import (
     strip_ansi,
     styles_at,
     table_region,
-    table_rows,
     time_kind,
     two_kind_metrics,
     two_kind_result,
@@ -57,15 +57,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from gymrat_py.report.types import ComparisonResult
-
-# A line dimmed end to end: opens with SGR 2, closes with SGR 22.
-_DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[22m$")
-
-
-@pytest.fixture(autouse=True)
-def _no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
 
 def _value_part_of(cell: str, glyph: str) -> str:
@@ -81,11 +72,6 @@ def _value_part_of(cell: str, glyph: str) -> str:
         msg = f"no {glyph!r} in cell: {cell!r}"
         raise AssertionError(msg)
     return re.sub(r"(?:\x1b\[\d+m)*$", "", cell[:index])
-
-
-def _last_table_row(report: str) -> str:
-    """The last rendered table row of a report — the row the table closes on."""
-    return table_rows(report)[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +116,7 @@ def test_render_report_when_many_candidates_does_carry_one_geomean_per_column():
 
 
 def test_render_report_when_many_candidates_does_close_the_table_on_the_geomean_row():
-    row = _last_table_row(render_report(multi_candidate_result()))
+    row = last_table_row(render_report(multi_candidate_result()))
 
     assert cells_of(row)[0].strip() == "geomean"
 
@@ -195,7 +181,7 @@ def test_render_report_when_colored_does_leave_a_mixed_row_without_end_to_end_di
 
     line = line_containing(render_report(_dimming_result()), row)
 
-    assert not _DIMMED_LINE.match(line)
+    assert not DIMMED_LINE.match(line)
 
 
 def test_render_report_when_colored_does_style_each_cell_verdict_on_its_own(
@@ -691,8 +677,7 @@ def test_render_report_when_colored_does_embolden_the_candidate_highlight_sub_la
     ]
 
     assert len(sub_labels) == 3
-    for sub_label in sub_labels:
-        assert "\x1b[1m" in sub_label
+    assert all("\x1b[1m" in sub_label for sub_label in sub_labels)
 
 
 # ---------------------------------------------------------------------------
