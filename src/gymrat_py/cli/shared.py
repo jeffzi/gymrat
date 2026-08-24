@@ -443,6 +443,11 @@ class ReportRenderers[T]:
     json: Callable[[T], str]
 
 
+def wants_json(flags: SharedFlags) -> bool:
+    """Whether ``flags.format`` selects the JSON document rather than the text report."""
+    return flags.format == OutputFormat.json.value
+
+
 def emit_report[T](
     result: T,
     flags: SharedFlags,
@@ -456,8 +461,5 @@ def emit_report[T](
     ``color`` is left unset. The JSON document is never styled, so it ignores
     ``render_opts`` entirely.
     """
-    if flags.format == "json":
-        output = renderers.json(result)
-    else:
-        output = renderers.text(result, render_opts)
+    output = renderers.json(result) if wants_json(flags) else renderers.text(result, render_opts)
     write_and_flush(sys.stdout, output + "\n")

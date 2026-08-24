@@ -37,6 +37,7 @@ from gymrat_py.cli.shared import (
     parse_positional,
     run_options_of,
     set_debug_mode,
+    wants_json,
     with_repo_lock,
     write_and_flush,
 )
@@ -165,7 +166,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 f"recorded to session {recording.session.session_id}\n"
             )
             # A JSON run keeps stdout a clean document, so the note rides stderr.
-            stream = sys.stderr if flags.format == "json" else sys.stdout
+            stream = sys.stderr if wants_json(flags) else sys.stdout
             write_and_flush(stream, note)
 
     try:
