@@ -13,14 +13,16 @@ import sys
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal, NoReturn, Protocol
+from enum import StrEnum
+from typing import Annotated, Literal, NoReturn, Protocol
 
 import typer
 from rich.markup import escape
 
 from gymrat_py.adapters.types import AdapterError
+from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat_py.cli.status_line import RenderMode
-from gymrat_py.config import MAX_TIMEOUT_SECONDS, CliFlags
+from gymrat_py.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat_py.errors import GymratError, hint_of, message_of
 from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
@@ -30,8 +32,8 @@ from gymrat_py.report.style import (
     markup,
     render_lines,
 )
-from gymrat_py.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
-from gymrat_py.sampling import TargetSpec
+from gymrat_py.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn, ReportOptions
+from gymrat_py.sampling import RunOptions, TargetSpec
 from gymrat_py.session.lock import acquire_lock
 from gymrat_py.session.paths import lockfile_path, repo_root
 
@@ -348,3 +350,109 @@ class CompareFlags(SharedFlags):
 @dataclass(frozen=True, slots=True)
 class MeasureFlags(SharedFlags):
     """The measure command's flags: the shared set, with no extra fields."""
+
+
+# ---------------------------------------------------------------------------
+# CLI option declarations
+# ---------------------------------------------------------------------------
+
+# The samples ceiling: JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so the
+# accepted range matches the shipped tool rather than drifting to a new bound.
+_MAX_SAMPLES = 2**53 - 1
+
+
+class OutputFormat(StrEnum):
+    """The ``--format`` choices: a human report or a machine-readable document."""
+
+    text = "text"
+    json = "json"
+
+
+# The config-bearing options every command shares, declared once as reusable
+# annotations so ``compare`` and ``measure`` carry an identical surface.
+BenchOption = Annotated[str | None, typer.Option("--bench", "-b", help="bench command")]
+PrepareOption = Annotated[
+    str | None,
+    typer.Option("--prepare", "-p", help="preparation script to run before each revision"),
+]
+AdapterOption = Annotated[
+    str | None, typer.Option("--adapter", "-a", help="adapter type for parsing benchmark output")
+]
+SamplesOption = Annotated[
+    int | None,
+    typer.Option(
+        "--samples",
+        "-s",
+        parser=parse_positive_integer_up_to(_MAX_SAMPLES),
+        help="paired samples per target",
+    ),
+]
+TimeoutOption = Annotated[
+    int | None,
+    typer.Option(
+        "--timeout",
+        "-t",
+        parser=parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS),
+        help="timeout in seconds",
+    ),
+]
+ConfigOption = Annotated[str | None, typer.Option("--config", "-c", help="configuration file path")]
+NoColorOption = Annotated[
+    bool, typer.Option("--no-color", help="print the report without ANSI styles")
+]
+FormatOption = Annotated[OutputFormat, typer.Option("--format", help="output format")]
+DebugOption = Annotated[bool, typer.Option("--debug", "-d", help="show stack traces on errors")]
+
+
+# ---------------------------------------------------------------------------
+# Run infrastructure
+# ---------------------------------------------------------------------------
+
+
+def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
+    """Suppress color per the flag, then build the reporter for ``target_count`` targets."""
+    mode = resolve_render_mode(flags.color)
+    return create_progress_reporter(mode, target_count)
+
+
+def run_options_of(config: ResolvedConfig, progress: ProgressReporter) -> RunOptions:
+    """Wire ``config``'s run settings and ``progress``'s callbacks into the shared run fields."""
+    return RunOptions(
+        bench=config.bench,
+        prepare=config.prepare,
+        adapter=config.adapter,
+        samples=config.samples,
+        timeout_seconds=config.timeout_seconds,
+        config_metrics=config.metrics,
+        config_kinds=config.kinds,
+        on_progress=progress.report,
+        warn=progress.warn,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ReportRenderers[T]:
+    """The text and JSON renderers a command hands ``emit_report`` for its result type."""
+
+    text: Callable[[T, ReportOptions], str]
+    json: Callable[[T], str]
+
+
+def emit_report[T](
+    result: T,
+    flags: SharedFlags,
+    renderers: ReportRenderers[T],
+    render_opts: ReportOptions,
+) -> None:
+    """Render ``result`` per ``flags.format`` and write it to stdout.
+
+    The text renderer honors ``render_opts`` — the ``--no-color`` veto rides in
+    its ``color`` field, and the renderer defers to stdout's own TTY state when
+    ``color`` is left unset. The JSON document is never styled, so it ignores
+    ``render_opts`` entirely.
+    """
+    if flags.format == "json":
+        output = renderers.json(result)
+    else:
+        output = renderers.text(result, render_opts)
+    write_and_flush(sys.stdout, output + "\n")

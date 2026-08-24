@@ -46,6 +46,7 @@
     "testpaths",
     "unitless",
     "unparseable",
+    "usefixtures",
     "venv",
     "virtualenvs",
     "wilcoxon",
