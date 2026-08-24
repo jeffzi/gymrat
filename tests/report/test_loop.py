@@ -1,10 +1,13 @@
 """Tests for the loop report fragments.
 
-These cover the loop header, the verdict block, and outcome derivation. The
-header block pins the iteration wording and sample pluralization; the verdict
-block pins the line shape and the outcome word; outcome derivation pins the full
-truth table, including the gating-regression override, direction-aware metric
-primaries, the exactly-zero cases, and the unmeasured-primary case.
+These cover the loop header, the verdict block, outcome derivation, and the
+status-report formatters. The header block pins the iteration wording and sample
+pluralization; the verdict block pins the line shape and the outcome word;
+outcome derivation pins the full truth table, including the gating-regression
+override, direction-aware metric primaries, the exactly-zero cases, and the
+unmeasured-primary case. The status formatters pin the header block, the
+per-iteration line (glyph, delta, and settle state), the baseline medians, the
+totals-and-stop footer, and the finalized closer.
 
 Color is pinned by intent rather than by raw byte sequences: the loop fragments
 return rich markup, and the color cases resolve that markup with
@@ -14,24 +17,39 @@ return rich markup, and the color cases resolve that markup with
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from gymrat_py.config import StopConfig
 from gymrat_py.report.loop import (
     GeomeanPrimary,
     LoopPrimary,
     MetricPrimary,
+    SettleDiscarded,
+    SettleKeepBlocked,
+    SettleKept,
+    SettleUnsettled,
+    StatusIteration,
+    StatusSummary,
     derive_outcome,
     format_loop_header,
+    format_status_baseline,
+    format_status_finalized,
+    format_status_footer,
+    format_status_header,
+    format_status_iteration,
     format_verdict_block,
 )
 from gymrat_py.report.style import render_lines
+from gymrat_py.session import BaselineRecord, BaselineRef
 from tests.report._inputs import signed_rank_metric, styles_at
+from tests.session._records import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
     from gymrat_py.model import Direction
-    from gymrat_py.report.loop import LoopOutcome
+    from gymrat_py.report.loop import LoopOutcome, SettleState
     from gymrat_py.report.types import MetricComparison, MetricComparisons
 
 # A width wide enough that no loop fragment ever soft-wraps.
@@ -202,3 +220,229 @@ def test_derive_outcome_when_primary_metric_never_measured_does_report_no_signal
     outcome = derive_outcome({"lower/time": _directed_metric("lower")}, primary)
 
     assert outcome == "no-signal"
+
+
+# ---------------------------------------------------------------------------
+# status formatters
+# ---------------------------------------------------------------------------
+
+# A 40-hex baseline sha whose first seven characters are recognizable on their own.
+_BASELINE_SHA = "a1b2c3d" + "e" * 33
+# A 40-hex keep-commit sha whose first seven characters are recognizable on their own.
+_KEEP_COMMIT = "b1b2b3b" + "c" * 33
+
+
+def _status_iteration(settle: SettleState) -> StatusIteration:
+    """An improved iteration numbered 1, settled the way ``settle`` says."""
+    return StatusIteration(seq=1, delta_pct=-7.2, outcome="improved", settle=settle)
+
+
+def _status_summary(**overrides: Any) -> StatusSummary:
+    """A session four iterations in, one kept and one thrown away."""
+    default = StatusSummary(iteration_count=4, keep_count=1, discard_count=1, target_reached=False)
+    return replace(default, **overrides) if overrides else default
+
+
+# ---------------------------------------------------------------------------
+# format_status_header
+# ---------------------------------------------------------------------------
+
+
+def test_format_status_header_when_given_session_does_name_session_baseline_branch_worktrees_adapter():
+    session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
+
+    lines = format_status_header(session)
+
+    assert [_plain(line) for line in lines] == [
+        f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
+        f"branch gymrat/{SESSION_ID}",
+        "experiment worktree /repo/.gymrat/worktrees/experiment",
+        "baseline worktree /repo/.gymrat/worktrees/baseline",
+    ]
+
+
+def test_format_status_header_when_colored_does_embolden_the_session():
+    session = session_record(baseline=BaselineRef(ref="main", sha=_BASELINE_SHA))
+
+    header = _colored(format_status_header(session)[0])
+
+    assert "1" in styles_at(header, f"session {SESSION_ID}")
+
+
+# ---------------------------------------------------------------------------
+# format_status_iteration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("settle", "expected"),
+    [
+        pytest.param(
+            SettleKept(commit=_KEEP_COMMIT),
+            "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+            id="kept-with-commit",
+        ),
+        pytest.param(SettleKept(), "iteration 1 · ✓ -7.2% · kept", id="kept-pending"),
+        pytest.param(SettleDiscarded(), "iteration 1 · ✓ -7.2% · discarded", id="discarded"),
+        pytest.param(SettleUnsettled(), "iteration 1 · ✓ -7.2% · unsettled", id="unsettled"),
+        pytest.param(
+            SettleKeepBlocked(reason="checks-failed"),
+            "iteration 1 · ✓ -7.2% · keep-blocked (checks-failed)",
+            id="blocked-with-reason",
+        ),
+        pytest.param(
+            SettleKeepBlocked(), "iteration 1 · ✓ -7.2% · keep-blocked", id="blocked-no-reason"
+        ),
+    ],
+)
+def test_format_status_iteration_when_given_settle_does_state_it(
+    settle: SettleState, expected: str
+):
+    assert _plain(format_status_iteration(_status_iteration(settle))) == expected
+
+
+@pytest.mark.parametrize(
+    ("outcome", "glyph"),
+    [
+        pytest.param("improved", "✓", id="improved"),
+        pytest.param("regressed", "✗", id="regressed"),
+        pytest.param("no-signal", "~", id="no-signal"),
+    ],
+)
+def test_format_status_iteration_when_given_outcome_does_mark_it_with_glyph(
+    outcome: LoopOutcome, glyph: str
+):
+    entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
+
+    assert _plain(format_status_iteration(entry)) == f"iteration 1 · {glyph} -7.2% · unsettled"
+
+
+def test_format_status_iteration_when_delta_unmeasured_does_state_no_percentage():
+    entry = replace(_status_iteration(SettleUnsettled()), delta_pct=None, outcome="no-signal")
+
+    assert _plain(format_status_iteration(entry)) == "iteration 1 · ~ · unsettled"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "glyph", "color_code"),
+    [
+        pytest.param("improved", "✓", "32", id="improved-green"),
+        pytest.param("regressed", "✗", "31", id="regressed-red"),
+    ],
+)
+def test_format_status_iteration_when_colored_does_paint_the_glyph(
+    outcome: LoopOutcome, glyph: str, color_code: str
+):
+    entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
+
+    assert color_code in styles_at(_colored(format_status_iteration(entry)), glyph)
+
+
+# ---------------------------------------------------------------------------
+# format_status_baseline
+# ---------------------------------------------------------------------------
+
+
+def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric():
+    record = BaselineRecord(
+        type="baseline",
+        at="2026-08-08T14:15:30.000Z",
+        label="main",
+        samples=(
+            {"total_ms": 15200, "alloc_bytes": 1500},
+            {"total_ms": 15184, "alloc_bytes": 1540},
+        ),
+    )
+
+    line = _plain(format_status_baseline(record))
+
+    assert line == "baseline main · total_ms 15192 · alloc_bytes 1520"
+
+
+def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rounds_that_reported_it():
+    record = BaselineRecord(
+        type="baseline",
+        at="2026-08-08T14:15:30.000Z",
+        label="main",
+        samples=({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}),
+    )
+
+    line = _plain(format_status_baseline(record))
+
+    assert line == "baseline main · total_ms 200 · alloc_bytes 40"
+
+
+# ---------------------------------------------------------------------------
+# format_status_footer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        pytest.param(
+            _status_summary(iteration_count=1, keep_count=1, discard_count=0),
+            "1 iteration · 1 kept · 0 discarded",
+            id="one-iteration",
+        ),
+        pytest.param(_status_summary(), "4 iterations · 1 kept · 1 discarded", id="several"),
+    ],
+)
+def test_format_status_footer_when_given_summary_does_total_the_settles(
+    summary: StatusSummary, expected: str
+):
+    assert _plain(format_status_footer(summary)[0]) == expected
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        pytest.param(
+            _status_summary(stop=StopConfig(max_iterations=30)),
+            "stop: 4 of 30 iterations",
+            id="max-iterations",
+        ),
+        pytest.param(
+            _status_summary(stop=StopConfig(target_value=95)),
+            "stop: target pending",
+            id="target-pending",
+        ),
+        pytest.param(
+            _status_summary(stop=StopConfig(target_value=95), target_reached=True),
+            "stop: target reached",
+            id="target-reached",
+        ),
+        pytest.param(
+            _status_summary(stop=StopConfig(target_value=95, max_iterations=30)),
+            "stop: 4 of 30 iterations · target pending",
+            id="both-conditions",
+        ),
+        pytest.param(_status_summary(), None, id="no-stop"),
+        pytest.param(_status_summary(stop=StopConfig()), None, id="empty-stop"),
+    ],
+)
+def test_format_status_footer_when_stop_configured_does_state_the_conditions(
+    summary: StatusSummary, expected: str | None
+):
+    lines = [_plain(line) for line in format_status_footer(summary)]
+
+    stop_line = next((line for line in lines if line.startswith("stop:")), None)
+
+    assert stop_line == expected
+
+
+# ---------------------------------------------------------------------------
+# format_status_finalized
+# ---------------------------------------------------------------------------
+
+
+def test_format_status_finalized_when_given_record_does_name_the_branch_and_commit():
+    line = _plain(format_status_finalized(finalize_record()))
+
+    assert line == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
+
+
+def test_format_status_finalized_when_colored_does_embolden_finalized():
+    line = _colored(format_status_finalized(finalize_record()))
+
+    assert "1" in styles_at(line, "finalized")

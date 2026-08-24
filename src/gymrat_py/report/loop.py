@@ -7,6 +7,11 @@ compare`` reads an iteration without relearning anything. The lines follow the
 same conventions — the verdict block's colors, the dimmed ``·`` — so an
 iteration reads as the comparison it is built on.
 
+The same fragments assemble ``gymrat status``: a header naming the session, one
+line per record in file order (a baseline, an iteration and its settle state, or
+a refused keep standing alone), the totals, and — when the session was
+finalized — the line it closes on.
+
 These fragments return rich-markup strings rather than raw ANSI, so a renderer
 decides color once through :func:`gymrat_py.report.style.render_lines`. Dynamic
 text inside a styled span is escaped so a metric named ``[i]`` renders literally.
@@ -20,15 +25,26 @@ from typing import TYPE_CHECKING, Literal
 from rich.markup import escape
 
 from gymrat_py.model import Effect
-from gymrat_py.report.format import format_delta, is_improvement
+from gymrat_py.report.format import format_delta, format_value, get_glyph, is_improvement, pluralize
 from gymrat_py.report.style import format_hint_label
 from gymrat_py.report.table import markup
 from gymrat_py.report.text import paired_samples
+from gymrat_py.stats.descriptive import compute_median
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from gymrat_py.config import StopConfig
+    from gymrat_py.report.format import DisplayClass
     from gymrat_py.report.types import MetricComparison, MetricComparisons
+    from gymrat_py.session import (
+        BaselineRecord,
+        BaselineRef,
+        FinalizeRecord,
+        SessionRecord,
+    )
+    from gymrat_py.session.records import SampleRound
+    from gymrat_py.session.schema import KeepReason
 
 # ---------------------------------------------------------------------------
 # Outcome and primary-figure types
@@ -301,3 +317,242 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> LoopOutc
     if _has_gating_regression(metrics):
         return "regressed"
     return "improved" if _primary_improved(metrics, primary) else "no-signal"
+
+
+# ---------------------------------------------------------------------------
+# Status report
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SettleKept:
+    """A kept iteration, carrying the commit it landed as once one is known.
+
+    Attributes:
+        commit: The commit the keep made, or ``None`` while it is not yet known —
+            a keep can be recorded before its squash commit exists.
+    """
+
+    commit: str | None = None
+    kind: Literal["kept"] = "kept"
+
+
+@dataclass(frozen=True, slots=True)
+class SettleDiscarded:
+    """An iteration thrown away."""
+
+    kind: Literal["discarded"] = "discarded"
+
+
+@dataclass(frozen=True, slots=True)
+class SettleUnsettled:
+    """An iteration nobody has settled yet."""
+
+    kind: Literal["unsettled"] = "unsettled"
+
+
+@dataclass(frozen=True, slots=True)
+class SettleKeepBlocked:
+    """An iteration whose keep was refused, carrying why when the log knows.
+
+    A blocked keep is its own state rather than a variant of unsettled: the
+    iteration is still waiting to be settled, but the log knows why the last
+    attempt did not land, and that reason is what the agent acts on.
+
+    Attributes:
+        reason: Why the keep was refused, or ``None`` when the log names none.
+    """
+
+    reason: KeepReason | None = None
+    kind: Literal["keep-blocked"] = "keep-blocked"
+
+
+#: What a single settling record says became of the iteration it settles.
+SettleState = SettleKept | SettleDiscarded | SettleUnsettled | SettleKeepBlocked
+
+
+@dataclass(frozen=True, slots=True)
+class StatusIteration:
+    """One iteration as a status line states it.
+
+    Attributes:
+        seq: The iteration's number.
+        delta_pct: How far the iteration's primary figure moved, or ``None``
+            where the ratio had no value.
+        outcome: What the iteration amounted to.
+        settle: What became of it.
+    """
+
+    seq: int
+    delta_pct: float | None
+    outcome: LoopOutcome
+    settle: SettleState
+
+
+@dataclass(frozen=True, slots=True)
+class StatusSummary:
+    """What a session adds up to: how its iterations settled, and how near its stop it is.
+
+    Attributes:
+        iteration_count: How many iterations the session measured.
+        keep_count: How many of them it kept.
+        discard_count: How many of them it threw away.
+        target_reached: Whether a kept iteration reached the configured target.
+        stop: The configured stop conditions, or ``None`` when the session runs
+            until the agent stops it.
+    """
+
+    iteration_count: int
+    keep_count: int
+    discard_count: int
+    target_reached: bool
+    stop: StopConfig | None = None
+
+
+#: The glyph each outcome wears, borrowed from the comparison table's vocabulary.
+#:
+#: A no-signal iteration takes the table's within-noise glyph: both say the same
+#: thing — the figure moved by nothing the run can stand behind.
+OUTCOME_GLYPHS: dict[LoopOutcome, DisplayClass] = {
+    "improved": "improved",
+    "regressed": "regressed",
+    "no-signal": "within-noise",
+}
+
+
+def format_baseline_ref(baseline: BaselineRef) -> str:
+    """A session's baseline in the ``ref@sha`` form (sha shortened) every summary states it with."""
+    return f"{baseline.ref}@{baseline.sha[:SHORT_SHA_LENGTH]}"
+
+
+def format_status_header(session: SessionRecord) -> list[str]:
+    """The session a status report opens on: what it is, what it forked from, where it works.
+
+    Both worktree paths are named for the reason ``gymrat start`` names them: the
+    agent edits in one of them and must never touch the other.
+
+    Args:
+        session: The session header the log opens on.
+
+    Returns:
+        The header as rich-markup lines.
+    """
+    baseline = format_baseline_ref(session.baseline)
+    return [
+        _separator().join(
+            [
+                markup(f"session {session.session_id}", "bold"),
+                f"baseline {baseline}",
+                f"adapter {session.config.adapter}",
+            ]
+        ),
+        f"branch {session.branch}",
+        f"experiment worktree {session.worktrees.experiment}",
+        f"baseline worktree {session.worktrees.baseline}",
+    ]
+
+
+def format_status_settle(settle: SettleState) -> str:
+    """How an iteration was settled, in the words ``status`` reports it with.
+
+    A settling record that settled no iteration — a keep refused for want of a
+    measurement — stands on a line of its own, and this is all that line says.
+    """
+    if isinstance(settle, SettleKept):
+        return "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
+    if isinstance(settle, SettleDiscarded):
+        return "discarded"
+    if isinstance(settle, SettleUnsettled):
+        return "unsettled"
+    return "keep-blocked" if settle.reason is None else f"keep-blocked ({settle.reason})"
+
+
+def format_status_iteration(iteration: StatusIteration) -> str:
+    """One iteration of the session's history: which one, what it did, what became of it.
+
+    The glyph carries the outcome's own color, so a session's course is legible
+    down the left of the report before a word of it is read.
+    """
+    glyph = markup(get_glyph(OUTCOME_GLYPHS[iteration.outcome]), _OUTCOME_STYLES[iteration.outcome])
+    return _separator().join(
+        [
+            f"iteration {iteration.seq}",
+            f"{glyph}{_format_primary_delta(iteration.delta_pct)}",
+            format_status_settle(iteration.settle),
+        ]
+    )
+
+
+def _metric_medians(samples: Sequence[SampleRound]) -> list[tuple[str, float]]:
+    """The median each metric measured across ``samples``, in the order rounds first named them.
+
+    A metric is averaged only over the rounds that reported it, so a metric a
+    late round dropped keeps the median of the rounds that carried it.
+    """
+    readings: dict[str, list[float]] = {}
+    for round_ in samples:
+        for name, value in round_.items():
+            readings.setdefault(name, []).append(value)
+    return [(name, compute_median(values)) for name, values in readings.items()]
+
+
+def format_status_baseline(record: BaselineRecord) -> str:
+    """A recorded baseline measurement: what was measured, and the median each metric came to.
+
+    The log stores every round the measurement took, so the medians are computed
+    here rather than stored — a later statistics change re-reads the same records
+    instead of invalidating them.
+    """
+    parts = [f"baseline {record.label}"]
+    parts.extend(
+        f"{name} {format_value(median)}" for name, median in _metric_medians(record.samples)
+    )
+    return _separator().join(parts)
+
+
+def _format_stop_state(summary: StatusSummary) -> str | None:
+    """Where the session stands against its configured stop, or nothing when none is configured."""
+    stop = summary.stop
+    if stop is None:
+        return None
+    parts: list[str] = []
+    if stop.max_iterations is not None:
+        parts.append(f"{summary.iteration_count} of {stop.max_iterations} iterations")
+    if stop.target_value is not None:
+        parts.append("target reached" if summary.target_reached else "target pending")
+    if not parts:
+        return None
+    return f"{markup('stop:', 'dim')} {_separator().join(parts)}"
+
+
+def format_status_footer(summary: StatusSummary) -> list[str]:
+    """The lines closing a status report: how the iterations settled, and how near the stop is.
+
+    The stop line is left out when nothing is configured rather than reported as
+    unlimited: a loop the agent stops when it likes has no state to state.
+    """
+    totals = _separator().join(
+        [
+            pluralize(summary.iteration_count, "iteration"),
+            f"{summary.keep_count} kept",
+            f"{summary.discard_count} discarded",
+        ]
+    )
+    stop = _format_stop_state(summary)
+    return [totals] if stop is None else [totals, stop]
+
+
+def format_status_finalized(finalized: FinalizeRecord) -> str:
+    """The line a finalized session's report ends on: where its work ended up.
+
+    It sits under the totals rather than in the header because closing the
+    session is the last thing that happened to it, and the branch and commit it
+    names are what the reader goes to next — everything above them is history.
+    """
+    return _separator().join(
+        [
+            markup("finalized", "bold"),
+            f"branch {finalized.branch}",
+            f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",
+        ]
+    )
