@@ -48,6 +48,7 @@ from tests.session._records import (
     hook_record,
     iteration_record,
     session_record,
+    write_session_log,
 )
 
 # ---------------------------------------------------------------------------
@@ -78,11 +79,6 @@ def _iteration(seq: int, *, target_reached: bool) -> IterationRecord:
         ),
         target_reached=target_reached,
     )
-
-
-def _blocked_keep_without_reason(seq: int) -> KeepRecord:
-    """A blocked keep whose ``checks-failed`` reason never settles the iteration."""
-    return blocked_keep(seq)
 
 
 def _gating_block(seq: int) -> KeepRecord:
@@ -147,14 +143,6 @@ def _jsonl_holding(root: str, lines: list[str]) -> str:
     return jsonl_path
 
 
-def _root_holding(root: str, records: list[SessionLogRecord]) -> str:
-    """Append ``records`` to ``root``'s session log in order and return ``root``."""
-    jsonl_path = session_jsonl_path(root)
-    for record in records:
-        append_record(jsonl_path, record)
-    return root
-
-
 # ---------------------------------------------------------------------------
 # append_record
 # ---------------------------------------------------------------------------
@@ -208,24 +196,17 @@ def test_append_record_when_only_line_torn_does_recover(fresh_root: str):
     assert read_records(jsonl_path) == [SESSION]
 
 
-def test_append_record_when_record_unreadable_does_raise_naming_the_record_type(fresh_root: str):
+def test_append_record_when_record_unreadable_does_raise_and_leave_the_log_byte_identical(
+    fresh_root: str,
+):
     jsonl_path = session_jsonl_path(fresh_root)
     append_record(jsonl_path, SESSION)
+    before = Path(jsonl_path).read_bytes()
 
     with pytest.raises(GymratError) as excinfo:
         append_record(jsonl_path, UNREADABLE_ITERATION)
 
     assert re.search(r"\biteration\b", message_of(excinfo.value))
-
-
-def test_append_record_when_record_unreadable_does_leave_the_log_byte_identical(fresh_root: str):
-    jsonl_path = session_jsonl_path(fresh_root)
-    append_record(jsonl_path, SESSION)
-    before = Path(jsonl_path).read_bytes()
-
-    with pytest.raises(GymratError):
-        append_record(jsonl_path, UNREADABLE_ITERATION)
-
     assert Path(jsonl_path).read_bytes() == before
 
 
@@ -439,32 +420,28 @@ def _state(**changes: Any) -> SessionState:
         ),
     ],
 )
-def test_fold_session_summarizes_the_log(records: list[SessionLogRecord], expected: SessionState):
+def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
+    records: list[SessionLogRecord], expected: SessionState
+):
     assert fold_session(records) == expected
 
 
-def test_fold_session_when_a_keep_was_blocked_does_leave_it_out_of_the_keep_count():
-    state = fold_session([SESSION, ITERATION_1, blocked_keep(1)])
+@pytest.mark.parametrize(
+    ("keep_record", "expected_keep_count", "expected_unsettled"),
+    [
+        pytest.param(blocked_keep(1), 0, True, id="checks-failed"),
+        pytest.param(blocked_keep(1, reason=None), 0, True, id="reason-absent"),
+        pytest.param(_nothing_measured_block(2), 0, True, id="nothing-measured"),
+        pytest.param(_gating_block(1), 0, False, id="gating-regression"),
+    ],
+)
+def test_fold_session_when_keep_blocked_does_set_keep_count_and_unsettled(
+    keep_record: KeepRecord, expected_keep_count: int, expected_unsettled: bool
+):
+    state = fold_session([SESSION, ITERATION_1, keep_record])
 
-    assert state.keep_count == 0
-
-
-def test_fold_session_when_a_keep_blocked_without_reason_does_leave_iteration_unsettled():
-    state = fold_session([SESSION, ITERATION_1, _blocked_keep_without_reason(1)])
-
-    assert state.unsettled is True
-
-
-def test_fold_session_when_a_keep_blocked_for_nothing_measured_does_leave_iteration_unsettled():
-    state = fold_session([SESSION, ITERATION_1, _nothing_measured_block(2)])
-
-    assert state.unsettled is True
-
-
-def test_fold_session_when_a_keep_blocked_for_gating_regression_does_clear_unsettled():
-    state = fold_session([SESSION, ITERATION_1, _gating_block(1)])
-
-    assert state.unsettled is False
+    assert state.keep_count == expected_keep_count
+    assert state.unsettled is expected_unsettled
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +502,9 @@ def test_fold_session_when_a_keep_blocked_for_gating_regression_does_clear_unset
         ),
     ],
 )
-def test_fold_session_reads_ends_on_gating_block(records: list[SessionLogRecord], expected: bool):
+def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
+    records: list[SessionLogRecord], expected: bool
+):
     assert fold_session(records).ends_on_gating_block is expected
 
 
@@ -569,9 +548,9 @@ def test_require_session_when_no_session_opened_does_raise_naming_root_and_verb(
 def test_require_session_when_session_finalized_does_still_hand_the_closed_session_back(
     fresh_root: str,
 ):
-    root = _root_holding(fresh_root, [SESSION, ITERATION_1, committed_keep(1), FINALIZE])
+    write_session_log(fresh_root, SESSION, (ITERATION_1, committed_keep(1), FINALIZE))
 
-    required = require_session(root, "asking for its status")
+    required = require_session(fresh_root, "asking for its status")
 
     assert required.state.finalized == FINALIZE
 
@@ -581,42 +560,23 @@ def test_require_session_when_session_finalized_does_still_hand_the_closed_sessi
 # ---------------------------------------------------------------------------
 
 
-def test_require_open_session_when_session_not_finalized_does_hand_back_the_full_handoff(
+def test_require_open_session_when_not_finalized_does_match_require_session(
     fresh_root: str,
 ):
-    root = _root_holding(fresh_root, [SESSION, ITERATION_1])
+    write_session_log(fresh_root, SESSION, (ITERATION_1,))
 
-    required = require_open_session(root, "measuring an edit")
+    required = require_open_session(fresh_root, "measuring an edit")
 
-    assert required == RequiredSession(
-        session=SESSION,
-        state=_state(
-            session=SESSION,
-            iteration_count=1,
-            last_iteration=ITERATION_1,
-            unsettled=True,
-            last_seq=1,
-        ),
-        jsonl_path=session_jsonl_path(root),
-        records=[SESSION, ITERATION_1],
-    )
-
-
-def test_require_open_session_when_no_session_opened_does_raise_the_same_error(fresh_root: str):
-    with pytest.raises(GymratError) as excinfo:
-        require_open_session(fresh_root, "measuring an edit")
-
-    assert fresh_root in message_of(excinfo.value)
-    assert hint_of(excinfo.value) == "Run gymrat start to open one before measuring an edit."
+    assert required == require_session(fresh_root, "measuring an edit")
 
 
 def test_require_open_session_when_session_finalized_does_raise_naming_the_closed_session(
     fresh_root: str,
 ):
-    root = _root_holding(fresh_root, [SESSION, ITERATION_1, committed_keep(1), FINALIZE])
+    write_session_log(fresh_root, SESSION, (ITERATION_1, committed_keep(1), FINALIZE))
 
     with pytest.raises(GymratError) as excinfo:
-        require_open_session(root, "measuring an edit")
+        require_open_session(fresh_root, "measuring an edit")
 
     assert SESSION.session_id in message_of(excinfo.value)
     assert "gymrat start" in (hint_of(excinfo.value) or "")

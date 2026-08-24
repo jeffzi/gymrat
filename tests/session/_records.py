@@ -173,6 +173,6 @@ def write_session_log(
 
     The header is appended first, then each history record in order.
     """
-    append_record(session_jsonl_path(root), header)
-    for record in history:
-        append_record(session_jsonl_path(root), record)
+    jsonl_path = session_jsonl_path(root)
+    for record in (header, *history):
+        append_record(jsonl_path, record)

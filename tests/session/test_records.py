@@ -1,4 +1,3 @@
-import json
 import re
 from typing import cast
 
@@ -205,6 +204,27 @@ def _config_with(**overrides: object) -> dict[str, object]:
             ),
             id="iteration-reran-to-confirm",
         ),
+        pytest.param(
+            patching(
+                ITERATION_RECORD,
+                {"metrics": {"__proto__": {**METRIC_VERDICT, "deltaPct": -1.0}}},
+            ),
+            id="iteration-metric-name-is-proto",
+        ),
+        pytest.param(
+            patching(
+                ITERATION_RECORD,
+                {
+                    "samples": {
+                        "experiment": [{"__proto__": 100, "total_ms": 200}],
+                        "baseline": cast("dict[str, object]", ITERATION_RECORD["samples"])[
+                            "baseline"
+                        ],
+                    }
+                },
+            ),
+            id="iteration-sample-round-key-is-proto",
+        ),
         pytest.param(COMMITTED_KEEP_RECORD, id="committed-keep"),
         pytest.param(
             omitting(COMMITTED_KEEP_RECORD, "message"),
@@ -377,56 +397,9 @@ def test_parse_record_when_value_has_no_recognized_type_does_raise(value: object
         parse_record(value)
 
 
-def test_parse_record_when_type_unknown_does_name_it_in_message():
+def test_parse_record_when_type_unknown_does_name_it_and_list_known_types():
     with pytest.raises(GymratError) as exc:
         parse_record({"type": "banana", "seq": 1})
 
     assert mentions("banana").search(str(exc.value))
-
-
-def test_parse_record_when_type_unknown_does_list_finalize_among_known_types():
-    with pytest.raises(GymratError) as exc:
-        parse_record({"type": "banana", "seq": 1})
-
     assert "finalize" in (exc.value.hint or "")
-
-
-# ---------------------------------------------------------------------------
-# parse_record — a metric name that collides with Object.prototype
-# ---------------------------------------------------------------------------
-
-
-def test_parse_record_when_metric_name_is_proto_does_round_trip_as_own_key():
-    proto_verdict = {**METRIC_VERDICT, "deltaPct": -1.0}
-    metrics = json.loads(f'{{"__proto__": {json.dumps(proto_verdict)}}}')
-    wire = patching(ITERATION_RECORD, {"metrics": metrics})
-
-    record = parse_record(wire)
-
-    out = record_to_wire(record)
-    metrics_out = cast("dict[str, object]", out["metrics"])
-    assert record.type == "iteration"
-    assert "__proto__" in metrics_out
-    assert metrics_out["__proto__"] == proto_verdict
-
-
-def test_parse_record_when_sample_round_key_is_proto_does_round_trip_as_own_key():
-    experiment = [json.loads('{"__proto__": 100, "total_ms": 200}')]
-    wire = patching(
-        ITERATION_RECORD,
-        {
-            "samples": {
-                "experiment": experiment,
-                "baseline": cast("dict[str, object]", ITERATION_RECORD["samples"])["baseline"],
-            }
-        },
-    )
-
-    record = parse_record(wire)
-
-    out = record_to_wire(record)
-    samples_out = cast("dict[str, list[dict[str, object]]]", out["samples"])
-    first_round = samples_out["experiment"][0]
-    assert record.type == "iteration"
-    assert first_round["__proto__"] == 100
-    assert first_round["total_ms"] == 200
