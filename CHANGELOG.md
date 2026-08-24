@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-24
+
+### Added
+
+- The `gymrat compare` command: compare a baseline revision against one or more candidates and report
+  each candidate against the shared baseline, as text or JSON. A target is an existing directory
+  benched where it sits or a git ref — branch, tag, or commit — checked out into a throwaway
+  worktree pinned to its commit; an existing directory wins over an equally named ref.
+- The `gymrat measure` command: measure a single revision or directory on its own, defaulting to the
+  current directory, with nothing to compare against.
+- A repeatable `--fail-on` gate for `compare` that exits non-zero when a gating metric regresses
+  (`--fail-on regressed`) or a gated geometric mean crosses a threshold (`--fail-on geomean:<pct>`).
+- A live progress line reporting each prepare and sample step with an estimated time remaining,
+  adapting to the terminal width and color settings and clearing itself before the report is
+  printed.
+- A repository lock so two gymrat runs over the same repository cannot collide; a run started
+  outside a git repository proceeds without a lock.
+- Interruption handling: cancelling a run stops the benchmark, removes any worktrees the run created,
+  and exits with the conventional signal code.
+
 ## [0.7.0] - 2026-08-23
 
 ### Added
@@ -62,9 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judge each metric improved, regressed, or no clear change in its own direction. A metric too noisy
   to measure against is reported unstable rather than given a misleading verdict.
 - Headline and per-section aggregates: combine the per-metric verdicts into
-  one summary, rolled up per kind, per benchmark group, and over only the gating metrics — the ones
-  that decide the overall pass or fail. A metric that cannot be judged — no paired samples, an
-  unstable verdict, or an undefined ratio — is named in an exclusion list instead of silently
+  one summary, rolled up per kind, per benchmark group, and over only the gating metrics, the ones
+  that decide the overall pass or fail. A metric that cannot be judged (no paired samples, an
+  unstable verdict, or an undefined ratio) is named in an exclusion list instead of silently
   skewing the summary.
 - A warning when a metric present in only some rounds thins the paired sample: the comparison still
   runs on the rounds where the metric appears, and reports how many were dropped.
@@ -116,7 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured errors for every gymrat failure: each derives from `GymratError` and can carry a
   `hint`; failed subprocesses raise `CommandError`.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jeffzi/gymrat-py/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jeffzi/gymrat-py/compare/v0.4.0...v0.5.0
