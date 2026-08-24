@@ -1,6 +1,7 @@
 """Tests for the reference-CLI oracle locator, builder, and runner."""
 
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -211,19 +212,49 @@ def test_oracle_runner_run_when_spawning_does_use_clean_color_env_and_node_argv(
 
 
 # ---------------------------------------------------------------------------
+# PINNED_ORACLE_SHA
+# ---------------------------------------------------------------------------
+
+
+def test_pinned_oracle_sha_is_the_v0_8_reference_commit() -> None:
+    assert PINNED_ORACLE_SHA == "17f4ea96bb37587dc536a882868a0791f9ecbbf7"
+
+
+# ---------------------------------------------------------------------------
 # PortRunner
 # ---------------------------------------------------------------------------
 
 
-def test_port_runner_run_when_called_does_raise_not_available_error(
+def test_port_runner_run_when_spawning_does_use_clean_color_env_and_python_argv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _boom(*args: object, **kwargs: object) -> RunResult:
-        msg = "PortRunner must not spawn a subprocess"
-        raise AssertionError(msg)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    captured: dict[str, object] = {}
 
-    monkeypatch.setattr(oracle, "_run", _boom)
+    def _fake_run(cmd: Sequence[str], cwd: Path, env: dict[str, str] | None = None) -> RunResult:
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(env) if env is not None else None
+        return RunResult(exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(oracle, "_run", _fake_run)
     runner = PortRunner()
 
-    with pytest.raises(GymratError, match="v0.8"):
-        runner.run(["compare", "--help"], cwd=tmp_path)
+    runner.run(["compare", "--help"], cwd=tmp_path)
+
+    assert captured["cmd"] == [sys.executable, "-m", "gymrat_py.cli.app", "compare", "--help"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["NO_COLOR"] == "1"
+    assert "FORCE_COLOR" not in env
+
+
+def test_port_runner_run_when_invoked_with_help_does_return_usage_on_stdout(
+    tmp_path: Path,
+) -> None:
+    runner = PortRunner()
+
+    result = runner.run(["compare", "--help"], cwd=tmp_path)
+
+    assert result.exit_code == 0
+    assert "Usage:" in result.stdout
+    assert "compare" in result.stdout

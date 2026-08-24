@@ -173,14 +173,77 @@ def test_build_oracle_runner_when_repo_at_pinned_sha_does_build_and_return_runne
 
 
 # ---------------------------------------------------------------------------
-# compare — oracle-vs-port seam hits the not-yet-shipped port stub
+# compare — real reference binary vs the port over the whole matrix (the gate)
 # ---------------------------------------------------------------------------
 
 
-def test_compare_when_port_side_unavailable_does_exit_nonzero_and_mention_v0_8():
+def test_compare_when_run_over_full_matrix_does_report_green(requires_oracle: None):
+    result = _runner.invoke(app, ["compare"])
+
+    assert result.exit_code == 0, result.stdout
+    for fixture in fixture_matrix():
+        assert fixture.name in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# compare — hermetic oracle-vs-port document and exit-code diffing
+# ---------------------------------------------------------------------------
+
+
+class _StubRunner:
+    """Constant-payload ``Runner`` returning a fixed exit code and JSON document."""
+
+    def __init__(self, payload: str, exit_code: int = 0) -> None:
+        self._payload = payload
+        self._exit_code = exit_code
+        self.calls: list[tuple[list[str], Path]] = []
+
+    def run(self, args: Sequence[str], cwd: Path) -> RunResult:
+        self.calls.append((list(args), cwd))
+        return RunResult(exit_code=self._exit_code, stdout=self._payload, stderr="")
+
+
+def test_compare_when_both_sides_identical_does_exit_zero_and_name_each_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    names = [fixture.name for fixture in fixture_matrix()[:2]]
+    payload = json.dumps({"schemaVersion": 1, "samples": 10})
+    monkeypatch.setattr(cli, "_build_oracle_runner", lambda: _StubRunner(payload))
+    monkeypatch.setattr(cli, "_build_port_runner", lambda: _StubRunner(payload))
+
+    result = _runner.invoke(app, ["compare", *names])
+
+    assert result.exit_code == 0, result.stdout
+    for name in names:
+        assert name in result.stdout
+
+
+def test_compare_when_documents_differ_does_exit_one_and_show_path_and_both_values(
+    monkeypatch: pytest.MonkeyPatch,
+):
     name = fixture_matrix()[0].name
+    monkeypatch.setattr(
+        cli, "_build_oracle_runner", lambda: _StubRunner(json.dumps({"samples": 10}))
+    )
+    monkeypatch.setattr(cli, "_build_port_runner", lambda: _StubRunner(json.dumps({"samples": 12})))
 
     result = _runner.invoke(app, ["compare", name])
 
-    assert result.exit_code != 0
-    assert "v0.8" in result.stdout
+    assert result.exit_code == 1
+    assert "samples" in result.stdout
+    assert "10" in result.stdout
+    assert "12" in result.stdout
+
+
+def test_compare_when_exit_codes_differ_does_exit_one_and_flag_the_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    name = fixture_matrix()[0].name
+    payload = json.dumps({"schemaVersion": 1, "samples": 10})
+    monkeypatch.setattr(cli, "_build_oracle_runner", lambda: _StubRunner(payload, exit_code=0))
+    monkeypatch.setattr(cli, "_build_port_runner", lambda: _StubRunner(payload, exit_code=1))
+
+    result = _runner.invoke(app, ["compare", name])
+
+    assert result.exit_code == 1
+    assert "exit" in result.stdout.lower()

@@ -5,10 +5,12 @@ inputs and diffs the JSON it emits. This module builds those inputs so every run
 is reproducible: a one-commit scratch git repo, directory targets carrying shell
 "bench" emitters, and the config files that steer verdict selection.
 
-All targets are plain directories (never git refs), which the reference CLI
-resolves "in place" without a worktree. That keeps the run fully deterministic:
-no worktrees are created, pruned, or left behind, and each emitter prints a fixed
-or per-round-varying set of metrics.
+Most targets are plain directories, which the reference CLI resolves "in place"
+without a worktree, keeping those runs free of any worktree lifecycle. The
+two-ref fixtures instead name git refs (``main`` and ``feature``), which the CLI
+checks out into throwaway worktrees; each ref carries its own committed emitter
+so a worktree checkout benches the right revision. Either way each emitter prints
+a fixed or per-round-varying set of metrics, so every run stays deterministic.
 
 Shell emitters begin with ``#!/bin/sh`` and are invoked as ``sh <name>`` by the
 harness, so they never need an executable bit.
@@ -81,6 +83,48 @@ def create_scratch_repo(path: Path) -> None:
     # -c commit.gpgsign=false defends against a host whose global config forces
     # commit signing, which would otherwise block this non-interactive commit.
     _git(path, "-c", "commit.gpgsign=false", "commit", "-m", "Initial commit")
+
+
+def create_two_ref_repo(
+    path: Path,
+    *,
+    main_metrics: dict[str, float],
+    feature_metrics: dict[str, float],
+    feature_ref: str = "feature",
+) -> None:
+    """Build a scratch repo with ``main`` and a second committed ref.
+
+    Starts from :func:`create_scratch_repo` (branch ``main``, one README commit),
+    then commits a metric-lines emitter carrying ``main_metrics`` on ``main``,
+    branches ``feature_ref`` off it, and commits an emitter carrying the differing
+    ``feature_metrics`` there. HEAD is left on ``main`` with its own ``bench.sh``,
+    so ``main`` and ``feature_ref`` each bench a distinct revision — enough for a
+    ``compare main feature`` (or ``measure feature``) to exercise the real
+    ref-to-worktree lifecycle.
+
+    Args:
+        path: An existing directory to turn into the scratch repo.
+        main_metrics: Metrics emitted by ``main``'s committed ``bench.sh``.
+        feature_metrics: Metrics emitted by ``feature_ref``'s committed ``bench.sh``.
+        feature_ref: The name of the second branch to create.
+
+    Raises:
+        subprocess.CalledProcessError: When any git command fails.
+    """
+    create_scratch_repo(path)
+    _commit_emitter(path, main_metrics, message="Add bench on main")
+    # A committed working tree lets git switch move refs without discarding work;
+    # each branch keeps its own bench.sh so a worktree checkout benches that ref.
+    _git(path, "switch", "-q", "-c", feature_ref)
+    _commit_emitter(path, feature_metrics, message="Vary bench on feature")
+    _git(path, "switch", "-q", "main")
+
+
+def _commit_emitter(path: Path, metrics: dict[str, float], *, message: str) -> None:
+    """Write ``bench.sh`` with ``metrics`` at ``path`` and commit it."""
+    write_metric_lines_emitter(path, metrics)
+    _git(path, "add", "bench.sh")
+    _git(path, "-c", "commit.gpgsign=false", "commit", "-m", message)
 
 
 def write_config(dir: Path, config: dict[str, object], *, name: str = "gymrat.json") -> None:  # noqa: A002
@@ -293,6 +337,20 @@ def _build_one_sided_metric_compare(root: Path) -> None:
     _metric_target(root, "cand", {"shared/time": 12})
 
 
+# Shared metrics for the two-ref fixtures: main and feature bench distinct values
+# so a ref compare produces a real delta and a ref measure a stable single reading.
+_REF_MAIN_METRICS: dict[str, float] = {"latency/time": 100}
+_REF_FEATURE_METRICS: dict[str, float] = {"latency/time": 80}
+
+
+def _build_ref_repo(root: Path) -> None:
+    create_two_ref_repo(
+        root,
+        main_metrics=_REF_MAIN_METRICS,
+        feature_metrics=_REF_FEATURE_METRICS,
+    )
+
+
 # Shared flags: JSON output on stdout, color off, and a small sample count keep
 # every fixture fast and diffable.
 _JSON_FLAGS = ("--format", "json", "--no-color")
@@ -414,5 +472,34 @@ def fixture_matrix() -> tuple[Fixture, ...]:
             build=_build_one_sided_metric_compare,
             argv=_STD_COMPARE_ARGV,
             schema_version=2,
+        ),
+        Fixture(
+            name="ref_compare",
+            build=_build_ref_repo,
+            argv=(
+                "compare",
+                "main",
+                "feature",
+                "--bench",
+                "sh bench.sh",
+                "--samples",
+                "3",
+                *_JSON_FLAGS,
+            ),
+            schema_version=2,
+        ),
+        Fixture(
+            name="ref_measure",
+            build=_build_ref_repo,
+            argv=(
+                "measure",
+                "feature",
+                "--bench",
+                "sh bench.sh",
+                "--samples",
+                "3",
+                *_JSON_FLAGS,
+            ),
+            schema_version=1,
         ),
     )

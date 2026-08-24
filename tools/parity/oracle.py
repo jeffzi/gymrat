@@ -9,6 +9,7 @@ either side through the same call shape.
 
 import os
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ from gymrat_py.errors import CommandError, GymratError
 
 # The reference CLI is verified against this exact commit; every parity run pins
 # to it so oracle output stays reproducible across machines.
-PINNED_ORACLE_SHA = "b55e31b0ced0bfbbeefbd14b836ff2dda73097b8"
+PINNED_ORACLE_SHA = "17f4ea96bb37587dc536a882868a0791f9ecbbf7"
 
 # tools/parity/oracle.py -> repo root is two levels up.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -170,20 +171,25 @@ class OracleRunner:
 
 
 class PortRunner:
-    """Placeholder runner for the port CLI, which ships in v0.8."""
+    """Run the Python port CLI via its ``python -m`` entry point."""
 
-    def run(self, args: Sequence[str], cwd: Path) -> RunResult:  # noqa: ARG002
-        """Signal that the port CLI is not yet available.
+    def run(self, args: Sequence[str], cwd: Path) -> RunResult:
+        """Invoke ``python -m gymrat_py.cli.app <args...>`` with color disabled.
+
+        The port runs under the same interpreter as the harness (``sys.executable``)
+        so it resolves the installed ``gymrat_py`` package without a separate build
+        step. The child environment mirrors :class:`OracleRunner`: ``NO_COLOR`` is
+        forced and ``FORCE_COLOR`` stripped so both sides emit plain, deterministic
+        text regardless of the parent shell.
 
         Args:
-            args: Ignored; accepted to satisfy the :class:`Runner` interface.
-            cwd: Ignored; accepted to satisfy the :class:`Runner` interface.
+            args: Arguments passed to the port CLI.
+            cwd: The working directory for the invocation.
 
-        Raises:
-            GymratError: Always — the port CLI does not exist until v0.8.
+        Returns:
+            The captured exit code, stdout, and stderr.
         """
-        msg = "the port CLI is not built yet; it ships in v0.8"
-        raise GymratError(
-            msg,
-            hint="run the oracle side only until the v0.8 CLI lands",
-        )
+        env = os.environ.copy()
+        env["NO_COLOR"] = "1"
+        env.pop("FORCE_COLOR", None)
+        return _run([sys.executable, "-m", "gymrat_py.cli.app", *args], cwd=cwd, env=env)
