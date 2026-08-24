@@ -136,8 +136,6 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_an
     assert re.search(r"git branch -D", hint_of(excinfo.value) or "", re.IGNORECASE)
 
 
-# killGitDuringWorktreeAdd sends POSIX signal 9 via a post-checkout hook;
-# Windows cannot deliver that signal to the git parent process.
 @pytest.mark.skipif(sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only")
 def test_create_workspace_when_worktree_add_dies_does_unwind_and_fail_on_that_step(
     repo: str,
@@ -245,17 +243,6 @@ def test_create_workspace_when_directory_is_not_a_git_repository_does_raise(
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_git_exclude_when_entry_missing_does_append_and_keep_existing(repo: str):
-    path = _exclude_path(repo)
-    path.write_text("node_modules/\n", encoding="utf-8")
-
-    ensure_git_exclude(repo)
-
-    lines = path.read_text(encoding="utf-8").split("\n")
-    assert "node_modules/" in lines
-    assert lines.count(".gymrat/") == 1
-
-
 def test_ensure_git_exclude_when_already_listed_does_leave_file_byte_for_byte_unchanged(repo: str):
     before = "node_modules/\n.gymrat/\n"
     path = _exclude_path(repo)
@@ -266,7 +253,7 @@ def test_ensure_git_exclude_when_already_listed_does_leave_file_byte_for_byte_un
     assert path.read_text(encoding="utf-8") == before
 
 
-def test_ensure_git_exclude_when_appending_does_not_rewrite_existing_content(repo: str):
+def test_ensure_git_exclude_when_entry_missing_does_append_it_after_existing_content(repo: str):
     existing = "node_modules/\nbuild/\n"
     path = _exclude_path(repo)
     path.write_text(existing, encoding="utf-8")
@@ -360,7 +347,7 @@ def test_remove_worktrees_when_git_refuses_does_warn_naming_it_and_remove_the_ot
         pytest.param("scratch.txt", True, id="untracked-file-added"),
     ],
 )
-def test_is_worktree_dirty_reports_the_state_of_the_worktree(
+def test_is_worktree_dirty_when_worktree_edited_does_report_dirty(
     repo: str, baseline: BaselineRef, edit: str | None, expected: bool
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -440,7 +427,7 @@ def test_recreate_workspace_when_both_on_disk_does_leave_experiment_work_untouch
 # ---------------------------------------------------------------------------
 
 
-def test_commit_workspace_does_commit_staged_and_untracked_changes_and_return_new_head(
+def test_commit_workspace_when_changes_staged_and_untracked_does_commit_and_return_new_head(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -473,7 +460,7 @@ def test_commit_workspace_when_nothing_to_commit_does_raise_gymrat_error_leaving
     assert _git(["rev-parse", "HEAD"], experiment) == before
 
 
-def test_revert_workspace_does_restore_head_and_drop_untracked_files(
+def test_revert_workspace_when_worktree_dirty_does_restore_head_and_drop_untracked_files(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -487,7 +474,7 @@ def test_revert_workspace_does_restore_head_and_drop_untracked_files(
     assert not (Path(experiment) / "untracked.txt").exists()
 
 
-def test_worktree_head_does_return_the_checked_out_sha(
+def test_worktree_head_when_worktree_on_branch_does_return_the_checked_out_sha(
     repo: str, baseline_sha: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
@@ -495,7 +482,7 @@ def test_worktree_head_does_return_the_checked_out_sha(
     assert worktree_head(experiment_worktree_dir(repo)) == baseline_sha
 
 
-def test_advance_baseline_does_land_the_baseline_detached_at_the_target_sha(
+def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_at_it(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)

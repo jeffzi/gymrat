@@ -14,6 +14,7 @@ from typing import Annotated
 import typer
 
 from gymrat_py.cli.compare_cmd import compare
+from gymrat_py.cli.loop_cmds import discard, finalize, iterate, keep, start, status
 from gymrat_py.cli.measure_cmd import measure
 from gymrat_py.cli.shared import BUGS_URL, DebugOption, set_debug_mode
 
@@ -92,6 +93,12 @@ def _root(*, debug: DebugOption = False, version: _VersionOption = False) -> Non
 
 app.command("compare", epilog=_COMPARE_EPILOGUE)(compare)
 app.command("measure", epilog=_MEASURE_EPILOGUE)(measure)
+app.command("start")(start)
+app.command("iterate")(iterate)
+app.command("keep")(keep)
+app.command("discard")(discard)
+app.command("finalize")(finalize)
+app.command("status")(status)
 
 
 def main() -> None:

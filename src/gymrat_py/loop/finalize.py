@@ -1,0 +1,205 @@
+"""Collapse a session's kept commits into one and close the session.
+
+The squash is built with git plumbing (``commit-tree`` against the session
+branch's tree), so nothing is ever checked out: the user's own working copy stays
+on whatever branch it was on, which a ``merge --squash`` could not promise. The
+session branch is left in place too, so the iteration-by-iteration history that
+earned the squash stays readable.
+"""
+
+from dataclasses import dataclass
+
+from gymrat_py.errors import GymratError
+from gymrat_py.git import try_git
+from gymrat_py.report.format import pluralize
+from gymrat_py.report.loop import SHORT_SHA_LENGTH
+from gymrat_py.session.clock import now_iso
+from gymrat_py.session.records import FinalizeRecord, KeepRecord, SessionLogRecord
+from gymrat_py.session.store import append_record, require_open_session
+from gymrat_py.session.workspace import is_worktree_dirty, remove_worktrees, run_git_step
+
+#: The hint a refusal points at whenever the fix is to settle the last iteration.
+_SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."
+
+#: The body line a committed keep gets when it names neither a message nor a commit.
+_UNNAMED_KEEP_LINE = "(no message)"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeOptions:
+    """What a caller can hand a finalize beyond the repository it runs in."""
+
+    #: The squash commit's message; absent, one is generated from the kept commits.
+    message: str | None = None
+    #: The branch to point at the squash commit; absent, ``<session branch>-final``.
+    branch: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeResult:
+    """One closed session: what was written to the log, and what to print about it."""
+
+    #: The record appended to the session log.
+    record: FinalizeRecord
+    #: The finalize as the agent reads it: the branch, the commit, and any cleanup left.
+    report: str
+
+
+def finalize_session(root: str, options: FinalizeOptions | None = None) -> FinalizeResult:
+    """Collapse a session's kept commits into one commit on the pinned baseline and close it.
+
+    The squash is built with plumbing — ``commit-tree`` against the session
+    branch's tree — so nothing is ever checked out: the user's own working copy
+    stays on whatever branch it was on, which a ``merge --squash`` could not
+    promise. The session branch is left in place too, so the per-iteration history
+    that earned the squash stays readable.
+
+    Holding the repository lock across the call is the caller's job: the record
+    and the worktree removal it explains must not be separable by another run.
+
+    Raises:
+        GymratError: When no open session exists, when the session kept nothing,
+            when an iteration is still unsettled, when the experiment worktree
+            carries uncommitted work, when the caller's branch name would read as
+            a git flag, when the target branch already exists, or when git refuses
+            to build the squash commit.
+    """
+    opts = options if options is not None else FinalizeOptions()
+    required = require_open_session(root, "closing the session")
+    session, state = required.session, required.state
+
+    if state.keep_count == 0:
+        message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
+        hint = "Run gymrat keep on a measured edit before closing the session."
+        raise GymratError(message, hint=hint)
+    if state.unsettled:
+        message = (
+            f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
+        )
+        raise GymratError(message, hint=_SETTLE_FIRST_HINT)
+    if is_worktree_dirty(session.worktrees.experiment):
+        message = (
+            f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "
+            "carries uncommitted work."
+        )
+        raise GymratError(message, hint=_SETTLE_FIRST_HINT)
+
+    # Rejected before any ref is read or written: git's own argument parser would
+    # read a leading dash as an option, so `--branch -m` reaches `git branch` as
+    # the rename flag and moves a branch the session never asked about.
+    if opts.branch is not None and opts.branch.startswith("-"):
+        message = (
+            f"Finalize refused: '{opts.branch}' starts with a dash, so git reads it as a flag "
+            "rather than as a branch name."
+        )
+        hint = (
+            f"Name a branch that does not start with a dash, such as "
+            f"--branch {session.branch}-final"
+        )
+        raise GymratError(message, hint=hint)
+
+    branch = opts.branch if opts.branch is not None else f"{session.branch}-final"
+    if try_git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root) is None:
+        message = f"Finalize refused: the branch '{branch}' already exists."
+        hint = f"Name another with --branch <name>, or delete it with: git branch -D {branch}"
+        raise GymratError(message, hint=hint)
+
+    message = opts.message if opts.message is not None else _generated_message(required.records)
+    commit = _squash_onto_baseline(root, session.branch, session.baseline.sha, message)
+    # `--` ends git's options, so the branch name can never be read as one whatever
+    # the leading-dash check let through.
+    run_git_step(
+        ["branch", "--", branch, commit],
+        root,
+        f"Cannot point '{branch}' at the squash commit {commit}",
+        "Inspect the branches this repository has with: git branch --list",
+    )
+
+    record = FinalizeRecord(
+        type="finalize",
+        at=now_iso(),
+        branch=branch,
+        commit=commit,
+        message=message,
+    )
+    # Record the squash before clearing the worktrees: the branch already carries
+    # the work, so a removal that fails must not leave the session open on a log
+    # that never mentions the commit the agent is about to be told to look at.
+    append_record(required.jsonl_path, record)
+
+    warnings = remove_worktrees(root, session.worktrees)
+
+    return FinalizeResult(
+        record=record,
+        report=_finalize_report(record, state.keep_count, session.branch, warnings),
+    )
+
+
+def _squash_onto_baseline(
+    root: str,
+    session_branch: str,
+    baseline_sha: str,
+    message: str,
+) -> str:
+    """Build the one commit carrying the session branch's tree onto the pinned baseline.
+
+    Reading the tree and writing the commit are both plumbing, so neither needs —
+    or moves — a checkout. The single parent is the baseline the session started
+    from, which is what makes the result a squash rather than a merge.
+    """
+    tree = run_git_step(
+        ["rev-parse", f"{session_branch}^{{tree}}"],
+        root,
+        f"Cannot read the tree of the session branch '{session_branch}'",
+        f"Check that the branch is still there: git branch --list {session_branch}",
+    ).strip()
+
+    build_hint = (
+        f"Check that {baseline_sha} is a commit this repository has: git cat-file -t {baseline_sha}"
+    )
+    return run_git_step(
+        ["commit-tree", tree, "-p", baseline_sha, "-m", message],
+        root,
+        f"Cannot build the squash commit from {session_branch} onto {baseline_sha}",
+        build_hint,
+    ).strip()
+
+
+def _generated_message(records: list[SessionLogRecord]) -> str:
+    """The squash message written when the caller supplied none.
+
+    The subject counts what was collapsed and the body lists the kept commits in
+    the order they landed, so the one commit that reaches the user's branch still
+    says what the session did — the per-iteration history stays on the session
+    branch, which nothing but the reader's curiosity brings back.
+
+    A keep whose ``message`` the log omits — which gymrat never writes, but a
+    hand-edited or older log can hold — falls back to its short commit rather than
+    dropping its line and leaving the subject claiming more than the body shows.
+    """
+    kept = [
+        record.message
+        or (record.commit[:SHORT_SHA_LENGTH] if record.commit else None)
+        or _UNNAMED_KEEP_LINE
+        for record in records
+        if isinstance(record, KeepRecord) and record.status == "committed"
+    ]
+
+    subject = f"gymrat: squash {pluralize(len(kept), 'kept iteration')}"
+    return f"{subject}\n\n" + "\n".join(kept)
+
+
+def _finalize_report(
+    record: FinalizeRecord,
+    keep_count: int,
+    session_branch: str,
+    warnings: list[str],
+) -> str:
+    """The finalize as the agent reads it, with anything git would not clean up spelled out."""
+    lines = [
+        f"Finalized onto {record.branch} as {record.commit[:SHORT_SHA_LENGTH]}",
+        f"  squashed {pluralize(keep_count, 'kept iteration')} into one commit",
+        f"  the session is closed; {session_branch} is left in place for its history",
+        *warnings,
+    ]
+    return "\n".join(lines)

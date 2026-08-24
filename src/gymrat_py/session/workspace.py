@@ -79,7 +79,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     ensure_git_exclude(root)
     _prune_stale_worktrees(root)
 
-    _run_git_step(
+    run_git_step(
         ["branch", branch, baseline.sha],
         root,
         f"Cannot create the session branch '{branch}'",
@@ -170,7 +170,7 @@ def _prune_stale_worktrees(root: str) -> None:
 
 def _add_experiment_worktree(root: str, branch: str) -> None:
     directory = experiment_worktree_dir(root)
-    _run_git_step(
+    run_git_step(
         ["worktree", "add", directory, branch],
         root,
         f"Cannot create the experiment worktree at {directory}",
@@ -180,7 +180,7 @@ def _add_experiment_worktree(root: str, branch: str) -> None:
 
 def _add_baseline_worktree(root: str, sha: str) -> None:
     directory = baseline_worktree_dir(root)
-    _run_git_step(
+    run_git_step(
         ["worktree", "add", "--detach", directory, sha],
         root,
         f"Cannot create the baseline worktree at {directory}",
@@ -224,19 +224,19 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
         GymratError: When git refuses to stage or to commit — a worktree with
             nothing to commit included.
     """
-    _run_git_step(
+    run_git_step(
         ["add", "-A"],
         experiment_dir,
         f"Cannot stage the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
     )
-    _run_git_step(
+    run_git_step(
         ["commit", "-m", message],
         experiment_dir,
         f"Cannot commit the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
     )
-    return _run_git_step(
+    return run_git_step(
         ["rev-parse", "HEAD"],
         experiment_dir,
         f"Cannot read the commit just made in {experiment_dir}",
@@ -255,13 +255,13 @@ def revert_workspace(experiment_dir: str) -> None:
     Raises:
         GymratError: When git refuses to reset or to clean.
     """
-    _run_git_step(
+    run_git_step(
         ["reset", "--hard", "HEAD"],
         experiment_dir,
         f"Cannot revert the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
     )
-    _run_git_step(
+    run_git_step(
         ["clean", "-fd"],
         experiment_dir,
         f"Cannot remove the untracked files in {experiment_dir}",
@@ -280,7 +280,7 @@ def worktree_head(directory: str) -> str:
     Raises:
         GymratError: When git refuses to read the HEAD.
     """
-    return _run_git_step(
+    return run_git_step(
         ["rev-parse", "HEAD"],
         directory,
         f"Cannot read the HEAD of the worktree at {directory}",
@@ -298,7 +298,7 @@ def is_worktree_dirty(directory: str) -> bool:
     if not _is_directory(directory):
         return False
     return (
-        _run_git_step(
+        run_git_step(
             ["status", "--porcelain"],
             directory,
             f"Cannot read the status of the worktree at {directory}",
@@ -318,7 +318,7 @@ def advance_baseline(baseline_dir: str, sha: str) -> None:
     Raises:
         GymratError: When git refuses the checkout.
     """
-    _run_git_step(
+    run_git_step(
         ["checkout", "--detach", sha],
         baseline_dir,
         f"Cannot move the baseline worktree at {baseline_dir} to {sha}",
@@ -381,7 +381,7 @@ def _is_directory(directory: str) -> bool:
     return Path(directory).is_dir()
 
 
-def _run_git_step(args: list[str], cwd: str, message: str, hint: str) -> str:
+def run_git_step(args: list[str], cwd: str, message: str, hint: str) -> str:
     """Run git in ``cwd``, turning a non-zero exit into a ``GymratError``.
 
     The error carries git's own diagnostics after ``message`` so the reader sees

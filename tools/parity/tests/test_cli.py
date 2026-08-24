@@ -20,8 +20,10 @@ from gymrat_py.session.records import BaselineRecord
 from gymrat_py.session.store import append_record
 from tools.parity import cli
 from tools.parity.cli import app
-from tools.parity.fixtures import fixture_matrix
+from tools.parity.differ import DiffEntry
+from tools.parity.fixtures import Fixture, fixture_matrix
 from tools.parity.oracle import RunResult
+from tools.parity.tests.conftest import MISSING_SESSION_FIXTURE
 
 _runner = CliRunner()
 
@@ -45,25 +47,85 @@ class _FakeRunner:
 
 
 # ---------------------------------------------------------------------------
+# _self_diff_exit_only — distinguish nondeterminism from off-contract exits
+# ---------------------------------------------------------------------------
+
+
+class _ExitStubRunner:
+    """Runner returning a scripted exit code per call; stdout/stderr unused.
+
+    The exit code for call ``i`` is ``exit_codes[min(i, len - 1)]`` so a
+    single-element list yields a constant exit (identical both runs) while a
+    two-element list scripts a first-vs-second difference.
+    """
+
+    def __init__(self, exit_codes: Sequence[int]) -> None:
+        self._exit_codes = list(exit_codes)
+        self.calls: list[tuple[list[str], Path]] = []
+
+    def run(self, args: Sequence[str], cwd: Path) -> RunResult:
+        index = min(len(self.calls), len(self._exit_codes) - 1)
+        self.calls.append((list(args), cwd))
+        return RunResult(exit_code=self._exit_codes[index], stdout="", stderr="")
+
+
+def _exit_fixture(oracle_exit: int) -> Fixture:
+    return Fixture(
+        name="exit_probe",
+        build=lambda _root: None,
+        argv=("measure",),
+        schema_version=1,
+        oracle_exit=oracle_exit,
+    )
+
+
+def test_self_diff_exit_only_when_stable_but_off_contract_does_flag_expected_path(
+    tmp_path: Path,
+):
+    runner = _ExitStubRunner([1, 1])
+    fixture = _exit_fixture(oracle_exit=2)
+
+    report = cli._self_diff_exit_only(runner, fixture, tmp_path)
+
+    assert report.differences == (DiffEntry(path="exit_code.expected", left=2, right=1),)
+    assert report.p_notes == ()
+
+
+def test_self_diff_exit_only_when_runs_disagree_does_flag_exit_code_path(
+    tmp_path: Path,
+):
+    runner = _ExitStubRunner([2, 1])
+    fixture = _exit_fixture(oracle_exit=0)
+
+    report = cli._self_diff_exit_only(runner, fixture, tmp_path)
+
+    assert report.differences == (DiffEntry(path="exit_code", left=2, right=1),)
+    assert report.p_notes == ()
+
+
+def test_self_diff_exit_only_when_both_runs_match_oracle_exit_does_report_no_diffs(
+    tmp_path: Path,
+):
+    runner = _ExitStubRunner([1, 1])
+    fixture = _exit_fixture(oracle_exit=1)
+
+    report = cli._self_diff_exit_only(runner, fixture, tmp_path)
+
+    assert report.differences == ()
+    assert report.p_notes == ()
+
+
+# ---------------------------------------------------------------------------
 # self-diff — real reference binary on both sides (phase exit criterion)
 # ---------------------------------------------------------------------------
 
 
 def test_self_diff_when_run_over_full_matrix_does_report_green(requires_oracle: None):
-    # measure_record_missing_session deliberately fails on both sides (no open
-    # session), so it is a compare-only fixture; self-diff, which requires a
-    # zero-exit document from each run, exercises every other fixture.
-    names = [
-        fixture.name
-        for fixture in fixture_matrix()
-        if fixture.name != "measure_record_missing_session"
-    ]
-
-    result = _runner.invoke(app, ["self-diff", *names])
+    result = _runner.invoke(app, ["self-diff"])
 
     assert result.exit_code == 0, result.stdout
-    for name in names:
-        assert name in result.stdout
+    for fixture in fixture_matrix():
+        assert fixture.name in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -309,18 +371,6 @@ class _RecordingRunner:
         return RunResult(exit_code=exit_code, stdout=self._payload, stderr="")
 
 
-@pytest.mark.parametrize(
-    ("name", "expected_records"),
-    [("measure_record", True), ("measure_record_missing_session", False)],
-)
-def test_fixture_matrix_when_built_does_register_record_fixtures(name: str, expected_records: bool):
-    matrix = {fixture.name: fixture for fixture in fixture_matrix()}
-
-    fixture = matrix[name]
-
-    assert fixture.records is expected_records
-
-
 def test_compare_when_record_logs_match_does_exit_zero_and_name_the_fixture(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -386,10 +436,10 @@ def test_compare_when_missing_session_fixture_fails_both_sides_does_exit_zero(
     monkeypatch.setattr(cli, "_build_oracle_runner", lambda: _StubRunner(payload, exit_code=2))
     monkeypatch.setattr(cli, "_build_port_runner", lambda: _StubRunner(payload, exit_code=2))
 
-    result = _runner.invoke(app, ["compare", "measure_record_missing_session"])
+    result = _runner.invoke(app, ["compare", MISSING_SESSION_FIXTURE])
 
     assert result.exit_code == 0, result.stdout
-    assert "measure_record_missing_session" in result.stdout
+    assert MISSING_SESSION_FIXTURE in result.stdout
 
 
 def test_self_diff_when_run_over_record_fixture_does_stay_green(monkeypatch: pytest.MonkeyPatch):

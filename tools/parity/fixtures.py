@@ -253,6 +253,11 @@ class Fixture:
             open session, and the harness additionally verifies the session log
             each side wrote (a cross-implementation round-trip). Plain fixtures
             leave it false and are compared on stdout and exit code alone.
+        oracle_exit: The reference CLI's expected exit code. Zero for every
+            ordinary fixture; a compare-only fixture sets this to the exit code
+            it deliberately provokes (e.g. a validation error), which tells
+            self-diff to compare the two runs' exit codes rather than parse
+            their stdout as JSON.
     """
 
     name: str
@@ -260,6 +265,7 @@ class Fixture:
     argv: Sequence[str]
     schema_version: int
     records: bool = False
+    oracle_exit: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -323,14 +329,8 @@ def _seed_open_session(root: Path) -> None:
 
 
 def _build_measure_record(root: Path) -> None:
-    create_scratch_repo(root)
-    _metric_target(root, "target", {"latency/time": 100, "mem/heap": 200, "count": 5})
+    _build_metric_lines_measure(root)
     _seed_open_session(root)
-
-
-def _build_measure_record_missing_session(root: Path) -> None:
-    create_scratch_repo(root)
-    _metric_target(root, "target", {"latency/time": 100, "mem/heap": 200, "count": 5})
 
 
 def _build_mitata_compare(root: Path) -> None:
@@ -574,9 +574,9 @@ def fixture_matrix() -> tuple[Fixture, ...]:
         ),
         Fixture(
             name="measure_record_missing_session",
-            build=_build_measure_record_missing_session,
+            build=_build_metric_lines_measure,
             argv=_RECORD_ARGV,
             schema_version=1,
-            records=False,
+            oracle_exit=2,
         ),
     )

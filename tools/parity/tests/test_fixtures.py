@@ -17,6 +17,7 @@ from tools.parity.fixtures import (
     write_mitata_emitter,
 )
 from tools.parity.oracle import OracleRunner, ensure_built, ts_repo_path
+from tools.parity.tests.conftest import MISSING_SESSION_FIXTURE, oracle_success_fixtures
 
 _EXPECTED_FIXTURE_NAMES = {
     "metric_lines_compare_band",
@@ -31,16 +32,10 @@ _EXPECTED_FIXTURE_NAMES = {
     "ref_compare",
     "ref_measure",
     "measure_record",
-    "measure_record_missing_session",
+    MISSING_SESSION_FIXTURE,
 }
 
-# measure_record_missing_session drives measure --record with no open session, so
-# the reference binary is meant to reject it (exit 2). It is a compare-only
-# fixture — both sides fail identically and compare's exit-code agreement passes
-# it — so the success-path checks below run every other fixture.
-_ORACLE_SUCCESS_FIXTURES = tuple(
-    fixture for fixture in fixture_matrix() if fixture.name != "measure_record_missing_session"
-)
+_ORACLE_SUCCESS_FIXTURES = oracle_success_fixtures()
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -191,6 +186,18 @@ def test_fixture_matrix_when_called_does_return_all_named_entries():
     assert isinstance(matrix, tuple)
     assert all(isinstance(fixture, Fixture) for fixture in matrix)
     assert {fixture.name for fixture in matrix} == _EXPECTED_FIXTURE_NAMES
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_records"),
+    [("measure_record", True), (MISSING_SESSION_FIXTURE, False)],
+)
+def test_fixture_matrix_when_built_does_register_record_fixtures(name: str, expected_records: bool):
+    matrix = {fixture.name: fixture for fixture in fixture_matrix()}
+
+    fixture = matrix[name]
+
+    assert fixture.records is expected_records
 
 
 # ---------------------------------------------------------------------------

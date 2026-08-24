@@ -177,14 +177,35 @@ def _run_json(runner: Runner, fixture: Fixture, root: Path) -> object:
     return json.loads(result.stdout)
 
 
+def _self_diff_exit_only(runner: Runner, fixture: Fixture, root: Path) -> DiffReport:
+    """Diff a compare-only fixture's two runs by exit code instead of stdout.
+
+    A fixture with a nonzero ``oracle_exit`` deliberately provokes a failure, so
+    its stdout is not parseable JSON; comparing the two runs' exit codes against
+    each other and against the fixture's declared ``oracle_exit`` still proves
+    the failure is deterministic.
+    """
+    first_exit = runner.run(list(fixture.argv), cwd=root).exit_code
+    second_exit = runner.run(list(fixture.argv), cwd=root).exit_code
+    if first_exit == second_exit == fixture.oracle_exit:
+        return DiffReport(differences=(), p_notes=())
+    if first_exit != second_exit:
+        entry = DiffEntry(path="exit_code", left=first_exit, right=second_exit)
+    else:
+        entry = DiffEntry(path="exit_code.expected", left=fixture.oracle_exit, right=first_exit)
+    return DiffReport(differences=(entry,), p_notes=())
+
+
 def run_self_diff(runner: Runner, fixtures: Sequence[Fixture]) -> SelfDiffOutcome:
     """Diff the reference binary against itself for each fixture.
 
     Each fixture is built into a fresh temporary directory, then its argv is run
-    twice through ``runner`` (cwd = that directory) and the two parsed-JSON
-    documents are compared with :func:`~tools.parity.differ.diff_json`. Identical
-    deterministic output yields a green report; volatile worktree fields are
-    normalized by the differ.
+    twice through ``runner`` (cwd = that directory). For an ordinary fixture
+    (``oracle_exit == 0``) the two parsed-JSON documents are compared with
+    :func:`~tools.parity.differ.diff_json`; identical deterministic output yields
+    a green report, and volatile worktree fields are normalized by the differ. A
+    compare-only fixture (nonzero ``oracle_exit``) is instead diffed by exit code
+    via :func:`_self_diff_exit_only`, since its stdout is not JSON.
 
     Args:
         runner: The runner used for both sides of every fixture.
@@ -198,9 +219,12 @@ def run_self_diff(runner: Runner, fixtures: Sequence[Fixture]) -> SelfDiffOutcom
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixture.build(root)
-            first = _run_json(runner, fixture, root)
-            second = _run_json(runner, fixture, root)
-            report = diff_json(first, second)
+            if fixture.oracle_exit != 0:
+                report = _self_diff_exit_only(runner, fixture, root)
+            else:
+                first = _run_json(runner, fixture, root)
+                second = _run_json(runner, fixture, root)
+                report = diff_json(first, second)
         results.append(FixtureDiff(name=fixture.name, report=report))
     return SelfDiffOutcome(results=tuple(results))
 

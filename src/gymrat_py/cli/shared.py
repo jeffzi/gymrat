@@ -6,6 +6,7 @@ and the render-mode resolution — with no dependency on the heavy statistics
 stack or the command bodies, so importing it stays cheap.
 """
 
+import asyncio
 import contextlib
 import os
 import re
@@ -36,6 +37,7 @@ from gymrat_py.report.types import FailOnCondition, GeomeanFailOn, RegressedFail
 from gymrat_py.sampling import RunOptions, TargetSpec
 from gymrat_py.session.lock import acquire_lock
 from gymrat_py.session.paths import lockfile_path, repo_root
+from gymrat_py.signals import install_termination_cleanup
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -325,6 +327,26 @@ async def with_repo_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T
         release()
 
 
+async def run_with_signal_abort[T](
+    execute: Callable[[asyncio.Event], Awaitable[T]],
+) -> T:
+    """Run ``execute`` with an abort event a termination signal trips.
+
+    ``execute`` receives an :class:`asyncio.Event` to hand the in-flight bench so
+    a ``SIGINT`` / ``SIGTERM`` sets it and the current sample is abandoned rather
+    than the process being torn down mid-command. The signal handler owns the
+    exit itself (``128 +`` the signal number); this only wires the event and
+    always removes the cleanup afterward, so a completed run leaves no handler
+    behind.
+    """
+    abort = asyncio.Event()
+    uninstall = install_termination_cleanup(abort.set)
+    try:
+        return await execute(abort)
+    finally:
+        uninstall()
+
+
 # ---------------------------------------------------------------------------
 # Flag dataclasses
 # ---------------------------------------------------------------------------
@@ -407,6 +429,14 @@ RecordOption = Annotated[
     bool,
     typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
 ]
+MessageOption = Annotated[
+    str | None, typer.Option("--message", "-m", help="commit message for the settled edit")
+]
+BranchOption = Annotated[
+    str | None,
+    typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
+]
+ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +473,11 @@ class ReportRenderers[T]:
     json: Callable[[T], str]
 
 
+def wants_json(flags: SharedFlags) -> bool:
+    """Whether ``flags.format`` selects the JSON document rather than the text report."""
+    return flags.format == OutputFormat.json.value
+
+
 def emit_report[T](
     result: T,
     flags: SharedFlags,
@@ -456,8 +491,5 @@ def emit_report[T](
     ``color`` is left unset. The JSON document is never styled, so it ignores
     ``render_opts`` entirely.
     """
-    if flags.format == "json":
-        output = renderers.json(result)
-    else:
-        output = renderers.text(result, render_opts)
+    output = renderers.json(result) if wants_json(flags) else renderers.text(result, render_opts)
     write_and_flush(sys.stdout, output + "\n")

@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A `--record` (`-r`) flag for `gymrat measure` that appends the run to a per-repository session log
-  as a labeled baseline, capturing each round's raw samples. Recording requires an open session; a
+  as a labelled baseline, capturing each round's raw samples. Recording requires an open session; a
   missing or already-finalized session, or a run outside a git repository, stops the command before
-  it benchmarks so a long run is never discarded with nowhere to record it.
+  it benchmarks so a long run is never discarded with nowhere to record it. Sessions are opened by
+  the forthcoming session command; until it ships, `--record` reports that no session is open.
 
 ## [0.8.0] - 2026-08-24
 

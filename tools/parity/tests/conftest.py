@@ -10,8 +10,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from tools.parity.fixtures import Fixture
 
 # tools/parity/tests/conftest.py -> repo root is three levels up.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -52,3 +56,22 @@ def requires_oracle():
         pytest.skip("node is not available on PATH")
     if not _ts_repo_available():
         pytest.skip("reference checkout is unavailable or not at the pinned commit")
+
+
+# The reference binary is meant to reject this fixture (exit 2): it drives
+# measure --record with no open session. It is a compare-only fixture — both
+# sides fail identically and exit-code agreement passes it — so it is excluded
+# from checks that expect a zero-exit JSON document from every fixture.
+MISSING_SESSION_FIXTURE = "measure_record_missing_session"
+
+
+def oracle_success_fixtures() -> "tuple[Fixture, ...]":
+    """Return matrix fixtures the reference CLI is expected to exit zero for.
+
+    Excludes compare-only fixtures (nonzero ``oracle_exit``), such as
+    :data:`MISSING_SESSION_FIXTURE`, which deliberately fail and are verified
+    by exit-code agreement instead of a parsed JSON document.
+    """
+    from tools.parity.fixtures import fixture_matrix
+
+    return tuple(fixture for fixture in fixture_matrix() if fixture.oracle_exit == 0)

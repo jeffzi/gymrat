@@ -139,7 +139,7 @@ def test_measure_when_bench_missing_does_exit_two_with_message_on_stderr():
     ],
 )
 @pytest.mark.usefixtures("_in_non_repo")
-def test_measure_when_compare_only_option_given_does_exit_two(option: list[str]):
+def test_measure_when_unsupported_option_given_does_exit_two(option: list[str]):
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh", *option])
 
     assert result.exit_code == 2
@@ -160,6 +160,15 @@ def _finalize_session(repo: str) -> None:
     write_session_log(repo, session_record(), (finalize_record(),))
 
 
+@pytest.fixture
+def record_repo(monkeypatch: pytest.MonkeyPatch, create_scratch_repo: Callable[[], str]) -> str:
+    """A scratch git repo, chdir'd into, with ``resolve_config`` stubbed for ``--record`` tests."""
+    repo = create_scratch_repo()
+    monkeypatch.chdir(repo)
+    _stub_resolve(monkeypatch)
+    return repo
+
+
 @pytest.mark.parametrize(
     ("positional", "label"),
     [
@@ -167,55 +176,34 @@ def _finalize_session(repo: str) -> None:
         pytest.param("build=main", "build", id="label=ref"),
     ],
 )
-def test_measure_when_record_and_open_session_does_append_baseline_carrying_label_and_rounds(
+def test_measure_when_record_and_open_session_does_append_baseline_and_print_report_note(
     monkeypatch: pytest.MonkeyPatch,
-    create_scratch_repo: Callable[[], str],
+    record_repo: str,
     positional: str,
     label: str,
 ):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    _open_session(repo)
-    _stub_resolve(monkeypatch)
+    _open_session(record_repo)
     rounds: list[dict[str, float]] = [{"latency": 41}, {"latency": 43}]
     _capture_measure(monkeypatch, create_measurement_result(label=label, rounds=rounds))
 
     result = runner.invoke(app, ["measure", positional, "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 0
-    recorded = read_records(session_jsonl_path(repo))[-1]
+    recorded = read_records(session_jsonl_path(record_repo))[-1]
     assert isinstance(recorded, BaselineRecord)
     assert recorded.type == "baseline"
     assert ISO_PATTERN.match(recorded.at)
     assert recorded.label == label
     assert recorded.samples == tuple(rounds)
-
-
-def test_measure_when_record_and_open_session_does_print_report_and_note(
-    monkeypatch: pytest.MonkeyPatch,
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    _open_session(repo)
-    _stub_resolve(monkeypatch)
-    _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
-
-    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
-
-    assert result.exit_code == 0
-    assert "main" in result.stdout
+    assert label in result.stdout
     assert re.search(r"recorded to session", result.stdout, re.IGNORECASE)
 
 
 def test_measure_when_record_and_json_format_does_route_note_to_stderr(
     monkeypatch: pytest.MonkeyPatch,
-    create_scratch_repo: Callable[[], str],
+    record_repo: str,
 ):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    _open_session(repo)
-    _stub_resolve(monkeypatch)
+    _open_session(record_repo)
     _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
 
     result = runner.invoke(
@@ -227,13 +215,10 @@ def test_measure_when_record_and_json_format_does_route_note_to_stderr(
     assert re.search(r"recorded to session", result.stderr, re.IGNORECASE)
 
 
+@pytest.mark.usefixtures("record_repo")
 def test_measure_when_record_and_no_session_does_exit_two_without_benching(
     monkeypatch: pytest.MonkeyPatch,
-    create_scratch_repo: Callable[[], str],
 ):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    _stub_resolve(monkeypatch)
     captured = _capture_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
@@ -245,33 +230,28 @@ def test_measure_when_record_and_no_session_does_exit_two_without_benching(
 
 def test_measure_when_record_and_finalized_session_does_exit_two_without_benching(
     monkeypatch: pytest.MonkeyPatch,
-    create_scratch_repo: Callable[[], str],
+    record_repo: str,
 ):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    _finalize_session(repo)
-    _stub_resolve(monkeypatch)
+    _finalize_session(record_repo)
     captured = _capture_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 2
     assert captured == []
+    assert session_record().session_id in result.stderr
     assert "gymrat start" in result.stderr
 
 
 def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     monkeypatch: pytest.MonkeyPatch,
-    create_scratch_repo: Callable[[], str],
+    record_repo: str,
 ):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    _open_session(repo)
-    _stub_resolve(monkeypatch)
+    _open_session(record_repo)
     _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0
-    assert read_records(session_jsonl_path(repo)) == [session_record()]
+    assert read_records(session_jsonl_path(record_repo)) == [session_record()]
     assert "recorded to session" not in result.stdout
