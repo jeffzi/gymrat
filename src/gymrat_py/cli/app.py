@@ -50,6 +50,8 @@ Examples:
   • gymrat measure --bench "npm run bench"
 
   • gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
+
+  • gymrat measure main --bench "npm run bench" --record
 """
 
 
