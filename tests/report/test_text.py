@@ -23,8 +23,10 @@ from tests.report._inputs import (
     cells_of,
     create_candidate,
     create_comparison_result,
+    delta_cell,
     exact_metric,
     exact_verdict,
+    last_table_row,
     line_containing,
     line_starting_with,
     metric_meta,
@@ -32,26 +34,8 @@ from tests.report._inputs import (
     signed_rank_metric,
     strip_ansi,
     styles_at,
-    table_rows,
     two_kind_result,
 )
-
-
-@pytest.fixture(autouse=True)
-def _no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-
-
-def _delta_cell(line: str) -> str:
-    """The last cell of a rendered table line — the delta/verdict column."""
-    return cells_of(line)[-1]
-
-
-def _last_table_row(report: str) -> str:
-    """The last rendered table row of a report — the row the table closes on."""
-    return table_rows(report)[-1]
-
 
 # ---------------------------------------------------------------------------
 # run header
@@ -553,7 +537,7 @@ def test_render_report_when_an_aggregate_carries_a_band_does_state_it_behind_the
 ):
     row = line_starting_with(render_report(two_kind_result()), label)
 
-    assert _delta_cell(row).strip() == expected
+    assert delta_cell(row).strip() == expected
 
 
 def test_render_report_when_flat_geomean_carries_a_band_does_state_it_behind_the_delta():
@@ -564,13 +548,13 @@ def test_render_report_when_flat_geomean_carries_a_band_does_state_it_behind_the
 
     row = line_starting_with(render_report(result), "geomean")
 
-    assert _delta_cell(row).strip() == "-5.8%  ±1.2%"
+    assert delta_cell(row).strip() == "-5.8%  ±1.2%"
 
 
 def test_render_report_when_an_aggregate_has_no_band_does_print_the_delta_alone():
     row = line_starting_with(render_report(two_kind_result()), "geomean · memory")
 
-    assert _delta_cell(row).strip() == "-7.0%"
+    assert delta_cell(row).strip() == "-7.0%"
 
 
 def test_render_report_when_only_the_aggregate_carries_a_band_does_widen_the_verdict_column():
@@ -588,14 +572,14 @@ def test_render_report_when_only_the_aggregate_carries_a_band_does_widen_the_ver
         if (bare := strip_ansi(line)) and set(bare) <= set("─┼┬")
     )
 
-    assert _delta_cell(row).strip() == "-0.1%  ±0.5%"
+    assert delta_cell(row).strip() == "-0.1%  ±0.5%"
     assert len(strip_ansi(row).rstrip()) <= len(rule)
 
 
 def test_render_report_when_an_aggregate_carries_a_band_does_line_it_up_with_metric_rows():
     report = render_report(two_kind_result())
 
-    assert _delta_cell(line_starting_with(report, "geomean · time")).index("±") == _delta_cell(
+    assert delta_cell(line_starting_with(report, "geomean · time")).index("±") == delta_cell(
         line_starting_with(report, "  alive_check")
     ).index("±")
 
@@ -620,6 +604,6 @@ def test_render_report_when_closing_the_table_does_end_on_the_geomean_row():
         metrics={"a/time": signed_rank_metric(verdict="improved", delta=-6)}
     )
 
-    row = _last_table_row(render_report(result))
+    row = last_table_row(render_report(result))
 
     assert cells_of(row)[0].strip() == "geomean (10 stable metrics)"

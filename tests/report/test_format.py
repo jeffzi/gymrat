@@ -749,7 +749,15 @@ def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint(
 # ---------------------------------------------------------------------------
 
 
-def test_report_options_carries_an_optional_color_override():
-    assert ReportOptions().color is None
-    assert ReportOptions(color=True).color is True
-    assert ReportOptions(color=False).color is False
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        pytest.param(ReportOptions(), None, id="default-defers"),
+        pytest.param(ReportOptions(color=True), True, id="forced-on"),
+        pytest.param(ReportOptions(color=False), False, id="forced-off"),
+    ],
+)
+def test_report_options_carries_an_optional_color_override(
+    options: ReportOptions, expected: bool | None
+):
+    assert options.color is expected

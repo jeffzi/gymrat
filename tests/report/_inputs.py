@@ -183,7 +183,7 @@ def band_metric(
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CandidateSpec:
     """One candidate's signed-rank outcome against the shared baseline."""
 
@@ -439,7 +439,7 @@ def exact_metric(
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class NWayCandidate:
     """One candidate's signed-rank outcome, carrying its own measured median."""
 
@@ -832,6 +832,9 @@ _TRAILING_SGR_RUN = re.compile(r"(?:\x1b\[[0-9;]*m)*$")
 _RULE = re.compile(r"^─+┼")
 # A section border: only dashes and top-T junctions, edge to edge.
 _BORDER = re.compile(r"^[─┬]+$")
+# A line dimmed end to end: opens with SGR 2 and closes with a reset. Rich closes
+# a dim span with a full reset (SGR 0) rather than the incremental dim-off SGR 22.
+DIMMED_LINE = re.compile(r"^\x1b\[2m.*\x1b\[0m$")
 
 
 def strip_ansi(text: str) -> str:
@@ -847,6 +850,16 @@ def table_rows(report: str) -> list[str]:
 def cells_of(line: str) -> list[str]:
     """The cells of a rendered table line, padding included."""
     return line.split(_SEPARATOR)
+
+
+def delta_cell(line: str) -> str:
+    """The last cell of a rendered table line — the delta/verdict column."""
+    return cells_of(line)[-1]
+
+
+def last_table_row(report: str) -> str:
+    """The last rendered table row of a report — the row the table closes on."""
+    return table_rows(report)[-1]
 
 
 def line_starting_with(report: str, prefix: str) -> str:
@@ -1001,6 +1014,7 @@ def highlight_lines(report: str) -> list[str]:
 
 
 __all__ = [
+    "DIMMED_LINE",
     "CandidateSpec",
     "MetricEntry",
     "Metrics",
@@ -1012,12 +1026,14 @@ __all__ = [
     "create_candidate",
     "create_comparison_result",
     "create_measurement_result",
+    "delta_cell",
     "exact_metric",
     "exact_verdict",
     "geomean_of",
     "grouped_comparison",
     "highlight_lines",
     "kind_metric",
+    "last_table_row",
     "line_containing",
     "line_starting_with",
     "measured_metric",

@@ -51,12 +51,6 @@ if TYPE_CHECKING:
     from gymrat_py.report.types import ComparisonResult
 
 
-@pytest.fixture(autouse=True)
-def _no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-
-
 # ---------------------------------------------------------------------------
 # verdict summary
 # ---------------------------------------------------------------------------

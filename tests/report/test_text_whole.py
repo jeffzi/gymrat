@@ -62,12 +62,6 @@ _HEADER = (
 )
 
 
-@pytest.fixture(autouse=True)
-def _no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-
-
 def _normalized_highlights(report: str) -> list[str]:
     """The highlight block's lines with runs of whitespace collapsed to one space.
 
