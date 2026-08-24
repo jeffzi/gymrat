@@ -650,16 +650,14 @@ def _drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
     worth reporting; the parent prefix is redundant noise.
     """
     locs = [error["loc"] for error in errors]
-    kept: list[ErrorDetails] = []
-    for index, error in enumerate(errors):
-        loc = error["loc"]
-        is_prefix = any(
-            other != index and len(candidate) > len(loc) and candidate[: len(loc)] == loc
-            for other, candidate in enumerate(locs)
+    return [
+        error
+        for error in errors
+        if not any(
+            len(candidate) > len(error["loc"]) and candidate[: len(error["loc"])] == error["loc"]
+            for candidate in locs
         )
-        if not is_prefix:
-            kept.append(error)
-    return kept
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -799,10 +797,10 @@ def _to_finalize(model: _FinalizeModel) -> FinalizeRecord:
 # ---------------------------------------------------------------------------
 
 
-def _parser_for(
+def _parser_for[M: BaseModel](
     record_type: str,
-    model_cls: type[BaseModel],
-    to_dataclass: Callable[..., SessionLogRecord],
+    model_cls: type[M],
+    to_dataclass: Callable[[M], SessionLogRecord],
 ) -> Callable[[dict[str, object]], SessionLogRecord]:
     """Build a parser that validates against ``model_cls`` and words its failures."""
 
