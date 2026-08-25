@@ -193,6 +193,8 @@ def test_append_record_when_hard_killed_mid_append_does_leave_a_log_the_next_run
         if child.poll() is None:
             child.kill()
             child.wait()
+        if child.stderr is not None:
+            child.stderr.close()
 
     records = read_records(str(path))
     expected_prefix = [session_record(), *(committed_keep(seq=seq) for seq in range(clean_count))]
@@ -258,6 +260,8 @@ def test_append_record_when_processes_append_together_does_never_interleave_byte
             if child.poll() is None:
                 child.kill()
                 child.wait()
+            if child.stderr is not None:
+                child.stderr.close()
 
     assert [code for code, _ in outcomes] == [0] * process_count, [err for _, err in outcomes]
     lines = [line for line in path.read_text(encoding="utf-8").split("\n") if line]

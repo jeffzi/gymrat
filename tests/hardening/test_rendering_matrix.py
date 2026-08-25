@@ -134,6 +134,8 @@ def _run_report_on_pty(args: list[str], repo: str) -> str:
             proc.wait()
         reader.join(timeout=10)
         os.close(master)
+        if proc.stderr is not None:
+            proc.stderr.close()
     return b"".join(chunks).decode("utf-8", "replace")
 
 

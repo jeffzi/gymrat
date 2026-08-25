@@ -187,6 +187,8 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
             if child.poll() is None:
                 child.kill()
                 child.wait()
+            if child.stderr is not None:
+                child.stderr.close()
 
     return _RaceOutcome(
         won_pid_values=[path.read_text(encoding="utf-8").strip() for path in won],
