@@ -657,7 +657,8 @@ async def test_start_when_disconnect_raises_after_normal_stream_does_still_resol
     client = DisconnectFailingClient([SimpleNamespace(total_cost_usd=0.05)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    outcome = await run_session(driver, collecting_observer().observer)
+    with pytest.warns(RuntimeWarning, match="disconnect failed"):
+        outcome = await run_session(driver, collecting_observer().observer)
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.05
