@@ -1,5 +1,6 @@
 """Supervisor: the session event vocabulary and the observers that consume it."""
 
+from gymrat_py.supervisor.claude import ClientFactory, create_claude_driver
 from gymrat_py.supervisor.driver import (
     Driver,
     DriverSession,
@@ -32,6 +33,7 @@ from gymrat_py.supervisor.supervise import SupervisionResult, supervise
 __all__ = [
     "SUMMARY_MAX_CHARS",
     "CapEvent",
+    "ClientFactory",
     "DirtyInfo",
     "Driver",
     "DriverSession",
@@ -51,6 +53,7 @@ __all__ = [
     "UsageUpdateEvent",
     "combine_observers",
     "compose_kickoff",
+    "create_claude_driver",
     "create_event_log_writer",
     "summarize",
     "summarize_input",

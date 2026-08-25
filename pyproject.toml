@@ -5,6 +5,7 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "claude-agent-sdk>=0.2,<0.3",
   "pydantic>=2,<3",
   "rich>=15.0,<16",
   "scipy>=1.18,<2",
