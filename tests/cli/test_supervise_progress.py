@@ -309,6 +309,26 @@ def test_budget_when_now_omitted_does_use_the_wall_clock(monkeypatch: pytest.Mon
     assert _contains(factory.line.writes, "1m 5s / 60m")
 
 
+@pytest.mark.parametrize(
+    ("max_minutes", "expected"),
+    [
+        pytest.param(5.5, "1m 5s / 5.5m", id="fractional-keeps-decimal"),
+        pytest.param(10.0, "1m 5s / 10m", id="whole-float-drops-decimal"),
+        pytest.param(10, "1m 5s / 10m", id="integer-has-no-decimal"),
+    ],
+)
+def test_budget_when_max_minutes_given_does_render_the_actual_cap_value(
+    monkeypatch: pytest.MonkeyPatch, max_minutes: float, expected: str
+):
+    harness = set_up_reporter(
+        monkeypatch, mode="overwrite", max_minutes=max_minutes, now=Clock(66_000)
+    )
+
+    fire_launch(harness.reporter.observer, 1000)
+
+    assert _contains(harness.line.writes, expected)
+
+
 # ---------------------------------------------------------------------------
 # loop segment
 # ---------------------------------------------------------------------------
@@ -777,6 +797,23 @@ def test_plain_when_launched_without_spend_cap_does_print_bare_caps(
     fire_launch(harness.reporter.observer, 1000)
 
     assert "caps 30m" in harness.line.writes
+
+
+@pytest.mark.parametrize(
+    ("max_minutes", "expected"),
+    [
+        pytest.param(5.5, "caps 5.5m", id="fractional-keeps-decimal"),
+        pytest.param(10.0, "caps 10m", id="whole-float-drops-decimal"),
+    ],
+)
+def test_plain_caps_when_max_minutes_given_does_render_the_actual_cap_value(
+    monkeypatch: pytest.MonkeyPatch, max_minutes: float, expected: str
+):
+    harness = set_up_reporter(monkeypatch, max_minutes=max_minutes)
+
+    fire_launch(harness.reporter.observer, 1000)
+
+    assert expected in harness.line.writes
 
 
 def test_plain_when_usage_update_does_print_cost(monkeypatch: pytest.MonkeyPatch):

@@ -108,6 +108,14 @@ def _format_cost(usd: float) -> str:
     return f"${usd:.2f}"
 
 
+def _format_minutes(minutes: float) -> str:
+    # Render the wall-clock cap at its actual value: whole numbers drop the
+    # decimal point (10.0 -> "10"), fractional caps keep minimal digits
+    # (5.5 -> "5.5"). ``:g`` stays in fixed notation for every cap in range
+    # (the flag ceiling is 35791), so no scientific notation can leak out.
+    return f"{minutes:g}"
+
+
 def _format_iter_label(count: int, max_iterations: int | None) -> str:
     return f"iter {count}/{max_iterations}" if max_iterations is not None else f"iter {count}"
 
@@ -118,9 +126,9 @@ def _format_iter_label(count: int, max_iterations: int | None) -> str:
 
 
 def _build_budget_segment(
-    elapsed: int, cost_usd: float | None, max_minutes: int, max_usd: float | None
+    elapsed: int, cost_usd: float | None, max_minutes: float, max_usd: float | None
 ) -> str:
-    budget = f"{format_duration(elapsed)} / {max_minutes}m"
+    budget = f"{format_duration(elapsed)} / {_format_minutes(max_minutes)}m"
     if max_usd is not None:
         cost_str = _format_cost(cost_usd) if cost_usd is not None else "$—"
         budget += f" · {cost_str} / {_format_cost(max_usd)}"
@@ -190,7 +198,7 @@ def _build_liveness_segment(liveness: _Liveness, now: int) -> str:
 class _ReporterCtx:
     now: Callable[[], int]
     read_session_fn: Callable[[], ReadSessionResult]
-    max_minutes: int
+    max_minutes: float
     max_usd: float | None
     max_iterations: int | None
     is_plain: bool
@@ -274,7 +282,7 @@ def _handle_launch(ctx: _ReporterCtx, event: LaunchEvent) -> None:
     ctx.launch_timestamp = event.timestamp
     _try_read_session(ctx)
     if ctx.is_plain:
-        caps_parts = [f"{ctx.max_minutes}m"]
+        caps_parts = [f"{_format_minutes(ctx.max_minutes)}m"]
         if ctx.max_usd is not None:
             caps_parts.append(_format_cost(ctx.max_usd))
         ctx.status_line.write(f"caps {', '.join(caps_parts)}")
@@ -355,7 +363,7 @@ def _make_default_read(root: str) -> Callable[[], ReadSessionResult]:
 def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter knob, mirroring the option surface
     *,
     root: str,
-    max_minutes: int,
+    max_minutes: float,
     max_usd: float | None = None,
     max_iterations: int | None = None,
     mode: RenderMode,

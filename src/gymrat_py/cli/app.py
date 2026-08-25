@@ -17,6 +17,7 @@ from gymrat_py.cli.compare_cmd import compare
 from gymrat_py.cli.loop_cmds import discard, finalize, iterate, keep, start, status
 from gymrat_py.cli.measure_cmd import measure
 from gymrat_py.cli.shared import BUGS_URL, DebugOption, set_debug_mode
+from gymrat_py.cli.supervise_cmd import supervise_command
 
 _DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
 
@@ -28,6 +29,8 @@ Examples:
   • gymrat compare old=main new=perf/decode --bench "npm run bench" --fail-on regressed
 
   • gymrat measure --bench "npm run bench"
+
+  • gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5
 
 Docs: {_DOCS_URL}
 Bugs: {BUGS_URL}
@@ -99,6 +102,7 @@ app.command("keep")(keep)
 app.command("discard")(discard)
 app.command("finalize")(finalize)
 app.command("status")(status)
+app.command("supervise")(supervise_command)
 
 
 def main() -> None:
