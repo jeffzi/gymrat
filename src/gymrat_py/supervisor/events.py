@@ -16,7 +16,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, assert_never
+from typing import Any, Literal, assert_never, cast
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -221,6 +221,81 @@ def _to_wire(event: SessionEvent) -> dict[str, object]:
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with camelCase keys."""
     return json.dumps(_to_wire(event), separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# event_from_wire
+# ---------------------------------------------------------------------------
+
+
+def _dirty_from_wire(value: object) -> Literal[False] | DirtyInfo:
+    if isinstance(value, dict):
+        return DirtyInfo(file_count=cast("int", value["fileCount"]))
+    return False
+
+
+def _launch_from_wire(wire: dict[str, Any]) -> SessionEvent:
+    return LaunchEvent(
+        timestamp=wire["timestamp"],
+        head_sha=wire["headSha"],
+        dirty=_dirty_from_wire(wire["dirty"]),
+        max_minutes=wire["maxMinutes"],
+        max_usd=wire.get("maxUsd"),
+        model=wire.get("model"),
+        runbook_path=wire["runbookPath"],
+        kickoff_summary=wire["kickoffSummary"],
+    )
+
+
+# Each builder maps a camelCase wire dict back to its event, raising KeyError on
+# a missing required field so :func:`event_from_wire` can report it as unparsed.
+_WIRE_BUILDERS: dict[str, Callable[[dict[str, Any]], SessionEvent]] = {
+    "thinking_update": lambda w: ThinkingUpdateEvent(
+        timestamp=w["timestamp"], estimated_tokens=w["estimatedTokens"], delta=w["delta"]
+    ),
+    "tool_start": lambda w: ToolStartEvent(
+        timestamp=w["timestamp"],
+        tool_use_id=w["toolUseId"],
+        tool_name=w["toolName"],
+        input=w["input"],
+        input_summary=w["inputSummary"],
+    ),
+    "tool_progress": lambda w: ToolProgressEvent(
+        timestamp=w["timestamp"], tool_use_id=w["toolUseId"], elapsed_ms=w["elapsedMs"]
+    ),
+    "tool_end": lambda w: ToolEndEvent(
+        timestamp=w["timestamp"],
+        tool_use_id=w["toolUseId"],
+        tool_name=w["toolName"],
+        duration_ms=w["durationMs"],
+        result=w["result"],
+        result_summary=w["resultSummary"],
+    ),
+    "text_delta": lambda w: TextDeltaEvent(timestamp=w["timestamp"], chunk=w["chunk"]),
+    "usage_update": lambda w: UsageUpdateEvent(timestamp=w["timestamp"], cost_usd=w["costUsd"]),
+    "cap": lambda w: CapEvent(timestamp=w["timestamp"], cap=w["cap"]),
+    "launch": _launch_from_wire,
+}
+
+
+def event_from_wire(obj: object) -> SessionEvent | None:
+    """Reconstruct a session event from its camelCase wire object.
+
+    The inverse of :func:`to_json_line`'s rendering: given a decoded JSON object,
+    return the matching event dataclass. Returns ``None`` when ``obj`` is not a
+    dict, carries no recognized ``type``, or is missing a required field.
+    """
+    if not isinstance(obj, dict):
+        return None
+    wire = cast("dict[str, Any]", obj)
+    type_name = wire.get("type")
+    builder = _WIRE_BUILDERS.get(type_name) if isinstance(type_name, str) else None
+    if builder is None:
+        return None
+    try:
+        return builder(wire)
+    except KeyError:
+        return None
 
 
 # ---------------------------------------------------------------------------

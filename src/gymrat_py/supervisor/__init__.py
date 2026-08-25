@@ -23,11 +23,13 @@ from gymrat_py.supervisor.events import (
     ToolStartEvent,
     UsageUpdateEvent,
     combine_observers,
+    event_from_wire,
     summarize,
     summarize_input,
     to_json_line,
 )
 from gymrat_py.supervisor.kickoff import KickoffResult, compose_kickoff
+from gymrat_py.supervisor.stdio import create_stdio_driver
 from gymrat_py.supervisor.supervise import SupervisionResult, supervise
 
 __all__ = [
@@ -55,6 +57,8 @@ __all__ = [
     "compose_kickoff",
     "create_claude_driver",
     "create_event_log_writer",
+    "create_stdio_driver",
+    "event_from_wire",
     "summarize",
     "summarize_input",
     "supervise",

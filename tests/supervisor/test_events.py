@@ -24,6 +24,7 @@ from gymrat_py.supervisor.events import (
     ToolStartEvent,
     UsageUpdateEvent,
     combine_observers,
+    event_from_wire,
     summarize,
     summarize_input,
     to_json_line,
@@ -205,6 +206,37 @@ def test_to_json_line_when_launch_has_optionals_does_emit_them():
     assert parsed["maxUsd"] == 1.5
     assert parsed["model"] == "opus"
     assert parsed["dirty"] == {"fileCount": 4}
+
+
+# ---------------------------------------------------------------------------
+# event_from_wire
+# ---------------------------------------------------------------------------
+
+ROUND_TRIP_EVENTS = [pytest.param(event, id=type_) for event, type_ in EVENT_SAMPLES] + [
+    pytest.param(
+        make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4)),
+        id="launch-with-optionals",
+    ),
+]
+
+
+@pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
+def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: object):
+    assert event_from_wire(json.loads(to_json_line(event))) == event  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param([1, 2, 3], id="non-dict-list"),
+        pytest.param("nope", id="non-dict-str"),
+        pytest.param({"timestamp": 1}, id="missing-type"),
+        pytest.param({"type": "mystery", "timestamp": 1}, id="unknown-type"),
+        pytest.param({"type": "usage_update", "timestamp": 6}, id="missing-required-field"),
+    ],
+)
+def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
+    assert event_from_wire(obj) is None
 
 
 # ---------------------------------------------------------------------------
