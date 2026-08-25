@@ -392,7 +392,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly_and_sweep(
+def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly(
     create_scratch_repo: Callable[[], str],
     list_worktree_dirs: Callable[..., list[str]],
     reap_groups: list[int],
@@ -421,5 +421,10 @@ def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly_and_swee
             proc.kill()
             proc.communicate()
 
+    # The second signal's contract is a prompt exit that does not re-run
+    # cleanups: it can take the re-entry guard's fast path and exit before the
+    # first signal's worktree sweep finishes, so the surviving-worktree state is
+    # timing-dependent here by design. The bounded communicate above already
+    # pins "promptly"; the deterministic single-signal test above owns the
+    # all-worktrees-swept guarantee.
     assert proc.returncode == 130
-    assert list_worktree_dirs(repo, include_main=False) == []
