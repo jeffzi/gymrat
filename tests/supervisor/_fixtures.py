@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import NamedTuple
 
+from gymrat_py.supervisor.driver import SessionPrompt
 from gymrat_py.supervisor.events import LaunchEvent, SessionEvent, SessionObserver
 
 
@@ -47,3 +48,19 @@ def read_log_lines(log_path: str | Path) -> list[dict[str, object]]:
     """Parse a JSONL log file into a list of decoded JSON objects."""
     text = Path(log_path).read_text(encoding="utf-8")
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def make_prompt(**overrides: object) -> SessionPrompt:
+    """Build a ``SessionPrompt`` from shared defaults, overridden per keyword."""
+    params: dict[str, object] = {"kickoff": "do the thing", "cwd": "/tmp/test"}
+    params.update(overrides)
+    return SessionPrompt(**params)  # type: ignore[arg-type]
+
+
+def noop_observer() -> SessionObserver:
+    """Return an observer that discards every event it receives."""
+
+    def _observer(_event: SessionEvent) -> None:
+        return None
+
+    return _observer
