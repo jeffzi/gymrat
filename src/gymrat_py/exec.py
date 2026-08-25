@@ -34,6 +34,29 @@ OUTPUT_CAP = 64 * 1024 * 1024
 _READ_CHUNK = 65536
 """Bytes requested per pipe read."""
 
+_live_process_groups: set[int] = set()
+"""Process-group leader PIDs of bench children currently alive under :func:`exec`.
+
+A PID is present only for the child's lifetime: it is added once the spawn
+succeeds and removed on every settle path (normal, abort, timeout, reader
+error). :func:`kill_live_process_groups` reads it to tear down surviving groups
+on the signal path before a worktree sweep runs.
+"""
+
+
+def kill_live_process_groups() -> None:
+    """Kill every process group with a live bench child, never raising.
+
+    Iterates a snapshot so a run settling on another task can deregister its PID
+    mid-sweep without disturbing the loop. :func:`kill_process_group` already
+    tolerates an already-dead group and warns on other failures; the extra guard
+    keeps an unexpected ``OSError`` from escaping into the signal-path cleanup
+    that calls this.
+    """
+    for pid in list(_live_process_groups):
+        with contextlib.suppress(OSError):
+            kill_process_group(pid)
+
 
 @dataclass(frozen=True, slots=True)
 class ExecOptions:
@@ -136,7 +159,13 @@ def _exit_code(returncode: int | None) -> int:
 
 
 def _terminate(proc: asyncio.subprocess.Process) -> None:
-    """Kill ``proc``'s process group and drop its stdio pipes."""
+    """Tear down a run that will not settle on its own.
+
+    Killing the process group stops the child and any descendant it left
+    running; dropping the stdio pipes then releases the reader tasks still
+    waiting on EOF, so the run can be snapshotted without awaiting a natural
+    end of stream.
+    """
     kill_process_group(proc.pid, _platform())
     _close_pipes(proc)
 
@@ -219,7 +248,6 @@ async def _cancel_all(tasks: list[asyncio.Task[object]]) -> None:
 
 
 def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code: int) -> ExecResult:
-    """Assemble an :class:`ExecResult` from captured buffers and an exit code."""
     return ExecResult(
         stdout_buf.text,
         stderr_buf.text,
@@ -263,58 +291,67 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
         stderr = f"{error}\n"
         return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
 
-    stdout_buf = OutputBuffer()
-    stderr_buf = OutputBuffer()
-    assert proc.stdout is not None  # noqa: S101 -- guaranteed by stdout=PIPE
-    assert proc.stderr is not None  # noqa: S101 -- guaranteed by stderr=PIPE
-    stdout_task = asyncio.create_task(_read_stream(proc.stdout, stdout_buf))
-    stderr_task = asyncio.create_task(_read_stream(proc.stderr, stderr_buf))
-    stdin_task = asyncio.create_task(_feed_stdin(proc, options.stdin))
-    normal_task = asyncio.create_task(_await_normal(proc, stdout_task, stderr_task))
-    abort_task = asyncio.create_task(options.abort.wait()) if options.abort is not None else None
-
-    waiters: list[asyncio.Task[object]] = [normal_task]
-    if abort_task is not None:
-        waiters.append(abort_task)
-    timeout = options.timeout_ms / 1000 if options.timeout_ms is not None else None
-
+    # Register the group leader before the stream asserts and task creation
+    # below, which sit outside the settle try; the enclosing finally guarantees
+    # deregistration even if one of those raises.
+    _live_process_groups.add(proc.pid)
     try:
-        done, _ = await asyncio.wait(
-            waiters,
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
+        stdout_buf = OutputBuffer()
+        stderr_buf = OutputBuffer()
+        assert proc.stdout is not None  # noqa: S101 -- guaranteed by stdout=PIPE
+        assert proc.stderr is not None  # noqa: S101 -- guaranteed by stderr=PIPE
+        stdout_task = asyncio.create_task(_read_stream(proc.stdout, stdout_buf))
+        stderr_task = asyncio.create_task(_read_stream(proc.stderr, stderr_buf))
+        stdin_task = asyncio.create_task(_feed_stdin(proc, options.stdin))
+        normal_task = asyncio.create_task(_await_normal(proc, stdout_task, stderr_task))
+        abort_task = (
+            asyncio.create_task(options.abort.wait()) if options.abort is not None else None
         )
 
-        if normal_task in done:
-            reader_error = normal_task.exception()
-            if reader_error is not None:
-                _terminate(proc)
-                stderr_buf.append_failure(str(reader_error))
-                return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
-            return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
-
-        _terminate(proc)
-        if abort_task is not None and abort_task in done:
-            return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
-        if options.timeout_ms is not None:
-            return ExecTimeoutError(
-                stdout_buf.text,
-                stderr_buf.text,
-                options.timeout_ms,
-                stdout_buf.byte_count,
-                stderr_buf.byte_count,
-            )
-        # asyncio.wait only returns empty-handed when a timeout elapsed, so with
-        # no timeout set this branch cannot be reached.
-        msg = "exec settled without a normal, abort, or timeout outcome"
-        raise RuntimeError(msg)
-    finally:
-        pending: list[asyncio.Task[object]] = [
-            stdout_task,
-            stderr_task,
-            stdin_task,
-            normal_task,
-        ]
+        waiters: list[asyncio.Task[object]] = [normal_task]
         if abort_task is not None:
-            pending.append(abort_task)
-        await _cancel_all(pending)
+            waiters.append(abort_task)
+        timeout = options.timeout_ms / 1000 if options.timeout_ms is not None else None
+
+        try:
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if normal_task in done:
+                reader_error = normal_task.exception()
+                if reader_error is not None:
+                    _terminate(proc)
+                    stderr_buf.append_failure(str(reader_error))
+                    return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
+                return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
+
+            _terminate(proc)
+            if abort_task is not None and abort_task in done:
+                return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
+            if options.timeout_ms is not None:
+                return ExecTimeoutError(
+                    stdout_buf.text,
+                    stderr_buf.text,
+                    options.timeout_ms,
+                    stdout_buf.byte_count,
+                    stderr_buf.byte_count,
+                )
+            # asyncio.wait only returns empty-handed when a timeout elapsed, so with
+            # no timeout set this branch cannot be reached.
+            msg = "exec settled without a normal, abort, or timeout outcome"
+            raise RuntimeError(msg)
+        finally:
+            pending: list[asyncio.Task[object]] = [
+                stdout_task,
+                stderr_task,
+                stdin_task,
+                normal_task,
+            ]
+            if abort_task is not None:
+                pending.append(abort_task)
+            await _cancel_all(pending)
+    finally:
+        _live_process_groups.discard(proc.pid)

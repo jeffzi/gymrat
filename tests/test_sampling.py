@@ -508,6 +508,22 @@ class _InstallRecorder:
         return uninstall
 
 
+def _capturing_install(
+    captured: dict[str, Callable[[], None]],
+) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    """Build an install seam that records the registered cleanup into ``captured``.
+
+    Returns a no-op uninstall, so a test can invoke ``captured["cleanup"]``
+    directly to drive the termination path without a real signal.
+    """
+
+    def install(cleanup: Callable[[], None]) -> Callable[[], None]:
+        captured["cleanup"] = cleanup
+        return lambda: None
+
+    return install
+
+
 def _patch_cleanup(
     monkeypatch: pytest.MonkeyPatch, result: CleanupResult
 ) -> list[tuple[list[WorktreeInfo], str]]:
@@ -672,12 +688,7 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_abort_ru
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured: dict[str, Callable[[], None]] = {}
-
-    def _install(cleanup: Callable[[], None]) -> Callable[[], None]:
-        captured["cleanup"] = cleanup
-        return lambda: None
-
-    monkeypatch.setattr(sampling, "install_termination_cleanup", _install)
+    monkeypatch.setattr(sampling, "install_termination_cleanup", _capturing_install(captured))
     sweeps = _patch_cleanup(monkeypatch, _clean_result())
     observed: dict[str, object] = {}
 
@@ -692,3 +703,26 @@ async def test_run_with_worktrees_when_termination_cleanup_invoked_does_abort_ru
 
     assert observed["aborted"] is True
     assert observed["swept_by_cleanup"] == 1
+
+
+async def test_run_with_worktrees_when_termination_cleanup_invoked_does_kill_groups_before_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    order: list[str] = []
+    captured: dict[str, Callable[[], None]] = {}
+    monkeypatch.setattr(sampling, "install_termination_cleanup", _capturing_install(captured))
+    monkeypatch.setattr(sampling, "kill_live_process_groups", lambda: order.append("kill"))
+
+    def _cleanup(worktrees: list[WorktreeInfo], repo_dir: str) -> CleanupResult:
+        order.append("sweep")
+        return _clean_result()
+
+    monkeypatch.setattr(sampling, "cleanup_worktrees", _cleanup)
+
+    async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
+        captured["cleanup"]()
+        return "measurement"
+
+    await run_with_worktrees(phase, lambda m, c: (m, c))
+
+    assert order[:2] == ["kill", "sweep"]

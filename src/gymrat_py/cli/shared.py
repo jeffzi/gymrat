@@ -26,6 +26,7 @@ from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat_py.cli.status_line import RenderMode
 from gymrat_py.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.exec import kill_live_process_groups
 from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
     RENDER_WIDTH,
@@ -362,9 +363,19 @@ async def run_with_signal_abort[T](
     exit itself (``128 +`` the signal number); this only wires the event and
     always removes the cleanup afterward, so a completed run leaves no handler
     behind.
+
+    On the signal path the loop cannot resume to act on the abort before the
+    process exits, so the cleanup kills any live exec-spawned group synchronously
+    before setting the event; the event still drives the async abort race when
+    the loop does keep running.
     """
     abort = asyncio.Event()
-    uninstall = install_termination_cleanup(abort.set)
+
+    def terminate() -> None:
+        kill_live_process_groups()
+        abort.set()
+
+    uninstall = install_termination_cleanup(terminate)
     try:
         return await execute(abort)
     finally:
@@ -470,7 +481,7 @@ ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confi
 
 
 def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
-    """Suppress color per the flag, then build the reporter for ``target_count`` targets."""
+    """Build the progress reporter a run prints through, sized and colored per the flags."""
     mode = resolve_render_mode(flags.color)
     return create_progress_reporter(mode, target_count)
 

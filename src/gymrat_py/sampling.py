@@ -21,7 +21,7 @@ from typing import Literal
 from gymrat_py.adapters.types import Adapter, WarnSink
 from gymrat_py.config import KindEntry, MetricEntry, resolve_metric_meta
 from gymrat_py.errors import CommandError, GymratError, hint_of, message_of
-from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError, kill_live_process_groups
 from gymrat_py.exec import exec as exec  # noqa: A004, PLC0414
 from gymrat_py.model import ResolvedMetricMeta
 from gymrat_py.report.text import format_cleanup_failures
@@ -335,7 +335,7 @@ def _enforce(outcome: _CommandOutcome) -> str:
 
 
 def _to_command_error(failure: _CommandFailure) -> CommandError:
-    """Render a failed command into a :class:`CommandError`.
+    """Attach the target's location lines and ref-only hint to the error.
 
     A ref target contributes ``ref`` and ``worktree`` location lines plus the
     hint that the worktree only holds tracked files; a plain directory
@@ -577,6 +577,10 @@ async def run_with_worktrees[M, R](
 
     def terminate() -> None:
         abort.set()
+        # Kill any live bench group synchronously: on the signal path the loop
+        # may not resume to process the abort before the sweep runs, so the
+        # child must be dead before cleanup_worktrees touches the worktrees.
+        kill_live_process_groups()
         cleanup_worktrees(worktrees, repo_dir)
 
     uninstall = install_termination_cleanup(terminate)
