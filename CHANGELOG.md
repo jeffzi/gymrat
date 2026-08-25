@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text is left on the current line.
 - A lock file left behind by another user in a shared temporary directory now reports a clear remedy
   instead of failing with a raw permission error.
+- `compare` and `measure` reports now render in color when written to a terminal and drop color when
+  redirected to a file or pipe, instead of always rendering plain.
+- Color detection now follows one rule across reports, the progress line, and error messages, so
+  `FORCE_COLOR` and `NO_COLOR` take effect consistently; a `FORCE_COLOR` of `0`, `false`, or empty no
+  longer forces color on.
+- `--no-color` no longer sets `NO_COLOR` in the environment of the benchmark commands it runs.
 
 ## [0.11.0] - 2026-08-25
 

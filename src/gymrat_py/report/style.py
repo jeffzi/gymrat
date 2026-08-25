@@ -322,6 +322,22 @@ def _force_color_env() -> bool:
     return value.lower() not in {"", "0", "false"}
 
 
+def color_from_env() -> bool | None:
+    """The color preference the environment declares, or ``None`` to defer to the caller.
+
+    One precedence rule, shared by every color surface so they never disagree:
+    ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces color on even
+    when ``NO_COLOR`` is also present; ``NO_COLOR`` (present, any value) then
+    forces it off; with neither the answer is ``None`` so the caller decides from
+    the stream's own TTY state.
+    """
+    if _force_color_env():
+        return True
+    if "NO_COLOR" in os.environ:
+        return False
+    return None
+
+
 def render_lines(
     *renderables: RenderableType,
     color: bool | None = None,

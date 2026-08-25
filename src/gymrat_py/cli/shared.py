@@ -14,7 +14,7 @@ import re
 import sys
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Annotated, Literal, NoReturn, Protocol
 
@@ -30,6 +30,7 @@ from gymrat_py.exec import kill_live_process_groups
 from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
     RENDER_WIDTH,
+    color_from_env,
     format_hint_label,
     highlight_inline_code,
     markup,
@@ -128,17 +129,26 @@ def color_override_of(color: bool) -> Literal[False] | None:  # noqa: FBT001 -- 
     return None if color else False
 
 
-def _resolve_stderr_color() -> bool:
-    """Resolve whether stderr error output should carry color.
+def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
+    """Resolve whether output to ``stream`` should carry color.
 
-    Precedence: an explicit ``FORCE_COLOR`` wins over ``NO_COLOR``, which wins
-    over the stream's own TTY detection.
+    One precedence rule, shared by every color surface — the report on stdout,
+    the progress line on stderr, and the error text on stderr — so they never
+    disagree: an explicit ``override`` (the ``--color`` / ``--no-color`` flag)
+    wins; then ``FORCE_COLOR`` (any value but ``0``/``false``/empty); then
+    ``NO_COLOR`` (present, any value); then the stream's own TTY detection.
     """
-    if os.environ.get("FORCE_COLOR"):
-        return True
-    if "NO_COLOR" in os.environ:
-        return False
-    return is_tty(sys.stderr)
+    if override is not None:
+        return override
+    from_env = color_from_env()
+    if from_env is not None:
+        return from_env
+    return is_tty(stream)
+
+
+def _resolve_stderr_color() -> bool:
+    """Whether stderr error output should carry color, per the shared precedence."""
+    return resolve_stream_color(None, sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +322,15 @@ def parse_fail_on(value: str) -> FailOnCondition:
 def resolve_render_mode(color_flag: bool) -> RenderMode:  # noqa: FBT001 -- 1:1 map of the --color flag
     """Map the ``--color`` flag to the output strategy the progress reporter uses.
 
-    A vetoed flag suppresses color first; a non-TTY stderr always renders plain;
-    a TTY renders a spinner when color is allowed and falls back to in-place
-    overwrite otherwise.
+    A non-TTY stderr always renders plain; a TTY renders a spinner when color is
+    allowed and falls back to in-place overwrite otherwise. Color follows the
+    shared precedence (:func:`resolve_stream_color`) rather than mutating the
+    environment, so ``--no-color`` never leaks ``NO_COLOR`` into a spawned bench.
     """
-    if not color_flag:
-        suppress_color()
     if not is_tty(sys.stderr):
         return "plain"
-    color_allowed = color_flag and os.environ.get("NO_COLOR") is None
-    return "spinner" if color_allowed else "overwrite"
+    override = color_override_of(color_flag)
+    return "spinner" if resolve_stream_color(override, sys.stderr) else "overwrite"
 
 
 # ---------------------------------------------------------------------------
@@ -522,10 +531,17 @@ def emit_report[T](
 ) -> None:
     """Render ``result`` per ``flags.format`` and write it to stdout.
 
-    The text renderer honors ``render_opts`` — the ``--no-color`` veto rides in
-    its ``color`` field, and the renderer defers to stdout's own TTY state when
-    ``color`` is left unset. The JSON document is never styled, so it ignores
+    The text renderer captures into an in-memory buffer that cannot see the real
+    stdout, so a deferred color choice (``render_opts.color is None``) is
+    resolved here against stdout's own TTY state through the shared precedence:
+    a report printed to a terminal is styled, the same report piped away is
+    plain. An explicit ``--color`` / ``--no-color`` veto in ``render_opts.color``
+    is passed through untouched. The JSON document is never styled, so it ignores
     ``render_opts`` entirely.
     """
-    output = renderers.json(result) if wants_json(flags) else renderers.text(result, render_opts)
+    if wants_json(flags):
+        write_and_flush(sys.stdout, renderers.json(result) + "\n")
+        return
+    color = resolve_stream_color(render_opts.color, sys.stdout)
+    output = renderers.text(result, replace(render_opts, color=color))
     write_and_flush(sys.stdout, output + "\n")
