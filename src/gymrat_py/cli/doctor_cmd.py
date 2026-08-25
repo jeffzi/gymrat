@@ -167,12 +167,12 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
             git_error=git_env.git_error,
         )
         config_section = build_config_section(inspection)
+        resolved = config_resolved or _defaults_as_benchless()
         workflow_section = build_workflow_section(
-            config_resolved or _defaults_as_benchless(),
+            resolved,
             problems=inspection.problems,
             skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).exists(),
         )
-        resolved = config_resolved or _defaults_as_benchless()
         bench_section = await build_bench_section(
             BenchSectionInput(
                 bench=inspection.bench,
