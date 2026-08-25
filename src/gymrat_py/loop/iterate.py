@@ -625,7 +625,9 @@ def _build_iteration_record(
         samples=judged.samples,
         metrics=_recorded_verdicts(judged.run.verdicts, judged.run.metric_meta, confirmation),
         primary=IterationPrimary(
-            kind=primary.kind, delta_pct=primary.delta_pct, name=getattr(primary, "name", None)
+            kind=primary.kind,
+            delta_pct=primary.delta_pct,
+            name=primary.name if isinstance(primary, MetricPrimary) else None,
         ),
         outcome=judgment.outcome,
         target_reached=judgment.reached_target,
