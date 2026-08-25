@@ -1,0 +1,286 @@
+"""Session event vocabulary and the helpers that render and fan them out.
+
+A session emits a fixed set of eight events to any number of
+:data:`SessionObserver` callbacks. Each event is a frozen dataclass tagged by a
+``type`` literal and stamped with an epoch-millisecond ``timestamp``; together
+they form the :data:`SessionEvent` union.
+
+:func:`to_json_line` renders an event to a single compact JSON line with
+camelCase keys — the shared wire form the event log and the stdio driver both
+write. :func:`summarize` and :func:`summarize_input` produce the compact,
+single-line summaries carried on tool events. :func:`combine_observers` fans one
+event out to several observers in order.
+"""
+
+import json
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Literal, assert_never
+
+# ---------------------------------------------------------------------------
+# Event vocabulary
+# ---------------------------------------------------------------------------
+
+# Maximum code-point length for a session-event summary before it is truncated.
+SUMMARY_MAX_CHARS = 200
+
+
+@dataclass(frozen=True, slots=True)
+class DirtyInfo:
+    """The dirty-worktree provenance carried on a launch event."""
+
+    file_count: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ThinkingUpdateEvent:
+    """Emitted as the model's extended-thinking token estimate changes mid-turn."""
+
+    type: Literal["thinking_update"] = "thinking_update"
+    timestamp: int
+    estimated_tokens: int
+    delta: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolStartEvent:
+    """Emitted when the model invokes a tool."""
+
+    type: Literal["tool_start"] = "tool_start"
+    timestamp: int
+    tool_use_id: str
+    tool_name: str
+    input: object
+    input_summary: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolProgressEvent:
+    """Emitted periodically while a long-running tool call is still in flight."""
+
+    type: Literal["tool_progress"] = "tool_progress"
+    timestamp: int
+    tool_use_id: str
+    elapsed_ms: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolEndEvent:
+    """Emitted when a tool call completes and its result is available."""
+
+    type: Literal["tool_end"] = "tool_end"
+    timestamp: int
+    tool_use_id: str
+    tool_name: str
+    duration_ms: int
+    result: str
+    result_summary: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TextDeltaEvent:
+    """Emitted for each chunk of assistant text as it streams in."""
+
+    type: Literal["text_delta"] = "text_delta"
+    timestamp: int
+    chunk: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UsageUpdateEvent:
+    """Emitted when the driver observes updated cumulative cost."""
+
+    type: Literal["usage_update"] = "usage_update"
+    timestamp: int
+    cost_usd: float
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CapEvent:
+    """Emitted when a supervision cap (wall-clock or spend) fires."""
+
+    type: Literal["cap"] = "cap"
+    timestamp: int
+    cap: Literal["wall-clock", "spend-cap"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LaunchEvent:
+    """Written by the supervisor as the log's first line: launch provenance."""
+
+    type: Literal["launch"] = "launch"
+    timestamp: int
+    head_sha: str
+    dirty: Literal[False] | DirtyInfo
+    max_minutes: float
+    max_usd: float | None
+    model: str | None
+    runbook_path: str
+    kickoff_summary: str
+
+
+SessionEvent = (
+    ThinkingUpdateEvent
+    | ToolStartEvent
+    | ToolProgressEvent
+    | ToolEndEvent
+    | TextDeltaEvent
+    | UsageUpdateEvent
+    | CapEvent
+    | LaunchEvent
+)
+"""The union of every event a session can emit to a :data:`SessionObserver`."""
+
+SessionObserver = Callable[[SessionEvent], None]
+"""Receives :data:`SessionEvent`s as a session streams them."""
+
+
+# ---------------------------------------------------------------------------
+# to_json_line
+# ---------------------------------------------------------------------------
+
+
+def _dirty_to_wire(dirty: Literal[False] | DirtyInfo) -> object:
+    if dirty is False:
+        return False
+    return {"fileCount": dirty.file_count}
+
+
+def _launch_to_wire(event: LaunchEvent) -> dict[str, object]:
+    """Render a launch event, omitting ``maxUsd``/``model`` when they are ``None``.
+
+    Omission (rather than a ``null``) matches the shipped log format.
+    """
+    wire: dict[str, object] = {
+        "type": event.type,
+        "timestamp": event.timestamp,
+        "headSha": event.head_sha,
+        "dirty": _dirty_to_wire(event.dirty),
+        "maxMinutes": event.max_minutes,
+    }
+    if event.max_usd is not None:
+        wire["maxUsd"] = event.max_usd
+    if event.model is not None:
+        wire["model"] = event.model
+    wire["runbookPath"] = event.runbook_path
+    wire["kickoffSummary"] = event.kickoff_summary
+    return wire
+
+
+def _to_wire(event: SessionEvent) -> dict[str, object]:
+    """Render an event to its camelCase wire dict in declared field order."""
+    wire: dict[str, object]
+    match event:
+        case ThinkingUpdateEvent():
+            wire = {
+                "type": event.type,
+                "timestamp": event.timestamp,
+                "estimatedTokens": event.estimated_tokens,
+                "delta": event.delta,
+            }
+        case ToolStartEvent():
+            wire = {
+                "type": event.type,
+                "timestamp": event.timestamp,
+                "toolUseId": event.tool_use_id,
+                "toolName": event.tool_name,
+                "input": event.input,
+                "inputSummary": event.input_summary,
+            }
+        case ToolProgressEvent():
+            wire = {
+                "type": event.type,
+                "timestamp": event.timestamp,
+                "toolUseId": event.tool_use_id,
+                "elapsedMs": event.elapsed_ms,
+            }
+        case ToolEndEvent():
+            wire = {
+                "type": event.type,
+                "timestamp": event.timestamp,
+                "toolUseId": event.tool_use_id,
+                "toolName": event.tool_name,
+                "durationMs": event.duration_ms,
+                "result": event.result,
+                "resultSummary": event.result_summary,
+            }
+        case TextDeltaEvent():
+            wire = {"type": event.type, "timestamp": event.timestamp, "chunk": event.chunk}
+        case UsageUpdateEvent():
+            wire = {"type": event.type, "timestamp": event.timestamp, "costUsd": event.cost_usd}
+        case CapEvent():
+            wire = {"type": event.type, "timestamp": event.timestamp, "cap": event.cap}
+        case LaunchEvent():
+            wire = _launch_to_wire(event)
+        case _ as unreachable:  # pragma: no cover
+            assert_never(unreachable)
+    return wire
+
+
+def to_json_line(event: SessionEvent) -> str:
+    """Serialize an event to a single compact JSON line with camelCase keys."""
+    return json.dumps(_to_wire(event), separators=(",", ":"))
+
+
+# ---------------------------------------------------------------------------
+# combine_observers
+# ---------------------------------------------------------------------------
+
+
+def combine_observers(*observers: SessionObserver) -> SessionObserver:
+    """Fan one event out to each observer in order with the identical object.
+
+    With no observers the result is a no-op. If an observer raises, the error
+    propagates and later observers are not invoked.
+    """
+
+    def combined(event: SessionEvent) -> None:
+        for observer in observers:
+            observer(event)
+
+    return combined
+
+
+# ---------------------------------------------------------------------------
+# summarize
+# ---------------------------------------------------------------------------
+
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def summarize(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
+    """Produce a compact, single-line summary of ``text``.
+
+    Whitespace runs collapse to single spaces and the ends are trimmed. When the
+    collapsed text fits within ``max_chars`` code points it is returned as-is;
+    otherwise it is cut on a code-point boundary and a suffix reports the number
+    of dropped code points and the line count of the *original* text.
+    """
+    collapsed = _WHITESPACE_RUN.sub(" ", text).strip()
+
+    if len(collapsed) <= max_chars:
+        return collapsed
+
+    remaining = len(collapsed) - max_chars
+    line_count = text.count("\n") + 1
+    return f"{collapsed[:max_chars]}… ({remaining} more chars, {line_count} lines)"
+
+
+# ---------------------------------------------------------------------------
+# summarize_input
+# ---------------------------------------------------------------------------
+
+
+def summarize_input(value: object, max_chars: int = SUMMARY_MAX_CHARS) -> str:
+    """Summarize a value by JSON-encoding it, then passing it through :func:`summarize`.
+
+    The JSON uses no separators padding so ``{"key": "value"}`` renders as
+    ``{"key":"value"}``. A value ``json.dumps`` cannot encode falls back to
+    ``summarize(str(value))``.
+    """
+    try:
+        encoded = json.dumps(value, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return summarize(str(value), max_chars)
+    return summarize(encoded, max_chars)
