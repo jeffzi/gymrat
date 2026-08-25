@@ -16,15 +16,16 @@ from typing import Literal, TextIO
 import typer
 
 from gymrat_py.adapters import ADAPTER_NAMES, get_adapter
-from gymrat_py.cli.shared import parse_positive_integer_up_to, parse_stop_target_value
+from gymrat_py.cli.shared import (
+    MAX_SAFE_INTEGER,
+    parse_positive_integer_up_to,
+    parse_stop_target_value,
+)
 from gymrat_py.config import CONFIG_DEFAULTS, GEOMEAN_PRIMARY
 from gymrat_py.errors import GymratError, message_of
 
 #: The runbook filename scaffolded when the wizard creates one without a supplied path.
 DEFAULT_RUNBOOK_PATH = "gymrat-runbook.md"
-
-#: Upper bound on the interactive max-iterations answer, mirroring the flag coercer.
-_MAX_ITERATIONS = 2**53 - 1
 
 type _Validator = Callable[[str], str | None]
 
@@ -260,7 +261,7 @@ class _Wizard:
     @staticmethod
     def _validate_max_iterations(value: str) -> str | None:
         try:
-            parse_positive_integer_up_to(_MAX_ITERATIONS)(value)
+            parse_positive_integer_up_to(MAX_SAFE_INTEGER)(value)
         except typer.BadParameter as err:
             return str(err.message)
         return None

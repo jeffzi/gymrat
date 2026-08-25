@@ -403,9 +403,10 @@ class MeasureFlags(SharedFlags):
 # CLI option declarations
 # ---------------------------------------------------------------------------
 
-# The samples ceiling: JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so the
-# accepted range matches the shipped tool rather than drifting to a new bound.
-_MAX_SAMPLES = 2**53 - 1
+# JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so integer bounds this CLI shares
+# with the shipped tool (the samples ceiling, the init max-iterations cap) match it
+# rather than drifting to a new bound. Public: imported by init_cmd and the wizard.
+MAX_SAFE_INTEGER = 2**53 - 1
 
 
 class OutputFormat(StrEnum):
@@ -430,7 +431,7 @@ SamplesOption = Annotated[
     typer.Option(
         "--samples",
         "-s",
-        parser=parse_positive_integer_up_to(_MAX_SAMPLES),
+        parser=parse_positive_integer_up_to(MAX_SAFE_INTEGER),
         help="paired samples per target",
     ),
 ]

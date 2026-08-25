@@ -17,6 +17,7 @@ import typer
 from rich.markup import escape
 
 from gymrat_py.cli.shared import (
+    MAX_SAFE_INTEGER,
     DebugOption,
     exit_with_error,
     parse_positive_integer_up_to,
@@ -30,9 +31,6 @@ from gymrat_py.init.scaffold import ScaffoldArtifact, ScaffoldResult, scaffold
 from gymrat_py.init.wizard import WizardOptions, run_wizard
 from gymrat_py.report.style import RENDER_WIDTH, highlight_inline_code, render_lines
 
-# Upper bound on ``--stop-max-iterations``, mirroring the wizard's interactive cap.
-_MAX_ITERATIONS = 2**53 - 1
-
 _BenchOption = Annotated[str | None, typer.Option("--bench", help="bench command")]
 _AdapterOption = Annotated[str | None, typer.Option("--adapter", help="adapter type")]
 _ChecksOption = Annotated[str | None, typer.Option("--checks", help="checks command")]
@@ -44,7 +42,7 @@ _StopMaxIterationsOption = Annotated[
     int | None,
     typer.Option(
         "--stop-max-iterations",
-        parser=parse_positive_integer_up_to(_MAX_ITERATIONS),
+        parser=parse_positive_integer_up_to(MAX_SAFE_INTEGER),
         help="stop max iterations",
     ),
 ]
