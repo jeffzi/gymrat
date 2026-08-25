@@ -172,16 +172,13 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
             problems=inspection.problems,
             skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).exists(),
         )
+        resolved = config_resolved or _defaults_as_benchless()
         bench_section = await build_bench_section(
             BenchSectionInput(
                 bench=inspection.bench,
-                adapter=config_resolved.adapter if config_resolved else CONFIG_DEFAULTS.adapter,
-                timeout_seconds=(
-                    config_resolved.timeout_seconds
-                    if config_resolved
-                    else CONFIG_DEFAULTS.timeout_seconds
-                ),
-                primary=config_resolved.primary if config_resolved else CONFIG_DEFAULTS.primary,
+                adapter=resolved.adapter,
+                timeout_seconds=resolved.timeout_seconds,
+                primary=resolved.primary,
                 metrics=config_resolved.metrics if config_resolved else None,
                 kinds=config_resolved.kinds if config_resolved else None,
                 repo_root=base_dir,
