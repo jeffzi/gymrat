@@ -14,6 +14,7 @@ maps correctly and anything malformed is skipped in silence.
 """
 
 import asyncio
+import contextlib
 import json
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -212,7 +213,12 @@ class _ClaudeSession:
 
     async def _teardown(self) -> None:
         if self._abort_task is not None:
+            # Cancel then await under suppression so the abort watcher's
+            # CancelledError is retrieved here, never surfaced by the loop as a
+            # forgotten-task diagnostic (matches the stdio driver's teardown).
             self._abort_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._abort_task
         if self._client is not None:
             try:
                 await self._client.disconnect()
