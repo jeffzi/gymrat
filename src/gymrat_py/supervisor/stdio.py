@@ -18,6 +18,7 @@ outcome, an interrupt, and an abort each settle a :class:`SessionOutcome`.
 import asyncio
 import contextlib
 import json
+import warnings
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -35,6 +36,22 @@ from gymrat_py.supervisor.events import UsageUpdateEvent, event_from_wire
 
 _READ_CHUNK = 65536
 """Bytes requested per read while draining the child's stderr."""
+
+_STREAM_LIMIT = 8 * 1024 * 1024
+"""Max bytes buffered for a single child stdout line before the reader overruns.
+
+Event lines can legitimately carry large tool payloads, so the limit sits well
+above asyncio's 64 KiB default; the overrun guard in ``_read_events`` still stops
+an unbounded, unterminated line from escaping as an unhandled read error.
+"""
+
+_TEARDOWN_GRACE_SECONDS = 2.0
+"""How long teardown waits for a killed child to exit before abandoning the reap.
+
+A healthy child dies within milliseconds of the group kill, so the grace only
+elapses for one stuck in an uninterruptible state — which no longer wait would
+save — and it keeps teardown from wedging forever on such a child.
+"""
 
 
 def _start_command(prompt: SessionPrompt) -> dict[str, object]:
@@ -115,6 +132,7 @@ class _StdioSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=current_platform() != "win32",
+            limit=_STREAM_LIMIT,
         )
 
     async def _run(self) -> SessionOutcome:
@@ -135,13 +153,26 @@ class _StdioSession:
             await self._teardown(proc)
 
     async def _read_events(self, proc: asyncio.subprocess.Process) -> None:
-        """Relay each event line to the observer until the terminal outcome or EOF."""
+        """Relay each event line to the observer until the terminal outcome or EOF.
+
+        A child line longer than ``_STREAM_LIMIT`` makes the reader overrun rather
+        than yield a line; catch that so an oversized, unterminated line settles a
+        clean error outcome instead of escaping as an unhandled read error. The
+        child is left as-is here; ``_teardown`` kills and reaps it.
+        """
         if proc.stdout is None:
             return
-        async for raw in proc.stdout:
-            line = raw.decode(errors="replace").strip()
-            if line and self._consume(line):
-                return
+        try:
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").strip()
+                if line and self._consume(line):
+                    return
+        except (asyncio.LimitOverrunError, ValueError) as err:
+            self._outcome = SessionOutcome(
+                reason="error",
+                cost_usd=self._cost_usd,
+                message=f"child output line exceeded the read limit: {message_of(err)}",
+            )
 
     def _consume(self, line: str) -> bool:
         """Handle one stdout line; return ``True`` once the terminal outcome arrives."""
@@ -161,11 +192,15 @@ class _StdioSession:
         return False
 
     async def _resolve(self, proc: asyncio.subprocess.Process) -> SessionOutcome:
-        returncode = await proc.wait()
+        # Settle from a stop signal or a terminal line without awaiting the child's
+        # exit: a child that ignores the kill must not block the outcome. Teardown
+        # reaps it under a bound. Only the "exited without an outcome" path needs
+        # the return code, and there the child has already ended its stdout.
         if self._interrupt_requested or (self._abort is not None and self._abort.is_set()):
             return SessionOutcome(reason="interrupted", cost_usd=self._cost_usd)
         if self._outcome is not None:
             return self._outcome
+        returncode = await proc.wait()
         return SessionOutcome(
             reason="error",
             cost_usd=self._cost_usd,
@@ -197,7 +232,15 @@ class _StdioSession:
             kill_process_group(proc.pid)
         if proc.stdin is not None:
             proc.stdin.close()
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), _TEARDOWN_GRACE_SECONDS)
+        except TimeoutError:
+            warnings.warn(
+                f"child process {proc.pid} did not exit within "
+                f"{_TEARDOWN_GRACE_SECONDS:g}s of the group kill; abandoning the wait",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 class _StdioDriver:
