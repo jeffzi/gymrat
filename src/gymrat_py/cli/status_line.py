@@ -6,6 +6,7 @@ minimal animated glyph. The status line is content-agnostic — the progress lay
 owns what text to show; this layer owns how to put it on the terminal.
 """
 
+import os
 import shutil
 import sys
 import threading
@@ -13,6 +14,7 @@ from collections.abc import Callable
 from typing import Literal, Protocol
 
 from gymrat_py.report.style import shorten_label
+from gymrat_py.signals import install_termination_cleanup
 
 # Carriage-return + clear-to-end-of-line: rewind to column zero and wipe the row.
 CLEAR_LINE = "\r\x1b[K"
@@ -46,9 +48,23 @@ def _stderr_is_tty() -> bool:
 
 
 def _terminal_columns() -> int | None:
-    """The terminal width in columns, or ``None`` off a TTY (no width to fit)."""
+    """The terminal width in columns, or ``None`` off a TTY (no width to fit).
+
+    ``shutil.get_terminal_size`` silently substitutes its 80-column fallback for
+    a width it cannot trust — ``COLUMNS`` set to ``0``, empty, or a non-positive
+    or non-numeric value — which would let a genuinely zero-width terminal fit a
+    full-length row and spill. Honor an explicit ``COLUMNS`` directly instead,
+    collapsing a non-positive or unparseable value to zero so the fitted text
+    comes out empty rather than 80 columns wide.
+    """
     if not _stderr_is_tty():
         return None
+    columns_env = os.environ.get("COLUMNS")
+    if columns_env is not None:
+        try:
+            return max(int(columns_env), 0)
+        except ValueError:
+            return 0
     return shutil.get_terminal_size().columns
 
 
@@ -86,8 +102,23 @@ class _TtyStatusLine:
         self._frame = 0
         self._timer: threading.Timer | None = None
         self._stopped = False
+        # A termination signal exits via os._exit without unwinding the run's
+        # finally, so the row this line holds open would strand its last progress
+        # text on the terminal. Clearing it here — the one place that knows a row
+        # is open — is what wipes it before the process dies.
+        self._uninstall_cleanup = install_termination_cleanup(self._clear_on_signal)
         if on_tick is not None:
             self._schedule_tick()
+
+    def _clear_on_signal(self) -> None:
+        # os._exit skips buffer flushing, so the clear must be flushed explicitly
+        # or it never reaches the terminal. Marking the line stopped first keeps a
+        # racing tick from redrawing progress over the cleared row.
+        if self._stopped:
+            return
+        self._stopped = True
+        sys.stderr.write(CLEAR_LINE)
+        sys.stderr.flush()
 
     def _schedule_tick(self) -> None:
         timer = threading.Timer(TICK_INTERVAL_MS / 1000, self._fire_tick)
@@ -136,6 +167,7 @@ class _TtyStatusLine:
 
     def stop(self) -> None:
         self._stopped = True
+        self._uninstall_cleanup()
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None

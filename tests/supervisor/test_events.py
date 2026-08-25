@@ -10,6 +10,7 @@ error propagation.
 
 import dataclasses
 import json
+import typing
 
 import pytest
 
@@ -17,6 +18,7 @@ from gymrat_py.supervisor.events import (
     SUMMARY_MAX_CHARS,
     CapEvent,
     DirtyInfo,
+    SessionEvent,
     TextDeltaEvent,
     ThinkingUpdateEvent,
     ToolEndEvent,
@@ -74,8 +76,12 @@ def test_event_when_constructed_does_expose_its_type_literal(event: object, expe
     assert event.type == expected_type  # type: ignore[attr-defined]
 
 
-def test_event_vocabulary_when_enumerated_does_have_exactly_eight_types():
-    types = {type_ for _, type_ in EVENT_SAMPLES}
+def test_session_event_union_when_enumerated_does_expose_exactly_eight_type_literals():
+    event_classes = typing.get_args(SessionEvent)
+    types = {
+        next(field.default for field in dataclasses.fields(cls) if field.name == "type")
+        for cls in event_classes
+    }
 
     assert types == {
         "thinking_update",
@@ -244,8 +250,13 @@ def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
 # ---------------------------------------------------------------------------
 
 
-def test_summary_max_chars_equals_200():
-    assert SUMMARY_MAX_CHARS == 200
+def test_summarize_when_called_without_max_chars_does_truncate_to_summary_max_chars():
+    overflow = 50
+    text = "a" * (SUMMARY_MAX_CHARS + overflow)
+
+    result = summarize(text)
+
+    assert result == "a" * SUMMARY_MAX_CHARS + f"… ({overflow} more chars, 1 lines)"
 
 
 # ---------------------------------------------------------------------------

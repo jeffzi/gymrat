@@ -17,16 +17,19 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
-from unittest.mock import Mock
+from unittest.mock import Mock, create_autospec
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from gymrat_py.cli.app import app
+from gymrat_py.cli.supervise_progress import create_supervise_reporter
 from gymrat_py.config import BenchlessConfig, StopConfig
 from gymrat_py.errors import GymratError
 from gymrat_py.session.paths import supervise_lockfile_path
-from gymrat_py.supervisor import SessionOutcome, SupervisionResult
+from gymrat_py.session.workspace import ensure_git_exclude
+from gymrat_py.signals import install_termination_cleanup
+from gymrat_py.supervisor import SessionOutcome, SupervisionResult, create_claude_driver
 
 runner = CliRunner()
 
@@ -38,6 +41,17 @@ _LOCK_AT = "2026-01-01T00:00:00.000Z"
 # ---------------------------------------------------------------------------
 # seam installation
 # ---------------------------------------------------------------------------
+
+
+def _real_reporter_stop() -> Callable[[], None]:
+    """The production reporter's real ``stop`` closure, used only as an autospec source.
+
+    ``SuperviseReporter.stop`` is a nested closure with no importable name, so it
+    can't be targeted directly by ``create_autospec``. Building a real (side-effect-free,
+    plain-mode) reporter and taking its ``stop`` attribute gives ``create_autospec``
+    the actual production callable to bind against.
+    """
+    return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain").stop
 
 
 class _Seams:
@@ -53,10 +67,14 @@ class _Seams:
     def __init__(self) -> None:
         self.driver = object()
         self.observer: Callable[[object], None] = lambda _event: None
-        self.reporter_stop = Mock(name="reporter.stop")
-        self.ensure_git_exclude = Mock(name="ensure_git_exclude")
-        self.create_driver = Mock(name="create_claude_driver", return_value=self.driver)
-        self.install_cleanup = Mock(name="install_termination_cleanup", return_value=Mock())
+        self.reporter_stop = create_autospec(_real_reporter_stop(), name="reporter.stop")
+        self.ensure_git_exclude = create_autospec(ensure_git_exclude, name="ensure_git_exclude")
+        self.create_driver = create_autospec(
+            create_claude_driver, name="create_claude_driver", return_value=self.driver
+        )
+        self.install_cleanup = create_autospec(
+            install_termination_cleanup, name="install_termination_cleanup", return_value=Mock()
+        )
         self.supervise_calls: list[dict[str, object]] = []
         self.reporter_calls: list[dict[str, object]] = []
         self.compose_calls: list[tuple[object, object]] = []

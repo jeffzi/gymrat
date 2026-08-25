@@ -9,10 +9,10 @@ overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
 
 import json
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from gymrat_py.supervisor.driver import SessionPrompt
-from gymrat_py.supervisor.events import LaunchEvent, SessionEvent, SessionObserver
+from gymrat_py.supervisor.events import DirtyInfo, LaunchEvent, SessionEvent, SessionObserver
 
 
 class ObserverProbe(NamedTuple):
@@ -28,20 +28,28 @@ def collecting_observer() -> ObserverProbe:
     return ObserverProbe(events, events.append)
 
 
-def make_launch(**overrides: object) -> LaunchEvent:
+def make_launch(
+    *,
+    timestamp: int = 1000,
+    head_sha: str = "abc123def",
+    dirty: Literal[False] | DirtyInfo = False,
+    max_minutes: float = 5,
+    max_usd: float | None = None,
+    model: str | None = None,
+    runbook_path: str = "/path/to/runbook.md",
+    kickoff_summary: str = "test kickoff",
+) -> LaunchEvent:
     """Build a ``LaunchEvent`` from shared defaults, overridden per keyword."""
-    params: dict[str, object] = {
-        "timestamp": 1000,
-        "head_sha": "abc123def",
-        "dirty": False,
-        "max_minutes": 5,
-        "max_usd": None,
-        "model": None,
-        "runbook_path": "/path/to/runbook.md",
-        "kickoff_summary": "test kickoff",
-    }
-    params.update(overrides)
-    return LaunchEvent(**params)  # type: ignore[arg-type]
+    return LaunchEvent(
+        timestamp=timestamp,
+        head_sha=head_sha,
+        dirty=dirty,
+        max_minutes=max_minutes,
+        max_usd=max_usd,
+        model=model,
+        runbook_path=runbook_path,
+        kickoff_summary=kickoff_summary,
+    )
 
 
 def read_log_lines(log_path: str | Path) -> list[dict[str, object]]:
@@ -50,11 +58,20 @@ def read_log_lines(log_path: str | Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-def make_prompt(**overrides: object) -> SessionPrompt:
+def make_prompt(
+    *,
+    kickoff: str = "do the thing",
+    cwd: str = "/tmp/test",
+    system_prompt_append: str | None = None,
+    model: str | None = None,
+) -> SessionPrompt:
     """Build a ``SessionPrompt`` from shared defaults, overridden per keyword."""
-    params: dict[str, object] = {"kickoff": "do the thing", "cwd": "/tmp/test"}
-    params.update(overrides)
-    return SessionPrompt(**params)  # type: ignore[arg-type]
+    return SessionPrompt(
+        kickoff=kickoff,
+        cwd=cwd,
+        system_prompt_append=system_prompt_append,
+        model=model,
+    )
 
 
 def noop_observer() -> SessionObserver:

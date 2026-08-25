@@ -25,6 +25,16 @@ from typing import NoReturn
 # defensively.
 _TERMINATION_SIGNAL_NAMES = ("SIGINT", "SIGTERM", "SIGHUP")
 
+# The same signals resolved to their numbers, dropping any the platform does not
+# define. This is the canonical set: :mod:`gymrat_py.git` imports it to block
+# exactly these signals across a git subprocess call, so a signal cannot fire
+# this module's cleanup while a ``git worktree add`` is only half-materialized.
+TERMINATION_SIGNALS: frozenset[int] = frozenset(
+    resolved
+    for name in _TERMINATION_SIGNAL_NAMES
+    if (resolved := getattr(signal, name, None)) is not None
+)
+
 # Live cleanups keyed by an opaque install token. A dict preserves insertion
 # order, which the handler relies on to run cleanups in install order; a set
 # would not.

@@ -5,6 +5,7 @@ coercers, the render-mode resolution, and the repository lock wrapper — plus t
 import-latency guard.
 """
 
+import asyncio
 import io
 import os
 import subprocess
@@ -16,6 +17,7 @@ from typing import override
 import pytest
 import typer
 
+from gymrat_py.cli import shared
 from gymrat_py.cli.shared import (
     BUGS_URL,
     GATE_EXIT_CODE,
@@ -31,6 +33,7 @@ from gymrat_py.cli.shared import (
     parse_positive_integer_up_to,
     parse_positive_number,
     resolve_render_mode,
+    run_with_signal_abort,
     suppress_color,
     with_repo_lock,
     write_and_flush,
@@ -355,6 +358,45 @@ async def test_with_repo_lock_when_git_fails_otherwise_exits_two_without_running
 
     assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# run_with_signal_abort
+# ---------------------------------------------------------------------------
+
+
+async def test_run_with_signal_abort_when_cleanup_invoked_kills_groups_before_setting_abort(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured_cleanup: list[Callable[[], None]] = []
+    captured_abort: list[asyncio.Event] = []
+
+    def _install(cleanup: Callable[[], None]) -> Callable[[], None]:
+        captured_cleanup.append(cleanup)
+        return lambda: None
+
+    monkeypatch.setattr(shared, "install_termination_cleanup", _install)
+
+    observed: dict[str, bool] = {}
+
+    def _kill() -> None:
+        observed["kill_ran"] = True
+        observed["abort_set_at_kill"] = captured_abort[0].is_set()
+
+    monkeypatch.setattr(shared, "kill_live_process_groups", _kill)
+
+    async def execute(abort: asyncio.Event) -> str:
+        captured_abort.append(abort)
+        captured_cleanup[0]()
+        observed["abort_after_cleanup"] = abort.is_set()
+        return "done"
+
+    result = await run_with_signal_abort(execute)
+
+    assert result == "done"
+    assert observed["kill_ran"] is True
+    assert observed["abort_set_at_kill"] is False
+    assert observed["abort_after_cleanup"] is True
 
 
 # ---------------------------------------------------------------------------

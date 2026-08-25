@@ -9,11 +9,11 @@ so a delayed step yields the moment the session is interrupted or aborted.
 """
 
 import asyncio
-import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from gymrat_py.errors import message_of
+from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import (
     Driver,
     DriverSession,
@@ -49,10 +49,6 @@ class CostStep:
 
 MockStep = EmitStep | ActionStep | CostStep
 """A single step in a mock driver script."""
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 class _MockSession:
@@ -107,7 +103,7 @@ class _MockSession:
                 if self._aborted():
                     return
                 self._cost_usd = step.cost_usd
-                self._observer(UsageUpdateEvent(timestamp=_now_ms(), cost_usd=step.cost_usd))
+                self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=step.cost_usd))
 
     async def _run(self, steps: Sequence[MockStep]) -> SessionOutcome:
         for step in steps:

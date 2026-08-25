@@ -9,7 +9,6 @@ discrete milestones are printed (caps, cost, cap interruption, and a changed loo
 segment).
 """
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, assert_never
@@ -18,6 +17,7 @@ from gymrat_py.cli.status_line import RenderMode, StatusLine, create_status_line
 from gymrat_py.eta import format_duration
 from gymrat_py.model import Effect
 from gymrat_py.report.format import format_delta
+from gymrat_py.session.clock import now_ms
 from gymrat_py.session.paths import session_jsonl_path
 from gymrat_py.session.store import SessionState, fold_session, read_records
 from gymrat_py.supervisor.events import (
@@ -377,7 +377,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     swallowed and treated as "no session data" rather than propagated. ``stop``
     only tears the status line down — it neither flushes nor persists anything.
     """
-    resolved_now = now if now is not None else (lambda: int(time.time() * 1000))
+    resolved_now = now if now is not None else now_ms
     resolved_read = read_session if read_session is not None else _make_default_read(root)
 
     def on_tick() -> str:

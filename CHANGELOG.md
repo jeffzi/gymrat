@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Interrupting a run on a terminal now clears the progress line before exiting, so no stray status
+  text is left on the current line.
+- A lock file left behind by another user in a shared temporary directory now reports a clear remedy
+  instead of failing with a raw permission error.
+- `compare` and `measure` reports now render in color when written to a terminal and drop color when
+  redirected to a file or pipe, instead of always rendering plain.
+- Color detection now follows one rule across reports, the progress line, and error messages, so
+  `FORCE_COLOR` and `NO_COLOR` take effect consistently; a `FORCE_COLOR` of `0`, `false`, or empty no
+  longer forces color on.
+- `--no-color` no longer sets `NO_COLOR` in the environment of the benchmark commands it runs.
+- The progress line no longer spills a garbled row on a terminal that reports zero or unknown width
+  (for example `COLUMNS=0`); such a width now collapses the line instead of being treated as 80
+  columns.
+- A supervised agent session whose child emits an oversized, unterminated output line now ends with
+  a clear error instead of crashing on an internal read limit.
+- Tearing down a supervised agent session no longer hangs indefinitely when the child ignores the
+  stop signal; teardown now waits briefly, then abandons the wait and warns.
+
 ## [0.11.0] - 2026-08-25
 
 ### Added
@@ -14,9 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gymrat supervise [prompt]` runs an agent that drives the optimization loop on its own, bounded by
   a required wall-clock cap (`--max-minutes`) and an optional spend cap (`--max-usd`). When a cap is
   reached the agent is interrupted and given a grace period to stop; the run then reports how it
-  ended, its duration, and its cost. It requires a `runbook` in `gymrat.json`, holds a lock separate
-  from the session lock, refuses to start on a dirty tree unless `--allow-dirty` is passed, and
-  records every step of the session to a JSONL event log (`--log`, defaulting under `.gymrat/`).
+  ended, its duration, and its cost. Around that core:
+  - It requires a `runbook` in `gymrat.json` and refuses to start on a dirty tree unless
+    `--allow-dirty` is passed.
+  - It holds a lock separate from the session lock.
+  - It records every step of the session to a JSONL event log (`--log`, defaulting under `.gymrat/`).
 - A live progress line for supervised sessions showing the elapsed time and spend against the caps,
   loop progress (iterations, keeps, discards, and the last verdict), and the current tool activity,
   with a plain-text fallback when the output is not a terminal.
@@ -86,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   printed.
 - A repository lock so two gymrat runs over the same repository cannot collide; a run started
   outside a git repository proceeds without a lock.
-- Interruption handling: cancelling a run stops the benchmark, removes any worktrees the run created,
+- Interruption handling: canceling a run stops the benchmark, removes any worktrees the run created,
   and exits with the conventional signal code.
 
 ## [0.7.0] - 2026-08-23
@@ -97,7 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate — or a column per candidate against a shared baseline — showing each side's value with
   its spread, the verdict with its noise band, and a geometric-mean row summarizing the run. A run
   spanning several metric kinds splits into a titled section per kind, each closed by its own
-  geomean, and a kind that only informs (never gates) is labeled as such with the config line that
+  geometric mean, and a kind that only informs (never gates) is labeled as such with the config line
+  that
   made it so.
 - Measurement report table: a single-target table listing each metric's median and spread,
   sectioned by kind the same way, for a run with nothing to compare against.
@@ -105,7 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   within noise, or could not be judged, followed by a highlights block calling out the metrics that
   moved most — with a note that unstable metrics will not settle with more samples.
 - Gate-trip and cleanup reporting: when a `--fail-on` geomean threshold is crossed the report names
-  the kind, its gated geomean, and the threshold it exceeded; leftover worktrees and prune failures
+  the kind, its gated geometric mean, and the threshold it exceeded; leftover worktrees and prune
+  failures
   are reported in a closing footer. A verbose run also spells out the statistical method behind the
   verdicts and hints at when more samples would help.
 - Machine-readable JSON output: comparison and measurement runs render as a stable, versioned JSON
@@ -165,7 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once per target before the timed runs. A command that fails or exceeds its time limit stops the
   run with a message naming which target, command, and phase failed and showing its output.
 - Time limits and cancellation for benchmark commands: each command runs under
-  an optional timeout and can be cancelled; either one stops the command and the process group it
+  an optional timeout and can be canceled; either one stops the command and the process group it
   started, so a helper the shell left running is cleaned up too. Captured output is kept up to
   64 MiB per stream; longer output is truncated and flagged with its full byte count.
 - Clean shutdown on interruption: interrupting gymrat with Ctrl-C, or a

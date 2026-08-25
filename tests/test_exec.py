@@ -197,6 +197,14 @@ def spawned_processes(
                 os.killpg(proc.pid, signal.SIGKILL)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_live_groups() -> Iterator[None]:
+    """Keep the module-level live-group registry from bleeding across tests."""
+    exec_mod._live_process_groups.clear()
+    yield
+    exec_mod._live_process_groups.clear()
+
+
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
@@ -634,3 +642,122 @@ async def test_exec_when_killpg_fails_otherwise_does_warn_not_raise(
     abort.set()
     with pytest.warns(RuntimeWarning):
         await asyncio.wait_for(task, 5)
+
+
+# ---------------------------------------------------------------------------
+# live process-group registry
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_when_timed_out_does_deregister_group(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = asyncio.create_task(run_exec("sleep 30", make_opts(timeout_ms=300)))
+    proc = await wait_for_spawned(spawned_processes)
+
+    await task
+
+    attempted: list[int] = []
+
+    def record(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record)
+    exec_mod.kill_live_process_groups()
+
+    assert proc.pid not in attempted
+
+
+async def test_exec_when_stream_read_fails_does_deregister_group(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = asyncio.create_task(run_exec("sleep 30", make_opts()))
+    proc = await wait_for_spawned(spawned_processes)
+    assert proc.stdout is not None
+
+    proc.stdout.set_exception(RuntimeError("stream exploded"))
+    await asyncio.wait_for(task, 3)
+
+    attempted: list[int] = []
+
+    def record(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record)
+    exec_mod.kill_live_process_groups()
+
+    assert proc.pid not in attempted
+
+
+async def test_exec_when_completes_normally_does_deregister_group(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await run_exec("echo hello", make_opts())
+    proc = spawned_processes[-1]
+
+    attempted: list[int] = []
+
+    def record(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record)
+    exec_mod.kill_live_process_groups()
+
+    assert proc.pid not in attempted
+
+
+async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_descendants(
+    tmp_path: Path,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    task = asyncio.create_task(
+        run_exec("sleep 30 & echo $! > grandchild.pid; wait", make_opts()),
+    )
+    await wait_for_spawned(spawned_processes)
+    grandchild = await wait_for_pid(tmp_path / "grandchild.pid")
+
+    exec_mod.kill_live_process_groups()
+
+    await wait_until_dead(grandchild)
+    await task
+    assert not is_alive(grandchild)
+
+
+def test_kill_live_process_groups_when_registry_empty_does_not_kill_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempted: list[int] = []
+
+    def record(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record)
+
+    exec_mod.kill_live_process_groups()
+
+    assert attempted == []
+
+
+def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exec_mod._live_process_groups.add(4242)
+    attempted: list[int] = []
+
+    def boom(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+        message = "no such process"
+        raise OSError(message)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", boom)
+
+    exec_mod.kill_live_process_groups()
+
+    assert attempted == [4242]

@@ -24,7 +24,7 @@ _STATUS_STYLES: dict[CheckStatus, str] = {"ok": "green", "warn": "yellow", "fail
 
 _WORKFLOW_SECTION_TITLE = "Workflow"
 
-# The synthetic check name buildWorkflowSection emits in place of its real checks;
+# The synthetic check name build_workflow_section emits in place of its real checks;
 # the real ones are named after what they inspect ("skill file", "checks", …).
 _WORKFLOW_SKIP_CHECK_NAME = "workflow"
 

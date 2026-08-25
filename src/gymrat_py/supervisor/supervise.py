@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from gymrat_py.errors import message_of
+from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat_py.supervisor.event_log import create_event_log_writer
 from gymrat_py.supervisor.events import (
@@ -61,10 +62,6 @@ class _SuperviseConfig:
     max_usd: float | None
     observer: SessionObserver | None
     grace_ms: int
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def _fire_and_report_interrupt(session: DriverSession) -> None:
@@ -127,7 +124,7 @@ class _Supervision:
         self._ended_by = cap
         if self._wall_task is not None:
             self._wall_task.cancel()
-        self._combined(CapEvent(timestamp=_now_ms(), cap=cap))
+        self._combined(CapEvent(timestamp=now_ms(), cap=cap))
         _fire_and_report_interrupt(self._session)
         self._grace_task = asyncio.ensure_future(self._run_grace())
 

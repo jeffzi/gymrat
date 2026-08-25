@@ -14,14 +14,15 @@ maps correctly and anything malformed is skipped in silence.
 """
 
 import asyncio
+import contextlib
 import json
-import time
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from math import ceil
 from typing import Any, Protocol, cast
 
 from gymrat_py.errors import message_of
+from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import (
     Driver,
     DriverSession,
@@ -70,10 +71,6 @@ class ClaudeClient(Protocol):
 
 ClientFactory = Callable[[Mapping[str, object]], ClaudeClient]
 """Builds a :class:`ClaudeClient` from an SDK-native options mapping."""
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the package + live CLI
@@ -216,7 +213,12 @@ class _ClaudeSession:
 
     async def _teardown(self) -> None:
         if self._abort_task is not None:
+            # Cancel then await under suppression so the abort watcher's
+            # CancelledError is retrieved here, never surfaced by the loop as a
+            # forgotten-task diagnostic (matches the stdio driver's teardown).
             self._abort_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._abort_task
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -233,7 +235,7 @@ class _ClaudeSession:
             # Commit the cost before the observer fires so a callback reading it
             # (e.g. to interrupt at a threshold) sees the just-crossed value.
             self._cost_usd = float(cost)
-            self._observer(UsageUpdateEvent(timestamp=_now_ms(), cost_usd=self._cost_usd))
+            self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd))
             return
 
         content = getattr(message, "content", None)
@@ -244,7 +246,7 @@ class _ClaudeSession:
     def _map_block(self, block: object) -> None:
         text = getattr(block, "text", None)
         if isinstance(text, str):
-            self._observer(TextDeltaEvent(timestamp=_now_ms(), chunk=text))
+            self._observer(TextDeltaEvent(timestamp=now_ms(), chunk=text))
             return
 
         thinking = getattr(block, "thinking", None)
@@ -253,7 +255,7 @@ class _ClaudeSession:
             self._estimated_tokens += delta
             self._observer(
                 ThinkingUpdateEvent(
-                    timestamp=_now_ms(),
+                    timestamp=now_ms(),
                     estimated_tokens=self._estimated_tokens,
                     delta=delta,
                 )
@@ -263,12 +265,12 @@ class _ClaudeSession:
         block_id = getattr(block, "id", None)
         name = getattr(block, "name", None)
         if isinstance(block_id, str) and isinstance(name, str):
-            self._tool_starts[block_id] = _now_ms()
+            self._tool_starts[block_id] = now_ms()
             self._tool_names[block_id] = name
             tool_input = getattr(block, "input", None)
             self._observer(
                 ToolStartEvent(
-                    timestamp=_now_ms(),
+                    timestamp=now_ms(),
                     tool_use_id=block_id,
                     tool_name=name,
                     input=tool_input,
@@ -280,11 +282,11 @@ class _ClaudeSession:
         tool_use_id = getattr(block, "tool_use_id", None)
         if isinstance(tool_use_id, str):
             start = self._tool_starts.get(tool_use_id)
-            duration_ms = _now_ms() - start if start is not None else 0
+            duration_ms = now_ms() - start if start is not None else 0
             result = _stringify_result(getattr(block, "content", None))
             self._observer(
                 ToolEndEvent(
-                    timestamp=_now_ms(),
+                    timestamp=now_ms(),
                     tool_use_id=tool_use_id,
                     tool_name=self._tool_names.get(tool_use_id, "unknown"),
                     duration_ms=duration_ms,
