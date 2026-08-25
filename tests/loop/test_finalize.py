@@ -21,7 +21,6 @@ from gymrat_py.config import ResolvedConfig, StopConfig
 from gymrat_py.errors import GymratError, message_of
 from gymrat_py.loop.finalize import (
     FinalizeOptions,
-    FinalizeResult,
     finalize_session,
 )
 from gymrat_py.loop.start import start_session
@@ -438,9 +437,3 @@ def test_finalize_does_close_the_session_even_when_git_refuses_to_remove_a_workt
     assert experiment in result.report
     assert re.search(r"git worktree remove", result.report, re.IGNORECASE)
     assert _last_record(kept_repo) == result.record
-
-
-def test_finalize_result_is_a_finalize_result(kept_repo: str):
-    result = finalize_session(kept_repo)
-
-    assert isinstance(result, FinalizeResult)

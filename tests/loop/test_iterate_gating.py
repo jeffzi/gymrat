@@ -561,19 +561,13 @@ async def test_iterate_session_when_baseline_median_zero_does_stay_readable_off_
     assert as_logged(last_iteration_of(zero_baseline_repo)) == as_logged(result.record)
 
 
-async def test_iterate_session_when_baseline_median_zero_does_record_primary_delta_null(
+async def test_iterate_session_when_baseline_median_zero_does_record_primary_delta_null_and_state_no_percentage(
     zero_baseline_repo: str,
 ):
     result = await iterate_session(zero_baseline_repo, resolved_config(primary="total_ms"))
 
     assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
     assert result.record.outcome == "no-signal"
-
-
-async def test_iterate_session_when_baseline_median_zero_does_state_no_percentage(
-    zero_baseline_repo: str,
-):
-    result = await iterate_session(zero_baseline_repo, resolved_config(primary="total_ms"))
 
     primary = _primary_line(result.report)
     assert "verdict: NO-SIGNAL" in primary
@@ -602,7 +596,7 @@ def improved_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
     return open_repo
 
 
-async def test_iterate_session_when_primary_never_reported_does_record_delta_null(
+async def test_iterate_session_when_primary_never_reported_does_record_delta_null_and_state_no_percentage(
     improved_repo: str,
 ):
     result = await iterate_session(improved_repo, resolved_config(primary="startup_ms"))
@@ -612,12 +606,6 @@ async def test_iterate_session_when_primary_never_reported_does_record_delta_nul
     )
     assert result.record.outcome == "no-signal"
 
-
-async def test_iterate_session_when_primary_never_reported_does_state_no_percentage(
-    improved_repo: str,
-):
-    result = await iterate_session(improved_repo, resolved_config(primary="startup_ms"))
-
     assert _primary_line(result.report) == "primary: · verdict: NO-SIGNAL"
 
 
@@ -626,7 +614,7 @@ async def test_iterate_session_when_primary_never_reported_does_state_no_percent
 # ---------------------------------------------------------------------------
 
 
-async def test_iterate_session_when_geomean_all_non_gating_does_record_null_delta(
+async def test_iterate_session_when_geomean_all_non_gating_does_record_null_delta_and_state_no_percentage(
     improved_repo: str,
 ):
     result = await iterate_session(
@@ -640,6 +628,10 @@ async def test_iterate_session_when_geomean_all_non_gating_does_record_null_delt
     )
 
     assert result.record.primary == IterationPrimary(kind="geomean", delta_pct=None)
+
+    primary = _primary_line(result.report)
+    assert "NO-SIGNAL" in primary
+    assert not re.search(r"NaN|0\.0%", primary)
 
 
 async def test_iterate_session_when_geomean_all_unstable_does_record_null_delta(
@@ -648,24 +640,6 @@ async def test_iterate_session_when_geomean_all_unstable_does_record_null_delta(
     result = await iterate_session(improved_repo, resolved_config(unstable_noise_pct=0.0))
 
     assert result.record.primary == IterationPrimary(kind="geomean", delta_pct=None)
-
-
-async def test_iterate_session_when_geomean_no_inputs_does_state_no_percentage(
-    improved_repo: str,
-):
-    result = await iterate_session(
-        improved_repo,
-        resolved_config(
-            metrics={
-                "total_ms": MetricEntry(gating=False),
-                "alloc_bytes": MetricEntry(gating=False),
-            }
-        ),
-    )
-
-    primary = _primary_line(result.report)
-    assert "NO-SIGNAL" in primary
-    assert not re.search(r"NaN|0\.0%", primary)
 
 
 # ---------------------------------------------------------------------------

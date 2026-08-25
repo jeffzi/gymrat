@@ -22,14 +22,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from tools.parity.fixtures import fixture_matrix
+from tools.parity.oracle import PINNED_ORACLE_SHA, ts_repo_path
+
 
 def _node_available() -> bool:
     return shutil.which("node") is not None
 
 
 def _ts_repo_available() -> bool:
-    from tools.parity.oracle import PINNED_ORACLE_SHA, ts_repo_path
-
     try:
         repo = ts_repo_path()
     except Exception:  # noqa: BLE001 -- any resolution failure means "unavailable, skip"
@@ -72,6 +73,4 @@ def oracle_success_fixtures() -> "tuple[Fixture, ...]":
     :data:`MISSING_SESSION_FIXTURE`, which deliberately fail and are verified
     by exit-code agreement instead of a parsed JSON document.
     """
-    from tools.parity.fixtures import fixture_matrix
-
     return tuple(fixture for fixture in fixture_matrix() if fixture.oracle_exit == 0)

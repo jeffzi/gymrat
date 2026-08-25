@@ -18,7 +18,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from gymrat_py.config import ResolvedConfig
 from gymrat_py.errors import GymratError
@@ -26,6 +26,7 @@ from gymrat_py.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat_py.session import (
     IterationRecord,
     SessionLogRecord,
+    SessionRecord,
     Worktrees,
     read_records,
     record_to_wire,
@@ -34,6 +35,9 @@ from gymrat_py.session import (
 from tests.session._records import SESSION_ID
 from tests.session._records import iteration_record as _iteration_record
 from tests.session._records import session_record as _session_record_defaults
+
+if TYPE_CHECKING:
+    import pytest
 
 #: Ten rounds of a bench that stayed near 100.
 BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
@@ -71,7 +75,7 @@ def improved_rounds() -> list[dict[str, float]]:
     return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8))
 
 
-def session_record(root: str) -> Any:
+def session_record(root: str) -> SessionRecord:
     """A session header whose worktrees sit beside the default paths.
 
     Placing the worktrees on ``side-experiment`` / ``side-baseline`` rather than
@@ -163,7 +167,7 @@ class CollectSamplesRecorder:
         return len(self.calls)
 
 
-def install_collect_samples(monkeypatch: Any) -> CollectSamplesRecorder:
+def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
     """Replace ``gymrat_py.loop.iterate.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
     monkeypatch.setattr("gymrat_py.loop.iterate.collect_samples", recorder)
