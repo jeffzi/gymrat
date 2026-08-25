@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Interrupting a run on a terminal now clears the progress line before exiting, so no stray status
   text is left on the current line.
+- A lock file left behind by another user in a shared temporary directory now reports a clear remedy
+  instead of failing with a raw permission error.
 
 ## [0.11.0] - 2026-08-25
 

@@ -244,7 +244,12 @@ def publish_lock_record(lock_path: str, record: str) -> LockIdentity | None:
     the lock path over afterwards.
     """
     scratch_path = f"{lock_path}.{os.getpid()}.record"
-    fd = os.open(scratch_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        fd = os.open(scratch_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    except OSError as error:
+        # A leftover another user owns at the scratch path — a sticky ``/tmp`` —
+        # is reframed like every other auxiliary displacement wall, not thrown raw.
+        _rethrow_displacement_failure(lock_path, error)
     try:
         _write_all(fd, record.encode("utf-8"))
         identity = _identity_of(fd)
