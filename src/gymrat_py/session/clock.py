@@ -3,7 +3,11 @@
 from datetime import UTC, datetime
 
 
+def format_iso(dt: datetime) -> str:
+    """``dt`` as ISO-8601 with millisecond precision and a ``Z`` suffix."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
 def now_iso() -> str:
     """The current UTC time as ISO-8601 with millisecond precision and a ``Z`` suffix."""
-    now = datetime.now(UTC)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    return format_iso(datetime.now(UTC))
