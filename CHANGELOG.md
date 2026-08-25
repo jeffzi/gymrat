@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-25
+
+### Added
+
+- `gymrat supervise [prompt]` runs an agent that drives the optimization loop on its own, bounded by
+  a required wall-clock cap (`--max-minutes`) and an optional spend cap (`--max-usd`). When a cap is
+  reached the agent is interrupted and given a grace period to stop; the run then reports how it
+  ended, its duration, and its cost. It requires a `runbook` in `gymrat.json`, holds a lock separate
+  from the session lock, refuses to start on a dirty tree unless `--allow-dirty` is passed, and
+  records every step of the session to a JSONL event log (`--log`, defaulting under `.gymrat/`).
+- A live progress line for supervised sessions showing the elapsed time and spend against the caps,
+  loop progress (iterations, keeps, discards, and the last verdict), and the current tool activity,
+  with a plain-text fallback when the output is not a terminal.
+- `gymrat init` scaffolds a project: an interactive wizard (or flag-driven, with `--yes` for
+  non-interactive use) settles the bench command and optional adapter, checks, stop condition,
+  primary metric, runbook, and skill choices, then writes `gymrat.json`, a runbook stub, and the
+  gymrat skill file — validating the configuration before writing so a bad setup leaves nothing
+  behind.
+- `gymrat doctor` checks the project setup and reports problems across the environment (git and
+  repository), configuration, workflow (skill file, checks, stop condition, runbook), and an
+  optional bench smoke run that parses the bench output and cross-checks it against the configured
+  primary, metrics, and kinds. It renders as grouped text or `--format json` and exits non-zero when
+  any check fails; `--no-bench` skips the smoke run.
+- The gymrat skill file now ships inside the package, so a supervised session and `gymrat init` both
+  use it without a separate install step.
+
 ## [0.10.0] - 2026-08-25
 
 ### Added
@@ -170,7 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured error reporting for every gymrat failure: the command prints a clear message and, where
   one applies, an actionable hint for what to do next.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jeffzi/gymrat-py/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...v0.8.0
