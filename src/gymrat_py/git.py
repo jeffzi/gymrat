@@ -9,10 +9,13 @@ for stable, locale-independent diagnostics that classification can key on.
 
 import os
 import re
+import signal
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 
 from gymrat_py.errors import GymratError, stderr_text_of
+from gymrat_py.signals import TERMINATION_SIGNALS
 
 # Env vars an outer git process exports to point child git at a specific repo.
 # Removing them forces this call to resolve the repository from ``cwd`` alone.
@@ -31,6 +34,43 @@ _REPO_TARGETING_ENV_VARS = (
 # stderr. ``LC_ALL=C`` in :func:`run_git` stabilizes the wording across locales,
 # so a case-insensitive flag is not needed.
 _NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
+
+# POSIX-only seam for blocking signals. ``None`` on platforms without
+# ``pthread_sigmask`` (win32), where run_git falls back to running git unmasked.
+# Kept as a module-level reference so the fallback branch stays testable.
+_pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
+    signal, "pthread_sigmask", None
+)
+
+
+@contextmanager
+def _deferring_termination_signals() -> Iterator[None]:
+    """Block termination signals for the duration of the wrapped git call.
+
+    A termination signal delivered while git is running must not fire the
+    process's termination cleanup mid-call: that cleanup sweeps stranded
+    worktrees, and a ``git worktree add`` interrupted partway through is exactly
+    the state the sweep must never see. Blocking the signals keeps them pending
+    until git returns, so a registered handler runs only after git has fully
+    materialized its work, then still exits with ``128 + signal_number``.
+
+    On platforms without ``pthread_sigmask`` (win32) this is a no-op and git
+    runs unmasked.
+
+    The git child forked while the mask is held inherits the blocked mask for
+    its own lifetime — exec does not reset it. This is an accepted divergence:
+    git sets its own signal dispositions, and unblocking the mask in the forked
+    child would trade that small divergence for a fork-time hazard.
+    """
+    if _pthread_sigmask is None or not TERMINATION_SIGNALS:
+        yield
+        return
+
+    previous = _pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    try:
+        yield
+    finally:
+        _pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def run_git(args: Sequence[str], cwd: str) -> str:
@@ -52,19 +92,20 @@ def run_git(args: Sequence[str], cwd: str) -> str:
         env.pop(key, None)
     env["LC_ALL"] = "C"
 
-    completed = subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        # Paths, refs, and author names in git output can contain bytes that
-        # are not valid UTF-8; the classification and parsing that consumes
-        # this output needs a string to work with, not a crash.
-        errors="replace",
-        env=env,
-    )
+    with _deferring_termination_signals():
+        completed = subprocess.run(  # noqa: S603
+            ["git", *args],  # noqa: S607
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            # Paths, refs, and author names in git output can contain bytes that
+            # are not valid UTF-8; the classification and parsing that consumes
+            # this output needs a string to work with, not a crash.
+            errors="replace",
+            env=env,
+        )
     return completed.stdout
 
 
