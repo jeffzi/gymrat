@@ -89,7 +89,7 @@ class DiscardResult:
 
 @dataclass(frozen=True, slots=True)
 class _KeepContext:
-    """The settle context both keep paths thread through, mirroring the TS arg objects.
+    """The settle context both keep paths thread through.
 
     Bundling the shared inputs keeps the gate helpers to a couple of parameters
     each and makes it plain that both paths settle against the same worktree,
