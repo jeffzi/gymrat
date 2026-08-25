@@ -25,6 +25,7 @@
     "geteuid",
     "getpid",
     "gpgsign",
+    "getpgid",
     "gymrat",
     "isort",
     "killpg",

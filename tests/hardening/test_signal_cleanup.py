@@ -1,0 +1,425 @@
+"""End-to-end signal-cleanup hardening tests over real subprocesses.
+
+Each test runs the CLI out of process against a throwaway repo and a real shell
+bench, then delivers a real signal while the bench is mid-run. Together they pin
+the guarantees that must outlive an interrupted run:
+
+- no bench process — nor a grandchild it spawned — survives the CLI,
+- a lock stranded by a hard kill never wedges the next run,
+- the terminal status line is cleared on a TTY and left untouched off one,
+- every worktree is swept, even when a second signal lands during cleanup.
+
+The whole module is POSIX-only: it relies on real signals, ``sh`` bench scripts,
+and process-group tree-kill. Every test that spawns a real tree registers its
+group with the ``reap_groups`` fixture so no orphan bench survives a failed
+assertion.
+"""
+
+import contextlib
+import os
+import pty
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+import pytest
+
+from gymrat_py.session.paths import lockfile_path, repo_root
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
+
+_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
+
+# The overwrite status line clears its row with a carriage return followed by the
+# ANSI "erase to end of line" sequence.
+_CLEAR_LINE = "\r\x1b[K"
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# A bench that records its own process-group leader pid and a background
+# grandchild pid, emits one metric, then blocks forever on the grandchild. The
+# sample never completes on its own, so the run is always mid-bench when signalled.
+_TRACKED_BENCH = """#!/bin/sh
+echo $$ > bench.pid
+sleep 120 &
+echo $! > grandchild.pid
+echo 'METRIC x=1'
+wait
+"""
+
+_FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
+
+
+def _env() -> dict[str, str]:
+    """A child environment with color forced off, so output is deterministic."""
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("FORCE_COLOR", None)
+    return env
+
+
+def _git(repo: str, *args: str) -> None:
+    subprocess.run(  # noqa: S603
+        ["git", *args],  # noqa: S607
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_committed_bench(repo: str, script: str) -> None:
+    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
+    (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
+    _git(repo, "add", "bench.sh")
+    _git(repo, "commit", "-m", "add bench")
+
+
+def _is_alive(pid: int) -> bool:
+    """True while a process with ``pid`` exists."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_pid(path: Path) -> int | None:
+    """Read a pid a shell wrote with ``echo $$ >`` / ``echo $! >``.
+
+    Returns ``None`` until the file holds a complete positive integer, so a
+    partial write reads as "no pid yet" rather than a truncated value.
+    """
+    try:
+        raw = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
+def _wait_for_pid(path: Path, timeout_s: float = 30.0) -> int:
+    """Poll ``path`` until it holds a complete pid, then return it."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        pid = _read_pid(path)
+        if pid:
+            return pid
+        if time.monotonic() > deadline:
+            message = f"pid never appeared at {path}"
+            raise AssertionError(message)
+        time.sleep(0.05)
+
+
+def _wait_until_dead(pid: int, timeout_s: float = 30.0) -> None:
+    """Poll until the process with ``pid`` no longer exists."""
+    deadline = time.monotonic() + timeout_s
+    while _is_alive(pid):
+        if time.monotonic() > deadline:
+            message = f"process {pid} was still alive after {timeout_s}s"
+            raise AssertionError(message)
+        time.sleep(0.05)
+
+
+def _wait_for_worktree_count(
+    list_worktree_dirs: Callable[..., list[str]], repo: str, count: int, timeout_s: float = 30.0
+) -> None:
+    """Poll until at least ``count`` non-main worktrees exist for ``repo``."""
+    deadline = time.monotonic() + timeout_s
+    while len(list_worktree_dirs(repo, include_main=False)) < count:
+        if time.monotonic() > deadline:
+            got = list_worktree_dirs(repo, include_main=False)
+            message = f"expected >= {count} worktrees, saw {got}"
+            raise AssertionError(message)
+        time.sleep(0.05)
+
+
+def _final_line_is_blank(output: str) -> bool:
+    r"""Whether the terminal's current line is empty after replaying the stream.
+
+    Splits on carriage returns and newlines to isolate the text written since
+    the cursor last returned to column zero, then strips ANSI escapes. A cleared
+    status row ends with ``\r\x1b[K``, leaving nothing visible on the line.
+    """
+    tail = re.split(r"[\r\n]", output)[-1]
+    return _ANSI.sub("", tail).strip() == ""
+
+
+def _drain(fd: int, chunks: list[bytes]) -> None:
+    """Read a pty master until the child closes the slave, collecting bytes."""
+    while True:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            return
+        if not chunk:
+            return
+        chunks.append(chunk)
+
+
+@pytest.fixture
+def reap_groups() -> Iterator[list[int]]:
+    """Track process-group leaders and hard-kill any survivor on teardown.
+
+    Every test here drives a real bench process tree; a failed assertion must
+    not strand a live bench or the grandchild it forked. The bench writes its
+    own ``$$`` to ``bench.pid``; tests append that leader pid, and the whole
+    group is ``SIGKILL``ed when the test ends.
+    """
+    leaders: list[int] = []
+    try:
+        yield leaders
+    finally:
+        for pid in leaders:
+            with contextlib.suppress(OSError):
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+
+
+# ---------------------------------------------------------------------------
+# bench process tree does not outlive the CLI
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("signal_number", "expected_code"),
+    [
+        pytest.param(signal.SIGINT, 130, id="sigint"),
+        pytest.param(signal.SIGTERM, 143, id="sigterm"),
+    ],
+)
+def test_measure_when_signalled_mid_bench_does_kill_bench_grandchild_before_exit(
+    signal_number: int,
+    expected_code: int,
+    create_scratch_repo: Callable[[], str],
+    reap_groups: list[int],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _TRACKED_BENCH)
+
+    proc = subprocess.Popen(  # noqa: S603
+        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+        reap_groups.append(bench_pid)
+        grandchild = _wait_for_pid(Path(repo) / "grandchild.pid")
+        proc.send_signal(signal_number)
+        proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode == expected_code
+    _wait_until_dead(grandchild)
+    assert not _is_alive(bench_pid)
+
+
+# ---------------------------------------------------------------------------
+# a stranded lock never wedges the next run
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
+    create_scratch_repo: Callable[[], str],
+    reap_groups: list[int],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _TRACKED_BENCH)
+    lock_path = Path(lockfile_path(repo_root(repo)))
+
+    first = subprocess.Popen(  # noqa: S603
+        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+    reap_groups.append(bench_pid)
+    first.kill()  # SIGKILL runs no cleanup, so the lock is left behind
+    first.communicate(timeout=30)
+    os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
+    _wait_until_dead(bench_pid)
+
+    assert lock_path.exists(), "hard kill should strand the lock for the rerun to take over"
+
+    (Path(repo) / "bench.sh").write_text(_FAST_BENCH, encoding="utf-8")
+    rerun = subprocess.run(  # noqa: S603
+        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "2"],
+        cwd=repo,
+        env=_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert "x" in rerun.stdout
+
+
+# ---------------------------------------------------------------------------
+# the status line is cleared on a TTY and untouched off one
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
+    create_scratch_repo: Callable[[], str],
+    reap_groups: list[int],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _TRACKED_BENCH)
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(  # noqa: S603
+        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=_env(),
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        start_new_session=True,
+        close_fds=True,
+    )
+    os.close(slave)
+    chunks: list[bytes] = []
+    reader = threading.Thread(target=_drain, args=(master, chunks))
+    reader.start()
+    try:
+        bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+        reap_groups.append(bench_pid)
+        time.sleep(0.75)  # let the status line draw progress before the signal
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        reader.join(timeout=10)
+        os.close(master)
+    output = b"".join(chunks).decode("utf-8", "replace")
+
+    assert proc.returncode == 130
+    assert _CLEAR_LINE in output, f"status line never drew progress: {output!r}"
+    assert _final_line_is_blank(output), f"stray status text left on the line: {output!r}"
+
+
+def test_measure_when_signalled_off_a_tty_does_not_emit_terminal_clear_codes(
+    create_scratch_repo: Callable[[], str],
+    reap_groups: list[int],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _TRACKED_BENCH)
+
+    proc = subprocess.Popen(  # noqa: S603
+        [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+        reap_groups.append(bench_pid)
+        time.sleep(0.75)
+        proc.send_signal(signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode == 130
+    assert "\x1b[K" not in stderr
+    assert "\x1b[K" not in stdout
+
+
+# ---------------------------------------------------------------------------
+# every worktree is swept, even under a second signal during cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
+    create_scratch_repo: Callable[[], str],
+    list_worktree_dirs: Callable[..., list[str]],
+    reap_groups: list[int],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _TRACKED_BENCH)
+    _git(repo, "switch", "-c", "candidate-one")
+    _git(repo, "switch", "-c", "candidate-two")
+    _git(repo, "switch", "main")
+
+    proc = subprocess.Popen(  # noqa: S603
+        [
+            *_ENTRY,
+            "compare",
+            "main",
+            "candidate-one",
+            "candidate-two",
+            "--bench",
+            "sh bench.sh",
+            "--samples",
+            "1",
+        ],
+        cwd=repo,
+        env=_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_worktree_count(list_worktree_dirs, repo, 2)
+        proc.send_signal(signal.SIGINT)
+        proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode == 130
+    assert list_worktree_dirs(repo, include_main=False) == []
+
+
+def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly_and_sweep(
+    create_scratch_repo: Callable[[], str],
+    list_worktree_dirs: Callable[..., list[str]],
+    reap_groups: list[int],
+):
+    repo = create_scratch_repo()
+    _write_committed_bench(repo, _TRACKED_BENCH)
+    _git(repo, "switch", "-c", "candidate")
+    _git(repo, "switch", "main")
+
+    proc = subprocess.Popen(  # noqa: S603
+        [*_ENTRY, "compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
+        cwd=repo,
+        env=_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_worktree_count(list_worktree_dirs, repo, 1)
+        proc.send_signal(signal.SIGINT)
+        with contextlib.suppress(ProcessLookupError):
+            proc.send_signal(signal.SIGINT)
+        proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode == 130
+    assert list_worktree_dirs(repo, include_main=False) == []

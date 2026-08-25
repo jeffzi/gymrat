@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Interrupting a run on a terminal now clears the progress line before exiting, so no stray status
+  text is left on the current line.
+
 ## [0.11.0] - 2026-08-25
 
 ### Added
