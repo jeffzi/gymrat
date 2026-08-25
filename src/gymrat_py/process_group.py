@@ -19,10 +19,10 @@ _TASKKILL_GONE = 128
 
 
 def current_platform() -> str:
-    """Return the current platform string.
+    """Report the platform lazily instead of caching it at spawn.
 
-    Read at kill time rather than cached at spawn so a caller (and its tests)
-    can redirect the kill strategy to the Windows path after a POSIX spawn.
+    A caller (and its tests) can then redirect the kill strategy to the
+    Windows path after a POSIX spawn.
     """
     return sys.platform
 
