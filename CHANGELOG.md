@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FORCE_COLOR` and `NO_COLOR` take effect consistently; a `FORCE_COLOR` of `0`, `false`, or empty no
   longer forces color on.
 - `--no-color` no longer sets `NO_COLOR` in the environment of the benchmark commands it runs.
+- The progress line no longer spills a garbled row on a terminal that reports zero or unknown width
+  (for example `COLUMNS=0`); such a width now collapses the line instead of being treated as 80
+  columns.
 - A supervised agent session whose child emits an oversized, unterminated output line now ends with
   a clear error instead of crashing on an internal read limit.
 - Tearing down a supervised agent session no longer hangs indefinitely when the child ignores the

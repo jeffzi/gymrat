@@ -361,3 +361,39 @@ def test_status_line_when_terminal_reports_zero_width_does_not_crash_or_spill(
     drawn = fake.getvalue()
     assert drawn.startswith(_CLEAR_LINE)
     assert _strip_ansi(drawn).strip() == ""
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [pytest.param("0", id="zero"), pytest.param("", id="empty"), pytest.param("-5", id="negative")],
+)
+def test_status_line_when_columns_env_is_non_positive_does_not_spill(
+    monkeypatch: pytest.MonkeyPatch, columns: str
+):
+    monkeypatch.setenv("COLUMNS", columns)
+    fake = _FakeStream(tty=True)
+    monkeypatch.setattr("sys.stderr", fake)
+    line = create_status_line("overwrite")
+
+    line.write("abcdefghijklmnop")
+
+    drawn = fake.getvalue()
+    assert drawn.startswith(_CLEAR_LINE)
+    assert _strip_ansi(drawn).strip() == ""
+
+
+def test_status_line_when_columns_env_is_positive_does_truncate_to_fit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("COLUMNS", "10")
+    fake = _FakeStream(tty=True)
+    monkeypatch.setattr("sys.stderr", fake)
+    line = create_status_line("overwrite")
+
+    label = "abcdefghijklmnopqrstuvwxyz0123456789"
+    line.write(label)
+
+    visible = _strip_ansi(fake.getvalue()).strip()
+    assert visible
+    assert visible != label
+    assert len(visible) <= 10

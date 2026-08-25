@@ -6,6 +6,7 @@ minimal animated glyph. The status line is content-agnostic — the progress lay
 owns what text to show; this layer owns how to put it on the terminal.
 """
 
+import os
 import shutil
 import sys
 import threading
@@ -47,9 +48,23 @@ def _stderr_is_tty() -> bool:
 
 
 def _terminal_columns() -> int | None:
-    """The terminal width in columns, or ``None`` off a TTY (no width to fit)."""
+    """The terminal width in columns, or ``None`` off a TTY (no width to fit).
+
+    ``shutil.get_terminal_size`` silently substitutes its 80-column fallback for
+    a width it cannot trust — ``COLUMNS`` set to ``0``, empty, or a non-positive
+    or non-numeric value — which would let a genuinely zero-width terminal fit a
+    full-length row and spill. Honor an explicit ``COLUMNS`` directly instead,
+    collapsing a non-positive or unparseable value to zero so the fitted text
+    comes out empty rather than 80 columns wide.
+    """
     if not _stderr_is_tty():
         return None
+    columns_env = os.environ.get("COLUMNS")
+    if columns_env is not None:
+        try:
+            return max(int(columns_env), 0)
+        except ValueError:
+            return 0
     return shutil.get_terminal_size().columns
 
 
