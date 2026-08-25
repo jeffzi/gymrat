@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -37,6 +36,7 @@ from gymrat_py.errors import GymratError
 from gymrat_py.eta import format_duration
 from gymrat_py.git import run_git
 from gymrat_py.report.format import pluralize
+from gymrat_py.session.clock import now_ms
 from gymrat_py.session.lock import acquire_lock
 from gymrat_py.session.paths import repo_root, session_dir, supervise_lockfile_path
 from gymrat_py.session.workspace import ensure_git_exclude
@@ -70,11 +70,6 @@ _ModelOption = Annotated[
 _AllowDirtyOption = Annotated[
     bool, typer.Option("--allow-dirty", help="allow launching with uncommitted changes")
 ]
-
-
-def _now_ms() -> int:
-    """Milliseconds since the epoch, the unit every session event stamps with."""
-    return int(time.time() * 1000)
 
 
 def _dirty_file_count(root: str) -> int:
@@ -116,7 +111,7 @@ def _resolve_log_path(root: str, explicit: str | None) -> str:
     if explicit is not None:
         return explicit
     ensure_git_exclude(root)
-    return str(Path(session_dir(root)) / f"supervisor-{_now_ms()}.jsonl")
+    return str(Path(session_dir(root)) / f"supervisor-{now_ms()}.jsonl")
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +221,7 @@ def _execute(options: _Options) -> None:
         head_sha = run_git(["rev-parse", "HEAD"], root).strip()
 
         launch = LaunchEvent(
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             head_sha=head_sha,
             dirty=DirtyInfo(file_count=dirty_count) if dirty_count > 0 else False,
             max_minutes=options.max_minutes,
