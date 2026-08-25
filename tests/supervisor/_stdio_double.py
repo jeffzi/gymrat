@@ -39,6 +39,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import cast
 
 _GRANDCHILD_SLEEP_SECONDS = 30
 
@@ -49,13 +50,13 @@ def _writeln(text: str) -> None:
 
 
 def _emit_lines(config: dict[str, object]) -> None:
-    lines = config.get("lines", [])
-    delay_ms = config.get("line_delay_ms", 0)
-    for item in lines:  # type: ignore[union-attr]
+    lines = cast("list[dict[str, object]]", config.get("lines", []))
+    delay_ms = cast("float", config.get("line_delay_ms", 0))
+    for item in lines:
         if delay_ms:
-            time.sleep(delay_ms / 1000)  # type: ignore[operator]
+            time.sleep(delay_ms / 1000)
         if "text" in item:
-            _writeln(item["text"])
+            _writeln(cast("str", item["text"]))
         else:
             _writeln(json.dumps(item["json"]))
 
@@ -63,13 +64,13 @@ def _emit_lines(config: dict[str, object]) -> None:
 def _write_report(config: dict[str, object], payload: dict[str, object]) -> None:
     report_path = config.get("report_path")
     if report_path is not None:
-        Path(report_path).write_text(json.dumps(payload), encoding="utf-8")  # type: ignore[arg-type]
+        Path(cast("str", report_path)).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _write_stderr(config: dict[str, object]) -> None:
     text = config.get("stderr")
     if text is not None:
-        sys.stderr.write(text + "\n")  # type: ignore[operator]
+        sys.stderr.write(cast("str", text) + "\n")
         sys.stderr.flush()
 
 
@@ -80,7 +81,7 @@ def _run_script(config: dict[str, object], start_line: str) -> int:
     outcome = config.get("outcome")
     if outcome is not None:
         _writeln(json.dumps(outcome))
-    return int(config.get("exit_code", 0))  # type: ignore[arg-type]
+    return int(cast("int", config.get("exit_code", 0)))
 
 
 def _run_await_interrupt(config: dict[str, object], start_line: str) -> int:
@@ -99,7 +100,7 @@ def _run_await_interrupt(config: dict[str, object], start_line: str) -> int:
             if outcome is not None:
                 _writeln(json.dumps(outcome))
             break
-    return int(config.get("exit_code", 0))  # type: ignore[arg-type]
+    return int(cast("int", config.get("exit_code", 0)))
 
 
 def _run_sleep_forever(config: dict[str, object]) -> int:
