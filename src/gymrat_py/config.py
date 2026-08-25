@@ -653,6 +653,22 @@ def _validate_loop_keys(config: BenchlessConfig) -> None:
         raise GymratError(problems[0])
 
 
+def validate_config_dict(config: dict[str, object]) -> None:
+    """Validate an in-memory config dict the same way a loaded ``gymrat.json`` is.
+
+    Runs the strict schema (``extra="forbid"``) and the cross-field loop-key
+    checks over ``config``, raising a :class:`GymratError` on the first problem.
+    Lets a writer (the init scaffold) reject a config before touching disk without
+    a temp-file round-trip.
+    """
+    try:
+        model = _ConfigModel.model_validate(config)
+    except ValidationError as exc:
+        problems = [_message_for_error(error) for error in _drop_prefix_errors(exc.errors())]
+        raise GymratError(problems[0]) from exc
+    _validate_loop_keys(merge_config(CliFlags(), _to_config_file(model)))
+
+
 def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
     """Return a problem string when ``runbook`` does not name an existing file.
 

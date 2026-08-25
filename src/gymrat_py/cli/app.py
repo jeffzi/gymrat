@@ -14,20 +14,29 @@ from typing import Annotated
 import typer
 
 from gymrat_py.cli.compare_cmd import compare
+from gymrat_py.cli.doctor_cmd import doctor_command
+from gymrat_py.cli.init_cmd import init_command
 from gymrat_py.cli.loop_cmds import discard, finalize, iterate, keep, start, status
 from gymrat_py.cli.measure_cmd import measure
 from gymrat_py.cli.shared import BUGS_URL, DebugOption, set_debug_mode
+from gymrat_py.cli.supervise_cmd import supervise_command
 
 _DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
 
 _ROOT_EPILOGUE = f"""
 Examples:
 
+  • gymrat init --bench "npm run bench"
+
   • gymrat compare main my-branch --bench "npm run bench"
 
   • gymrat compare old=main new=perf/decode --bench "npm run bench" --fail-on regressed
 
   • gymrat measure --bench "npm run bench"
+
+  • gymrat doctor --bench "npm run bench"
+
+  • gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5
 
 Docs: {_DOCS_URL}
 Bugs: {BUGS_URL}
@@ -91,14 +100,17 @@ def _root(*, debug: DebugOption = False, version: _VersionOption = False) -> Non
     set_debug_mode(debug)
 
 
+app.command("init")(init_command)
 app.command("compare", epilog=_COMPARE_EPILOGUE)(compare)
 app.command("measure", epilog=_MEASURE_EPILOGUE)(measure)
+app.command("doctor")(doctor_command)
 app.command("start")(start)
 app.command("iterate")(iterate)
 app.command("keep")(keep)
 app.command("discard")(discard)
 app.command("finalize")(finalize)
 app.command("status")(status)
+app.command("supervise")(supervise_command)
 
 
 def main() -> None:

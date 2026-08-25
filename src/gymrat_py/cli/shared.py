@@ -8,6 +8,7 @@ stack or the command bodies, so importing it stays cheap.
 
 import asyncio
 import contextlib
+import math
 import os
 import re
 import sys
@@ -54,6 +55,12 @@ TOOL_FAILURE_EXIT_CODE = 2
 _POSITIVE_INTEGER_RE = re.compile(r"\d+")
 _POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 _GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?\d+(?:\.\d+)?)")
+
+# A signed decimal or scientific-notation literal. Unlike the positive-number
+# grammar, this admits a leading sign, a bare-dot fraction, and an exponent, so
+# a stop target of ``-1.5``, ``.5``, or ``1e3`` parses. Anything the pattern
+# rejects — or a magnitude that overflows to infinity — is not a finite number.
+_STOP_TARGET_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 class _WritableStream(Protocol):
@@ -249,6 +256,23 @@ def parse_positive_number(value: str) -> float:
     parsed = float(value)
     if parsed <= 0:
         message = "must be a positive number."
+        raise typer.BadParameter(message)
+    return parsed
+
+
+def parse_stop_target_value(value: str) -> float:
+    """Parse a signed, finite decimal or exponent stop target.
+
+    Rejects anything the signed-decimal grammar does not match, and rejects a
+    magnitude that overflows the float type to infinity. Used both as the
+    ``--stop-target`` coercer and by the wizard's validator, which catches the
+    raised error to re-prompt.
+    """
+    message = "must be a finite number."
+    if _STOP_TARGET_RE.fullmatch(value) is None:
+        raise typer.BadParameter(message)
+    parsed = float(value)
+    if not math.isfinite(parsed):
         raise typer.BadParameter(message)
     return parsed
 

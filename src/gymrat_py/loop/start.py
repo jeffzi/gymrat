@@ -16,6 +16,7 @@ from pathlib import Path
 
 from gymrat_py.config import ResolvedConfig
 from gymrat_py.errors import GymratError
+from gymrat_py.session.clock import format_iso
 from gymrat_py.session.paths import archived_session_path, session_jsonl_path
 from gymrat_py.session.records import SCHEMA_VERSION, SessionConfig, SessionHooks, SessionRecord
 from gymrat_py.session.store import SessionState, append_record, fold_session, read_records
@@ -178,7 +179,7 @@ def _iso(now: datetime) -> str:
     The header's ``created_at`` shares the instant the session id is minted from,
     so both read back as the same moment.
     """
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    return format_iso(now)
 
 
 def _snapshot_config(config: ResolvedConfig) -> SessionConfig:

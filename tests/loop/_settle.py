@@ -14,7 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.config import ResolvedConfig
+from gymrat_py.config import (
+    HooksConfig,
+    KindEntry,
+    MetricEntry,
+    ResolvedConfig,
+    StopConfig,
+)
 from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat_py.loop.start import start_session
 from gymrat_py.session import (
@@ -32,25 +38,45 @@ CHECKS_STDOUT = "3 tests failed"
 CHECKS_STDERR = "AssertionError: expected 2 to be 3"
 
 
-def checks_config(**overrides: object) -> ResolvedConfig:
+def checks_config(
+    *,
+    bench: str = "sh bench.sh",
+    prepare: str | None = None,
+    adapter: str = "metric-lines",
+    samples: int = 10,
+    timeout_seconds: int = 1800,
+    unstable_noise_pct: float = 2.0,
+    primary: str = "geomean",
+    checks: str | None = CHECKS,
+    metrics: dict[str, MetricEntry] | None = None,
+    kinds: dict[str, KindEntry] | None = None,
+    runbook: str | None = None,
+    filter: str | None = None,  # noqa: A002
+    stop: StopConfig | None = None,
+    hooks: HooksConfig | None = None,
+) -> ResolvedConfig:
     """A resolved config defaulted to the checks command every settle test exercises.
 
     ``timeout_seconds`` is 1800 so the run timeout the settle passes to ``exec``
     is 1_800_000 ms, the value the tests assert on. Pass ``checks=None`` to model
     a run with the gate switched off.
     """
-    defaults: dict[str, object] = {
-        "bench": "sh bench.sh",
-        "prepare": None,
-        "adapter": "metric-lines",
-        "samples": 10,
-        "timeout_seconds": 1800,
-        "unstable_noise_pct": 2.0,
-        "primary": "geomean",
-        "checks": CHECKS,
-    }
-    defaults.update(overrides)
-    return ResolvedConfig(**defaults)  # type: ignore[arg-type]
+    return ResolvedConfig(
+        bench=bench,
+        prepare=prepare,
+        adapter=adapter,
+        samples=samples,
+        timeout_seconds=timeout_seconds,
+        unstable_noise_pct=unstable_noise_pct,
+        primary=primary,
+        checks=checks,
+        metrics=metrics,
+        kinds=kinds,
+        runbook=runbook,
+        filter=filter,
+        stop=stop,
+        hooks=hooks,
+    )
 
 
 def git(args: list[str], cwd: str) -> str:

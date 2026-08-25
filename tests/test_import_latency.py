@@ -14,6 +14,11 @@ The guard extends to the CLI entry module: importing ``gymrat_py.cli.app`` and
 rendering ``--help`` must stay just as cheap as importing the package, so the
 command bodies (and the heavy statistics stack they pull) are imported lazily at
 call time, never when the app is assembled.
+
+The same discipline covers ``claude_agent_sdk``, the supervise driver's backend:
+it drags in ``mcp``, ``starlette``, ``uvicorn``, and ``httpx``, so the Claude
+driver imports it lazily inside ``start`` — importing ``gymrat_py.supervisor``
+(and the CLI) must never pull it in.
 """
 
 import subprocess
@@ -33,11 +38,12 @@ import gymrat_py.exec
 import gymrat_py.signals
 import gymrat_py.sampling
 import gymrat_py.targets
+import gymrat_py.supervisor
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels'}
-    or name.startswith(('scipy.', 'statsmodels.'))
+    if name in {'scipy', 'statsmodels', 'claude_agent_sdk'}
+    or name.startswith(('scipy.', 'statsmodels.', 'claude_agent_sdk.'))
 )
 assert not heavy, f'package import pulled in heavy modules: {heavy}'
 """
@@ -65,7 +71,8 @@ assert result.exit_code == 0, result.output
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels'} or name.startswith(('scipy.', 'statsmodels.'))
+    if name in {'scipy', 'statsmodels', 'claude_agent_sdk'}
+    or name.startswith(('scipy.', 'statsmodels.', 'claude_agent_sdk.'))
 )
 bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
 assert not heavy, f'cli app import pulled heavy modules: {heavy}'

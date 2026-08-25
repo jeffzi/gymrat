@@ -20,12 +20,10 @@ import asyncio
 import codecs
 import contextlib
 import os
-import signal
-import subprocess
-import sys
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+from gymrat_py.process_group import current_platform, kill_process_group
 
 FAILURE_EXIT_CODE = 1
 """Exit code reported when a run fails without a positive child exit code."""
@@ -35,9 +33,6 @@ OUTPUT_CAP = 64 * 1024 * 1024
 
 _READ_CHUNK = 65536
 """Bytes requested per pipe read."""
-
-_TASKKILL_GONE = 128
-"""``taskkill`` exit status meaning the process was already gone."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,10 +116,11 @@ class OutputBuffer:
 def _platform() -> str:
     """Return the current platform.
 
-    Read at kill time rather than cached at spawn so tests can redirect the kill
-    strategy to the Windows path after a POSIX spawn.
+    Kept as a module-level seam (delegating to
+    :func:`gymrat_py.process_group.current_platform`) so a test can redirect the
+    kill strategy to the Windows path after a POSIX spawn.
     """
-    return sys.platform
+    return current_platform()
 
 
 def _exit_code(returncode: int | None) -> int:
@@ -139,56 +135,9 @@ def _exit_code(returncode: int | None) -> int:
     return returncode
 
 
-def _taskkill(pid: int) -> None:
-    """Run ``taskkill /T /F`` for ``pid``, raising on any non-zero status.
-
-    ``taskkill`` resolves from ``PATH`` on Windows and the argv is fixed, so the
-    subprocess-injection check does not apply.
-    """
-    argv = ["taskkill", "/F", "/T", "/PID", str(pid)]
-    subprocess.run(argv, capture_output=True, check=True)  # noqa: S603
-
-
-def _kill_group(pid: int) -> None:
-    """Kill the whole process group led by ``pid``, never raising into the caller.
-
-    On POSIX this signals the group with ``SIGKILL``, staying silent when the
-    group is already gone and warning on any other failure. On Windows it
-    delegates to ``taskkill /T /F``, staying silent when the process is already
-    gone and warning on any other failure.
-    """
-    if _platform() == "win32":
-        try:
-            _taskkill(pid)
-        except subprocess.CalledProcessError as error:
-            if error.returncode != _TASKKILL_GONE:
-                warnings.warn(
-                    f"taskkill failed for pid {pid}: {error}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-        except FileNotFoundError:
-            warnings.warn(
-                f"taskkill unavailable while killing pid {pid}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        return
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except OSError as error:
-        warnings.warn(
-            f"killpg failed for pid {pid}: {error}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-
 def _terminate(proc: asyncio.subprocess.Process) -> None:
     """Kill ``proc``'s process group and drop its stdio pipes."""
-    _kill_group(proc.pid)
+    kill_process_group(proc.pid, _platform())
     _close_pipes(proc)
 
 

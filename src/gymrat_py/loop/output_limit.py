@@ -4,7 +4,8 @@ import codecs
 
 # The budget is measured in bytes, not characters: downstream consumers size
 # their buffers in bytes, so a multi-byte-heavy string that "looks short" can
-# still blow past the limit. Keep this module-private, as in the reference.
+# still blow past the limit. Keep this module-private: the byte budget is an
+# internal knob, not something a caller should tune.
 _OUTPUT_LIMIT_BYTES = 8192
 
 _NEWLINE_BYTE = 0x0A

@@ -27,6 +27,7 @@ def test_confirm_action_when_called_does_write_prompt_to_stderr(
         ("n\n", False),
         ("N\n", False),
         pytest.param("\n", False, id="empty-line"),
+        pytest.param("", False, id="eof"),
         pytest.param("yes\n", False, id="full-word-yes"),
         pytest.param("nope\n", False, id="arbitrary-text"),
     ],
@@ -38,9 +39,3 @@ def test_confirm_action_when_answer_given_does_return_true_only_for_exact_y(
     result = confirm_action("Proceed?", io.StringIO(line))
 
     assert result is expected
-
-
-def test_confirm_action_when_stream_at_eof_does_return_false():
-    result = confirm_action("Proceed?", io.StringIO(""))
-
-    assert result is False

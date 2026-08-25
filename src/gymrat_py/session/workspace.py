@@ -122,7 +122,10 @@ def ensure_git_exclude(root: str) -> None:
     """
     exclude_file = Path(_git_common_dir(root)) / "info" / "exclude"
     line = f"{SESSION_DIR_NAME}/"
-    existing = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+    try:
+        existing = exclude_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
 
     if any(entry.strip() == line for entry in existing.split("\n")):
         return
