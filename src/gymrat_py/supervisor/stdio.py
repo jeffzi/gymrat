@@ -153,7 +153,7 @@ class _StdioSession:
             await self._teardown(proc)
 
     async def _read_events(self, proc: asyncio.subprocess.Process) -> None:
-        """Relay each event line to the observer until the terminal outcome or EOF.
+        """Relay event lines from the child's stdout until a terminal outcome or EOF.
 
         A child line longer than ``_STREAM_LIMIT`` makes the reader overrun rather
         than yield a line; catch that so an oversized, unterminated line settles a

@@ -335,7 +335,7 @@ def _enforce(outcome: _CommandOutcome) -> str:
 
 
 def _to_command_error(failure: _CommandFailure) -> CommandError:
-    """Attach the target's location lines and ref-only hint to the error.
+    """Map a command failure to a target-specific :class:`CommandError`.
 
     A ref target contributes ``ref`` and ``worktree`` location lines plus the
     hint that the worktree only holds tracked files; a plain directory
