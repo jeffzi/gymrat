@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and checking out an experiment and a baseline worktree; a finalized session's log is archived and
     a fresh session takes its place.
   - `gymrat iterate` measures the experiment worktree against the baseline and reports the verdict,
-    honouring configurable stop conditions — a maximum iteration count, or a target value for a named
+    honoring configurable stop conditions — a maximum iteration count, or a target value for a named
     metric.
   - `gymrat keep` commits the measured edit once a configured checks command passes, advancing the
     baseline onto the kept commit; it refuses a standing gating regression or failing checks and
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A `--record` (`-r`) flag for `gymrat measure` that appends the run to a per-repository session log
-  as a labelled baseline, capturing each round's raw samples. Recording requires an open session; a
+  as a labeled baseline, capturing each round's raw samples. Recording requires an open session; a
   missing or already-finalized session, or a run outside a git repository, stops the command before
   it benchmarks so a long run is never discarded with nowhere to record it. Sessions are opened by
   the forthcoming session command; until it ships, `--record` reports that no session is open.
@@ -71,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate — or a column per candidate against a shared baseline — showing each side's value with
   its spread, the verdict with its noise band, and a geometric-mean row summarizing the run. A run
   spanning several metric kinds splits into a titled section per kind, each closed by its own
-  geomean, and a kind that only informs (never gates) is labelled as such with the config line that
+  geomean, and a kind that only informs (never gates) is labeled as such with the config line that
   made it so.
 - Measurement report table: a single-target table listing each metric's median and spread,
   sectioned by kind the same way, for a run with nothing to compare against.
@@ -162,15 +162,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Significance testing and summary statistics for paired benchmark samples:
   median, half-range, ratio normalization, and geometric-mean combination, plus Wilcoxon
   signed-rank and exact sign-flip permutation tests.
-- Value types for benchmark-comparison results: effect sizes, metric metadata,
-  verdict records, and aggregates for paired samples.
 
 ## [0.1.0] - 2026-08-22
 
 ### Added
 
-- Structured errors for every gymrat failure: each derives from `GymratError` and can carry a
-  `hint`; failed subprocesses raise `CommandError`.
+- Structured error reporting for every gymrat failure: the command prints a clear message and, where
+  one applies, an actionable hint for what to do next.
 
 [Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.10.0...HEAD
 [0.10.0]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...v0.10.0
