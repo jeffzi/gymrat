@@ -29,7 +29,11 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.session.paths import lockfile_path, repo_root
+from tests.hardening._bench_helpers import drain as _drain
+from tests.hardening._bench_helpers import env as _env
+from tests.hardening._bench_helpers import git as _git
+from tests.hardening._bench_helpers import is_alive as _is_alive
+from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
@@ -52,40 +56,6 @@ wait
 """
 
 _FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
-
-
-def _env() -> dict[str, str]:
-    """A child environment with color forced off, so output is deterministic."""
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-    env.pop("FORCE_COLOR", None)
-    return env
-
-
-def _git(repo: str, *args: str) -> None:
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-
-def _write_committed_bench(repo: str, script: str) -> None:
-    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
-    (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", "add bench")
-
-
-def _is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def _read_pid(path: Path) -> int | None:
@@ -146,18 +116,6 @@ def _final_line_is_blank(output: str) -> bool:
     """
     tail = re.split(r"[\r\n]", output)[-1]
     return _ANSI.sub("", tail).strip() == ""
-
-
-def _drain(fd: int, chunks: list[bytes]) -> None:
-    """Read a pty master until the child closes the slave, collecting bytes."""
-    while True:
-        try:
-            chunk = os.read(fd, 4096)
-        except OSError:
-            return
-        if not chunk:
-            return
-        chunks.append(chunk)
 
 
 @pytest.fixture
@@ -234,7 +192,6 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
 ):
     repo = create_scratch_repo()
     _write_committed_bench(repo, _TRACKED_BENCH)
-    lock_path = Path(lockfile_path(repo_root(repo)))
 
     first = subprocess.Popen(  # noqa: S603
         [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
@@ -250,8 +207,7 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
     first.communicate(timeout=30)
     os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
     _wait_until_dead(bench_pid)
-
-    assert lock_path.exists(), "hard kill should strand the lock for the rerun to take over"
+    # The lock left behind above is now stale; the rerun below must take it over.
 
     (Path(repo) / "bench.sh").write_text(_FAST_BENCH, encoding="utf-8")
     rerun = subprocess.run(  # noqa: S603

@@ -37,6 +37,9 @@ import pytest
 from gymrat_py.cli.shared import format_cli_error, resolve_render_mode, resolve_stream_color
 from gymrat_py.cli.status_line import create_status_line
 from gymrat_py.report.style import shorten_label
+from tests.hardening._bench_helpers import drain as _drain
+from tests.hardening._bench_helpers import git as _git
+from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -74,35 +77,6 @@ def _neutral_env() -> dict[str, str]:
     env.pop("FORCE_COLOR", None)
     env["TERM"] = "xterm-256color"
     return env
-
-
-def _git(repo: str, *args: str) -> None:
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-
-def _write_committed_bench(repo: str, script: str) -> None:
-    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
-    (Path(repo) / "bench.sh").write_text(script, encoding="utf-8")
-    _git(repo, "add", "bench.sh")
-    _git(repo, "commit", "-m", "add bench")
-
-
-def _drain(fd: int, chunks: list[bytes]) -> None:
-    """Read a pty master until the child closes the slave, collecting bytes."""
-    while True:
-        try:
-            chunk = os.read(fd, 4096)
-        except OSError:
-            return
-        if not chunk:
-            return
-        chunks.append(chunk)
 
 
 def _run_report_on_pty(args: list[str], repo: str) -> str:

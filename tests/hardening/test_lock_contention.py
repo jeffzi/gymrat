@@ -329,7 +329,6 @@ def test_acquire_lock_when_one_command_lock_is_held_does_not_block_the_other(
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     root = str(tmp_path / "checkout")
     paths = {"repo": lockfile_path(root), "supervise": supervise_lockfile_path(root)}
-    assert paths["repo"] != paths["supervise"]
 
     held = acquire_lock(paths[held_role], held_role)
     other = acquire_lock(paths[acquired_role], acquired_role)

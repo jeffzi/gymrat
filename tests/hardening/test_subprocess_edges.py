@@ -56,15 +56,6 @@ _LEAK_MARKERS = ("was destroyed but it is pending", "exception was never retriev
 # ---------------------------------------------------------------------------
 
 
-def is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def try_read_report(report_path: Path) -> dict[str, Any] | None:
     """Load the JSON report if it exists and is complete, else ``None``.
 

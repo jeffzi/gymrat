@@ -36,6 +36,8 @@ from gymrat_py.targets import (
     materialize_worktree,
     plan_worktree,
 )
+from tests.hardening._bench_helpers import env as _env
+from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 # A sha no repository holds, so planning never needs a real commit to build a path.
 UNKNOWN_SHA = "0" * 40
@@ -67,21 +69,6 @@ def _run_git(args: list[str], cwd: str) -> str:
 
 def _get_head_sha(repo_dir: str) -> str:
     return _run_git(["rev-parse", "HEAD"], repo_dir).strip()
-
-
-def _env() -> dict[str, str]:
-    """A child environment with color forced off, so output is deterministic."""
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-    env.pop("FORCE_COLOR", None)
-    return env
-
-
-def _write_committed_bench(repo_dir: str, script: str) -> None:
-    """Drop ``script`` as ``bench.sh`` and commit it so every ref can run it."""
-    (Path(repo_dir) / "bench.sh").write_text(script, encoding="utf-8")
-    _run_git(["add", "bench.sh"], repo_dir)
-    _run_git(["commit", "-m", "add bench"], repo_dir)
 
 
 def _point_temp_base_at(monkeypatch: pytest.MonkeyPatch, real_base: Path, shape: str) -> None:
