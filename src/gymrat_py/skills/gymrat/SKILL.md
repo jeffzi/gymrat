@@ -54,7 +54,7 @@ Read the verdict block:
 - **IMPROVED** — the primary metric moved in the right direction.
 - **REGRESSED** — a gating metric regressed (confirmed by rerun for inexact metrics; exact metrics
   gate without rerun). A metric absent from the rerun still gates.
-- **NO-SIGNAL** — the change did not move the needle.
+- **NO-SIGNAL** — the change had no measurable effect.
 
 Then settle:
 
