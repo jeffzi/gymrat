@@ -56,12 +56,15 @@ def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResu
     raw = os.environ.get(env_var)
     if raw is None:
         return EnvResult()
-    valid = (
-        raw.isascii()
-        and raw.isdigit()
-        and int(raw) >= 1
-        and (maximum is None or int(raw) <= maximum)
-    )
+    try:
+        valid = (
+            raw.isascii()
+            and raw.isdigit()
+            and int(raw) >= 1
+            and (maximum is None or int(raw) <= maximum)
+        )
+    except ValueError:
+        valid = False
     if valid:
         return EnvResult(value=int(raw))
     phrase = (

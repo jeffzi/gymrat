@@ -13,6 +13,7 @@ from gymrat_py.config import (
     MetricEntry,
     ResolvedConfig,
     StopConfig,
+    flag_problem,
     load_config_file,
     load_config_file_collecting,
     resolve_config,
@@ -746,6 +747,60 @@ def test_load_config_file_collecting_when_path_is_directory_does_collect_read_fa
     assert result.config_file is None
     assert result.exists is True
     assert any(f"Cannot read config file at {tmp_path}: " in problem for problem in result.problems)
+
+
+def test_load_config_file_collecting_when_value_is_toml_date_does_report_problem_not_crash(
+    tmp_path: Path,
+):
+    config_path = write_raw(tmp_path, "samples = 1979-05-27")
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result.config_file is None
+    assert len(result.problems) >= 1
+    joined = "\n".join(result.problems)
+    assert "samples" in joined
+
+
+def test_load_config_file_collecting_when_file_is_utf16_does_report_read_failure(
+    tmp_path: Path,
+):
+    config_path = tmp_path / "gymrat.toml"
+    config_path.write_bytes('bench = "hello"'.encode("utf-16"))
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result.config_file is None
+    assert any("Cannot read config file" in problem for problem in result.problems)
+
+
+# ---------------------------------------------------------------------------
+# flag_problem
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "test_id"),
+    [
+        pytest.param("", "empty", id="empty"),
+        pytest.param("   ", "whitespace-spaces", id="whitespace-spaces"),
+        pytest.param("\t", "whitespace-tab", id="whitespace-tab"),
+    ],
+)
+def test_flag_problem_when_value_blank_does_return_problem_naming_flag(value: str, test_id: str):
+    result = flag_problem("bench", value)
+
+    assert result is not None
+    assert "--bench" in result
+    assert "non-empty" in result
+
+
+def test_flag_problem_when_value_none_does_return_none():
+    assert flag_problem("bench", None) is None
+
+
+def test_flag_problem_when_value_non_empty_does_return_none():
+    assert flag_problem("bench", "real-command") is None
 
 
 # ---------------------------------------------------------------------------

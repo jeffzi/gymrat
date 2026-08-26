@@ -379,7 +379,10 @@ def _invalid_value_message(field_name: str, expected_phrase: str, value: object)
     The single shape both the schema translator and the cross-field settlement
     checks report.
     """
-    got = json.dumps(value)
+    try:
+        got = json.dumps(value)
+    except TypeError:
+        got = repr(value)
     return f"Invalid config value for {field_name}: expected {expected_phrase}, got {got}"
 
 
@@ -429,8 +432,8 @@ def _read_source(path: Path) -> _ReadResult:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return _ReadAbsent()
-    except OSError as exc:
-        reason = exc.strerror or str(exc)
+    except (OSError, ValueError) as exc:
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
         return _ReadError(f"Cannot read config file at {path}: {reason}")
     return _ReadOk(text.removeprefix("﻿"))
 
@@ -564,13 +567,13 @@ def load_config_file(path: str | Path, *, required: bool = False) -> ConfigFile:
 
 
 def flag_problem(field_name: str, value: str | None) -> str | None:
-    """Return a problem string when a flag holds the empty string, else ``None``.
+    """Return a problem string when a flag is blank (empty or whitespace-only).
 
-    Flags bypass the file schema, so ``--bench ""`` is the one way an empty string
-    reaches a settled field. The message names the flag, not the config key,
-    because the flag is what the user typed.
+    Flags bypass the file schema, so ``--bench ""`` or ``--bench "   "`` is the
+    one way a blank string reaches a settled field. The message names the flag,
+    not the config key, because the flag is what the user typed.
     """
-    if value == "":
+    if value is not None and not value.strip():
         return _invalid_value_message(f"--{field_name}", "a non-empty string", value)
     return None
 
