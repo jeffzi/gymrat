@@ -17,7 +17,7 @@ import json
 import math
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat_py.model import BandVerdict, ExactVerdict, SignedRankVerdict
+from gymrat_py.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat_py.report.format import count_verdicts
 from gymrat_py.report.types import CandidateMetric
 from gymrat_py.verdict import infer_group
@@ -123,7 +123,7 @@ def _candidate_row(label: str, candidate: CandidateMetric) -> dict[str, object]:
 def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     """The verdict-derived fields, padded per method.
 
-    Signed-rank carries a p-value and no band; band carries a noise figure in
+    Permutation carries a p-value and no band; band carries a noise figure in
     both ``noisePct`` and ``band``; exact carries none. A candidate with no
     verdict leaves every field null while its measurements survive on the row.
     """
@@ -140,7 +140,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     p: float | None = None
     band: float | None = None
     match verdict:
-        case SignedRankVerdict():
+        case PermutationVerdict():
             noise_pct = verdict.noise_pct
             p = verdict.p
         case BandVerdict():

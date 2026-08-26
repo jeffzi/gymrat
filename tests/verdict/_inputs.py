@@ -104,5 +104,5 @@ def build_inputs(
     return verdicts, metric_meta
 
 
-# Re-exported for callers building explicit band/signed-rank verdicts.
+# Re-exported for callers building explicit band/permutation verdicts.
 __all__ = ["MetricSpec", "build_inputs", "exact_verdict"]

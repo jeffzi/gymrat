@@ -71,7 +71,7 @@ FILTER = "npm run bench -- --filter {names}"
 def _jittered(values: list[float], up: float, down: float) -> list[float]:
     """Nudge alternate rounds up by ``up`` and the rest down by ``down``.
 
-    The mixed signs leave the signed-rank test nothing to call, while the larger
+    The mixed signs leave the permutation test nothing to call, while the larger
     upward nudge still drags the median above the baseline's — a run that moved
     the wrong way without saying anything, which is what ``no-signal`` means.
     """
@@ -107,13 +107,13 @@ def _primary_line(report: str) -> str:
     raise AssertionError(message)
 
 
-def _assert_signed_rank(
+def _assert_permutation(
     metric: MetricVerdict, *, delta: float, verdict: str, confirmed: bool
 ) -> None:
-    """Assert a signed-rank metric moved ``delta`` percent and settled as ``verdict``."""
+    """Assert a permutation metric moved ``delta`` percent and settled as ``verdict``."""
     assert metric.delta_pct == pytest.approx(delta, abs=1e-6)
     assert metric.verdict == verdict
-    assert metric.method == "signed-rank"
+    assert metric.method == "permutation"
     assert metric.p is not None
     assert metric.noise_pct is not None
     assert metric.gating is True
@@ -215,7 +215,7 @@ async def test_iterate_session_when_rerun_agrees_does_confirm_and_read_regressed
 
     result = await iterate_session(open_repo, resolved)
 
-    _assert_signed_rank(
+    _assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="regressed", confirmed=True
     )
     assert result.record.outcome == "regressed"
@@ -247,7 +247,7 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
 
     result = await iterate_session(open_repo, resolved)
 
-    _assert_signed_rank(
+    _assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
     assert result.record.outcome == "no-signal"
@@ -357,7 +357,7 @@ async def test_iterate_session_when_rerun_silent_on_metric_does_leave_it_regress
 ):
     result = await iterate_session(partial_rerun_repo, resolved_config(filter=FILTER))
 
-    _assert_signed_rank(
+    _assert_permutation(
         result.record.metrics["alloc_bytes"], delta=10, verdict="regressed", confirmed=False
     )
     assert result.record.outcome == "regressed"
@@ -490,10 +490,10 @@ async def test_iterate_session_when_metric_named_proto_does_keep_it_as_an_own_ke
     result = await iterate_session(proto_repo, resolved_config())
 
     assert set(result.record.metrics.keys()) == {"total_ms", _PROTO}
-    _assert_signed_rank(
+    _assert_permutation(
         result.record.metrics["total_ms"], delta=-10, verdict="improved", confirmed=False
     )
-    _assert_signed_rank(
+    _assert_permutation(
         result.record.metrics[_PROTO], delta=-20, verdict="improved", confirmed=False
     )
 
@@ -526,7 +526,7 @@ def _undefined_delta_iteration(seq: int) -> IterationRecord:
             "total_ms": MetricVerdict(
                 delta_pct=None,
                 verdict="no-signal",
-                method="signed-rank",
+                method="permutation",
                 p=0.005,
                 noise_pct=3,
                 gating=True,

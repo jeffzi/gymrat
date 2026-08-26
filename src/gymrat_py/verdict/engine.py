@@ -5,8 +5,11 @@ percentage delta from the paired medians, and classifies the move with one of
 three methods:
 
 - **exact** — any difference between medians is signal; no noise band.
-- **signed-rank** — the Wilcoxon test decides significance once there are enough
-  non-tied pairs; a delta must also clear the metric's measurement resolution.
+- **permutation** — the sign-flip permutation test decides significance once
+  there are enough non-tied pairs. Its statistic is the reported delta functional
+  itself, its small-sample null is an exact sign-flip enumeration, and its
+  p-value is used unclamped; a delta must also clear the metric's measurement
+  resolution.
 - **band** — the fallback for short or tied runs; a delta must exceed the
   metric's own noise band.
 """
@@ -21,7 +24,7 @@ from gymrat_py.model import (
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
     NOISE_K,
-    SIGNED_RANK_DESCRIPTOR,
+    PERMUTATION_DESCRIPTOR,
     BandVerdict,
     Direction,
     Effect,
@@ -30,11 +33,11 @@ from gymrat_py.model import (
     MetricUnit,
     MetricVerdict,
     Observations,
-    SignedRankVerdict,
+    PermutationVerdict,
     Verdict,
     pair_metric,
 )
-from gymrat_py.stats import compute_half_range, compute_median, wilcoxon_signed_rank
+from gymrat_py.stats import compute_half_range, compute_median, sign_flip_permutation_test
 from gymrat_py.warn import WarnSink, warn_to_stderr
 
 ONE_BYTE_PCT = 100.0
@@ -78,7 +81,7 @@ def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) 
     """Classify the delta when a signal was found, else ``no-signal``.
 
     ``has_signal`` already encodes the method's own significance test (the
-    signed-rank p-value comparison or the band comparison); this helper exists only
+    permutation p-value comparison or the band comparison); this helper exists only
     to keep ``no-signal`` the single fallback path shared by both approximate
     methods.
     """
@@ -158,25 +161,25 @@ def _compute_approximate_verdict(
     delta: float,
     meta: MetricMeta,
     unstable_noise_pct: float,
-) -> SignedRankVerdict | BandVerdict:
+) -> PermutationVerdict | BandVerdict:
     """Decide a non-exact verdict, applying the unstable override.
 
-    Uses the signed-rank method when at least :attr:`SIGNED_RANK_DESCRIPTOR.min_n`
-    pairs differ by a non-zero amount; the noise band otherwise. Tied pairs carry
-    no rank information, so a long but mostly identical run falls back to the band
-    just as a short one does.
+    Uses the sign-flip permutation test when at least
+    :attr:`PERMUTATION_DESCRIPTOR.min_n` pairs differ by a non-zero amount; the
+    noise band otherwise. Tied pairs contribute no sign to flip, so a long but
+    mostly identical run falls back to the band just as a short one does.
 
-    A significant p-value alone is not enough on the signed-rank path: the delta
+    A significant p-value alone is not enough on the permutation path: the delta
     must also clear the metric's measurement resolution, or a one-byte
     quantization step reads as signal however many rounds agree on it.
     """
-    result = wilcoxon_signed_rank(paired_left, paired_right)
+    result = sign_flip_permutation_test(paired_left, paired_right)
     noise = _compute_noise(paired_left, paired_right, meta.unit)
     n = len(paired_left)
     effect = Effect(value=delta, unit="percent")
 
-    record: SignedRankVerdict | BandVerdict
-    if result.n < SIGNED_RANK_DESCRIPTOR.min_n:
+    record: PermutationVerdict | BandVerdict
+    if result.n < PERMUTATION_DESCRIPTOR.min_n:
         has_signal = n >= BAND_DESCRIPTOR.min_n and abs(delta) > noise.pct
         verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
@@ -189,17 +192,17 @@ def _compute_approximate_verdict(
             n=n,
         )
     else:
-        # The signed-rank descriptor always carries a threshold; the union type
+        # The permutation descriptor always carries a threshold; the union type
         # admits None only for the exact and band descriptors. Surface a
         # misconfiguration rather than compare against None.
-        threshold = SIGNED_RANK_DESCRIPTOR.p_threshold
+        threshold = PERMUTATION_DESCRIPTOR.p_threshold
         if threshold is None:
-            message = "SIGNED_RANK_DESCRIPTOR must define a p-value threshold"
+            message = "PERMUTATION_DESCRIPTOR must define a p-value threshold"
             raise ValueError(message)
         has_signal = result.p < threshold and abs(delta) > noise.resolution_pct
         verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
-        record = SignedRankVerdict(
-            method="signed-rank",
+        record = PermutationVerdict(
+            method="permutation",
             verdict=verdict,
             p=result.p,
             noise_pct=noise.pct,

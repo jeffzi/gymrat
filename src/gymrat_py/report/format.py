@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from gymrat_py.model import (
     BAND_DESCRIPTOR,
-    SIGNED_RANK_DESCRIPTOR,
+    PERMUTATION_DESCRIPTOR,
     Effect,
     GeomeanResult,
     MetricUnit,
@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
     from gymrat_py.report.types import CandidateMetric, MetricComparison, MetricComparisons
 
-#: Minimum pairs the signed-rank test needs; below it a run falls to the band.
-MIN_WILCOXON_N = SIGNED_RANK_DESCRIPTOR.min_n
+#: Minimum pairs the permutation test needs; below it a run falls to the band.
+MIN_PERMUTATION_N = PERMUTATION_DESCRIPTOR.min_n
 #: Minimum pairs the band method needs to measure a spread at all.
 MIN_BAND_N = BAND_DESCRIPTOR.min_n
 
@@ -250,7 +250,7 @@ type DisplayClass = Literal[
 
 ``no-signal`` splits in three here: a metric resting on too few pairs for the
 band method reads ``inconclusive``, one whose two sides measured close enough
-to identical to starve the signed-rank test reads ``identical``, and every
+to identical to starve the permutation test reads ``identical``, and every
 other no-signal verdict reads ``within-noise``. The split is presentation only
 — the stored verdict stays ``no-signal``.
 """
@@ -262,9 +262,9 @@ def display_class(verdict: MetricVerdict) -> DisplayClass:
     The pair count is read before anything else about a band verdict: below
     :data:`MIN_BAND_N` the band is the noise floor constant rather than a
     measurement, so the verdict reads ``inconclusive``. A band verdict with
-    enough pairs for the signed-rank test reads ``identical`` only when every
+    enough pairs for the permutation test reads ``identical`` only when every
     one of them tied (``usable_n == 0``); anywhere ``usable_n`` sits between
-    zero and :data:`MIN_WILCOXON_N` some pairs did differ, so that reads
+    zero and :data:`MIN_PERMUTATION_N` some pairs did differ, so that reads
     ``within-noise``. An exact no-signal always reads ``within-noise``.
     """
     if verdict.method == "band" and verdict.n < MIN_BAND_N:
@@ -284,10 +284,10 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
     """
     match verdict.method:
         case "band":
-            if verdict.n >= MIN_WILCOXON_N and verdict.usable_n == 0:
+            if verdict.n >= MIN_PERMUTATION_N and verdict.usable_n == 0:
                 return "identical"
             return "within-noise"
-        case "signed-rank":
+        case "permutation":
             return "within-noise"
         case "exact":
             return "within-noise"
@@ -801,10 +801,10 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
 # Footer generation
 # ---------------------------------------------------------------------------
 
-_SAMPLES_HINT = f"re-run with --samples {MIN_WILCOXON_N} or more for statistical verdicts"
+_SAMPLES_HINT = f"re-run with --samples {MIN_PERMUTATION_N} or more for statistical verdicts"
 
 # Shown when the run had enough samples but some metrics paired fewer rounds than
-# the signed-rank test needs: suggesting more samples would be wrong.
+# the permutation test needs: suggesting more samples would be wrong.
 _DROPPED_ROUNDS_HINT = (
     "some rounds were dropped — not all samples produced paired measurements for every metric"
 )
@@ -817,12 +817,12 @@ _BAND_METHOD = "noise band ±(half-range × K)"
 class _FooterData:
     """The pair counts the footer sorts by the cause that forced each fallback.
 
-    ``signed_rank`` carries the pair counts of every signed-rank verdict.
+    ``permutation`` carries the pair counts of every permutation verdict.
     ``shortage`` and ``ties`` split the band-method verdicts by cause: too few
     total pairs, or too many of them tied away.
     """
 
-    signed_rank: list[int]
+    permutation: list[int]
     shortage: list[int]
     ties: list[int]
 
@@ -835,10 +835,10 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
     a new method could slip past unnoticed.
     """
     match verdict.method:
-        case "signed-rank":
-            data.signed_rank.append(verdict.n)
+        case "permutation":
+            data.permutation.append(verdict.n)
         case "band":
-            if verdict.n < MIN_WILCOXON_N:
+            if verdict.n < MIN_PERMUTATION_N:
                 data.shortage.append(verdict.n)
             else:
                 data.ties.append(verdict.usable_n)
@@ -850,7 +850,7 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
 
 def _collect_footer_data(metrics: MetricComparisons) -> _FooterData:
     """Sort every verdict's pair count into the cause it belongs to, in one pass."""
-    data = _FooterData(signed_rank=[], shortage=[], ties=[])
+    data = _FooterData(permutation=[], shortage=[], ties=[])
     for metric in metrics.values():
         for candidate in metric.candidates:
             if candidate.verdict is not None:
@@ -867,23 +867,23 @@ def _method_lines(data: _FooterData) -> list[str]:
     it.
     """
     lines: list[str] = []
-    if data.signed_rank:
+    if data.permutation:
         desc = (
-            f"verdicts: Wilcoxon signed-rank on pairs "
-            f"({format_pair_count(min(data.signed_rank))} ≥ {MIN_WILCOXON_N}) "
+            f"verdicts: sign-flip permutation test on pairs "
+            f"({format_pair_count(min(data.permutation))} ≥ {MIN_PERMUTATION_N}) "
             f"· ~ = no signal at α=0.05"
         )
         lines.append(markup(desc, "dim"))
     if data.shortage:
         desc = (
             f"{_BAND_METHOD} — {format_pair_count(max(data.shortage))} "
-            f"below signed-rank floor ({MIN_WILCOXON_N} pairs)"
+            f"below permutation floor ({MIN_PERMUTATION_N} pairs)"
         )
         lines.append(markup(desc, "dim"))
     if data.ties:
         desc = (
             f"{_BAND_METHOD} — ties left {format_pair_count(min(data.ties))} "
-            f"usable pairs ({MIN_WILCOXON_N} needed)"
+            f"usable pairs ({MIN_PERMUTATION_N} needed)"
         )
         lines.append(markup(desc, "dim"))
     return lines
@@ -898,7 +898,7 @@ def _shortage_hint(shortage: Sequence[int], samples: int | None) -> str | None:
     """
     if not shortage:
         return None
-    if samples is not None and samples >= MIN_WILCOXON_N:
+    if samples is not None and samples >= MIN_PERMUTATION_N:
         return _DROPPED_ROUNDS_HINT
     return _SAMPLES_HINT
 

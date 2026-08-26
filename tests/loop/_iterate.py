@@ -52,7 +52,7 @@ def scaled(values: list[float], factor: float) -> list[float]:
     """Scale every round by ``factor``, moving the median by exactly that much.
 
     A constant factor leaves every pairwise difference the same sign, which is
-    what makes the signed-rank test call the move rather than shrug at it.
+    what makes the permutation test call the move rather than shrug at it.
     """
     return [value * factor for value in values]
 

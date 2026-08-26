@@ -13,7 +13,7 @@ from gymrat_py.model.methods import (
     EXACT_DESCRIPTOR,
     NOISE_FLOOR_PCT,
     NOISE_K,
-    SIGNED_RANK_DESCRIPTOR,
+    PERMUTATION_DESCRIPTOR,
     Method,
     MethodDescriptor,
 )
@@ -37,7 +37,7 @@ from gymrat_py.model.verdicts import (
     BandVerdict,
     ExactVerdict,
     MetricVerdict,
-    SignedRankVerdict,
+    PermutationVerdict,
     Verdict,
 )
 
@@ -48,7 +48,7 @@ __all__ = [
     "EXACT_DESCRIPTOR",
     "NOISE_FLOOR_PCT",
     "NOISE_K",
-    "SIGNED_RANK_DESCRIPTOR",
+    "PERMUTATION_DESCRIPTOR",
     "Aggregate",
     "ApproximateVerdict",
     "BandVerdict",
@@ -67,9 +67,9 @@ __all__ = [
     "Observations",
     "PairResult",
     "PairingKey",
+    "PermutationVerdict",
     "Repeat",
     "ResolvedMetricMeta",
-    "SignedRankVerdict",
     "UnpairedPolicy",
     "Verdict",
     "pair_metric",

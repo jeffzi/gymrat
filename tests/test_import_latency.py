@@ -1,9 +1,10 @@
 """Guard: importing ``gymrat_py`` must not pull in the heavy statistics stack.
 
-The verdict engine will depend on ``scipy`` and ``statsmodels``, both of which
-cost hundreds of milliseconds to import. Keeping them out of the package's
-import path preserves fast startup for commands that never compute a verdict, so
-they must be imported lazily at their point of use, never at package import.
+The verdict engine will depend on ``scipy``, ``numpy``, and ``statsmodels``, all
+of which cost hundreds of milliseconds to import. Keeping them out of the
+package's import path preserves fast startup for commands that never compute a
+verdict, so they must be imported lazily at their point of use, never at package
+import. The permutation test's ``numpy`` use lives behind such a lazy import.
 
 The check runs in a fresh interpreter subprocess and asserts *inside* that
 subprocess: the test process has its own imports (pytest pulls in a large
@@ -42,8 +43,8 @@ import gymrat_py.supervisor
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels', 'claude_agent_sdk'}
-    or name.startswith(('scipy.', 'statsmodels.', 'claude_agent_sdk.'))
+    if name in {'scipy', 'statsmodels', 'numpy', 'claude_agent_sdk'}
+    or name.startswith(('scipy.', 'statsmodels.', 'numpy.', 'claude_agent_sdk.'))
 )
 assert not heavy, f'package import pulled in heavy modules: {heavy}'
 """
@@ -71,8 +72,8 @@ assert result.exit_code == 0, result.output
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels', 'claude_agent_sdk'}
-    or name.startswith(('scipy.', 'statsmodels.', 'claude_agent_sdk.'))
+    if name in {'scipy', 'statsmodels', 'numpy', 'claude_agent_sdk'}
+    or name.startswith(('scipy.', 'statsmodels.', 'numpy.', 'claude_agent_sdk.'))
 )
 bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
 assert not heavy, f'cli app import pulled heavy modules: {heavy}'

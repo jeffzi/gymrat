@@ -44,7 +44,7 @@ from gymrat_py.report.loop import (
 )
 from gymrat_py.report.style import render_lines
 from gymrat_py.session import BaselineRecord, BaselineRef
-from tests.report._inputs import signed_rank_metric, styles_at
+from tests.report._inputs import permutation_metric, styles_at
 from tests.session._records import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
@@ -73,12 +73,12 @@ def _geomean_primary(delta_pct: float = -4.2) -> GeomeanPrimary:
 
 def _directed_metric(direction: Direction, *, gating: bool = True) -> MetricComparison:
     """A metric judged in ``direction`` with no signal of its own."""
-    return signed_rank_metric(verdict="no-signal", delta=0, direction=direction, gating=gating)
+    return permutation_metric(verdict="no-signal", delta=0, direction=direction, gating=gating)
 
 
 def _regressed_metrics(*, gating: bool) -> MetricComparisons:
     """A run whose single metric regressed, gating or not."""
-    return {"decode/time": signed_rank_metric(verdict="regressed", delta=4, gating=gating)}
+    return {"decode/time": permutation_metric(verdict="regressed", delta=4, gating=gating)}
 
 
 # ---------------------------------------------------------------------------

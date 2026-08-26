@@ -1,7 +1,7 @@
 """Behavioral tests for the verdict engine.
 
 Covers pairing, delta computation, and per-metric method dispatch (exact,
-signed-rank, band), driving that behavior through the public ``compute_verdicts``
+permutation, band), driving that behavior through the public ``compute_verdicts``
 API only.
 """
 
@@ -16,7 +16,7 @@ from gymrat_py.model import (
     MetricMeta,
     MetricVerdict,
     Observations,
-    SignedRankVerdict,
+    PermutationVerdict,
 )
 from gymrat_py.verdict import compute_verdicts
 from gymrat_py.warn import WarnSink
@@ -68,9 +68,9 @@ def samples(*values: float) -> list[dict[str, float]]:
     return [{"metric": value} for value in values]
 
 
-def get_signed_rank(result: dict[str, MetricVerdict], key: str = "metric") -> SignedRankVerdict:
+def get_permutation(result: dict[str, MetricVerdict], key: str = "metric") -> PermutationVerdict:
     verdict = result[key]
-    assert isinstance(verdict, SignedRankVerdict), f"expected signed-rank, got {verdict.method}"
+    assert isinstance(verdict, PermutationVerdict), f"expected permutation, got {verdict.method}"
     return verdict
 
 
@@ -81,9 +81,10 @@ def get_band(result: dict[str, MetricVerdict], key: str = "metric") -> BandVerdi
 
 
 # Six paired windows noisy enough to reach noise_pct = 30 while staying on the
-# signed-rank path (all six diffs non-zero, negative → improved).
-NOISY_SIGNED_RANK_A = samples(80.0, 90.0, 100.0, 100.0, 110.0, 120.0)
-NOISY_SIGNED_RANK_B = samples(40.0, 45.0, 50.0, 50.0, 55.0, 60.0)
+# permutation path: all six diffs non-zero and negative, and the two groups are
+# separated enough that the sign-flip null makes the observed delta significant.
+NOISY_PERMUTATION_A = samples(80.0, 90.0, 100.0, 100.0, 110.0, 120.0)
+NOISY_PERMUTATION_B = samples(40.0, 45.0, 50.0, 50.0, 55.0, 60.0)
 
 # Two paired windows noisy enough to reach noise_pct = 30 on the band path.
 NOISY_BAND_A = samples(80.0, 120.0)
@@ -320,32 +321,32 @@ def test_compute_verdicts_when_many_windows_does_pair_all():
 
 
 # ---------------------------------------------------------------------------
-# Signed-rank method
+# Permutation method
 # ---------------------------------------------------------------------------
 
 
-def test_compute_verdicts_when_non_exact_and_six_pairs_does_use_signed_rank():
+def test_compute_verdicts_when_non_exact_and_six_pairs_does_use_permutation():
     result = run(create_samples(6, 100.0), create_samples(6, 95.0), METRIC_APPROX_LOWER)
 
-    assert result["metric"].method == "signed-rank"
+    assert result["metric"].method == "permutation"
 
 
-def test_compute_verdicts_when_signed_rank_p_not_significant_does_no_signal():
+def test_compute_verdicts_when_permutation_p_not_significant_does_no_signal():
     samples_b = samples(99.0, 101.0, 98.0, 102.0, 97.0, 103.0)
 
     result = run(create_samples(6, 100.0), samples_b, METRIC_APPROX_LOWER)
 
-    verdict = get_signed_rank(result)
+    verdict = get_permutation(result)
     assert verdict.p >= 0.05
     assert verdict.verdict == "no-signal"
 
 
-def test_compute_verdicts_when_signed_rank_delta_nan_does_no_signal():
+def test_compute_verdicts_when_permutation_delta_nan_does_no_signal():
     result = run(create_samples(6, 0.0), create_samples(6, 5.0), METRIC_APPROX_LOWER)
 
-    verdict = get_signed_rank(result)
-    assert verdict.p < 0.05
+    verdict = get_permutation(result)
     assert math.isnan(verdict.delta.value)
+    assert verdict.p == pytest.approx(1.0)
     assert verdict.verdict == "no-signal"
 
 
@@ -356,29 +357,34 @@ def test_compute_verdicts_when_signed_rank_delta_nan_does_no_signal():
         pytest.param(METRIC_APPROX_HIGHER, id="higher"),
     ],
 )
-def test_compute_verdicts_when_signed_rank_delta_zero_does_no_signal(meta: dict[str, MetricMeta]):
+def test_compute_verdicts_when_permutation_delta_zero_does_no_signal(meta: dict[str, MetricMeta]):
     samples_a = samples(80.0, 90.0, 95.0, 100.0, 100.0, 105.0, 110.0, 120.0)
     samples_b = samples(81.0, 91.0, 96.0, 100.0, 100.0, 106.0, 111.0, 121.0)
 
     result = run(samples_a, samples_b, meta)
 
-    verdict = get_signed_rank(result)
-    assert verdict.p < 0.05
+    verdict = get_permutation(result)
     assert verdict.delta.value == 0.0
+    assert verdict.p == pytest.approx(1.0)
     assert verdict.verdict == "no-signal"
 
 
-def test_compute_verdicts_when_signed_rank_delta_below_band_does_still_signal():
+def test_compute_verdicts_when_permutation_delta_below_band_does_no_signal():
+    # The permutation statistic *is* the delta functional, so a delta smaller
+    # than the noise band never separates the two groups enough for the
+    # sign-flip null to call it significant — unlike the retired signed-rank
+    # test, which modelled scatter through a separate rank p-value and could
+    # still signal here. This verdict flip is the deliberate divergence.
     samples_a = samples(80.0, 90.0, 100.0, 100.0, 110.0, 120.0)
     samples_b = samples(76.0, 85.5, 95.0, 95.0, 104.5, 114.0)
 
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
-    verdict = get_signed_rank(result)
-    assert verdict.p < 0.05
+    verdict = get_permutation(result)
+    assert verdict.p == pytest.approx(0.5)
     assert verdict.delta.value == pytest.approx(-5.0, abs=1e-5)
     assert verdict.noise_pct == pytest.approx(30.0, abs=1e-5)
-    assert verdict.verdict == "improved"
+    assert verdict.verdict == "no-signal"
 
 
 def test_compute_verdicts_when_zero_diffs_drop_usable_below_six_does_fall_back_to_band():
@@ -487,25 +493,31 @@ def test_compute_verdicts_when_band_median_zero_does_treat_spread_as_zero():
     assert get_band(result).noise_pct == pytest.approx(0.5, abs=1e-1)
 
 
+# Two well-separated six-window groups: the sign-flip null makes the observed
+# delta significant (p = 0.03125) in either pairing direction.
+_SEPARATED_HIGH = samples(180.0, 190.0, 200.0, 200.0, 210.0, 220.0)
+_SEPARATED_LOW = samples(90.0, 95.0, 100.0, 100.0, 105.0, 110.0)
+
+
 @pytest.mark.parametrize(
-    ("meta", "samples_a_value", "samples_b_value", "expected_verdict"),
+    ("meta", "samples_a", "samples_b", "expected_verdict"),
     [
-        (METRIC_APPROX_LOWER, 100.0, 95.0, "improved"),
-        (METRIC_APPROX_LOWER, 100.0, 105.0, "regressed"),
-        (METRIC_APPROX_HIGHER, 50.0, 100.0, "improved"),
-        (METRIC_APPROX_HIGHER, 100.0, 50.0, "regressed"),
+        (METRIC_APPROX_LOWER, _SEPARATED_HIGH, _SEPARATED_LOW, "improved"),
+        (METRIC_APPROX_LOWER, _SEPARATED_LOW, _SEPARATED_HIGH, "regressed"),
+        (METRIC_APPROX_HIGHER, _SEPARATED_LOW, _SEPARATED_HIGH, "improved"),
+        (METRIC_APPROX_HIGHER, _SEPARATED_HIGH, _SEPARATED_LOW, "regressed"),
     ],
 )
-def test_compute_verdicts_when_signed_rank_direction_varies_does_classify(
+def test_compute_verdicts_when_permutation_direction_varies_does_classify(
     meta: dict[str, MetricMeta],
-    samples_a_value: float,
-    samples_b_value: float,
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
     expected_verdict: str,
 ):
-    result = run(create_samples(6, samples_a_value), create_samples(6, samples_b_value), meta)
+    result = run(samples_a, samples_b, meta)
 
     verdict = result["metric"]
-    assert verdict.method == "signed-rank"
+    assert verdict.method == "permutation"
     assert verdict.verdict == expected_verdict
 
 
@@ -551,42 +563,42 @@ def test_compute_verdicts_when_band_both_medians_zero_does_apply_floor():
 # ---------------------------------------------------------------------------
 
 
-def test_compute_verdicts_when_signed_rank_does_carry_noise_pct():
+def test_compute_verdicts_when_permutation_does_carry_noise_pct():
     samples_a = samples(80.0, 90.0, 100.0, 100.0, 110.0, 120.0)
     samples_b = samples(95.0, 95.0, 95.0, 105.0, 105.0, 105.0)
 
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
-    verdict = get_signed_rank(result)
+    verdict = get_permutation(result)
     assert verdict.noise_pct == pytest.approx(30.0, abs=1e-5)
 
 
-def test_compute_verdicts_when_signed_rank_median_zero_does_treat_spread_as_zero():
+def test_compute_verdicts_when_permutation_median_zero_does_treat_spread_as_zero():
     samples_a = samples(-5.0, -3.0, -1.0, 1.0, 3.0, 5.0)
     samples_b = samples(-10.0, -6.0, -2.0, 2.0, 6.0, 10.0)
 
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
-    assert get_signed_rank(result).noise_pct == pytest.approx(0.5, abs=1e-5)
+    assert get_permutation(result).noise_pct == pytest.approx(0.5, abs=1e-5)
 
 
-def test_compute_verdicts_when_signed_rank_median_negative_does_use_magnitude():
+def test_compute_verdicts_when_permutation_median_negative_does_use_magnitude():
     samples_a = samples(-60.0, -55.0, -50.0, -50.0, -45.0, -40.0)
     samples_b = samples(-61.0, -56.0, -51.0, -51.0, -46.0, -41.0)
 
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
-    assert get_signed_rank(result).noise_pct == pytest.approx(30.0, abs=1e-5)
+    assert get_permutation(result).noise_pct == pytest.approx(30.0, abs=1e-5)
 
 
 @pytest.mark.parametrize(
     ("method", "values_a", "values_b"),
     [
         pytest.param(
-            "signed-rank",
+            "permutation",
             [180.0, 190.0, 200.0, 200.0, 210.0, 220.0],
             [90.0, 95.0, 100.0, 100.0, 105.0, 110.0],
-            id="signed-rank",
+            id="permutation",
         ),
         pytest.param("band", [180.0, 220.0], [90.0, 110.0], id="band"),
     ],
@@ -598,7 +610,7 @@ def test_compute_verdicts_when_non_exact_does_carry_noise_abs(
 ):
     result = run(samples(*values_a), samples(*values_b), METRIC_APPROX_LOWER)
 
-    verdict = get_signed_rank(result) if method == "signed-rank" else get_band(result)
+    verdict = get_permutation(result) if method == "permutation" else get_band(result)
     assert verdict.noise_pct == pytest.approx(15.0, abs=1e-5)
     assert verdict.noise_abs == pytest.approx(30.0, abs=1e-5)
 
@@ -606,6 +618,18 @@ def test_compute_verdicts_when_non_exact_does_carry_noise_abs(
 # ---------------------------------------------------------------------------
 # Whole-byte resolution floor
 # ---------------------------------------------------------------------------
+
+# Six windows whose medians are 4 vs 3 bytes — a one-byte move (delta -25%) —
+# spread enough that the sign-flip null makes the observed delta significant
+# (p = 0.03125). The whole-byte floor, not the p-value, is what withholds the
+# signal on a byte metric.
+_BYTE_ONE_MOVE_A = samples(3.4, 3.7, 4.0, 4.0, 4.3, 4.6)
+_BYTE_ONE_MOVE_B = samples(2.4, 2.7, 3.0, 3.0, 3.3, 3.6)
+
+# Six windows whose medians are 100 vs 75 bytes — a 25-byte move that clears the
+# whole-byte floor — with the same separation that keeps p significant.
+_BYTE_CLEARS_A = samples(90.0, 95.0, 100.0, 100.0, 105.0, 110.0)
+_BYTE_CLEARS_B = samples(67.0, 71.0, 75.0, 75.0, 79.0, 83.0)
 
 
 @pytest.mark.parametrize("pairs", [2, 5])
@@ -625,12 +649,12 @@ def test_compute_verdicts_when_byte_move_is_one_byte_does_no_signal_on_band(pair
         pytest.param(METRIC_BYTES_HIGHER, id="higher"),
     ],
 )
-def test_compute_verdicts_when_byte_move_is_one_byte_does_no_signal_on_signed_rank(
+def test_compute_verdicts_when_byte_move_is_one_byte_does_no_signal_on_permutation(
     meta: dict[str, MetricMeta],
 ):
-    result = run(create_samples(6, 4.0), create_samples(6, 3.0), meta)
+    result = run(_BYTE_ONE_MOVE_A, _BYTE_ONE_MOVE_B, meta)
 
-    verdict = get_signed_rank(result)
+    verdict = get_permutation(result)
     assert verdict.p < 0.05
     assert verdict.delta.value == pytest.approx(-25.0, abs=1e-5)
     assert verdict.noise_pct == pytest.approx(100 / 3, abs=1e-5)
@@ -648,11 +672,11 @@ def test_compute_verdicts_when_byte_move_clears_floor_does_signal(
     meta: dict[str, MetricMeta],
     expected: str,
 ):
-    result = run(create_samples(6, 100.0), create_samples(6, 75.0), meta)
+    result = run(_BYTE_CLEARS_A, _BYTE_CLEARS_B, meta)
 
-    verdict = get_signed_rank(result)
+    verdict = get_permutation(result)
     assert verdict.delta.value == pytest.approx(-25.0, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(100 / 75, abs=1e-5)
+    assert verdict.noise_pct == pytest.approx(16.0, abs=1e-5)
     assert verdict.verdict == expected
 
 
@@ -664,10 +688,10 @@ def test_compute_verdicts_when_byte_move_clears_floor_does_signal(
     ],
 )
 def test_compute_verdicts_when_unit_not_bytes_does_ignore_byte_floor(meta: dict[str, MetricMeta]):
-    result = run(create_samples(6, 4.0), create_samples(6, 3.0), meta)
+    result = run(_BYTE_ONE_MOVE_A, _BYTE_ONE_MOVE_B, meta)
 
-    verdict = get_signed_rank(result)
-    assert verdict.noise_pct == pytest.approx(0.5, abs=1e-5)
+    verdict = get_permutation(result)
+    assert verdict.noise_pct == pytest.approx(30.0, abs=1e-5)
     assert verdict.verdict == "improved"
 
 
@@ -720,8 +744,8 @@ def test_compute_verdicts_when_unit_not_bytes_does_keep_floor_for_small_move(
 @pytest.mark.parametrize(
     ("method", "unstable_noise_pct", "expected"),
     [
-        ("signed-rank", 20.0, "unstable"),
-        ("signed-rank", 30.0, "improved"),
+        ("permutation", 20.0, "unstable"),
+        ("permutation", 30.0, "improved"),
         ("band", 20.0, "unstable"),
         ("band", 30.0, "improved"),
     ],
@@ -732,8 +756,8 @@ def test_compute_verdicts_when_noise_exceeds_threshold_does_mark_unstable(
     expected: str,
 ):
     samples_a, samples_b = (
-        (NOISY_SIGNED_RANK_A, NOISY_SIGNED_RANK_B)
-        if method == "signed-rank"
+        (NOISY_PERMUTATION_A, NOISY_PERMUTATION_B)
+        if method == "permutation"
         else (NOISY_BAND_A, NOISY_BAND_B)
     )
 

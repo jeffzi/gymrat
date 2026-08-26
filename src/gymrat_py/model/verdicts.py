@@ -13,20 +13,20 @@ ApproximateVerdict = Literal["improved", "regressed", "no-signal", "unstable"]
 
 
 @dataclass(frozen=True, slots=True)
-class SignedRankVerdict:
-    """Verdict from the signed-rank method.
+class PermutationVerdict:
+    """Verdict from the sign-flip permutation method.
 
     Attributes:
-        method: Discriminant tag, always ``"signed-rank"``.
+        method: Discriminant tag, always ``"permutation"``.
         verdict: The approximate outcome.
-        p: The signed-rank test p-value.
+        p: The sign-flip permutation test p-value.
         noise_pct: Estimated noise as a percentage.
         noise_abs: Estimated noise in absolute units.
         delta: The unit-tagged effect size of the comparison.
         n: Number of paired samples.
     """
 
-    method: Literal["signed-rank"]
+    method: Literal["permutation"]
     verdict: ApproximateVerdict
     p: float
     noise_pct: float
@@ -75,5 +75,5 @@ class ExactVerdict:
     n: int
 
 
-MetricVerdict = SignedRankVerdict | BandVerdict | ExactVerdict
+MetricVerdict = PermutationVerdict | BandVerdict | ExactVerdict
 """Union of per-method verdict records, discriminated on ``method``."""

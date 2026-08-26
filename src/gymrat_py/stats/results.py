@@ -2,10 +2,10 @@
 
 :class:`SignificanceResult` is deliberately test-agnostic: it carries only the
 two-sided p-value and the effective paired sample count, with no reference to
-which test produced them. Every significance test in this package — the
-Wilcoxon signed-rank wrapper and the sign-flip permutation test — returns this
-same shape so callers can consume verdicts uniformly. :func:`count_nonzero_pairs`
-is the pairing logic every such test starts from.
+which test produced them. Every significance test in this package — currently the
+sign-flip permutation test — returns this same shape so callers can consume
+verdicts uniformly. :func:`count_nonzero_pairs` is the pairing logic every such
+test starts from.
 """
 
 from collections.abc import Sequence

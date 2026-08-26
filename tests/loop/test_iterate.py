@@ -236,7 +236,7 @@ async def test_iterate_session_when_measuring_does_append_iteration_after_last_s
     total = record.metrics["total_ms"]
     assert total.delta_pct == pytest.approx(-10, abs=1e-6)
     assert total.verdict == "improved"
-    assert total.method == "signed-rank"
+    assert total.method == "permutation"
     assert total.p is not None
     assert total.noise_pct is not None
     assert total.gating is True

@@ -41,9 +41,9 @@ from tests.report._inputs import (
     n_way_metric,
     offsets_of,
     other_kind,
+    permutation_metric,
     separator_offsets,
     separator_styles,
-    signed_rank_metric,
     strip_ansi,
     styles_at,
     table_region,
@@ -536,12 +536,12 @@ def test_render_report_when_colored_does_leave_separators_in_the_default_color(
 
 
 def _ordered_result() -> ComparisonResult:
-    """A two-metric run whose only footer content is the signed-rank method line."""
+    """A two-metric run whose only footer content is the permutation method line."""
     return create_comparison_result(
         baseline_label="main",
         metrics={
-            "metric1/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns"),
-            "metric2/time": signed_rank_metric(
+            "metric1/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
+            "metric2/time": permutation_metric(
                 verdict="no-signal", delta=2, gating=False, unit="ns"
             ),
         },
@@ -572,7 +572,7 @@ def test_render_report_when_verbose_does_add_the_method_block_below_a_blank_line
 
     assert "metric1/time" in lines[11]
     assert lines[12] == ""
-    assert "Wilcoxon signed-rank" in lines[13]
+    assert "sign-flip permutation test" in lines[13]
     assert len(lines) == 14
 
 

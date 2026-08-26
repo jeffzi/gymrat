@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat_py.model import (
-    SIGNED_RANK_DESCRIPTOR,
+    PERMUTATION_DESCRIPTOR,
     Effect,
     Exclusion,
     GeomeanResult,
@@ -49,13 +49,13 @@ from tests.report._inputs import (
     geomean_of,
     metric_for,
     one_sided_metric,
-    signed_rank_verdict,
+    permutation_verdict,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-MIN_WILCOXON_N = SIGNED_RANK_DESCRIPTOR.min_n
+MIN_PERMUTATION_N = PERMUTATION_DESCRIPTOR.min_n
 
 
 def _percent(value: float) -> Effect:
@@ -162,7 +162,7 @@ def test_format_evidence_when_counted_does_mark_exact():
 
 
 def test_format_evidence_when_statistical_improvement_does_add_nothing():
-    assert format_evidence(signed_rank_verdict(verdict="improved", delta=-10)) == ""
+    assert format_evidence(permutation_verdict(verdict="improved", delta=-10)) == ""
 
 
 @pytest.mark.parametrize(
@@ -178,13 +178,13 @@ def test_format_evidence_when_statistical_improvement_does_add_nothing():
 def test_format_evidence_when_unstable_within_cap_does_state_percentage(
     noise_pct: float, expected: str
 ):
-    verdict = signed_rank_verdict(verdict="unstable", noise_pct=noise_pct, noise_abs=381)
+    verdict = permutation_verdict(verdict="unstable", noise_pct=noise_pct, noise_abs=381)
 
     assert format_evidence(verdict, "bytes", 5) == expected
 
 
 def test_format_evidence_when_unstable_past_cap_does_state_absolute_units():
-    verdict = signed_rank_verdict(verdict="unstable", noise_pct=7620, noise_abs=381)
+    verdict = permutation_verdict(verdict="unstable", noise_pct=7620, noise_abs=381)
 
     assert format_evidence(verdict, "bytes", 5) == "±381B noise on a 5B median"
 
@@ -241,7 +241,7 @@ def test_format_delta_when_undefined_arithmetic_does_render_nothing():
             "unstable",
             id="noise-swamped-band",
         ),
-        pytest.param(signed_rank_verdict(), "within-noise", id="signed-rank-no-signal"),
+        pytest.param(permutation_verdict(), "within-noise", id="permutation-no-signal"),
         pytest.param(exact_verdict(), "within-noise", id="counted-metric-unchanged"),
     ],
 )
@@ -603,7 +603,7 @@ def test_footer_lines_when_plain_does_carry_no_ansi():
 def test_footer_lines_dims_the_descriptive_verdict_line():
     metrics: Metrics = {"a/time": approximate_metric(verdict="improved", delta=-10)}
 
-    verdict_line = next(line for line in _verbose_lines(metrics) if "Wilcoxon" in _plain(line))
+    verdict_line = next(line for line in _verbose_lines(metrics) if "permutation" in _plain(line))
 
     assert "2" in _sgr_codes(_colored(verdict_line))
 
@@ -619,7 +619,7 @@ def test_footer_lines_leaves_the_sample_shortage_hint_to_non_verbose():
     [
         pytest.param(
             {"decode/time": band_metric(n=3), "encode/time": band_metric(n=5)},
-            ["noise band ±(half-range × K) — n=5 below signed-rank floor (6 pairs)"],
+            ["noise band ±(half-range × K) — n=5 below permutation floor (6 pairs)"],
             id="run-too-short",
         ),
         pytest.param(
@@ -633,7 +633,7 @@ def test_footer_lines_leaves_the_sample_shortage_hint_to_non_verbose():
         pytest.param(
             {"decode/time": band_metric(n=3), "tied/heap": band_metric(n=10, usable_n=3)},
             [
-                "noise band ±(half-range × K) — n=3 below signed-rank floor (6 pairs)",
+                "noise band ±(half-range × K) — n=3 below permutation floor (6 pairs)",
                 "noise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)",
             ],
             id="each-cause-a-different-metric",
@@ -685,7 +685,7 @@ def test_footer_lines_does_not_dim_the_hint_line():
         pytest.param(
             {"parse/time": approximate_metric(verdict="improved", delta=-10)},
             [],
-            id="signed-rank-carried-every-metric",
+            id="permutation-carried-every-metric",
         ),
     ],
 )
@@ -697,8 +697,8 @@ def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
     ("metrics", "samples"),
     [
         pytest.param(
-            {"a/time": band_metric(n=MIN_WILCOXON_N - 1)},
-            MIN_WILCOXON_N - 1,
+            {"a/time": band_metric(n=MIN_PERMUTATION_N - 1)},
+            MIN_PERMUTATION_N - 1,
             id="fewer-samples-than-floor",
         ),
         pytest.param({"a/time": band_metric(n=1)}, 1, id="single-sample"),
@@ -724,8 +724,8 @@ def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
             id="enough-samples-but-rounds-dropped",
         ),
         pytest.param(
-            {"a/time": band_metric(n=MIN_WILCOXON_N - 1)},
-            MIN_WILCOXON_N,
+            {"a/time": band_metric(n=MIN_PERMUTATION_N - 1)},
+            MIN_PERMUTATION_N,
             id="floor-reached-but-fewer-paired",
         ),
     ],

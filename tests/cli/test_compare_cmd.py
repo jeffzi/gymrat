@@ -19,7 +19,7 @@ from gymrat_py.report.types import ComparisonResult
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
-    signed_rank_metric,
+    permutation_metric,
 )
 
 runner = CliRunner()
@@ -65,7 +65,7 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
 def _regressed_result() -> ComparisonResult:
     """A comparison whose single gating metric regressed, so a fail-on gate trips."""
     return create_comparison_result(
-        metrics={"m/time": signed_rank_metric(verdict="regressed", delta=4, gating=True)},
+        metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)},
         candidates=[create_candidate()],
     )
 

@@ -9,7 +9,7 @@ from gymrat_py.model import (
     EXACT_DESCRIPTOR,
     NOISE_FLOOR_PCT,
     NOISE_K,
-    SIGNED_RANK_DESCRIPTOR,
+    PERMUTATION_DESCRIPTOR,
     Aggregate,
     BandVerdict,
     Effect,
@@ -20,8 +20,8 @@ from gymrat_py.model import (
     MethodDescriptor,
     MetricMeta,
     MetricVerdict,
+    PermutationVerdict,
     ResolvedMetricMeta,
-    SignedRankVerdict,
     Verdict,
 )
 
@@ -140,7 +140,7 @@ def test_resolved_metric_meta_when_field_assigned_does_raise_frozen_instance_err
 @pytest.mark.parametrize(
     ("descriptor", "method", "min_n", "p_threshold"),
     [
-        (SIGNED_RANK_DESCRIPTOR, "signed-rank", 6, 0.05),
+        (PERMUTATION_DESCRIPTOR, "permutation", 6, 0.05),
         (BAND_DESCRIPTOR, "band", 2, None),
         (EXACT_DESCRIPTOR, "exact", 1, None),
     ],
@@ -172,9 +172,9 @@ def _percent(value: float) -> Effect:
     return Effect(value=value, unit="percent")
 
 
-def test_signed_rank_verdict_when_constructed_does_store_fields():
-    verdict = SignedRankVerdict(
-        method="signed-rank",
+def test_permutation_verdict_when_constructed_does_store_fields():
+    verdict = PermutationVerdict(
+        method="permutation",
         verdict="improved",
         p=0.01,
         noise_pct=1.2,
@@ -183,7 +183,7 @@ def test_signed_rank_verdict_when_constructed_does_store_fields():
         n=8,
     )
 
-    assert verdict.method == "signed-rank"
+    assert verdict.method == "permutation"
     assert verdict.verdict == "improved"
     assert verdict.p == 0.01
     assert verdict.noise_pct == 1.2
@@ -252,8 +252,8 @@ def test_exact_verdict_verdict_when_passed_to_verdict_sink_does_round_trip():
 def describe(verdict: MetricVerdict) -> str:
     """Exhaustive match over the discriminant; the ``assert_never`` arm pins the union."""
     match verdict.method:
-        case "signed-rank":
-            return "signed-rank"
+        case "permutation":
+            return "permutation"
         case "band":
             return "band"
         case "exact":
@@ -266,8 +266,8 @@ def describe(verdict: MetricVerdict) -> str:
     ("verdict", "expected"),
     [
         (
-            SignedRankVerdict(
-                method="signed-rank",
+            PermutationVerdict(
+                method="permutation",
                 verdict="improved",
                 p=0.01,
                 noise_pct=1.0,
@@ -275,7 +275,7 @@ def describe(verdict: MetricVerdict) -> str:
                 delta=_percent(1.0),
                 n=6,
             ),
-            "signed-rank",
+            "permutation",
         ),
         (
             BandVerdict(

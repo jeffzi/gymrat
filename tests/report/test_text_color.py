@@ -34,9 +34,9 @@ from tests.report._inputs import (
     line_starting_with,
     measured_metric,
     other_kind,
+    permutation_metric,
     separator_offsets,
     separator_styles,
-    signed_rank_metric,
     strip_ansi,
     styles_at,
     table_region,
@@ -55,12 +55,12 @@ def _colorful_result() -> ComparisonResult:
     """A run whose rows cover every verdict class, plus a geomean figure."""
     return create_comparison_result(
         metrics={
-            "faster/time": signed_rank_metric(verdict="improved", delta=-17.5, unit="ns"),
-            "slower/time": signed_rank_metric(verdict="regressed", delta=2.4, unit="ns"),
-            "flat/time": signed_rank_metric(verdict="no-signal", delta=0.3, unit="ns"),
+            "faster/time": permutation_metric(verdict="improved", delta=-17.5, unit="ns"),
+            "slower/time": permutation_metric(verdict="regressed", delta=2.4, unit="ns"),
+            "flat/time": permutation_metric(verdict="no-signal", delta=0.3, unit="ns"),
             "tied/heap": band_metric(verdict="no-signal", delta=-0.5, n=10, usable_n=0),
             "single-pair/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns"),
-            "jittery/time": signed_rank_metric(verdict="unstable", delta=-50, noise_pct=30),
+            "jittery/time": permutation_metric(verdict="unstable", delta=-50, noise_pct=30),
         },
         candidates=[
             create_candidate(
@@ -361,10 +361,10 @@ def test_render_report_when_colored_does_measure_verdict_subfields_on_plain_text
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
         metrics={
-            "improved/time": signed_rank_metric(
+            "improved/time": permutation_metric(
                 verdict="improved", delta=-12.4, noise_pct=2.5, unit="ns"
             ),
-            "flat/time": signed_rank_metric(
+            "flat/time": permutation_metric(
                 verdict="no-signal", delta=0.4, noise_pct=100, unit="ns"
             ),
         }
@@ -485,7 +485,7 @@ def test_render_report_when_colored_does_embolden_the_baseline_after_the_vs_pref
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
         baseline_label=baseline,
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")},
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-10, unit="ns")},
     )
 
     cell = delta_cell(line_containing(render_report(result), "metric  "))
@@ -581,7 +581,7 @@ def test_render_report_when_colored_does_dim_a_zero_count_segment_in_the_summary
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"faster/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")}
+        metrics={"faster/time": permutation_metric(verdict="improved", delta=-10, unit="ns")}
     )
     summary = line_containing(render_report(result), "improved")
 
@@ -650,7 +650,7 @@ def test_render_report_when_colored_does_style_a_highlight_glyph_and_delta(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={metric: signed_rank_metric(verdict=verdict, delta=delta, unit="ns")}
+        metrics={metric: permutation_metric(verdict=verdict, delta=delta, unit="ns")}
     )
     entry = highlight_lines(render_report(result))[0]
 
@@ -724,9 +724,9 @@ def test_render_report_when_colored_does_dim_the_verdict_method_description(
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns")}
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-10, unit="ns")}
     )
-    method = line_containing(render_report(result, ReportOptions(verbose=True)), "Wilcoxon")
+    method = line_containing(render_report(result, ReportOptions(verbose=True)), "permutation")
 
     assert DIMMED_LINE.match(method)
 

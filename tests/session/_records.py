@@ -88,7 +88,7 @@ def iteration_record(**overrides: Any) -> IterationRecord:
             "total_ms": MetricVerdict(
                 delta_pct=-7.2,
                 verdict="improved",
-                method="signed-rank",
+                method="permutation",
                 p=0.002,
                 noise_pct=1.4,
                 gating=True,

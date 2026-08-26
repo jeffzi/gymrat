@@ -45,8 +45,8 @@ from gymrat_py.model import (
     ExactVerdict,
     MetricVerdict,
     Observations,
+    PermutationVerdict,
     ResolvedMetricMeta,
-    SignedRankVerdict,
 )
 from gymrat_py.report.loop import (
     EXPERIMENT_INDEX,
@@ -582,7 +582,7 @@ def _recorded_verdicts(
 ) -> dict[str, RecordMetricVerdict]:
     """The per-metric verdicts as the log keeps them, flattened out of the method shapes.
 
-    A key whose value is absent is left out — ``p`` off a non-signed-rank verdict,
+    A key whose value is absent is left out — ``p`` off a non-permutation verdict,
     ``noise_pct`` off an exact one — so a record handed to a caller matches the one
     read back off the log.
     """
@@ -595,7 +595,7 @@ def _recorded_verdicts(
             method=verdict.method,
             gating=meta.gating if meta is not None else True,
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
-            p=verdict.p if isinstance(verdict, SignedRankVerdict) else None,
+            p=verdict.p if isinstance(verdict, PermutationVerdict) else None,
             noise_pct=None if isinstance(verdict, ExactVerdict) else verdict.noise_pct,
         )
     return recorded
