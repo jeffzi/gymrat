@@ -17,7 +17,6 @@ assertion.
 
 import contextlib
 import os
-import pty
 import re
 import signal
 import subprocess
@@ -28,6 +27,9 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+
+if sys.platform != "win32":
+    import pty
 
 from tests._process_helpers import is_alive as _is_alive
 from tests.hardening._bench_helpers import drain as _drain

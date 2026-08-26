@@ -45,8 +45,14 @@ class HookScripts:
         return f'"{sys.executable}" "{script_path}"'
 
     def printing(self, *lines: str) -> str:
-        """A command printing each of ``lines`` on its own line on stdout."""
-        writes = "\n".join(f"sys.stdout.write({json.dumps(line + chr(10))})" for line in lines)
+        r"""A command printing each of ``lines`` on its own line on stdout.
+
+        Writes go through ``sys.stdout.buffer`` so ``\n`` stays a single byte
+        on Windows — text-mode stdout would translate it to ``\r\n``.
+        """
+        writes = "\n".join(
+            f"sys.stdout.buffer.write({json.dumps(line + chr(10))}.encode())" for line in lines
+        )
         return self.hook_command(f"import sys\n{writes}\n")
 
     def printing_line(self, name: str, channel: Channel, content: str) -> str:
@@ -57,8 +63,8 @@ class HookScripts:
         for byte.
         """
         data_path = Path(self.temp_dir) / name
-        data_path.write_text(content, encoding="utf-8")
-        return f"sys.{channel}.write(open({json.dumps(str(data_path))}, encoding='utf-8').read())\n"
+        data_path.write_bytes(content.encode())
+        return f"sys.{channel}.buffer.write(open({json.dumps(str(data_path))}, 'rb').read())\n"
 
     def printing_content_of(self, file_name: str, content: str) -> str:
         """A command that prints parked ``content`` verbatim on stdout."""
