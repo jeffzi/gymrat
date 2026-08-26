@@ -291,7 +291,7 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
             return "within-noise"
         case "exact":
             return "within-noise"
-        case _ as unreachable:  # pragma: no cover
+        case _ as unreachable:  # pragma: no cover — exhaustive match over Method
             assert_never(unreachable)
 
 
@@ -844,7 +844,7 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
                 data.ties.append(verdict.usable_n)
         case "exact":
             return
-        case _ as unreachable:  # pragma: no cover
+        case _ as unreachable:  # pragma: no cover — exhaustive match over Method
             assert_never(unreachable)
 
 

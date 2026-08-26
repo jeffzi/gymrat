@@ -9,7 +9,6 @@ import dataclasses
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
@@ -46,14 +45,7 @@ skip_on_windows_or_root = pytest.mark.skipif(
 )
 
 
-def _run_git(args: list[str], cwd: str) -> str:
-    return subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+from tests._git import run_git as _run_git
 
 
 def _get_head_sha(repo_dir: str) -> str:

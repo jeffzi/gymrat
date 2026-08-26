@@ -52,19 +52,10 @@ skip_on_windows_or_root = pytest.mark.skipif(
     reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
 )
 
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
+from tests._cli import ENTRY as _ENTRY
+from tests._git import run_git as _run_git
 
 _FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
-
-
-def _run_git(args: list[str], cwd: str) -> str:
-    return subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
 
 
 def _get_head_sha(repo_dir: str) -> str:

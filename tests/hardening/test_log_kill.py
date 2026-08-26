@@ -74,23 +74,26 @@ def _wait_for_file(path: Path, timeout_s: float = 30.0) -> None:
 
 def _wait_until_grew_or_dead(
     path: Path, baseline: int, child: subprocess.Popen[str], timeout_s: float = 30.0
-) -> None:
+) -> bool:
     """Poll until ``path`` grows past ``baseline`` bytes, or the child exits first.
 
     Growth past the clean prefix means the child has begun flushing its final,
     deliberately huge record to disk, so a kill now lands mid-append. If the
     child finishes the whole record first it exits, and the caller kills a
     corpse — the log then holds a complete final record rather than a torn one.
+
+    Returns ``True`` when the log grew (kill should tear the record), ``False``
+    when the child finished first (record is complete).
     """
     deadline = time.monotonic() + timeout_s
     while True:
         try:
             if path.stat().st_size > baseline:
-                return
+                return True
         except FileNotFoundError:
             pass
         if child.poll() is not None:
-            return
+            return False
         if time.monotonic() > deadline:
             message = f"log at {path} never grew past {baseline} bytes"
             raise AssertionError(message)
@@ -199,7 +202,11 @@ def test_append_record_when_hard_killed_mid_append_does_leave_a_log_the_next_run
     records = read_records(str(path))
     expected_prefix = [session_record(), *(committed_keep(seq=seq) for seq in range(clean_count))]
     assert records[: len(expected_prefix)] == expected_prefix
-    assert len(records) in (len(expected_prefix), len(expected_prefix) + 1)
+
+    if len(records) == len(expected_prefix) + 1:
+        pytest.skip("child flushed the full record before the kill tore it — no torn tail to test")
+
+    assert len(records) == len(expected_prefix)
 
 
 # ---------------------------------------------------------------------------

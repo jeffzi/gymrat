@@ -6,7 +6,6 @@ whose stdout the ``metric-lines`` adapter parses — so the star comparison and
 worktree-sweep behavior is exercised for real.
 """
 
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -16,18 +15,9 @@ import pytest
 from gymrat_py.compare import CompareOptions, compare
 from gymrat_py.errors import GymratError
 from gymrat_py.sampling import TargetSpec
+from tests._git import git as _git
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
-
-
-def _git(repo: str, *args: str) -> None:
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
 
 
 def _commit_bench(repo: str, value: int) -> None:
@@ -82,7 +72,7 @@ async def test_compare_when_candidate_unresolvable_does_fail_with_nothing_on_dis
     _commit_bench(repo, 1)
     monkeypatch.chdir(repo)
 
-    with pytest.raises(GymratError):
+    with pytest.raises(GymratError, match="no-such-ref"):
         await compare(_options("main", "no-such-ref"))
 
     assert list_worktree_dirs(repo, include_main=False) == []

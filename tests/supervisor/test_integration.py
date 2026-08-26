@@ -33,7 +33,7 @@ from tests.supervisor._mock_driver import ActionStep, CostStep, create_mock_driv
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
 
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
+from tests._cli import ENTRY as _ENTRY
 
 #: Generous budget: every action creates real worktrees and spawns real benches.
 LONG_RUN_TIMEOUT = 180

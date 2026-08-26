@@ -93,6 +93,36 @@ def test_app_when_debug_flag_in_either_position_does_not_error(argv: Sequence[st
     assert result.exit_code == 0
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(
+            ["--debug", "measure", "--bench", "sh bench.sh"],
+            id="before-subcommand",
+            marks=pytest.mark.xfail(
+                strict=True, reason="B5: root --debug clobbered by subcommand default"
+            ),
+        ),
+        pytest.param(["measure", "--bench", "sh bench.sh", "--debug"], id="after-subcommand"),
+    ],
+)
+def test_app_when_debug_flag_does_show_traceback_on_error(
+    argv: Sequence[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.chdir(tmp_path)
+
+    async def exploding_measure(_options: object):
+        msg = "deliberate boom"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("gymrat_py.measure.measure", exploding_measure)
+
+    result = runner.invoke(app, list(argv))
+
+    assert result.exit_code == 2
+    assert "Traceback" in result.output
+
+
 # ---------------------------------------------------------------------------
 # unknown command
 # ---------------------------------------------------------------------------

@@ -6,7 +6,6 @@ worktree-sweep and error-surfacing behavior is exercised for real. Signal and
 subprocess-kill assertions are out of scope here (they belong to the CLI suite).
 """
 
-import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -18,21 +17,12 @@ from gymrat_py.errors import CommandError
 from gymrat_py.measure import MeasureOptions, measure
 from gymrat_py.sampling import TargetSpec
 from gymrat_py.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
+from tests._git import git as _git
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 
 _EMIT_ONE = "#!/bin/sh\necho 'METRIC x=1'\n"
 _FAIL = "#!/bin/sh\nexit 1\n"
-
-
-def _git(repo: str, *args: str) -> None:
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
 
 
 def _commit_bench(repo: str, script: str) -> None:

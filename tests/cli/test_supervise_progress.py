@@ -294,7 +294,7 @@ def test_budget_when_usage_update_and_no_max_usd_does_show_bare_cost(
 
 
 def test_budget_when_now_omitted_does_use_the_wall_clock(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("time.time", lambda: 66.0)
+    monkeypatch.setattr("gymrat_py.cli.supervise_progress.now_ms", lambda: 66_000)
     factory = StatusLineFactory()
     monkeypatch.setattr("gymrat_py.cli.supervise_progress.create_status_line", factory)
     reporter = create_supervise_reporter(

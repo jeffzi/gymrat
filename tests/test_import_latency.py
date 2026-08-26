@@ -22,13 +22,19 @@ driver imports it lazily inside ``start`` — importing ``gymrat_py.supervisor``
 (and the CLI) must never pull it in.
 """
 
+import os
 import subprocess
 import sys
 
 
+def _child_env() -> dict[str, str]:
+    """Child environment with the optimize flag cleared so the child exits explicitly."""
+    env = dict(os.environ)
+    env.pop("PYTHONOPTIMIZE", None)  # cspell:disable-line
+    return env
+
+
 def test_importing_package_does_not_import_scipy_or_numpy():
-    # Run inside the child so the test process's own dependency tree cannot
-    # mask a violation, and so a non-zero exit surfaces the offending modules.
     probe = """
 import sys
 import gymrat_py
@@ -46,7 +52,9 @@ heavy = sorted(
     if name in {'scipy', 'numpy', 'claude_agent_sdk'}
     or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
 )
-assert not heavy, f'package import pulled in heavy modules: {heavy}'
+if heavy:
+    print(f'package import pulled in heavy modules: {heavy}', file=sys.stderr)
+    sys.exit(1)
 """
 
     result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
@@ -54,21 +62,21 @@ assert not heavy, f'package import pulled in heavy modules: {heavy}'
         capture_output=True,
         text=True,
         check=False,
+        env=_child_env(),
     )
 
     assert result.returncode == 0, result.stderr
 
 
 def test_importing_cli_app_and_rendering_help_does_not_import_scipy_or_numpy():
-    # Assemble the app and render its help through the runner, then assert inside
-    # the child that neither the heavy stack nor the command bodies were loaded:
-    # a cheap --help must never reach the statistics-bearing modules.
     probe = """
 import sys
 from typer.testing import CliRunner
 from gymrat_py.cli.app import app
 result = CliRunner().invoke(app, ["--help"])
-assert result.exit_code == 0, result.output
+if result.exit_code != 0:
+    print(f'--help failed: {result.output}', file=sys.stderr)
+    sys.exit(1)
 heavy = sorted(
     name
     for name in sys.modules
@@ -76,8 +84,12 @@ heavy = sorted(
     or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
 )
 bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
-assert not heavy, f'cli app import pulled heavy modules: {heavy}'
-assert not bodies, f'cli app import pulled command bodies: {bodies}'
+if heavy:
+    print(f'cli app import pulled heavy modules: {heavy}', file=sys.stderr)
+    sys.exit(1)
+if bodies:
+    print(f'cli app import pulled command bodies: {bodies}', file=sys.stderr)
+    sys.exit(1)
 """
 
     result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
@@ -85,6 +97,7 @@ assert not bodies, f'cli app import pulled command bodies: {bodies}'
         capture_output=True,
         text=True,
         check=False,
+        env=_child_env(),
     )
 
     assert result.returncode == 0, result.stderr

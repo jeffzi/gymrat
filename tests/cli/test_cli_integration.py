@@ -18,30 +18,14 @@ from pathlib import Path
 import pytest
 
 from gymrat_py.session.paths import lockfile_path, repo_root
+from tests._cli import ENTRY as _ENTRY
+from tests._cli import no_color_env as _env
+from tests._git import git as _git
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
 _EMIT_ONE = "#!/bin/sh\necho 'METRIC x=1'\n"
 _SLOW_BENCH = "#!/bin/sh\nsleep 5\necho 'METRIC x=1'\n"
-
-
-def _env() -> dict[str, str]:
-    """A child environment with color forced off, so output is deterministic."""
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-    env.pop("FORCE_COLOR", None)
-    return env
-
-
-def _git(repo: str, *args: str) -> None:
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
 
 
 def _write_lockfile(repo: str, pid: int) -> None:

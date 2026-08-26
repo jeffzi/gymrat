@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import io
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -46,8 +45,9 @@ from tests.hardening._bench_helpers import write_committed_bench as _write_commi
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+from tests._ansi import ANSI_RE as _ANSI
+from tests._cli import ENTRY as _ENTRY
+
 _CLEAR_LINE = "\r\x1b[K"
 
 _METRIC_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"

@@ -31,6 +31,7 @@ import pytest
 if sys.platform != "win32":
     import pty
 
+from tests._cli import ENTRY as _ENTRY
 from tests._process_helpers import is_alive as _is_alive
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import env as _env
@@ -38,8 +39,6 @@ from tests.hardening._bench_helpers import git as _git
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
 
 # The overwrite status line clears its row with a carriage return followed by the
 # ANSI "erase to end of line" sequence.
@@ -340,6 +339,11 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
     )
     try:
         _wait_for_worktree_count(list_worktree_dirs, repo, 2)
+        worktrees = list_worktree_dirs(repo, include_main=False)
+        for wt in worktrees:
+            pid = _read_pid(Path(wt) / "bench.pid")
+            if pid is not None:
+                reap_groups.append(pid)
         proc.send_signal(signal.SIGINT)
         proc.communicate(timeout=30)
     finally:

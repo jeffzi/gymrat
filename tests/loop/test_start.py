@@ -10,7 +10,6 @@ straight out of the worktrees git laid down.
 
 import re
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -96,14 +95,9 @@ CONFIG_SNAPSHOT = SessionConfig(
 
 def _git(args: list[str], cwd: str) -> str:
     """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    result = subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+    from tests._git import run_git
+
+    return run_git(args, cwd).strip()
 
 
 def _session_header_of(root: str) -> SessionRecord:

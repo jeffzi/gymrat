@@ -9,7 +9,6 @@ pruning, unwind, and detachment behavior these tests pin.
 
 import re
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -45,14 +44,9 @@ NEXT_BRANCH = f"gymrat/{NEXT_SESSION_ID}"
 
 def _git(args: list[str], cwd: str) -> str:
     """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    result = subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+    from tests._git import run_git
+
+    return run_git(args, cwd).strip()
 
 
 def _checked_out_ref(worktree: str) -> str:

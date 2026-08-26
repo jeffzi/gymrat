@@ -148,7 +148,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
             band = verdict.noise_pct
         case ExactVerdict():
             pass
-        case _ as unreachable:  # pragma: no cover
+        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict
             assert_never(unreachable)
     return {
         "verdict": verdict.verdict,

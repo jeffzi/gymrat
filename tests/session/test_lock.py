@@ -9,10 +9,11 @@ import errno
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Buffer
+from collections.abc import Buffer, Iterator
 from pathlib import Path
 
 import pytest
@@ -36,10 +37,22 @@ WRITTEN_LOCK_AT = "2026-01-01T00:00:00.000Z"
 LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish."
 
 
+_temp_dirs: list[str] = []
+
+
 def fresh_lock_path(*segments: str) -> str:
     """Return a lock path inside its own temp dir, so tests never share a file."""
     directory = tempfile.mkdtemp(prefix="lock-test-")
+    _temp_dirs.append(directory)
     return str(Path(directory, *segments, "gymrat.lock.json"))
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_temp_dirs() -> Iterator[None]:
+    """Remove any temp dirs ``fresh_lock_path`` created during the test."""
+    yield
+    while _temp_dirs:
+        shutil.rmtree(_temp_dirs.pop(), ignore_errors=True)
 
 
 def dead_pid() -> int:

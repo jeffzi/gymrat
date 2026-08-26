@@ -33,13 +33,17 @@ class _ProcessExitedError(Exception):
 def _reset_registry() -> Iterator[None]:
     """Keep module-global registry state isolated between tests.
 
-    The termination handler is installed once per signal for the lifetime of the
-    process and deliberately never restored, so only the per-run registry and the
-    re-entry flag need clearing between tests.
+    Saves the signal dispositions for every termination signal before the test,
+    and restores them after — so a Ctrl-C during the suite reaches pytest's own
+    handler instead of the gymrat handler installed by the test.
     """
+    saved = {sig: signal.getsignal(sig) for sig in signals.TERMINATION_SIGNALS}
     yield
     signals._registry.clear()
     signals._handling = False
+    signals._installed_signals.clear()
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
 
 
 @pytest.fixture
