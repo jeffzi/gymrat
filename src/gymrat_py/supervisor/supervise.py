@@ -76,7 +76,7 @@ def _fire_and_report_interrupt(session: DriverSession) -> None:
         warn_to_stderr(f"session interrupt failed: {message_of(error)}")
         return
 
-    task = asyncio.ensure_future(pending)
+    task = asyncio.create_task(pending)
 
     def _report(finished: asyncio.Task[None]) -> None:
         if finished.cancelled():
@@ -126,7 +126,7 @@ class _Supervision:
             self._wall_task.cancel()
         self._combined(CapEvent(timestamp=now_ms(), cap=cap))
         _fire_and_report_interrupt(self._session)
-        self._grace_task = asyncio.ensure_future(self._run_grace())
+        self._grace_task = asyncio.create_task(self._run_grace())
 
     async def _run_grace(self) -> None:
         await asyncio.sleep(self._config.grace_ms / 1000)
@@ -148,7 +148,7 @@ class _Supervision:
 
         # Arm the wall-clock timer only when no cap fired during start.
         if not self._cap_fired:
-            self._wall_task = asyncio.ensure_future(self._run_wall_clock())
+            self._wall_task = asyncio.create_task(self._run_wall_clock())
 
         try:
             outcome = await self._session.outcome

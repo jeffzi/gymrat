@@ -99,7 +99,7 @@ class _StdioSession:
         self._cost_usd = 0.0
         self._interrupt_requested = False
         self._outcome: SessionOutcome | None = None
-        self._task: asyncio.Task[SessionOutcome] = asyncio.ensure_future(self._run())
+        self._task: asyncio.Task[SessionOutcome] = asyncio.create_task(self._run())
 
     @property
     def outcome(self) -> asyncio.Task[SessionOutcome]:
@@ -142,9 +142,9 @@ class _StdioSession:
             return SessionOutcome(reason="error", cost_usd=0.0, message=message_of(err))
         self._proc = proc
         if self._abort is not None:
-            self._abort_task = asyncio.ensure_future(self._watch_abort(self._abort, proc))
+            self._abort_task = asyncio.create_task(self._watch_abort(self._abort, proc))
         if proc.stderr is not None:
-            self._stderr_task = asyncio.ensure_future(self._drain(proc.stderr))
+            self._stderr_task = asyncio.create_task(self._drain(proc.stderr))
         try:
             await self._write_line(_start_command(self._prompt))
             await self._read_events(proc)

@@ -140,7 +140,7 @@ class _ClaudeSession:
         self._tool_starts: dict[str, int] = {}
         self._tool_names: dict[str, str] = {}
         self._stopped: SessionOutcome | None = None
-        self._task: asyncio.Task[SessionOutcome] = asyncio.ensure_future(self._run())
+        self._task: asyncio.Task[SessionOutcome] = asyncio.create_task(self._run())
 
     @property
     def outcome(self) -> asyncio.Task[SessionOutcome]:
@@ -197,7 +197,7 @@ class _ClaudeSession:
         client = factory(_build_options(self._prompt))
         self._client = client
         if self._abort is not None:
-            self._abort_task = asyncio.ensure_future(self._watch_abort(self._abort, client))
+            self._abort_task = asyncio.create_task(self._watch_abort(self._abort, client))
         await client.connect()
         await client.query(self._prompt.kickoff)
         async for message in client.receive_messages():
