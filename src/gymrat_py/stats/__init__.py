@@ -1,7 +1,7 @@
 """Pure descriptive-statistics helpers, free of I/O, config, and model types."""
 
+from gymrat_py.model.metrics import Direction
 from gymrat_py.stats.descriptive import (
-    Direction,
     GeomeanCombination,
     RatioExclusion,
     RatioOutcome,

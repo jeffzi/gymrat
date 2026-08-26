@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.session.clock import now_iso
 
 # Largest pid a liveness probe can be asked about: signalling rejects anything
@@ -157,7 +157,7 @@ def read_lockfile(lock_path: str) -> _LockfileState:
     except PermissionError as error:
         # A lockfile another user owns is unreadable to every later run, so the
         # steal path can never reach it — the only way out is by hand.
-        message = f"Lock file {lock_path} could not be read: {message_of(error)}"
+        message = f"Lock file {lock_path} could not be read: {error!s}"
         hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
         raise GymratError(message, hint=hint) from error
 
@@ -289,7 +289,7 @@ def _rethrow_displacement_failure(lock_path: str, error: OSError) -> NoReturn:
     clean up.
     """
     if isinstance(error, PermissionError):
-        message = f"Stale lock file {lock_path} could not be removed: {message_of(error)}"
+        message = f"Stale lock file {lock_path} could not be removed: {error!s}"
         hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
         raise GymratError(message, hint=hint) from error
     raise error
@@ -470,7 +470,7 @@ def _make_release(lock_path: str, identity: LockIdentity) -> ReleaseLock:
         try:
             unlink_if_same_file(lock_path, identity)
         except OSError as error:
-            text = f"Warning: failed to release lock at {lock_path}: {message_of(error)}\n"
+            text = f"Warning: failed to release lock at {lock_path}: {error!s}\n"
             sys.stderr.write(text)
 
     return release

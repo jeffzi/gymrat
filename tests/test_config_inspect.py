@@ -294,7 +294,7 @@ def test_inspect_config_when_no_file_and_empty_flags_does_return_defaults(
     result = inspect_config(CliFlags())
 
     assert result.config_path is None
-    assert result.config_exists is False
+
     assert result.problems == []
     assert result.config == DEFAULT_CONFIG
     assert result.bench is None
@@ -330,7 +330,7 @@ def test_inspect_config_when_valid_file_provides_values_does_settle_config_and_p
     result = inspect_config(CliFlags())
 
     assert result.config_path == str(tmp_path / "gymrat.toml")
-    assert result.config_exists is True
+
     assert result.problems == []
     assert result.config == BenchlessConfig(
         adapter="custom-adapter",
@@ -435,7 +435,7 @@ def test_inspect_config_when_config_flag_names_missing_path_does_report_and_omit
     result = inspect_config(CliFlags(bench="my-bench", config=str(missing_path)))
 
     assert result.config_path == str(missing_path)
-    assert result.config_exists is False
+
     assert has_problem(result.problems, re.escape(str(missing_path)))
     assert result.config is None
 
@@ -449,7 +449,7 @@ def test_inspect_config_when_file_is_invalid_toml_does_report_naming_path(
     result = inspect_config(CliFlags())
 
     assert result.config_path == str(config_path)
-    assert result.config_exists is True
+
     assert has_problem(result.problems, re.escape(str(config_path)))
     assert result.config is None
 

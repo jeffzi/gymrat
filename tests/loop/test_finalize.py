@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from gymrat_py.config import ResolvedConfig, StopConfig
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.loop.finalize import (
     FinalizeOptions,
     finalize_session,
@@ -180,7 +180,7 @@ def test_finalize_when_already_finalized_does_refuse_naming_closed_session_and_f
 
     error = _capture_error(lambda: finalize_session(repo))
 
-    assert _session_header(repo).session_id in message_of(error)
+    assert _session_header(repo).session_id in str(error)
     assert error.hint is not None
     assert "gymrat start" in error.hint
 
@@ -395,8 +395,8 @@ def test_finalize_does_refuse_a_branch_name_git_reads_as_a_flag_creating_nothing
 
     error = _capture_error(lambda: finalize_session(kept_repo, FinalizeOptions(branch="-m")))
 
-    assert "-m" in message_of(error)
-    assert re.search(r"flag", message_of(error), re.IGNORECASE)
+    assert "-m" in str(error)
+    assert re.search(r"flag", str(error), re.IGNORECASE)
     assert error.hint is not None
     assert _git(["branch", "--format=%(refname:short)"], kept_repo) == branches_before
     assert len(_records(kept_repo)) == before
@@ -419,7 +419,7 @@ def test_finalize_does_refuse_when_the_target_branch_already_exists_creating_not
 
     error = _capture_error(lambda: finalize_session(kept_repo))
 
-    assert final_branch in message_of(error)
+    assert final_branch in str(error)
     assert _git(["rev-parse", final_branch], kept_repo) == baseline_sha
     assert len(_records(kept_repo)) == before
 

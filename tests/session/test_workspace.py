@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat_py.session.workspace import (
     BaselineRef,
@@ -132,7 +132,7 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_branch_an
     with pytest.raises(GymratError) as excinfo:
         create_workspace(repo, SESSION_ID, baseline)
 
-    assert BRANCH in message_of(excinfo.value)
+    assert BRANCH in str(excinfo.value)
     assert re.search(r"git branch -D", hint_of(excinfo.value) or "", re.IGNORECASE)
 
 
@@ -151,9 +151,7 @@ def test_create_workspace_when_worktree_add_dies_does_unwind_and_fail_on_that_st
         create_workspace(repo, SESSION_ID, baseline)
 
     # The unwind's own git steps never speak for it.
-    assert re.search(
-        r"cannot create the experiment worktree", message_of(excinfo.value), re.IGNORECASE
-    )
+    assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
     assert _session_branches(repo) == []
     assert list_worktree_dirs(repo, include_main=False) == []
     assert not Path(experiment_worktree_dir(repo)).exists()
@@ -223,7 +221,7 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_leave_its_wor
     # Only this attempt's own branch is unwound.
     assert stranded.read_text(encoding="utf-8") == "# work from the earlier session\n"
     assert _session_branches(repo) == [BRANCH]
-    assert experiment_worktree_dir(repo) in message_of(excinfo.value)
+    assert experiment_worktree_dir(repo) in str(excinfo.value)
 
 
 def test_create_workspace_when_directory_is_not_a_git_repository_does_raise(
@@ -234,7 +232,7 @@ def test_create_workspace_when_directory_is_not_a_git_repository_does_raise(
     with pytest.raises(GymratError) as excinfo:
         create_workspace(outside, SESSION_ID, BaselineRef(ref=BASELINE_REF, sha=baseline_sha))
 
-    assert re.search(r"not a git repository", message_of(excinfo.value), re.IGNORECASE)
+    assert re.search(r"not a git repository", str(excinfo.value), re.IGNORECASE)
     assert re.search(r"git repository", hint_of(excinfo.value) or "", re.IGNORECASE)
 
 
@@ -456,7 +454,7 @@ def test_commit_workspace_when_nothing_to_commit_does_raise_gymrat_error_leaving
         commit_workspace(experiment, "no-op")
 
     # The wrapper surfaces git's failure as "<step message>: <diagnostic>".
-    assert ": " in message_of(excinfo.value)
+    assert ": " in str(excinfo.value)
     assert _git(["rev-parse", "HEAD"], experiment) == before
 
 

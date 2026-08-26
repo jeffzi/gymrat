@@ -44,7 +44,6 @@ def _patch_doctor(
     """Replace every doctor seam and return the recorded bench inputs and lock calls."""
     inspection = ConfigInspection(
         config_path="/missing/gymrat.json" if config_failure else "/project/gymrat.json",
-        config_exists=not config_failure,
         problems=["Config file not found at /missing/gymrat.json"] if config_failure else [],
         config=None if config_failure else _config(),
         bench="node bench.js",

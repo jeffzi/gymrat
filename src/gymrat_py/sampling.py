@@ -20,7 +20,7 @@ from typing import Literal
 
 from gymrat_py.adapters.types import Adapter, WarnSink
 from gymrat_py.config import KindEntry, MetricEntry, resolve_metric_meta
-from gymrat_py.errors import CommandError, GymratError, hint_of, message_of
+from gymrat_py.errors import CommandError, GymratError, hint_of
 from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError, kill_live_process_groups
 from gymrat_py.exec import (
     exec as exec,  # noqa: A004, PLC0414 -- names the subprocess executor `exec`
@@ -186,36 +186,6 @@ class MetricStats:
     spread: float | None
 
 
-@dataclass(frozen=True, slots=True)
-class _Step:
-    """Which command in the schedule is running: its phase and round, if any."""
-
-    phase: str
-    sample_index: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class _CommandSuccess:
-    stdout: str
-
-
-@dataclass(frozen=True, slots=True)
-class _CommandFailure:
-    phase: str
-    ctx: TargetContext
-    command: str
-    sample_index: int | None
-    timed_out: bool
-    timeout_ms: int
-    exit_code: int | None
-    stdout: str
-    stderr: str
-    stdout_bytes: int
-    stderr_bytes: int
-
-
-type _CommandOutcome = _CommandSuccess | _CommandFailure
-
 _REF_HINT = (
     "the worktree only contains files tracked at this ref; "
     "untracked, gitignored, or not-yet-committed files are absent"
@@ -256,10 +226,7 @@ async def collect_samples(
     if options.prepare is not None:
         for ctx in targets:
             _report(options, PrepareProgressStep(label=ctx.label))
-            outcome = await _run_command(
-                _Step("prepare", None), options.prepare, ctx, timeout_ms, abort
-            )
-            _enforce(outcome)
+            await _run_command("prepare", None, options.prepare, ctx, timeout_ms, abort)
 
     for round_index in range(options.samples):
         for target_index, ctx in enumerate(targets):
@@ -267,10 +234,9 @@ async def collect_samples(
                 options,
                 SampleProgressStep(index=round_index + 1, total=options.samples, label=ctx.label),
             )
-            outcome = await _run_command(
-                _Step("bench", round_index + 1), options.bench, ctx, timeout_ms, abort
+            stdout = await _run_command(
+                "bench", round_index + 1, options.bench, ctx, timeout_ms, abort
             )
-            stdout = _enforce(outcome)
             collected[target_index].append(_parse(adapter, stdout, options.warn))
 
     return [
@@ -279,94 +245,66 @@ async def collect_samples(
     ]
 
 
-async def _run_command(
-    step: _Step,
+async def _run_command(  # noqa: PLR0913, PLR0917 -- inlined from the removed _Step/_CommandOutcome round trip
+    phase: str,
+    sample_index: int | None,
     command: str,
     ctx: TargetContext,
     timeout_ms: int,
     abort: asyncio.Event,
-) -> _CommandOutcome:
-    """Run one command and classify its result as success or failure."""
+) -> str:
+    """Run one command and return its stdout, or raise on failure."""
     result = await exec(command, ExecOptions(cwd=ctx.dir, timeout_ms=timeout_ms, abort=abort))
     if isinstance(result, ExecTimeoutError) or result.exit_code != 0:
-        return _to_failure(step, command, ctx, result, timeout_ms)
-    return _CommandSuccess(stdout=result.stdout)
+        raise _to_command_error(phase, sample_index, command, ctx, result, timeout_ms)
+    return result.stdout
 
 
-def _to_failure(
-    step: _Step,
+def _to_command_error(  # noqa: PLR0913, PLR0917 -- one field per failure axis
+    phase: str,
+    sample_index: int | None,
     command: str,
     ctx: TargetContext,
     result: ExecResult | ExecTimeoutError,
     request_timeout_ms: int,
-) -> _CommandFailure:
-    """Build a `_CommandFailure` from a run's outcome and its captured streams.
-
-    A timeout carries its own budget as ``timeout_ms``; a non-zero exit carries
-    the exit code and the run's requested budget (unused when rendering, but kept
-    for a uniform record shape).
-    """
-    if isinstance(result, ExecTimeoutError):
-        timed_out, timeout_ms, exit_code = True, result.timeout_ms, None
-    else:
-        timed_out, timeout_ms, exit_code = False, request_timeout_ms, result.exit_code
-    return _CommandFailure(
-        phase=step.phase,
-        ctx=ctx,
-        command=command,
-        sample_index=step.sample_index,
-        timed_out=timed_out,
-        timeout_ms=timeout_ms,
-        exit_code=exit_code,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        stdout_bytes=result.stdout_bytes,
-        stderr_bytes=result.stderr_bytes,
-    )
-
-
-def _enforce(outcome: _CommandOutcome) -> str:
-    """Return the run's stdout, or raise the failure as a formatted error.
-
-    This is the single site that converts a failed command into a
-    :class:`CommandError`; every command runs through it.
-    """
-    if isinstance(outcome, _CommandFailure):
-        raise _to_command_error(outcome)
-    return outcome.stdout
-
-
-def _to_command_error(failure: _CommandFailure) -> CommandError:
+) -> CommandError:
     """Map a command failure to a target-specific :class:`CommandError`.
 
     A ref target contributes ``ref`` and ``worktree`` location lines plus the
     hint that the worktree only holds tracked files; a plain directory
     contributes a single ``dir`` line and no hint.
     """
-    target = failure.ctx.target
+    timed_out = isinstance(result, ExecTimeoutError)
+    if timed_out:
+        timeout_ms = result.timeout_ms
+        exit_code: int | None = None
+    else:
+        timeout_ms = request_timeout_ms
+        exit_code = result.exit_code
+
+    target = ctx.target
     if isinstance(target, RefTarget):
-        location = [_field("ref", target.ref), _field("worktree", failure.ctx.dir)]
+        location = [_field("ref", target.ref), _field("worktree", ctx.dir)]
         hint = _REF_HINT
     else:
-        location = [_field("dir", failure.ctx.dir)]
+        location = [_field("dir", ctx.dir)]
         hint = None
 
-    lines = [_header(failure), *location, _field("command", failure.command)]
-    if failure.timed_out:
-        lines.append(_field("timeout", f"{failure.timeout_ms}ms"))
+    position = f"{ctx.position}, " if ctx.position is not None else ""
+    sample = f", sample {sample_index}" if sample_index is not None else ""
+    outcome_label = "timed out" if timed_out else "failed"
+    header = f'{phase} command {outcome_label} ({position}"{ctx.label}"{sample})'
+
+    lines = [header, *location, _field("command", command)]
+    if timed_out:
+        lines.append(_field("timeout", f"{timeout_ms}ms"))
     else:
-        lines.append(_field("exit code", failure.exit_code))
-    lines.extend(_captured_output(failure))
+        lines.append(_field("exit code", exit_code))
+    lines.extend(
+        _captured_output(result.stdout, result.stdout_bytes, result.stderr, result.stderr_bytes)
+    )
 
     return CommandError("\n".join(lines), hint=hint)
-
-
-def _header(failure: _CommandFailure) -> str:
-    """Build the one-line summary naming phase, outcome, target, and round."""
-    position = f"{failure.ctx.position}, " if failure.ctx.position is not None else ""
-    sample = f", sample {failure.sample_index}" if failure.sample_index is not None else ""
-    outcome = "timed out" if failure.timed_out else "failed"
-    return f'{failure.phase} command {outcome} ({position}"{failure.ctx.label}"{sample})'
 
 
 def _field(label: str, value: object) -> str:
@@ -374,7 +312,7 @@ def _field(label: str, value: object) -> str:
     return f"  {(label + ':').ljust(_LABEL_WIDTH)}{value}"
 
 
-def _captured_output(failure: _CommandFailure) -> list[str]:
+def _captured_output(stdout: str, stdout_bytes: int, stderr: str, stderr_bytes: int) -> list[str]:
     """Render whatever the failed command wrote to its output streams.
 
     A lone non-empty stream is emitted bare unless its captured text was
@@ -382,8 +320,8 @@ def _captured_output(failure: _CommandFailure) -> list[str]:
     becomes a labeled entry annotated with the true byte total.
     """
     streams = [
-        ("stderr", failure.stderr, failure.stderr_bytes),
-        ("stdout", failure.stdout, failure.stdout_bytes),
+        ("stderr", stderr, stderr_bytes),
+        ("stdout", stdout, stdout_bytes),
     ]
     present = [(label, text, total) for label, text, total in streams if text]
 
@@ -626,7 +564,7 @@ def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exceptio
     if not details:
         return error
 
-    combined = "\n".join([message_of(error), "", "cleanup did not finish:", *details])
+    combined = "\n".join([str(error), "", "cleanup did not finish:", *details])
     if isinstance(error, GymratError):
         wrapped: Exception = type(error)(combined, hint=hint_of(error))
     else:

@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Annotated, Any, Literal, NoReturn, Protocol
@@ -24,7 +24,7 @@ from gymrat_py.adapters.types import AdapterError
 from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat_py.cli.status_line import RenderMode
 from gymrat_py.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.exec import kill_live_process_groups
 from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
@@ -159,10 +159,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
     """
     error_label = f"{markup('Error', 'red')}: "
 
-    if isinstance(error, AdapterError):
-        body = f"{type(error).__name__}: {message_of(error)}"
-    else:
-        body = message_of(error)
+    body = f"{type(error).__name__}: {error!s}" if isinstance(error, AdapterError) else str(error)
 
     doc = f"{error_label}{escape(body)}"
 
@@ -239,11 +236,6 @@ def parse_positional(positional: str) -> TargetSpec:
         raise typer.BadParameter(message)
 
     return TargetSpec(label=label, target=target)
-
-
-def collect_positional(value: str, previous: Sequence[TargetSpec]) -> list[TargetSpec]:
-    """Accumulate parsed candidate positionals as the parser walks the variadic argument."""
-    return [*previous, parse_positional(value)]
 
 
 def parse_positive_integer_up_to(max_value: int) -> Callable[[str], int]:

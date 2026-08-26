@@ -6,7 +6,6 @@ import pytest
 from gymrat_py.model import (
     BAND_DESCRIPTOR,
     DEFAULT_UNSTABLE_NOISE_PCT,
-    EXACT_DESCRIPTOR,
     NOISE_FLOOR_PCT,
     NOISE_K,
     PERMUTATION_DESCRIPTOR,
@@ -142,7 +141,6 @@ def test_resolved_metric_meta_when_field_assigned_does_raise_frozen_instance_err
     [
         (PERMUTATION_DESCRIPTOR, "permutation", 6, 0.05),
         (BAND_DESCRIPTOR, "band", 2, None),
-        (EXACT_DESCRIPTOR, "exact", 1, None),
     ],
 )
 def test_method_descriptor_when_defined_does_expose_statistical_floors(

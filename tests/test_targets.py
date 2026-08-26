@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.targets import (
     InPlaceTarget,
     RefTarget,
@@ -252,7 +252,7 @@ def test_resolve_target_when_input_not_a_ref_does_carry_git_stderr(
     with pytest.raises(GymratError) as exc_info:
         resolve_target("definitely-not-a-ref", repo)
 
-    message = message_of(exc_info.value)
+    message = str(exc_info.value)
     assert "fatal:" in message
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
 
@@ -282,7 +282,7 @@ def test_resolve_target_when_probe_hits_symlink_loop_does_raise_resolve_error(
     with pytest.raises(GymratError) as exc_info:
         resolve_target(str(loop), repo)
 
-    message = message_of(exc_info.value)
+    message = str(exc_info.value)
     assert f"Cannot resolve target '{loop}'" in message
     assert "fatal:" not in message
     assert exc_info.value.hint == RESOLVE_TARGET_HINT
@@ -302,7 +302,7 @@ def test_resolve_target_when_probe_hits_unsearchable_parent_does_raise_resolve_e
         with pytest.raises(GymratError) as exc_info:
             resolve_target(str(target), repo)
 
-        message = message_of(exc_info.value)
+        message = str(exc_info.value)
         assert f"Cannot resolve target '{target}'" in message
         assert "fatal:" not in message
         assert exc_info.value.hint == RESOLVE_TARGET_HINT
@@ -335,7 +335,7 @@ def test_plan_worktree_when_tmpdir_nonexistent_does_raise_naming_temp_dir(
     with pytest.raises(GymratError) as exc_info:
         plan_worktree(RefTarget(ref="v1", resolved_sha=UNKNOWN_SHA))
 
-    assert bogus_dir in message_of(exc_info.value)
+    assert bogus_dir in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ def test_materialize_worktree_when_git_rejects_sha_does_raise_gymrat_error_with_
     with pytest.raises(GymratError) as exc_info:
         materialize_worktree(worktree, repo)
 
-    message = message_of(exc_info.value)
+    message = str(exc_info.value)
     assert UNKNOWN_SHA in message
     assert re.search(r"not a valid object name|invalid reference", message)
     assert "returned non-zero exit status" not in message

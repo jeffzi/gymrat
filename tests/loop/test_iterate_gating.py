@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat_py.config import HooksConfig, MetricEntry
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.loop.iterate import iterate_session
 from gymrat_py.session import (
     Confirm,
@@ -267,7 +267,7 @@ async def test_iterate_session_when_rerun_bench_fails_does_fail_and_record_nothi
     with pytest.raises(GymratError) as exc:
         await iterate_session(open_repo, resolved)
 
-    assert message_of(exc.value) == "bench command failed"
+    assert str(exc.value) == "bench command failed"
     assert len(read_records(session_jsonl_path(open_repo))) == 1
 
 

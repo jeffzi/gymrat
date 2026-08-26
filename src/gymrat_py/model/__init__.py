@@ -10,7 +10,6 @@ from gymrat_py.model.effect import Effect, EffectUnit
 from gymrat_py.model.methods import (
     BAND_DESCRIPTOR,
     DEFAULT_UNSTABLE_NOISE_PCT,
-    EXACT_DESCRIPTOR,
     NOISE_FLOOR_PCT,
     NOISE_K,
     PERMUTATION_DESCRIPTOR,
@@ -45,7 +44,6 @@ __all__ = [
     "BAND_DESCRIPTOR",
     "DEFAULT_UNSTABLE_NOISE_PCT",
     "DROP_UNPAIRED",
-    "EXACT_DESCRIPTOR",
     "NOISE_FLOOR_PCT",
     "NOISE_K",
     "PERMUTATION_DESCRIPTOR",

@@ -19,8 +19,6 @@ into a landmine for the next.
 import asyncio
 import codecs
 import contextlib
-import os
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from gymrat_py.process_group import current_platform, kill_process_group
@@ -68,15 +66,12 @@ class ExecOptions:
         abort: Event that, once set, kills the run and resolves a failed result.
         stdin: Text delivered to the command's standard input, then closed;
             ``None`` gives an immediately closed (EOF) input.
-        env: Variables merged *over* the inherited environment; ``None`` inherits
-            the environment unchanged.
     """
 
     cwd: str
     timeout_ms: int | None = None
     abort: asyncio.Event | None = None
     stdin: str | None = None
-    env: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,16 +131,6 @@ class OutputBuffer:
         self.byte_count += len(line.encode())
 
 
-def _platform() -> str:
-    """Return the current platform.
-
-    Kept as a module-level seam (delegating to
-    :func:`gymrat_py.process_group.current_platform`) so a test can redirect the
-    kill strategy to the Windows path after a POSIX spawn.
-    """
-    return current_platform()
-
-
 def _exit_code(returncode: int | None) -> int:
     """Map a child's raw return code to a reported exit code.
 
@@ -166,7 +151,7 @@ def _terminate(proc: asyncio.subprocess.Process) -> None:
     waiting on EOF, so the run can be snapshotted without awaiting a natural
     end of stream.
     """
-    kill_process_group(proc.pid, _platform())
+    kill_process_group(proc.pid)
     _close_pipes(proc)
 
 
@@ -267,7 +252,7 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
 
     Args:
         command: The shell command line to run.
-        options: Working directory, timeout, abort event, stdin, and environment.
+        options: Working directory, timeout, abort event, and stdin.
 
     Returns:
         An :class:`ExecResult` for any completed or cancelled run, or an
@@ -276,7 +261,6 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
     if options.abort is not None and options.abort.is_set():
         return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
 
-    env = {**os.environ, **options.env} if options.env is not None else None
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -284,8 +268,7 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=env,
-            start_new_session=_platform() != "win32",
+            start_new_session=current_platform() != "win32",
         )
     except OSError as error:
         stderr = f"{error}\n"

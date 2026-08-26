@@ -21,7 +21,6 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from math import ceil
 from typing import Any, Protocol, cast
 
-from gymrat_py.errors import message_of
 from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import (
     Driver,
@@ -169,7 +168,7 @@ class _ClaudeSession:
         try:
             return _load_default_factory()
         except ModuleNotFoundError as err:
-            detail = message_of(err)
+            detail = str(err)
             return SessionOutcome(
                 reason="error",
                 cost_usd=0.0,
@@ -188,7 +187,7 @@ class _ClaudeSession:
             return await self._stream(factory)
         except Exception as err:  # noqa: BLE001 - any construction or stream failure becomes an error outcome, never a raise
             return self._settled_or(
-                SessionOutcome(reason="error", cost_usd=self._cost_usd, message=message_of(err))
+                SessionOutcome(reason="error", cost_usd=self._cost_usd, message=str(err))
             )
         finally:
             await self._teardown()
@@ -224,7 +223,7 @@ class _ClaudeSession:
                 await self._client.disconnect()
             except Exception as err:  # noqa: BLE001 - teardown must not mask the already-settled outcome
                 warnings.warn(
-                    f"claude client disconnect failed: {message_of(err)}",
+                    f"claude client disconnect failed: {err!s}",
                     RuntimeWarning,
                     stacklevel=2,
                 )

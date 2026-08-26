@@ -25,7 +25,6 @@ from gymrat_py.cli.shared import (
     CompareFlags,
     MeasureFlags,
     SharedFlags,
-    collect_positional,
     color_override_of,
     is_tty,
     parse_max_minutes,
@@ -173,17 +172,6 @@ def test_parse_positional_when_target_empty_raises_dedicated_message(positional:
         parse_positional(positional)
 
     assert exc.value.message == 'the target is empty; write the positional as "[label=]<ref|dir>".'
-
-
-def test_collect_positional_appends_the_parsed_spec_to_previous():
-    previous = (TargetSpec(label=None, target="main"),)
-
-    result = collect_positional("feat=HEAD", previous)
-
-    assert result == [
-        TargetSpec(label=None, target="main"),
-        TargetSpec(label="feat", target="HEAD"),
-    ]
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.session import (
     BaselineRecord,
     HookRecord,
@@ -206,7 +206,7 @@ def test_append_record_when_record_unreadable_does_raise_and_leave_the_log_byte_
     with pytest.raises(GymratError) as excinfo:
         append_record(jsonl_path, UNREADABLE_ITERATION)
 
-    assert re.search(r"\biteration\b", message_of(excinfo.value))
+    assert re.search(r"\biteration\b", str(excinfo.value))
     assert Path(jsonl_path).read_bytes() == before
 
 
@@ -245,7 +245,7 @@ def test_read_records_when_a_line_is_not_json_does_raise_naming_the_log_and_line
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert f"{jsonl_path}:2" in message_of(excinfo.value)
+    assert f"{jsonl_path}:2" in str(excinfo.value)
 
 
 def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_field(
@@ -258,8 +258,8 @@ def test_read_records_when_a_line_matches_no_schema_does_raise_naming_line_and_f
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert f"{jsonl_path}:2" in message_of(excinfo.value)
-    assert re.search(r"\bmetrics\b", message_of(excinfo.value))
+    assert f"{jsonl_path}:2" in str(excinfo.value)
+    assert re.search(r"\bmetrics\b", str(excinfo.value))
 
 
 def test_read_records_when_first_record_not_session_does_raise_naming_the_first_line(
@@ -270,8 +270,8 @@ def test_read_records_when_first_record_not_session_does_raise_naming_the_first_
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
 
-    assert f"{jsonl_path}:1" in message_of(excinfo.value)
-    assert re.search(r"session", message_of(excinfo.value), re.IGNORECASE)
+    assert f"{jsonl_path}:1" in str(excinfo.value)
+    assert re.search(r"session", str(excinfo.value), re.IGNORECASE)
 
 
 def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str):
@@ -541,7 +541,7 @@ def test_require_session_when_no_session_opened_does_raise_naming_root_and_verb(
     with pytest.raises(GymratError) as excinfo:
         require_session(fresh_root, verb)
 
-    assert fresh_root in message_of(excinfo.value)
+    assert fresh_root in str(excinfo.value)
     assert hint_of(excinfo.value) == f"Run gymrat start to open one before {verb}."
 
 
@@ -578,5 +578,5 @@ def test_require_open_session_when_session_finalized_does_raise_naming_the_close
     with pytest.raises(GymratError) as excinfo:
         require_open_session(fresh_root, "measuring an edit")
 
-    assert SESSION.session_id in message_of(excinfo.value)
+    assert SESSION.session_id in str(excinfo.value)
     assert "gymrat start" in (hint_of(excinfo.value) or "")

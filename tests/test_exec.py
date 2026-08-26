@@ -16,12 +16,13 @@ import signal
 import subprocess
 import sys
 import warnings
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from gymrat_py import exec as exec_mod
+from gymrat_py import process_group as pg_mod
 from gymrat_py.exec import (
     ExecOptions,
     ExecResult,
@@ -137,14 +138,12 @@ def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
         timeout_ms: int | None = None,
         abort: asyncio.Event | None = None,
         stdin: str | None = None,
-        env: Mapping[str, str] | None = None,
     ) -> ExecOptions:
         return ExecOptions(
             cwd=str(tmp_path),
             timeout_ms=timeout_ms,
             abort=abort,
             stdin=stdin,
-            env=env,
         )
 
     return _make
@@ -277,31 +276,6 @@ async def test_exec_when_stdin_unread_and_large_does_settle_with_command_result(
     result = await run_exec("exit 3", make_opts(stdin=payload))
 
     assert result == expected_result("", "", 3)
-
-
-async def test_exec_when_env_provided_does_merge_over_inherited(
-    make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GYMRAT_INHERITED", "keep")
-
-    result = await run_exec(
-        'printf "%s|%s" "$MARKER" "$GYMRAT_INHERITED"',
-        make_opts(env={"MARKER": "sentinel"}),
-    )
-
-    assert result == expected_result("sentinel|keep", "", 0)
-
-
-async def test_exec_when_env_omitted_does_inherit_unchanged(
-    make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GYMRAT_INHERITED", "keep")
-
-    result = await run_exec('printf "%s" "$GYMRAT_INHERITED"', make_opts())
-
-    assert result == expected_result("keep", "", 0)
 
 
 async def test_exec_when_cwd_missing_does_resolve_with_failure_on_stderr(tmp_path: Path) -> None:
@@ -575,7 +549,8 @@ async def test_exec_when_win32_taskkill_reports_gone_does_stay_silent(
     await wait_for_spawned(spawned_processes)
 
     # Redirect only the kill-time platform read, after the POSIX spawn.
-    monkeypatch.setattr(exec_mod, "_platform", lambda: "win32")
+    monkeypatch.setattr(pg_mod, "current_platform", lambda: "win32")
+    monkeypatch.setattr(exec_mod, "current_platform", lambda: "win32")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         abort.set()
@@ -595,7 +570,8 @@ async def test_exec_when_win32_taskkill_fails_otherwise_does_warn(
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
     await wait_for_spawned(spawned_processes)
 
-    monkeypatch.setattr(exec_mod, "_platform", lambda: "win32")
+    monkeypatch.setattr(pg_mod, "current_platform", lambda: "win32")
+    monkeypatch.setattr(exec_mod, "current_platform", lambda: "win32")
     # exec runs as a separate task, so it cannot process the abort until the
     # awaited wait_for yields control inside the warns block.
     abort.set()

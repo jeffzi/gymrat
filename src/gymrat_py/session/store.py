@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import assert_never
 
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.finite_json import null_non_finite
 from gymrat_py.session.paths import session_jsonl_path
 from gymrat_py.session.records import (
@@ -142,7 +142,7 @@ def _serialize_record(record: SessionLogRecord) -> str:
         line = json.dumps(null_non_finite(wire))
         parse_record(json.loads(line))
     except (GymratError, ValueError, TypeError) as error:
-        message = f"Refusing to log an unreadable {record.type} record: {message_of(error)}"
+        message = f"Refusing to log an unreadable {record.type} record: {error!s}"
         hint = (
             "Nothing was written. A metric that is NaN or Infinity becomes "
             "null in JSON and no longer reads back."
@@ -215,7 +215,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
         try:
             record = parse_record(value)
         except GymratError as error:
-            message = f"{message_of(error)} (at {at})"
+            message = f"{error!s} (at {at})"
             raise GymratError(message, hint=hint_of(error)) from error
 
         if not records and record.type != "session":

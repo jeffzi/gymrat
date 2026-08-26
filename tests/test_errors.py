@@ -6,7 +6,6 @@ from gymrat_py.errors import (
     CommandError,
     GymratError,
     hint_of,
-    message_of,
     stderr_text_of,
 )
 
@@ -72,25 +71,6 @@ def test_command_error_when_raised_does_subclass_gymrat_error_and_share_signatur
     assert isinstance(err, GymratError)
     assert str(err) == "command failed"
     assert err.hint == "check the target"
-
-
-# ---------------------------------------------------------------------------
-# message_of
-# ---------------------------------------------------------------------------
-
-
-def test_message_of_when_given_exception_does_return_its_message():
-    error = ValueError("boom")
-
-    assert message_of(error) == "boom"
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [("boom", "boom"), (42, "42")],
-)
-def test_message_of_when_given_non_exception_does_stringify_value(value: object, expected: str):
-    assert message_of(value) == expected
 
 
 # ---------------------------------------------------------------------------

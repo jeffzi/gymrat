@@ -60,11 +60,6 @@ def archived_session_path(root: str, session_id: str) -> str:
     return str(Path(root) / SESSION_DIR_NAME / f"session-{session_id}.jsonl")
 
 
-def worktrees_dir(root: str) -> str:
-    """Directory holding gymrat-managed worktrees under ``root``."""
-    return str(Path(root) / SESSION_DIR_NAME / "worktrees")
-
-
 def experiment_worktree_dir(root: str) -> str:
     """Path to the experiment worktree under ``root``."""
     return str(Path(root) / SESSION_DIR_NAME / "worktrees" / "experiment")

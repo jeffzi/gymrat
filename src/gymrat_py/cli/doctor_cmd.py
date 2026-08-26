@@ -54,7 +54,7 @@ from gymrat_py.doctor.checks import (
     create_doctor_report,
 )
 from gymrat_py.doctor.render import render_doctor_json, render_doctor_report
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.git import NotAGitRepositoryError, try_git
 from gymrat_py.init.scaffold import SKILL_RELATIVE_PATH
 from gymrat_py.report.types import ReportOptions
@@ -90,7 +90,7 @@ def detect_git_environment(cwd: str) -> GitEnvironment:
     except NotAGitRepositoryError:
         return GitEnvironment(git_available=True, inside_git_repo=False)
     except GymratError as error:
-        return GitEnvironment(git_available=True, inside_git_repo=True, git_error=message_of(error))
+        return GitEnvironment(git_available=True, inside_git_repo=True, git_error=str(error))
 
 
 def _defaults_as_benchless() -> BenchlessConfig:

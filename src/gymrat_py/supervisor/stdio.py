@@ -22,7 +22,6 @@ import warnings
 from collections.abc import Sequence
 from typing import Any, cast
 
-from gymrat_py.errors import message_of
 from gymrat_py.process_group import current_platform, kill_process_group
 from gymrat_py.supervisor.driver import (
     Driver,
@@ -139,7 +138,7 @@ class _StdioSession:
         try:
             proc = await self._spawn()
         except OSError as err:
-            return SessionOutcome(reason="error", cost_usd=0.0, message=message_of(err))
+            return SessionOutcome(reason="error", cost_usd=0.0, message=str(err))
         self._proc = proc
         if self._abort is not None:
             self._abort_task = asyncio.create_task(self._watch_abort(self._abort, proc))
@@ -171,7 +170,7 @@ class _StdioSession:
             self._outcome = SessionOutcome(
                 reason="error",
                 cost_usd=self._cost_usd,
-                message=f"child output line exceeded the read limit: {message_of(err)}",
+                message=f"child output line exceeded the read limit: {err!s}",
             )
 
     def _consume(self, line: str) -> bool:

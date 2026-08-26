@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from gymrat_py.config import HooksConfig, ResolvedConfig, StopConfig
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.loop.start import StartResult, start_session
 from gymrat_py.session import (
     BaselineRef,
@@ -308,9 +308,7 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
         start_session(repo, "main", CONFIG)
 
     # The rollback's own failure never speaks for the start's.
-    assert re.search(
-        r"cannot create the experiment worktree", message_of(excinfo.value), re.IGNORECASE
-    )
+    assert re.search(r"cannot create the experiment worktree", str(excinfo.value), re.IGNORECASE)
     assert read_records(session_jsonl_path(repo)) == closed_log
     assert not Path(archived_session_path(repo, closed)).exists()
 
@@ -358,7 +356,7 @@ def test_start_session_when_baseline_ref_does_not_resolve_does_raise_and_leave_n
     with pytest.raises(GymratError) as excinfo:
         start_session(repo, "no-such-ref", CONFIG)
 
-    assert "no-such-ref" in message_of(excinfo.value)
+    assert "no-such-ref" in str(excinfo.value)
     assert not Path(session_jsonl_path(repo)).exists()
 
 
@@ -370,5 +368,5 @@ def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_re
     with pytest.raises(GymratError) as excinfo:
         start_session(repo, target_dir, CONFIG)
 
-    assert target_dir in message_of(excinfo.value)
+    assert target_dir in str(excinfo.value)
     assert not Path(session_jsonl_path(repo)).exists()

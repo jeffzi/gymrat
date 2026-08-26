@@ -40,7 +40,6 @@ class ConfigInspection:
     """
 
     config_path: str | None
-    config_exists: bool
     problems: list[str]
     config: BenchlessConfig | None = None
     bench: str | None = None
@@ -110,7 +109,7 @@ def _build_effective_flags(flags: CliFlags, env_flags: CliFlags) -> CliFlags:
 
 def _resolve_config_source(
     flags: CliFlags, base_dir: str | None
-) -> tuple[str | None, bool, ConfigFile | None, list[str]]:
+) -> tuple[str | None, ConfigFile | None, list[str]]:
     """Resolve which config file to load, load it, and report any problems.
 
     When the config source itself is broken (empty ``--config``, blank
@@ -129,7 +128,7 @@ def _resolve_config_source(
         env_config_path = str(result.value) if result.value is not None else None
 
     if flags.config == "" or env_config_failed:
-        return None, False, ConfigFile(), problems
+        return None, ConfigFile(), problems
 
     explicit_config = flags.config if flags.config is not None else env_config_path
     if explicit_config is not None:
@@ -142,7 +141,7 @@ def _resolve_config_source(
     problems.extend(file_result.problems)
 
     config_path = resolved_path if (required or file_result.exists) else None
-    return config_path, file_result.exists, file_result.config_file, problems
+    return config_path, file_result.config_file, problems
 
 
 def _resolve_runbook(
@@ -182,29 +181,22 @@ def inspect_config(flags: CliFlags, base_dir: str | None = None) -> ConfigInspec
 
     effective = _build_effective_flags(flags, env_flags)
 
-    config_path, config_exists, config_file, source_problems = _resolve_config_source(
-        flags, base_dir
-    )
+    config_path, config_file, source_problems = _resolve_config_source(flags, base_dir)
     problems.extend(source_problems)
 
     if config_file is None:
-        return ConfigInspection(
-            config_path=config_path, config_exists=config_exists, problems=problems
-        )
+        return ConfigInspection(config_path=config_path, problems=problems)
 
     config = merge_config(effective, config_file)
     problems.extend(loop_key_problems(config))
     config = _resolve_runbook(config, config_path, problems)
 
     if problems:
-        return ConfigInspection(
-            config_path=config_path, config_exists=config_exists, problems=problems
-        )
+        return ConfigInspection(config_path=config_path, problems=problems)
 
     bench = effective.bench if effective.bench is not None else config_file.bench
     return ConfigInspection(
         config_path=config_path,
-        config_exists=config_exists,
         problems=[],
         config=config,
         bench=bench,

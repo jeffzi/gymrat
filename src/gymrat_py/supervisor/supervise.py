@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from gymrat_py.errors import message_of
 from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat_py.supervisor.event_log import create_event_log_writer
@@ -73,7 +72,7 @@ def _fire_and_report_interrupt(session: DriverSession) -> None:
     try:
         pending = session.interrupt()
     except Exception as error:  # noqa: BLE001 - interrupt failure must not abort grace setup
-        warn_to_stderr(f"session interrupt failed: {message_of(error)}")
+        warn_to_stderr(f"session interrupt failed: {error!s}")
         return
 
     task = asyncio.create_task(pending)
@@ -83,7 +82,7 @@ def _fire_and_report_interrupt(session: DriverSession) -> None:
             return
         error = finished.exception()
         if error is not None:
-            warn_to_stderr(f"session interrupt failed: {message_of(error)}")
+            warn_to_stderr(f"session interrupt failed: {error!s}")
 
     task.add_done_callback(_report)
 

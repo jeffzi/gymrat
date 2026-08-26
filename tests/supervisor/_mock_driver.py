@@ -12,7 +12,6 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
-from gymrat_py.errors import message_of
 from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import (
     Driver,
@@ -124,9 +123,7 @@ class _MockSession:
             try:
                 await self._execute(step)
             except Exception as error:  # noqa: BLE001 - the mock's contract turns any action failure into an error outcome
-                return SessionOutcome(
-                    reason="error", cost_usd=self._cost_usd, message=message_of(error)
-                )
+                return SessionOutcome(reason="error", cost_usd=self._cost_usd, message=str(error))
 
             if self._aborted():
                 return self._interrupted()

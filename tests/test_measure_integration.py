@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from gymrat_py import sampling
-from gymrat_py.errors import CommandError, message_of
+from gymrat_py.errors import CommandError
 from gymrat_py.measure import MeasureOptions, measure
 from gymrat_py.sampling import TargetSpec
 from gymrat_py.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
@@ -123,6 +123,6 @@ async def test_measure_when_bench_fails_and_worktree_unremovable_does_name_stran
     with pytest.raises(CommandError) as caught:
         await measure(_options("HEAD"))
 
-    message = message_of(caught.value)
+    message = str(caught.value)
     assert "/tmp/stranded-wt" in message
     assert "bench command failed" in message
