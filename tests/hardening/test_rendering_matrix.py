@@ -327,6 +327,7 @@ def _zero_width_terminal(*_args: object, **_kwargs: object) -> os.terminal_size:
 def test_status_line_when_terminal_reports_zero_width_does_not_crash_or_spill(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setattr("shutil.get_terminal_size", _zero_width_terminal)
     fake = _FakeStream(tty=True)
     monkeypatch.setattr("sys.stderr", fake)

@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  _TYPER_FORCE_DISABLE_TERMINAL: "1"
   PYTEST_ADDOPTS: "--color=yes"
 
 jobs:
