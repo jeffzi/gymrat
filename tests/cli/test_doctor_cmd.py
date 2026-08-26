@@ -112,14 +112,13 @@ def _patch_doctor(
 
 
 @pytest.fixture
-def _preserve_color_env():
-    saved = {name: os.environ.get(name) for name in ("NO_COLOR", "FORCE_COLOR")}
-    yield
-    for name, value in saved.items():
+def _preserve_color_env(monkeypatch: pytest.MonkeyPatch):
+    for name in ("NO_COLOR", "FORCE_COLOR"):
+        value = os.environ.get(name)
         if value is None:
-            os.environ.pop(name, None)
+            monkeypatch.delenv(name, raising=False)
         else:
-            os.environ[name] = value
+            monkeypatch.setenv(name, value)
 
 
 # ---------------------------------------------------------------------------

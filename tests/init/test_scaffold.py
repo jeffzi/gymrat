@@ -92,7 +92,7 @@ def test_scaffold_when_runbook_path_set_does_include_runbook_key(tmp_path: Path)
     assert _read_config(tmp_path)["runbook"] == "gymrat-runbook.md"
 
 
-def test_scaffold_writes_scalar_keys_before_the_stop_table(tmp_path: Path):
+def test_scaffold_when_writing_config_does_place_scalar_keys_before_stop_table(tmp_path: Path):
     scaffold(
         str(tmp_path),
         _result(
@@ -232,7 +232,7 @@ def test_scaffold_when_skill_declined_does_not_create_skill_file(tmp_path: Path)
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_writes_toml_with_trailing_newline(tmp_path: Path):
+def test_scaffold_when_writing_config_does_produce_toml_with_trailing_newline(tmp_path: Path):
     scaffold(str(tmp_path), _result())
 
     raw = (tmp_path / "gymrat.toml").read_text(encoding="utf-8")

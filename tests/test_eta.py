@@ -149,7 +149,9 @@ def test_record_when_no_clock_injected_does_measure_gaps_with_perf_counter(
         (7_200_000, "2h 0m"),
     ],
 )
-def test_format_duration_does_render_expected(ms: float, expected: str) -> None:
+def test_format_duration_when_given_milliseconds_does_render_expected_duration(
+    ms: float, expected: str
+) -> None:
     assert format_duration(ms) == expected
 
 
@@ -177,5 +179,7 @@ def test_format_duration_does_render_expected(ms: float, expected: str) -> None:
         (7260000, "~2h 1m left"),
     ],
 )
-def test_format_eta_does_render_expected(ms: float, expected: str) -> None:
+def test_format_eta_when_given_milliseconds_does_render_expected_eta(
+    ms: float, expected: str
+) -> None:
     assert format_eta(ms) == expected

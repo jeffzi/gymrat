@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from gymrat_py.model import (
+    BandVerdict,
     Direction,
     Effect,
     ExactVerdict,
@@ -104,5 +105,33 @@ def build_inputs(
     return verdicts, metric_meta
 
 
+def _noop_warn(_message: str) -> None:
+    """Swallow divergence warnings so these cases stay silent on stderr."""
+
+
+def create_samples(n: int, value: float) -> list[dict[str, float]]:
+    return [{"metric": value} for _ in range(n)]
+
+
+def unstable_band_verdict() -> BandVerdict:
+    """A band verdict too noisy to judge, regardless of its ratio."""
+    return BandVerdict(
+        method="band",
+        verdict="unstable",
+        usable_n=4,
+        noise_pct=250.0,
+        noise_abs=25.0,
+        delta=Effect(value=-50.0, unit="percent"),
+        n=4,
+    )
+
+
 # Re-exported for callers building explicit band/permutation verdicts.
-__all__ = ["MetricSpec", "build_inputs", "exact_verdict"]
+__all__ = [
+    "MetricSpec",
+    "_noop_warn",
+    "build_inputs",
+    "create_samples",
+    "exact_verdict",
+    "unstable_band_verdict",
+]

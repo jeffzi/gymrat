@@ -22,32 +22,17 @@ from gymrat_py.model import (
     Observations,
 )
 from gymrat_py.verdict import compute_geomean, compute_verdicts
-from tests.verdict._inputs import MetricSpec, build_inputs
+from tests.verdict._inputs import (
+    MetricSpec,
+    _noop_warn,
+    build_inputs,
+    create_samples,
+    unstable_band_verdict,
+)
 
 METRIC_BYTES_LOWER = {
     "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
 }
-
-
-def _noop_warn(_message: str) -> None:
-    """Swallow divergence warnings so these cases stay silent on stderr."""
-
-
-def create_samples(n: int, value: float) -> list[dict[str, float]]:
-    return [{"metric": value} for _ in range(n)]
-
-
-def unstable_band_verdict() -> BandVerdict:
-    """A band verdict too noisy to judge, regardless of its ratio."""
-    return BandVerdict(
-        method="band",
-        verdict="unstable",
-        usable_n=4,
-        noise_pct=250.0,
-        noise_abs=25.0,
-        delta=Effect(value=-50.0, unit="percent"),
-        n=4,
-    )
 
 
 def gating_verdicts_with_noise(

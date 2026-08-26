@@ -29,10 +29,10 @@ from pathlib import Path
 
 import pytest
 
+from tests._process_helpers import is_alive as _is_alive
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import env as _env
 from tests.hardening._bench_helpers import git as _git
-from tests.hardening._bench_helpers import is_alive as _is_alive
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")

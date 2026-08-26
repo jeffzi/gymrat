@@ -29,21 +29,13 @@ from gymrat_py.exec import (
     OutputBuffer,
 )
 from gymrat_py.exec import exec as run_exec
+from tests._process_helpers import is_alive, wait_until_dead
 
 # exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
 # works under cmd.exe, so the whole module is POSIX-only.
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only shell and process groups"
 )
-
-
-def is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def read_pid(pid_path: Path) -> int | None:
@@ -71,17 +63,6 @@ async def wait_for_pid(pid_path: Path, timeout_s: float = 3.0) -> int:
         if loop.time() > deadline:
             msg = f"pid never appeared at {pid_path}"
             raise TimeoutError(msg)
-        await asyncio.sleep(0.025)
-
-
-async def wait_until_dead(pid: int, timeout_s: float = 3.0) -> None:
-    """Poll until the process with ``pid`` no longer exists."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while is_alive(pid):
-        if loop.time() > deadline:
-            msg = f"process {pid} was still alive after {timeout_s}s"
-            raise AssertionError(msg)
         await asyncio.sleep(0.025)
 
 
@@ -390,7 +371,7 @@ async def test_exec_when_aborted_mid_run_does_kill_whole_group(
 
     abort.set()
 
-    await wait_until_dead(grandchild)
+    await wait_until_dead(grandchild, timeout_s=3.0)
     await task
     assert not is_alive(grandchild)
 
@@ -533,7 +514,7 @@ async def test_exec_when_stream_read_fails_does_kill_whole_group(
 
     proc.stdout.set_exception(RuntimeError("stream exploded"))
 
-    await wait_until_dead(grandchild)
+    await wait_until_dead(grandchild, timeout_s=3.0)
     await task
     assert not is_alive(grandchild)
 
@@ -725,7 +706,7 @@ async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_des
 
     exec_mod.kill_live_process_groups()
 
-    await wait_until_dead(grandchild)
+    await wait_until_dead(grandchild, timeout_s=3.0)
     await task
     assert not is_alive(grandchild)
 

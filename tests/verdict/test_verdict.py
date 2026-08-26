@@ -20,6 +20,7 @@ from gymrat_py.model import (
 )
 from gymrat_py.verdict import compute_verdicts
 from gymrat_py.warn import WarnSink
+from tests.verdict._inputs import _noop_warn, create_samples
 
 # ---------------------------------------------------------------------------
 # Metric-meta fixtures shared across the verdict-engine cases
@@ -40,10 +41,6 @@ METRIC_BYTES_HIGHER = {
 METRIC_NS_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=False, unit="ns")}
 
 
-def _noop_warn(_message: str) -> None:
-    """Swallow divergence warnings so these cases stay silent on stderr."""
-
-
 def run(
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
@@ -58,10 +55,6 @@ def run(
     if unstable_noise_pct is None:
         return compute_verdicts(left, right, meta, warn=sink)
     return compute_verdicts(left, right, meta, unstable_noise_pct=unstable_noise_pct, warn=sink)
-
-
-def create_samples(n: int, value: float) -> list[dict[str, float]]:
-    return [{"metric": float(value)} for _ in range(n)]
 
 
 def samples(*values: float) -> list[dict[str, float]]:

@@ -27,7 +27,7 @@ import sys
 
 
 def test_importing_package_does_not_import_scipy_or_statsmodels():
-    # Assert inside the child so the test process's own dependency tree cannot
+    # Run inside the child so the test process's own dependency tree cannot
     # mask a violation, and so a non-zero exit surfaces the offending modules.
     probe = """
 import sys
