@@ -826,7 +826,9 @@ async def test_iterate_session_when_before_hook_fails_does_measure_on_reporting_
     hooks_setup: tuple[str, str, HookScripts],
 ):
     repo, _experiment_dir, hooks = hooks_setup
-    before = hooks.hook_command('import sys\nsys.stderr.write("no warm copy\\n")\nsys.exit(3)\n')
+    before = hooks.hook_command(
+        'import sys\nsys.stderr.buffer.write(b"no warm copy\\n")\nsys.exit(3)\n'
+    )
     config = resolved_config(hooks=HooksConfig(before=before))
 
     result = await iterate_session(repo, config)

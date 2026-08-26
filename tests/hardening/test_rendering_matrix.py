@@ -24,13 +24,15 @@ from __future__ import annotations
 
 import io
 import os
-import pty
 import re
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, override
+
+if sys.platform != "win32":
+    import pty
 
 import pytest
 

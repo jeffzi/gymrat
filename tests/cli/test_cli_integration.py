@@ -136,7 +136,7 @@ def test_cli_when_usage_error_does_exit_two_and_print_once(tmp_path: Path):
     [
         pytest.param(signal.SIGINT, 130, id="sigint"),
         pytest.param(signal.SIGTERM, 143, id="sigterm"),
-        pytest.param(signal.SIGHUP, 129, id="sighup"),
+        pytest.param(getattr(signal, "SIGHUP", None), 129, id="sighup"),
     ],
 )
 def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_worktrees(
