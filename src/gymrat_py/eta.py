@@ -89,6 +89,7 @@ def format_duration(ms: float) -> str:
     Uses at most two tiers and always shows a zero remainder in the lower tier
     (``60_000`` renders ``"1m 0s"``, ``3_600_000`` renders ``"1h 0m"``).
     """
+    ms = max(0.0, ms)
     total_seconds = math.floor(ms / 1000)
     hours = total_seconds // _SECONDS_PER_HOUR
     minutes = (total_seconds % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE

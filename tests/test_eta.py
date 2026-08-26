@@ -155,6 +155,18 @@ def test_format_duration_when_given_milliseconds_does_render_expected_duration(
     assert format_duration(ms) == expected
 
 
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        (-1, "0s"),
+        (-1000, "0s"),
+        (-999_999, "0s"),
+    ],
+)
+def test_format_duration_when_negative_input_does_render_zero(ms: float, expected: str) -> None:
+    assert format_duration(ms) == expected
+
+
 # ---------------------------------------------------------------------------
 # format_eta
 # ---------------------------------------------------------------------------
