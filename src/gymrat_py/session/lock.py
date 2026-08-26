@@ -178,14 +178,18 @@ def read_lockfile(lock_path: str) -> _LockfileState:
 def is_alive(pid: int) -> bool:
     """Whether a process with ``pid`` still exists.
 
-    Signal ``0`` runs the kernel's permission and existence checks without
-    delivering anything. Only ``ESRCH`` means no such process: ``EPERM`` says the
-    process is there but owned by another user, which is still a live holder.
+    On POSIX, signal 0 runs the kernel's permission and existence checks without
+    delivering anything: ``ESRCH`` means gone, ``EPERM`` means alive but owned by
+    another user.
+
+    On Windows, ``os.kill(pid, 0)`` calls ``OpenProcess`` — a nonexistent PID
+    raises ``OSError`` with ``errno == EINVAL`` rather than ``ESRCH``, so both
+    codes count as "gone".
     """
     try:
         os.kill(pid, 0)
     except OSError as error:
-        return error.errno != errno.ESRCH
+        return error.errno == errno.EPERM
     return True
 
 
