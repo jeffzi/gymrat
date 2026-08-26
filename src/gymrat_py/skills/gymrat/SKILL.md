@@ -85,8 +85,8 @@ gymrat finalize [-m "squash message"] [--branch <name>]
 ```
 
 Collapses kept iterations into one squash commit on a new branch (default `<session-branch>-final`).
-Requires every iteration settled, at least one keep, and a clean experiment worktree. A finalized
-session refuses all mutating commands.
+The squash commit is the deliverable. Requires every iteration settled, at least one keep, and a
+clean experiment worktree. A finalized session refuses all mutating commands.
 
 ### Supervised mode
 
@@ -117,16 +117,10 @@ session lock.
 4. **Discard decisively.** A NO-SIGNAL or REGRESSED iteration that cannot be salvaged gets discarded
    immediately — reworking without discarding first conflates the changes.
 
-5. **Finalize when the work is done.** The squash commit is the deliverable.
-
 ## Common mistakes
 
-- Editing in the baseline worktree instead of the experiment worktree.
-- Running `iterate` before settling the previous iteration (`keep` or `discard`).
 - Forgetting `checks` in `gymrat.toml` — `keep` commits with the gate off and only warns.
 - Treating NO-SIGNAL as success — it means the change had no measurable effect.
-- Attempting `keep` after a gating regression — `keep` stays blocked; use `iterate` or `discard`.
-- Running `gymrat supervise` without `runbook` in `gymrat.toml`.
 
 ## Exit codes
 

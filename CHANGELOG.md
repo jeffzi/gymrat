@@ -242,15 +242,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured error reporting for every gymrat failure: the command prints a clear message and, where
   one applies, an actionable hint for what to do next.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.11.0...HEAD
-[0.11.0]: https://github.com/jeffzi/gymrat-py/compare/v0.10.0...v0.11.0
-[0.10.0]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/jeffzi/gymrat-py/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/jeffzi/gymrat-py/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/jeffzi/gymrat-py/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/jeffzi/gymrat-py/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/jeffzi/gymrat-py/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/jeffzi/gymrat-py/releases/tag/v0.1.0
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jeffzi/gymrat/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/jeffzi/gymrat/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/jeffzi/gymrat/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/jeffzi/gymrat/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/jeffzi/gymrat/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/jeffzi/gymrat/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/jeffzi/gymrat/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/jeffzi/gymrat/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jeffzi/gymrat/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/jeffzi/gymrat/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/jeffzi/gymrat/releases/tag/v0.1.0
