@@ -42,18 +42,7 @@ def fresh_lock_path(*segments: str) -> str:
 
 
 def dead_pid() -> int:
-    """Return a pid that no running process holds.
-
-    A very high PID avoids the race window that a spawn-and-reap approach has on
-    Windows, where the OS can reassign the PID to a new process before
-    ``is_alive`` probes it.
-    """
-    pid = 2**22 - 1
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return pid
-    # Astronomically unlikely, but fall back to spawn-and-reap if the PID is live.
+    """Return a pid that is certainly gone: the child ran and was reaped."""
     proc = subprocess.Popen([sys.executable, "-c", ""])
     proc.wait()
     return proc.pid

@@ -63,7 +63,7 @@ class HookScripts:
         for byte.
         """
         data_path = Path(self.temp_dir) / name
-        data_path.write_text(content, encoding="utf-8")
+        data_path.write_bytes(content.encode())
         return f"sys.{channel}.buffer.write(open({json.dumps(str(data_path))}, 'rb').read())\n"
 
     def printing_content_of(self, file_name: str, content: str) -> str:
