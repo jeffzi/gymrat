@@ -45,7 +45,7 @@ malware-check = true
 
 [tool.pyrefly]
 preset = "strict"
-project-includes = ["src", "tests", "tools"]
+project-includes = ["src", "tests"]
 python-version = "3.12"
 search-path = ["src", "."]
 
