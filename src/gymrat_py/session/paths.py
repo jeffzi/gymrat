@@ -37,7 +37,7 @@ def repo_root(cwd: str | None = None) -> str:
             :class:`~gymrat_py.git.NotAGitRepositoryError`) or git otherwise
             fails to resolve the repository.
     """
-    directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109
+    directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109 -- low-level os call for atomicity guarantees pathlib cannot provide
     try:
         toplevel = run_git(["rev-parse", "--show-toplevel"], directory).strip()
     except (subprocess.SubprocessError, OSError) as error:

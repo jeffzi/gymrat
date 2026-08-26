@@ -257,7 +257,7 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
-async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001
+async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001 -- names the subprocess executor `exec`
     """Run ``command`` through the shell and capture its output.
 
     The run never raises for a spawn or child failure: a shell that cannot be

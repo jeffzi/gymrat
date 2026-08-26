@@ -34,7 +34,7 @@ def _taskkill(pid: int) -> None:
     subprocess-injection check does not apply.
     """
     argv = ["taskkill", "/F", "/T", "/PID", str(pid)]
-    subprocess.run(argv, capture_output=True, check=True)  # noqa: S603
+    subprocess.run(argv, capture_output=True, check=True)  # noqa: S603 -- argv is a fixed list, not shell-injected
 
 
 def kill_process_group(pid: int, platform: str | None = None) -> None:

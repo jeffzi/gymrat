@@ -20,7 +20,7 @@ from gymrat_py.errors import GymratError
 from gymrat_py.exec import (
     ExecOptions,
     ExecTimeoutError,
-    exec,  # noqa: A004
+    exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat_py.loop.output_limit import limit_output
 from gymrat_py.model import Effect

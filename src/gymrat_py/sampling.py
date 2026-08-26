@@ -22,7 +22,9 @@ from gymrat_py.adapters.types import Adapter, WarnSink
 from gymrat_py.config import KindEntry, MetricEntry, resolve_metric_meta
 from gymrat_py.errors import CommandError, GymratError, hint_of, message_of
 from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError, kill_live_process_groups
-from gymrat_py.exec import exec as exec  # noqa: A004, PLC0414
+from gymrat_py.exec import (
+    exec as exec,  # noqa: A004, PLC0414 -- names the subprocess executor `exec`
+)
 from gymrat_py.model import ResolvedMetricMeta
 from gymrat_py.report.text import format_cleanup_failures
 from gymrat_py.signals import install_termination_cleanup

@@ -30,7 +30,7 @@ from gymrat_py.exec import (
     ExecOptions,
     ExecResult,
     ExecTimeoutError,
-    exec,  # noqa: A004
+    exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat_py.loop.output_limit import limit_output
 from gymrat_py.session import HookRecord, IterationRecord, SessionRecord, record_to_wire

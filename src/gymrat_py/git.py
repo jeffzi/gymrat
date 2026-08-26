@@ -93,8 +93,8 @@ def run_git(args: Sequence[str], cwd: str) -> str:
     env["LC_ALL"] = "C"
 
     with _deferring_termination_signals():
-        completed = subprocess.run(  # noqa: S603
-            ["git", *args],  # noqa: S607
+        completed = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
+            ["git", *args],  # noqa: S607 -- argv is a fixed list, not shell-injected
             cwd=cwd,
             check=True,
             capture_output=True,

@@ -41,7 +41,7 @@ to whoever holds it now, and is left where it stands.
 """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LockHolder:
     """The process a lockfile records as its holder."""
 
@@ -50,7 +50,7 @@ class LockHolder:
     at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LockIdentity:
     """Which file a lockfile read came from, as the filesystem identifies it.
 
@@ -109,18 +109,18 @@ def _write_all(fd: int, data: bytes) -> None:
 def _force_unlink(path: str) -> None:
     """Remove ``path``, treating an already-absent file as success."""
     try:
-        os.unlink(path)  # noqa: PTH108
+        os.unlink(path)  # noqa: PTH108 -- low-level os call for atomicity guarantees pathlib cannot provide
     except FileNotFoundError:
         return
 
 
 # What a lockfile says at the moment it was read.
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Absent:
     """No file stands at the lock path."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Held:
     """A parseable holder record and the file it was read from."""
 
@@ -128,7 +128,7 @@ class _Held:
     identity: LockIdentity
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Unreadable:
     """Debris at the lock path — unparseable or a foreign shape — and its file."""
 
@@ -219,7 +219,7 @@ def still_names_file(lock_path: str, identity: LockIdentity) -> bool:
     write against it. :func:`unlink_if_same_file` is the safe form for that.
     """
     try:
-        info = os.stat(lock_path)  # noqa: PTH116
+        info = os.stat(lock_path)  # noqa: PTH116 -- low-level os call for atomicity guarantees pathlib cannot provide
     except FileNotFoundError:
         return False
     return LockIdentity(dev=info.st_dev, ino=info.st_ino) == identity
@@ -283,21 +283,21 @@ def _rethrow_displacement_failure(lock_path: str, error: OSError) -> NoReturn:
 # What asking for the right to displace a stale lockfile turned up. ``_ClaimGone``
 # covers both ways the judged file can stop being the one at the lock path: it
 # vanished before the claim, or the claim came back naming a different file.
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ClaimClaimed:
     """The judged file was claimed for displacement; its claim lives here."""
 
     claim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ClaimBlocked:
     """The claim name is already taken; the blocking claim lives here."""
 
     claim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ClaimGone:
     """The judged file is no longer the one at the lock path."""
 
@@ -328,7 +328,7 @@ def claim_stale_lock(lock_path: str, identity: LockIdentity) -> _ClaimOutcome:
     except OSError as error:
         _rethrow_displacement_failure(lock_path, error)
 
-    info = os.stat(claim_path)  # noqa: PTH116
+    info = os.stat(claim_path)  # noqa: PTH116 -- low-level os call for atomicity guarantees pathlib cannot provide
     if LockIdentity(dev=info.st_dev, ino=info.st_ino) == identity:
         return _ClaimClaimed(claim_path)
     _force_unlink(claim_path)
@@ -349,7 +349,7 @@ def displace_stale_lock(lock_path: str) -> bool:
     aside_path = f"{lock_path}.{os.getpid()}.stale"
     try:
         # Raw os.rename is the atomic displacement seam the retry loop races on.
-        os.rename(lock_path, aside_path)  # noqa: PTH104
+        os.rename(lock_path, aside_path)  # noqa: PTH104 -- low-level os call for atomicity guarantees pathlib cannot provide
     except FileNotFoundError:
         return False
     except OSError as error:
@@ -358,7 +358,7 @@ def displace_stale_lock(lock_path: str) -> bool:
     return True
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _WedgedTakeover:
     """A takeover that died holding its claim, leaving the lock impossible to steal.
 
@@ -373,19 +373,19 @@ class _WedgedTakeover:
 
 
 # What one pass at the lock path turned up.
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Acquired:
     """The lock was published; the release handle keys on this identity."""
 
     identity: LockIdentity
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Retry:
     """The lock path shifted under the attempt; read it afresh."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Blocked:
     """A claim stood in the way of a steal."""
 
