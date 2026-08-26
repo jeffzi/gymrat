@@ -8,17 +8,20 @@ which then runs lock-free. Any check failure exits 1; an unexpected crash exits 
 
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import platform
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+if TYPE_CHECKING:
+    import asyncio
+
 from gymrat_py.cli.shared import (
+    GATE_EXIT_CODE,
     AdapterOption,
     BenchOption,
     ConfigOption,
@@ -33,7 +36,7 @@ from gymrat_py.cli.shared import (
     TimeoutOption,
     color_override_of,
     emit_report,
-    exit_with_error,
+    run_cli,
     run_with_signal_abort,
     set_debug_mode,
     suppress_color,
@@ -58,8 +61,6 @@ from gymrat_py.report.types import ReportOptions
 from gymrat_py.session.paths import repo_root
 
 NoBenchOption = Annotated[bool, typer.Option("--no-bench", help="skip the smoke-run bench section")]
-
-GATE_EXIT_CODE = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,9 +216,4 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         if report.has_failures:
             raise typer.Exit(GATE_EXIT_CODE)
 
-    try:
-        asyncio.run(run())
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_cli(run)

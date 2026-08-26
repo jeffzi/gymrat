@@ -13,10 +13,10 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Annotated, Literal, NoReturn, Protocol
+from typing import Annotated, Any, Literal, NoReturn, Protocol
 
 import typer
 from rich.markup import escape
@@ -203,6 +203,16 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
     with contextlib.suppress(OSError):
         sys.stdout.flush()
     raise typer.Exit(code)
+
+
+def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    """Run an async CLI body, routing any failure through the shared error formatter."""
+    try:
+        asyncio.run(run())
+    except typer.Exit:
+        raise
+    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
+        exit_with_error(error)
 
 
 # ---------------------------------------------------------------------------
