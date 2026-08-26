@@ -41,7 +41,7 @@ jobs:
         run: uv sync --locked --group dev
 
       - name: Run tests
-        run: uv run pytest ${{ runner.os == 'Windows' && '--no-cov -n 0' || '--cov' }}
+        run: uv run pytest ${{ runner.os == 'Windows' && '--no-cov -n 0 --full-trace -v' || '--cov' }}
 
       - name: Check diff coverage
         if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
