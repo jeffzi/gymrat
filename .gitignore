@@ -30,6 +30,10 @@ coverage.xml
 # PyPI configuration file
 .pypirc
 
+# Planning and research (local-only)
+.planning/
+.research/
+
 # Agents
 .agents/settings.local.json
 .claude/settings.local.json

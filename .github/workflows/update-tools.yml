@@ -12,24 +12,34 @@ permissions:
 jobs:
   autoupdate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.14"
       - name: Upgrade dependencies
         run: |
           uv lock --upgrade
           uv sync
       - name: Install dprint
+        shell: bash
         run: |
           curl -fsSL https://dprint.dev/install.sh | sh
           echo "$HOME/.dprint/bin" >> "$GITHUB_PATH"
       - name: Bump hook revs and dprint plugins
         run: |
-          uv run prek autoupdate || true
-          dprint config update || true
-          uv run prek run -a || true
+          uv run prek autoupdate
+          dprint config update
+      - name: Auto-fix and verify
+        run: |
+          if ! uv run prek run -a; then
+            uv run prek run -a --show-diff-on-failure
+          fi
+      - name: Run tests
+        run: uv run pytest --no-cov -x -q
       - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           commit-message: "chore: update dependencies and dev tools"
