@@ -387,14 +387,22 @@ def _phrase_for_loc(loc: tuple[str, ...]) -> str:
     return _PHRASES.get(shape, "a valid value")
 
 
+def _invalid_value_message(field_name: str, expected_phrase: str, value: object) -> str:
+    """Word an invalid-value problem.
+
+    The single shape both the schema translator and the cross-field settlement
+    checks report.
+    """
+    got = json.dumps(value)
+    return f"Invalid config value for {field_name}: expected {expected_phrase}, got {got}"
+
+
 def _message_for_error(error: ErrorDetails) -> str:
     """Translate one pydantic error into a gymrat-worded problem string."""
     loc = tuple(str(part) for part in error["loc"])
     if error["type"] == "extra_forbidden":
         return f"Unknown config key: {_describe_key(loc)}"
-    phrase = _phrase_for_loc(loc)
-    got = json.dumps(error["input"])
-    return f"Invalid config value for {_describe_key(loc)}: expected {phrase}, got {got}"
+    return _invalid_value_message(_describe_key(loc), _phrase_for_loc(loc), error["input"])
 
 
 def _drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
@@ -586,12 +594,6 @@ def load_config_file(path: str | Path, *, required: bool = False) -> ConfigFile:
 # ---------------------------------------------------------------------------
 # Settlement: merge flags, env vars, config file, and defaults
 # ---------------------------------------------------------------------------
-
-
-def _invalid_value_message(field_name: str, expected_phrase: str, value: object) -> str:
-    """Word an invalid-value problem the same way the schema translator does."""
-    got = json.dumps(value)
-    return f"Invalid config value for {field_name}: expected {expected_phrase}, got {got}"
 
 
 def flag_problem(field_name: str, value: str | None) -> str | None:
