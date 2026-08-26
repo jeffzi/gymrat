@@ -175,22 +175,33 @@ def read_lockfile(lock_path: str) -> _LockfileState:
     return _Held(holder, identity) if holder is not None else _Unreadable(identity)
 
 
-def is_alive(pid: int) -> bool:
-    """Whether a process with ``pid`` still exists.
-
-    On POSIX, signal 0 runs the kernel's permission and existence checks without
-    delivering anything: ``ESRCH`` means gone, ``EPERM`` means alive but owned by
-    another user.
-
-    On Windows, ``os.kill(pid, 0)`` calls ``OpenProcess`` — a nonexistent PID
-    raises ``OSError`` with ``errno == EINVAL`` rather than ``ESRCH``, so both
-    codes count as "gone".
-    """
+def _is_alive_posix(pid: int) -> bool:
+    """Signal 0 checks existence without delivering anything."""
     try:
         os.kill(pid, 0)
     except OSError as error:
         return error.errno == errno.EPERM
     return True
+
+
+def _is_alive_windows(pid: int) -> bool:
+    """Open the process handle to check existence.
+
+    ``os.kill(pid, 0)`` cannot be used on Windows: ``signal.CTRL_C_EVENT`` is 0,
+    so CPython dispatches through ``GenerateConsoleCtrlEvent`` instead of
+    ``OpenProcess``, broadcasting Ctrl+C to the target's console process group.
+    """
+    import ctypes  # noqa: PLC0415 — Windows-only, deferred to avoid top-level import on POSIX
+
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    handle = kernel32.OpenProcess(0x1000, 0, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+is_alive = _is_alive_windows if sys.platform == "win32" else _is_alive_posix
 
 
 def unlink_if_same_file(lock_path: str, identity: LockIdentity) -> None:
