@@ -5,7 +5,7 @@ description: >-
   comparisons (gymrat compare) or standalone measurements (gymrat measure without --record).
 when_to_use: >-
   Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard, gymrat finalize,
-  gymrat status, or gymrat supervise; when a repo has a gymrat.json; when asked to optimize a
+  gymrat status, or gymrat supervise; when a repo has a gymrat.toml; when asked to optimize a
   benchmark toward a target or budget; or on errors like "has not been settled", "Keep refused", or
   "Stop condition met".
 ---
@@ -15,7 +15,7 @@ when_to_use: >-
 Covers the full session lifecycle: start, iterate, settle, finalize. Every command runs from the
 repository root.
 
-`bench` must be resolvable — from `gymrat.json` or `--bench`. `gymrat.json` is where `checks`,
+`bench` must be resolvable — from `gymrat.toml` or `--bench`. `gymrat.toml` is where `checks`,
 `filter`, `primary`, `runbook`, `stop`, and `hooks` live; `adapter` and `samples` default to
 `metric-lines` and `10`.
 
@@ -93,13 +93,13 @@ session refuses all mutating commands.
 gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--log <path>] [--model <name>]
 ```
 
-Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.json` and
+Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.toml` and
 `--max-minutes`. `--allow-dirty` permits uncommitted changes. Holds its own lock, separate from the
 session lock.
 
 ## Loop discipline
 
-1. **Never stop before a stop condition fires.** When `stop.maxIterations` or `stop.targetValue` is
+1. **Never stop before a stop condition fires.** When `stop.max_iterations` or `stop.target_value` is
    configured, keep iterating until `iterate` exits 1 naming the condition. Without `stop`, the
    runbook's goal is the criterion. Report and stop when a target proves unreachable after sustained
    NO-SIGNAL.
@@ -118,11 +118,11 @@ session lock.
 
 - Editing in the baseline worktree instead of the experiment worktree.
 - Running `iterate` before settling the previous iteration (`keep` or `discard`).
-- Forgetting `checks` in `gymrat.json` — `keep` commits with the gate off and only warns.
+- Forgetting `checks` in `gymrat.toml` — `keep` commits with the gate off and only warns.
 - Treating NO-SIGNAL as success — it means the change had no measurable effect.
 - Attempting `keep` after a gating regression — the iteration is already settled; use `iterate` or
   `discard`.
-- Running `gymrat supervise` without `runbook` in `gymrat.json`.
+- Running `gymrat supervise` without `runbook` in `gymrat.toml`.
 
 ## Exit codes
 

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The configuration file is now `gymrat.toml`, written in TOML with snake_case keys, replacing the
+  former `gymrat.json`. Keys that were camelCase are now snake_case: `timeout_seconds`,
+  `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the
+  new file, and existing configs must be converted to TOML and re-keyed.
 - Significance verdicts now come from an exact sign-flip permutation test instead of the Wilcoxon
   signed-rank test. The permutation test's statistic is the delta each verdict already reports — the
   percent change in the median — so a significant result can no longer point in a different direction
