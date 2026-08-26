@@ -3,8 +3,9 @@
 Resolves the base directory to the repository root when inside one (so a run from
 a subdirectory still scaffolds at the root) and the process cwd otherwise; git is
 not required. An existing ``gymrat.toml`` at that base is refused before the
-wizard runs. The wizard prompts on stderr and reads stdin, and the artifact
-summary is written to stdout so the two channels stay separable.
+scaffold runs. The ``--bench`` flag is required; ``--no-runbook`` and
+``--no-skill`` suppress those artifacts. The artifact summary is written to
+stdout.
 """
 
 from __future__ import annotations
@@ -17,49 +18,24 @@ import typer
 from rich.markup import escape
 
 from gymrat_py.cli.shared import (
-    MAX_SAFE_INTEGER,
     DebugOption,
     exit_with_error,
-    parse_positive_integer_up_to,
-    parse_stop_target_value,
     set_debug_mode,
     write_and_flush,
 )
 from gymrat_py.config import CONFIG_FILENAME, find_implicit_base
 from gymrat_py.errors import GymratError
-from gymrat_py.init.scaffold import ScaffoldArtifact, ScaffoldResult, scaffold
-from gymrat_py.init.wizard import WizardOptions, run_wizard
+from gymrat_py.init.scaffold import (
+    ScaffoldArtifact,
+    ScaffoldRequest,
+    ScaffoldResult,
+    scaffold,
+)
 from gymrat_py.report.style import RENDER_WIDTH, highlight_inline_code, render_lines
 
 _BenchOption = Annotated[str | None, typer.Option("--bench", help="bench command")]
-_AdapterOption = Annotated[str | None, typer.Option("--adapter", help="adapter type")]
-_ChecksOption = Annotated[str | None, typer.Option("--checks", help="checks command")]
-_StopTargetOption = Annotated[
-    float | None,
-    typer.Option("--stop-target", parser=parse_stop_target_value, help="stop target value"),
-]
-_StopMaxIterationsOption = Annotated[
-    int | None,
-    typer.Option(
-        "--stop-max-iterations",
-        parser=parse_positive_integer_up_to(MAX_SAFE_INTEGER),
-        help="stop max iterations",
-    ),
-]
-_PrimaryOption = Annotated[str | None, typer.Option("--primary", help="primary metric name")]
-_RunbookOption = Annotated[str | None, typer.Option("--runbook", help="create the runbook at PATH")]
 _NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the runbook")]
-_SkillOption = Annotated[
-    bool | None, typer.Option("--skill/--no-skill", help="install (or skip) the skill file")
-]
-_YesOption = Annotated[bool, typer.Option("--yes", "-y", help="non-interactive mode")]
-
-
-def _resolve_runbook_flag(runbook: str | None, *, no_runbook: bool) -> str | bool | None:
-    """Fold the ``--runbook``/``--no-runbook`` pair into the wizard's tri-state value."""
-    if no_runbook:
-        return False
-    return runbook
+_NoSkillOption = Annotated[bool, typer.Option("--no-skill", help="skip the skill file")]
 
 
 def _format_artifact(label: str, artifact: ScaffoldArtifact) -> str:
@@ -82,22 +58,18 @@ def _format_summary(result: ScaffoldResult) -> str:
     return render_lines(doc, color=None, width=RENDER_WIDTH)
 
 
-def init_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the scaffold surface
+def init_command(
     *,
     bench: _BenchOption = None,
-    adapter: _AdapterOption = None,
-    checks: _ChecksOption = None,
-    stop_target: _StopTargetOption = None,
-    stop_max_iterations: _StopMaxIterationsOption = None,
-    primary: _PrimaryOption = None,
-    runbook: _RunbookOption = None,
     no_runbook: _NoRunbookOption = False,
-    skill: _SkillOption = None,
-    yes: _YesOption = False,
+    no_skill: _NoSkillOption = False,
     debug: DebugOption = False,
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
     set_debug_mode(debug)
+    if bench is None:
+        exit_with_error(GymratError("Missing --bench flag."))
+
     base_dir = find_implicit_base()
     config_path = Path(base_dir) / CONFIG_FILENAME
     if config_path.exists():
@@ -105,24 +77,13 @@ def init_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the 
         hint = "Edit it directly, or run `gymrat doctor` to verify the setup."
         exit_with_error(GymratError(message, hint=hint))
 
-    runbook_option = _resolve_runbook_flag(runbook, no_runbook=no_runbook)
     try:
-        wizard_result = run_wizard(
-            WizardOptions(
-                input=sys.stdin,
-                output=sys.stderr,
-                bench=bench,
-                adapter=adapter,
-                checks=checks,
-                stop_target=stop_target,
-                stop_max_iterations=stop_max_iterations,
-                primary=primary,
-                runbook=runbook_option,
-                skill=skill,
-                yes=yes,
-            )
+        request = ScaffoldRequest(
+            bench=bench,
+            runbook=not no_runbook,
+            install_skill=not no_skill,
         )
-        result = scaffold(base_dir, wizard_result)
+        result = scaffold(base_dir, request)
     except typer.Exit:
         raise
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter

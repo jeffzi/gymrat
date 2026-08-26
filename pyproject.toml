@@ -9,7 +9,6 @@ dependencies = [
   "pydantic>=2,<3",
   "rich>=15.0,<16",
   "scipy>=1.18,<2",
-  "tomli-w>=1.2.0",
   "typer>=0.27.1,<0.28",
 ]
 
@@ -29,6 +28,7 @@ dev = [
   "pytest-sugar>=1.1,<2",
   "pytest-xdist>=3.8,<4",
   "ruff>=0.16.3,<0.17",
+  "tomli-w>=1.2.0",
 ]
 
 [build-system]

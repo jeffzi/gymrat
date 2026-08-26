@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   former `gymrat.json`. Keys that were camelCase are now snake_case: `timeout_seconds`,
   `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the
   new file, and existing configs must be converted to TOML and re-keyed.
+- `gymrat init` is now non-interactive: it takes `--bench` (required), `--no-runbook`, and
+  `--no-skill` flags and writes only the `bench` and `runbook` config keys.
 - Significance verdicts now come from an exact sign-flip permutation test instead of the Wilcoxon
   signed-rank test. The permutation test's statistic is the delta each verdict already reports — the
   percent change in the median — so a significant result can no longer point in a different direction
@@ -41,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now ends with a clear error instead of crashing on an internal read limit.
 - Tearing down a supervised agent session no longer hangs indefinitely when the supervised process
   ignores the stop signal; teardown now waits briefly, then abandons the wait and warns.
+
+### Removed
+
+- The interactive wizard prompts in `gymrat init` and the `--adapter`, `--checks`, `--stop-target`,
+  `--stop-max-iterations`, `--primary`, `--runbook PATH`, `--skill/--no-skill` tri-state, and
+  `--yes` flags.
 
 ## [0.11.0] - 2026-08-25
 

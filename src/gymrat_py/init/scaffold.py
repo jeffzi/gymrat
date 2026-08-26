@@ -1,7 +1,10 @@
 """Write the gymrat config, runbook stub, and skill file for ``init``.
 
-The config dict is validated before anything is written, so a config that would
-fail the schema or the cross-field loop-key checks leaves no files behind. The
+A ``ScaffoldRequest`` carries the three user choices (bench command, runbook
+flag, skill-install flag). The config is serialized as hand-written TOML —
+``json.dumps`` escapes the bench string, which round-trips through any TOML
+parser because every JSON basic-string escape is valid TOML. Validation runs
+before anything is written, so an invalid config leaves no files behind. The
 bundled skill is read next (only when installing), so a broken install fails
 before the runbook stub is created. Among the writes the config lands last and
 with an exclusive create, so a failure partway through never leaves a
@@ -9,18 +12,18 @@ with an exclusive create, so a failure partway through never leaves a
 config is never silently overwritten.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import tomli_w
-
 from gymrat_py.bundled_skill import read_bundled_skill
 from gymrat_py.config import CONFIG_FILENAME, validate_config_dict
-from gymrat_py.init.wizard import DEFAULT_RUNBOOK_PATH, WizardResult
 
 #: Path, relative to the project root, where init writes and doctor checks for the skill.
 SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
+
+DEFAULT_RUNBOOK_PATH = "gymrat-runbook.md"
 
 type ArtifactStatus = Literal["created", "exists", "declined"]
 
@@ -47,6 +50,15 @@ _RUNBOOK_STUB = """# Optimization Runbook
 
 
 @dataclass(frozen=True, slots=True)
+class ScaffoldRequest:
+    """User choices that drive the scaffold: bench command, runbook, and skill."""
+
+    bench: str
+    runbook: bool = True
+    install_skill: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class ScaffoldArtifact:
     """The outcome of one scaffold artifact: its path and whether it was written."""
 
@@ -63,41 +75,29 @@ class ScaffoldResult:
     skill: ScaffoldArtifact
 
 
-def _build_config(result: WizardResult) -> dict[str, object]:
-    """Build the config dict, in declared key order, from the settled wizard answers."""
-    config: dict[str, object] = {"bench": result.bench}
-    if result.adapter is not None:
-        config["adapter"] = result.adapter
-    if result.checks is not None:
-        config["checks"] = result.checks
-    if result.primary is not None:
-        config["primary"] = result.primary
-    stop: dict[str, object] = {}
-    if result.stop_target is not None:
-        stop["target_value"] = result.stop_target
-    if result.stop_max_iterations is not None:
-        stop["max_iterations"] = result.stop_max_iterations
-    if stop:
-        config["stop"] = stop
-    if result.runbook is not False:
-        config["runbook"] = result.runbook.path
-    return config
+def _serialize_config(config: dict[str, object]) -> str:
+    """Hand-written TOML: one key per line, trailing newline.
+
+    ``json.dumps`` escapes the bench value — every JSON basic-string escape is a
+    valid TOML basic-string escape, so the result round-trips through any TOML
+    parser.
+    """
+    lines = [f"bench = {json.dumps(config['bench'])}"]
+    if "runbook" in config:
+        lines.append(f'runbook = "{config["runbook"]}"')
+    return "\n".join(lines) + "\n"
 
 
-def _write_runbook(base_dir: str, result: WizardResult) -> ScaffoldArtifact:
-    if result.runbook is False:
+def _write_runbook(base_dir: str, *, runbook: bool) -> ScaffoldArtifact:
+    if not runbook:
         return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="declined")
 
-    runbook_path = result.runbook.path
-    # `Path("/base") / "/abs"` yields "/abs", so an absolute runbook path is
-    # honored verbatim while a relative one anchors at the base dir.
-    full_path = Path(base_dir) / runbook_path
+    full_path = Path(base_dir) / DEFAULT_RUNBOOK_PATH
     if full_path.exists():
-        return ScaffoldArtifact(path=runbook_path, status="exists")
+        return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="exists")
 
-    full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_text(_RUNBOOK_STUB, encoding="utf-8")
-    return ScaffoldArtifact(path=runbook_path, status="created")
+    return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="created")
 
 
 def _write_skill(base_dir: str, content: str) -> ScaffoldArtifact:
@@ -110,18 +110,14 @@ def _write_skill(base_dir: str, content: str) -> ScaffoldArtifact:
     return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
 
 
-def _write_config(base_dir: str, config: dict[str, object]) -> ScaffoldArtifact:
+def _write_config(base_dir: str, content: str) -> ScaffoldArtifact:
     full_path = Path(base_dir) / CONFIG_FILENAME
-    # tomli_w emits scalar keys before table headers, so a scalar declared after the
-    # ``stop`` dict (e.g. ``runbook``) stays top-level instead of nesting under ``[stop]``.
-    payload = tomli_w.dumps(config)
-    # Exclusive create: an existing gymrat.toml must never be silently overwritten.
     with full_path.open("x", encoding="utf-8") as handle:
-        handle.write(payload)
+        handle.write(content)
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
-def scaffold(base_dir: str, wizard_result: WizardResult) -> ScaffoldResult:
+def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     """Write the config, runbook stub, and skill file for ``base_dir``.
 
     Returns a :class:`ScaffoldResult` describing each artifact. Raises a
@@ -129,17 +125,21 @@ def scaffold(base_dir: str, wizard_result: WizardResult) -> ScaffoldResult:
     cannot be read, and :class:`FileExistsError` when ``gymrat.toml`` already
     exists — in every failure case no partial scaffold is left behind.
     """
-    config = _build_config(wizard_result)
-    validate_config_dict(config)
+    config_dict: dict[str, object] = {"bench": request.bench}
+    if request.runbook:
+        config_dict["runbook"] = DEFAULT_RUNBOOK_PATH
+    validate_config_dict(config_dict)
 
-    skill_content = read_bundled_skill() if wizard_result.install_skill else None
+    config_content = _serialize_config(config_dict)
 
-    runbook = _write_runbook(base_dir, wizard_result)
-    skill = (
+    skill_content = read_bundled_skill() if request.install_skill else None
+
+    runbook_artifact = _write_runbook(base_dir, runbook=request.runbook)
+    skill_artifact = (
         ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="declined")
         if skill_content is None
         else _write_skill(base_dir, skill_content)
     )
-    config_artifact = _write_config(base_dir, config)
+    config_artifact = _write_config(base_dir, config_content)
 
-    return ScaffoldResult(config=config_artifact, runbook=runbook, skill=skill)
+    return ScaffoldResult(config=config_artifact, runbook=runbook_artifact, skill=skill_artifact)

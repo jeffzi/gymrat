@@ -408,7 +408,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "rich" },
     { name = "scipy" },
-    { name = "tomli-w" },
     { name = "typer" },
 ]
 
@@ -425,6 +424,7 @@ dev = [
     { name = "pytest-sugar" },
     { name = "pytest-xdist" },
     { name = "ruff" },
+    { name = "tomli-w" },
 ]
 
 [package.metadata]
@@ -433,7 +433,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "rich", specifier = ">=15.0,<16" },
     { name = "scipy", specifier = ">=1.18,<2" },
-    { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "typer", specifier = ">=0.27.1,<0.28" },
 ]
 
@@ -450,6 +449,7 @@ dev = [
     { name = "pytest-sugar", specifier = ">=1.1,<2" },
     { name = "pytest-xdist", specifier = ">=3.8,<4" },
     { name = "ruff", specifier = ">=0.16.3,<0.17" },
+    { name = "tomli-w", specifier = ">=1.2.0" },
 ]
 
 [[package]]
