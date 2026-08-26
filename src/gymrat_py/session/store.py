@@ -16,11 +16,12 @@ must not already be finalized.
 """
 
 import json
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import assert_never
 
 from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.finite_json import null_non_finite
 from gymrat_py.session.paths import session_jsonl_path
 from gymrat_py.session.records import (
     BaselineRecord,
@@ -133,7 +134,7 @@ def _serialize_record(record: SessionLogRecord) -> str:
     """
     try:
         wire = record_to_wire(record)
-        line = json.dumps(_nullify_non_finite(wire))
+        line = json.dumps(null_non_finite(wire))
         parse_record(json.loads(line))
     except (GymratError, ValueError, TypeError) as error:
         message = f"Refusing to log an unreadable {record.type} record: {message_of(error)}"
@@ -143,25 +144,6 @@ def _serialize_record(record: SessionLogRecord) -> str:
         )
         raise GymratError(message, hint=hint) from error
     return line
-
-
-def _nullify_non_finite(value: object) -> object:
-    """Recursively replace non-finite floats with ``None``, matching ``JSON.stringify``.
-
-    Python's ``json.dumps`` writes ``NaN``/``Infinity`` literals that ``json.loads``
-    reads back as floats, so a bad measurement would wrongly survive the round
-    trip. Lowering them to ``None`` first mirrors JavaScript, where they serialize
-    to ``null`` and no longer read back as a number.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {key: _nullify_non_finite(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_nullify_non_finite(item) for item in value]
-    return value
 
 
 def _truncate_torn_tail(jsonl_path: str) -> None:
@@ -324,6 +306,8 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
                 state.finalized = record
             case BaselineRecord() | HookRecord():
                 pass
+            case _ as unreachable:
+                assert_never(unreachable)
 
     return SessionState(
         session=state.session,

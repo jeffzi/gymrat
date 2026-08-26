@@ -35,6 +35,8 @@ from pydantic_core import ErrorDetails
 
 from gymrat_py.adapters.defaults import DEFAULT_GATING, DEFAULT_METRIC_KIND
 from gymrat_py.adapters.types import Adapter
+from gymrat_py.config_constants import MAX_TIMEOUT_SECONDS
+from gymrat_py.config_env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
 from gymrat_py.errors import GymratError
 from gymrat_py.model import (
     DEFAULT_UNSTABLE_NOISE_PCT,
@@ -42,19 +44,8 @@ from gymrat_py.model import (
     Direction,
     ResolvedMetricMeta,
 )
+from gymrat_py.pydantic_errors import describe_key, drop_prefix_errors
 from gymrat_py.session.paths import repo_root
-
-MAX_TIMEOUT_SECONDS = 2_147_483
-"""Largest ``timeout_seconds`` a 32-bit millisecond timer can represent."""
-
-# config_env reads MAX_TIMEOUT_SECONDS from this module, so its import must follow
-# the constant's definition -- importing it at the top would hit a half-initialized
-# module and fail. Keep this line below MAX_TIMEOUT_SECONDS.
-from gymrat_py.config_env import (  # noqa: E402
-    NUMBER_ENV_FIELDS,
-    STRING_ENV_FIELDS,
-    env_string_result,
-)
 
 # Characters a `^…$` key pattern would treat as line terminators; embedding one
 # in a config key can smuggle the rest of the key past validation, so any key
@@ -371,15 +362,6 @@ _PHRASES: dict[tuple[str, ...], str] = {
 }
 
 
-def _describe_key(loc: tuple[str, ...]) -> str:
-    """Join an error location into a dotted config key.
-
-    An empty part renders as a quoted empty string so the path never ends in a
-    bare dot.
-    """
-    return ".".join('""' if part == "" else part for part in loc)
-
-
 def _phrase_for_loc(loc: tuple[str, ...]) -> str:
     """Human-facing description of the value a location expects."""
     nested = len(loc) > 1 and loc[0] in {"metrics", "kinds"}
@@ -401,27 +383,8 @@ def _message_for_error(error: ErrorDetails) -> str:
     """Translate one pydantic error into a gymrat-worded problem string."""
     loc = tuple(str(part) for part in error["loc"])
     if error["type"] == "extra_forbidden":
-        return f"Unknown config key: {_describe_key(loc)}"
-    return _invalid_value_message(_describe_key(loc), _phrase_for_loc(loc), error["input"])
-
-
-def _drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
-    """Drop any error whose location is a strict prefix of another's.
-
-    When a parent and its child both fail, only the more specific child error is
-    worth reporting; the parent prefix is redundant noise.
-    """
-    locs = [error["loc"] for error in errors]
-    kept: list[ErrorDetails] = []
-    for index, error in enumerate(errors):
-        loc = error["loc"]
-        is_prefix = any(
-            other != index and len(candidate) > len(loc) and candidate[: len(loc)] == loc
-            for other, candidate in enumerate(locs)
-        )
-        if not is_prefix:
-            kept.append(error)
-    return kept
+        return f"Unknown config key: {describe_key(loc)}"
+    return _invalid_value_message(describe_key(loc), _phrase_for_loc(loc), error["input"])
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +528,7 @@ def _validate_read(
     try:
         model = _ConfigModel.model_validate(data)
     except ValidationError as exc:
-        return None, [_message_for_error(error) for error in _drop_prefix_errors(exc.errors())]
+        return None, [_message_for_error(error) for error in drop_prefix_errors(exc.errors())]
 
     return _to_config_file(model), []
 
@@ -658,7 +621,7 @@ def validate_config_dict(config: dict[str, object]) -> None:
     try:
         model = _ConfigModel.model_validate(config)
     except ValidationError as exc:
-        problems = [_message_for_error(error) for error in _drop_prefix_errors(exc.errors())]
+        problems = [_message_for_error(error) for error in drop_prefix_errors(exc.errors())]
         raise GymratError(problems[0]) from exc
     _validate_loop_keys(merge_config(CliFlags(), _to_config_file(model)))
 
@@ -754,7 +717,11 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         timeout_seconds=(
             flags.timeout or config_file.timeout_seconds or CONFIG_DEFAULTS.timeout_seconds
         ),
-        unstable_noise_pct=config_file.unstable_noise_pct or CONFIG_DEFAULTS.unstable_noise_pct,
+        unstable_noise_pct=(
+            config_file.unstable_noise_pct
+            if config_file.unstable_noise_pct is not None
+            else CONFIG_DEFAULTS.unstable_noise_pct
+        ),
         primary=config_file.primary or CONFIG_DEFAULTS.primary,
         prepare=flags.prepare if flags.prepare is not None else config_file.prepare,
         metrics=dict(config_file.metrics) if config_file.metrics is not None else None,

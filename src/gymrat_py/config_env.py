@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 
-from gymrat_py.config import MAX_TIMEOUT_SECONDS
+from gymrat_py.config_constants import MAX_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True, slots=True)

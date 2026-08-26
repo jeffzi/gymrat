@@ -14,9 +14,9 @@ before the dump, and ``allow_nan=False`` guards against any that slip through.
 from __future__ import annotations
 
 import json
-import math
 from typing import TYPE_CHECKING, assert_never
 
+from gymrat_py.finite_json import null_non_finite
 from gymrat_py.model import BandVerdict, ExactVerdict, PermutationVerdict
 from gymrat_py.report.format import count_verdicts
 from gymrat_py.report.types import CandidateMetric
@@ -238,15 +238,4 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
 
 def _dump(document: dict[str, object]) -> str:
     """Serialize with a two-space indent after nulling every non-finite float."""
-    return json.dumps(_null_non_finite(document), indent=2, allow_nan=False)
-
-
-def _null_non_finite(value: object) -> object:
-    """Replace every non-finite float in a nested JSON structure with ``None``."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {key: _null_non_finite(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_null_non_finite(item) for item in value]
-    return value
+    return json.dumps(null_non_finite(document), indent=2, allow_nan=False)

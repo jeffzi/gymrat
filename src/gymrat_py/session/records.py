@@ -20,12 +20,13 @@ Two entry points bridge the two forms:
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 from pydantic_core import ErrorDetails
 
 from gymrat_py.errors import GymratError
+from gymrat_py.pydantic_errors import describe_key, drop_prefix_errors
 from gymrat_py.session.schema import (
     SCHEMA_VERSION,
     HookStage,
@@ -628,36 +629,14 @@ def _normalize_loc(loc: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _describe_key(loc: tuple[str, ...]) -> str:
-    """Join an error location into a dotted key, quoting any empty segment."""
-    return ".".join('""' if part == "" else part for part in loc)
-
-
 def _message_for_error(error: ErrorDetails, record_type: str) -> str:
     """Translate one pydantic error into a session-record problem string."""
     loc = tuple(str(part) for part in error["loc"])
     if error["type"] == "extra_forbidden":
-        return f"Unknown session record key: {_describe_key(loc)}"
+        return f"Unknown session record key: {describe_key(loc)}"
     phrase = _PHRASES.get((record_type, *_normalize_loc(loc)), "a valid value")
     got = "undefined" if error["type"] == "missing" else json.dumps(error["input"])
-    return f"Invalid session record value for {_describe_key(loc)}: expected {phrase}, got {got}"
-
-
-def _drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
-    """Drop any error whose location is a strict prefix of another's.
-
-    When a parent and its child both fail, only the more specific child error is
-    worth reporting; the parent prefix is redundant noise.
-    """
-    locs = [error["loc"] for error in errors]
-    return [
-        error
-        for error in errors
-        if not any(
-            len(candidate) > len(error["loc"]) and candidate[: len(error["loc"])] == error["loc"]
-            for candidate in locs
-        )
-    ]
+    return f"Invalid session record value for {describe_key(loc)}: expected {phrase}, got {got}"
 
 
 # ---------------------------------------------------------------------------
@@ -808,7 +787,7 @@ def _parser_for[M: BaseModel](
         try:
             model = model_cls.model_validate(value)
         except ValidationError as exc:
-            error = _drop_prefix_errors(exc.errors())[0]
+            error = drop_prefix_errors(exc.errors())[0]
             raise GymratError(_message_for_error(error, record_type)) from exc
         return to_dataclass(model)
 
@@ -1033,4 +1012,6 @@ def record_to_wire(record: SessionLogRecord) -> dict[str, object]:
             wire = _hook_to_wire(record)
         case FinalizeRecord():
             wire = _finalize_to_wire(record)
+        case _ as unreachable:
+            assert_never(unreachable)
     return wire
