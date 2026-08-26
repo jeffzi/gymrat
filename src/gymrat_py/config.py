@@ -8,9 +8,9 @@ to consumers. Two entry points share one read/parse/validate pipeline:
 - :func:`load_config_file_collecting` returns every problem alongside an
   ``exists`` flag, for callers that want to report all issues at once.
 
-Config keys are written in camelCase (``timeoutSeconds``, ``unstableNoisePct``,
-``stop.maxIterations``); the frozen dataclasses expose them as snake_case
-attributes. Validation error paths always name the camelCase key the user wrote.
+Config keys are snake_case (``timeout_seconds``, ``unstable_noise_pct``,
+``stop.max_iterations``), matching the frozen dataclass attributes. Validation
+error paths always name the snake_case key the user wrote.
 """
 
 import json
@@ -45,7 +45,7 @@ from gymrat_py.model import (
 from gymrat_py.session.paths import repo_root
 
 MAX_TIMEOUT_SECONDS = 2_147_483
-"""Largest ``timeoutSeconds`` a 32-bit millisecond timer can represent."""
+"""Largest ``timeout_seconds`` a 32-bit millisecond timer can represent."""
 
 # config_env reads MAX_TIMEOUT_SECONDS from this module, so its import must follow
 # the constant's definition -- importing it at the top would hit a half-initialized
@@ -294,12 +294,12 @@ class _StopModel(BaseModel):
         float | None,
         BeforeValidator(_coerce_number),
         AfterValidator(_reject_non_finite),
-        Field(default=None, alias="targetValue"),
+        Field(default=None),
     ]
     max_iterations: Annotated[
         int | None,
         BeforeValidator(_coerce_integer),
-        Field(default=None, ge=1, alias="maxIterations"),
+        Field(default=None, ge=1),
     ]
 
 
@@ -320,13 +320,13 @@ class _ConfigModel(BaseModel):
     timeout_seconds: Annotated[
         int | None,
         BeforeValidator(_coerce_integer),
-        Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS, alias="timeoutSeconds"),
+        Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS),
     ]
     unstable_noise_pct: Annotated[
         float | None,
         BeforeValidator(_coerce_number),
         AfterValidator(_reject_non_finite),
-        Field(default=None, ge=NOISE_FLOOR_PCT, alias="unstableNoisePct"),
+        Field(default=None, ge=NOISE_FLOOR_PCT),
     ]
     metrics: Annotated[
         dict[str, _MetricModel] | None, BeforeValidator(_reject_bad_dict), Field(default=None)
@@ -352,14 +352,14 @@ _PHRASES: dict[tuple[str, ...], str] = {
     **{(field,): "a non-empty string" for field in _NON_EMPTY_STRING_FIELDS},
     ("filter",): "a string",
     ("samples",): "a positive integer",
-    ("timeoutSeconds",): f"a positive integer no greater than {MAX_TIMEOUT_SECONDS}",
-    ("unstableNoisePct",): f"a number at or above the {NOISE_FLOOR_PCT}% noise floor",
+    ("timeout_seconds",): f"a positive integer no greater than {MAX_TIMEOUT_SECONDS}",
+    ("unstable_noise_pct",): f"a number at or above the {NOISE_FLOOR_PCT}% noise floor",
     ("metrics",): "an object",
     ("kinds",): "an object",
     ("stop",): "an object",
     ("hooks",): "an object",
-    ("stop", "targetValue"): "a number",
-    ("stop", "maxIterations"): "a positive integer",
+    ("stop", "target_value"): "a number",
+    ("stop", "max_iterations"): "a positive integer",
     ("hooks", "before"): "a non-empty string",
     ("hooks", "after"): "a non-empty string",
     ("metrics", "*"): "an object",
@@ -615,7 +615,7 @@ def _assert_flag_not_empty(field_name: str, value: str | None) -> None:
 def loop_key_problems(config: BenchlessConfig) -> list[str]:
     """Return the cross-field violations the schema alone cannot express.
 
-    ``filter`` must carry its placeholder, and ``stop.targetValue`` only makes
+    ``filter`` must carry its placeholder, and ``stop.target_value`` only makes
     sense when ``primary`` names a metric -- the geomean is a ratio, not a value.
     """
     problems: list[str] = []
@@ -633,7 +633,7 @@ def loop_key_problems(config: BenchlessConfig) -> list[str]:
         and config.primary == GEOMEAN_PRIMARY
     ):
         problems.append(
-            "Invalid config value for stop.targetValue: it needs primary to name a metric, "
+            "Invalid config value for stop.target_value: it needs primary to name a metric, "
             f"not {json.dumps(GEOMEAN_PRIMARY)}"
         )
     return problems

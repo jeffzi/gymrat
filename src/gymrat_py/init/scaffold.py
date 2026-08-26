@@ -74,9 +74,9 @@ def _build_config(result: WizardResult) -> dict[str, object]:
         config["primary"] = result.primary
     stop: dict[str, object] = {}
     if result.stop_target is not None:
-        stop["targetValue"] = result.stop_target
+        stop["target_value"] = result.stop_target
     if result.stop_max_iterations is not None:
-        stop["maxIterations"] = result.stop_max_iterations
+        stop["max_iterations"] = result.stop_max_iterations
     if stop:
         config["stop"] = stop
     if result.runbook is not False:

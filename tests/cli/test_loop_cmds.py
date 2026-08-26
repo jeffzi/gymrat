@@ -220,7 +220,7 @@ def test_iterate_command_when_stop_condition_met_does_exit_one_without_measuring
         repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
     )
     mock = install_collect_samples(monkeypatch)
-    _write_config(repo, stop={"maxIterations": 1})
+    _write_config(repo, stop={"max_iterations": 1})
 
     result = runner.invoke(app, ["iterate"])
 

@@ -85,7 +85,7 @@ def commit_project(
                 "bench": f"{sys.executable} {BENCH_FILE}",
                 "adapter": "metric-lines",
                 "samples": samples,
-                "timeoutSeconds": 120,
+                "timeout_seconds": 120,
             }
         ),
     }

@@ -27,7 +27,7 @@ LOOP_CONFIG: dict[str, object] = {
     "checks": "npm test",
     "filter": "npm run bench -- {names}",
     "primary": "decode/time",
-    "stop": {"targetValue": 1.5, "maxIterations": 20},
+    "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
 
@@ -102,8 +102,8 @@ def test_load_config_file_when_all_known_keys_given_does_round_trip(tmp_path: Pa
             "prepare": "prepare-cmd",
             "adapter": "adapter-name",
             "samples": 10,
-            "timeoutSeconds": 30,
-            "unstableNoisePct": 150.5,
+            "timeout_seconds": 30,
+            "unstable_noise_pct": 150.5,
             "metrics": {
                 "metric1": {"direction": "lower", "gating": True, "exact": False},
                 "metric2": {"direction": "higher"},
@@ -166,13 +166,13 @@ def test_load_config_file_when_duplicate_key_does_raise_naming_path(tmp_path: Pa
 def test_load_config_file_when_noise_pct_non_finite_does_name_key_not_parse(
     tmp_path: Path, literal: str
 ):
-    config_path = write_raw(tmp_path, f"unstableNoisePct = {literal}")
+    config_path = write_raw(tmp_path, f"unstable_noise_pct = {literal}")
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
     message = str(exc.value)
-    assert "unstableNoisePct" in message
+    assert "unstable_noise_pct" in message
     assert "Failed to parse" not in message
 
 
@@ -180,13 +180,13 @@ def test_load_config_file_when_noise_pct_non_finite_does_name_key_not_parse(
 def test_load_config_file_when_stop_target_value_non_finite_does_name_key_not_parse(
     tmp_path: Path, literal: str
 ):
-    config_path = write_raw(tmp_path, f"[stop]\ntargetValue = {literal}")
+    config_path = write_raw(tmp_path, f"[stop]\ntarget_value = {literal}")
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
     message = str(exc.value)
-    assert "stop.targetValue" in message
+    assert "stop.target_value" in message
     assert "Failed to parse" not in message
 
 
@@ -310,8 +310,8 @@ def test_load_config_file_when_non_empty_string_key_holds_whitespace_does_name_k
         pytest.param("samples", "ten", id="samples-string"),
         pytest.param("samples", 1.5, id="samples-non-integer"),
         pytest.param("samples", 0, id="samples-zero"),
-        pytest.param("timeoutSeconds", -1, id="timeout-negative"),
-        pytest.param("timeoutSeconds", True, id="timeout-boolean"),
+        pytest.param("timeout_seconds", -1, id="timeout-negative"),
+        pytest.param("timeout_seconds", True, id="timeout-boolean"),
     ],
 )
 def test_load_config_file_when_integer_key_invalid_does_name_key_and_positive_integer(
@@ -330,23 +330,23 @@ def test_load_config_file_when_integer_key_given_integral_float_does_accept(tmp_
 
 
 def test_load_config_file_when_timeout_exceeds_cap_does_name_key_and_cap(tmp_path: Path):
-    config_path = write_config(tmp_path, {"timeoutSeconds": MAX_TIMEOUT_SECONDS + 1})
+    config_path = write_config(tmp_path, {"timeout_seconds": MAX_TIMEOUT_SECONDS + 1})
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
-    assert "timeoutSeconds" in str(exc.value)
+    assert "timeout_seconds" in str(exc.value)
     assert "no greater than 2147483" in str(exc.value)
 
 
 def test_load_config_file_when_timeout_on_cap_does_accept(tmp_path: Path):
-    config_path = write_config(tmp_path, {"timeoutSeconds": MAX_TIMEOUT_SECONDS})
+    config_path = write_config(tmp_path, {"timeout_seconds": MAX_TIMEOUT_SECONDS})
 
     assert load_config_file(config_path) == ConfigFile(timeout_seconds=2_147_483)
 
 
 # ---------------------------------------------------------------------------
-# unstableNoisePct
+# unstable_noise_pct
 # ---------------------------------------------------------------------------
 
 
@@ -363,19 +363,19 @@ def test_load_config_file_when_timeout_on_cap_does_accept(tmp_path: Path):
 def test_load_config_file_when_noise_pct_invalid_does_name_key_and_noise_floor(
     tmp_path: Path, value: object
 ):
-    config_path = write_config(tmp_path, {"unstableNoisePct": value})
+    config_path = write_config(tmp_path, {"unstable_noise_pct": value})
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
     message = str(exc.value)
-    assert "unstableNoisePct" in message
+    assert "unstable_noise_pct" in message
     assert "0.5" in message
     assert "noise floor" in message
 
 
 def test_load_config_file_when_noise_pct_on_floor_does_accept(tmp_path: Path):
-    config_path = write_config(tmp_path, {"unstableNoisePct": 0.5})
+    config_path = write_config(tmp_path, {"unstable_noise_pct": 0.5})
 
     assert load_config_file(config_path) == ConfigFile(unstable_noise_pct=0.5)
 
@@ -612,26 +612,12 @@ def test_load_config_file_when_hooks_not_object_does_name_hooks_and_object(
         pytest.param("before", "", id="before-empty"),
         pytest.param("after", "", id="after-empty"),
         pytest.param("before", 42, id="before-number"),
-    ],
-)
-def test_load_config_file_when_hooks_command_not_non_empty_string_does_name_stage(
-    tmp_path: Path, stage: str, value: object
-):
-    config_path = write_config(tmp_path, {"hooks": {stage: value}})
-
-    with pytest.raises(GymratError, match=rf"hooks\.{stage}.*non-empty string"):
-        load_config_file(config_path)
-
-
-@pytest.mark.parametrize(
-    ("stage", "value"),
-    [
         pytest.param("before", " ", id="before-space"),
         pytest.param("after", "\t\n ", id="after-mixed-whitespace"),
     ],
 )
-def test_load_config_file_when_hooks_command_whitespace_only_does_name_stage(
-    tmp_path: Path, stage: str, value: str
+def test_load_config_file_when_hooks_command_not_non_empty_string_does_name_stage(
+    tmp_path: Path, stage: str, value: object
 ):
     config_path = write_config(tmp_path, {"hooks": {stage: value}})
 
@@ -656,10 +642,10 @@ def test_load_config_file_when_hooks_has_unknown_key_does_name_dotted_path(tmp_p
 @pytest.mark.parametrize(
     ("field", "value", "pattern"),
     [
-        pytest.param("targetValue", "fast", r"stop\.targetValue.*number", id="target-string"),
-        pytest.param("maxIterations", 0, r"stop\.maxIterations.*positive integer", id="max-zero"),
+        pytest.param("target_value", "fast", r"stop\.target_value.*number", id="target-string"),
+        pytest.param("max_iterations", 0, r"stop\.max_iterations.*positive integer", id="max-zero"),
         pytest.param(
-            "maxIterations", 1.5, r"stop\.maxIterations.*positive integer", id="max-non-integer"
+            "max_iterations", 1.5, r"stop\.max_iterations.*positive integer", id="max-non-integer"
         ),
     ],
 )
@@ -673,9 +659,34 @@ def test_load_config_file_when_stop_field_invalid_does_name_field(
 
 
 def test_load_config_file_when_stop_has_unknown_key_does_name_dotted_path(tmp_path: Path):
-    config_path = write_config(tmp_path, {"stop": {"targetValue": 1, "patience": 3}})
+    config_path = write_config(tmp_path, {"stop": {"target_value": 1, "patience": 3}})
 
     with pytest.raises(GymratError, match=r"Unknown config key: stop\.patience"):
+        load_config_file(config_path)
+
+
+# ---------------------------------------------------------------------------
+# camelCase keys rejected as unknown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("content", "camel_key"),
+    [
+        pytest.param({"timeoutSeconds": 30}, r"timeoutSeconds", id="timeout-seconds"),
+        pytest.param({"unstableNoisePct": 150.5}, r"unstableNoisePct", id="unstable-noise-pct"),
+        pytest.param({"stop": {"targetValue": 1.5}}, r"stop\.targetValue", id="stop-target-value"),
+        pytest.param(
+            {"stop": {"maxIterations": 20}}, r"stop\.maxIterations", id="stop-max-iterations"
+        ),
+    ],
+)
+def test_load_config_file_when_camel_case_key_given_does_reject_as_unknown(
+    tmp_path: Path, content: dict[str, object], camel_key: str
+):
+    config_path = write_config(tmp_path, content)
+
+    with pytest.raises(GymratError, match=rf"Unknown config key: {camel_key}"):
         load_config_file(config_path)
 
 
@@ -781,8 +792,8 @@ def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
                 "bench": "config-bench",
                 "adapter": "custom-adapter",
                 "samples": 20,
-                "timeoutSeconds": 3600,
-                "unstableNoisePct": 150.5,
+                "timeout_seconds": 3600,
+                "unstable_noise_pct": 150.5,
             },
             ResolvedConfig(
                 bench="config-bench",
@@ -954,7 +965,7 @@ def test_resolve_config_when_config_has_no_metrics_does_omit_metrics(
 def test_resolve_config_when_timeout_flag_given_does_beat_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_config(tmp_path, {"timeoutSeconds": 3600})
+    write_config(tmp_path, {"timeout_seconds": 3600})
     monkeypatch.chdir(tmp_path)
 
     result = resolve_config(CliFlags(bench="my-bench", timeout=1200))
@@ -1010,7 +1021,7 @@ def test_resolve_config_when_stop_target_value_with_geomean_does_raise_naming_ta
 ):
     write_config(
         tmp_path,
-        {"bench": "config-bench", "stop": {"targetValue": 1.5}, **overrides},
+        {"bench": "config-bench", "stop": {"target_value": 1.5}, **overrides},
     )
     monkeypatch.chdir(tmp_path)
 
@@ -1018,14 +1029,14 @@ def test_resolve_config_when_stop_target_value_with_geomean_does_raise_naming_ta
         resolve_config(CliFlags())
 
     message = str(exc.value)
-    assert "targetValue" in message
+    assert "target_value" in message
     assert "geomean" in message
 
 
 def test_resolve_config_when_stop_sets_only_max_iterations_under_geomean_does_resolve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_config(tmp_path, {"bench": "config-bench", "stop": {"maxIterations": 5}})
+    write_config(tmp_path, {"bench": "config-bench", "stop": {"max_iterations": 5}})
     monkeypatch.chdir(tmp_path)
 
     result = resolve_config(CliFlags())

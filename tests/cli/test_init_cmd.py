@@ -147,7 +147,7 @@ def test_init_when_skill_declined_does_report_it():
         pytest.param(
             ["--bench", "bench.sh", "--stop-target", "1.5", "--primary", "latency"],
             "stop",
-            {"targetValue": 1.5},
+            {"target_value": 1.5},
             id="stop-target",
         ),
         pytest.param(

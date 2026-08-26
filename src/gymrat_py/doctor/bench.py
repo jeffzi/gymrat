@@ -21,7 +21,7 @@ from gymrat_py.exec import exec as run_exec
 _MAX_STDERR_EXCERPT_LINES = 5
 _MAX_METRIC_NAMES_SHOWN = 5
 
-_TIMEOUT_HINT = 'Raise the limit with --timeout or the "timeoutSeconds" config key'
+_TIMEOUT_HINT = 'Raise the limit with --timeout or the "timeout_seconds" config key'
 _NO_BENCH_HINT = 'Set the bench command with --bench or the "bench" config key'
 
 

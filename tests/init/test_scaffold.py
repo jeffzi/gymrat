@@ -64,22 +64,26 @@ def test_scaffold_when_field_set_does_include_it_in_config(
     assert _read_config(tmp_path)[field] == expected
 
 
-def test_scaffold_when_stop_target_set_does_write_stop_with_only_target(tmp_path: Path):
-    scaffold(str(tmp_path), _result(stop_target=1.5, primary="latency"))
+@pytest.mark.parametrize(
+    ("override", "expected_stop"),
+    [
+        pytest.param(
+            {"stop_target": 1.5, "primary": "latency"}, {"target_value": 1.5}, id="target-only"
+        ),
+        pytest.param({"stop_max_iterations": 10}, {"max_iterations": 10}, id="max-iterations-only"),
+        pytest.param(
+            {"stop_target": 2.0, "stop_max_iterations": 20, "primary": "latency"},
+            {"target_value": 2.0, "max_iterations": 20},
+            id="both",
+        ),
+    ],
+)
+def test_scaffold_when_stop_fields_set_does_write_expected_stop_table(
+    tmp_path: Path, override: dict[str, object], expected_stop: dict[str, object]
+):
+    scaffold(str(tmp_path), _result(**override))
 
-    assert _read_config(tmp_path)["stop"] == {"targetValue": 1.5}
-
-
-def test_scaffold_when_max_iterations_set_does_write_stop_with_only_max(tmp_path: Path):
-    scaffold(str(tmp_path), _result(stop_max_iterations=10))
-
-    assert _read_config(tmp_path)["stop"] == {"maxIterations": 10}
-
-
-def test_scaffold_when_both_stop_fields_set_does_write_both(tmp_path: Path):
-    scaffold(str(tmp_path), _result(stop_target=2.0, stop_max_iterations=20, primary="latency"))
-
-    assert _read_config(tmp_path)["stop"] == {"targetValue": 2.0, "maxIterations": 20}
+    assert _read_config(tmp_path)["stop"] == expected_stop
 
 
 def test_scaffold_when_runbook_path_set_does_include_runbook_key(tmp_path: Path):

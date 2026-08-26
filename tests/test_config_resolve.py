@@ -163,7 +163,7 @@ def test_resolve_config_when_env_var_set_and_flag_absent_does_use_env(
                 "900",
                 "timeout_seconds",
                 900,
-                config={"bench": "b", "timeoutSeconds": 3600},
+                config={"bench": "b", "timeout_seconds": 3600},
             ),
             id="timeout",
         ),

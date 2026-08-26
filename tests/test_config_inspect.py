@@ -254,7 +254,7 @@ LOOP_CONFIG: dict[str, object] = {
     "checks": "npm test",
     "filter": "npm run bench -- {names}",
     "primary": "decode/time",
-    "stop": {"targetValue": 1.5, "maxIterations": 20},
+    "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
 
@@ -321,8 +321,8 @@ def test_inspect_config_when_valid_file_provides_values_does_settle_config_and_p
             "bench": "config-bench",
             "adapter": "custom-adapter",
             "samples": 20,
-            "timeoutSeconds": 3600,
-            "unstableNoisePct": 150.5,
+            "timeout_seconds": 3600,
+            "unstable_noise_pct": 150.5,
         },
     )
     monkeypatch.chdir(tmp_path)
@@ -484,12 +484,12 @@ def test_inspect_config_when_filter_omits_names_placeholder_does_report_naming_f
 def test_inspect_config_when_target_value_with_geomean_primary_does_report_naming_both(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_config(tmp_path, {"bench": "config-bench", "stop": {"targetValue": 1.5}})
+    write_config(tmp_path, {"bench": "config-bench", "stop": {"target_value": 1.5}})
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())
 
-    assert has_problem(result.problems, r"targetValue.*geomean|geomean.*targetValue")
+    assert has_problem(result.problems, r"target_value.*geomean|geomean.*target_value")
 
 
 def test_inspect_config_when_runbook_missing_does_report_naming_field_and_path(
