@@ -1,7 +1,6 @@
 """Session state: repository paths, worktree layout, and the single-flight lock."""
 
 from gymrat_py.session.paths import (
-    SESSION_DIR_NAME,
     archived_session_path,
     baseline_worktree_dir,
     experiment_worktree_dir,
@@ -10,7 +9,6 @@ from gymrat_py.session.paths import (
     session_dir,
     session_jsonl_path,
     supervise_lockfile_path,
-    worktrees_dir,
 )
 from gymrat_py.session.records import (
     SCHEMA_VERSION,
@@ -58,7 +56,6 @@ from gymrat_py.session.workspace import (
 
 __all__ = [
     "SCHEMA_VERSION",
-    "SESSION_DIR_NAME",
     "BaselineRecord",
     "BaselineRef",
     "Confirm",
@@ -103,5 +100,4 @@ __all__ = [
     "session_jsonl_path",
     "supervise_lockfile_path",
     "worktree_head",
-    "worktrees_dir",
 ]

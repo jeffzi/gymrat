@@ -19,17 +19,7 @@ from pathlib import Path
 
 import pytest
 
-
-def _run_git(args: list[str], cwd: str) -> str:
-    """Run git in ``cwd`` for fixture setup, returning stdout and failing loudly."""
-    result = subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+from tests._git import run_git as _run_git
 
 
 def _init_scratch_repo() -> str:

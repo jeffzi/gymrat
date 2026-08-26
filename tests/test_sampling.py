@@ -10,7 +10,7 @@ import pytest
 
 from gymrat_py import sampling
 from gymrat_py.adapters.metric_lines import metric_lines_adapter
-from gymrat_py.errors import CommandError, message_of
+from gymrat_py.errors import CommandError
 from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat_py.report.text import format_cleanup_failures
 from gymrat_py.sampling import (
@@ -677,7 +677,7 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
     details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
     assert caught.value is not original
     assert isinstance(caught.value, CommandError)
-    assert message_of(caught.value) == "\n".join(
+    assert str(caught.value) == "\n".join(
         ["bench command failed", "", "cleanup did not finish:", *details]
     )
     assert caught.value.hint == "check the target"

@@ -46,12 +46,3 @@ def drain(fd: int, chunks: list[bytes]) -> None:
         if not chunk:
             return
         chunks.append(chunk)
-
-
-def is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True

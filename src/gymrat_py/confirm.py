@@ -19,5 +19,6 @@ def confirm_action(message: str, stream: TextIO) -> bool:
     and declines.
     """
     sys.stderr.write(f"{message} [y/N] ")
+    sys.stderr.flush()
     answer = stream.readline().rstrip("\r\n")
     return answer in ("y", "Y")

@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from gymrat_py.adapters import get_adapter
 from gymrat_py.adapters.types import WarnSink
+from gymrat_py.config import KindEntry
 from gymrat_py.model import MetricVerdict, Observations, ResolvedMetricMeta, pair_metric
 from gymrat_py.report.types import (
     CandidateComparison,
@@ -65,7 +66,7 @@ class CompareOptions(RunOptions):
 
 
 @dataclass(frozen=True, slots=True)
-class _CandidateMeasurement:
+class CandidateMeasurement:
     """One candidate's samples and the verdicts they earned against the baseline."""
 
     label: str
@@ -84,7 +85,7 @@ class _Measurement:
 
     baseline_label: str
     baseline_samples: list[dict[str, float]]
-    candidates: list[_CandidateMeasurement]
+    candidates: list[CandidateMeasurement]
     metric_meta: dict[str, ResolvedMetricMeta]
 
 
@@ -120,7 +121,7 @@ def _measure_candidates(
     metric_meta: dict[str, ResolvedMetricMeta],
     unstable_noise_pct: float | None,
     warn: WarnSink | None,
-) -> list[_CandidateMeasurement]:
+) -> list[CandidateMeasurement]:
     """Judge every candidate against the same baseline samples, one comparison each."""
     verdict_kwargs: dict[str, Any] = {}
     if unstable_noise_pct is not None:
@@ -129,7 +130,7 @@ def _measure_candidates(
         verdict_kwargs["warn"] = warn
 
     baseline_obs = Observations.from_rounds(baseline_samples)
-    measured: list[_CandidateMeasurement] = []
+    measured: list[CandidateMeasurement] = []
     for candidate in candidates:
         verdicts = compute_verdicts(
             baseline_obs,
@@ -138,7 +139,7 @@ def _measure_candidates(
             **verdict_kwargs,
         )
         measured.append(
-            _CandidateMeasurement(
+            CandidateMeasurement(
                 label=candidate.ctx.label,
                 samples=candidate.samples,
                 verdicts=verdicts,
@@ -148,23 +149,32 @@ def _measure_candidates(
     return measured
 
 
-def _build_comparison_result(
-    measurement: _Measurement,
-    options: CompareOptions,
+def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an intermediate dataclass
+    baseline_label: str,
+    baseline_samples: list[dict[str, float]],
+    candidates: list[CandidateMeasurement],
+    metric_meta: dict[str, ResolvedMetricMeta],
+    *,
+    samples: int,
+    adapter: str,
+    config_kinds: dict[str, KindEntry] | None,
     cleanup: CleanupResult,
 ) -> ComparisonResult:
-    """Assemble the rendered result from the measurement and the cleanup outcome."""
-    baseline_samples = measurement.baseline_samples
-    candidate_sample_sets = [candidate.samples for candidate in measurement.candidates]
+    """Build a comparison result from measured candidates and a cleanup outcome.
+
+    Both ``compare`` (multi-candidate, real cleanup) and the loop engine
+    (single candidate, zeroed cleanup) call this.
+    """
+    candidate_sample_sets = [c.samples for c in candidates]
     baseline_obs = Observations.from_rounds(baseline_samples)
 
     metrics: dict[str, MetricComparison] = {}
-    for metric_name, meta in measurement.metric_meta.items():
+    for metric_name, meta in metric_meta.items():
         baseline_stats = compute_metric_stats(
             _baseline_paired_values(baseline_samples, candidate_sample_sets, metric_name)
         )
         candidate_metrics: list[CandidateMetric] = []
-        for candidate in measurement.candidates:
+        for candidate in candidates:
             paired = pair_metric(
                 baseline_obs, Observations.from_rounds(candidate.samples), metric_name
             ).right
@@ -189,15 +199,14 @@ def _build_comparison_result(
         worktrees_removed=cleanup.removed,
         worktrees_left_behind=tuple(cleanup.failures),
         worktree_prune_error=cleanup.prune_error,
-        baseline_label=measurement.baseline_label,
+        baseline_label=baseline_label,
         candidates=tuple(
-            CandidateComparison(label=candidate.label, kinds=tuple(candidate.kinds))
-            for candidate in measurement.candidates
+            CandidateComparison(label=c.label, kinds=tuple(c.kinds)) for c in candidates
         ),
-        samples=options.samples,
-        adapter=options.adapter,
+        samples=samples,
+        adapter=adapter,
         metrics=metrics,
-        config_kinds=options.config_kinds,
+        config_kinds=config_kinds,
     )
 
 
@@ -281,5 +290,14 @@ async def compare(options: CompareOptions) -> ComparisonResult:
 
     return await run_with_worktrees(
         phase,
-        lambda measurement, cleanup: _build_comparison_result(measurement, options, cleanup),
+        lambda measurement, cleanup: build_comparison_result(
+            measurement.baseline_label,
+            measurement.baseline_samples,
+            measurement.candidates,
+            measurement.metric_meta,
+            samples=options.samples,
+            adapter=options.adapter,
+            config_kinds=options.config_kinds,
+            cleanup=cleanup,
+        ),
     )

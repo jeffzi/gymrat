@@ -1,9 +1,7 @@
 """Behavioral tests for the git subprocess helpers and lookup classification.
 
-Real-subprocess tests are parallel-safe: the ``scratch_repo`` fixture gives
-every test its own temp directory (``tempfile.mkdtemp``) resolved through
-``os.path.realpath`` so macOS ``/var`` → ``/private/var`` matches what git
-reports, and tears it down with ``shutil.rmtree``.
+Real-subprocess tests are parallel-safe: the ``create_scratch_repo`` factory
+(see ``conftest.py``) gives every test its own temp git repository.
 """
 
 import os
@@ -11,10 +9,9 @@ import re
 import shutil
 import signal
 import subprocess
-import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -30,34 +27,10 @@ from gymrat_py.git import (
 )
 
 
-def _run(args: list[str], cwd: str) -> None:
-    """Run git in ``cwd`` for fixture setup, failing loudly on error."""
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)  # noqa: S603, S607
-
-
 @pytest.fixture
-def scratch_repo() -> Iterator[str]:
-    """A throwaway git repo on ``main`` with one committed file.
-
-    Its own temp directory per test keeps the suite order-independent and safe
-    under ``pytest-xdist``.
-    """
-    directory = os.path.realpath(tempfile.mkdtemp(prefix="gymrat-test-"))
-    try:
-        _run(["init", "-b", "main"], directory)
-        for key, value in (
-            ("user.name", "Test User"),
-            ("user.email", "test@example.com"),
-            ("commit.gpgsign", "false"),
-            ("core.autocrlf", "false"),
-        ):
-            _run(["config", key, value], directory)
-        (Path(directory) / "README.md").write_text("# Test Repo\n", encoding="utf-8")
-        _run(["add", "README.md"], directory)
-        _run(["commit", "-m", "Initial commit"], directory)
-        yield directory
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
+def scratch_repo(create_scratch_repo: Callable[[], str]) -> str:
+    """A throwaway git repo on ``main`` with one committed file."""
+    return create_scratch_repo()
 
 
 # ---------------------------------------------------------------------------

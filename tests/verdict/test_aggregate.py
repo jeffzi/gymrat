@@ -11,8 +11,6 @@ from collections.abc import Sequence
 import pytest
 
 from gymrat_py.model import (
-    BandVerdict,
-    Effect,
     Exclusion,
     ExclusionReason,
     GeomeanResult,
@@ -24,7 +22,12 @@ from gymrat_py.verdict import (
     compute_kind_aggregates,
     infer_group,
 )
-from tests.verdict._inputs import MetricSpec, build_inputs, exact_verdict
+from tests.verdict._inputs import (
+    MetricSpec,
+    build_inputs,
+    exact_verdict,
+    unstable_band_verdict,
+)
 
 
 def kinds_of(specs: Sequence[MetricSpec]) -> list[KindAggregate]:
@@ -47,19 +50,6 @@ def only_kind(aggregates: Sequence[KindAggregate]) -> KindAggregate:
     if not aggregates:
         pytest.fail("expected one kind aggregate but got none")
     return aggregates[0]
-
-
-def unstable_band_verdict() -> BandVerdict:
-    """A band verdict too noisy to judge, regardless of its ratio."""
-    return BandVerdict(
-        method="band",
-        verdict="unstable",
-        usable_n=4,
-        noise_pct=250.0,
-        noise_abs=25.0,
-        delta=Effect(value=-50.0, unit="percent"),
-        n=4,
-    )
 
 
 def mixed_gating_kind() -> list[MetricSpec]:

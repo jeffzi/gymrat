@@ -12,7 +12,6 @@ on process-group tree-kill.
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +26,7 @@ from gymrat_py.supervisor.events import (
     ToolProgressEvent,
     UsageUpdateEvent,
 )
+from tests._process_helpers import wait_until_dead
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
 pytestmark = pytest.mark.skipif(
@@ -39,26 +39,6 @@ _DOUBLE = str(Path(__file__).parent / "_stdio_double.py")
 def double_argv(config: dict[str, Any]) -> list[str]:
     """Build the argv that runs the protocol double with ``config``."""
     return [sys.executable, _DOUBLE, json.dumps(config)]
-
-
-def is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
-async def wait_until_dead(pid: int, timeout_s: float = 5.0) -> None:
-    """Poll until the process with ``pid`` no longer exists."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while is_alive(pid):
-        if loop.time() > deadline:
-            message = f"process {pid} was still alive after {timeout_s}s"
-            raise AssertionError(message)
-        await asyncio.sleep(0.02)
 
 
 async def wait_for_event(

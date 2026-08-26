@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.session.clock import now_iso
 
 # Largest pid a liveness probe can be asked about: signalling rejects anything
@@ -41,7 +41,7 @@ to whoever holds it now, and is left where it stands.
 """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LockHolder:
     """The process a lockfile records as its holder."""
 
@@ -50,7 +50,7 @@ class LockHolder:
     at: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LockIdentity:
     """Which file a lockfile read came from, as the filesystem identifies it.
 
@@ -109,18 +109,18 @@ def _write_all(fd: int, data: bytes) -> None:
 def _force_unlink(path: str) -> None:
     """Remove ``path``, treating an already-absent file as success."""
     try:
-        os.unlink(path)  # noqa: PTH108
+        os.unlink(path)  # noqa: PTH108 -- low-level os call for atomicity guarantees pathlib cannot provide
     except FileNotFoundError:
         return
 
 
 # What a lockfile says at the moment it was read.
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Absent:
     """No file stands at the lock path."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Held:
     """A parseable holder record and the file it was read from."""
 
@@ -128,7 +128,7 @@ class _Held:
     identity: LockIdentity
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Unreadable:
     """Debris at the lock path — unparseable or a foreign shape — and its file."""
 
@@ -157,7 +157,7 @@ def read_lockfile(lock_path: str) -> _LockfileState:
     except PermissionError as error:
         # A lockfile another user owns is unreadable to every later run, so the
         # steal path can never reach it — the only way out is by hand.
-        message = f"Lock file {lock_path} could not be read: {message_of(error)}"
+        message = f"Lock file {lock_path} could not be read: {error!s}"
         hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
         raise GymratError(message, hint=hint) from error
 
@@ -175,18 +175,33 @@ def read_lockfile(lock_path: str) -> _LockfileState:
     return _Held(holder, identity) if holder is not None else _Unreadable(identity)
 
 
-def is_alive(pid: int) -> bool:
-    """Whether a process with ``pid`` still exists.
-
-    Signal ``0`` runs the kernel's permission and existence checks without
-    delivering anything. Only ``ESRCH`` means no such process: ``EPERM`` says the
-    process is there but owned by another user, which is still a live holder.
-    """
+def _is_alive_posix(pid: int) -> bool:
+    """Signal 0 checks existence without delivering anything."""
     try:
         os.kill(pid, 0)
     except OSError as error:
-        return error.errno != errno.ESRCH
+        return error.errno == errno.EPERM
     return True
+
+
+def _is_alive_windows(pid: int) -> bool:
+    """Open the process handle to check existence.
+
+    ``os.kill(pid, 0)`` cannot be used on Windows: ``signal.CTRL_C_EVENT`` is 0,
+    so CPython dispatches through ``GenerateConsoleCtrlEvent`` instead of
+    ``OpenProcess``, broadcasting Ctrl+C to the target's console process group.
+    """
+    import ctypes  # noqa: PLC0415 — Windows-only, deferred to avoid top-level import on POSIX
+
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    handle = kernel32.OpenProcess(0x1000, 0, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+is_alive = _is_alive_windows if sys.platform == "win32" else _is_alive_posix
 
 
 def unlink_if_same_file(lock_path: str, identity: LockIdentity) -> None:
@@ -219,7 +234,7 @@ def still_names_file(lock_path: str, identity: LockIdentity) -> bool:
     write against it. :func:`unlink_if_same_file` is the safe form for that.
     """
     try:
-        info = os.stat(lock_path)  # noqa: PTH116
+        info = os.stat(lock_path)  # noqa: PTH116 -- low-level os call for atomicity guarantees pathlib cannot provide
     except FileNotFoundError:
         return False
     return LockIdentity(dev=info.st_dev, ino=info.st_ino) == identity
@@ -274,7 +289,7 @@ def _rethrow_displacement_failure(lock_path: str, error: OSError) -> NoReturn:
     clean up.
     """
     if isinstance(error, PermissionError):
-        message = f"Stale lock file {lock_path} could not be removed: {message_of(error)}"
+        message = f"Stale lock file {lock_path} could not be removed: {error!s}"
         hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
         raise GymratError(message, hint=hint) from error
     raise error
@@ -283,21 +298,21 @@ def _rethrow_displacement_failure(lock_path: str, error: OSError) -> NoReturn:
 # What asking for the right to displace a stale lockfile turned up. ``_ClaimGone``
 # covers both ways the judged file can stop being the one at the lock path: it
 # vanished before the claim, or the claim came back naming a different file.
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ClaimClaimed:
     """The judged file was claimed for displacement; its claim lives here."""
 
     claim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ClaimBlocked:
     """The claim name is already taken; the blocking claim lives here."""
 
     claim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ClaimGone:
     """The judged file is no longer the one at the lock path."""
 
@@ -328,7 +343,7 @@ def claim_stale_lock(lock_path: str, identity: LockIdentity) -> _ClaimOutcome:
     except OSError as error:
         _rethrow_displacement_failure(lock_path, error)
 
-    info = os.stat(claim_path)  # noqa: PTH116
+    info = os.stat(claim_path)  # noqa: PTH116 -- low-level os call for atomicity guarantees pathlib cannot provide
     if LockIdentity(dev=info.st_dev, ino=info.st_ino) == identity:
         return _ClaimClaimed(claim_path)
     _force_unlink(claim_path)
@@ -349,7 +364,7 @@ def displace_stale_lock(lock_path: str) -> bool:
     aside_path = f"{lock_path}.{os.getpid()}.stale"
     try:
         # Raw os.rename is the atomic displacement seam the retry loop races on.
-        os.rename(lock_path, aside_path)  # noqa: PTH104
+        os.rename(lock_path, aside_path)  # noqa: PTH104 -- low-level os call for atomicity guarantees pathlib cannot provide
     except FileNotFoundError:
         return False
     except OSError as error:
@@ -358,7 +373,7 @@ def displace_stale_lock(lock_path: str) -> bool:
     return True
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _WedgedTakeover:
     """A takeover that died holding its claim, leaving the lock impossible to steal.
 
@@ -373,19 +388,19 @@ class _WedgedTakeover:
 
 
 # What one pass at the lock path turned up.
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Acquired:
     """The lock was published; the release handle keys on this identity."""
 
     identity: LockIdentity
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Retry:
     """The lock path shifted under the attempt; read it afresh."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Blocked:
     """A claim stood in the way of a steal."""
 
@@ -455,7 +470,7 @@ def _make_release(lock_path: str, identity: LockIdentity) -> ReleaseLock:
         try:
             unlink_if_same_file(lock_path, identity)
         except OSError as error:
-            text = f"Warning: failed to release lock at {lock_path}: {message_of(error)}\n"
+            text = f"Warning: failed to release lock at {lock_path}: {error!s}\n"
             sys.stderr.write(text)
 
     return release

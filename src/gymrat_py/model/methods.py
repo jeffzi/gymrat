@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-Method = Literal["signed-rank", "band", "exact"]
+Method = Literal["permutation", "band", "exact"]
 """Tag identifying which statistical method produced a verdict."""
 
 
@@ -22,14 +22,11 @@ class MethodDescriptor:
     p_threshold: float | None
 
 
-SIGNED_RANK_DESCRIPTOR = MethodDescriptor(method="signed-rank", min_n=6, p_threshold=0.05)
-"""Signed-rank floors: at least 6 pairs, gated at p ≤ 0.05."""
+PERMUTATION_DESCRIPTOR = MethodDescriptor(method="permutation", min_n=6, p_threshold=0.05)
+"""Permutation floors: at least 6 usable pairs, gated at p ≤ 0.05."""
 
 BAND_DESCRIPTOR = MethodDescriptor(method="band", min_n=2, p_threshold=None)
 """Band floors: at least 2 usable entries; no significance gate."""
-
-EXACT_DESCRIPTOR = MethodDescriptor(method="exact", min_n=1, p_threshold=None)
-"""Exact floors: a single sample suffices; no significance gate."""
 
 NOISE_K = 1.5
 """Multiplier applied to the noise floor when deriving the instability band."""

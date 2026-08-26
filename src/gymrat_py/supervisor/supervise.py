@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from gymrat_py.errors import message_of
 from gymrat_py.session.clock import now_ms
 from gymrat_py.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat_py.supervisor.event_log import create_event_log_writer
@@ -73,17 +72,17 @@ def _fire_and_report_interrupt(session: DriverSession) -> None:
     try:
         pending = session.interrupt()
     except Exception as error:  # noqa: BLE001 - interrupt failure must not abort grace setup
-        warn_to_stderr(f"session interrupt failed: {message_of(error)}")
+        warn_to_stderr(f"session interrupt failed: {error!s}")
         return
 
-    task = asyncio.ensure_future(pending)
+    task = asyncio.create_task(pending)
 
     def _report(finished: asyncio.Task[None]) -> None:
         if finished.cancelled():
             return
         error = finished.exception()
         if error is not None:
-            warn_to_stderr(f"session interrupt failed: {message_of(error)}")
+            warn_to_stderr(f"session interrupt failed: {error!s}")
 
     task.add_done_callback(_report)
 
@@ -126,7 +125,7 @@ class _Supervision:
             self._wall_task.cancel()
         self._combined(CapEvent(timestamp=now_ms(), cap=cap))
         _fire_and_report_interrupt(self._session)
-        self._grace_task = asyncio.ensure_future(self._run_grace())
+        self._grace_task = asyncio.create_task(self._run_grace())
 
     async def _run_grace(self) -> None:
         await asyncio.sleep(self._config.grace_ms / 1000)
@@ -148,7 +147,7 @@ class _Supervision:
 
         # Arm the wall-clock timer only when no cap fired during start.
         if not self._cap_fired:
-            self._wall_task = asyncio.ensure_future(self._run_wall_clock())
+            self._wall_task = asyncio.create_task(self._run_wall_clock())
 
         try:
             outcome = await self._session.outcome

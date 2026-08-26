@@ -7,6 +7,7 @@ from a source checkout, a wheel, or a zipapp.
 
 from importlib import resources
 from importlib.resources.abc import Traversable
+from zipfile import BadZipFile
 
 from gymrat_py.errors import GymratError
 
@@ -33,7 +34,7 @@ def read_bundled_skill() -> str:
     resource = _skill_resource()
     try:
         return resource.read_text(encoding="utf-8")
-    except OSError as err:
+    except (OSError, ValueError, BadZipFile) as err:
         message = (
             f"Could not read the bundled skill file {_SKILL_RELATIVE_PATH} "
             f"(resolved to {resource})."

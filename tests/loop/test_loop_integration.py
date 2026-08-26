@@ -49,7 +49,9 @@ from tests.session._records import committed_keep, iteration_record
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
 
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
+from tests._ansi import strip_sgr as _strip_ansi
+from tests._cli import ENTRY as _ENTRY
+from tests._cli import no_color_env as _env
 
 #: Generous budget: every command creates real worktrees and spawns real benches.
 LONG_RUN_TIMEOUT = 180
@@ -67,21 +69,6 @@ DISCARDED_LATENCY = 80
 DISCARD_MARKER = "discarded-edit-marker"
 
 DISCARDED_FILE = "discarded-note.txt"
-
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _env() -> dict[str, str]:
-    """A child environment with color forced off, so output is deterministic."""
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-    env.pop("FORCE_COLOR", None)
-    return env
-
-
-def _strip_ansi(text: str) -> str:
-    """Drop any residual SGR color escapes, so lines compare as plain text."""
-    return _ANSI.sub("", text)
 
 
 def _run_cli(repo: str, *argv: str) -> subprocess.CompletedProcess[str]:
@@ -104,14 +91,9 @@ def _run_cli(repo: str, *argv: str) -> subprocess.CompletedProcess[str]:
 
 def _git(repo: str, *args: str) -> str:
     """Run git in ``repo`` for test setup and inspection, returning trimmed stdout."""
-    result = subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+    from tests._git import run_git
+
+    return run_git(list(args), repo).strip()
 
 
 def _tune_experiment(repo: str, latency: int) -> None:

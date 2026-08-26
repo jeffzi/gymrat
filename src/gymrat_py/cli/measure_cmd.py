@@ -9,7 +9,6 @@ pulls the heavy statistics stack.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from dataclasses import dataclass
 from typing import Annotated
@@ -33,8 +32,8 @@ from gymrat_py.cli.shared import (
     begin_run,
     color_override_of,
     emit_report,
-    exit_with_error,
     parse_positional,
+    run_cli,
     run_options_of,
     set_debug_mode,
     wants_json,
@@ -88,7 +87,8 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,
@@ -169,9 +169,4 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             stream = sys.stderr if wants_json(flags) else sys.stdout
             write_and_flush(stream, note)
 
-    try:
-        asyncio.run(run())
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_cli(run)

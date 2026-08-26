@@ -25,7 +25,6 @@ from gymrat_py.session.paths import (
     session_dir,
     session_jsonl_path,
     supervise_lockfile_path,
-    worktrees_dir,
 )
 
 SESSION_ID = "20260808-141530-a3f2"
@@ -95,7 +94,6 @@ def _derive_archived(root: str) -> str:
     [
         (session_dir, (".gymrat",)),
         (session_jsonl_path, (".gymrat", "session.jsonl")),
-        (worktrees_dir, (".gymrat", "worktrees")),
         (experiment_worktree_dir, (".gymrat", "worktrees", "experiment")),
         (baseline_worktree_dir, (".gymrat", "worktrees", "baseline")),
         (_derive_archived, (".gymrat", f"session-{SESSION_ID}.jsonl")),

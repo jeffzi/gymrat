@@ -9,7 +9,6 @@ CLI never pulls the heavy statistics stack.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated
 
 import typer
@@ -32,9 +31,9 @@ from gymrat_py.cli.shared import (
     begin_run,
     color_override_of,
     emit_report,
-    exit_with_error,
     parse_fail_on,
     parse_positional,
+    run_cli,
     run_options_of,
     set_debug_mode,
     with_repo_lock,
@@ -90,7 +89,8 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Compare one baseline revision against one or more candidates."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,
@@ -144,9 +144,4 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         if should_fail_gate(flags.fail_on, result):
             raise typer.Exit(GATE_EXIT_CODE)
 
-    try:
-        asyncio.run(run())
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_cli(run)

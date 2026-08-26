@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The configuration file is now `gymrat.toml`, written in TOML with snake_case keys, replacing the
+  former `gymrat.json`. Keys that were camelCase are now snake_case: `timeout_seconds`,
+  `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the
+  new file, and existing configs must be converted to TOML and re-keyed.
+- `gymrat init` is now non-interactive: it takes `--bench` (required), `--no-runbook`, and
+  `--no-skill` flags and writes only the `bench` and `runbook` config keys.
+- Significance verdicts now come from an exact sign-flip permutation test instead of the Wilcoxon
+  signed-rank test. The permutation test's statistic is the delta each verdict already reports — the
+  percent change in the median — so a significant result can no longer point in a different direction
+  than the number shown beside it. It also computes exact results for small sample sizes instead of
+  relying on approximations that can distort the outcome. Verdicts are labeled `permutation` in the
+  text reports and in the JSON output. Near the significance boundary a metric can now land on the
+  opposite verdict from earlier releases; in particular, a run whose samples barely move is less
+  likely to be judged significant than before.
+
 ### Fixed
 
 - Interrupting a run on a terminal now clears the progress line before exiting, so no stray status
@@ -22,10 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The progress line no longer spills a garbled row on a terminal that reports zero or unknown width
   (for example `COLUMNS=0`); such a width now collapses the line instead of being treated as 80
   columns.
-- A supervised agent session whose child emits an oversized, unterminated output line now ends with
-  a clear error instead of crashing on an internal read limit.
-- Tearing down a supervised agent session no longer hangs indefinitely when the child ignores the
-  stop signal; teardown now waits briefly, then abandons the wait and warns.
+- A supervised agent session whose benchmark process emits an oversized, unterminated output line
+  now ends with a clear error instead of crashing on an internal read limit.
+- Tearing down a supervised agent session no longer hangs indefinitely when the supervised process
+  ignores the stop signal; teardown now waits briefly, then abandons the wait and warns.
+
+### Removed
+
+- The interactive wizard prompts in `gymrat init` and the `--adapter`, `--checks`, `--stop-target`,
+  `--stop-max-iterations`, `--primary`, `--runbook PATH`, `--skill/--no-skill` tri-state, and
+  `--yes` flags.
 
 ## [0.11.0] - 2026-08-25
 
@@ -88,8 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `--record` (`-r`) flag for `gymrat measure` that appends the run to a per-repository session log
   as a labeled baseline, capturing each round's raw samples. Recording requires an open session; a
   missing or already-finalized session, or a run outside a git repository, stops the command before
-  it benchmarks so a long run is never discarded with nowhere to record it. Sessions are opened by
-  the forthcoming session command; until it ships, `--record` reports that no session is open.
+  it benchmarks so a long run is never discarded with nowhere to record it.
 
 ## [0.8.0] - 2026-08-24
 
@@ -220,15 +242,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured error reporting for every gymrat failure: the command prints a clear message and, where
   one applies, an actionable hint for what to do next.
 
-[Unreleased]: https://github.com/jeffzi/gymrat-py/compare/v0.11.0...HEAD
-[0.11.0]: https://github.com/jeffzi/gymrat-py/compare/v0.10.0...v0.11.0
-[0.10.0]: https://github.com/jeffzi/gymrat-py/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/jeffzi/gymrat-py/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/jeffzi/gymrat-py/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/jeffzi/gymrat-py/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/jeffzi/gymrat-py/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/jeffzi/gymrat-py/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/jeffzi/gymrat-py/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/jeffzi/gymrat-py/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/jeffzi/gymrat-py/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/jeffzi/gymrat-py/releases/tag/v0.1.0
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jeffzi/gymrat/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/jeffzi/gymrat/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/jeffzi/gymrat/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/jeffzi/gymrat/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/jeffzi/gymrat/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/jeffzi/gymrat/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/jeffzi/gymrat/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/jeffzi/gymrat/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jeffzi/gymrat/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/jeffzi/gymrat/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/jeffzi/gymrat/releases/tag/v0.1.0

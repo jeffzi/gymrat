@@ -37,7 +37,7 @@ def repo_root(cwd: str | None = None) -> str:
             :class:`~gymrat_py.git.NotAGitRepositoryError`) or git otherwise
             fails to resolve the repository.
     """
-    directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109
+    directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109 -- low-level os call for atomicity guarantees pathlib cannot provide
     try:
         toplevel = run_git(["rev-parse", "--show-toplevel"], directory).strip()
     except (subprocess.SubprocessError, OSError) as error:
@@ -58,11 +58,6 @@ def session_jsonl_path(root: str) -> str:
 def archived_session_path(root: str, session_id: str) -> str:
     """Path to the archived log for a completed session under ``root``."""
     return str(Path(root) / SESSION_DIR_NAME / f"session-{session_id}.jsonl")
-
-
-def worktrees_dir(root: str) -> str:
-    """Directory holding gymrat-managed worktrees under ``root``."""
-    return str(Path(root) / SESSION_DIR_NAME / "worktrees")
 
 
 def experiment_worktree_dir(root: str) -> str:

@@ -1,11 +1,8 @@
-import inspect
-
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from gymrat_py.model import (
-    DROP_UNPAIRED,
     Observations,
     pair_metric,
 )
@@ -137,18 +134,6 @@ def test_pair_metric_when_container_has_multiple_repeats_does_raise_value_error(
 
     with pytest.raises(ValueError, match="single-repeat"):
         pair_metric(multi, single, "t")
-
-
-# ---------------------------------------------------------------------------
-# pair_metric — named drop policy seam
-# ---------------------------------------------------------------------------
-
-
-def test_pair_metric_default_policy_is_drop_unpaired():
-    default = inspect.signature(pair_metric).parameters["policy"].default
-
-    assert default == DROP_UNPAIRED
-    assert DROP_UNPAIRED == "drop-unpaired"
 
 
 # ---------------------------------------------------------------------------

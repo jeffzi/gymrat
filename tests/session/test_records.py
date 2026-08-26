@@ -40,7 +40,7 @@ BASELINE_RECORD: dict[str, object] = {
 METRIC_VERDICT: dict[str, object] = {
     "deltaPct": -7.2,
     "verdict": "improved",
-    "method": "signed-rank",
+    "method": "permutation",
     "p": 0.002,
     "noisePct": 1.4,
     "gating": True,
@@ -297,11 +297,6 @@ def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[
         pytest.param(omitting(FINALIZE_RECORD, "commit"), "commit", id="finalize-no-commit"),
         # a field violates its schema
         pytest.param(
-            patching(SESSION_RECORD, {"schemaVersion": 2}),
-            "schemaVersion",
-            id="wrong-schema-version",
-        ),
-        pytest.param(
             patching(SESSION_RECORD, {"baseline": {"ref": 42, "sha": SHA}}),
             "baseline.ref",
             id="baseline-ref-not-string",
@@ -365,6 +360,14 @@ def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[
             patching(ITERATION_RECORD, {"metrics": {"total_ms": {**METRIC_VERDICT, "band": 1.4}}}),
             "metrics.total_ms.band",
             id="unknown-in-verdict",
+        ),
+        pytest.param(
+            patching(
+                ITERATION_RECORD,
+                {"metrics": {"total_ms": {**METRIC_VERDICT, "method": "signed-rank"}}},
+            ),
+            "metrics.total_ms.method",
+            id="verdict-method-signed-rank-retired",
         ),
     ],
 )

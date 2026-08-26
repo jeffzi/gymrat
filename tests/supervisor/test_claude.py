@@ -15,7 +15,6 @@ from typing import override
 
 import pytest
 
-from gymrat_py.errors import message_of
 from gymrat_py.supervisor import create_claude_driver
 from gymrat_py.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat_py.supervisor.events import (
@@ -643,7 +642,7 @@ async def test_start_when_client_factory_raises_does_resolve_error_without_raisi
     outcome = await run_session(driver, collecting_observer().observer)
 
     assert outcome.reason == "error"
-    assert outcome.message == message_of(error)
+    assert outcome.message == str(error)
     assert outcome.cost_usd == 0.0
 
 

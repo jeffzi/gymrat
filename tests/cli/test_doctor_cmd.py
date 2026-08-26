@@ -44,7 +44,6 @@ def _patch_doctor(
     """Replace every doctor seam and return the recorded bench inputs and lock calls."""
     inspection = ConfigInspection(
         config_path="/missing/gymrat.json" if config_failure else "/project/gymrat.json",
-        config_exists=not config_failure,
         problems=["Config file not found at /missing/gymrat.json"] if config_failure else [],
         config=None if config_failure else _config(),
         bench="node bench.js",
@@ -112,14 +111,13 @@ def _patch_doctor(
 
 
 @pytest.fixture
-def _preserve_color_env():
-    saved = {name: os.environ.get(name) for name in ("NO_COLOR", "FORCE_COLOR")}
-    yield
-    for name, value in saved.items():
+def _preserve_color_env(monkeypatch: pytest.MonkeyPatch):
+    for name in ("NO_COLOR", "FORCE_COLOR"):
+        value = os.environ.get(name)
         if value is None:
-            os.environ.pop(name, None)
+            monkeypatch.delenv(name, raising=False)
         else:
-            os.environ[name] = value
+            monkeypatch.setenv(name, value)
 
 
 # ---------------------------------------------------------------------------

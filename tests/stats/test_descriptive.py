@@ -281,19 +281,19 @@ def test_combine_geomean_property_is_permutation_invariant(
 # ---------------------------------------------------------------------------
 
 
-def test_ratio_outcome_is_frozen():
+def test_ratio_outcome_when_field_assigned_does_raise_frozen():
     outcome = normalize_ratio(50.0, "lower")
 
     with pytest.raises((AttributeError, TypeError)):
         outcome.rho = 2.0  # type: ignore[misc]
 
 
-def test_geomean_combination_is_frozen():
+def test_geomean_combination_when_field_assigned_does_raise_frozen():
     result = combine_geomean([(1.5, 2.0)])
 
     with pytest.raises((AttributeError, TypeError)):
         result.value = 0.0  # type: ignore[misc]
 
 
-def test_ratio_outcome_type_is_importable():
+def test_ratio_outcome_type_when_normalize_ratio_called_does_return_ratio_outcome_instance():
     assert isinstance(normalize_ratio(50.0, "lower"), RatioOutcome)

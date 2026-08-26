@@ -30,7 +30,7 @@ from tests.report._inputs import (
     line_starting_with,
     metric_meta,
     other_kind,
-    signed_rank_metric,
+    permutation_metric,
     strip_ansi,
     styles_at,
     two_kind_result,
@@ -124,7 +124,7 @@ def test_render_report_when_variant_label_overflows_does_truncate_leaving_metric
         baseline_label="main",
         candidates=[create_candidate(label="feature/entity-spawn-fastpath")],
         metrics={
-            "decode/an-extremely-long-metric-name/time": signed_rank_metric(
+            "decode/an-extremely-long-metric-name/time": permutation_metric(
                 verdict="improved", delta=-10, unit="ns"
             ),
         },
@@ -154,7 +154,7 @@ def test_render_report_when_rendering_a_metric_row_does_pair_glyph_delta_and_ban
 ):
     result = create_comparison_result(
         metrics={
-            "decode/time": signed_rank_metric(
+            "decode/time": permutation_metric(
                 verdict=verdict, delta=delta, noise_pct=noise_pct, unit="ns"
             )
         }
@@ -167,7 +167,7 @@ def test_render_report_when_rendering_a_metric_row_does_pair_glyph_delta_and_ban
 
 def test_render_report_when_rendering_a_metric_row_does_drop_pair_count_and_pvalue():
     result = create_comparison_result(
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-10, p=0.002)}
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10, p=0.002)}
     )
 
     row = line_starting_with(render_report(result), "decode/time")
@@ -214,7 +214,7 @@ def test_render_report_when_delta_is_undefined_arithmetic_does_keep_the_glyph():
 def test_render_report_when_spread_exceeds_the_median_does_state_it_in_absolute_units():
     result = create_comparison_result(
         metrics={
-            "jittery/heap": signed_rank_metric(
+            "jittery/heap": permutation_metric(
                 verdict="unstable",
                 delta=5,
                 baseline_median=5,
@@ -233,9 +233,9 @@ def test_render_report_when_spread_exceeds_the_median_does_state_it_in_absolute_
     ("metric", "expected"),
     [
         pytest.param(
-            signed_rank_metric(verdict="improved", delta=-10, n=8),
+            permutation_metric(verdict="improved", delta=-10, n=8),
             "✓  -10.0%  ±2.5%  n=8",
-            id="signed-rank",
+            id="permutation",
         ),
         pytest.param(
             band_metric(verdict="improved", delta=-5, n=4),
@@ -267,10 +267,10 @@ def test_render_report_when_metric_paired_fewer_rounds_does_annotate_with_pair_c
 def test_render_report_when_columns_differ_in_width_does_right_align_value_cells():
     result = create_comparison_result(
         metrics={
-            "short": signed_rank_metric(
+            "short": permutation_metric(
                 verdict="improved", delta=-50, baseline_median=914, unit="ns"
             ),
-            "very-long-metric-name": signed_rank_metric(
+            "very-long-metric-name": permutation_metric(
                 verdict="improved", delta=-10, baseline_median=49152, unit="bytes"
             ),
         }
@@ -288,8 +288,8 @@ def test_render_report_when_columns_differ_in_width_does_right_align_value_cells
 def test_render_report_when_widths_differ_does_stack_separators_across_header_rows_and_geomean():
     result = create_comparison_result(
         metrics={
-            "a/time": signed_rank_metric(verdict="improved", delta=-5, unit="ns"),
-            "a-much-longer-metric/time": signed_rank_metric(
+            "a/time": permutation_metric(verdict="improved", delta=-5, unit="ns"),
+            "a-much-longer-metric/time": permutation_metric(
                 verdict="improved", delta=-5, baseline_median=100000, unit="ns"
             ),
         },
@@ -311,14 +311,14 @@ def test_render_report_when_widths_differ_does_stack_separators_across_header_ro
     [
         pytest.param(
             {
-                "first/metric": signed_rank_metric(
+                "first/metric": permutation_metric(
                     verdict="improved",
                     delta=-10,
                     baseline_median=162000,
                     baseline_spread=9,
                     unit="ns",
                 ),
-                "second/metric": signed_rank_metric(
+                "second/metric": permutation_metric(
                     verdict="improved",
                     delta=-10,
                     baseline_median=29200,
@@ -332,14 +332,14 @@ def test_render_report_when_widths_differ_does_stack_separators_across_header_ro
         ),
         pytest.param(
             {
-                "first/metric": signed_rank_metric(
+                "first/metric": permutation_metric(
                     verdict="improved",
                     delta=-10,
                     baseline_median=5,
                     baseline_spread=7620,
                     unit="bytes",
                 ),
-                "second/metric": signed_rank_metric(
+                "second/metric": permutation_metric(
                     verdict="improved",
                     delta=-10,
                     baseline_median=49152,
@@ -369,7 +369,7 @@ def test_render_report_when_a_magnitude_has_no_spread_does_keep_it_in_the_magnit
     report = render_report(
         create_comparison_result(
             metrics={
-                "first/metric": signed_rank_metric(
+                "first/metric": permutation_metric(
                     verdict="improved",
                     delta=-10,
                     baseline_median=2048,
@@ -399,11 +399,11 @@ def test_render_report_when_a_magnitude_has_no_spread_does_keep_it_in_the_magnit
 def test_render_report_when_aligning_the_verdict_column_does_right_align_deltas_and_pin_band():
     result = create_comparison_result(
         metrics={
-            "regressed/time": signed_rank_metric(
+            "regressed/time": permutation_metric(
                 verdict="regressed", delta=0.4, noise_pct=2.5, unit="ns"
             ),
-            "flat/time": signed_rank_metric(verdict="no-signal", delta=0, noise_pct=100, unit="ns"),
-            "improved/time": signed_rank_metric(
+            "flat/time": permutation_metric(verdict="no-signal", delta=0, noise_pct=100, unit="ns"),
+            "improved/time": permutation_metric(
                 verdict="improved", delta=-12.4, noise_pct=30, unit="ns"
             ),
         }
@@ -421,8 +421,8 @@ def test_render_report_when_aligning_the_verdict_column_does_right_align_deltas_
 def test_render_report_when_a_verdict_is_unstable_does_seat_the_word_without_widening_others():
     result = create_comparison_result(
         metrics={
-            "improved/time": signed_rank_metric(verdict="improved", delta=-12.4, unit="ns"),
-            "jittery/time": signed_rank_metric(
+            "improved/time": permutation_metric(verdict="improved", delta=-12.4, unit="ns"),
+            "jittery/time": permutation_metric(
                 verdict="unstable", delta=-50, noise_pct=30, unit="ns"
             ),
         }
@@ -450,7 +450,7 @@ def test_render_report_when_rendering_the_geomean_row_does_label_with_the_metric
     n: int, expected_label: str
 ):
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-6)},
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-6)},
         candidates=[create_candidate(kinds=[other_kind(-5.8, n)])],
     )
 
@@ -461,7 +461,7 @@ def test_render_report_when_rendering_the_geomean_row_does_label_with_the_metric
 
 def test_render_report_when_rendering_the_geomean_row_does_align_its_delta_with_the_column():
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-17.9)},
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-17.9)},
         candidates=[create_candidate(kinds=[other_kind(-6, 1)])],
     )
 
@@ -474,7 +474,7 @@ def test_render_report_when_rendering_the_geomean_row_does_align_its_delta_with_
 
 def test_render_report_when_rendering_the_geomean_row_does_leave_excluded_to_the_summary():
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-6)},
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-6)},
         candidates=[
             create_candidate(
                 kinds=[
@@ -495,7 +495,7 @@ def test_render_report_when_rendering_the_geomean_row_does_leave_excluded_to_the
 
 def test_render_report_when_every_metric_excluded_does_report_no_stable_metrics():
     result = create_comparison_result(
-        metrics={"jittery/time": signed_rank_metric(verdict="unstable", delta=-50)},
+        metrics={"jittery/time": permutation_metric(verdict="unstable", delta=-50)},
         candidates=[
             create_candidate(
                 kinds=[
@@ -541,7 +541,7 @@ def test_render_report_when_an_aggregate_carries_a_band_does_state_it_behind_the
 
 def test_render_report_when_flat_geomean_carries_a_band_does_state_it_behind_the_delta():
     result = create_comparison_result(
-        metrics={"faster/time": signed_rank_metric(verdict="improved", delta=-17.5)},
+        metrics={"faster/time": permutation_metric(verdict="improved", delta=-17.5)},
         candidates=[create_candidate(kinds=[other_kind(-5.8, 1, band=1.2)])],
     )
 
@@ -600,7 +600,7 @@ def test_render_report_when_rendering_with_color_does_dim_the_aggregate_band(
 
 def test_render_report_when_closing_the_table_does_end_on_the_geomean_row():
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-6)}
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-6)}
     )
 
     row = last_table_row(render_report(result))

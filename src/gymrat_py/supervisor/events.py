@@ -213,7 +213,7 @@ def _to_wire(event: SessionEvent) -> dict[str, object]:
             wire = {"type": event.type, "timestamp": event.timestamp, "cap": event.cap}
         case LaunchEvent():
             wire = _launch_to_wire(event)
-        case _ as unreachable:  # pragma: no cover
+        case _ as unreachable:  # pragma: no cover — exhaustive match over the event union
             assert_never(unreachable)
     return wire
 

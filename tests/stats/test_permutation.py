@@ -1,7 +1,7 @@
-"""Behavioral tests for the dormant sign-flip permutation test.
+"""Behavioral tests for the sign-flip permutation test.
 
 The permutation test pairs ``x`` and ``y`` index-wise over the shorter input,
-reports the same ``SignificanceResult`` shape as the Wilcoxon wrapper, and
+reports a ``SignificanceResult``, and
 derives its two-sided p-value from an exact sign-flip enumeration (small
 samples) or a fixed-seed Monte Carlo resample (large samples). scipy is the
 authority for the pinned p-values below; they were captured by running the

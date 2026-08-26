@@ -1,9 +1,9 @@
-import json
 import re
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import tomli_w
 
 from gymrat_py.adapters.types import Adapter, MetricDefaults
 from gymrat_py.config import (
@@ -254,7 +254,7 @@ LOOP_CONFIG: dict[str, object] = {
     "checks": "npm test",
     "filter": "npm run bench -- {names}",
     "primary": "decode/time",
-    "stop": {"targetValue": 1.5, "maxIterations": 20},
+    "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
 
@@ -266,13 +266,13 @@ def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def write_config(directory: Path, content: dict[str, object]) -> Path:
-    config_path = directory / "gymrat.json"
-    config_path.write_text(json.dumps(content), encoding="utf-8")
+    config_path = directory / "gymrat.toml"
+    config_path.write_text(tomli_w.dumps(content), encoding="utf-8")
     return config_path
 
 
 def write_raw_config(directory: Path, content: str) -> Path:
-    config_path = directory / "gymrat.json"
+    config_path = directory / "gymrat.toml"
     config_path.write_text(content, encoding="utf-8")
     return config_path
 
@@ -294,7 +294,7 @@ def test_inspect_config_when_no_file_and_empty_flags_does_return_defaults(
     result = inspect_config(CliFlags())
 
     assert result.config_path is None
-    assert result.config_exists is False
+
     assert result.problems == []
     assert result.config == DEFAULT_CONFIG
     assert result.bench is None
@@ -321,16 +321,16 @@ def test_inspect_config_when_valid_file_provides_values_does_settle_config_and_p
             "bench": "config-bench",
             "adapter": "custom-adapter",
             "samples": 20,
-            "timeoutSeconds": 3600,
-            "unstableNoisePct": 150.5,
+            "timeout_seconds": 3600,
+            "unstable_noise_pct": 150.5,
         },
     )
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())
 
-    assert result.config_path == str(tmp_path / "gymrat.json")
-    assert result.config_exists is True
+    assert result.config_path == str(tmp_path / "gymrat.toml")
+
     assert result.problems == []
     assert result.config == BenchlessConfig(
         adapter="custom-adapter",
@@ -417,7 +417,7 @@ def test_inspect_config_when_base_dir_given_does_read_base_dir_config(
     result = inspect_config(CliFlags(), str(base_dir))
 
     assert result.bench == "base-bench"
-    assert result.config_path == str(base_dir / "gymrat.json")
+    assert result.config_path == str(base_dir / "gymrat.toml")
     assert result.config is not None
     assert result.config.checks == "base-checks"
 
@@ -430,39 +430,27 @@ def test_inspect_config_when_base_dir_given_does_read_base_dir_config(
 def test_inspect_config_when_config_flag_names_missing_path_does_report_and_omit_config(
     tmp_path: Path,
 ):
-    missing_path = tmp_path / "typo.json"
+    missing_path = tmp_path / "typo.toml"
 
     result = inspect_config(CliFlags(bench="my-bench", config=str(missing_path)))
 
     assert result.config_path == str(missing_path)
-    assert result.config_exists is False
+
     assert has_problem(result.problems, re.escape(str(missing_path)))
     assert result.config is None
 
 
-def test_inspect_config_when_file_is_invalid_json_does_report_naming_path(
+def test_inspect_config_when_file_is_invalid_toml_does_report_naming_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    config_path = write_raw_config(tmp_path, "{ invalid json }")
+    config_path = write_raw_config(tmp_path, "= invalid toml =")
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())
 
     assert result.config_path == str(config_path)
-    assert result.config_exists is True
+
     assert has_problem(result.problems, re.escape(str(config_path)))
-    assert result.config is None
-
-
-def test_inspect_config_when_file_root_not_object_does_report_json_object(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    write_raw_config(tmp_path, "[]")
-    monkeypatch.chdir(tmp_path)
-
-    result = inspect_config(CliFlags())
-
-    assert has_problem(result.problems, "JSON object")
     assert result.config is None
 
 
@@ -496,12 +484,12 @@ def test_inspect_config_when_filter_omits_names_placeholder_does_report_naming_f
 def test_inspect_config_when_target_value_with_geomean_primary_does_report_naming_both(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_config(tmp_path, {"bench": "config-bench", "stop": {"targetValue": 1.5}})
+    write_config(tmp_path, {"bench": "config-bench", "stop": {"target_value": 1.5}})
     monkeypatch.chdir(tmp_path)
 
     result = inspect_config(CliFlags())
 
-    assert has_problem(result.problems, r"targetValue.*geomean|geomean.*targetValue")
+    assert has_problem(result.problems, r"target_value.*geomean|geomean.*target_value")
 
 
 def test_inspect_config_when_runbook_missing_does_report_naming_field_and_path(
@@ -593,7 +581,7 @@ def test_inspect_config_when_config_env_var_names_missing_path_does_report_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.chdir(tmp_path)
-    missing_path = tmp_path / "typo.json"
+    missing_path = tmp_path / "typo.toml"
     monkeypatch.setenv("GYMRAT_CONFIG", str(missing_path))
 
     result = inspect_config(CliFlags(bench="my-bench"))

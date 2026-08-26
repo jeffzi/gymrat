@@ -122,8 +122,8 @@ async def test_run_hook_when_hook_prints_nothing_does_report_empty(hooks: HookSc
 async def test_run_hook_when_successful_does_keep_stderr_out_of_report(hooks: HookScripts) -> None:
     command = hooks.hook_command(
         "import sys\n"
-        'sys.stdout.write("warmed the cache\\n")\n'
-        'sys.stderr.write("cache was already warm\\n")\n'
+        'sys.stdout.buffer.write(b"warmed the cache\\n")\n'
+        'sys.stderr.buffer.write(b"cache was already warm\\n")\n'
     )
 
     run = await run_hook(hooks.invocation_of(command))
@@ -152,7 +152,7 @@ async def test_run_hook_when_hook_writes_stderr_does_record_stderr_bytes(
     hooks: HookScripts,
 ) -> None:
     command = hooks.hook_command(
-        'import sys\nsys.stdout.write("hello\\n")\nsys.stderr.write("warning\\n")\n'
+        'import sys\nsys.stdout.buffer.write(b"hello\\n")\nsys.stderr.buffer.write(b"warning\\n")\n'
     )
 
     run = await run_hook(hooks.invocation_of(command))
@@ -226,8 +226,8 @@ async def test_run_hook_when_failing_stderr_long_line_does_not_split_multi_byte_
 async def test_run_hook_when_hook_exits_nonzero_does_report_and_record(hooks: HookScripts) -> None:
     command = hooks.hook_command(
         "import sys\n"
-        'sys.stdout.write("checked the cache\\n")\n'
-        'sys.stderr.write("no warm copy\\n")\n'
+        'sys.stdout.buffer.write(b"checked the cache\\n")\n'
+        'sys.stderr.buffer.write(b"no warm copy\\n")\n'
         "sys.exit(3)\n"
     )
 
@@ -280,7 +280,8 @@ async def test_run_hook_when_worktree_vanished_does_report_instead_of_raising(
 
     lines = labeled_lines(run.report, "before")
     assert lines[0] == f"hook exited {FAILURE_EXIT_CODE}"
-    assert "No such file or directory" in "\n".join(lines[1:])
+    detail = "\n".join(lines[1:])
+    assert "No such file or directory" in detail or "directory name is invalid" in detail
     assert run.record.stdout_bytes == 0
     assert run.record.timed_out is False
 

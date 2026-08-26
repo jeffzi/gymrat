@@ -13,10 +13,10 @@ import os
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Annotated, Literal, NoReturn, Protocol
+from typing import Annotated, Any, Literal, NoReturn, Protocol
 
 import typer
 from rich.markup import escape
@@ -25,7 +25,7 @@ from gymrat_py.adapters.types import AdapterError
 from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat_py.cli.status_line import RenderMode
 from gymrat_py.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.exec import kill_live_process_groups
 from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
@@ -57,12 +57,6 @@ TOOL_FAILURE_EXIT_CODE = 2
 _POSITIVE_INTEGER_RE = re.compile(r"\d+")
 _POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 _GEOMEAN_CONDITION_RE = re.compile(r"geomean:(-?\d+(?:\.\d+)?)")
-
-# A signed decimal or scientific-notation literal. Unlike the positive-number
-# grammar, this admits a leading sign, a bare-dot fraction, and an exponent, so
-# a stop target of ``-1.5``, ``.5``, or ``1e3`` parses. Anything the pattern
-# rejects — or a magnitude that overflows to infinity — is not a finite number.
-_STOP_TARGET_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 class _WritableStream(Protocol):
@@ -166,10 +160,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
     """
     error_label = f"{markup('Error', 'red')}: "
 
-    if isinstance(error, AdapterError):
-        body = f"{type(error).__name__}: {message_of(error)}"
-    else:
-        body = message_of(error)
+    body = f"{type(error).__name__}: {error!s}" if isinstance(error, AdapterError) else str(error)
 
     doc = f"{error_label}{escape(body)}"
 
@@ -205,6 +196,18 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
     raise typer.Exit(code)
 
 
+def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    """Run an async CLI body, routing any failure through the shared error formatter."""
+    try:
+        asyncio.run(run())
+    except typer.Exit:
+        raise
+    except BrokenPipeError:
+        raise typer.Exit(0) from None
+    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
+        exit_with_error(error)
+
+
 # ---------------------------------------------------------------------------
 # Flag parsers
 # ---------------------------------------------------------------------------
@@ -238,11 +241,6 @@ def parse_positional(positional: str) -> TargetSpec:
     return TargetSpec(label=label, target=target)
 
 
-def collect_positional(value: str, previous: Sequence[TargetSpec]) -> list[TargetSpec]:
-    """Accumulate parsed candidate positionals as the parser walks the variadic argument."""
-    return [*previous, parse_positional(value)]
-
-
 def parse_positive_integer_up_to(max_value: int) -> Callable[[str], int]:
     """Build a coercer accepting only a positive integer at or below ``max_value``."""
 
@@ -265,25 +263,8 @@ def parse_positive_number(value: str) -> float:
         message = "must be a positive number."
         raise typer.BadParameter(message)
     parsed = float(value)
-    if parsed <= 0:
+    if parsed <= 0 or not math.isfinite(parsed):
         message = "must be a positive number."
-        raise typer.BadParameter(message)
-    return parsed
-
-
-def parse_stop_target_value(value: str) -> float:
-    """Parse a signed, finite decimal or exponent stop target.
-
-    Rejects anything the signed-decimal grammar does not match, and rejects a
-    magnitude that overflows the float type to infinity. Used both as the
-    ``--stop-target`` coercer and by the wizard's validator, which catches the
-    raised error to re-prompt.
-    """
-    message = "must be a finite number."
-    if _STOP_TARGET_RE.fullmatch(value) is None:
-        raise typer.BadParameter(message)
-    parsed = float(value)
-    if not math.isfinite(parsed):
         raise typer.BadParameter(message)
     return parsed
 
@@ -423,9 +404,8 @@ class MeasureFlags(SharedFlags):
 # CLI option declarations
 # ---------------------------------------------------------------------------
 
-# JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so integer bounds this CLI shares
-# with the shipped tool (the samples ceiling, the init max-iterations cap) match it
-# rather than drifting to a new bound. Public: imported by init_cmd and the wizard.
+# JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so the samples ceiling this CLI
+# shares with the shipped tool matches it rather than drifting to a new bound.
 MAX_SAFE_INTEGER = 2**53 - 1
 
 

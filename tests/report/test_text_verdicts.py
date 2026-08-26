@@ -38,8 +38,8 @@ from tests.report._inputs import (
     memory_kind,
     metric_meta,
     other_kind,
-    signed_rank_metric,
-    signed_rank_verdict,
+    permutation_metric,
+    permutation_verdict,
     single_sample_result,
     styles_at,
     time_kind,
@@ -59,11 +59,11 @@ if TYPE_CHECKING:
 def test_render_report_when_summarizing_does_count_every_verdict_class_on_one_line():
     result = create_comparison_result(
         metrics={
-            "faster/time": signed_rank_metric(verdict="improved", delta=-10),
-            "also-faster/time": signed_rank_metric(verdict="improved", delta=-5),
-            "slower/time": signed_rank_metric(verdict="regressed", delta=8),
-            "jittery/time": signed_rank_metric(verdict="unstable", delta=5, noise_pct=300),
-            "flat/time": signed_rank_metric(verdict="no-signal", delta=0.2),
+            "faster/time": permutation_metric(verdict="improved", delta=-10),
+            "also-faster/time": permutation_metric(verdict="improved", delta=-5),
+            "slower/time": permutation_metric(verdict="regressed", delta=8),
+            "jittery/time": permutation_metric(verdict="unstable", delta=5, noise_pct=300),
+            "flat/time": permutation_metric(verdict="no-signal", delta=0.2),
         }
     )
 
@@ -76,7 +76,7 @@ def test_render_report_when_summarizing_does_count_every_verdict_class_on_one_li
 
 
 # ---------------------------------------------------------------------------
-# ties starving the signed-rank test
+# ties starving the permutation test
 # ---------------------------------------------------------------------------
 
 
@@ -84,7 +84,7 @@ def _identical_result() -> ComparisonResult:
     """A run whose ``tied/heap`` metric moved too little to break any pair apart."""
     return create_comparison_result(
         metrics={
-            "faster/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns"),
+            "faster/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
             "tied/heap": band_metric(verdict="no-signal", delta=-0.5, n=10, usable_n=0),
         }
     )
@@ -130,7 +130,7 @@ def test_render_report_when_ties_starve_the_test_does_mark_the_candidate_cell_id
                     CandidateMetric(
                         median=90,
                         spread=1,
-                        verdict=signed_rank_verdict(verdict="improved", delta=-10, p=0.002),
+                        verdict=permutation_verdict(verdict="improved", delta=-10, p=0.002),
                     ),
                 ),
                 meta=metric_meta("tied/time", unit="ns"),
@@ -182,7 +182,7 @@ def test_render_report_when_single_pair_does_hint_at_the_longer_run():
 def test_render_report_when_highlighting_does_carry_glyph_delta_and_evidence():
     result = create_comparison_result(
         metrics={
-            "slower/time": signed_rank_metric(verdict="regressed", delta=2.2, p=0.002),
+            "slower/time": permutation_metric(verdict="regressed", delta=2.2, p=0.002),
             "cheaper/heap": exact_metric(delta=-7.9),
             "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30),
         }
@@ -201,7 +201,7 @@ def test_render_report_when_highlighting_does_carry_glyph_delta_and_evidence():
 def test_render_report_when_highlighting_does_state_noise_in_absolute_units_when_large():
     result = create_comparison_result(
         metrics={
-            "jittery/heap": signed_rank_metric(
+            "jittery/heap": permutation_metric(
                 verdict="unstable",
                 delta=5,
                 baseline_median=5,
@@ -219,7 +219,7 @@ def test_render_report_when_highlighting_does_state_noise_in_absolute_units_when
 
 def test_render_report_when_nothing_moved_does_omit_the_highlights_block():
     result = create_comparison_result(
-        metrics={"flat/time": signed_rank_metric(verdict="no-signal", delta=0.2)}
+        metrics={"flat/time": permutation_metric(verdict="no-signal", delta=0.2)}
     )
 
     assert "highlights" not in render_report(result)
@@ -377,7 +377,7 @@ def test_render_report_when_gate_trips_with_color_does_paint_the_glyph_and_delta
 )
 def test_render_report_when_closing_does_spell_out_no_legend(options: ReportOptions):
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10)}
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-10)}
     )
 
     output = render_report(result, options)
@@ -394,14 +394,14 @@ def test_render_report_when_closing_does_spell_out_no_legend(options: ReportOpti
 def test_render_report_when_not_verbose_does_stop_after_highlights():
     result = create_comparison_result(
         metrics={
-            "a/time": signed_rank_metric(verdict="improved", delta=-10),
+            "a/time": permutation_metric(verdict="improved", delta=-10),
             "b/time": band_metric(verdict="improved", delta=-5, n=10, usable_n=3),
         }
     )
 
     output = render_report(result)
 
-    assert "Wilcoxon" not in output
+    assert "sign-flip permutation test" not in output
     assert "noise band" not in output
 
 
@@ -435,17 +435,17 @@ def test_render_report_when_not_verbose_does_keep_the_worktree_footer_below_the_
 # ---------------------------------------------------------------------------
 
 
-def test_render_report_when_verbose_does_name_the_signed_rank_test():
+def test_render_report_when_verbose_does_name_the_permutation_test():
     result = create_comparison_result(
         metrics={
-            "a/time": signed_rank_metric(verdict="improved", delta=-10),
+            "a/time": permutation_metric(verdict="improved", delta=-10),
             "b/time": band_metric(verdict="improved", delta=-5),
         }
     )
 
     output = render_report(result, ReportOptions(verbose=True))
 
-    assert "Wilcoxon signed-rank" in output
+    assert "sign-flip permutation test" in output
     assert "n=10 ≥ 6" in output
 
 
@@ -457,8 +457,8 @@ def test_render_report_when_verbose_and_band_only_does_name_the_band_and_hint():
     output = render_report(result, ReportOptions(verbose=True))
 
     assert "noise band ±(half-range × K)" in output
-    assert "below signed-rank floor (6 pairs)" in output
-    assert "Wilcoxon" not in output
+    assert "below permutation floor (6 pairs)" in output
+    assert "sign-flip permutation test" not in output
     assert "Hint: some rounds were dropped" in output
 
 
@@ -467,14 +467,14 @@ def test_render_report_when_verbose_and_all_exact_does_name_no_method_or_hint():
 
     output = render_report(result, ReportOptions(verbose=True))
 
-    assert "Wilcoxon" not in output
+    assert "sign-flip permutation test" not in output
     assert "noise band" not in output
     assert "Hint:" not in output
 
 
-def test_render_report_when_verbose_and_signed_rank_carried_the_run_does_drop_the_hint():
+def test_render_report_when_verbose_and_permutation_carried_the_run_does_drop_the_hint():
     result = create_comparison_result(
-        metrics={"a/time": signed_rank_metric(verdict="improved", delta=-10)}
+        metrics={"a/time": permutation_metric(verdict="improved", delta=-10)}
     )
 
     output = render_report(result, ReportOptions(verbose=True))
@@ -497,7 +497,7 @@ def test_render_report_when_verbose_does_phrase_each_band_fallback_by_its_cause(
     ]
 
     assert band_lines == [
-        "noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)",
+        "noise band ±(half-range × K) — n=4 below permutation floor (6 pairs)",
         "noise band ±(half-range × K) — ties left n=3 usable pairs (6 needed)",
     ]
 
@@ -510,13 +510,13 @@ def test_render_report_when_verbose_does_phrase_each_band_fallback_by_its_cause(
 def _mixed_method_result() -> ComparisonResult:
     """A run whose metrics genuinely disagree on method.
 
-    ``decode/time`` paired on 10 of the 12 rounds — enough for the signed-rank
+    ``decode/time`` paired on 10 of the 12 rounds — enough for the permutation
     test — while ``encode/time`` paired on 4 and fell back to the noise band.
     """
     return create_comparison_result(
         samples=12,
         metrics={
-            "decode/time": signed_rank_metric(verdict="improved", delta=-10, n=10),
+            "decode/time": permutation_metric(verdict="improved", delta=-10, n=10),
             "encode/time": band_metric(verdict="no-signal", delta=1, n=4),
         },
     )
@@ -525,14 +525,14 @@ def _mixed_method_result() -> ComparisonResult:
 def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts():
     report = render_report(_mixed_method_result(), ReportOptions(verbose=True))
 
-    signed_rank_line = line_starting_with(report, "verdicts:")
+    permutation_line = line_starting_with(report, "verdicts:")
     band_line = line_starting_with(report, "noise band")
 
-    assert signed_rank_line == (
-        "verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05"
+    assert permutation_line == (
+        "verdicts: sign-flip permutation test on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05"
     )
-    assert band_line == "noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)"
-    assert report.index(signed_rank_line) < report.index(band_line)
+    assert band_line == "noise band ±(half-range × K) — n=4 below permutation floor (6 pairs)"
+    assert report.index(permutation_line) < report.index(band_line)
 
 
 def test_render_report_when_methods_differ_does_hint_at_dropped_rounds():

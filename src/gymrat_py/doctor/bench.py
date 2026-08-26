@@ -14,14 +14,14 @@ from gymrat_py.adapters import Adapter, AdapterError, get_adapter
 from gymrat_py.adapters.defaults import DEFAULT_METRIC_KIND
 from gymrat_py.config import GEOMEAN_PRIMARY, KindEntry, MetricEntry
 from gymrat_py.doctor.checks import Check, CheckSection
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.exec import ExecOptions, ExecTimeoutError
 from gymrat_py.exec import exec as run_exec
 
 _MAX_STDERR_EXCERPT_LINES = 5
 _MAX_METRIC_NAMES_SHOWN = 5
 
-_TIMEOUT_HINT = 'Raise the limit with --timeout or the "timeoutSeconds" config key'
+_TIMEOUT_HINT = 'Raise the limit with --timeout or the "timeout_seconds" config key'
 _NO_BENCH_HINT = 'Set the bench command with --bench or the "bench" config key'
 
 
@@ -141,7 +141,7 @@ async def _run_and_parse_bench(
     try:
         parsed = adapter.parse(result.stdout, warnings.append)
     except AdapterError as error:
-        return [Check(name="parse", status="fail", detail=message_of(error))]
+        return [Check(name="parse", status="fail", detail=str(error))]
 
     metric_names = list(parsed)
     checks = [Check(name="bench run", status="ok", detail=_summarize_metric_names(metric_names))]
@@ -164,7 +164,7 @@ async def build_bench_section(input_: BenchSectionInput) -> CheckSection:
         adapter = get_adapter(input_.adapter)
     except GymratError as error:
         return _bench_section(
-            [Check(name="adapter", status="fail", detail=message_of(error), hint=hint_of(error))]
+            [Check(name="adapter", status="fail", detail=str(error), hint=hint_of(error))]
         )
 
     if input_.no_bench:

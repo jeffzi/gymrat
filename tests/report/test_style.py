@@ -96,7 +96,7 @@ def test_shorten_label_when_measuring_wide_chars_does_use_terminal_cells(
 # ---------------------------------------------------------------------------
 
 
-def test_label_display_width_is_twenty():
+def test_label_display_width_when_referenced_does_equal_twenty():
     assert LABEL_DISPLAY_WIDTH == 20
 
 
@@ -158,19 +158,21 @@ def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it
         pytest.param("inconclusive", "dim", id="inconclusive"),
     ],
 )
-def test_verdict_styles_maps_display_class_to_style(display_class: DisplayClass, expected: str):
+def test_verdict_styles_when_referenced_does_map_display_class_to_style(
+    display_class: DisplayClass, expected: str
+):
     assert VERDICT_STYLES[display_class] == expected
 
 
-def test_variant_name_style_is_bold_underline():
+def test_variant_name_style_when_referenced_does_equal_bold_underline():
     assert VARIANT_NAME_STYLE == "bold underline"
 
 
-def test_group_label_style_is_blue():
+def test_group_label_style_when_referenced_does_equal_blue():
     assert GROUP_LABEL_STYLE == "blue"
 
 
-def test_aggregate_label_style_is_bold():
+def test_aggregate_label_style_when_referenced_does_equal_bold():
     assert AGGREGATE_LABEL_STYLE == "bold"
 
 
@@ -186,7 +188,7 @@ def test_format_hint_label_when_rendered_plain_does_read_hint_colon():
 def test_format_hint_label_when_colored_does_underline_hint_but_not_colon():
     styled = render_lines(format_hint_label(), color=True, width=80)
 
-    # Assert the *intent* (underline reaches the word but stops before the
+    # the *intent* (underline reaches the word but stops before the
     # colon), not literal escape bytes: rich renders each styled span as a
     # combined SGR (e.g. "\x1b[4;33m") followed by a full reset, and never emits
     # an incremental underline-off "\x1b[24m".
@@ -256,7 +258,7 @@ def test_highlight_inline_code_when_rendered_plain_does_yield_content(text: str,
     assert render_lines(highlight_inline_code(text), color=False, width=80) == expected
 
 
-def test_highlight_inline_code_when_content_has_markup_metacharacters_render_literally():
+def test_highlight_inline_code_when_content_has_markup_metacharacters_does_render_literally():
     plain = render_lines(
         highlight_inline_code("Metric `[i]` counts."),
         color=False,
@@ -338,7 +340,7 @@ def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain(
     assert "\x1b[" not in result
 
 
-def test_render_lines_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
+def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
 
@@ -367,7 +369,7 @@ def test_render_lines_when_given_multiple_renderables_does_join_with_newlines():
     assert result == "line1\nline2"
 
 
-def test_render_lines_does_not_emit_trailing_whitespace():
+def test_render_lines_when_content_shorter_than_width_does_not_emit_trailing_whitespace():
     result = render_lines("hi", color=False, width=80)
 
     assert result == "hi"
@@ -391,7 +393,9 @@ def test_render_lines_when_text_escaped_does_render_markup_metacharacters_litera
         pytest.param(False, False, id="color-off-plain"),
     ],
 )
-def test_make_capture_console_honors_color_and_captures_output(color: bool, has_ansi: bool):
+def test_make_capture_console_when_color_set_does_honor_color_and_capture_output(
+    color: bool, has_ansi: bool
+):
     console = make_capture_console(color=color, width=80)
 
     console.print("[red]hi[/red]")
@@ -423,7 +427,7 @@ def test_make_capture_console_honors_color_and_captures_output(color: bool, has_
         "LABEL_DISPLAY_WIDTH",
     ],
 )
-def test_report_package_reexports_public_style_name(name: str):
+def test_report_package_when_queried_does_reexport_public_style_name(name: str):
     from gymrat_py import report
     from gymrat_py.report import style
 

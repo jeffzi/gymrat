@@ -7,22 +7,16 @@ into an :class:`~gymrat_py.eta.EtaTracker` and refreshes a live countdown
 between emits.
 """
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from gymrat_py.cli.status_line import RenderMode, create_status_line
-from gymrat_py.eta import EtaTracker, format_eta
+from gymrat_py.eta import EtaTracker, _default_clock, format_eta
 from gymrat_py.report.style import RENDER_WIDTH, markup, render_lines
 from gymrat_py.sampling import PrepareProgressStep, ProgressStep, SampleProgressStep
 
 # Shown after a sample step until enough gaps have been measured for an ETA.
 ETA_PENDING_LABEL = "estimating time left…"
-
-
-def _default_clock() -> float:
-    """Milliseconds from a monotonic clock, matching the tracker's own units."""
-    return time.perf_counter() * 1000
 
 
 def _identity(text: str) -> str:

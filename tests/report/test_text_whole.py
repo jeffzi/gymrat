@@ -43,8 +43,8 @@ from tests.report._inputs import (
     multi_candidate_result,
     n_way_kind_metric,
     other_kind,
-    signed_rank_metric,
-    signed_rank_verdict,
+    permutation_metric,
+    permutation_verdict,
     single_sample_result,
     styles_at,
     table_region,
@@ -237,7 +237,7 @@ def test_render_report_when_flat_kind_is_informational_and_colored_does_dim_the_
 def _flat_result() -> ComparisonResult:
     """A single-candidate run of one kind, whose table closes on a flat geomean row."""
     return create_comparison_result(
-        metrics={"faster/time": signed_rank_metric(verdict="improved", delta=-17.5)}
+        metrics={"faster/time": permutation_metric(verdict="improved", delta=-17.5)}
     )
 
 
@@ -347,7 +347,7 @@ def test_render_report_when_quiet_flat_metric_and_colored_does_leave_the_geomean
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"faster/time": signed_rank_metric(verdict="no-signal", delta=-0.5)}
+        metrics={"faster/time": permutation_metric(verdict="no-signal", delta=-0.5)}
     )
 
     line = line_containing(render_report(result), "geomean")
@@ -429,7 +429,7 @@ def _representative_result() -> ComparisonResult:
                     CandidateMetric(
                         median=1425,
                         spread=1,
-                        verdict=signed_rank_verdict(verdict="improved", delta=-17.9, p=0.002),
+                        verdict=permutation_verdict(verdict="improved", delta=-17.9, p=0.002),
                     ),
                 ),
                 meta=metric_meta("decode/text=digits/time", unit="ns"),
@@ -441,7 +441,7 @@ def _representative_result() -> ComparisonResult:
                     CandidateMetric(
                         median=3093,
                         spread=3,
-                        verdict=signed_rank_verdict(verdict="no-signal", delta=0.9, p=0.49),
+                        verdict=permutation_verdict(verdict="no-signal", delta=0.9, p=0.49),
                     ),
                 ),
                 meta=metric_meta("decode/text=words/time", unit="ns"),
@@ -453,7 +453,7 @@ def _representative_result() -> ComparisonResult:
                     CandidateMetric(
                         median=934,
                         spread=1,
-                        verdict=signed_rank_verdict(verdict="regressed", delta=2.2, p=0.002),
+                        verdict=permutation_verdict(verdict="regressed", delta=2.2, p=0.002),
                     ),
                 ),
                 meta=metric_meta("encode/time", unit="ns"),
@@ -601,12 +601,12 @@ def _two_candidate_result() -> ComparisonResult:
                     CandidateMetric(
                         median=1425,
                         spread=1,
-                        verdict=signed_rank_verdict(verdict="improved", delta=-17.9, p=0.002),
+                        verdict=permutation_verdict(verdict="improved", delta=-17.9, p=0.002),
                     ),
                     CandidateMetric(
                         median=1698,
                         spread=2,
-                        verdict=signed_rank_verdict(verdict="no-signal", delta=-2.1, p=0.32),
+                        verdict=permutation_verdict(verdict="no-signal", delta=-2.1, p=0.32),
                     ),
                 ),
                 meta=metric_meta("decode/text=digits/time", unit="ns"),
@@ -618,7 +618,7 @@ def _two_candidate_result() -> ComparisonResult:
                     CandidateMetric(
                         median=934,
                         spread=1,
-                        verdict=signed_rank_verdict(verdict="regressed", delta=2.2, p=0.002),
+                        verdict=permutation_verdict(verdict="regressed", delta=2.2, p=0.002),
                     ),
                     CandidateMetric(
                         median=1200,
@@ -678,8 +678,8 @@ def test_render_report_when_verbose_two_candidate_does_summarize_group_and_foote
 
     lines = report.split("\n")
     assert lines[-3:] == [
-        "verdicts: Wilcoxon signed-rank on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05",
-        "noise band ±(half-range × K) — n=4 below signed-rank floor (6 pairs)",
+        "verdicts: sign-flip permutation test on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05",
+        "noise band ±(half-range × K) — n=4 below permutation floor (6 pairs)",
         (
             "Hint: some rounds were dropped — not all samples produced paired measurements "
             "for every metric"

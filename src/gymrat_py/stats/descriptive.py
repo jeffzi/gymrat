@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from statistics import fmean, median
 from typing import Literal
 
-type Direction = Literal["lower", "higher"]
-"""Which side of a comparison a lower percent delta counts as an improvement."""
+from gymrat_py.model.metrics import Direction
 
 type RatioExclusion = Literal["undefined-ratio", "infinite-rho"]
 """Why a percent delta could not be normalized into a usable ratio rho."""

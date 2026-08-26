@@ -8,17 +8,20 @@ which then runs lock-free. Any check failure exits 1; an unexpected crash exits 
 
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import platform
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+if TYPE_CHECKING:
+    import asyncio
+
 from gymrat_py.cli.shared import (
+    GATE_EXIT_CODE,
     AdapterOption,
     BenchOption,
     ConfigOption,
@@ -33,7 +36,7 @@ from gymrat_py.cli.shared import (
     TimeoutOption,
     color_override_of,
     emit_report,
-    exit_with_error,
+    run_cli,
     run_with_signal_abort,
     set_debug_mode,
     suppress_color,
@@ -51,15 +54,13 @@ from gymrat_py.doctor.checks import (
     create_doctor_report,
 )
 from gymrat_py.doctor.render import render_doctor_json, render_doctor_report
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.git import NotAGitRepositoryError, try_git
 from gymrat_py.init.scaffold import SKILL_RELATIVE_PATH
 from gymrat_py.report.types import ReportOptions
 from gymrat_py.session.paths import repo_root
 
 NoBenchOption = Annotated[bool, typer.Option("--no-bench", help="skip the smoke-run bench section")]
-
-GATE_EXIT_CODE = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +90,7 @@ def detect_git_environment(cwd: str) -> GitEnvironment:
     except NotAGitRepositoryError:
         return GitEnvironment(git_available=True, inside_git_repo=False)
     except GymratError as error:
-        return GitEnvironment(git_available=True, inside_git_repo=True, git_error=message_of(error))
+        return GitEnvironment(git_available=True, inside_git_repo=True, git_error=str(error))
 
 
 def _defaults_as_benchless() -> BenchlessConfig:
@@ -130,7 +131,8 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     debug: DebugOption = False,
 ) -> None:
     """Check the project setup and report any problems."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     flags = SharedFlags(
         bench=bench,
         prepare=prepare,
@@ -215,9 +217,4 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         if report.has_failures:
             raise typer.Exit(GATE_EXIT_CODE)
 
-    try:
-        asyncio.run(run())
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
+    run_cli(run)

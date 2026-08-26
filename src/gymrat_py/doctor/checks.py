@@ -160,7 +160,7 @@ _SKILL_MISSING_HINT = "Run `gymrat init` to scaffold the project."
 _CHECKS_MISSING_HINT = "Without checks, keep cannot gate commits"
 _STOP_MISSING_HINT = "Without stop, a session has no finish line"
 _RUNBOOK_MISSING_HINT = (
-    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.json. "
+    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
     "Without one, supervise has no instructions to follow."
 )
 
@@ -214,9 +214,9 @@ def _build_stop_check(stop: StopConfig | None) -> Check:
     if stop is not None and (stop.target_value is not None or stop.max_iterations is not None):
         parts: list[str] = []
         if stop.target_value is not None:
-            parts.append(f"targetValue: {stop.target_value}")
+            parts.append(f"target_value: {stop.target_value}")
         if stop.max_iterations is not None:
-            parts.append(f"maxIterations: {stop.max_iterations}")
+            parts.append(f"max_iterations: {stop.max_iterations}")
         return _ok("stop", f"stop: {', '.join(parts)}")
 
     return _issue("stop", "warn", "stop is not configured", _STOP_MISSING_HINT)

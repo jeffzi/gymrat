@@ -16,7 +16,7 @@ from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
     other_kind,
-    signed_rank_metric,
+    permutation_metric,
     without_gated_geomean,
 )
 
@@ -63,7 +63,7 @@ def test_parse_fail_on_rejects_everything_else(value: str):
 
 def test_should_fail_gate_when_no_conditions_does_not_trip():
     result = create_comparison_result(
-        metrics={"m/time": signed_rank_metric(verdict="regressed", delta=4, gating=True)},
+        metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)},
         candidates=[create_candidate()],
     )
 
@@ -72,7 +72,7 @@ def test_should_fail_gate_when_no_conditions_does_not_trip():
 
 def test_should_fail_gate_when_regressed_gating_metric_present_trips():
     result = create_comparison_result(
-        metrics={"m/time": signed_rank_metric(verdict="regressed", delta=4, gating=True)},
+        metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)},
         candidates=[create_candidate()],
     )
 
@@ -81,7 +81,7 @@ def test_should_fail_gate_when_regressed_gating_metric_present_trips():
 
 def test_should_fail_gate_when_regression_is_non_gating_does_not_trip():
     result = create_comparison_result(
-        metrics={"m/time": signed_rank_metric(verdict="regressed", delta=4, gating=False)},
+        metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=False)},
         candidates=[create_candidate()],
     )
 
@@ -122,7 +122,7 @@ def test_should_fail_gate_when_kind_is_non_gating_never_trips_on_geomean():
 
 def test_should_fail_gate_conditions_or_together():
     result = create_comparison_result(
-        metrics={"m/time": signed_rank_metric(verdict="regressed", delta=4, gating=True)},
+        metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)},
         candidates=[create_candidate(kinds=[other_kind(1.0, 3)])],
     )
 

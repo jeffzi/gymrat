@@ -8,12 +8,12 @@ precedence chain -- config file, then built-in default -- can supply the value.
 
 import json
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 
-from gymrat_py.config import MAX_TIMEOUT_SECONDS
+MAX_TIMEOUT_SECONDS = 2_147_483
+"""Largest ``timeout_seconds`` a 32-bit millisecond timer can represent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,18 +49,22 @@ def env_string_result(env_var: str) -> EnvResult:
 def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResult:
     r"""Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
 
-    The ASCII ``[0-9]+`` pattern -- not ``\d`` -- rejects sign, decimal point,
-    exponent, and hex notation, so only a bare run of digits parses. When
+    The ``isascii() and isdigit()`` check rejects sign, decimal point,
+    exponent, and hex notation, so only a bare run of ASCII digits parses. When
     ``maximum`` is supplied the cap is named in the error phrase.
     """
     raw = os.environ.get(env_var)
     if raw is None:
         return EnvResult()
-    valid = (
-        re.fullmatch(r"[0-9]+", raw) is not None
-        and int(raw) >= 1
-        and (maximum is None or int(raw) <= maximum)
-    )
+    try:
+        valid = (
+            raw.isascii()
+            and raw.isdigit()
+            and int(raw) >= 1
+            and (maximum is None or int(raw) <= maximum)
+        )
+    except ValueError:
+        valid = False
     if valid:
         return EnvResult(value=int(raw))
     phrase = (

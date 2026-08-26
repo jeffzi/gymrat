@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from gymrat_py.model import Effect, Exclusion, MetricUnit, SignedRankVerdict
+from gymrat_py.model import Effect, Exclusion, MetricUnit, PermutationVerdict
 from gymrat_py.report import render_json, render_measure_json
 from gymrat_py.report.types import (
     CandidateMetric,
@@ -35,7 +35,7 @@ from tests.report._inputs import (
     metric_meta,
     n_way_metric,
     other_kind,
-    signed_rank_metric,
+    permutation_metric,
     single_sample_result,
     two_kind_measurement,
 )
@@ -108,7 +108,7 @@ def test_render_json_when_single_candidate_does_produce_schema_version_2_shape()
         candidates=[create_candidate(label="experiment")],
         samples=10,
         adapter="mitata",
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-10)},
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10)},
     )
 
     doc = json.loads(render_json(result))
@@ -125,7 +125,7 @@ def test_render_json_when_single_candidate_does_produce_schema_version_2_shape()
 
 def test_render_json_when_top_level_keys_does_order_them_canonically():
     result = create_comparison_result(
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-10)},
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10)},
     )
 
     doc = json.loads(render_json(result))
@@ -177,14 +177,14 @@ def test_render_json_when_several_candidates_does_include_all_in_order():
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_when_signed_rank_verdict_does_set_p_and_null_band():
+def test_render_json_when_permutation_verdict_does_set_p_and_null_band():
     result = create_comparison_result(
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-10, p=0.003)},
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10, p=0.003)},
     )
 
     candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
 
-    assert candidate["method"] == "signed-rank"
+    assert candidate["method"] == "permutation"
     assert candidate["p"] == 0.003
     assert candidate["band"] is None
 
@@ -231,8 +231,8 @@ def test_render_json_when_delta_is_non_finite_does_render_null():
             CandidateMetric(
                 median=90.0,
                 spread=1.0,
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict="improved",
                     p=0.01,
                     noise_pct=2.5,
@@ -265,7 +265,7 @@ def test_render_json_when_metric_unit_does_serialize_unit(
     expected: str | None,
 ):
     result = create_comparison_result(
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-5, unit=unit)},
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-5, unit=unit)},
     )
 
     doc = json.loads(render_json(result))
@@ -275,7 +275,7 @@ def test_render_json_when_metric_unit_does_serialize_unit(
 
 def test_render_json_when_metric_meta_does_include_direction_and_gating():
     result = create_comparison_result(
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-5, gating=False)},
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-5, gating=False)},
     )
 
     metric = json.loads(render_json(result))["metrics"]["decode/time"]
@@ -287,7 +287,7 @@ def test_render_json_when_metric_meta_does_include_direction_and_gating():
 def test_render_json_when_baseline_measured_does_include_median_and_spread():
     result = create_comparison_result(
         metrics={
-            "decode/time": signed_rank_metric(
+            "decode/time": permutation_metric(
                 verdict="improved",
                 delta=-10,
                 baseline_median=200,
@@ -347,7 +347,7 @@ def test_render_json_when_candidate_spans_kinds_does_leave_no_blended_geomean():
 def test_render_json_when_single_kind_does_use_same_shape_with_one_entry():
     result = create_comparison_result(
         candidates=[create_candidate(label="experiment", kinds=[other_kind(-3.2, 2)])],
-        metrics={"decode/time": signed_rank_metric(verdict="improved", delta=-10)},
+        metrics={"decode/time": permutation_metric(verdict="improved", delta=-10)},
     )
 
     doc = json.loads(render_json(result))
@@ -394,11 +394,11 @@ def test_render_json_when_reporting_metric_does_carry_kind_and_group(
 def test_render_json_when_metrics_vary_does_tally_verdict_counts_per_candidate():
     result = create_comparison_result(
         metrics={
-            "faster/time": signed_rank_metric(verdict="improved", delta=-10),
-            "also-faster/time": signed_rank_metric(verdict="improved", delta=-5),
-            "slower/time": signed_rank_metric(verdict="regressed", delta=8),
-            "jittery/time": signed_rank_metric(verdict="unstable", delta=5),
-            "flat/time": signed_rank_metric(verdict="no-signal", delta=0.2),
+            "faster/time": permutation_metric(verdict="improved", delta=-10),
+            "also-faster/time": permutation_metric(verdict="improved", delta=-5),
+            "slower/time": permutation_metric(verdict="regressed", delta=8),
+            "jittery/time": permutation_metric(verdict="unstable", delta=5),
+            "flat/time": permutation_metric(verdict="no-signal", delta=0.2),
         },
     )
 
@@ -418,8 +418,8 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
         baseline_spread=None,
         candidates=(
             CandidateMetric(
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict="improved",
                     p=0.01,
                     noise_pct=2.5,
@@ -452,8 +452,8 @@ def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
             CandidateMetric(
                 median=90.0,
                 spread=1.0,
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict="improved",
                     p=0.01,
                     noise_pct=2.5,
@@ -492,8 +492,8 @@ def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements
             CandidateMetric(
                 median=90.0,
                 spread=1.0,
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict="improved",
                     p=0.01,
                     noise_pct=2.5,
@@ -561,7 +561,7 @@ def test_render_json_when_cleanup_has_failures_does_report_left_behind_and_prune
 def test_render_json_when_output_parsed_again_matches_identically():
     result = create_comparison_result(
         metrics={
-            "decode/time": signed_rank_metric(verdict="improved", delta=-10, unit="ns"),
+            "decode/time": permutation_metric(verdict="improved", delta=-10, unit="ns"),
             "alloc/heap": exact_metric(delta=-5, unit="bytes"),
         },
         worktrees_removed=1,

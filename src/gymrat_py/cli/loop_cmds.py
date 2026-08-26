@@ -1,7 +1,7 @@
 """The optimization-loop subcommands: start, iterate, keep, discard, finalize, status.
 
 Each command resolves its configuration at the repository root — so a run from a
-subdirectory still finds the implicit ``gymrat.json`` — and, where it mutates the
+subdirectory still finds the implicit ``gymrat.toml`` — and, where it mutates the
 session, holds the repository's single-flight lock for the length of the work.
 Two commands break that lock pattern deliberately:
 
@@ -23,10 +23,8 @@ measurement stack these are light, and every loop command reaches one.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
 
 import typer
 
@@ -45,6 +43,7 @@ from gymrat_py.cli.shared import (
     TimeoutOption,
     exit_with_error,
     is_tty,
+    run_cli,
     run_with_signal_abort,
     set_debug_mode,
     suppress_color,
@@ -68,9 +67,6 @@ from gymrat_py.report.format import pluralize
 from gymrat_py.report.loop import format_baseline_ref
 from gymrat_py.session.paths import repo_root
 from gymrat_py.session.store import require_open_session
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
 
 _RefArgument = typer.Argument(
     metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
@@ -127,16 +123,6 @@ def format_start_summary(result: StartResult, runbook: str | None) -> str:
     return "\n".join(lines)
 
 
-def _run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
-    """Run an async CLI body, routing any failure through the shared error formatter."""
-    try:
-        asyncio.run(run())
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
-
-
 def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
     ref: str | None = _RefArgument,
     *,
@@ -149,7 +135,9 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     debug: DebugOption = False,
 ) -> None:
     """Create or resume this repository's optimization session."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -170,7 +158,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
         outcome = await with_repo_lock("start", body)
         write_and_flush(sys.stdout, format_start_summary(outcome.result, outcome.runbook) + "\n")
 
-    _run_cli(run)
+    run_cli(run)
 
 
 def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
@@ -184,7 +172,9 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -211,7 +201,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             exit_with_error(error, GATE_EXIT_CODE)
         write_and_flush(sys.stdout, result.report + "\n")
 
-    _run_cli(run)
+    run_cli(run)
 
 
 def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
@@ -226,7 +216,9 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -250,12 +242,13 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
         if result.record.status == "blocked":
             raise typer.Exit(GATE_EXIT_CODE)
 
-    _run_cli(run)
+    run_cli(run)
 
 
 def discard(*, force: ForceOption = False, debug: DebugOption = False) -> None:
     """Revert the session's experiment worktree to its last commit."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
 
     async def run() -> None:
         root = repo_root()
@@ -281,7 +274,7 @@ def discard(*, force: ForceOption = False, debug: DebugOption = False) -> None:
         result = await with_repo_lock("discard", body)
         write_and_flush(sys.stdout, result.report + "\n")
 
-    _run_cli(run)
+    run_cli(run)
 
 
 def finalize(
@@ -291,7 +284,8 @@ def finalize(
     debug: DebugOption = False,
 ) -> None:
     """Collapse the session's kept iterations into one commit and close it."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
 
     async def run() -> None:
         async def body() -> FinalizeResult:
@@ -300,7 +294,7 @@ def finalize(
         result = await with_repo_lock("finalize", body)
         write_and_flush(sys.stdout, result.report + "\n")
 
-    _run_cli(run)
+    run_cli(run)
 
 
 def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
@@ -315,7 +309,9 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     debug: DebugOption = False,
 ) -> None:
     """Show this repository's session history, read from its log."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     # status styles its lines as it builds them, with no render-time color
     # wrapper, so --no-color has to clear the environment before the render:
     # suppress_color drops FORCE_COLOR as well as setting NO_COLOR, so the flag

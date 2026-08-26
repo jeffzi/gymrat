@@ -68,7 +68,7 @@ def test_compose_kickoff_when_bundled_skill_missing_does_raise_before_runbook_ch
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_no_runbook_configured_does_raise_naming_gymrat_json():
+def test_compose_kickoff_when_no_runbook_configured_does_raise_naming_gymrat_toml():
     config = _make_config(runbook=None)
 
     with pytest.raises(GymratError) as excinfo:
@@ -76,7 +76,7 @@ def test_compose_kickoff_when_no_runbook_configured_does_raise_naming_gymrat_jso
 
     message = str(excinfo.value)
     assert "runbook" in message.lower()
-    assert "gymrat.json" in message
+    assert "gymrat.toml" in message
     assert excinfo.value.hint
 
 

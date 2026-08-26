@@ -371,6 +371,30 @@ async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path)
     assert result.cost_usd == 10.0
 
 
+async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
+    tmp_path: Path,
+):
+    steps = [CostStep(cost_usd=0.05), CostStep(cost_usd=0.12)]
+    driver = create_mock_driver(steps)
+    log_path = tmp_path / "events.jsonl"
+
+    await supervise(
+        driver,
+        make_prompt(),
+        max_minutes=10,
+        max_usd=0.1,
+        log_path=log_path,
+        launch=make_launch(max_usd=0.1),
+    )
+
+    lines = read_log_lines(log_path)
+    types = [line["type"] for line in lines]
+    assert "cap" in types
+    cap_idx = types.index("cap")
+    preceding = types[:cap_idx]
+    assert preceding[-1] == "usage_update"
+
+
 # ---------------------------------------------------------------------------
 # cap racing
 # ---------------------------------------------------------------------------

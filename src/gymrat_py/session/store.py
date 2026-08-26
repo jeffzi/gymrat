@@ -16,11 +16,13 @@ must not already be finalized.
 """
 
 import json
-import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import assert_never
 
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
+from gymrat_py.finite_json import null_non_finite
 from gymrat_py.session.paths import session_jsonl_path
 from gymrat_py.session.records import (
     BaselineRecord,
@@ -115,8 +117,12 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     line = _serialize_record(record)
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     _truncate_torn_tail(jsonl_path)
-    with Path(jsonl_path).open("a", encoding="utf-8") as handle:
-        handle.write(f"{line}\n")
+    payload = f"{line}\n".encode()
+    fd = os.open(jsonl_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
 
 
 def _serialize_record(record: SessionLogRecord) -> str:
@@ -133,35 +139,16 @@ def _serialize_record(record: SessionLogRecord) -> str:
     """
     try:
         wire = record_to_wire(record)
-        line = json.dumps(_nullify_non_finite(wire))
+        line = json.dumps(null_non_finite(wire))
         parse_record(json.loads(line))
     except (GymratError, ValueError, TypeError) as error:
-        message = f"Refusing to log an unreadable {record.type} record: {message_of(error)}"
+        message = f"Refusing to log an unreadable {record.type} record: {error!s}"
         hint = (
             "Nothing was written. A metric that is NaN or Infinity becomes "
             "null in JSON and no longer reads back."
         )
         raise GymratError(message, hint=hint) from error
     return line
-
-
-def _nullify_non_finite(value: object) -> object:
-    """Recursively replace non-finite floats with ``None``, matching ``JSON.stringify``.
-
-    Python's ``json.dumps`` writes ``NaN``/``Infinity`` literals that ``json.loads``
-    reads back as floats, so a bad measurement would wrongly survive the round
-    trip. Lowering them to ``None`` first mirrors JavaScript, where they serialize
-    to ``null`` and no longer read back as a number.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {key: _nullify_non_finite(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_nullify_non_finite(item) for item in value]
-    return value
 
 
 def _truncate_torn_tail(jsonl_path: str) -> None:
@@ -228,7 +215,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
         try:
             record = parse_record(value)
         except GymratError as error:
-            message = f"{message_of(error)} (at {at})"
+            message = f"{error!s} (at {at})"
             raise GymratError(message, hint=hint_of(error)) from error
 
         if not records and record.type != "session":
@@ -324,6 +311,8 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
                 state.finalized = record
             case BaselineRecord() | HookRecord():
                 pass
+            case _ as unreachable:
+                assert_never(unreachable)
 
     return SessionState(
         session=state.session,

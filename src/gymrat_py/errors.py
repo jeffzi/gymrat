@@ -40,22 +40,6 @@ class CommandError(GymratError):
     """A subprocess command invoked by gymrat failed."""
 
 
-def message_of(error: object) -> str:
-    """Extract a human-readable message from an arbitrary thrown value.
-
-    ``str`` dispatches to ``__str__`` for both exceptions (which yields the
-    message) and plain values, so the exception and non-exception cases share
-    one implementation.
-
-    Args:
-        error: The caught value — an exception or any other object.
-
-    Returns:
-        ``str(error)``: an exception's message, or the stringified value.
-    """
-    return str(error)
-
-
 def hint_of(error: object) -> str | None:
     """Extract the ``hint`` from a :class:`GymratError`, else ``None``.
 
@@ -78,7 +62,7 @@ def stderr_text_of(error: object) -> str:
     stderr keeps git's own diagnostics — the text repository-lookup
     classification keys on — instead of that wrapper noise.
 
-    Falls back to :func:`message_of` for values with no stderr, or whose stderr
+    Falls back to ``str(error)`` for values with no stderr, or whose stderr
     is blank: git sometimes explains a failure on stdout instead (e.g. "nothing
     to commit"), leaving stderr an empty or whitespace-only string.
 
@@ -97,4 +81,4 @@ def stderr_text_of(error: object) -> str:
         if isinstance(stderr, str) and stderr.strip():
             return stderr.strip()
 
-    return message_of(error)
+    return str(error)

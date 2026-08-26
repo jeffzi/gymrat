@@ -1,7 +1,7 @@
 """Pure descriptive-statistics helpers, free of I/O, config, and model types."""
 
+from gymrat_py.model.metrics import Direction
 from gymrat_py.stats.descriptive import (
-    Direction,
     GeomeanCombination,
     RatioExclusion,
     RatioOutcome,
@@ -16,7 +16,6 @@ from gymrat_py.stats.permutation import (
     sign_flip_permutation_test,
 )
 from gymrat_py.stats.results import SignificanceResult
-from gymrat_py.stats.wilcoxon import wilcoxon_signed_rank
 
 __all__ = [
     "PERMUTATION_SEED",
@@ -31,5 +30,4 @@ __all__ = [
     "compute_median",
     "normalize_ratio",
     "sign_flip_permutation_test",
-    "wilcoxon_signed_rank",
 ]

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError, message_of
+from gymrat_py.errors import GymratError
 from gymrat_py.targets import (
     RefTarget,
     cleanup_worktrees,
@@ -52,19 +52,10 @@ skip_on_windows_or_root = pytest.mark.skipif(
     reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
 )
 
-_ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
+from tests._cli import ENTRY as _ENTRY
+from tests._git import run_git as _run_git
 
 _FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
-
-
-def _run_git(args: list[str], cwd: str) -> str:
-    return subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
 
 
 def _get_head_sha(repo_dir: str) -> str:
@@ -114,7 +105,7 @@ def test_materialize_worktree_when_temp_dir_read_only_does_fail_naming_dir_witho
         with pytest.raises(GymratError) as exc_info:
             materialize_worktree(worktree, repo)
 
-        message = message_of(exc_info.value)
+        message = str(exc_info.value)
         assert "worktree add failed" in message
         assert os.path.realpath(str(read_only_base)) in message
         assert "Traceback (most recent call last)" not in message

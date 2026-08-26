@@ -40,7 +40,6 @@ def _config(**overrides: object) -> BenchlessConfig:
 def _inspection(**overrides: object) -> ConfigInspection:
     base: dict[str, object] = {
         "config_path": "/project/gymrat.json",
-        "config_exists": True,
         "problems": [],
         "config": _config(),
     }
@@ -204,9 +203,7 @@ def test_build_config_section_when_clean_does_produce_single_ok_naming_the_path(
 
 
 def test_build_config_section_when_no_config_file_does_produce_single_ok_defaults_only():
-    section = build_config_section(
-        _inspection(config_path=None, config_exists=False, config=None, problems=[])
-    )
+    section = build_config_section(_inspection(config_path=None, config=None, problems=[]))
 
     assert len(section.checks) == 1
     check = section.checks[0]

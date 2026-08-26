@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from gymrat_py.config import BenchlessConfig, StopConfig
-from gymrat_py.errors import GymratError, hint_of, message_of
+from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.loop.status import status_session
 from gymrat_py.session import (
     BaselineRecord,
@@ -180,7 +180,7 @@ def test_status_session_when_a_log_line_is_not_json_does_surface_the_store_error
     with pytest.raises(GymratError) as exc:
         status_session(root, _config())
 
-    assert f"{session_jsonl_path(root)}:2" in message_of(exc.value)
+    assert f"{session_jsonl_path(root)}:2" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

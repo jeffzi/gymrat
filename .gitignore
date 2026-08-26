@@ -30,8 +30,9 @@ coverage.xml
 # PyPI configuration file
 .pypirc
 
-# Local-only developer tooling
-tools/
+# Planning and research (local-only)
+.planning/
+.research/
 
 # Agents
 .agents/settings.local.json

@@ -27,8 +27,8 @@ from gymrat_py.model import (
     Exclusion,
     GeomeanResult,
     MetricUnit,
+    PermutationVerdict,
     ResolvedMetricMeta,
-    SignedRankVerdict,
     Verdict,
 )
 from gymrat_py.report.types import (
@@ -84,7 +84,7 @@ def band_verdict(
     )
 
 
-def signed_rank_verdict(
+def permutation_verdict(
     *,
     verdict: ApproximateVerdict = "no-signal",
     delta: float = 0.2,
@@ -92,10 +92,10 @@ def signed_rank_verdict(
     p: float = 0.49,
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
-) -> SignedRankVerdict:
-    """A verdict the Wilcoxon signed-rank test produced."""
-    return SignedRankVerdict(
-        method="signed-rank",
+) -> PermutationVerdict:
+    """A verdict the sign-flip permutation test test produced."""
+    return PermutationVerdict(
+        method="permutation",
         verdict=verdict,
         p=p,
         noise_pct=noise_pct,
@@ -150,7 +150,7 @@ def band_metric(
 
     ``n`` is the total pair count and ``usable_n`` how many of those pairs
     survived tie-dropping. ``n < 6`` means the run was too short for the
-    signed-rank test; ``n >= 6`` with ``usable_n < 6`` means ties starved it.
+    permutation test; ``n >= 6`` with ``usable_n < 6`` means ties starved it.
     """
     resolved_usable = n if usable_n is None else usable_n
     return MetricComparison(
@@ -184,7 +184,7 @@ def band_metric(
 
 @dataclass(frozen=True, slots=True)
 class CandidateSpec:
-    """One candidate's signed-rank outcome against the shared baseline."""
+    """One candidate's permutation outcome against the shared baseline."""
 
     verdict: ApproximateVerdict
     delta: float
@@ -207,8 +207,8 @@ def metric_for(
             CandidateMetric(
                 median=100.0 + candidate.delta,
                 spread=1.0,
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict=candidate.verdict,
                     p=0.01,
                     noise_pct=candidate.noise_pct,
@@ -237,7 +237,7 @@ def approximate_metric(
     noise_pct: float = 2.5,
     direction: Direction = "lower",
 ) -> MetricEntry:
-    """A single-candidate metric whose verdict came from the signed-rank method."""
+    """A single-candidate metric whose verdict came from the permutation method."""
     return metric_for(
         [CandidateSpec(verdict=verdict, delta=delta, noise_pct=noise_pct)],
         direction,
@@ -351,7 +351,7 @@ def create_comparison_result(
 # ---------------------------------------------------------------------------
 
 
-def signed_rank_metric(
+def permutation_metric(
     *,
     verdict: ApproximateVerdict,
     delta: float,
@@ -367,7 +367,7 @@ def signed_rank_metric(
     direction: Direction = "lower",
     n: int = 10,
 ) -> MetricEntry:
-    """A two-sided metric whose verdict came from the signed-rank method."""
+    """A two-sided metric whose verdict came from the permutation method."""
     resolved_median = (
         baseline_median * (1 + delta / 100) if candidate_median is None else candidate_median
     )
@@ -378,8 +378,8 @@ def signed_rank_metric(
             CandidateMetric(
                 median=resolved_median,
                 spread=candidate_spread,
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict=verdict,
                     p=p,
                     noise_pct=noise_pct,
@@ -440,7 +440,7 @@ def exact_metric(
 
 @dataclass(frozen=True, slots=True)
 class NWayCandidate:
-    """One candidate's signed-rank outcome, carrying its own measured median."""
+    """One candidate's permutation outcome, carrying its own measured median."""
 
     verdict: ApproximateVerdict
     delta: float
@@ -456,8 +456,8 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricEntry:
             CandidateMetric(
                 median=candidate.median,
                 spread=1.0,
-                verdict=SignedRankVerdict(
-                    method="signed-rank",
+                verdict=PermutationVerdict(
+                    method="permutation",
                     verdict=candidate.verdict,
                     p=0.01,
                     noise_pct=2.5,
@@ -494,8 +494,8 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
         CandidateMetric(
             median=90.0,
             spread=1.0,
-            verdict=SignedRankVerdict(
-                method="signed-rank",
+            verdict=PermutationVerdict(
+                method="permutation",
                 verdict="improved",
                 p=0.002,
                 noise_pct=2.5,
@@ -507,8 +507,8 @@ def multi_candidate_result(candidate_count: int = 3) -> ComparisonResult:
         CandidateMetric(
             median=104.0,
             spread=1.0,
-            verdict=SignedRankVerdict(
-                method="signed-rank",
+            verdict=PermutationVerdict(
+                method="permutation",
                 verdict="regressed",
                 p=0.002,
                 noise_pct=2.5,
@@ -580,8 +580,8 @@ def kind_metric(
     gating: bool = True,
     unit: MetricUnit | None = "ns",
 ) -> MetricEntry:
-    """A metric of ``kind``, displayed under ``short_name``, judged by the signed-rank test."""
-    metric = signed_rank_metric(verdict=verdict, delta=delta, gating=gating, unit=unit)
+    """A metric of ``kind``, displayed under ``short_name``, judged by the permutation test."""
+    metric = permutation_metric(verdict=verdict, delta=delta, gating=gating, unit=unit)
     return replace(metric, meta=replace(metric.meta, kind=kind, short_name=short_name))
 
 
@@ -1045,10 +1045,10 @@ __all__ = [
     "offsets_of",
     "one_sided_metric",
     "other_kind",
+    "permutation_metric",
+    "permutation_verdict",
     "separator_offsets",
     "separator_styles",
-    "signed_rank_metric",
-    "signed_rank_verdict",
     "single_sample_result",
     "strip_ansi",
     "styles_at",

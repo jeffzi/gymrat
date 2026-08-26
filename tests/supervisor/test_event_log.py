@@ -7,6 +7,7 @@ tree lazily on the first write. Serialization is delegated to ``to_json_line``
 directory creation, the failure surface, and ``SessionObserver`` compatibility.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,7 @@ def test_create_event_log_writer_when_write_fails_does_raise_gymrat_error_naming
     log_path.mkdir()
     writer = create_event_log_writer(log_path)
 
-    with pytest.raises(GymratError, match=str(log_path)):
+    with pytest.raises(GymratError, match=re.escape(str(log_path))):
         writer(UsageUpdateEvent(timestamp=1000, cost_usd=0.01))
 
 

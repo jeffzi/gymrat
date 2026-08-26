@@ -37,16 +37,15 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from gymrat_py.adapters import get_adapter
-from gymrat_py.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, ResolvedConfig
+from gymrat_py.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, KindEntry, ResolvedConfig
 from gymrat_py.errors import GymratError
 from gymrat_py.loop.hooks import HookInvocation, run_hook
-from gymrat_py.loop.iterate_compare import BenchRunOutputs, build_comparison_result
 from gymrat_py.model import (
     ExactVerdict,
     MetricVerdict,
     Observations,
+    PermutationVerdict,
     ResolvedMetricMeta,
-    SignedRankVerdict,
 )
 from gymrat_py.report.loop import (
     EXPERIMENT_INDEX,
@@ -62,7 +61,11 @@ from gymrat_py.report.loop import (
 )
 from gymrat_py.report.style import RENDER_WIDTH, render_lines
 from gymrat_py.report.text import render_report
-from gymrat_py.report.types import ComparisonResult, MetricComparisons, ReportOptions
+from gymrat_py.report.types import (
+    ComparisonResult,
+    MetricComparisons,
+    ReportOptions,
+)
 from gymrat_py.sampling import (
     SamplingOptions,
     TargetContext,
@@ -83,7 +86,7 @@ from gymrat_py.session import (
 from gymrat_py.session import MetricVerdict as RecordMetricVerdict
 from gymrat_py.session.clock import now_iso
 from gymrat_py.targets import InPlaceTarget
-from gymrat_py.verdict import compute_geomean, compute_verdicts
+from gymrat_py.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -180,6 +183,46 @@ class _BenchRun:
     metric_meta: dict[str, ResolvedMetricMeta]
     verdicts: dict[str, MetricVerdict]
     samples: PairedSamples
+
+
+@dataclass(frozen=True, slots=True)
+class BenchRunOutputs:
+    """One bench run's measurement outputs, shared by the record and the report."""
+
+    baseline: TargetSamples
+    experiment: TargetSamples
+    verdicts: dict[str, MetricVerdict]
+    metric_meta: dict[str, ResolvedMetricMeta]
+
+
+def build_iteration_comparison(
+    run: BenchRunOutputs,
+    adapter: str,
+    config_kinds: dict[str, KindEntry] | None,
+) -> ComparisonResult:
+    """Build a comparison result for a single iteration: one baseline, one candidate, no cleanup."""
+    from gymrat_py.compare import (  # noqa: PLC0415 -- deferred to keep compare out of the CLI import chain
+        CandidateMeasurement,
+        build_comparison_result,
+    )
+    from gymrat_py.targets import CleanupResult  # noqa: PLC0415
+
+    candidate = CandidateMeasurement(
+        label=run.experiment.ctx.label,
+        samples=run.experiment.samples,
+        verdicts=run.verdicts,
+        kinds=compute_kind_aggregates(run.verdicts, run.metric_meta),
+    )
+    return build_comparison_result(
+        run.baseline.ctx.label,
+        run.baseline.samples,
+        [candidate],
+        run.metric_meta,
+        samples=min(len(run.baseline.samples), len(run.experiment.samples)),
+        adapter=adapter,
+        config_kinds=config_kinds,
+        cleanup=CleanupResult(removed=0, failures=(), prune_error=None),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,7 +347,7 @@ async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
     )
     return _Judged(
         run=run,
-        result=build_comparison_result(run, ctx.config),
+        result=build_iteration_comparison(run, ctx.config.adapter, ctx.config.kinds),
         confirmation=confirmation,
         samples=first.samples,
     )
@@ -582,7 +625,7 @@ def _recorded_verdicts(
 ) -> dict[str, RecordMetricVerdict]:
     """The per-metric verdicts as the log keeps them, flattened out of the method shapes.
 
-    A key whose value is absent is left out — ``p`` off a non-signed-rank verdict,
+    A key whose value is absent is left out — ``p`` off a non-permutation verdict,
     ``noise_pct`` off an exact one — so a record handed to a caller matches the one
     read back off the log.
     """
@@ -595,7 +638,7 @@ def _recorded_verdicts(
             method=verdict.method,
             gating=meta.gating if meta is not None else True,
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
-            p=verdict.p if isinstance(verdict, SignedRankVerdict) else None,
+            p=verdict.p if isinstance(verdict, PermutationVerdict) else None,
             noise_pct=None if isinstance(verdict, ExactVerdict) else verdict.noise_pct,
         )
     return recorded
