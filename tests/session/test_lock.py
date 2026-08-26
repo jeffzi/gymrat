@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from gymrat_py.errors import GymratError
+from gymrat_py.session import lock as lock_module
 from gymrat_py.session.lock import acquire_lock
 
 # ---------------------------------------------------------------------------
@@ -254,13 +255,9 @@ def test_acquire_lock_when_holder_has_unknown_extra_keys_does_treat_as_live_hold
 def test_acquire_lock_when_liveness_probe_unreadable_does_leave_holder_record_in_place(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # EPERM means the process exists but belongs to another user.
     lock_path, holder_pid = stale_lock_path()
 
-    def refuse_kill(pid: int, sig: int) -> None:
-        raise OSError(errno.EPERM, "operation not permitted")
-
-    monkeypatch.setattr(os, "kill", refuse_kill)
+    monkeypatch.setattr(lock_module, "is_alive", lambda _pid: True)  # pyrefly: ignore
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
@@ -447,17 +444,17 @@ def test_acquire_lock_when_rival_reaches_same_verdict_does_leave_rival_in_place_
     # A rival run takes the very same stale lockfile over, and holds it, in the
     # window between our read of that lockfile and our own steal.
     lock_path, _ = stale_lock_path()
-    real_kill = os.kill
+    real_is_alive = lock_module.is_alive
     rival_has_run = False
 
-    def spy_kill(pid: int, sig: int) -> None:
+    def spy_is_alive(pid: int) -> bool:
         nonlocal rival_has_run
         if not rival_has_run:
             rival_has_run = True
             acquire_lock(lock_path, "rival")
-        return real_kill(pid, sig)
+        return real_is_alive(pid)
 
-    monkeypatch.setattr(os, "kill", spy_kill)
+    monkeypatch.setattr(lock_module, "is_alive", spy_is_alive)
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
