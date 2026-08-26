@@ -16,6 +16,7 @@ must not already be finalized.
 """
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import assert_never
@@ -116,8 +117,12 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     line = _serialize_record(record)
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     _truncate_torn_tail(jsonl_path)
-    with Path(jsonl_path).open("a", encoding="utf-8") as handle:
-        handle.write(f"{line}\n")
+    payload = f"{line}\n".encode()
+    fd = os.open(jsonl_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
 
 
 def _serialize_record(record: SessionLogRecord) -> str:

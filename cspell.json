@@ -15,6 +15,7 @@
     "diffable",
     "dunder",
     "EEXIST",
+    "EINVAL",
     "ENOENT",
     "ENOTDIR",
     "ESRCH",
