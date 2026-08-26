@@ -30,9 +30,6 @@ coverage.xml
 # PyPI configuration file
 .pypirc
 
-# Local-only developer tooling
-tools/
-
 # Agents
 .agents/settings.local.json
 .claude/settings.local.json
