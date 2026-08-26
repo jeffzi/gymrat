@@ -16,7 +16,8 @@ Covers the full session lifecycle: start, iterate, settle, finalize. Every comma
 repository root.
 
 `bench` must be resolvable — from `gymrat.toml` or `--bench`. `gymrat.toml` is where `checks`,
-`filter`, `primary`, `runbook`, `stop`, and `hooks` live; `adapter` and `samples` default to
+`filter` (selects which benchmarks to run), `primary`, `runbook`, `stop`, and `hooks` live;
+`adapter` (names the output parser) and `samples` (measurements per iteration) default to
 `metric-lines` and `10`.
 
 **Load the per-repo runbook before your first edit** — the path `gymrat start` prints (also in
@@ -52,8 +53,8 @@ gymrat iterate        # measure the edit, print the verdict
 Read the verdict block:
 
 - **IMPROVED** — the primary metric moved in the right direction.
-- **REGRESSED** — a gating metric regressed (confirmed by rerun for inexact metrics; exact metrics
-  gate without rerun). A metric absent from the rerun still gates.
+- **REGRESSED** — a gating metric regressed. For inexact metrics, a rerun confirms the regression;
+  exact metrics gate without a rerun. A metric absent from the rerun still gates.
 - **NO-SIGNAL** — the change had no measurable effect.
 
 Then settle:
@@ -66,8 +67,8 @@ gymrat discard                                # revert the experiment worktree
 `keep` refuses when nothing has been measured, when a gating metric regressed, or when `checks`
 fails. Refusals exit 1.
 
-After a checks failure, fix and re-run `gymrat keep`. After a gating-regression refusal the
-iteration is settled — `iterate` or `discard`.
+After a checks failure, fix and re-run `gymrat keep`. After a gating-regression refusal, `keep`
+stays blocked — run `iterate` or `discard`.
 
 **One iteration at a time.** Each must be settled before the next `iterate`.
 
@@ -87,7 +88,10 @@ Collapses kept iterations into one squash commit on a new branch (default `<sess
 Requires every iteration settled, at least one keep, and a clean experiment worktree. A finalized
 session refuses all mutating commands.
 
-### 6. Supervised mode
+### Supervised mode
+
+An alternative to the manual iteration cycle (steps 3-5): an agent drives `iterate`/`keep`/`discard`
+on its own instead of you running them by hand.
 
 ```sh
 gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--log <path>] [--model <name>]
@@ -104,7 +108,8 @@ session lock.
    runbook's goal is the criterion. Report and stop when a target proves unreachable after sustained
    NO-SIGNAL.
 
-2. **Act on hook failures.** Hooks cannot fail the loop, but ignoring their output accumulates debt.
+2. **When a hook fails, report the failure and pause for the user to decide.** Hooks cannot fail
+   the loop, so a silently-ignored failure reaches `keep` unnoticed.
 
 3. **Never run concurrent sessions.** Every mutating command holds a per-repository lock;
    `supervise` holds its own separate lock. A second gymrat process exits 2.
@@ -120,8 +125,7 @@ session lock.
 - Running `iterate` before settling the previous iteration (`keep` or `discard`).
 - Forgetting `checks` in `gymrat.toml` — `keep` commits with the gate off and only warns.
 - Treating NO-SIGNAL as success — it means the change had no measurable effect.
-- Attempting `keep` after a gating regression — the iteration is already settled; use `iterate` or
-  `discard`.
+- Attempting `keep` after a gating regression — `keep` stays blocked; use `iterate` or `discard`.
 - Running `gymrat supervise` without `runbook` in `gymrat.toml`.
 
 ## Exit codes
