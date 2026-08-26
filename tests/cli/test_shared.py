@@ -443,7 +443,7 @@ import gymrat_py.cli.gating
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels'} or name.startswith(('scipy.', 'statsmodels.'))
+    if name in {'scipy', 'numpy'} or name.startswith(('scipy.', 'numpy.'))
 )
 bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
 assert not heavy, f'cli import pulled heavy modules: {heavy}'

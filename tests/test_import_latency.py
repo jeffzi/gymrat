@@ -1,7 +1,7 @@
 """Guard: importing ``gymrat_py`` must not pull in the heavy statistics stack.
 
-The verdict engine will depend on ``scipy``, ``numpy``, and ``statsmodels``, all
-of which cost hundreds of milliseconds to import. Keeping them out of the
+The verdict engine depends on ``scipy`` and ``numpy``, both of which cost
+hundreds of milliseconds to import. Keeping them out of the
 package's import path preserves fast startup for commands that never compute a
 verdict, so they must be imported lazily at their point of use, never at package
 import. The permutation test's ``numpy`` use lives behind such a lazy import.
@@ -26,7 +26,7 @@ import subprocess
 import sys
 
 
-def test_importing_package_does_not_import_scipy_or_statsmodels():
+def test_importing_package_does_not_import_scipy_or_numpy():
     # Run inside the child so the test process's own dependency tree cannot
     # mask a violation, and so a non-zero exit surfaces the offending modules.
     probe = """
@@ -43,8 +43,8 @@ import gymrat_py.supervisor
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels', 'numpy', 'claude_agent_sdk'}
-    or name.startswith(('scipy.', 'statsmodels.', 'numpy.', 'claude_agent_sdk.'))
+    if name in {'scipy', 'numpy', 'claude_agent_sdk'}
+    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
 )
 assert not heavy, f'package import pulled in heavy modules: {heavy}'
 """
@@ -59,7 +59,7 @@ assert not heavy, f'package import pulled in heavy modules: {heavy}'
     assert result.returncode == 0, result.stderr
 
 
-def test_importing_cli_app_and_rendering_help_does_not_import_scipy_or_statsmodels():
+def test_importing_cli_app_and_rendering_help_does_not_import_scipy_or_numpy():
     # Assemble the app and render its help through the runner, then assert inside
     # the child that neither the heavy stack nor the command bodies were loaded:
     # a cheap --help must never reach the statistics-bearing modules.
@@ -72,8 +72,8 @@ assert result.exit_code == 0, result.output
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'statsmodels', 'numpy', 'claude_agent_sdk'}
-    or name.startswith(('scipy.', 'statsmodels.', 'numpy.', 'claude_agent_sdk.'))
+    if name in {'scipy', 'numpy', 'claude_agent_sdk'}
+    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
 )
 bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
 assert not heavy, f'cli app import pulled heavy modules: {heavy}'
