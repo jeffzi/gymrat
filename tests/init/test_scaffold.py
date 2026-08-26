@@ -4,14 +4,15 @@ Each case uses ``tmp_path`` as the base directory and drives ``scaffold`` with a
 ``WizardResult``. The suite pins the config key ordering, the validate-before-any-write
 ordering (a broken bench or a geomean stop target leaves nothing behind), the
 runbook/skill status reporting, and the exclusive-create refusal to overwrite an
-existing ``gymrat.json``.
+existing ``gymrat.toml``.
 """
 
-import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
+from gymrat_py.config import StopConfig, load_config_file
 from gymrat_py.errors import GymratError
 from gymrat_py.init.scaffold import (
     SKILL_RELATIVE_PATH,
@@ -33,7 +34,7 @@ def _result(**overrides: object) -> WizardResult:
 
 
 def _read_config(base: Path) -> dict[str, object]:
-    return json.loads((base / "gymrat.json").read_text(encoding="utf-8"))
+    return tomllib.loads((base / "gymrat.toml").read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ def test_scaffold_when_runbook_path_set_does_include_runbook_key(tmp_path: Path)
     assert _read_config(tmp_path)["runbook"] == "gymrat-runbook.md"
 
 
-def test_scaffold_writes_config_keys_in_the_declared_order(tmp_path: Path):
+def test_scaffold_writes_scalar_keys_before_the_stop_table(tmp_path: Path):
     scaffold(
         str(tmp_path),
         _result(
@@ -100,13 +101,16 @@ def test_scaffold_writes_config_keys_in_the_declared_order(tmp_path: Path):
         ),
     )
 
+    # TOML requires every scalar key to precede any table header, so `runbook`
+    # is emitted ahead of the `[stop]` table -- a bare key written after `[stop]`
+    # would parse as belonging to it.
     assert list(_read_config(tmp_path).keys()) == [
         "bench",
         "adapter",
         "checks",
         "primary",
-        "stop",
         "runbook",
+        "stop",
     ]
 
 
@@ -119,14 +123,14 @@ def test_scaffold_when_schema_invalid_does_raise_before_writing_any_file(tmp_pat
     with pytest.raises(GymratError):
         scaffold(str(tmp_path), _result(bench=""))
 
-    assert not (tmp_path / "gymrat.json").exists()
+    assert not (tmp_path / "gymrat.toml").exists()
 
 
 def test_scaffold_when_stop_target_with_geomean_primary_does_raise_before_writing(tmp_path: Path):
     with pytest.raises(GymratError):
         scaffold(str(tmp_path), _result(stop_target=1.5))
 
-    assert not (tmp_path / "gymrat.json").exists()
+    assert not (tmp_path / "gymrat.toml").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -224,11 +228,45 @@ def test_scaffold_when_skill_declined_does_not_create_skill_file(tmp_path: Path)
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_writes_pretty_printed_json_with_trailing_newline(tmp_path: Path):
+def test_scaffold_writes_toml_with_trailing_newline(tmp_path: Path):
     scaffold(str(tmp_path), _result())
 
-    raw = (tmp_path / "gymrat.json").read_text(encoding="utf-8")
-    assert raw == json.dumps({"bench": "npm run bench"}, indent=2) + "\n"
+    raw = (tmp_path / "gymrat.toml").read_text(encoding="utf-8")
+    assert raw == 'bench = "npm run bench"\n'
+
+
+# ---------------------------------------------------------------------------
+# round-trip through the loader (TOML table-ordering trap)
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_when_runbook_follows_stop_does_reload_without_nesting_runbook(tmp_path: Path):
+    scaffold(
+        str(tmp_path),
+        _result(
+            stop_target=1.5,
+            stop_max_iterations=20,
+            primary="latency",
+            runbook=RunbookChoice(path="gymrat-runbook.md"),
+        ),
+    )
+
+    config = load_config_file(tmp_path / "gymrat.toml")
+
+    assert config.stop == StopConfig(target_value=1.5, max_iterations=20)
+    assert config.runbook == "gymrat-runbook.md"
+
+
+def test_scaffold_when_no_runbook_does_reload_with_stop_as_last_key(tmp_path: Path):
+    scaffold(
+        str(tmp_path),
+        _result(stop_target=1.5, stop_max_iterations=20, primary="latency"),
+    )
+
+    config = load_config_file(tmp_path / "gymrat.toml")
+
+    assert config.stop == StopConfig(target_value=1.5, max_iterations=20)
+    assert config.runbook is None
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +292,7 @@ def test_scaffold_when_skill_read_fails_does_not_leave_config_behind(
     with pytest.raises(GymratError):
         scaffold(str(tmp_path), _result(install_skill=True))
 
-    assert not (tmp_path / "gymrat.json").exists()
+    assert not (tmp_path / "gymrat.toml").exists()
 
 
 def test_scaffold_when_skill_read_fails_does_not_leave_runbook_stub_behind(
@@ -277,7 +315,7 @@ def test_scaffold_when_skill_read_fails_does_not_leave_runbook_stub_behind(
 
 
 def test_scaffold_when_config_already_exists_does_raise_instead_of_overwriting(tmp_path: Path):
-    (tmp_path / "gymrat.json").write_text('{"bench":"old"}\n', encoding="utf-8")
+    (tmp_path / "gymrat.toml").write_text('bench = "old"\n', encoding="utf-8")
 
     with pytest.raises(FileExistsError):
         scaffold(str(tmp_path), _result())
@@ -294,7 +332,7 @@ def test_scaffold_when_all_artifacts_created_does_return_created_statuses(tmp_pa
         _result(runbook=RunbookChoice(path="gymrat-runbook.md"), install_skill=True),
     )
 
-    assert result.config == ScaffoldArtifact(path="gymrat.json", status="created")
+    assert result.config == ScaffoldArtifact(path="gymrat.toml", status="created")
     assert result.runbook == ScaffoldArtifact(path="gymrat-runbook.md", status="created")
     assert result.skill == ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
 

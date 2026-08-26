@@ -46,7 +46,7 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
     skill_content = read_bundled_skill()
 
     if config.runbook is None:
-        message = "No runbook configured — set `runbook` in gymrat.json."
+        message = "No runbook configured — set `runbook` in gymrat.toml."
         hint = (
             "A supervised session has no human to answer the skill's "
             "fallback; a runbook is required."
@@ -57,7 +57,7 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         runbook_content = Path(config.runbook).read_text(encoding="utf-8")
     except OSError as err:
         message = f"Runbook not found at {config.runbook}."
-        hint = "Verify the file exists at the path configured for `runbook` in gymrat.json."
+        hint = "Verify the file exists at the path configured for `runbook` in gymrat.toml."
         raise GymratError(message, hint=hint) from err
 
     system_prompt_append = f"{skill_content}\n## Runbook: {config.runbook}\n\n{runbook_content}"

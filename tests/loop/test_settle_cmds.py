@@ -6,15 +6,15 @@ suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``
 The one boundary these tests mock is the checks command — the consumer's own
 test suite, which no test here can run — replaced at ``gymrat_py.loop.settle.exec``
 by the ``checks_pass`` / ``checks_fail`` recorders. Every git operation is real,
-run against the ``gymrat.json`` each test lays down at the repository root.
+run against the ``gymrat.toml`` each test lays down at the repository root.
 """
 
-import json
 import re
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import tomli_w
 from typer.testing import CliRunner
 
 from gymrat_py.cli.app import app
@@ -35,9 +35,9 @@ runner = CliRunner()
 
 
 def _write_config(root: str, **extra: object) -> None:
-    """Write the ``gymrat.json`` the settle commands read their checks gate from."""
+    """Write the ``gymrat.toml`` the settle commands read their checks gate from."""
     payload: dict[str, object] = {"bench": "npm run bench", **extra}
-    (Path(root) / "gymrat.json").write_text(json.dumps(payload), encoding="utf-8")
+    (Path(root) / "gymrat.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
 
 
 @pytest.fixture

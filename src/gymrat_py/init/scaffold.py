@@ -5,14 +5,15 @@ fail the schema or the cross-field loop-key checks leaves no files behind. The
 bundled skill is read next (only when installing), so a broken install fails
 before the runbook stub is created. Among the writes the config lands last and
 with an exclusive create, so a failure partway through never leaves a
-``gymrat.json`` pointing at artifacts that were not written, and an existing
+``gymrat.toml`` pointing at artifacts that were not written, and an existing
 config is never silently overwritten.
 """
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+import tomli_w
 
 from gymrat_py.bundled_skill import read_bundled_skill
 from gymrat_py.config import CONFIG_FILENAME, validate_config_dict
@@ -111,8 +112,10 @@ def _write_skill(base_dir: str, content: str) -> ScaffoldArtifact:
 
 def _write_config(base_dir: str, config: dict[str, object]) -> ScaffoldArtifact:
     full_path = Path(base_dir) / CONFIG_FILENAME
-    payload = json.dumps(config, indent=2) + "\n"
-    # Exclusive create: an existing gymrat.json must never be silently overwritten.
+    # tomli_w emits scalar keys before table headers, so a scalar declared after the
+    # ``stop`` dict (e.g. ``runbook``) stays top-level instead of nesting under ``[stop]``.
+    payload = tomli_w.dumps(config)
+    # Exclusive create: an existing gymrat.toml must never be silently overwritten.
     with full_path.open("x", encoding="utf-8") as handle:
         handle.write(payload)
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
@@ -123,7 +126,7 @@ def scaffold(base_dir: str, wizard_result: WizardResult) -> ScaffoldResult:
 
     Returns a :class:`ScaffoldResult` describing each artifact. Raises a
     :class:`GymratError` when the config fails validation or the bundled skill
-    cannot be read, and :class:`FileExistsError` when ``gymrat.json`` already
+    cannot be read, and :class:`FileExistsError` when ``gymrat.toml`` already
     exists — in every failure case no partial scaffold is left behind.
     """
     config = _build_config(wizard_result)

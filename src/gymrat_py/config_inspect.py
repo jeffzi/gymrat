@@ -168,7 +168,7 @@ def inspect_config(flags: CliFlags, base_dir: str | None = None) -> ConfigInspec
 
     Args:
         flags: Command-line overrides.
-        base_dir: Anchor for the implicit ``gymrat.json`` lookup; falls back to the
+        base_dir: Anchor for the implicit ``gymrat.toml`` lookup; falls back to the
             git repository root or the cwd when ``None``.
 
     Returns:

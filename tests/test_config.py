@@ -1,7 +1,7 @@
-import json
 from pathlib import Path
 
 import pytest
+import tomli_w
 
 from gymrat_py.config import (
     MAX_TIMEOUT_SECONDS,
@@ -38,11 +38,11 @@ LINE_BREAKS = ["\n", "\r", "\u2028", "\u2029"]
 
 
 def write_config(directory: Path, content: dict[str, object]) -> Path:
-    return write_raw(directory, json.dumps(content))
+    return write_raw(directory, tomli_w.dumps(content))
 
 
 def write_raw(directory: Path, text: str) -> Path:
-    config_path = directory / "gymrat.json"
+    config_path = directory / "gymrat.toml"
     config_path.write_text(text, encoding="utf-8")
     return config_path
 
@@ -53,13 +53,13 @@ def write_raw(directory: Path, text: str) -> Path:
 
 
 def test_load_config_file_when_file_missing_does_return_empty_config(tmp_path: Path):
-    missing = tmp_path / "nonexistent.json"
+    missing = tmp_path / "nonexistent.toml"
 
     assert load_config_file(missing) == ConfigFile()
 
 
 def test_load_config_file_when_file_missing_and_required_does_raise_naming_path(tmp_path: Path):
-    missing = tmp_path / "nonexistent.json"
+    missing = tmp_path / "nonexistent.toml"
 
     with pytest.raises(GymratError) as exc:
         load_config_file(missing, required=True)
@@ -84,7 +84,7 @@ def test_load_config_file_when_path_is_directory_does_raise_naming_path(
 
 
 # ---------------------------------------------------------------------------
-# valid JSON with known keys
+# valid TOML with known keys
 # ---------------------------------------------------------------------------
 
 
@@ -140,12 +140,12 @@ def test_load_config_file_when_partial_metrics_metadata_given_does_round_trip(tm
 
 
 # ---------------------------------------------------------------------------
-# invalid JSON / BOM / non-finite literals
+# invalid TOML / duplicate key / BOM / non-finite literals
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_file_when_json_invalid_does_raise_naming_path(tmp_path: Path):
-    config_path = write_raw(tmp_path, "{ invalid json }")
+def test_load_config_file_when_toml_invalid_does_raise_naming_path(tmp_path: Path):
+    config_path = write_raw(tmp_path, "key = ")
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
@@ -153,51 +153,49 @@ def test_load_config_file_when_json_invalid_does_raise_naming_path(tmp_path: Pat
     assert str(config_path) in str(exc.value)
 
 
-@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
-def test_load_config_file_when_non_finite_literal_does_raise_parse_failure(
+def test_load_config_file_when_duplicate_key_does_raise_naming_path(tmp_path: Path):
+    config_path = write_raw(tmp_path, 'bench = "first"\nbench = "second"')
+
+    with pytest.raises(GymratError) as exc:
+        load_config_file(config_path)
+
+    assert str(config_path) in str(exc.value)
+
+
+@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
+def test_load_config_file_when_noise_pct_non_finite_does_name_key_not_parse(
     tmp_path: Path, literal: str
 ):
-    config_path = write_raw(tmp_path, f'{{"unstableNoisePct": {literal}}}')
+    config_path = write_raw(tmp_path, f"unstableNoisePct = {literal}")
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
-    assert str(config_path) in str(exc.value)
+    message = str(exc.value)
+    assert "unstableNoisePct" in message
+    assert "Failed to parse" not in message
+
+
+@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
+def test_load_config_file_when_stop_target_value_non_finite_does_name_key_not_parse(
+    tmp_path: Path, literal: str
+):
+    config_path = write_raw(tmp_path, f"[stop]\ntargetValue = {literal}")
+
+    with pytest.raises(GymratError) as exc:
+        load_config_file(config_path)
+
+    message = str(exc.value)
+    assert "stop.targetValue" in message
+    assert "Failed to parse" not in message
 
 
 def test_load_config_file_when_prefixed_with_bom_does_parse_as_if_absent(tmp_path: Path):
     config_path = write_raw(
-        tmp_path, f"{UTF8_BOM}{json.dumps({'bench': 'bom-bench', 'samples': 5})}"
+        tmp_path, f"{UTF8_BOM}{tomli_w.dumps({'bench': 'bom-bench', 'samples': 5})}"
     )
 
     assert load_config_file(config_path) == ConfigFile(bench="bom-bench", samples=5)
-
-
-# ---------------------------------------------------------------------------
-# non-object JSON root
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        pytest.param("[]", id="array"),
-        pytest.param('"bench"', id="string"),
-        pytest.param("3", id="number"),
-        pytest.param("true", id="boolean"),
-        pytest.param("null", id="null"),
-    ],
-)
-def test_load_config_file_when_root_not_object_does_raise_naming_json_object(
-    tmp_path: Path, raw: str
-):
-    config_path = write_raw(tmp_path, raw)
-
-    with pytest.raises(GymratError) as exc:
-        load_config_file(config_path)
-
-    assert str(config_path) in str(exc.value)
-    assert "JSON object" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +228,6 @@ def test_load_config_file_when_empty_string_top_level_key_does_name_quoted_empty
         load_config_file(config_path)
 
     assert 'Unknown config key: ""' in str(exc.value)
-    assert "JSON object" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +253,8 @@ def test_load_config_file_when_empty_object_does_return_empty_config(tmp_path: P
         pytest.param("bench", ["a"], id="bench-array"),
         pytest.param("prepare", True, id="prepare-boolean"),
         pytest.param("prepare", {"cmd": "x"}, id="prepare-object"),
-        pytest.param("adapter", None, id="adapter-null"),
         pytest.param("checks", 42, id="checks-number"),
         pytest.param("filter", ["a"], id="filter-array"),
-        pytest.param("primary", None, id="primary-null"),
     ],
 )
 def test_load_config_file_when_string_key_holds_non_string_does_name_key_and_string(
@@ -317,7 +312,6 @@ def test_load_config_file_when_non_empty_string_key_holds_whitespace_does_name_k
         pytest.param("samples", 0, id="samples-zero"),
         pytest.param("timeoutSeconds", -1, id="timeout-negative"),
         pytest.param("timeoutSeconds", True, id="timeout-boolean"),
-        pytest.param("timeoutSeconds", None, id="timeout-null"),
     ],
 )
 def test_load_config_file_when_integer_key_invalid_does_name_key_and_positive_integer(
@@ -330,7 +324,7 @@ def test_load_config_file_when_integer_key_invalid_does_name_key_and_positive_in
 
 
 def test_load_config_file_when_integer_key_given_integral_float_does_accept(tmp_path: Path):
-    config_path = write_raw(tmp_path, '{"samples": 5.0}')
+    config_path = write_raw(tmp_path, "samples = 5.0")
 
     assert load_config_file(config_path) == ConfigFile(samples=5)
 
@@ -363,7 +357,6 @@ def test_load_config_file_when_timeout_on_cap_does_accept(tmp_path: Path):
         pytest.param(0, id="zero"),
         pytest.param(-5, id="negative"),
         pytest.param(True, id="boolean"),
-        pytest.param(None, id="null"),
         pytest.param(0.25, id="below-floor"),
     ],
 )
@@ -398,7 +391,6 @@ def test_load_config_file_when_noise_pct_on_floor_does_accept(tmp_path: Path):
         pytest.param([], id="array"),
         pytest.param("latency", id="string"),
         pytest.param(3, id="number"),
-        pytest.param(None, id="null"),
     ],
 )
 def test_load_config_file_when_metrics_not_object_does_name_metrics_and_object(
@@ -432,7 +424,6 @@ def test_load_config_file_when_metrics_entry_under_empty_key_invalid_does_quote_
         pytest.param("sideways", id="unknown-string"),
         pytest.param("Lower", id="wrong-case"),
         pytest.param(True, id="boolean"),
-        pytest.param(None, id="null"),
     ],
 )
 def test_load_config_file_when_metrics_direction_invalid_does_name_direction_and_options(
@@ -448,7 +439,6 @@ def test_load_config_file_when_metrics_direction_invalid_does_name_direction_and
     ("field", "value"),
     [
         pytest.param("gating", "yes", id="gating-string"),
-        pytest.param("gating", None, id="gating-null"),
         pytest.param("exact", 1, id="exact-number"),
     ],
 )
@@ -507,7 +497,6 @@ def test_load_config_file_when_kinds_section_given_does_round_trip(tmp_path: Pat
         pytest.param([], id="array"),
         pytest.param("memory", id="string"),
         pytest.param(3, id="number"),
-        pytest.param(None, id="null"),
     ],
 )
 def test_load_config_file_when_kinds_not_object_does_name_kinds_and_object(
@@ -531,7 +520,6 @@ def test_load_config_file_when_kinds_entry_not_object_does_name_entry_and_object
     [
         pytest.param("yes", id="string"),
         pytest.param(1, id="number"),
-        pytest.param(None, id="null"),
     ],
 )
 def test_load_config_file_when_kinds_gating_non_boolean_does_name_gating_and_boolean(
@@ -607,7 +595,6 @@ def test_load_config_file_when_hooks_partial_does_round_trip(
         pytest.param("gymrat.hooks", id="string"),
         pytest.param([], id="array"),
         pytest.param(True, id="boolean"),
-        pytest.param(None, id="null"),
     ],
 )
 def test_load_config_file_when_hooks_not_object_does_name_hooks_and_object(
@@ -625,7 +612,6 @@ def test_load_config_file_when_hooks_not_object_does_name_hooks_and_object(
         pytest.param("before", "", id="before-empty"),
         pytest.param("after", "", id="after-empty"),
         pytest.param("before", 42, id="before-number"),
-        pytest.param("after", None, id="after-null"),
     ],
 )
 def test_load_config_file_when_hooks_command_not_non_empty_string_does_name_stage(
@@ -699,7 +685,7 @@ def test_load_config_file_when_stop_has_unknown_key_does_name_dotted_path(tmp_pa
 
 
 def test_load_config_file_collecting_when_file_missing_does_report_absent(tmp_path: Path):
-    missing = tmp_path / "nonexistent.json"
+    missing = tmp_path / "nonexistent.toml"
 
     assert load_config_file_collecting(missing, required=False) == ConfigFileResult(
         config_file=ConfigFile(), exists=False, problems=[]
@@ -709,7 +695,7 @@ def test_load_config_file_collecting_when_file_missing_does_report_absent(tmp_pa
 def test_load_config_file_collecting_when_file_missing_and_required_does_report_problem(
     tmp_path: Path,
 ):
-    missing = tmp_path / "nonexistent.json"
+    missing = tmp_path / "nonexistent.toml"
 
     result = load_config_file_collecting(missing, required=True)
 
@@ -893,8 +879,8 @@ def test_resolve_config_when_flag_holds_empty_string_does_raise_naming_flag(
 
 
 def test_resolve_config_when_explicit_config_path_given_does_load_it(tmp_path: Path):
-    config_path = tmp_path / "custom-config.json"
-    config_path.write_text(json.dumps({"bench": "custom-bench"}), encoding="utf-8")
+    config_path = tmp_path / "custom-config.toml"
+    config_path.write_text(tomli_w.dumps({"bench": "custom-bench"}), encoding="utf-8")
 
     result = resolve_config(CliFlags(config=str(config_path)))
 
@@ -902,7 +888,7 @@ def test_resolve_config_when_explicit_config_path_given_does_load_it(tmp_path: P
 
 
 def test_resolve_config_when_explicit_config_path_missing_does_raise_naming_path(tmp_path: Path):
-    missing = tmp_path / "typo.json"
+    missing = tmp_path / "typo.toml"
 
     with pytest.raises(GymratError) as exc:
         resolve_config(CliFlags(bench="my-bench", config=str(missing)))

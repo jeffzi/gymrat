@@ -160,7 +160,7 @@ _SKILL_MISSING_HINT = "Run `gymrat init` to scaffold the project."
 _CHECKS_MISSING_HINT = "Without checks, keep cannot gate commits"
 _STOP_MISSING_HINT = "Without stop, a session has no finish line"
 _RUNBOOK_MISSING_HINT = (
-    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.json. "
+    "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
     "Without one, supervise has no instructions to follow."
 )
 

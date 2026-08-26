@@ -7,8 +7,8 @@ exercised the way a shell would invoke them. Usage errors and the
 already-exists refusal assert the exit code and the routed message.
 """
 
-import json
 import re
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,7 +21,7 @@ runner = CliRunner()
 
 
 def _read_config(base: Path) -> dict[str, object]:
-    return json.loads((base / "gymrat.json").read_text(encoding="utf-8"))
+    return tomllib.loads((base / "gymrat.toml").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
@@ -56,13 +56,20 @@ def test_init_when_help_does_document_its_flags():
     assert "-y" in out
 
 
+def test_init_when_help_does_describe_scaffolding_a_toml_config():
+    result = runner.invoke(app, ["init", "--help"])
+
+    assert result.exit_code == 0
+    assert "gymrat.toml" in result.stdout
+
+
 # ---------------------------------------------------------------------------
-# existing gymrat.json at the resolved base
+# existing gymrat.toml at the resolved base
 # ---------------------------------------------------------------------------
 
 
 def test_init_when_config_already_exists_does_exit_two_pointing_at_doctor(non_repo_cwd: Path):
-    (non_repo_cwd / "gymrat.json").write_text("{}", encoding="utf-8")
+    (non_repo_cwd / "gymrat.toml").write_text("", encoding="utf-8")
 
     result = runner.invoke(app, ["init", "--bench", "npm run bench", "--yes"])
 
@@ -95,7 +102,7 @@ def test_init_when_scaffolding_succeeds_does_write_summary_and_doctor_pointer():
 
     assert result.exit_code == 0
     out = result.stdout
-    assert "Config: created at gymrat.json" in out
+    assert "Config: created at gymrat.toml" in out
     assert "gymrat doctor" in out
     assert result.stderr == ""
 
@@ -201,7 +208,7 @@ def test_init_when_stop_max_iterations_invalid_does_exit_two_naming_flag(value: 
 @pytest.mark.parametrize(
     ("flag", "value"),
     [
-        pytest.param("--config", "gymrat.json", id="config"),
+        pytest.param("--config", "gymrat.toml", id="config"),
         pytest.param("--samples", "5", id="samples"),
         pytest.param("--timeout", "300", id="timeout"),
     ],
@@ -229,12 +236,12 @@ def test_init_when_run_in_a_git_repo_subdirectory_does_scaffold_at_the_repo_root
     result = runner.invoke(app, ["init", "--bench", "npm run bench", "--yes"])
 
     assert result.exit_code == 0
-    assert (Path(root) / "gymrat.json").exists()
-    assert not (nested / "gymrat.json").exists()
+    assert (Path(root) / "gymrat.toml").exists()
+    assert not (nested / "gymrat.toml").exists()
 
 
 def test_init_when_run_outside_a_git_repo_does_scaffold_in_cwd(non_repo_cwd: Path):
     result = runner.invoke(app, ["init", "--bench", "npm run bench", "--yes"])
 
     assert result.exit_code == 0
-    assert (non_repo_cwd / "gymrat.json").exists()
+    assert (non_repo_cwd / "gymrat.toml").exists()

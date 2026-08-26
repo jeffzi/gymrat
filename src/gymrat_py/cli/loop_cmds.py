@@ -1,7 +1,7 @@
 """The optimization-loop subcommands: start, iterate, keep, discard, finalize, status.
 
 Each command resolves its configuration at the repository root — so a run from a
-subdirectory still finds the implicit ``gymrat.json`` — and, where it mutates the
+subdirectory still finds the implicit ``gymrat.toml`` — and, where it mutates the
 session, holds the repository's single-flight lock for the length of the work.
 Two commands break that lock pattern deliberately:
 

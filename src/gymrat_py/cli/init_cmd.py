@@ -1,8 +1,8 @@
-"""The ``init`` command: scaffold a gymrat.json, skill file, and runbook.
+"""The ``init`` command: scaffold a gymrat.toml, skill file, and runbook.
 
 Resolves the base directory to the repository root when inside one (so a run from
 a subdirectory still scaffolds at the root) and the process cwd otherwise; git is
-not required. An existing ``gymrat.json`` at that base is refused before the
+not required. An existing ``gymrat.toml`` at that base is refused before the
 wizard runs. The wizard prompts on stderr and reads stdin, and the artifact
 summary is written to stdout so the two channels stay separable.
 """
@@ -96,7 +96,7 @@ def init_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the 
     yes: _YesOption = False,
     debug: DebugOption = False,
 ) -> None:
-    """Scaffold a gymrat.json, skill file, and runbook."""
+    """Scaffold a gymrat.toml, skill file, and runbook."""
     set_debug_mode(debug)
     base_dir = find_implicit_base()
     config_path = Path(base_dir) / CONFIG_FILENAME

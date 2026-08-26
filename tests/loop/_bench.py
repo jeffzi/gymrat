@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import tomli_w
+
 #: The bench script every worktree runs.
 BENCH_FILE = "bench.py"
 
@@ -78,15 +80,14 @@ def commit_project(
     files = {
         ".gitignore": ".gymrat/\n",
         BENCH_FILE: bench_script(gate_file),
-        "gymrat.json": json.dumps(
+        "gymrat.toml": tomli_w.dumps(
             {
                 "bench": f"{sys.executable} {BENCH_FILE}",
                 "adapter": "metric-lines",
                 "samples": samples,
                 "timeoutSeconds": 120,
             }
-        )
-        + "\n",
+        ),
     }
     for name, content in files.items():
         (Path(repo_dir) / name).write_text(content, encoding="utf-8")

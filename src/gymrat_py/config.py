@@ -1,6 +1,6 @@
 """Config-file schema and loading for gymrat.
 
-The on-disk ``gymrat.json`` file is validated against pydantic models internally,
+The on-disk ``gymrat.toml`` file is validated against pydantic models internally,
 but the public surface is plain frozen dataclasses -- no pydantic type ever leaks
 to consumers. Two entry points share one read/parse/validate pipeline:
 
@@ -14,14 +14,23 @@ attributes. Validation error paths always name the camelCase key the user wrote.
 """
 
 import json
+import math
 import os
 import stat
+import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+)
 from pydantic_core import ErrorDetails
 
 from gymrat_py.adapters.defaults import DEFAULT_GATING, DEFAULT_METRIC_KIND
@@ -46,8 +55,6 @@ from gymrat_py.config_env import (  # noqa: E402
     STRING_ENV_FIELDS,
     env_string_result,
 )
-
-_NULL_MESSAGE = "value must not be null"
 
 # Characters a `^…$` key pattern would treat as line terminators; embedding one
 # in a config key can smuggle the rest of the key past validation, so any key
@@ -99,7 +106,7 @@ class HooksConfig:
 
 @dataclass(frozen=True, slots=True)
 class ConfigFile:
-    """Parsed ``gymrat.json`` contents; every key is optional."""
+    """Parsed ``gymrat.toml`` contents; every key is optional."""
 
     bench: str | None = None
     prepare: str | None = None
@@ -183,7 +190,7 @@ class _ConfigDefaults:
 
 
 #: The config file basename the CLI writes, loads, and probes for.
-CONFIG_FILENAME = "gymrat.json"
+CONFIG_FILENAME = "gymrat.toml"
 
 #: The primary that aggregates every gating metric rather than naming one.
 GEOMEAN_PRIMARY = "geomean"
@@ -206,51 +213,45 @@ CONFIG_DEFAULTS = _ConfigDefaults(
 # ---------------------------------------------------------------------------
 
 
-def _reject_none(value: object) -> object:
-    """Reject an explicitly-provided ``null``.
-
-    An absent key falls back to the ``None`` default without invoking this
-    validator; only a present ``null`` reaches here, and we reject it so the
-    error path names the field with its real type expectation.
-    """
-    if value is None:
-        raise ValueError(_NULL_MESSAGE)
-    return value
-
-
 def _coerce_integer(value: object) -> object:
-    """Reject ``null`` and fold an integral float into ``int``.
+    """Fold an integral float into ``int`` so it satisfies strict integer validation.
 
-    Folding ``5.0`` to ``5`` lets it satisfy strict integer validation; every
-    other value is passed through for the model to accept or reject.
+    Folding ``5.0`` to ``5`` lets it pass; every other value is passed through for
+    the model to accept or reject.
     """
-    if value is None:
-        raise ValueError(_NULL_MESSAGE)
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return value
 
 
 def _coerce_number(value: object) -> object:
-    """Reject ``null`` and widen a plain ``int`` to ``float``.
+    """Widen a plain ``int`` to ``float`` so it satisfies strict float validation.
 
-    Widening lets an integer satisfy strict float validation; ``bool`` is left
-    untouched so it is rejected as a non-number.
+    ``bool`` is left untouched so it is rejected as a non-number.
     """
-    if value is None:
-        raise ValueError(_NULL_MESSAGE)
     if isinstance(value, int) and not isinstance(value, bool):
         return float(value)
     return value
 
 
+def _reject_non_finite(value: float | None) -> float | None:
+    """Reject a non-finite float that TOML accepts as a literal.
+
+    TOML parses ``nan``/``inf``/``-inf`` into real floats, so a numeric key can
+    carry one past parsing. This surfaces it as an invalid value naming the key
+    rather than letting it settle as a silent NaN or infinity.
+    """
+    if value is not None and not math.isfinite(value):
+        msg = "value must be finite"
+        raise ValueError(msg)
+    return value
+
+
 def _reject_bad_dict(value: object) -> object:
-    """Reject ``null`` and any mapping whose key embeds a line terminator.
+    """Reject any mapping whose key embeds a line terminator.
 
     A non-mapping falls through to the model's own ``dict``-type error.
     """
-    if value is None:
-        raise ValueError(_NULL_MESSAGE)
     if isinstance(value, dict):
         for key in value:
             if isinstance(key, str) and any(char in key for char in _LINE_BREAKS):
@@ -265,20 +266,17 @@ def _reject_bad_dict(value: object) -> object:
 
 _STRICT = ConfigDict(strict=True, extra="forbid")
 
-# A field's key is optional, but a present `null` must be rejected: annotate the
-# union so the BeforeValidator wraps it (running before None matches the None
-# arm), and give a None default so an absent key skips validation entirely.
-_NonEmptyStr = Annotated[
-    str | None, BeforeValidator(_reject_none), Field(default=None, min_length=1, pattern=r"\S")
-]
-_AnyStr = Annotated[str | None, BeforeValidator(_reject_none), Field(default=None)]
-_Bool = Annotated[bool | None, BeforeValidator(_reject_none), Field(default=None)]
+# TOML cannot express null, so every optional field simply defaults to None when
+# its key is absent; a present key always carries a real value to validate.
+_NonEmptyStr = Annotated[str | None, Field(default=None, min_length=1, pattern=r"\S")]
+_AnyStr = Annotated[str | None, Field(default=None)]
+_Bool = Annotated[bool | None, Field(default=None)]
 
 
 class _MetricModel(BaseModel):
     model_config = _STRICT
 
-    direction: Annotated[Direction | None, BeforeValidator(_reject_none), Field(default=None)]
+    direction: Annotated[Direction | None, Field(default=None)]
     gating: _Bool
     exact: _Bool
 
@@ -293,7 +291,10 @@ class _StopModel(BaseModel):
     model_config = _STRICT
 
     target_value: Annotated[
-        float | None, BeforeValidator(_coerce_number), Field(default=None, alias="targetValue")
+        float | None,
+        BeforeValidator(_coerce_number),
+        AfterValidator(_reject_non_finite),
+        Field(default=None, alias="targetValue"),
     ]
     max_iterations: Annotated[
         int | None,
@@ -324,6 +325,7 @@ class _ConfigModel(BaseModel):
     unstable_noise_pct: Annotated[
         float | None,
         BeforeValidator(_coerce_number),
+        AfterValidator(_reject_non_finite),
         Field(default=None, ge=NOISE_FLOOR_PCT, alias="unstableNoisePct"),
     ]
     metrics: Annotated[
@@ -336,8 +338,8 @@ class _ConfigModel(BaseModel):
     runbook: _NonEmptyStr
     filter: _AnyStr
     primary: _NonEmptyStr
-    stop: Annotated[_StopModel | None, BeforeValidator(_reject_none), Field(default=None)]
-    hooks: Annotated[_HooksModel | None, BeforeValidator(_reject_none), Field(default=None)]
+    stop: Annotated[_StopModel | None, Field(default=None)]
+    hooks: Annotated[_HooksModel | None, Field(default=None)]
 
 
 # ---------------------------------------------------------------------------
@@ -417,12 +419,6 @@ def _drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
 # ---------------------------------------------------------------------------
 # File I/O and parsing
 # ---------------------------------------------------------------------------
-
-
-def _reject_constant(literal: str) -> float:
-    """Turn a non-finite JSON literal (``NaN``/``Infinity``) into a parse error."""
-    msg = f"unsupported non-finite literal: {literal}"
-    raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,7 +512,7 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
     """Load and validate a config file, collecting every problem.
 
     Args:
-        path: Path to the ``gymrat.json`` file.
+        path: Path to the ``gymrat.toml`` file.
         required: When ``True``, an absent file is itself a reported problem.
 
     Returns:
@@ -551,16 +547,12 @@ def _validate_read(
     if isinstance(source, _ReadError):
         return None, [source.message]
 
+    # A TOML document root is always a table, so the parsed value is always a
+    # dict; only a syntax error (including a duplicate key) surfaces here.
     try:
-        data = json.loads(source.text, parse_constant=_reject_constant)
-    except ValueError as exc:
+        data = tomllib.loads(source.text)
+    except tomllib.TOMLDecodeError as exc:
         return None, [f"Failed to parse config file at {config_path}: {exc}"]
-
-    if not isinstance(data, dict):
-        rendered = json.dumps(data)
-        return None, [
-            f"Invalid config file at {config_path}: expected a JSON object, got {rendered}"
-        ]
 
     try:
         model = _ConfigModel.model_validate(data)
@@ -574,7 +566,7 @@ def load_config_file(path: str | Path, *, required: bool = False) -> ConfigFile:
     """Load and validate a config file, raising on the first problem.
 
     Args:
-        path: Path to the ``gymrat.json`` file.
+        path: Path to the ``gymrat.toml`` file.
         required: When ``True``, an absent file raises rather than returning an
             empty config.
 
@@ -654,7 +646,7 @@ def _validate_loop_keys(config: BenchlessConfig) -> None:
 
 
 def validate_config_dict(config: dict[str, object]) -> None:
-    """Validate an in-memory config dict the same way a loaded ``gymrat.json`` is.
+    """Validate an in-memory config dict the same way a loaded ``gymrat.toml`` is.
 
     Runs the strict schema (``extra="forbid"``) and the cross-field loop-key
     checks over ``config``, raising a :class:`GymratError` on the first problem.
@@ -673,7 +665,7 @@ def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
     """Return a problem string when ``runbook`` does not name an existing file.
 
     Resolved against ``base_dir`` (or the cwd when ``None``), matching how the
-    implicit ``gymrat.json`` lookup is anchored -- a runbook path is authored
+    implicit ``gymrat.toml`` lookup is anchored -- a runbook path is authored
     relative to the repository the config lives in.
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
@@ -736,7 +728,7 @@ def _read_env_flags(flags: CliFlags) -> CliFlags:
 
 
 def find_implicit_base() -> str:
-    """Return the anchor directory for the implicit ``gymrat.json`` lookup.
+    """Return the anchor directory for the implicit ``gymrat.toml`` lookup.
 
     Inside a git repository the config lives at the repo root, so moving the cwd
     into a subdirectory must not lose it. Outside a repository -- or when git is
@@ -784,7 +776,7 @@ def _settle_config(
     # Env vars fill in for absent flags: flag > env > file > default.
     effective = _read_env_flags(flags)
 
-    # --config > GYMRAT_CONFIG > implicit gymrat.json
+    # --config > GYMRAT_CONFIG > implicit gymrat.toml
     env_config_path = _read_env_string("GYMRAT_CONFIG") if flags.config is None else None
     explicit_config = flags.config if flags.config is not None else env_config_path
     if explicit_config is not None:

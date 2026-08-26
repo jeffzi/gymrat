@@ -7,17 +7,17 @@ The seams mocked here mirror the engine suites' boundaries: sampling for
 ``iterate`` (``gymrat_py.loop.iterate.collect_samples``), and for ``discard``'s
 prompt the ``is_tty`` and ``confirm_action`` helpers as the ``loop_cmds`` module
 imports them. Config resolution is exercised for real where a test lays down a
-``gymrat.json`` and stubbed at the ``loop_cmds`` seam where a test needs to pin
+``gymrat.toml`` and stubbed at the ``loop_cmds`` seam where a test needs to pin
 what a command reads (the runbook row) or observe where it looked (the
 subdirectory case).
 """
 
-import json
 import re
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import tomli_w
 from typer.testing import CliRunner
 
 from gymrat_py.cli.app import app
@@ -72,9 +72,9 @@ def _never_tty(_stream: object) -> bool:
 
 
 def _write_config(root: str, **extra: object) -> None:
-    """Write the implicit ``gymrat.json`` at the repository root."""
+    """Write the implicit ``gymrat.toml`` at the repository root."""
     payload: dict[str, object] = {"bench": "npm run bench", **extra}
-    (Path(root) / "gymrat.json").write_text(json.dumps(payload), encoding="utf-8")
+    (Path(root) / "gymrat.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
 
 
 class _ConfirmRecorder:

@@ -444,7 +444,7 @@ async def _run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun
         sys.stderr.write(
             "Warning: no checks command is configured, so gymrat keep is committing "
             "with the gate off.\n"
-            'Hint: set "checks" in gymrat.json to the command that must pass before an '
+            'Hint: set "checks" in gymrat.toml to the command that must pass before an '
             "edit is kept.\n"
         )
         return None

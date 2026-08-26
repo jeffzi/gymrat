@@ -1,10 +1,10 @@
-import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+import tomli_w
 
 from gymrat_py.config import (
     MAX_TIMEOUT_SECONDS,
@@ -37,7 +37,7 @@ INVALID_POSITIVE_INTEGER_VALUES = [
     pytest.param("0x10", id="hex"),
 ]
 
-# Both resolvers settle the implicit gymrat.json through the same lookup, so any
+# Both resolvers settle the implicit gymrat.toml through the same lookup, so any
 # behavior that depends on the lookup has to hold for either entry point.
 Resolver = Callable[..., BenchlessConfig]
 RESOLVERS = [
@@ -52,10 +52,13 @@ def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+def write_toml(path: Path, content: dict[str, object]) -> Path:
+    path.write_text(tomli_w.dumps(content), encoding="utf-8")
+    return path
+
+
 def write_config(directory: Path, content: dict[str, object]) -> Path:
-    config_path = directory / "gymrat.json"
-    config_path.write_text(json.dumps(content), encoding="utf-8")
-    return config_path
+    return write_toml(directory / "gymrat.toml", content)
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +283,7 @@ def test_resolve_config_when_config_env_var_names_file_and_config_flag_absent_do
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.chdir(tmp_path)
-    env_config_path = tmp_path / "env-config.json"
-    env_config_path.write_text(json.dumps({"bench": "env-config-bench"}), encoding="utf-8")
+    env_config_path = write_toml(tmp_path / "env-config.toml", {"bench": "env-config-bench"})
     monkeypatch.setenv("GYMRAT_CONFIG", str(env_config_path))
 
     result = resolve_config(CliFlags())
@@ -293,7 +295,7 @@ def test_resolve_config_when_config_env_var_names_missing_file_does_raise_naming
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.chdir(tmp_path)
-    missing_path = tmp_path / "typo.json"
+    missing_path = tmp_path / "typo.toml"
     monkeypatch.setenv("GYMRAT_CONFIG", str(missing_path))
 
     with pytest.raises(GymratError) as exc:
@@ -307,8 +309,7 @@ def test_resolve_config_when_config_env_var_set_does_bypass_implicit_config(
 ):
     write_config(tmp_path, {"bench": "implicit-bench", "adapter": "implicit-adapter"})
     monkeypatch.chdir(tmp_path)
-    env_config_path = tmp_path / "alt-config.json"
-    env_config_path.write_text(json.dumps({"bench": "alt-bench"}), encoding="utf-8")
+    env_config_path = write_toml(tmp_path / "alt-config.toml", {"bench": "alt-bench"})
     monkeypatch.setenv("GYMRAT_CONFIG", str(env_config_path))
 
     result = resolve_config(CliFlags())
@@ -376,12 +377,10 @@ def test_resolve_when_config_flag_relative_to_cwd_does_read_named_file_over_base
         {"bench": "a-bench", "checks": "base-checks"},
         {"bench": "a-bench", "checks": "cwd-checks"},
     )
-    (nested_dir / "custom.json").write_text(
-        json.dumps({"bench": "a-bench", "checks": "named-checks"}), encoding="utf-8"
-    )
+    write_toml(nested_dir / "custom.toml", {"bench": "a-bench", "checks": "named-checks"})
     monkeypatch.chdir(nested_dir)
 
-    result = resolve(CliFlags(config="custom.json"), tmp_path)
+    result = resolve(CliFlags(config="custom.toml"), tmp_path)
 
     assert result.checks == "named-checks"
 
