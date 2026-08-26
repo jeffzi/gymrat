@@ -131,7 +131,8 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     debug: DebugOption = False,
 ) -> None:
     """Check the project setup and report any problems."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     flags = SharedFlags(
         bench=bench,
         prepare=prepare,

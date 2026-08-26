@@ -1,12 +1,13 @@
 """Tests for the content-agnostic status-line primitive.
 
 These cover ``create_status_line``: plain newline lines, in-place overwrite with
-clear/redraw on warn, the minimal spinner's first-write start, and the periodic
-tick callback.
+clear/redraw on warn, the minimal spinner's first-write start, the periodic
+tick callback, and thread-safety around ``stop``.
 """
 
 import io
 import threading
+import time
 from typing import override
 
 import pytest
@@ -172,3 +173,43 @@ def test_status_line_on_tick_fires_periodically_until_stopped(
         line.stop()
 
     assert "tick" in fake.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# stop / tick thread safety
+# ---------------------------------------------------------------------------
+
+
+def test_status_line_when_tick_fires_during_stop_does_not_write_stale_tick(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A tick whose callback returns *after* ``stop()`` must not write.
+
+    The tick callback blocks, giving ``stop()`` time to run while the timer
+    thread is still inside the callback. When the callback returns, the timer
+    thread holds stale text — a lock around ``_write_text`` and a ``_stopped``
+    re-check inside it must prevent this text from reaching stderr.
+    """
+    tick_entered = threading.Event()
+    tick_proceed = threading.Event()
+
+    def slow_tick() -> str:
+        tick_entered.set()
+        tick_proceed.wait(timeout=2.0)
+        return "stale-tick"
+
+    monkeypatch.setattr(status_line_module, "TICK_INTERVAL_MS", 1)
+    fake = _FakeStderr(tty=True)
+    monkeypatch.setattr("sys.stderr", fake)
+    line = create_status_line("overwrite", slow_tick)
+
+    assert tick_entered.wait(2.0), "tick callback never fired"
+
+    line.stop()
+
+    fake.seek(0)
+    fake.truncate(0)
+    tick_proceed.set()
+    time.sleep(0.05)
+
+    assert "stale-tick" not in fake.getvalue(), "tick wrote stale text after stop() returned"

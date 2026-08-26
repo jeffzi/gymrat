@@ -13,16 +13,18 @@ upstream test harness.
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal
 from unittest.mock import Mock, create_autospec
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from gymrat_py.cli.app import app
+from gymrat_py.cli.shared import write_and_flush
 from gymrat_py.cli.supervise_progress import create_supervise_reporter
 from gymrat_py.config import BenchlessConfig, StopConfig
 from gymrat_py.errors import GymratError
@@ -552,6 +554,40 @@ def test_supervise_when_run_completes_does_stop_the_reporter(
 
     assert result.exit_code == 0
     assert seams.reporter_stop.called
+
+
+def test_supervise_when_run_completes_does_stop_reporter_before_printing_summary(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    """The reporter must be stopped before the summary is printed.
+
+    Without this ordering, the summary text appends to the still-open status
+    row, corrupting the output.
+    """
+    order: list[str] = []
+    seams = _install_seams(monkeypatch)
+    seams.reporter_stop.side_effect = lambda: order.append("stop")
+
+    original_waf = write_and_flush
+
+    def tracking_waf(stream: Any, data: str) -> None:
+        if stream is sys.stdout:
+            order.append("write")
+        original_waf(stream, data)
+
+    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.write_and_flush", tracking_waf)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert "stop" in order, "reporter.stop() was never called"
+    assert "write" in order, "summary was never written to stdout"
+    stop_idx = order.index("stop")
+    write_idx = order.index("write")
+    assert stop_idx < write_idx, (
+        f"reporter.stop() at index {stop_idx} must precede summary write at {write_idx}; "
+        f"order was {order}"
+    )
 
 
 def test_supervise_when_supervise_raises_does_still_stop_the_reporter(

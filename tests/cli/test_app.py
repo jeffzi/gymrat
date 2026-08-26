@@ -99,9 +99,6 @@ def test_app_when_debug_flag_in_either_position_does_not_error(argv: Sequence[st
         pytest.param(
             ["--debug", "measure", "--bench", "sh bench.sh"],
             id="before-subcommand",
-            marks=pytest.mark.xfail(
-                strict=True, reason="B5: root --debug clobbered by subcommand default"
-            ),
         ),
         pytest.param(["measure", "--bench", "sh bench.sh", "--debug"], id="after-subcommand"),
     ],

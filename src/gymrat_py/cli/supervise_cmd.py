@@ -189,10 +189,10 @@ def _run_session(ctx: _SessionContext) -> None:
                 observer=reporter.observer,
             )
         )
-        _report_result(result, ctx.log_path)
     finally:
         reporter.stop()
         uninstall_cleanup()
+    _report_result(result, ctx.log_path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +260,8 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     debug: DebugOption = False,
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     options = _Options(
         prompt=prompt,
         max_minutes=max_minutes,

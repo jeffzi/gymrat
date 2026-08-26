@@ -8,6 +8,7 @@ stack or the command bodies, so importing it stays cheap.
 
 import asyncio
 import contextlib
+import math
 import os
 import re
 import sys
@@ -201,6 +202,8 @@ def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
         asyncio.run(run())
     except typer.Exit:
         raise
+    except BrokenPipeError:
+        raise typer.Exit(0) from None
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
 
@@ -260,7 +263,7 @@ def parse_positive_number(value: str) -> float:
         message = "must be a positive number."
         raise typer.BadParameter(message)
     parsed = float(value)
-    if parsed <= 0:
+    if parsed <= 0 or not math.isfinite(parsed):
         message = "must be a positive number."
         raise typer.BadParameter(message)
     return parsed

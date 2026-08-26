@@ -89,7 +89,8 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Compare one baseline revision against one or more candidates."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,

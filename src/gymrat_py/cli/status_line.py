@@ -102,6 +102,7 @@ class _TtyStatusLine:
         self._frame = 0
         self._timer: threading.Timer | None = None
         self._stopped = False
+        self._lock = threading.Lock()
         # A termination signal exits via os._exit without unwinding the run's
         # finally, so the row this line holds open would strand its last progress
         # text on the terminal. Clearing it here — the one place that knows a row
@@ -127,13 +128,12 @@ class _TtyStatusLine:
         timer.start()
 
     def _fire_tick(self) -> None:
-        # A tick that lands after stop must neither redraw nor reschedule, or the
-        # timer chain would outlive the run it was reporting on.
-        if self._stopped or self._on_tick is None:
-            return
-        self._write_text(self._on_tick())
-        if not self._stopped:
-            self._schedule_tick()
+        with self._lock:
+            if self._stopped or self._on_tick is None:
+                return
+            self._write_text(self._on_tick())
+            if not self._stopped:
+                self._schedule_tick()
 
     def _write_text(self, text: str) -> None:
         self._last_text = text
@@ -150,28 +150,33 @@ class _TtyStatusLine:
         sys.stderr.write(f"{CLEAR_LINE}\x1b[33m{glyph}\x1b[39m {text}")
 
     def write(self, text: str) -> None:
-        self._write_text(text)
+        with self._lock:
+            if self._stopped:
+                return
+            self._write_text(text)
 
     def warn(self, message: str) -> None:
-        previous = self._last_text
-        if previous is None:
-            sys.stderr.write(f"{message}\n")
-            return
+        with self._lock:
+            if self._stopped:
+                return
+            previous = self._last_text
+            if previous is None:
+                sys.stderr.write(f"{message}\n")
+                return
 
-        sys.stderr.write(CLEAR_LINE)
-        sys.stderr.write(f"{message}\n")
-        # The spinner redraws itself on its next frame; overwrite mode must
-        # restore the row it just cleared.
-        if not self._spinner:
-            sys.stderr.write(f"{CLEAR_LINE}{_fit_to_terminal_width(previous)}")
+            sys.stderr.write(CLEAR_LINE)
+            sys.stderr.write(f"{message}\n")
+            if not self._spinner:
+                sys.stderr.write(f"{CLEAR_LINE}{_fit_to_terminal_width(previous)}")
 
     def stop(self) -> None:
-        self._stopped = True
-        self._uninstall_cleanup()
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
-        sys.stderr.write(CLEAR_LINE)
+        with self._lock:
+            self._stopped = True
+            self._uninstall_cleanup()
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            sys.stderr.write(CLEAR_LINE)
 
 
 def create_status_line(mode: RenderMode, on_tick: Callable[[], str] | None = None) -> StatusLine:

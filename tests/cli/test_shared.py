@@ -108,6 +108,22 @@ def test_write_and_flush_writes_then_flushes():
     assert recorder.flushed is True
 
 
+def test_run_cli_when_broken_pipe_does_exit_cleanly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    from gymrat_py.cli.shared import run_cli
+
+    async def boom() -> None:
+        raise BrokenPipeError
+
+    with pytest.raises(typer.Exit) as exc:
+        run_cli(boom)
+
+    assert exc.value.exit_code == 0
+    captured = capsys.readouterr()
+    assert BUGS_URL not in captured.err
+
+
 # ---------------------------------------------------------------------------
 # color control
 # ---------------------------------------------------------------------------
@@ -222,6 +238,15 @@ def test_parse_positive_number_accepts_positive_decimals(value: str, expected: f
 def test_parse_positive_number_rejects_non_positive_or_malformed(value: str):
     with pytest.raises(typer.BadParameter) as exc:
         parse_positive_number(value)
+
+    assert exc.value.message == "must be a positive number."
+
+
+def test_parse_positive_number_when_value_overflows_to_infinity_does_reject():
+    huge = "1" + "0" * 310
+
+    with pytest.raises(typer.BadParameter) as exc:
+        parse_positive_number(huge)
 
     assert exc.value.message == "must be a positive number."
 

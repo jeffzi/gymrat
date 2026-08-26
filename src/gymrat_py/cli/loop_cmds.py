@@ -135,7 +135,9 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     debug: DebugOption = False,
 ) -> None:
     """Create or resume this repository's optimization session."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -170,7 +172,9 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -212,7 +216,9 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -241,7 +247,8 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
 
 def discard(*, force: ForceOption = False, debug: DebugOption = False) -> None:
     """Revert the session's experiment worktree to its last commit."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
 
     async def run() -> None:
         root = repo_root()
@@ -277,7 +284,8 @@ def finalize(
     debug: DebugOption = False,
 ) -> None:
     """Collapse the session's kept iterations into one commit and close it."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
 
     async def run() -> None:
         async def body() -> FinalizeResult:
@@ -301,7 +309,9 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     debug: DebugOption = False,
 ) -> None:
     """Show this repository's session history, read from its log."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
+
     # status styles its lines as it builds them, with no render-time color
     # wrapper, so --no-color has to clear the environment before the render:
     # suppress_color drops FORCE_COLOR as well as setting NO_COLOR, so the flag

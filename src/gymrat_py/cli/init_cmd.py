@@ -66,7 +66,8 @@ def init_command(
     debug: DebugOption = False,
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
-    set_debug_mode(debug)
+    if debug:
+        set_debug_mode(True)
     if bench is None:
         exit_with_error(GymratError("Missing --bench flag."))
 
