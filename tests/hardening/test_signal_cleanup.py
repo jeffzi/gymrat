@@ -207,7 +207,8 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
     reap_groups.append(bench_pid)
     first.kill()  # SIGKILL runs no cleanup, so the lock is left behind
     first.communicate(timeout=30)
-    os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
     _wait_until_dead(bench_pid)
     # The lock left behind above is now stale; the rerun below must take it over.
 
