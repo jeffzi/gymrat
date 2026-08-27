@@ -8,6 +8,7 @@ refusal to log a record that would not read back.
 """
 
 import json
+import os
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -196,6 +197,22 @@ def test_append_record_when_only_line_torn_does_recover(fresh_root: str):
     assert read_records(jsonl_path) == [SESSION]
 
 
+def test_append_record_when_final_line_torn_mid_utf8_does_repair_and_append_cleanly(
+    fresh_root: str,
+):
+    jsonl_path = session_jsonl_path(fresh_root)
+    valid_line = _line(SESSION).encode("utf-8") + b"\n"
+    # \xc3 is the first byte of a 2-byte UTF-8 sequence; without the second byte
+    # the tail is a truncated character the writer must discard before appending.
+    raw = valid_line + b'{"type":"iter\xc3'
+    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(jsonl_path).write_bytes(raw)
+
+    append_record(jsonl_path, ITERATION_1)
+
+    assert read_records(jsonl_path) == [SESSION, ITERATION_1]
+
+
 def test_append_record_when_record_unreadable_does_raise_and_leave_the_log_byte_identical(
     fresh_root: str,
 ):
@@ -208,6 +225,41 @@ def test_append_record_when_record_unreadable_does_raise_and_leave_the_log_byte_
 
     assert re.search(r"\biteration\b", str(excinfo.value))
     assert Path(jsonl_path).read_bytes() == before
+
+
+def test_append_record_when_os_write_short_does_retry_until_all_bytes_written(
+    fresh_root: str, monkeypatch: pytest.MonkeyPatch
+):
+    jsonl_path = session_jsonl_path(fresh_root)
+    real_write = os.write
+
+    def short_write(fd: int, data: bytes) -> int:
+        return real_write(fd, data[:1])
+
+    monkeypatch.setattr(os, "write", short_write)
+
+    append_record(jsonl_path, SESSION)
+
+    monkeypatch.undo()
+    assert read_records(jsonl_path) == [SESSION]
+
+
+def test_append_record_when_record_written_does_fsync_before_close(
+    fresh_root: str, monkeypatch: pytest.MonkeyPatch
+):
+    jsonl_path = session_jsonl_path(fresh_root)
+    fsynced_fds: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd: int) -> None:
+        fsynced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+
+    append_record(jsonl_path, SESSION)
+
+    assert len(fsynced_fds) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +332,35 @@ def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str)
         handle.write('{"type":"iter')
 
     assert read_records(jsonl_path) == [SESSION]
+
+
+def test_read_records_when_final_line_torn_mid_utf8_does_skip_it(fresh_root: str):
+    jsonl_path = session_jsonl_path(fresh_root)
+    valid_line = _line(SESSION).encode("utf-8") + b"\n"
+    # \xc3 is the leading byte of a 2-byte UTF-8 code point; alone at the end
+    # it forms a truncated character the reader must silently discard.
+    raw = valid_line + b'{"type":"iter\xc3'
+    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(jsonl_path).write_bytes(raw)
+
+    assert read_records(jsonl_path) == [SESSION]
+
+
+def test_read_records_when_complete_line_fails_to_decode_does_raise_naming_path_and_line(
+    fresh_root: str,
+):
+    jsonl_path = session_jsonl_path(fresh_root)
+    valid_line = _line(SESSION).encode("utf-8") + b"\n"
+    # A newline-terminated line whose bytes are not valid UTF-8.
+    corrupt_line = b"\xff\xff\n"
+    raw = valid_line + corrupt_line
+    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(jsonl_path).write_bytes(raw)
+
+    with pytest.raises(GymratError) as excinfo:
+        read_records(jsonl_path)
+
+    assert f"{jsonl_path}:2" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

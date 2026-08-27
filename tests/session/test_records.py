@@ -406,3 +406,26 @@ def test_parse_record_when_type_unknown_does_name_it_and_list_known_types():
 
     assert mentions("banana").search(str(exc.value))
     assert "finalize" in (exc.value.hint or "")
+
+
+# ---------------------------------------------------------------------------
+# parse_record — all-digit metric name phrasing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_record_when_metric_name_all_digits_does_phrase_expected_value_correctly():
+    record = patching(
+        ITERATION_RECORD,
+        {"metrics": {"123": omitting(METRIC_VERDICT, "deltaPct")}},
+    )
+
+    with pytest.raises(GymratError) as exc:
+        parse_record(record)
+
+    msg = str(exc.value)
+    assert mentions("123").search(msg)
+    assert mentions("deltaPct").search(msg)
+    # Must produce the specific type description, not the generic "a valid value"
+    # fallback that the expected-type lookup misses when the metric name is all
+    # digits and _normalize_loc conflates it with an array index.
+    assert "a number or null" in msg

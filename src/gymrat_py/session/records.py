@@ -605,18 +605,22 @@ _PHRASES: dict[tuple[str, ...], str] = {
 }
 
 
-def _normalize_loc(loc: tuple[str, ...]) -> tuple[str, ...]:
+def _normalize_loc(loc: tuple[int | str, ...]) -> tuple[str, ...]:
     """Collapse array indices and dynamic map keys to ``"*"`` for phrase lookup.
 
-    An array index is a purely-numeric segment. A dynamic map key is either a
-    metric name directly under ``metrics``, or a metric name inside a sample
-    round -- the segment following an index. Both are collapsed so one phrase
-    entry covers every concrete name.
+    An array index is an ``int`` segment (pydantic preserves the type). A dynamic
+    map key is either a metric name directly under ``metrics``, or a metric name
+    inside a sample round — the segment following an index. Both are collapsed so
+    one phrase entry covers every concrete name.
+
+    Using ``isinstance(segment, int)`` instead of ``str.isdigit`` keeps all-digit
+    dict keys (e.g. a metric named ``"123"``) from being conflated with array
+    indices.
     """
     out: list[str] = []
     prev_index = False
     for i, segment in enumerate(loc):
-        if segment.isdigit():
+        if isinstance(segment, int):
             out.append("*")
             prev_index = True
             continue
@@ -631,12 +635,14 @@ def _normalize_loc(loc: tuple[str, ...]) -> tuple[str, ...]:
 
 def _message_for_error(error: ErrorDetails, record_type: str) -> str:
     """Translate one pydantic error into a session-record problem string."""
-    loc = tuple(str(part) for part in error["loc"])
+    raw_loc = error["loc"]
+    display_loc = tuple(str(part) for part in raw_loc)
     if error["type"] == "extra_forbidden":
-        return f"Unknown session record key: {describe_key(loc)}"
-    phrase = _PHRASES.get((record_type, *_normalize_loc(loc)), "a valid value")
+        return f"Unknown session record key: {describe_key(display_loc)}"
+    phrase = _PHRASES.get((record_type, *_normalize_loc(raw_loc)), "a valid value")
     got = "undefined" if error["type"] == "missing" else json.dumps(error["input"])
-    return f"Invalid session record value for {describe_key(loc)}: expected {phrase}, got {got}"
+    key = describe_key(display_loc)
+    return f"Invalid session record value for {key}: expected {phrase}, got {got}"
 
 
 # ---------------------------------------------------------------------------

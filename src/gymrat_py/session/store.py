@@ -120,7 +120,10 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     payload = f"{line}\n".encode()
     fd = os.open(jsonl_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        os.write(fd, payload)
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view) :]
+        os.fsync(fd)
     finally:
         os.close(fd)
 
@@ -184,27 +187,38 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
             message names the log and the 1-based line at fault.
     """
     try:
-        content = Path(jsonl_path).read_text(encoding="utf-8")
+        raw = Path(jsonl_path).read_bytes()
     except FileNotFoundError:
         return []
 
-    lines = content.split("\n")
-    # A file whose last byte is not "\n" ends on a line the writer never
-    # finished — a torn append or a crash mid-flush. Each record is written as a
-    # single newline-terminated write, so a line lacking the terminator was never
-    # completed and must not be trusted.
-    last_unterminated = bool(content) and not content.endswith("\n")
+    # Split on newline bytes. The final element is whatever follows the last
+    # newline — either empty (when the file ends on \n) or the torn tail of a
+    # write that never finished.
+    raw_lines = raw.split(b"\n")
+    # A file whose last byte is not b"\n" ends on a line the writer never
+    # finished — a torn append or a crash mid-flush. Each record is written as
+    # a single newline-terminated write, so a line lacking the terminator was
+    # never completed and must not be trusted.
+    last_unterminated = bool(raw) and raw[-1] != _NEWLINE_BYTE
 
     records: list[SessionLogRecord] = []
-    for index, line in enumerate(lines):
-        if line.strip() == "":
+    for index, raw_line in enumerate(raw_lines):
+        if raw_line.strip() == b"":
             continue
 
-        is_last_line = index == len(lines) - 1
+        is_last_line = index == len(raw_lines) - 1
         if is_last_line and last_unterminated:
             break
 
         at = f"{jsonl_path}:{index + 1}"
+
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError as error:
+            message = f"Corrupt session log at {at}"
+            raise GymratError(
+                message, hint=f"Line {index + 1} contains invalid UTF-8 bytes."
+            ) from error
 
         try:
             value = json.loads(line)

@@ -5,6 +5,7 @@ exercising the hard-link takeover protocol through real filesystem operations
 and patched system calls at the exact seams a concurrent run would race on.
 """
 
+import ctypes
 import errno
 import json
 import os
@@ -15,6 +16,7 @@ import sys
 import tempfile
 from collections.abc import Buffer, Iterator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -583,6 +585,57 @@ def test_acquire_lock_when_wedged_file_no_longer_on_disk_does_report_contention(
     assert caught.value.hint == (
         f"{LIVE_HOLDER_HINT} If no gymrat process is running, delete {lock_path}."
     )
+
+
+# ---------------------------------------------------------------------------
+# acquire_lock — Win32 liveness probe error codes
+# ---------------------------------------------------------------------------
+
+
+def test_acquire_lock_when_win32_open_process_access_denied_does_treat_holder_as_alive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path, _ = stale_lock_path()
+    mock_kernel32 = MagicMock()
+    mock_kernel32.OpenProcess.return_value = 0
+    mock_kernel32.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
+    monkeypatch.setattr(ctypes, "windll", MagicMock(kernel32=mock_kernel32), raising=False)
+    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+
+    with pytest.raises(GymratError) as caught:
+        acquire_lock(lock_path, "compare")
+
+    assert caught.value.hint == LIVE_HOLDER_HINT
+
+
+def test_acquire_lock_when_win32_open_process_invalid_parameter_does_steal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path, _ = stale_lock_path()
+    mock_kernel32 = MagicMock()
+    mock_kernel32.OpenProcess.return_value = 0
+    mock_kernel32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER
+    monkeypatch.setattr(ctypes, "windll", MagicMock(kernel32=mock_kernel32), raising=False)
+    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+
+    acquire_lock(lock_path, "compare")
+
+    assert_holder_record(read_lockfile(lock_path))
+
+
+def test_acquire_lock_when_win32_liveness_probed_does_declare_handle_as_pointer_width(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path, _ = stale_lock_path()
+    mock_kernel32 = MagicMock()
+    mock_kernel32.OpenProcess.return_value = 0
+    mock_kernel32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER
+    monkeypatch.setattr(ctypes, "windll", MagicMock(kernel32=mock_kernel32), raising=False)
+    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+
+    acquire_lock(lock_path, "compare")
+
+    assert mock_kernel32.OpenProcess.restype is ctypes.c_void_p
 
 
 # ---------------------------------------------------------------------------
