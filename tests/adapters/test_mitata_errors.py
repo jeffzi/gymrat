@@ -10,12 +10,18 @@ from tests.adapters._inputs import build_stdout
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 
 
-def _decode_error_reason(candidate: str) -> str:
+def _decode_error_reason(text: str, pos: int = 0) -> str:
+    """Return the JSONDecodeError message from attempting ``raw_decode`` at *pos*.
+
+    Uses :meth:`json.JSONDecoder.raw_decode` to match how the adapter now
+    discovers candidates. The resulting char offset is absolute within *text*,
+    not relative to a pre-sliced candidate.
+    """
     try:
-        json.loads(candidate)
+        json.JSONDecoder().raw_decode(text, pos)
     except json.JSONDecodeError as exc:
         return str(exc)
-    msg = f"expected {candidate!r} to fail json parsing"
+    msg = f"expected raw_decode at pos {pos} in {text!r} to fail"
     raise AssertionError(msg)
 
 
@@ -51,7 +57,7 @@ def test_parse_when_no_run_has_valid_stats_does_raise():
         mitata_adapter.parse(stdout)
 
 
-def test_parse_when_benchmark_entries_not_objects_does_skip_silently():
+def test_parse_when_benchmark_entries_not_objects_does_warn_and_skip():
     stdout = build_stdout(
         [
             None,
@@ -65,7 +71,7 @@ def test_parse_when_benchmark_entries_not_objects_does_skip_silently():
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"valid/time": 1}
-    assert warnings == []
+    assert len(warnings) == 3
 
 
 def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip():
@@ -81,7 +87,7 @@ def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip()
     assert mitata_adapter.parse(stdout) == {"valid/time": 1}
 
 
-def test_parse_when_runs_are_not_objects_does_skip_silently():
+def test_parse_when_runs_are_not_objects_does_warn_and_skip():
     stdout = build_stdout(
         [{"alias": "test", "runs": [None, 42, {"args": {}, "stats": {"p50": 1}}]}]
     )
@@ -90,7 +96,8 @@ def test_parse_when_runs_are_not_objects_does_skip_silently():
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"test/time": 1}
-    assert warnings == []
+    assert len(warnings) == 2
+    assert all("test" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +308,27 @@ def test_parse_when_only_incomplete_brace_fragments_present_does_raise():
 
 
 # ---------------------------------------------------------------------------
+# unbalanced brace before payload (B20)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_unbalanced_brace_precedes_json_does_still_find_payload():
+    payload = build_stdout([{"alias": "encode", "runs": [{"args": {}, "stats": {"p50": 42}}]}])
+    stdout = f"cpu: {{model\n{payload}"
+
+    result = mitata_adapter.parse(stdout)
+
+    assert result == {"encode/time": 42}
+
+
+def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():
+    stdout = "{" * 5000
+
+    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
+        mitata_adapter.parse(stdout)
+
+
+# ---------------------------------------------------------------------------
 # candidate selection among multiple JSON objects
 # ---------------------------------------------------------------------------
 
@@ -327,7 +355,10 @@ def test_parse_when_several_candidates_fail_does_report_longest_candidates_error
     with pytest.raises(AdapterError) as exc_info:
         mitata_adapter.parse(stdout)
 
-    assert str(exc_info.value) == f"Failed to parse JSON: {_decode_error_reason(long_bad)}"
+    longest_pos = stdout.index("{")
+    assert (
+        str(exc_info.value) == f"Failed to parse JSON: {_decode_error_reason(stdout, longest_pos)}"
+    )
 
 
 # ---------------------------------------------------------------------------
