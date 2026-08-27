@@ -105,6 +105,10 @@ def run_git(args: Sequence[str], cwd: str) -> str:
             # this output needs a string to work with, not a crash.
             errors="replace",
             env=env,
+            # Close stdin so a git command that wants user input (credential
+            # fill, interactive rebase) fails immediately with its own
+            # diagnostic instead of hanging while the signal mask is held.
+            stdin=subprocess.DEVNULL,
         )
     return completed.stdout
 

@@ -48,9 +48,9 @@ def kill_process_group(pid: int) -> None:
                     RuntimeWarning,
                     stacklevel=2,
                 )
-        except FileNotFoundError:
+        except OSError as os_error:
             warnings.warn(
-                f"taskkill unavailable while killing pid {pid}",
+                f"taskkill unavailable while killing pid {pid}: {os_error}",
                 RuntimeWarning,
                 stacklevel=2,
             )

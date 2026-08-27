@@ -444,3 +444,81 @@ async def test_exec_when_grandchild_holds_stdout_open_without_timeout_does_wait_
     assert open_ended, "exec returned before the grandchild released stdout"
     assert isinstance(result, ExecResult)
     assert "METRIC" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# termination signal between spawn and registration kills the child
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="Signal masking requires POSIX pthread_sigmask",
+)
+async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import time
+
+    from gymrat_py import exec as exec_mod
+    from gymrat_py import signals
+
+    # Widen the spawn-to-register gap so SIGTERM lands inside it.
+    real_spawn = asyncio.create_subprocess_shell
+    spawned: list[asyncio.subprocess.Process] = []
+    spawn_barrier = threading.Event()
+
+    async def slow_spawn(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        proc = await real_spawn(*args, **kwargs)  # type: ignore[arg-type]
+        spawned.append(proc)
+        spawn_barrier.set()
+        await asyncio.sleep(1.0)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", slow_spawn)
+
+    # Prevent the handler from actually terminating the process.
+    exit_record: dict[str, object] = {}
+    monkeypatch.setattr(signals, "_exit_process", lambda code: exit_record.update(code=code))  # pyrefly: ignore
+
+    # Keep the live-groups registry clean for this test.
+    saved = set(exec_mod._live_process_groups)
+    exec_mod._live_process_groups.clear()
+
+    uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
+
+    def send_signal() -> None:
+        spawn_barrier.wait(5.0)
+        time.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    sender = threading.Thread(target=send_signal, daemon=True)
+    try:
+        sender.start()
+        result = await asyncio.wait_for(
+            run_exec(
+                "sleep 30",
+                ExecOptions(cwd=str(tmp_path), timeout_ms=8000),
+            ),
+            timeout=10,
+        )
+    finally:
+        sender.join(timeout=3)
+        uninstall()
+        exec_mod._live_process_groups.clear()
+        exec_mod._live_process_groups.update(saved)
+        for proc in spawned:
+            if proc.returncode is None and proc.pid:
+                with contextlib.suppress(OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+
+    # With the fix (signal mask around spawn+register), the deferred handler
+    # finds the child in the registry and kills it — exec settles quickly as
+    # a normal result, not a timeout. Without the fix the handler fires before
+    # registration and the child survives until the 8 s timeout.
+    assert not isinstance(result, ExecTimeoutError), (
+        "child was not killed by the signal handler — spawn-register window is unmasked"
+    )
+    assert "code" in exit_record

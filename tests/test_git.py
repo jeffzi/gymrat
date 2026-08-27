@@ -231,3 +231,26 @@ def test_run_git_when_pthread_sigmask_unavailable_does_run_unmasked_and_return_s
     result = run_git(["rev-parse", "HEAD"], repo)
 
     assert re.fullmatch(r"[0-9a-f]{40}", result.strip())
+
+
+# ---------------------------------------------------------------------------
+# run_git — stdin is closed
+# ---------------------------------------------------------------------------
+
+
+def test_run_git_when_invoked_does_pass_stdin_devnull(
+    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    captured_kwargs: list[dict[str, object]] = []
+    real_run = subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_kwargs.append(dict(kwargs))
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+
+    run_git(["rev-parse", "HEAD"], scratch_repo)
+
+    assert captured_kwargs
+    assert captured_kwargs[0]["stdin"] is subprocess.DEVNULL

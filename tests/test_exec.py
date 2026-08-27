@@ -581,6 +581,30 @@ async def test_exec_when_win32_taskkill_fails_otherwise_does_warn(
     assert_taskkill_invoked(calls)
 
 
+async def test_exec_when_win32_taskkill_launch_raises_oserror_does_warn_not_raise(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_oserror(
+        args: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(subprocess, "run", raise_oserror)
+    abort = asyncio.Event()
+    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
+    await wait_for_spawned(spawned_processes)
+
+    monkeypatch.setattr(pg_mod, "current_platform", lambda: "win32")
+    monkeypatch.setattr(exec_mod, "current_platform", lambda: "win32")
+    abort.set()
+    with pytest.warns(RuntimeWarning):
+        await asyncio.wait_for(task, 5)
+
+
 async def test_exec_when_killpg_fails_otherwise_does_warn_not_raise(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
