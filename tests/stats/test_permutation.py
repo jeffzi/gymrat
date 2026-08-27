@@ -188,6 +188,74 @@ _paired_samples = st.lists(
 _no_deadline = settings(deadline=None)
 
 
+# ---------------------------------------------------------------------------
+# B43 — zero-median sign-flip rearrangements count against
+# ---------------------------------------------------------------------------
+
+
+def test_sign_flip_permutation_test_when_zero_median_rearrangements_does_count_against():
+    """Sign-flip rearrangements that produce a zero baseline median count against the delta.
+
+    Baseline ``[12]*6`` vs candidate ``[0,0,0,0,60,60]``: some rearrangements
+    flip enough low candidate values into the baseline to make its median zero,
+    which makes the delta undefined (division by zero).  Those rearrangements must
+    count on the baseline side (against the observed delta), not be discarded or
+    treated as evidence for the delta.  The correct exact p is 0.25, not 0.125.
+    """
+    result = sign_flip_permutation_test([12] * 6, [0, 0, 0, 0, 60, 60])
+
+    assert result.n == 6
+    assert result.p == pytest.approx(0.25)
+    assert math.isfinite(result.p)
+
+
+# ---------------------------------------------------------------------------
+# D3 — exact p over differing pairs with tied values held fixed
+# ---------------------------------------------------------------------------
+
+
+def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
+    """Only differing pairs count toward the exact/MC budget decision.
+
+    Eight extreme tied pairs plus the standard six differing pairs give 14 total.
+    ``2**14 > RESAMPLE_BUDGET`` would push scipy onto the Monte Carlo path, but
+    tied pairs contribute the same value to both sides under every flip, so the
+    effective space is ``2**6 = 64 <= RESAMPLE_BUDGET`` — exact enumeration.
+
+    Extreme tied values sit outside the differing-pair range and do not shift
+    medians, so the exact p equals the ties-free six-pair p.  An MC path over
+    all 14 pairs would produce a close but not byte-identical estimate.
+    """
+    x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
+    y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
+
+    assert 2 ** len(x) > RESAMPLE_BUDGET
+
+    no_ties = sign_flip_permutation_test(_SIX_PAIR_X, _SIX_PAIR_Y)
+    with_ties = sign_flip_permutation_test(x, y)
+
+    assert with_ties.n == 6
+    assert 2**with_ties.n <= RESAMPLE_BUDGET
+    assert with_ties.p == no_ties.p
+
+
+# ---------------------------------------------------------------------------
+# D1 — permutation descriptor docstring
+# ---------------------------------------------------------------------------
+
+
+def test_permutation_descriptor_docstring_when_inspected_does_state_strict_inequality():
+    """The PERMUTATION_DESCRIPTOR docstring states the engine gate: ``p < 0.05``."""
+    import inspect
+
+    from gymrat_py.model import methods
+
+    source = inspect.getsource(methods)
+    descriptor_region = source[source.index("PERMUTATION_DESCRIPTOR") :]
+
+    assert "p < 0.05" in descriptor_region
+
+
 @_no_deadline
 @given(pairs=_paired_samples)
 def test_sign_flip_permutation_test_property_p_is_strictly_positive_within_unit_interval(

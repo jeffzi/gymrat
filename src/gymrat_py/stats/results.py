@@ -18,8 +18,10 @@ class SignificanceResult:
 
     Attributes:
         p: The two-sided p-value, always within ``[0.0, 1.0]``.
-        n: The number of paired entries that actually entered the test, after
-            dropping zero-difference pairs.
+        n: The number of paired entries whose difference is non-zero.  Tied
+            pairs (zero difference) are held fixed on both sides — they
+            contribute to medians under every rearrangement but are not
+            sign-flipped.
     """
 
     p: float
@@ -30,8 +32,8 @@ def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> tuple[int, in
     """Pair ``x`` and ``y`` positionally over the shorter input and count non-zero diffs.
 
     Shared by every paired significance test: each pairs ``x[i]`` with ``y[i]``
-    for ``i`` below the shorter input's length and drops pairs whose difference
-    is zero before invoking its test.
+    for ``i`` below the shorter input's length.  The caller holds zero-difference
+    (tied) pairs fixed on both sides of the test rather than dropping them.
 
     Args:
         x: The first sample.

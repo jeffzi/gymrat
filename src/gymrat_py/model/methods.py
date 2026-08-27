@@ -23,7 +23,7 @@ class MethodDescriptor:
 
 
 PERMUTATION_DESCRIPTOR = MethodDescriptor(method="permutation", min_n=6, p_threshold=0.05)
-"""Permutation floors: at least 6 usable pairs, gated at p ≤ 0.05."""
+"""Permutation floors: at least 6 usable pairs, gated at p < 0.05."""
 
 BAND_DESCRIPTOR = MethodDescriptor(method="band", min_n=2, p_threshold=None)
 """Band floors: at least 2 usable entries; no significance gate."""

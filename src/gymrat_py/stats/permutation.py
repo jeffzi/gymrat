@@ -36,20 +36,27 @@ def _percent_delta(baseline: Sequence[float], candidate: Sequence[float]) -> flo
     """Return the median percent delta of ``candidate`` against ``baseline``.
 
     The functional is ``100 * (median(candidate) - median(baseline)) /
-    abs(median(baseline))``. When the baseline median is zero the ratio is
-    undefined, so this returns NaN rather than dividing by zero — callers treat
-    a non-finite delta as "no direction to test".
+    abs(median(baseline))``.
+
+    When the baseline median is zero the ratio is undefined.  Returns ``0.0``
+    when both medians are zero (no separation) and ``NaN`` otherwise — the
+    caller decides how to treat the undefined case (the permutation test's
+    statistic closure converts it to signed infinity so scipy's null tally
+    counts it on the correct tail).
 
     Args:
         baseline: The reference samples (non-empty).
         candidate: The samples compared against the baseline (non-empty).
 
     Returns:
-        The percent delta, or ``float("nan")`` when the baseline median is zero.
+        The percent delta, ``0.0`` when both medians are zero, or ``NaN``
+        when only the baseline median is zero.
     """
     base = compute_median(baseline)
     denom = abs(base)
     if denom == 0.0:
+        if compute_median(candidate) == base:
+            return 0.0
         return math.nan
     return 100.0 * (compute_median(candidate) - base) / denom
 
@@ -62,18 +69,22 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
     of the longer input are ignored. The reported ``n`` counts only pairs whose
     difference is non-zero.
 
+    Tied pairs (zero difference) are held fixed on both sides: they contribute
+    to the median under every rearrangement but are never sign-flipped, so the
+    effective null space is ``2**n`` where ``n`` is the differing-pair count.
+
     The test statistic is the median percent delta of the paired slices,
     ``100 * (median(y) - median(x)) / abs(median(x))``; its permutation null
-    distribution comes from flipping the sign of each pair's difference. When the
-    ``2**pairs`` sign-flip space fits :data:`RESAMPLE_BUDGET` the enumeration is
+    distribution comes from flipping the sign of each differing pair's
+    difference. When ``2**n`` fits :data:`RESAMPLE_BUDGET` the enumeration is
     exact; otherwise :data:`RESAMPLE_BUDGET` Monte Carlo resamples are drawn from
     a generator seeded with :data:`PERMUTATION_SEED`. Both paths are
     deterministic for a given input.
 
     Degenerate inputs cannot support the test and short-circuit to a
-    non-significant ``p = 1.0`` without invoking scipy: fewer than two pairs,
-    all-zero paired differences, and a non-finite observed statistic (the
-    baseline median is zero, so the percent delta is undefined).
+    non-significant ``p = 1.0`` without invoking scipy: fewer than two
+    differing pairs, and a non-finite observed statistic (the baseline median
+    is zero, so the percent delta is undefined).
 
     Args:
         x: The baseline sample.
@@ -85,13 +96,25 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
         non-zero paired differences.
     """
     m, n = count_nonzero_pairs(x, y)
-    if n == 0 or m < _MIN_PAIRS:
+    if n < _MIN_PAIRS:
         return SignificanceResult(p=1.0, n=n)
 
-    x_paired = list(x[:m])
-    y_paired = list(y[:m])
+    # Separate tied (zero-diff) and differing pairs.  Only the differing pairs
+    # are sign-flipped; tied pairs contribute the same value to both sides
+    # under every flip, so they are held fixed in the statistic.
+    tied_x: list[float] = []
+    tied_y: list[float] = []
+    diff_x: list[float] = []
+    diff_y: list[float] = []
+    for i in range(m):
+        if x[i] == y[i]:
+            tied_x.append(x[i])
+            tied_y.append(y[i])
+        else:
+            diff_x.append(x[i])
+            diff_y.append(y[i])
 
-    observed = _percent_delta(x_paired, y_paired)
+    observed = _percent_delta(tied_x + diff_x, tied_y + diff_y)
     if not math.isfinite(observed):
         return SignificanceResult(p=1.0, n=n)
 
@@ -103,17 +126,25 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
     def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
         # scipy passes numpy arrays; convert to lists so ``compute_median``'s
         # emptiness check (``if not values``) sees a plain sequence, not an
-        # array whose truthiness is ambiguous.
-        return _percent_delta(list(baseline), list(candidate))
+        # array whose truthiness is ambiguous.  Tied values are prepended so
+        # that medians reflect all paired observations.
+        delta = _percent_delta(tied_x + list(baseline), tied_y + list(candidate))
+        if math.isnan(delta):
+            # Zero-median permuted baseline with a non-zero candidate median.
+            # Return infinity on the observed tail so scipy's two-sided
+            # comparison (2·min(p_le, p_ge)) counts the rearrangement against
+            # the observed delta rather than discarding it.
+            return math.copysign(math.inf, observed)
+        return delta
 
-    # ``m`` is the number of pairs scipy actually sign-flips, hence the exponent
-    # of the null space. scipy enumerates exactly when ``n_resamples`` reaches
-    # that space; otherwise it samples with the seeded generator.
-    exact_space = 2**m
+    # ``n`` is the number of differing pairs scipy actually sign-flips, hence
+    # the exponent of the null space.  Tied pairs are fixed, so flipping them
+    # adds no information — the effective space is ``2**n``, not ``2**m``.
+    exact_space = 2**n
     n_resamples = min(exact_space, RESAMPLE_BUDGET)
 
     result = permutation_test(
-        (x_paired, y_paired),
+        (diff_x, diff_y),
         statistic,
         permutation_type="samples",
         alternative="two-sided",
