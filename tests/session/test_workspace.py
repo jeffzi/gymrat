@@ -466,6 +466,24 @@ def test_revert_workspace_when_worktree_dirty_does_restore_head_and_drop_untrack
     assert not (Path(experiment) / "untracked.txt").exists()
 
 
+def test_revert_workspace_when_target_sha_given_does_reset_head_and_tree_to_that_commit(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+    original = _git(["rev-parse", "HEAD"], experiment)
+    (Path(experiment) / "step.txt").write_text("agent change\n", encoding="utf-8")
+    _git(["add", "-A"], experiment)
+    _git(["commit", "-m", "agent step"], experiment)
+    assert _git(["rev-parse", "HEAD"], experiment) != original
+
+    revert_workspace(experiment, target=original)
+
+    assert _git(["rev-parse", "HEAD"], experiment) == original
+    assert not (Path(experiment) / "step.txt").exists()
+    assert _git(["status", "--porcelain"], experiment) == ""
+
+
 def test_worktree_head_when_worktree_on_branch_does_return_the_checked_out_sha(
     repo: str, baseline_sha: str, baseline: BaselineRef
 ):

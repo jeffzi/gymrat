@@ -61,6 +61,7 @@ class _Noise:
     pct: float
     abs: float
     resolution_pct: float
+    force_unstable: bool = False
 
 
 def _determine_verdict(delta: float, direction: Direction) -> Verdict:
@@ -148,10 +149,16 @@ def _compute_noise(
         else 0.0
     )
 
+    # A side with median 0 and non-zero half-range makes the noise fraction
+    # undefined (division by zero). Force the unstable flag so the engine
+    # never serializes an infinite noise_pct into session records.
+    force_unstable = (median_a == 0 and half_range_a != 0) or (median_b == 0 and half_range_b != 0)
+
     return _Noise(
         pct=max(NOISE_K * 100 * max_spread, NOISE_FLOOR_PCT, byte_floor_pct),
         abs=NOISE_K * max(half_range_a, half_range_b),
         resolution_pct=byte_floor_pct,
+        force_unstable=force_unstable,
     )
 
 
@@ -180,7 +187,7 @@ def _compute_approximate_verdict(
 
     record: PermutationVerdict | BandVerdict
     if result.n < PERMUTATION_DESCRIPTOR.min_n:
-        has_signal = n >= BAND_DESCRIPTOR.min_n and abs(delta) > noise.pct
+        has_signal = result.n >= BAND_DESCRIPTOR.min_n and abs(delta) > noise.pct
         verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
@@ -214,7 +221,7 @@ def _compute_approximate_verdict(
     # The band is too wide to measure any delta against, so the override is
     # unconditional. Strict comparison keeps a metric sitting exactly on the
     # threshold on its normal verdict.
-    if record.noise_pct > unstable_noise_pct:
+    if noise.force_unstable or record.noise_pct > unstable_noise_pct:
         return dataclasses.replace(record, verdict="unstable")
     return record
 

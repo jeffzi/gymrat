@@ -8,6 +8,7 @@ earned the squash stays readable.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from gymrat_py.errors import GymratError
 from gymrat_py.git import try_git
@@ -15,8 +16,13 @@ from gymrat_py.report.format import pluralize
 from gymrat_py.report.loop import SHORT_SHA_LENGTH
 from gymrat_py.session.clock import now_iso
 from gymrat_py.session.records import FinalizeRecord, KeepRecord, SessionLogRecord
-from gymrat_py.session.store import append_record, require_open_session
-from gymrat_py.session.workspace import is_worktree_dirty, remove_worktrees, run_git_step
+from gymrat_py.session.store import append_record, last_kept_position, require_open_session
+from gymrat_py.session.workspace import (
+    is_worktree_dirty,
+    remove_worktrees,
+    run_git_step,
+    worktree_head,
+)
 
 #: The hint a refusal points at whenever the fix is to settle the last iteration.
 _SETTLE_FIRST_HINT = "Run gymrat keep or gymrat discard before closing the session."
@@ -83,6 +89,16 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
             "carries uncommitted work."
         )
         raise GymratError(message, hint=_SETTLE_FIRST_HINT)
+
+    expected_position = last_kept_position(state, session.baseline.sha)
+    if state.last_kept_commit is not None and Path(session.worktrees.experiment).is_dir():
+        head = worktree_head(session.worktrees.experiment)
+        if head != expected_position:
+            message = (
+                "Finalize refused: the experiment worktree has commits that were "
+                "neither kept nor discarded."
+            )
+            raise GymratError(message, hint=_SETTLE_FIRST_HINT)
 
     # Rejected before any ref is read or written: git's own argument parser would
     # read a leading dash as an option, so `--branch -m` reaches `git branch` as

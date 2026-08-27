@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 
 from gymrat_py.cli.app import app
 from gymrat_py.session import KeepRecord, experiment_worktree_dir
+from tests._ansi import SGR_RE
 from tests.loop._settle import (
     CHECKS,
     checks_fail,
@@ -84,6 +85,38 @@ def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
     assert isinstance(record, KeepRecord)
     assert record.status == "blocked"
     assert record.reason == "nothing-to-commit"
+
+
+def test_keep_command_when_refusing_does_print_a_report_carrying_no_hint_label(repo: str):
+    start_with(repo, (iteration(1),))
+    _write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    assert "Hint" not in result.stdout
+    assert "gymrat keep" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("variable", "expect_ansi"),
+    [
+        pytest.param("FORCE_COLOR", True, id="force-color"),
+        pytest.param("NO_COLOR", False, id="no-color"),
+    ],
+)
+def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
+    repo: str, monkeypatch: pytest.MonkeyPatch, variable: str, expect_ansi: bool
+):
+    for name in ("FORCE_COLOR", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "1")
+    start_with(repo, (iteration(1),))
+    _write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert bool(SGR_RE.search(result.stdout)) is expect_ansi
 
 
 def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(

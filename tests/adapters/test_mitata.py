@@ -428,6 +428,45 @@ def test_parse_when_heap_avg_missing_does_skip_heap_metric():
     assert mitata_adapter.parse(stdout) == {"test/time": 42}
 
 
+@pytest.mark.parametrize(
+    "heap_value",
+    [
+        pytest.param(42, id="integer"),
+        pytest.param("bad", id="string"),
+        pytest.param([1, 2], id="array"),
+        pytest.param(True, id="boolean"),
+    ],
+)
+def test_parse_when_heap_is_not_an_object_does_warn_and_skip_heap(heap_value: object):
+    stdout = build_stdout(
+        [
+            {
+                "alias": "test",
+                "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": heap_value}}],
+            }
+        ]
+    )
+    warnings: list[str] = []
+
+    result = mitata_adapter.parse(stdout, warnings.append)
+
+    assert result == {"test/time": 42}
+    assert len(warnings) == 1
+    assert str(heap_value) in warnings[0] or repr(heap_value) in warnings[0]
+
+
+def test_parse_when_heap_absent_does_not_warn():
+    stdout = build_stdout(
+        [{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}]
+    )
+    warnings: list[str] = []
+
+    result = mitata_adapter.parse(stdout, warnings.append)
+
+    assert result == {"test/time": 42}
+    assert warnings == []
+
+
 # ---------------------------------------------------------------------------
 # non-finite statistics
 # ---------------------------------------------------------------------------
@@ -460,10 +499,14 @@ def test_parse_when_every_p50_non_finite_does_raise_no_valid_runs():
         mitata_adapter.parse(stdout)
 
 
-def test_parse_when_heap_avg_non_finite_does_keep_time_and_skip_heap():
+def test_parse_when_heap_avg_non_finite_does_warn_and_skip_heap():
     stdout = '{"benchmarks":[{"alias":"test","runs":[{"name":"t","args":{},"stats":{"p50":42,"heap":{"avg":1e999}}}]}]}'
+    warnings: list[str] = []
 
-    assert mitata_adapter.parse(stdout) == {"test/time": 42}
+    result = mitata_adapter.parse(stdout, warnings.append)
+
+    assert result == {"test/time": 42}
+    assert any("test" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -611,12 +654,12 @@ def test_defaults_when_prefix_empty_does_fall_back_to_full_metric_name(
         ),
         pytest.param(
             'cpu: {model}\n{"benchmarks": []}\nfooter: {info}',
-            ["{model}", '{"benchmarks": []}', "{info}"],
+            ['{"benchmarks": []}'],
             id="non-json-braces-around-payload",
         ),
     ],
 )
-def test_find_json_candidates_when_scanning_does_return_balanced_slices(
+def test_find_json_candidates_when_scanning_does_return_valid_json_objects(
     text: str, expected: list[str]
 ):
     assert find_json_candidates(text) == expected

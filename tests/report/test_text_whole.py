@@ -498,7 +498,7 @@ def test_render_report_when_representative_does_assemble_table_summary_and_highl
         "✓ decode/text=digits/time -17.9%",
         "✓ encode/heap -7.9% (exact)",
     ]
-    assert "Hint" not in report
+    assert "some rounds were dropped" not in report
     assert "worktree" not in report
 
 
@@ -570,7 +570,7 @@ def test_render_report_when_degenerate_and_dirty_cleanup_does_close_with_footer_
 
     lines = report.split("\n")
     assert lines[-4:] == [
-        "Hint: re-run with --samples 6 or more for statistical verdicts",
+        "re-run with --samples 6 or more for statistical verdicts",
         "1 worktree removed · 1 left behind",
         "  left behind: /tmp/gymrat-abc123 (contains modified files)",
         "  worktree prune failed: could not lock config file",
@@ -681,7 +681,7 @@ def test_render_report_when_verbose_two_candidate_does_summarize_group_and_foote
         "verdicts: sign-flip permutation test on pairs (n=10 ≥ 6) · ~ = no signal at α=0.05",
         "noise band ±(half-range × K) — n=4 below permutation floor (6 pairs)",
         (
-            "Hint: some rounds were dropped — not all samples produced paired measurements "
+            "some rounds were dropped — not all samples produced paired measurements "
             "for every metric"
         ),
     ]
@@ -709,9 +709,7 @@ def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlig
         "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
         "= 0 identical   ~ 0 within noise   ? 2 inconclusive"
     )
-    assert report.split("\n")[-1] == (
-        "Hint: re-run with --samples 6 or more for statistical verdicts"
-    )
+    assert report.split("\n")[-1] == ("re-run with --samples 6 or more for statistical verdicts")
 
 
 def test_render_report_when_flat_non_gating_does_assemble_tag_summary_and_highlights():

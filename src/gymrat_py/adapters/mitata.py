@@ -6,9 +6,9 @@ measured it, ``<alias>/heap`` from ``stats.heap.avg``. Parameterized benchmarks
 carry ``$name`` placeholders in the alias that are substituted with ``name=value``
 so one benchmark becomes one metric per argument combination.
 
-The JSON is located by scanning stdout for balanced top-level ``{...}`` slices, so
-banner text mitata prints around it — including bare braces like ``cpu: {model}``
-— does not have to be stripped by the caller.
+The JSON is located by attempting ``json.JSONDecoder().raw_decode`` at each ``{``
+position in stdout, so banner text mitata prints around it — including unbalanced
+braces like ``cpu: {model`` — does not prevent the real payload from being found.
 """
 
 import json
@@ -31,84 +31,54 @@ escapes so the source stays plain ASCII.
 """
 
 
-def _skip_quoted_string(text: str, pos: int) -> int:
-    """Advance past a double-quoted string, starting one position after the opening quote.
-
-    Returns the index of the closing ``"``, or the end of ``text`` when the string
-    is unterminated.
-    """
-    i = pos
-    length = len(text)
-    while i < length and text[i] != '"':
-        if text[i] == "\\":
-            i += 1
-        i += 1
-    return i
+_JSON_DECODER = json.JSONDecoder()
 
 
 def find_json_candidates(text: str) -> list[str]:
-    """Scan ``text`` for balanced top-level ``{...}`` slices.
+    """Scan ``text`` for valid JSON objects using :meth:`json.JSONDecoder.raw_decode`.
 
-    Quote skipping only applies once a candidate is open (brace depth > 0). A
-    stray unpaired ``"`` in banner text before any ``{`` — a plain apostrophe-style
-    quote in prose, say — is otherwise indistinguishable from the start of a
-    string and would swallow everything up to the next ``"`` it finds, frequently a
-    quote inside the real JSON payload that follows. Outside a candidate there is
-    no string to skip: banner text is not JSON, so a bare quote there is just a
-    character like any other.
-
-    Every balanced slice is returned as-is — no JSON validation is performed.
+    For each ``{`` in ``text``, attempts a full JSON parse starting at that
+    position. Successfully parsed objects are returned as their original text
+    slices; positions that fail are silently skipped. This naturally handles
+    unbalanced braces and banner text like ``cpu: {model}`` because the JSON
+    decoder rejects them rather than requiring a hand-rolled brace-balancing
+    scanner.
     """
     candidates: list[str] = []
-    depth = 0
-    start = -1
-    i = 0
     length = len(text)
-    while i < length:
-        ch = text[i]
-        if ch == '"':
-            if depth > 0:
-                i = _skip_quoted_string(text, i + 1)
-            i += 1
+    pos = text.find("{")
+    while pos != -1 and pos < length:
+        try:
+            _, end = _JSON_DECODER.raw_decode(text, pos)
+        except (json.JSONDecodeError, RecursionError):
+            pos = text.find("{", pos + 1)
             continue
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0:
-                candidates.append(text[start : i + 1])
-                start = -1
-        i += 1
+        candidates.append(text[pos:end])
+        pos = text.find("{", end)
     return candidates
 
 
 def _extract_json(stdout: str) -> dict[str, object]:
-    """Find mitata's JSON object by parsing each balanced ``{...}`` candidate.
+    """Find mitata's JSON object using :func:`find_json_candidates`.
 
-    A candidate carrying a ``benchmarks`` list wins over any earlier record that
-    parses but does not — a decoy object printed before mitata's own output must
-    not shadow the real payload. When no candidate has a ``benchmarks`` list, the
-    first record that parsed is returned anyway, so the caller's "missing
-    benchmarks array" error still names the right cause instead of a generic parse
-    failure.
+    Candidates from :func:`find_json_candidates` are already valid JSON (parsed
+    via ``raw_decode``). A candidate carrying a ``benchmarks`` list wins over any
+    earlier record that does not — a decoy object printed before mitata's own
+    output must not shadow the real payload. When no candidate has a
+    ``benchmarks`` list, the first dict-shaped record is returned anyway, so the
+    caller's "missing benchmarks array" error still names the right cause instead
+    of a generic parse failure.
 
-    When every candidate fails to parse, the diagnostic names the failure of the
-    longest candidate rather than whichever was tried last — the longest balanced
-    slice is the one most likely to be the actual payload rather than banner
-    residue.
+    When :func:`find_json_candidates` returns nothing, every ``{`` in ``stdout``
+    failed to start a valid JSON object. The diagnostic names the failure of the
+    longest attempt — the ``{`` closest to the start of text spans the most
+    content and is most likely to be the real payload.
     """
-    first_record: dict[str, object] | None = None
-    longest_failure: tuple[str, str] | None = None
+    candidates = find_json_candidates(stdout)
 
-    for candidate in find_json_candidates(stdout):
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            if longest_failure is None or len(candidate) > len(longest_failure[0]):
-                longest_failure = (candidate, str(exc))
-            continue
+    first_record: dict[str, object] | None = None
+    for candidate in candidates:
+        parsed = json.loads(candidate)
         if not isinstance(parsed, dict):
             continue
         if isinstance(parsed.get("benchmarks"), list):
@@ -118,11 +88,40 @@ def _extract_json(stdout: str) -> dict[str, object]:
 
     if first_record is not None:
         return first_record
+
+    longest_failure = _longest_decode_failure(stdout)
     if longest_failure is not None:
-        msg = f"Failed to parse JSON: {longest_failure[1]}"
+        msg = f"Failed to parse JSON: {longest_failure}"
         raise AdapterError(msg)
     msg = "No JSON object found in stdout"
     raise AdapterError(msg)
+
+
+def _longest_decode_failure(text: str) -> str | None:
+    """Return the error message from the longest failing ``raw_decode`` attempt.
+
+    Scans every ``{`` in ``text`` and tries ``raw_decode``; positions that succeed
+    are ignored (they were already collected by :func:`find_json_candidates`).
+    Among failures, the one starting at the earliest ``{`` — which spans the most
+    remaining text — is the most likely payload attempt, so its error is returned.
+    """
+    longest: tuple[int, str] | None = None
+    length = len(text)
+    pos = text.find("{")
+    while pos != -1 and pos < length:
+        try:
+            _JSON_DECODER.raw_decode(text, pos)
+        except json.JSONDecodeError as exc:
+            remaining = length - pos
+            if longest is None or remaining > longest[0]:
+                longest = (remaining, str(exc))
+        except RecursionError:
+            remaining = length - pos
+            reason = f"Exceeded maximum recursion depth while parsing at position {pos}"
+            if longest is None or remaining > longest[0]:
+                longest = (remaining, reason)
+        pos = text.find("{", pos + 1)
+    return longest[1] if longest is not None else None
 
 
 def _parse_benchmarks(json_obj: dict[str, object]) -> list[object]:
@@ -252,21 +251,33 @@ def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) 
 
 
 def _record_heap_metric(
-    stats: dict[str, object], prefix: str, metrics: dict[str, float], warn: WarnSink
+    stats: dict[str, object],
+    prefix: str,
+    alias: str,
+    metrics: dict[str, float],
+    warn: WarnSink,
 ) -> None:
     """Record ``<prefix>/heap`` from ``stats.heap.avg`` when mitata measured it."""
     heap = stats.get("heap")
+    if heap is None:
+        return
     if not isinstance(heap, dict):
+        warn(f"Skipping heap metric for {alias}: stats.heap is not an object ({heap!r})")
         return
     avg = heap.get("avg")
-    if _is_number(avg) and math.isfinite(avg):
-        _record_metric(metrics, f"{prefix}/heap", avg, warn)
+    if avg is None:
+        return
+    if not _is_number(avg) or not math.isfinite(avg):
+        warn(f"Skipping heap metric for {alias}: stats.heap.avg is not a finite number ({avg!r})")
+        return
+    _record_metric(metrics, f"{prefix}/heap", avg, warn)
 
 
 def _extract_run_metrics(
     run: object, alias: str, metrics: dict[str, float], warn: WarnSink
 ) -> None:
     if not isinstance(run, dict):
+        warn(f"Skipping non-object run entry for benchmark: {alias}")
         return
 
     if "error" in run and run["error"] is not None:
@@ -294,13 +305,14 @@ def _extract_run_metrics(
         return
 
     _record_metric(metrics, f"{prefix}/time", p50, warn)
-    _record_heap_metric(stats, prefix, metrics, warn)
+    _record_heap_metric(stats, prefix, alias, metrics, warn)
 
 
 def _extract_benchmark_metrics(
     benchmark: object, metrics: dict[str, float], warn: WarnSink
 ) -> None:
     if not isinstance(benchmark, dict):
+        warn(f"Skipping non-object benchmark entry: {json.dumps(benchmark)}")
         return
 
     alias = benchmark.get("alias")

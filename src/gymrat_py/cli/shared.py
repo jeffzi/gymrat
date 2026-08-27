@@ -9,7 +9,6 @@ stack or the command bodies, so importing it stays cheap.
 import asyncio
 import contextlib
 import math
-import os
 import re
 import sys
 import traceback
@@ -31,7 +30,7 @@ from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
     RENDER_WIDTH,
     color_from_env,
-    format_hint_label,
+    format_hint,
     highlight_inline_code,
     markup,
     render_lines,
@@ -105,16 +104,6 @@ def write_and_flush(stream: _WritableStream, data: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def suppress_color() -> None:
-    """Veto color unconditionally by clearing ``FORCE_COLOR`` and setting ``NO_COLOR``.
-
-    The style layer resolves ``FORCE_COLOR`` before ``NO_COLOR``, so a leftover
-    ``FORCE_COLOR`` from the caller's shell would otherwise defeat ``--no-color``.
-    """
-    os.environ.pop("FORCE_COLOR", None)
-    os.environ["NO_COLOR"] = "1"
-
-
 def color_override_of(color: bool) -> Literal[False] | None:  # noqa: FBT001 -- 1:1 map of the --color flag
     """Translate the ``--color`` flag into the renderer's color override.
 
@@ -155,8 +144,8 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
 
     The sections appear in order: the label, the message body (an
     :class:`AdapterError` keeps its class-name prefix), the stack trace when
-    ``debug`` is set, a ``Hint:`` for a :class:`GymratError` that carries one,
-    and a report-a-bug footer for errors that are not :class:`GymratError`.
+    ``debug`` is set, a dim hint line for a :class:`GymratError` that carries
+    one, and a report-a-bug footer for errors that are not :class:`GymratError`.
     """
     error_label = f"{markup('Error', 'red')}: "
 
@@ -170,7 +159,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
 
     hint = hint_of(error)
     if hint is not None:
-        doc += f"\n{format_hint_label()} {highlight_inline_code(hint)}"
+        doc += f"\n{format_hint(hint)}"
 
     if not isinstance(error, GymratError):
         footer = (

@@ -259,9 +259,38 @@ def test_render_doctor_report_when_force_color_emits_ansi(monkeypatch: pytest.Mo
     assert "\x1b[" in render_doctor_report(report)
 
 
+def test_render_doctor_report_when_color_false_does_suppress_ansi():
+    report = _report(
+        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
+    )
+
+    assert "\x1b[" not in render_doctor_report(report, color=False)
+
+
+def test_render_doctor_report_when_color_true_does_emit_ansi():
+    report = _report(
+        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
+    )
+
+    assert "\x1b[" in render_doctor_report(report, color=True)
+
+
 # ---------------------------------------------------------------------------
 # JSON rendering
 # ---------------------------------------------------------------------------
+
+
+def test_render_doctor_json_when_force_color_env_does_carry_no_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    report = _report(
+        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
+    )
+
+    output = render_doctor_json(report)
+
+    assert "\x1b[" not in output
 
 
 def test_render_doctor_json_carries_environment_sections_and_counts():

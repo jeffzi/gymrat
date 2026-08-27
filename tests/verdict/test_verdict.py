@@ -551,6 +551,16 @@ def test_compute_verdicts_when_band_both_medians_zero_does_apply_floor():
     assert get_band(result).noise_pct == pytest.approx(0.5, abs=1e-1)
 
 
+def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_no_signal():
+    """D4: one tied + one doubled pair reads no-signal when only one differs."""
+    result = run(samples(100.0, 100.0), samples(100.0, 210.0), METRIC_APPROX_LOWER)
+
+    verdict = get_band(result)
+    assert verdict.n == 2
+    assert verdict.usable_n == 1
+    assert verdict.verdict == "no-signal"
+
+
 # ---------------------------------------------------------------------------
 # Noise-band carrying on non-exact verdicts
 # ---------------------------------------------------------------------------
@@ -796,6 +806,55 @@ def test_compute_verdicts_when_exact_metric_is_noisy_does_never_mark_unstable():
     verdict = result["metric"]
     assert verdict.method == "exact"
     assert verdict.verdict == "improved"
+
+
+# ---------------------------------------------------------------------------
+# D2: zero-median non-exact reports unstable
+# ---------------------------------------------------------------------------
+
+# When one side's median is 0 but that side has non-zero half-range, the noise
+# fraction is undefined (division by zero). Rather than letting noise_pct reach
+# inf, the engine caps it and forces the verdict to unstable on both paths.
+
+
+@pytest.mark.parametrize(
+    ("method", "values_a", "values_b"),
+    [
+        pytest.param("band", [-5.0, 5.0], [10.0, 10.0], id="band-baseline-zero"),
+        pytest.param("band", [10.0, 10.0], [-5.0, 5.0], id="band-candidate-zero"),
+        pytest.param(
+            "permutation",
+            [-5.0, -3.0, -1.0, 1.0, 3.0, 5.0],
+            [10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
+            id="permutation-baseline-zero",
+        ),
+        pytest.param(
+            "permutation",
+            [10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
+            [-5.0, -3.0, -1.0, 1.0, 3.0, 5.0],
+            id="permutation-candidate-zero",
+        ),
+    ],
+)
+def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
+    method: str,
+    values_a: list[float],
+    values_b: list[float],
+):
+    result = run(samples(*values_a), samples(*values_b), METRIC_APPROX_LOWER)
+
+    verdict = get_permutation(result) if method == "permutation" else get_band(result)
+    assert verdict.verdict == "unstable"
+    assert not math.isinf(verdict.noise_pct)
+
+
+def test_compute_verdicts_when_bytes_zero_median_and_zero_spread_does_not_report_unstable():
+    """D2: byte-floor on a 0-byte median with zero spread does not force unstable."""
+    result = run(create_samples(2, 0.0), create_samples(2, 0.0), METRIC_BYTES_LOWER)
+
+    verdict = get_band(result)
+    assert verdict.verdict != "unstable"
+    assert not math.isinf(verdict.noise_pct)
 
 
 # ---------------------------------------------------------------------------

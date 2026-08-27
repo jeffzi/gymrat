@@ -352,7 +352,7 @@ def test_combine_observers_when_given_no_observers_does_not_raise():
     combined(event)
 
 
-def test_combine_observers_when_an_observer_raises_does_not_call_later_observers():
+def test_combine_observers_when_an_observer_raises_does_still_call_later_observers():
     boom_message = "observer failure"
 
     def boom(_: object) -> None:
@@ -362,7 +362,42 @@ def test_combine_observers_when_an_observer_raises_does_not_call_later_observers
     combined = combine_observers(boom, later.observer)
     event = UsageUpdateEvent(timestamp=1, cost_usd=0.01)
 
-    with pytest.raises(RuntimeError, match=boom_message):
+    combined(event)
+
+    assert later.events == [event]
+
+
+def test_combine_observers_when_an_observer_raises_does_warn_about_the_failure():
+    boom_message = "observer failure"
+
+    def boom(_: object) -> None:
+        raise RuntimeError(boom_message)
+
+    later = collecting_observer()
+    combined = combine_observers(boom, later.observer)
+    event = UsageUpdateEvent(timestamp=1, cost_usd=0.01)
+
+    with pytest.warns(RuntimeWarning, match=boom_message):
         combined(event)
 
-    assert later.events == []
+
+# ---------------------------------------------------------------------------
+# B34 — non-finite float serialization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_to_json_line_when_cost_is_non_finite_does_serialize_as_null(cost: float):
+    event = UsageUpdateEvent(timestamp=1, cost_usd=cost)
+
+    line = to_json_line(event)
+
+    parsed = json.loads(line)
+    assert parsed["costUsd"] is None

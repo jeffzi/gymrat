@@ -37,10 +37,12 @@ from gymrat_py.session import (
     read_records,
     session_jsonl_path,
 )
+from tests._ansi import SGR_RE, strip_ansi
 from tests.loop._settle import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,
+    ExecRecorder,
     checks_config,
     checks_fail,
     checks_pass,
@@ -901,6 +903,20 @@ def test_discard_session_when_unmeasured_regression_block_stands_does_number_dis
     assert_settling_record(result.record, discard_record(2))
 
 
+def test_discard_session_when_gating_block_then_nothing_measured_keep_does_report_reverted_iteration(
+    repo: str,
+):
+    start_with(repo, (confirmed_regression(1), gating_block(1), nothing_measured_block(2)))
+    edit_experiment(repo)
+
+    result = discard_session(repo)
+
+    # The report names iteration 1 — the one whose edit was actually thrown away —
+    # not the nothing-measured keep's number (2) or the discard's own seq (3).
+    assert re.search(r"iteration 1\b", result.report, re.IGNORECASE)
+    assert not re.search(r"iteration [23]\b", result.report, re.IGNORECASE)
+
+
 async def test_discard_session_when_keep_retried_after_block_does_throw_away_standing_edit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -934,6 +950,67 @@ async def test_discard_session_when_keep_retried_after_block_does_append_after_t
     assert tail[1] == result.record
 
 
+# ---------------------------------------------------------------------------
+# discard_session resets to last kept commit or baseline SHA (D6)
+# ---------------------------------------------------------------------------
+
+
+def test_discard_session_when_nothing_kept_and_agent_committed_does_reset_to_baseline_sha(
+    repo: str,
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    _commit_experiment_directly(repo)
+    worktree = experiment_worktree_dir(repo)
+    baseline_sha = head_of(baseline_worktree_dir(repo))
+    assert head_of(worktree) != baseline_sha
+
+    discard_session(repo)
+
+    assert head_of(worktree) == baseline_sha
+    assert status_of(worktree) == ""
+
+
+async def test_discard_session_when_keep_committed_then_agent_committed_does_reset_to_kept_commit(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    keep_result = await keep_session(repo, checks_config())
+    kept_commit = keep_result.record.commit
+
+    worktree = experiment_worktree_dir(repo)
+    append_record(session_jsonl_path(repo), iteration(2))
+    (Path(worktree) / "post-keep.txt").write_text("after keep\n", encoding="utf-8")
+    git(["add", "-A"], worktree)
+    git(["commit", "-m", "agent commit after keep"], worktree)
+    assert head_of(worktree) != kept_commit
+
+    discard_session(repo)
+
+    assert head_of(worktree) == kept_commit
+    assert status_of(worktree) == ""
+
+
+def test_discard_session_when_resetting_does_report_the_commit_it_landed_on(
+    repo: str,
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    _commit_experiment_directly(repo)
+
+    result = discard_session(repo)
+
+    worktree = experiment_worktree_dir(repo)
+    assert head_of(worktree)[:7] in result.report
+
+
+# ---------------------------------------------------------------------------
+# discard_session when nothing was measured
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize(
     "history",
     [
@@ -957,3 +1034,131 @@ def test_discard_session_when_nothing_measured_does_refuse_settling_again(
 
     assert len(read_records(session_jsonl_path(repo))) == before
     assert status_of(experiment_worktree_dir(repo)) != ""
+
+
+# ---------------------------------------------------------------------------
+# the hint the refusals close on
+# ---------------------------------------------------------------------------
+
+
+def _nothing_measured(repo: str) -> None:
+    """An edited experiment with no iteration measured behind it."""
+    start_with(repo, ())
+    edit_experiment(repo)
+
+
+def _nothing_to_commit(repo: str) -> None:
+    """A measured iteration the agent left the experiment untouched under."""
+    start_with(repo, (iteration(1),))
+
+
+def _edited_after_iteration(repo: str) -> None:
+    """The ordinary keep shape: one measured iteration and an edit to commit."""
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+
+
+def _standing_gating_regression(repo: str) -> None:
+    """An edit standing behind a gating regression the rerun confirmed."""
+    start_with(repo, (confirmed_regression(1),))
+    edit_experiment(repo)
+
+
+def _unmeasured_gating_regression(repo: str) -> None:
+    """An edit standing behind a gating regression the rerun never measured."""
+    start_with(repo, (unmeasured_regression(1),))
+    edit_experiment(repo)
+
+
+@pytest.mark.parametrize(
+    ("arrange", "install_checks"),
+    [
+        pytest.param(_nothing_measured, checks_pass, id="nothing-measured"),
+        pytest.param(_nothing_to_commit, checks_pass, id="nothing-to-commit"),
+        pytest.param(_edited_after_iteration, checks_fail, id="checks-failed"),
+        pytest.param(_standing_gating_regression, checks_pass, id="gating-regression"),
+        pytest.param(_unmeasured_gating_regression, checks_pass, id="unmeasured-regression"),
+    ],
+)
+async def test_keep_session_when_refusing_does_close_on_a_hint_carrying_no_label(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[str], None],
+    install_checks: Callable[[pytest.MonkeyPatch], ExecRecorder],
+):
+    arrange(repo)
+    install_checks(monkeypatch)
+
+    result = await keep_session(repo, checks_config())
+
+    assert "Hint" not in result.report
+    assert "`" not in result.report
+
+
+async def test_keep_session_when_nothing_measured_does_name_iterate_in_bare_prose(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _nothing_measured(repo)
+    checks_pass(monkeypatch)
+
+    result = await keep_session(repo, checks_config())
+
+    assert "run gymrat iterate first" in result.report
+
+
+async def test_keep_session_when_colored_does_dim_the_hint_and_paint_the_command(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _nothing_measured(repo)
+    checks_pass(monkeypatch)
+
+    result = await keep_session(repo, checks_config(), color=True)
+
+    hint = next(line for line in result.report.split("\n") if "gymrat iterate" in strip_ansi(line))
+    assert hint.startswith("\x1b[2m")
+    assert any("34" in run.split(";") for run in SGR_RE.findall(hint))
+
+
+async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_report_it_literally(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _edited_after_iteration(repo)
+    noisy = "FAIL [i] parse_config"
+    install_exec(
+        monkeypatch,
+        ExecResult(
+            stdout=noisy, stderr="", exit_code=1, stdout_bytes=len(noisy.encode()), stderr_bytes=0
+        ),
+    )
+
+    result = await keep_session(repo, checks_config(), color=True)
+
+    assert noisy in strip_ansi(result.report)
+
+
+async def test_keep_session_when_no_checks_configured_does_warn_on_stderr_without_a_label(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    _edited_after_iteration(repo)
+    install_exec(monkeypatch, UNUSED_EXEC)
+
+    await keep_session(repo, checks_config(checks=None))
+
+    warning = capsys.readouterr().err
+    assert "gymrat.toml" in warning
+    assert "Hint" not in warning
+    assert "`" not in warning
+
+
+async def test_keep_session_when_no_checks_configured_and_color_forced_does_dim_the_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    _edited_after_iteration(repo)
+    install_exec(monkeypatch, UNUSED_EXEC)
+
+    await keep_session(repo, checks_config(checks=None))
+
+    hint = capsys.readouterr().err.splitlines()[1]
+    assert hint.startswith("\x1b[2m")

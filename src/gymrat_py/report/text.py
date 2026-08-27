@@ -43,7 +43,7 @@ from gymrat_py.report.style import (
     RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
-    format_hint_label,
+    format_hint,
     render_lines,
     truncate_labels,
 )
@@ -312,7 +312,7 @@ def _render_method_footer(result: ComparisonResult, *, verbose: bool) -> list[st
     return footer_lines(
         result.metrics,
         verbose=verbose,
-        format_hint=lambda hint: f"{format_hint_label()} {escape(hint)}",
+        format_hint=format_hint,
         samples=result.samples,
     )
 

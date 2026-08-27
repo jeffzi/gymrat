@@ -22,6 +22,7 @@ import contextlib
 from dataclasses import dataclass
 
 from gymrat_py.process_group import current_platform, kill_process_group
+from gymrat_py.signals import deferring_termination_signals
 
 FAILURE_EXIT_CODE = 1
 """Exit code reported when a run fails without a positive child exit code."""
@@ -261,23 +262,25 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
     if options.abort is not None and options.abort.is_set():
         return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
 
+    # Mask termination signals across the spawn + registration pair so a
+    # signal delivered between the two still finds the child in the live
+    # registry when the deferred handler fires kill_live_process_groups.
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            cwd=options.cwd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=current_platform() != "win32",
-        )
+        with deferring_termination_signals():
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=options.cwd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=current_platform() != "win32",
+            )
+            # Register the group leader before lifting the mask; the enclosing
+            # finally guarantees deregistration even if a later step raises.
+            _live_process_groups.add(proc.pid)
     except OSError as error:
         stderr = f"{error}\n"
         return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
-
-    # Register the group leader before the stream asserts and task creation
-    # below, which sit outside the settle try; the enclosing finally guarantees
-    # deregistration even if one of those raises.
-    _live_process_groups.add(proc.pid)
     try:
         stdout_buf = OutputBuffer()
         stderr_buf = OutputBuffer()

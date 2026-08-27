@@ -63,17 +63,18 @@ class _SuperviseConfig:
     grace_ms: int
 
 
-def _fire_and_report_interrupt(session: DriverSession) -> None:
+def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | None:
     """Interrupt the session, isolating any failure so grace setup continues.
 
     ``interrupt`` may throw synchronously or its coroutine may reject; either way
     the fallback recovery still runs, so the failure is warned, never raised.
+    Returns the interrupt task so the caller can cancel it on teardown.
     """
     try:
         pending = session.interrupt()
     except Exception as error:  # noqa: BLE001 - interrupt failure must not abort grace setup
         warn_to_stderr(f"session interrupt failed: {error!s}")
-        return
+        return None
 
     task = asyncio.create_task(pending)
 
@@ -85,6 +86,7 @@ def _fire_and_report_interrupt(session: DriverSession) -> None:
             warn_to_stderr(f"session interrupt failed: {error!s}")
 
     task.add_done_callback(_report)
+    return task
 
 
 class _Supervision:
@@ -104,6 +106,7 @@ class _Supervision:
         self._cap_fired = False
         self._wall_task: asyncio.Task[None] | None = None
         self._grace_task: asyncio.Task[None] | None = None
+        self._interrupt_task: asyncio.Task[None] | None = None
         self._session: DriverSession | None = None
         self._pending_cap: CapType | None = None
 
@@ -124,7 +127,7 @@ class _Supervision:
         if self._wall_task is not None:
             self._wall_task.cancel()
         self._combined(CapEvent(timestamp=now_ms(), cap=cap))
-        _fire_and_report_interrupt(self._session)
+        self._interrupt_task = _fire_and_report_interrupt(self._session)
         self._grace_task = asyncio.create_task(self._run_grace())
 
     async def _run_grace(self) -> None:
@@ -163,6 +166,8 @@ class _Supervision:
                 self._wall_task.cancel()
             if self._grace_task is not None:
                 self._grace_task.cancel()
+            if self._interrupt_task is not None:
+                self._interrupt_task.cancel()
 
 
 async def supervise(  # noqa: PLR0913 - one parameter per supervision knob, mirroring the driver-seam option surface

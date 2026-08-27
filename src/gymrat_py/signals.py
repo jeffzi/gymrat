@@ -16,7 +16,8 @@ that registry, never the signal disposition.
 import os
 import signal
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from types import FrameType
 from typing import NoReturn
 
@@ -48,6 +49,15 @@ _installed_signals: set[int] = set()
 # mid-drain must exit immediately rather than re-enter the cleanups.
 _handling = False
 
+# Python-level deferral state. In a multi-threaded program, ``pthread_sigmask``
+# blocks OS delivery to the main thread, but a non-main thread's C handler can
+# still set the pending-signal flag. ``time.sleep`` and asyncio event loops call
+# ``PyErr_CheckSignals()`` which processes that flag regardless of the mask.
+# The deferral flag makes the Python-level handler store the signal instead of
+# processing it; the stored signal is replayed when deferral ends.
+_deferring: bool = False
+_deferred_signal: int | None = None
+
 
 def _exit_process(code: int) -> NoReturn:
     """Terminate the process immediately with ``code``.
@@ -70,7 +80,11 @@ def _run_cleanups() -> None:
 
 
 def _handler(signal_number: int, _frame: FrameType | None) -> None:
-    global _handling  # noqa: PLW0603 - module-level re-entry guard the handler owns
+    global _handling, _deferred_signal  # noqa: PLW0603 - module-level state the handler owns
+
+    if _deferring:
+        _deferred_signal = signal_number
+        return
 
     if not _handling:
         _handling = True
@@ -89,6 +103,49 @@ def _ensure_handlers_installed() -> None:
             continue
         signal.signal(signal_number, _handler)
         _installed_signals.add(signal_number)
+
+
+# POSIX-only seam for blocking signals. ``None`` on platforms without
+# ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
+# Kept as a module-level reference so the fallback branch stays testable.
+_pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
+    signal, "pthread_sigmask", None
+)
+
+
+@contextmanager
+def deferring_termination_signals() -> Iterator[None]:
+    """Defer termination signals for the duration of the wrapped call.
+
+    A termination signal delivered while the wrapped code is running must not
+    fire the process's termination cleanup mid-call. The deferral works at two
+    levels: ``pthread_sigmask`` blocks OS-level delivery to the main thread
+    (where available), and a Python-level flag makes the handler store the
+    signal instead of processing it. The second level is needed because in
+    multi-threaded programs a non-main thread can receive the OS signal, set
+    CPython's pending-signal flag, and ``PyErr_CheckSignals()`` on the main
+    thread then runs the handler despite the mask.
+
+    Any signal stored during deferral is replayed when the context exits, so a
+    registered handler runs only after the wrapped code completes.
+    """
+    global _deferring, _deferred_signal  # noqa: PLW0603
+
+    _deferring = True
+    if _pthread_sigmask is not None and TERMINATION_SIGNALS:
+        previous: list[int] | None = _pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    else:
+        previous = None
+    try:
+        yield
+    finally:
+        _deferring = False
+        if previous is not None and _pthread_sigmask is not None:
+            _pthread_sigmask(signal.SIG_SETMASK, previous)
+        deferred = _deferred_signal
+        _deferred_signal = None
+        if deferred is not None:
+            _handler(deferred, None)
 
 
 def install_termination_cleanup(cleanup: Callable[[], None]) -> Callable[[], None]:

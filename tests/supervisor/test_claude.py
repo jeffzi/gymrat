@@ -661,3 +661,23 @@ async def test_start_when_disconnect_raises_after_normal_stream_does_still_resol
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.05
+
+
+# ---------------------------------------------------------------------------
+# B32 — interrupted before client connects
+# ---------------------------------------------------------------------------
+
+
+async def test_start_when_interrupted_before_connect_does_never_send_kickoff_query():
+    client = FakeClient([])
+    probe = FactoryProbe(client)
+    driver = create_claude_driver(client_factory=probe)
+
+    session = driver.start(
+        make_prompt(kickoff="should not be sent"), collecting_observer().observer
+    )
+    await session.interrupt()
+    outcome = await session.outcome
+
+    assert outcome.reason == "interrupted"
+    assert client.query_prompt is None

@@ -15,14 +15,28 @@ from typer.testing import CliRunner
 
 from gymrat_py.cli.app import app
 from gymrat_py.cli.shared import BUGS_URL
+from tests._ansi import SGR_RE, strip_ansi
 from tests.report._inputs import create_measurement_result
 
 runner = CliRunner()
+
+DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
+"""The documentation link the root epilogue points at."""
 
 
 def _normalize(text: str) -> str:
     """Collapse every run of whitespace to a single space, so a reflowed help block matches."""
     return " ".join(text.split())
+
+
+def _sgr_params(text: str) -> str:
+    """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"2;34"``).
+
+    Asserts which attributes a styled span carries without pinning the exact
+    escape bytes rich emits.
+    """
+    match = list(SGR_RE.finditer(text))[-1]
+    return match.group(1)
 
 
 @pytest.fixture
@@ -70,8 +84,21 @@ def test_app_when_help_does_show_root_epilogue_examples_and_links():
         in normalized
     )
     assert 'gymrat measure --bench "npm run bench"' in normalized
-    assert "Docs: https://github.com/jeffzi/gymrat#readme" in normalized
+    assert f"Docs: {DOCS_URL}" in normalized
     assert f"Bugs: {BUGS_URL}" in normalized
+
+
+def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    result = runner.invoke(app, ["--help"], color=True)
+
+    docs_line = next(line for line in result.stdout.splitlines() if "Docs:" in strip_ansi(line))
+    assert docs_line.lstrip().startswith("\x1b[2m")  # cspell:disable-line
+    assert "34" in _sgr_params(docs_line[: docs_line.index(DOCS_URL)])
 
 
 # ---------------------------------------------------------------------------

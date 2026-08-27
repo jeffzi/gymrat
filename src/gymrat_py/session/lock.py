@@ -190,14 +190,33 @@ def _is_alive_windows(pid: int) -> bool:
     ``os.kill(pid, 0)`` cannot be used on Windows: ``signal.CTRL_C_EVENT`` is 0,
     so CPython dispatches through ``GenerateConsoleCtrlEvent`` instead of
     ``OpenProcess``, broadcasting Ctrl+C to the target's console process group.
+
+    When ``OpenProcess`` returns NULL, ``GetLastError`` distinguishes the two
+    interesting cases:
+
+    - **ERROR_ACCESS_DENIED (5)**: the process exists but the caller lacks the
+      right to open it — alive, never eligible for a steal.
+    - **ERROR_INVALID_PARAMETER (87)**: no process with that PID exists — dead,
+      proceed with the steal.
     """
     import ctypes  # noqa: PLC0415 — Windows-only, deferred to avoid top-level import on POSIX
 
+    access_denied = 5
+    invalid_parameter = 87
+
     kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     handle = kernel32.OpenProcess(0x1000, 0, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if handle:
         kernel32.CloseHandle(handle)
         return True
+    last_error = kernel32.GetLastError()
+    if last_error == access_denied:
+        return True
+    if last_error == invalid_parameter:
+        return False
     return False
 
 

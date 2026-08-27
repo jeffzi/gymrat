@@ -134,3 +134,22 @@ def test_compose_kickoff_when_prompt_given_does_return_it_verbatim(tmp_path: Pat
     result = compose_kickoff(config, "optimize the decoder loop")
 
     assert result.kickoff == "optimize the decoder loop"
+
+
+# ---------------------------------------------------------------------------
+# B33 — non-UTF-8 runbook
+# ---------------------------------------------------------------------------
+
+
+def test_compose_kickoff_when_runbook_not_utf8_does_raise_gymrat_error_naming_path(
+    tmp_path: Path,
+):
+    runbook_path = tmp_path / "runbook.md"
+    runbook_path.write_bytes(b"\x80\x81\x82 invalid utf-8")
+    config = _make_config(runbook=str(runbook_path))
+
+    with pytest.raises(GymratError) as excinfo:
+        compose_kickoff(config)
+
+    assert str(runbook_path) in str(excinfo.value)
+    assert excinfo.value.hint

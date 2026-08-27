@@ -7,7 +7,6 @@ import-latency guard.
 
 import asyncio
 import io
-import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -33,7 +32,6 @@ from gymrat_py.cli.shared import (
     parse_positive_number,
     resolve_render_mode,
     run_with_signal_abort,
-    suppress_color,
     with_repo_lock,
     write_and_flush,
 )
@@ -127,18 +125,6 @@ def test_run_cli_when_broken_pipe_does_exit_cleanly(
 # ---------------------------------------------------------------------------
 # color control
 # ---------------------------------------------------------------------------
-
-
-def test_suppress_color_removes_force_color_and_sets_no_color(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
-
-    suppress_color()
-
-    assert "FORCE_COLOR" not in os.environ
-    assert os.environ["NO_COLOR"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -291,7 +277,7 @@ def test_resolve_render_mode_maps_tty_and_color_to_strategy(
     monkeypatch: pytest.MonkeyPatch,
 ):
     # Neutralize the color env first so a stray FORCE_COLOR/NO_COLOR — and any
-    # suppress_color() mutation — is reverted at teardown by monkeypatch.
+    # color_override_of() mutation — is reverted at teardown by monkeypatch.
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("NO_COLOR", raising=False)
     if no_color is not None:

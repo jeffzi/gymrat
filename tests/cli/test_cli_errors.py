@@ -79,7 +79,7 @@ def test_format_cli_error_includes_stack_only_under_debug():
     assert "Traceback" not in without_stack
 
 
-def test_format_cli_error_when_gymrat_error_carries_hint_appends_it_without_bug_footer(
+def test_format_cli_error_when_gymrat_error_carries_hint_appends_unlabeled_line_without_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("NO_COLOR", "1")
@@ -87,9 +87,22 @@ def test_format_cli_error_when_gymrat_error_carries_hint_appends_it_without_bug_
 
     output = format_cli_error(GymratError("boom", hint="run gymrat doctor"))
 
-    assert "Hint:" in output
-    assert "run gymrat doctor" in output
+    assert output.splitlines()[-1] == "run gymrat doctor"
+    assert "Hint" not in output
     assert BUGS_URL not in output
+
+
+def test_format_cli_error_when_hint_colored_does_dim_the_line_and_paint_inline_code_blue(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    output = format_cli_error(GymratError("boom", hint="run `gymrat doctor` first"))
+
+    hint_line = output.splitlines()[-1]
+    assert hint_line.startswith("\x1b[2mrun ")  # cspell:disable-line
+    assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
 
 
 def test_format_cli_error_when_not_gymrat_error_appends_bug_footer():

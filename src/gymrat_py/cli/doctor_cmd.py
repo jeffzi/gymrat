@@ -1,9 +1,8 @@
 """The ``gymrat doctor`` command: probe the project setup and report problems.
 
-Doctor assembles an environment, config, and workflow section from pure builders,
-then runs a one-shot bench smoke run. The smoke run is the only part that touches
-the repository, so it holds the repository lock — unless ``--no-bench`` skips it,
-which then runs lock-free. Any check failure exits 1; an unexpected crash exits 2.
+Doctor validates the project's configuration — environment, config file, workflow
+keys, bench command, and adapter — without running any benchmarks. Any check
+failure exits 1; an unexpected crash exits 2.
 """
 
 from __future__ import annotations
@@ -13,12 +12,8 @@ import platform
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
 
 import typer
-
-if TYPE_CHECKING:
-    import asyncio
 
 from gymrat_py.cli.shared import (
     GATE_EXIT_CODE,
@@ -30,21 +25,19 @@ from gymrat_py.cli.shared import (
     NoColorOption,
     OutputFormat,
     PrepareOption,
-    ReportRenderers,
     SamplesOption,
     SharedFlags,
     TimeoutOption,
     color_override_of,
-    emit_report,
+    resolve_stream_color,
     run_cli,
-    run_with_signal_abort,
     set_debug_mode,
-    suppress_color,
-    with_repo_lock,
+    wants_json,
+    write_and_flush,
 )
 from gymrat_py.config import CONFIG_DEFAULTS, BenchlessConfig, CliFlags
 from gymrat_py.config_inspect import inspect_config
-from gymrat_py.doctor.bench import BenchSectionInput, build_bench_section
+from gymrat_py.doctor.bench import build_bench_section
 from gymrat_py.doctor.checks import (
     DoctorReport,
     EnvironmentInfo,
@@ -53,14 +46,14 @@ from gymrat_py.doctor.checks import (
     build_workflow_section,
     create_doctor_report,
 )
-from gymrat_py.doctor.render import render_doctor_json, render_doctor_report
+from gymrat_py.doctor.render import (
+    render_doctor_json,
+    render_doctor_report,
+)
 from gymrat_py.errors import GymratError
 from gymrat_py.git import NotAGitRepositoryError, try_git
 from gymrat_py.init.scaffold import SKILL_RELATIVE_PATH
-from gymrat_py.report.types import ReportOptions
 from gymrat_py.session.paths import repo_root
-
-NoBenchOption = Annotated[bool, typer.Option("--no-bench", help="skip the smoke-run bench section")]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +118,6 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     samples: SamplesOption = None,
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
-    no_bench: NoBenchOption = False,
     output_format: FormatOption = OutputFormat.text,
     no_color: NoColorOption = False,
     debug: DebugOption = False,
@@ -143,11 +135,9 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         color=not no_color,
         format=output_format.value,
     )
-    if not flags.color:
-        suppress_color()
     color_override = color_override_of(flags.color)
 
-    async def build_report(abort: asyncio.Event) -> DoctorReport:
+    def _build_report() -> DoctorReport:
         cwd = str(Path.cwd())
         git_env = detect_git_environment(cwd)
         base_dir = git_env.repo_root_dir or cwd
@@ -175,19 +165,9 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
             problems=inspection.problems,
             skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).exists(),
         )
-        bench_section = await build_bench_section(
-            BenchSectionInput(
-                bench=inspection.bench,
-                adapter=resolved.adapter,
-                timeout_seconds=resolved.timeout_seconds,
-                primary=resolved.primary,
-                metrics=config_resolved.metrics if config_resolved else None,
-                kinds=config_resolved.kinds if config_resolved else None,
-                repo_root=base_dir,
-                abort=abort,
-                no_bench=no_bench,
-                config_failed=bool(inspection.problems),
-            )
+        bench_section = build_bench_section(
+            bench=inspection.bench,
+            adapter=adapter or resolved.adapter,
         )
 
         return create_doctor_report(
@@ -196,23 +176,14 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         )
 
     async def run() -> None:
-        # The smoke run is the only part that touches the repository, so
-        # `--no-bench` stays lock-free and can run alongside whatever holds the lock.
-        report = (
-            await run_with_signal_abort(build_report)
-            if no_bench
-            else await with_repo_lock("doctor", lambda: run_with_signal_abort(build_report))
-        )
+        report = _build_report()
 
-        emit_report(
-            report,
-            flags,
-            ReportRenderers(
-                text=lambda result, _opts: render_doctor_report(result),
-                json=render_doctor_json,
-            ),
-            ReportOptions(color=color_override),
-        )
+        if wants_json(flags):
+            write_and_flush(sys.stdout, render_doctor_json(report) + "\n")
+        else:
+            color = resolve_stream_color(color_override, sys.stdout)
+            output = render_doctor_report(report, color=color)
+            write_and_flush(sys.stdout, output + "\n")
 
         if report.has_failures:
             raise typer.Exit(GATE_EXIT_CODE)

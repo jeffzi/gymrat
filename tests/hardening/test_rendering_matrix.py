@@ -37,6 +37,8 @@ import pytest
 
 from gymrat_py.cli.shared import format_cli_error, resolve_render_mode, resolve_stream_color
 from gymrat_py.cli.status_line import create_status_line
+from gymrat_py.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
+from gymrat_py.doctor.render import render_doctor_report
 from gymrat_py.report.style import shorten_label
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import git as _git
@@ -230,6 +232,22 @@ def _report_is_colored() -> bool:
     return resolve_stream_color(None, _FakeStream(tty=True))
 
 
+def _doctor_report_is_colored() -> bool:
+    """Whether the doctor report surface renders ANSI for the ambient environment.
+
+    Builds a minimal doctor report, resolves color the same way the doctor
+    command does (``resolve_stream_color`` with no override on a TTY stream),
+    and checks whether the rendered text carries ANSI. A change to either the
+    doctor renderer's color parameter or the shared precedence fails this probe.
+    """
+    env = EnvironmentInfo(gymrat_version="0.1.0", python_version="3.13.0", platform="test")
+    report = create_doctor_report(
+        env, [CheckSection(title="T", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
+    )
+    color = resolve_stream_color(None, _FakeStream(tty=True))
+    return "\x1b[" in render_doctor_report(report, color=color)
+
+
 def _progress_is_colored() -> bool:
     """Whether the progress surface would animate (spinner) for the environment.
 
@@ -277,6 +295,7 @@ def test_color_precedence_is_consistent_across_report_progress_and_error_surface
     _apply_color_env(monkeypatch, force_color, no_color)
 
     assert _report_is_colored() is expected
+    assert _doctor_report_is_colored() is expected
     assert _progress_is_colored() is expected
     assert _error_is_colored() is expected
 

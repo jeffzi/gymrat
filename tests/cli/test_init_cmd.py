@@ -3,8 +3,9 @@
 Each case drives the assembled app through :class:`typer.testing.CliRunner`. The
 non-interactive command takes ``--bench`` and optional ``--no-runbook`` /
 ``--no-skill`` flags, builds a :class:`ScaffoldRequest`, and delegates to
-:func:`scaffold`. Usage errors, the already-exists refusal, and the
-base-directory resolution are exercised the way a shell would invoke them.
+:func:`scaffold`. Usage errors, the re-run over an existing ``gymrat.toml``,
+and the base-directory resolution are exercised the way a shell would invoke
+them.
 """
 
 import re
@@ -15,8 +16,11 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat_py.cli.app import app
+from tests._ansi import strip_ansi
 
 runner = CliRunner()
+
+EXISTING_CONFIG = 'bench = "old"\n'
 
 # These flags must never be advertised in --help or accepted by the command.
 OLD_WIZARD_FLAGS = [
@@ -35,6 +39,13 @@ def non_repo_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Run the command from a fresh, non-git directory."""
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def existing_config_cwd(non_repo_cwd: Path) -> Path:
+    """A non-repo cwd with a pre-existing ``gymrat.toml`` already written."""
+    (non_repo_cwd / "gymrat.toml").write_text(EXISTING_CONFIG, encoding="utf-8")
+    return non_repo_cwd
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +73,7 @@ def test_init_when_help_does_describe_scaffolding_a_toml_config():
         pytest.param("--bench", id="bench"),
         pytest.param("--no-runbook", id="no-runbook"),
         pytest.param("--no-skill", id="no-skill"),
+        pytest.param("--no-color", id="no-color"),
         pytest.param("--debug", id="debug"),
     ],
 )
@@ -124,14 +136,40 @@ def test_init_when_bench_missing_does_exit_two_naming_bench():
 # ---------------------------------------------------------------------------
 
 
-def test_init_when_config_already_exists_does_exit_two_pointing_at_doctor(non_repo_cwd: Path):
-    (non_repo_cwd / "gymrat.toml").write_text("", encoding="utf-8")
-
+def test_init_when_config_already_exists_does_report_existing_config_and_new_artifacts(
+    existing_config_cwd: Path,
+):
     result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
-    assert result.exit_code == 2
-    assert re.search(r"already exists", result.stderr, re.IGNORECASE)
-    assert "gymrat doctor" in result.stderr
+    assert result.exit_code == 0
+    assert re.search(r"config.*already exists at gymrat\.toml", result.stdout, re.IGNORECASE)
+    assert re.search(r"runbook.*created at", result.stdout, re.IGNORECASE)
+
+
+def test_init_when_config_already_exists_does_not_require_bench(existing_config_cwd: Path):
+    result = runner.invoke(app, ["init"])
+
+    assert result.exit_code == 0
+    assert (existing_config_cwd / "gymrat-runbook.md").exists()
+
+
+def test_init_when_config_already_exists_and_bench_given_does_not_rewrite_it(
+    existing_config_cwd: Path,
+):
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert (existing_config_cwd / "gymrat.toml").read_text(encoding="utf-8") == EXISTING_CONFIG
+
+
+def test_init_when_config_exists_and_skill_path_is_a_directory_does_report_config_exists(
+    existing_config_cwd: Path,
+):
+    (existing_config_cwd / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
+
+    result = runner.invoke(app, ["init"])
+
+    assert re.search(r"config.*already exists at gymrat\.toml", result.stdout, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +184,11 @@ def test_init_when_scaffolding_succeeds_does_write_summary_and_doctor_pointer():
     assert result.exit_code == 0
     out = result.stdout
     assert "Config: created at gymrat.toml" in out
-    assert "gymrat doctor" in out
     assert result.stderr == ""
+    lines = strip_ansi(out).rstrip("\n").split("\n")
+    pointer_index = next(i for i, line in enumerate(lines) if "gymrat doctor" in line)
+    # The hint closes the artifact block directly — no blank line before it.
+    assert lines[pointer_index - 1].strip().startswith("Skill:")
 
 
 def test_init_when_runbook_already_existed_does_report_it(non_repo_cwd: Path):
@@ -173,6 +214,52 @@ def test_init_when_skill_declined_does_report_it():
 
     assert result.exit_code == 0
     assert re.search(r"skill.*(decline|skip)", result.stdout, re.IGNORECASE)
+
+
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_colored_does_dim_the_doctor_pointer(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert "`" not in result.stdout
+    pointer = next(
+        line for line in result.stdout.split("\n") if "gymrat doctor" in strip_ansi(line)
+    )
+    assert pointer.startswith("\x1b[2m")
+
+
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
+    result = runner.invoke(app, ["init", "--bench", "npm run bench", "--no-color"])
+
+    assert result.exit_code == 0
+    assert "\x1b[" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# init summary prints cwd-relative paths
+# ---------------------------------------------------------------------------
+
+
+def test_init_when_run_from_subdirectory_does_print_cwd_relative_paths_in_summary(
+    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    root = create_scratch_repo()
+    nested = Path(root) / "packages" / "core"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    out = result.stdout
+    # Paths must be navigable from cwd, not bare filenames relative to repo root.
+    # From packages/core/, gymrat.toml is at ../../gymrat.toml.
+    assert "gymrat.toml" in out
+    assert "../../gymrat.toml" in out or str(Path(root) / "gymrat.toml") in out
 
 
 # ---------------------------------------------------------------------------

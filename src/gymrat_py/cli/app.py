@@ -20,27 +20,21 @@ from gymrat_py.cli.loop_cmds import discard, finalize, iterate, keep, start, sta
 from gymrat_py.cli.measure_cmd import measure
 from gymrat_py.cli.shared import BUGS_URL, DebugOption, set_debug_mode
 from gymrat_py.cli.supervise_cmd import supervise_command
+from gymrat_py.report.style import format_hint
 
 _DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
 
 _ROOT_EPILOGUE = f"""
 Examples:
-
   • gymrat init --bench "npm run bench"
-
   • gymrat compare main my-branch --bench "npm run bench"
-
   • gymrat compare old=main new=perf/decode --bench "npm run bench" --fail-on regressed
-
   • gymrat measure --bench "npm run bench"
-
   • gymrat doctor --bench "npm run bench"
-
   • gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5
 
-Docs: {_DOCS_URL}
-Bugs: {BUGS_URL}
-"""
+{format_hint(f"Docs: `{_DOCS_URL}`")}
+{format_hint(f"Bugs: `{BUGS_URL}`")}"""
 
 _COMPARE_EPILOGUE = """
 Examples:
@@ -51,18 +45,13 @@ Examples:
 
   • gymrat compare old=main new=perf/faster-decode --bench "npm run bench"
 
-  • gymrat compare main my-branch --bench "npm run bench" --fail-on geomean:2 --format json
-"""
+  • gymrat compare main my-branch --bench "npm run bench" --fail-on geomean:2 --format json"""
 
 _MEASURE_EPILOGUE = """
 Examples:
-
   • gymrat measure --bench "npm run bench"
-
   • gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
-
-  • gymrat measure main --bench "npm run bench" --record
-"""
+  • gymrat measure main --bench "npm run bench" --record"""
 
 
 def _version_callback(*, value: bool) -> None:
@@ -90,6 +79,7 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     pretty_exceptions_enable=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 

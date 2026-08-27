@@ -198,6 +198,8 @@ class _ClaudeSession:
         if self._abort is not None:
             self._abort_task = asyncio.create_task(self._watch_abort(self._abort, client))
         await client.connect()
+        if self._stopped is not None:
+            return self._stopped
         await client.query(self._prompt.kickoff)
         async for message in client.receive_messages():
             if self._stopped is not None:

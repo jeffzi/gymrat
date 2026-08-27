@@ -554,3 +554,98 @@ async def test_supervise_when_outcome_rejects_does_propagate_and_not_cap(tmp_pat
         )
 
     assert _cap_events(probe.events) == []
+
+
+# ---------------------------------------------------------------------------
+# B31 — observer resilience: cap fires even when an observer raises
+# ---------------------------------------------------------------------------
+
+
+async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
+    tmp_path: Path,
+):
+    cap_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    def failing_observer(event: SessionEvent) -> None:
+        if event.type == "cap":
+            cap_seen.set()
+            msg = "observer explodes on cap"
+            raise RuntimeError(msg)
+
+    async def block() -> None:
+        await release.wait()
+
+    wrapper = _WrapDriver(create_mock_driver([ActionStep(action=block)]))
+    grace_ms = 100
+
+    async def run() -> object:
+        return await supervise(
+            wrapper,
+            make_prompt(),
+            max_minutes=0.001,
+            log_path=tmp_path / "events.jsonl",
+            launch=make_launch(max_minutes=0.001),
+            observer=failing_observer,
+            grace_ms=grace_ms,
+        )
+
+    task = asyncio.create_task(run())
+    await asyncio.wait_for(cap_seen.wait(), timeout=2.0)
+
+    captured = wrapper.captured_abort
+    assert captured is not None
+    await asyncio.wait_for(captured.wait(), timeout=2.0)
+
+    release.set()
+    result = await asyncio.wait_for(task, timeout=2.0)
+    assert result.ended_by == "wall-clock"  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# B35 — interrupt task teardown
+# ---------------------------------------------------------------------------
+
+
+class _SlowInterruptSession(_DelegatingSession):
+    """An interrupt that blocks until cancelled, to detect leaked tasks."""
+
+    def __init__(self, inner: DriverSession) -> None:
+        super().__init__(inner)
+        self.interrupt_cancelled = asyncio.Event()
+
+    @override
+    async def interrupt(self) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.interrupt_cancelled.set()
+            raise
+
+
+async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: Path):
+    slow_session: _SlowInterruptSession | None = None
+
+    def wrap(inner: DriverSession) -> DriverSession:
+        nonlocal slow_session
+        slow_session = _SlowInterruptSession(inner)
+        return slow_session
+
+    inner = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
+    driver = _WrapDriver(inner, wrap)
+
+    result = await supervise(
+        driver,
+        make_prompt(),
+        max_minutes=0.001,
+        log_path=tmp_path / "events.jsonl",
+        launch=make_launch(max_minutes=0.001),
+        grace_ms=50,
+    )
+
+    assert result.ended_by == "wall-clock"
+    assert slow_session is not None
+
+    # Give the event loop a tick so the CancelledError propagates.
+    await asyncio.sleep(0)
+    assert slow_session.interrupt_cancelled.is_set()
