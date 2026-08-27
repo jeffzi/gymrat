@@ -94,14 +94,19 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
     lines.append(markup(note, "dim"))
     lines.append("")
 
-    summary = " · ".join(
-        [
-            pluralize(report.ok_count, "ok", "ok"),
-            pluralize(report.warn_count, "warning"),
-            pluralize(report.fail_count, "failure"),
-        ]
-    )
-    lines.append(escape(summary))
+    segments: list[tuple[int, str, str | None, CheckStatus]] = [
+        (report.ok_count, "ok", "ok", "ok"),
+        (report.warn_count, "warning", None, "warn"),
+        (report.fail_count, "failure", None, "fail"),
+    ]
+    parts: list[str] = []
+    for count, noun, plural, status in segments:
+        if count == 0:
+            continue
+        label = escape(pluralize(count, noun, plural))
+        colored_count = markup(str(count), _STATUS_STYLES[status])
+        parts.append(colored_count + label.removeprefix(str(count)))
+    lines.append(" · ".join(parts))
 
     return render_lines(*lines, color=color, width=RENDER_WIDTH)
 
