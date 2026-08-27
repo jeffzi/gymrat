@@ -1,14 +1,12 @@
 """Tests for the ``gymrat doctor`` command wiring.
 
 These drive the assembled app through :class:`typer.testing.CliRunner` with the
-section builders, the bench smoke run, both renderers, ``inspect_config``, and
-the repository lock replaced. They cover registration and help, the exit-code
-contract, the JSON path, ``--no-color``, the ``--no-bench`` lock-free path, a
-missing ``--config`` surfacing as a config failure rather than a crash, and the
-abort event reaching the bench section.
+section builders, both renderers, and ``inspect_config`` replaced. They cover
+registration and help, the exit-code contract, the JSON path, ``--no-color``,
+a missing ``--config`` surfacing as a config failure rather than a crash, and
+the adapter flag reaching the bench section.
 """
 
-import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -41,7 +39,7 @@ def _patch_doctor(
     bench_fail: bool = False,
     env_error: Exception | None = None,
 ) -> SimpleNamespace:
-    """Replace every doctor seam and return the recorded bench inputs and lock calls."""
+    """Replace every doctor seam and return the recorded bench calls."""
     inspection = ConfigInspection(
         config_path="/missing/gymrat.json" if config_failure else "/project/gymrat.json",
         problems=["Config file not found at /missing/gymrat.json"] if config_failure else [],
@@ -77,15 +75,15 @@ def _patch_doctor(
 
     monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_workflow_section", workflow_section)
 
-    bench_inputs: list[object] = []
+    bench_calls: list[dict[str, object]] = []
     bench_check = (
-        Check("smoke", "fail", "bench crashed")
+        Check("bench", "fail", "bench crashed")
         if bench_fail
-        else Check("smoke", "ok", "1 metric found")
+        else Check("bench", "ok", "1 metric found")
     )
 
-    async def bench_section(bench_input: object) -> CheckSection:
-        bench_inputs.append(bench_input)
+    def bench_section(*, bench: object, adapter: object) -> CheckSection:
+        bench_calls.append({"bench": bench, "adapter": adapter})
         return CheckSection(title="Bench", checks=[bench_check])
 
     monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_bench_section", bench_section)
@@ -99,18 +97,10 @@ def _patch_doctor(
     monkeypatch.setattr("gymrat_py.cli.doctor_cmd.render_doctor_report", fake_text)
     monkeypatch.setattr("gymrat_py.cli.doctor_cmd.render_doctor_json", fake_json)
 
-    lock_calls: list[str] = []
-
-    async def fake_lock(command: str, body: object) -> object:
-        lock_calls.append(command)
-        return await body()  # pyrefly: ignore
-
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.with_repo_lock", fake_lock)
-
-    return SimpleNamespace(bench_inputs=bench_inputs, lock_calls=lock_calls)
+    return SimpleNamespace(bench_calls=bench_calls)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _preserve_color_env(monkeypatch: pytest.MonkeyPatch):
     for name in ("NO_COLOR", "FORCE_COLOR"):
         value = os.environ.get(name)
@@ -132,12 +122,11 @@ def test_doctor_when_root_help_does_list_doctor():
     assert "doctor" in result.stdout
 
 
-def test_doctor_when_help_does_document_no_bench_no_color_and_format():
+def test_doctor_when_help_does_document_no_color_and_format():
     result = runner.invoke(app, ["doctor", "--help"])
 
     assert result.exit_code == 0
     out = result.stdout
-    assert "--no-bench" in out
     assert "--no-color" in out
     assert "--format" in out
 
@@ -189,7 +178,6 @@ def test_doctor_when_format_json_does_write_only_the_json_line(monkeypatch: pyte
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("_preserve_color_env")
 def test_doctor_when_no_color_flag_does_not_mutate_color_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
@@ -202,7 +190,6 @@ def test_doctor_when_no_color_flag_does_not_mutate_color_env(monkeypatch: pytest
     assert os.environ.get("FORCE_COLOR") is None
 
 
-@pytest.mark.usefixtures("_preserve_color_env")
 def test_doctor_when_no_color_flag_and_force_color_set_does_preserve_force_color_env(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -213,45 +200,6 @@ def test_doctor_when_no_color_flag_and_force_color_set_does_preserve_force_color
 
     assert result.exit_code == 0
     assert os.environ.get("FORCE_COLOR") == "1"
-
-
-# ---------------------------------------------------------------------------
-# --no-bench and the repository lock
-# ---------------------------------------------------------------------------
-
-
-def test_doctor_when_no_bench_does_reach_bench_section_as_skip_without_the_lock(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    handles = _patch_doctor(monkeypatch)
-
-    result = runner.invoke(app, ["doctor", "--no-bench"])
-
-    assert result.exit_code == 0
-    assert len(handles.bench_inputs) == 1
-    assert handles.bench_inputs[0].no_bench is True
-    assert handles.lock_calls == []
-
-
-def test_doctor_when_bench_runs_does_hold_the_repository_lock(monkeypatch: pytest.MonkeyPatch):
-    handles = _patch_doctor(monkeypatch)
-
-    result = runner.invoke(app, ["doctor"])
-
-    assert result.exit_code == 0
-    assert len(handles.bench_inputs) == 1
-    assert handles.bench_inputs[0].no_bench is False
-    assert handles.lock_calls == ["doctor"]
-
-
-def test_doctor_when_bench_runs_does_forward_an_abort_event_to_the_bench_section(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    handles = _patch_doctor(monkeypatch)
-
-    runner.invoke(app, ["doctor"])
-
-    assert isinstance(handles.bench_inputs[0].abort, asyncio.Event)
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +215,8 @@ def test_doctor_when_config_failed_and_adapter_flag_given_does_forward_flag_adap
     result = runner.invoke(app, ["doctor", "--adapter", "custom-adapter"])
 
     assert result.exit_code in (0, 1)
-    assert len(handles.bench_inputs) == 1
-    assert handles.bench_inputs[0].adapter == "custom-adapter"
+    assert len(handles.bench_calls) == 1
+    assert handles.bench_calls[0]["adapter"] == "custom-adapter"
 
 
 # ---------------------------------------------------------------------------
