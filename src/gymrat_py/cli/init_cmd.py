@@ -19,7 +19,10 @@ from rich.markup import escape
 
 from gymrat_py.cli.shared import (
     DebugOption,
+    NoColorOption,
+    color_override_of,
     exit_with_error,
+    resolve_stream_color,
     set_debug_mode,
     write_and_flush,
 )
@@ -45,7 +48,7 @@ def _format_artifact(label: str, artifact: ScaffoldArtifact) -> str:
     return f"  {label} {verb} {artifact.path}"
 
 
-def _format_summary(result: ScaffoldResult) -> str:
+def _format_summary(result: ScaffoldResult, *, color: bool | None = None) -> str:
     doc = "\n".join(
         [
             escape(_format_artifact("Config:", result.config)),
@@ -55,7 +58,7 @@ def _format_summary(result: ScaffoldResult) -> str:
             highlight_inline_code("Run `gymrat doctor` to verify the setup."),
         ]
     )
-    return render_lines(doc, color=None, width=RENDER_WIDTH)
+    return render_lines(doc, color=color, width=RENDER_WIDTH)
 
 
 def init_command(
@@ -63,6 +66,7 @@ def init_command(
     bench: _BenchOption = None,
     no_runbook: _NoRunbookOption = False,
     no_skill: _NoSkillOption = False,
+    no_color: NoColorOption = False,
     debug: DebugOption = False,
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
@@ -70,6 +74,9 @@ def init_command(
         set_debug_mode(True)
     if bench is None:
         exit_with_error(GymratError("Missing --bench flag."))
+
+    color_override = color_override_of(not no_color)
+    resolved_color = resolve_stream_color(color_override, sys.stdout)
 
     base_dir = find_implicit_base()
     config_path = Path(base_dir) / CONFIG_FILENAME
@@ -90,4 +97,4 @@ def init_command(
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
 
-    write_and_flush(sys.stdout, _format_summary(result) + "\n")
+    write_and_flush(sys.stdout, _format_summary(result, color=resolved_color) + "\n")

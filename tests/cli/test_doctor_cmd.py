@@ -90,7 +90,7 @@ def _patch_doctor(
 
     monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_bench_section", bench_section)
 
-    def fake_text(_report: object) -> str:
+    def fake_text(_report: object, **_kwargs: object) -> str:
         return "doctor text report"
 
     def fake_json(_report: object) -> str:
@@ -190,14 +190,29 @@ def test_doctor_when_format_json_does_write_only_the_json_line(monkeypatch: pyte
 
 
 @pytest.mark.usefixtures("_preserve_color_env")
-def test_doctor_when_no_color_does_set_no_color_env(monkeypatch: pytest.MonkeyPatch):
+def test_doctor_when_no_color_flag_does_not_mutate_color_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     _patch_doctor(monkeypatch)
 
     result = runner.invoke(app, ["doctor", "--no-color"])
 
     assert result.exit_code == 0
-    assert os.environ.get("NO_COLOR") == "1"
+    assert os.environ.get("NO_COLOR") is None
+    assert os.environ.get("FORCE_COLOR") is None
+
+
+@pytest.mark.usefixtures("_preserve_color_env")
+def test_doctor_when_no_color_flag_and_force_color_set_does_preserve_force_color_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    _patch_doctor(monkeypatch)
+
+    result = runner.invoke(app, ["doctor", "--no-color"])
+
+    assert result.exit_code == 0
+    assert os.environ.get("FORCE_COLOR") == "1"
 
 
 # ---------------------------------------------------------------------------

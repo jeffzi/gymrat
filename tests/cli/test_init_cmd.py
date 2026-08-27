@@ -62,6 +62,7 @@ def test_init_when_help_does_describe_scaffolding_a_toml_config():
         pytest.param("--bench", id="bench"),
         pytest.param("--no-runbook", id="no-runbook"),
         pytest.param("--no-skill", id="no-skill"),
+        pytest.param("--no-color", id="no-color"),
         pytest.param("--debug", id="debug"),
     ],
 )
@@ -173,6 +174,14 @@ def test_init_when_skill_declined_does_report_it():
 
     assert result.exit_code == 0
     assert re.search(r"skill.*(decline|skip)", result.stdout, re.IGNORECASE)
+
+
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
+    result = runner.invoke(app, ["init", "--bench", "npm run bench", "--no-color"])
+
+    assert result.exit_code == 0
+    assert "\x1b[" not in result.stdout
 
 
 # ---------------------------------------------------------------------------

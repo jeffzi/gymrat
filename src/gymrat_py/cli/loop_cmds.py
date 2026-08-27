@@ -41,12 +41,13 @@ from gymrat_py.cli.shared import (
     PrepareOption,
     SamplesOption,
     TimeoutOption,
+    color_override_of,
     exit_with_error,
     is_tty,
+    resolve_stream_color,
     run_cli,
     run_with_signal_abort,
     set_debug_mode,
-    suppress_color,
     with_repo_lock,
     write_and_flush,
 )
@@ -169,12 +170,15 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     samples: SamplesOption = None,
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
+    no_color: NoColorOption = False,
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
     if debug:
         set_debug_mode(True)
 
+    color_override = color_override_of(not no_color)
+    resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -189,7 +193,10 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             root = repo_root()
             return await run_with_signal_abort(
                 lambda abort: iterate_session(
-                    root, resolve_config(flags, root), IterateOptions(abort=abort)
+                    root,
+                    resolve_config(flags, root),
+                    IterateOptions(abort=abort),
+                    color=resolved_color,
                 )
             )
 
@@ -312,12 +319,8 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     if debug:
         set_debug_mode(True)
 
-    # status styles its lines as it builds them, with no render-time color
-    # wrapper, so --no-color has to clear the environment before the render:
-    # suppress_color drops FORCE_COLOR as well as setting NO_COLOR, so the flag
-    # beats a FORCE_COLOR left in the caller's shell.
-    if no_color:
-        suppress_color()
+    color_override = color_override_of(not no_color)
+    resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -329,7 +332,7 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 
     try:
         root = repo_root()
-        report = status_session(root, resolve_benchless_config(flags, root))
+        report = status_session(root, resolve_benchless_config(flags, root), color=resolved_color)
     except typer.Exit:
         raise
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter

@@ -298,7 +298,8 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
         # when FORCE_COLOR has forced a terminal; disabling the color system drops
         # every SGR code, so color=False fully overrides the environment.
         return Console(file=buffer, width=width, color_system=None, soft_wrap=True)
-    if _force_color_env():
+    env_color = color_from_env()
+    if env_color is True:
         return Console(
             file=buffer,
             width=width,
@@ -306,6 +307,8 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
             no_color=False,
             soft_wrap=True,
         )
+    if env_color is False:
+        return Console(file=buffer, width=width, color_system=None, soft_wrap=True)
     return Console(file=buffer, width=width, soft_wrap=True)
 
 
@@ -327,12 +330,16 @@ def color_from_env() -> bool | None:
 
     One precedence rule, shared by every color surface so they never disagree:
     ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces color on even
-    when ``NO_COLOR`` is also present; ``NO_COLOR`` (present, any value) then
-    forces it off; with neither the answer is ``None`` so the caller decides from
-    the stream's own TTY state.
+    when ``NO_COLOR`` is also present; ``FORCE_COLOR`` set to a rejected value
+    (``0``/``false``/empty) explicitly disables color — this must override
+    Rich's presence-based detection which treats any ``FORCE_COLOR`` as "on";
+    ``NO_COLOR`` (present, any value) then forces it off; with neither the
+    answer is ``None`` so the caller decides from the stream's own TTY state.
     """
     if _force_color_env():
         return True
+    if os.environ.get("FORCE_COLOR") is not None:
+        return False
     if "NO_COLOR" in os.environ:
         return False
     return None

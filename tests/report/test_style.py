@@ -406,6 +406,36 @@ def test_make_capture_console_when_color_set_does_honor_color_and_capture_output
     assert ("\x1b[" in captured) is has_ansi
 
 
+def test_make_capture_console_when_color_none_and_force_color_zero_does_render_plain(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "0")
+
+    console = make_capture_console(color=None, width=80)
+    console.print("[red]hi[/red]")
+
+    assert isinstance(console.file, io.StringIO)
+    captured = console.file.getvalue()
+    assert "hi" in captured
+    assert "\x1b[" not in captured
+
+
+def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all_styling(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setenv("NO_COLOR", "")
+
+    console = make_capture_console(color=None, width=80)
+    console.print("[bold]hi[/bold]")
+
+    assert isinstance(console.file, io.StringIO)
+    captured = console.file.getvalue()
+    assert "hi" in captured
+    assert "\x1b[" not in captured
+
+
 # ---------------------------------------------------------------------------
 # report package re-exports
 # ---------------------------------------------------------------------------

@@ -74,8 +74,14 @@ def _check_lines(status: CheckStatus, detail: str, hint: str | None) -> list[str
     return lines
 
 
-def render_doctor_report(report: DoctorReport) -> str:
-    """Render a doctor report as styled text for the terminal."""
+def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> str:
+    """Render a doctor report as styled text for the terminal.
+
+    Args:
+        report: The assembled doctor report.
+        color: Explicit color choice — ``True`` forces ANSI, ``False``
+            suppresses it, ``None`` defers to the environment and TTY.
+    """
     lines: list[str] = [_header_line(report), ""]
 
     for section in report.sections:
@@ -97,7 +103,7 @@ def render_doctor_report(report: DoctorReport) -> str:
     )
     lines.append(escape(summary))
 
-    return render_lines(*lines, width=RENDER_WIDTH)
+    return render_lines(*lines, color=color, width=RENDER_WIDTH)
 
 
 def render_doctor_json(report: DoctorReport) -> str:

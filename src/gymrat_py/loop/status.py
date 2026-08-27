@@ -145,7 +145,7 @@ def _settle_states(records: Sequence[SessionLogRecord]) -> dict[int, SettleState
     return states
 
 
-def status_session(root: str, config: BenchlessConfig) -> str:
+def status_session(root: str, config: BenchlessConfig, *, color: bool | None = None) -> str:
     """The session's whole history, as the agent reads it back.
 
     The records are walked in file order rather than summarized, so the report
@@ -161,6 +161,8 @@ def status_session(root: str, config: BenchlessConfig) -> str:
     Args:
         root: The repository whose session is reported.
         config: The live run configuration the stop line and runbook read from.
+        color: Explicit color choice — ``True`` forces ANSI, ``False``
+            suppresses it, ``None`` defers to the environment and TTY.
 
     Returns:
         The report as a single rendered string.
@@ -212,4 +214,4 @@ def status_session(root: str, config: BenchlessConfig) -> str:
     if state.finalized is not None:
         lines.append(format_status_finalized(state.finalized))
 
-    return render_lines(*lines, width=RENDER_WIDTH)
+    return render_lines(*lines, color=color, width=RENDER_WIDTH)

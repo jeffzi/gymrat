@@ -324,6 +324,22 @@ async def test_iterate_session_when_target_not_met_does_leave_it_out_of_the_repo
     assert "target reached" not in _plain(result.report)
 
 
+async def test_iterate_session_when_color_false_does_suppress_ansi_in_report(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    result = await iterate_session(settled, resolved_config(), color=False)
+
+    assert "\x1b[" not in result.report
+
+
+async def test_iterate_session_when_color_true_does_emit_ansi_in_report(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    result = await iterate_session(settled, resolved_config(), color=True)
+
+    assert "\x1b[" in result.report
+
+
 async def test_iterate_session_when_measuring_does_open_report_on_the_loop_header(
     settled: str, samples_mock: CollectSamplesRecorder
 ):

@@ -9,7 +9,6 @@ stack or the command bodies, so importing it stays cheap.
 import asyncio
 import contextlib
 import math
-import os
 import re
 import sys
 import traceback
@@ -103,16 +102,6 @@ def write_and_flush(stream: _WritableStream, data: str) -> None:
 # ---------------------------------------------------------------------------
 # Color control
 # ---------------------------------------------------------------------------
-
-
-def suppress_color() -> None:
-    """Veto color unconditionally by clearing ``FORCE_COLOR`` and setting ``NO_COLOR``.
-
-    The style layer resolves ``FORCE_COLOR`` before ``NO_COLOR``, so a leftover
-    ``FORCE_COLOR`` from the caller's shell would otherwise defeat ``--no-color``.
-    """
-    os.environ.pop("FORCE_COLOR", None)
-    os.environ["NO_COLOR"] = "1"
 
 
 def color_override_of(color: bool) -> Literal[False] | None:  # noqa: FBT001 -- 1:1 map of the --color flag

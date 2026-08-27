@@ -249,6 +249,8 @@ async def iterate_session(
     root: str,
     config: ResolvedConfig,
     options: IterateOptions | None = None,
+    *,
+    color: bool | None = None,
 ) -> IterateResult:
     """Measure the experiment worktree against the baseline worktree and record it.
 
@@ -256,6 +258,9 @@ async def iterate_session(
         root: The repository whose open session is measured.
         config: The resolved run configuration.
         options: Progress and abort hooks; a fresh set is used when ``None``.
+        color: Explicit color choice for the iteration report — ``True``
+            forces ANSI, ``False`` suppresses it, ``None`` defers to the
+            environment and TTY.
 
     Returns:
         The appended record and the report to print for it.
@@ -327,7 +332,7 @@ async def iterate_session(
         else None,
     )
 
-    iteration_report = _render_iteration(judged.result, seq, judgment)
+    iteration_report = _render_iteration(judged.result, seq, judgment, color=color)
     report = "\n".join(
         part for part in (before_report, iteration_report, after_report) if part != ""
     )
@@ -689,6 +694,8 @@ def _render_iteration(
     result: ComparisonResult,
     seq: int,
     judgment: _IterationJudgment,
+    *,
+    color: bool | None = None,
 ) -> str:
     """The iteration as it prints: the loop's header, the comparison table, the verdict."""
     confirmation = judgment.confirmation
@@ -700,11 +707,8 @@ def _render_iteration(
         if confirmation is not None
         else []
     )
-    # render_report places its header override verbatim and resolves only its own
-    # body markup, so the loop header and the verdict block are rendered here the
-    # same way — deferring color to the environment, at the report's own width.
-    header = render_lines(format_loop_header(seq, result.samples), width=RENDER_WIDTH)
-    report = render_report(result, ReportOptions(header=header))
+    header = render_lines(format_loop_header(seq, result.samples), color=color, width=RENDER_WIDTH)
+    report = render_report(result, ReportOptions(header=header, color=color))
     verdict = render_lines(
         *format_verdict_block(
             outcome=judgment.outcome,
@@ -713,6 +717,7 @@ def _render_iteration(
             reruns=reruns,
             target_reached=judgment.reached_target,
         ),
+        color=color,
         width=RENDER_WIDTH,
     )
     return f"{report}\n\n{verdict}"

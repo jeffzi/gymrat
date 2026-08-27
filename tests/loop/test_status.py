@@ -378,3 +378,26 @@ def test_status_session_when_runbook_not_configured_does_omit_the_runbook_line(t
     report = status_session(root, _config())
 
     assert not any("runbook" in line for line in _report_lines(report))
+
+
+# ---------------------------------------------------------------------------
+# color parameter
+# ---------------------------------------------------------------------------
+
+
+def test_status_session_when_color_false_does_suppress_ansi(tmp_path: Path):
+    root = str(tmp_path)
+    write_session_log(root, _session(root), four_iterations())
+
+    report = status_session(root, _config(), color=False)
+
+    assert "\x1b[" not in report
+
+
+def test_status_session_when_color_true_does_emit_ansi(tmp_path: Path):
+    root = str(tmp_path)
+    write_session_log(root, _session(root), four_iterations())
+
+    report = status_session(root, _config(), color=True)
+
+    assert "\x1b[" in report
