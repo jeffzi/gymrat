@@ -55,6 +55,10 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
 
     try:
         runbook_content = Path(config.runbook).read_text(encoding="utf-8")
+    except UnicodeDecodeError as err:
+        message = f"Runbook is not valid UTF-8: {config.runbook}"
+        hint = "Re-save the runbook as UTF-8 or remove non-UTF-8 bytes."
+        raise GymratError(message, hint=hint) from err
     except OSError as err:
         message = f"Runbook not found at {config.runbook}."
         hint = "Verify the file exists at the path configured for `runbook` in gymrat.toml."

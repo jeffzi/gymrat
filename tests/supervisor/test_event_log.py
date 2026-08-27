@@ -102,3 +102,27 @@ def test_create_event_log_writer_when_wrapped_in_combine_observers_does_write_on
     assert read_log_lines(log_path) == [
         {"type": "usage_update", "timestamp": 1000, "costUsd": 0.01},
     ]
+
+
+# ---------------------------------------------------------------------------
+# event log directory re-creation
+# ---------------------------------------------------------------------------
+
+
+def test_create_event_log_writer_when_parent_removed_after_first_write_does_recreate_on_next(
+    tmp_path: Path,
+):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    log_path = log_dir / "events.jsonl"
+    writer = create_event_log_writer(log_path)
+
+    writer(UsageUpdateEvent(timestamp=1000, cost_usd=0.01))
+    import shutil
+
+    shutil.rmtree(log_dir)
+    writer(UsageUpdateEvent(timestamp=2000, cost_usd=0.02))
+
+    assert read_log_lines(log_path) == [
+        {"type": "usage_update", "timestamp": 2000, "costUsd": 0.02},
+    ]

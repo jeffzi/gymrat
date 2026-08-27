@@ -13,7 +13,9 @@ event out to several observers in order.
 """
 
 import json
+import math
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, assert_never, cast
@@ -218,9 +220,21 @@ def _to_wire(event: SessionEvent) -> dict[str, object]:
     return wire
 
 
+def _sanitize_floats(value: object) -> object:
+    """Replace non-finite floats (NaN, Infinity) with ``None`` for valid JSON."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _sanitize_floats(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_floats(item) for item in value]
+    return value
+
+
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with camelCase keys."""
-    return json.dumps(_to_wire(event), separators=(",", ":"))
+    wire = _to_wire(event)
+    return json.dumps(_sanitize_floats(wire), separators=(",", ":"))
 
 
 # ---------------------------------------------------------------------------
@@ -306,13 +320,16 @@ def event_from_wire(obj: object) -> SessionEvent | None:
 def combine_observers(*observers: SessionObserver) -> SessionObserver:
     """Fan one event out to each observer in order with the identical object.
 
-    With no observers the result is a no-op. If an observer raises, the error
-    propagates and later observers are not invoked.
+    With no observers the result is a no-op. If an observer raises, a
+    :class:`RuntimeWarning` is emitted and later observers still run.
     """
 
     def combined(event: SessionEvent) -> None:
         for observer in observers:
-            observer(event)
+            try:
+                observer(event)
+            except Exception as error:  # noqa: BLE001 - observer failure must not break the chain
+                warnings.warn(str(error), RuntimeWarning, stacklevel=2)
 
     return combined
 

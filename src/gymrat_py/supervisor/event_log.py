@@ -21,14 +21,10 @@ def create_event_log_writer(log_path: str | Path) -> SessionObserver:
     the log path, chaining the underlying OS error as its cause.
     """
     path = Path(log_path)
-    dir_ensured = False
 
     def write(event: SessionEvent) -> None:
-        nonlocal dir_ensured
         try:
-            if not dir_ensured:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                dir_ensured = True
+            path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as log:
                 log.write(to_json_line(event) + "\n")
         except OSError as error:
