@@ -18,7 +18,7 @@ from gymrat_py.report.style import (
     LABEL_DISPLAY_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
-    format_hint_label,
+    format_hint,
     highlight_inline_code,
     make_capture_console,
     render_lines,
@@ -177,27 +177,6 @@ def test_aggregate_label_style_when_referenced_does_equal_bold():
 
 
 # ---------------------------------------------------------------------------
-# format_hint_label
-# ---------------------------------------------------------------------------
-
-
-def test_format_hint_label_when_rendered_plain_does_read_hint_colon():
-    assert render_lines(format_hint_label(), color=False, width=80) == "Hint:"
-
-
-def test_format_hint_label_when_colored_does_underline_hint_but_not_colon():
-    styled = render_lines(format_hint_label(), color=True, width=80)
-
-    # the *intent* (underline reaches the word but stops before the
-    # colon), not literal escape bytes: rich renders each styled span as a
-    # combined SGR (e.g. "\x1b[4;33m") followed by a full reset, and never emits
-    # an incremental underline-off "\x1b[24m".
-    assert "\x1b[" in styled
-    assert "4" in _sgr_params(styled[: styled.index("Hint")])  # underline on the word
-    assert "4" not in _sgr_params(styled[: styled.index(":")])  # colon colored, not underlined
-
-
-# ---------------------------------------------------------------------------
 # highlight_inline_code
 # ---------------------------------------------------------------------------
 
@@ -209,15 +188,14 @@ def test_highlight_inline_code_when_span_present_does_strip_backticks_and_keep_c
     assert "gymrat doctor" in result
 
 
-def test_highlight_inline_code_when_colored_does_emit_ansi_around_content():
+def test_highlight_inline_code_when_colored_does_paint_the_span_blue():
     styled = render_lines(
         highlight_inline_code("Run `gymrat doctor` to verify."),
         color=True,
         width=80,
     )
 
-    assert "\x1b[" in styled
-    assert "gymrat doctor" in styled
+    assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
     assert "`" not in styled
 
 
@@ -266,6 +244,43 @@ def test_highlight_inline_code_when_content_has_markup_metacharacters_does_rende
     )
 
     assert plain == "Metric [i] counts."
+
+
+# ---------------------------------------------------------------------------
+# format_hint
+# ---------------------------------------------------------------------------
+
+_HINT = "run `gymrat doctor` first"
+
+
+def test_format_hint_when_rendered_plain_does_yield_the_bare_sentence():
+    assert render_lines(format_hint(_HINT), color=False, width=80) == "run gymrat doctor first"
+
+
+def test_format_hint_when_colored_does_dim_the_whole_line():
+    styled = render_lines(format_hint(_HINT), color=True, width=80)
+
+    assert styled.startswith("\x1b[2m")
+    assert styled.endswith("\x1b[0m")
+
+
+def test_format_hint_when_colored_does_paint_the_inline_code_blue():
+    styled = render_lines(format_hint(_HINT), color=True, width=80)
+
+    assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("counts [i] rounds", "counts [i] rounds", id="prose"),
+        pytest.param("counts `[i]` rounds", "counts [i] rounds", id="inline-code"),
+    ],
+)
+def test_format_hint_when_text_has_markup_metacharacters_does_render_them_literally(
+    text: str, expected: str
+):
+    assert render_lines(format_hint(text), color=False, width=80) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +463,8 @@ def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all
         "truncate_labels",
         "render_lines",
         "make_capture_console",
+        "format_hint",
         "highlight_inline_code",
-        "format_hint_label",
         "VERDICT_STYLES",
         "VARIANT_NAME_STYLE",
         "GROUP_LABEL_STYLE",

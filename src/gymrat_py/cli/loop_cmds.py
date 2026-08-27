@@ -226,6 +226,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     if debug:
         set_debug_mode(True)
 
+    resolved_color = resolve_stream_color(None, sys.stdout)
     flags = CliFlags(
         bench=bench,
         prepare=prepare,
@@ -239,7 +240,10 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
         async def body() -> KeepResult:
             root = repo_root()
             return await keep_session(
-                root, resolve_benchless_config(flags, root), KeepOptions(message=message)
+                root,
+                resolve_benchless_config(flags, root),
+                KeepOptions(message=message),
+                color=resolved_color,
             )
 
         result = await with_repo_lock("keep", body)

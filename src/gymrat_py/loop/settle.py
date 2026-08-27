@@ -13,7 +13,9 @@ it mid-advance.
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from rich.markup import escape
 
 from gymrat_py.config import BenchlessConfig
 from gymrat_py.errors import GymratError
@@ -25,6 +27,7 @@ from gymrat_py.exec import (
 from gymrat_py.loop.output_limit import limit_output
 from gymrat_py.model import Effect
 from gymrat_py.report.format import format_delta
+from gymrat_py.report.style import RENDER_WIDTH, color_from_env, format_hint, render_lines
 from gymrat_py.session.clock import now_iso
 from gymrat_py.session.records import (
     DiscardRecord,
@@ -108,14 +111,35 @@ async def keep_session(
     root: str,
     config: BenchlessConfig,
     options: KeepOptions | None = None,
+    *,
+    color: bool | None = None,
 ) -> KeepResult:
     """Commit the measured edit standing in the experiment worktree, if it may be kept.
+
+    Args:
+        root: The repository the session was started in.
+        config: The configuration the checks gate is read from.
+        options: What the caller hands the keep beyond its configuration.
+        color: Whether the report carries color, or ``None`` to defer to the
+            environment.
+
+    Returns:
+        The keep as it was logged, with its report rendered for the terminal.
 
     Raises:
         GymratError: When no session has been started, or when git refuses to
             commit the worktree or to advance the baseline.
     """
-    options = options or KeepOptions()
+    settled = await _settle_keep(root, config, options or KeepOptions())
+    return replace(settled, report=render_lines(settled.report, color=color, width=RENDER_WIDTH))
+
+
+async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions) -> KeepResult:
+    """Run the keep gates, leaving the report as the markup :func:`keep_session` renders.
+
+    Every gate phrases its refusal as markup and none of them renders it, so the
+    color choice is resolved once for the whole report however the keep settled.
+    """
     required = require_open_session(root, "settling an edit")
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
     configured = config.checks is not None
@@ -132,8 +156,10 @@ async def keep_session(
             checks=KeepChecks(configured=configured),
             report=(
                 "Keep refused: nothing has been measured since the last keep or discard.\n"
-                "Hint: run gymrat iterate first — an unmeasured commit is one the loop "
-                "cannot account for."
+                + format_hint(
+                    "run `gymrat iterate` first — an unmeasured commit is one the loop "
+                    "cannot account for."
+                )
             ),
         )
 
@@ -189,7 +215,9 @@ async def _keep_clean_worktree(context: _KeepContext, *, baseline_position: str)
             checks=KeepChecks(configured=context.config.checks is not None),
             report=(
                 "Keep refused: the experiment worktree has nothing to commit.\n"
-                "Hint: edit the code in the experiment worktree, then run gymrat keep again."
+                + format_hint(
+                    "edit the code in the experiment worktree, then run `gymrat keep` again."
+                )
             ),
         )
 
@@ -245,8 +273,8 @@ def _checks_failed_keep(jsonl_path: str, seq: int, checks: ChecksRun) -> KeepRes
             stderr_bytes=checks.stderr_bytes,
         ),
         report=(
-            f"Keep refused: the checks command failed.\n\n{checks.output}\n"
-            "Hint: fix the failures and run gymrat keep again."
+            f"Keep refused: the checks command failed.\n\n{escape(checks.output)}\n"
+            + format_hint("fix the failures and run `gymrat keep` again.")
         ),
     )
 
@@ -287,7 +315,8 @@ def _commit_keep(
     return KeepResult(
         record=record,
         report=(
-            f"Kept iteration {context.iteration.seq} as {commit}\n  message: {message}\n"
+            f"Kept iteration {context.iteration.seq} as {commit}\n"
+            f"  message: {escape(message)}\n"
             "  the baseline now measures against this commit"
         ),
     )
@@ -403,7 +432,7 @@ def _is_gating_regression(metric: MetricVerdict) -> bool:
 
 
 def _gating_refusal(iteration: IterationRecord) -> str:
-    """How the refusal reads to the agent that has to act on it.
+    """How the refusal reads to the agent that has to act on it, as markup.
 
     A regression the rerun stood behind needs no explaining beyond the number the
     iteration already reported. One the rerun never re-measured does: the agent is
@@ -413,22 +442,34 @@ def _gating_refusal(iteration: IterationRecord) -> str:
     the rerun to a subset the bench does not answer with.
     """
     refusal = f"Keep refused: iteration {iteration.seq} regressed a gating metric."
-    settle_hint = "fix the regression and run gymrat iterate again, or run gymrat discard"
+    settle_hint = "fix the regression and run `gymrat iterate` again, or run `gymrat discard`"
 
     unmeasured = _unmeasured_gating_regressions(iteration)
     if not unmeasured:
-        return f"{refusal}\nHint: {settle_hint}."
+        return f"{refusal}\n{format_hint(f'{settle_hint}.')}"
 
     named = "\n".join(
-        f"  {name}: not measured on the confirmation rerun, so the regression stands"
+        f"  {escape(name)}: not measured on the confirmation rerun, so the regression stands"
         for name in unmeasured
     )
+    # The metric names go to `format_hint` unescaped: it escapes the prose it is
+    # handed, and escaping them here would have them escaped twice.
     reported = ", ".join(unmeasured)
-    return (
-        f"{refusal}\n{named}\n"
-        f"Hint: check that the filter template (or the bench itself) reports {reported}, "
+    return f"{refusal}\n{named}\n" + format_hint(
+        f"check that the filter template (or the bench itself) reports {reported}, "
         f"then {settle_hint}."
     )
+
+
+def _stderr_color() -> bool:
+    """Whether the warning gymrat writes to stderr carries color.
+
+    :func:`color_from_env` owns the ``FORCE_COLOR`` / ``NO_COLOR`` precedence
+    every color surface shares; with neither declared, stderr's own TTY state
+    decides, so a warning piped into a file stays plain.
+    """
+    declared = color_from_env()
+    return declared if declared is not None else sys.stderr.isatty()
 
 
 async def _run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun | None:
@@ -445,11 +486,17 @@ async def _run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun
     """
     command = config.checks
     if command is None:
+        hint = render_lines(
+            format_hint(
+                "set `checks` in `gymrat.toml` to the command that must pass before an "
+                "edit is kept."
+            ),
+            color=_stderr_color(),
+            width=RENDER_WIDTH,
+        )
         sys.stderr.write(
             "Warning: no checks command is configured, so gymrat keep is committing "
-            "with the gate off.\n"
-            'Hint: set "checks" in gymrat.toml to the command that must pass before an '
-            "edit is kept.\n"
+            f"with the gate off.\n{hint}\n"
         )
         return None
 

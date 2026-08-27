@@ -146,7 +146,7 @@ def test_format_verdict_block_when_given_next_step_does_close_the_block_with_it(
     )
 
     assert len(block) == 2
-    assert _plain(block[1]) == "Hint: fix or gymrat discard"
+    assert _plain(block[1]) == "fix or gymrat discard"
 
 
 @pytest.mark.parametrize(

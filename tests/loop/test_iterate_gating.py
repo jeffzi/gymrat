@@ -720,19 +720,19 @@ async def test_iterate_session_when_primary_flat_does_record_zero_as_a_percentag
 @pytest.mark.parametrize(
     ("outcome", "word", "experiment", "next_step"),
     [
-        pytest.param("improved", "IMPROVED", improved_rounds(), "Hint: gymrat keep", id="improved"),
+        pytest.param("improved", "IMPROVED", improved_rounds(), "gymrat keep", id="improved"),
         pytest.param(
             "regressed",
             "REGRESSED",
             _regressed_rounds(),
-            "Hint: fix or gymrat discard",
+            "fix or gymrat discard",
             id="regressed",
         ),
         pytest.param(
             "no-signal",
             "NO-SIGNAL",
             _noisy_rounds(),
-            "Hint: gymrat keep or gymrat discard",
+            "gymrat keep or gymrat discard",
             id="no-signal",
         ),
     ],

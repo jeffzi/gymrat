@@ -7,7 +7,7 @@ This module owns three concerns the text renderers share:
   without losing the ends that tell sibling branches apart.
 - **Style vocabulary** — the rich style strings a verdict, a variant name, a
   group label or an aggregate label wears, plus the markup helpers
-  (:func:`format_hint_label`, :func:`highlight_inline_code`) that carry inline
+  (:func:`format_hint`, :func:`highlight_inline_code`) that carry inline
   styling in user-facing prose.
 - **Color resolution** — :func:`make_capture_console` and :func:`render_lines`
   turn an explicit ``color`` choice into a rich :class:`~rich.console.Console`
@@ -187,12 +187,6 @@ GROUP_LABEL_STYLE = "blue"
 #: The style an aggregate label (a geomean row, a total) wears.
 AGGREGATE_LABEL_STYLE = "bold"
 
-# The word `Hint` carries the underline; the colon is colored with it but never
-# underlined, since an underscore running under a colon reads as punctuation of
-# its own.
-_HINT_WORD_STYLE = "yellow underline"
-_HINT_COLON_STYLE = "yellow"
-
 # A backtick-wrapped inline code span; the capture group is its content.
 _INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
 
@@ -206,24 +200,8 @@ def markup(text: str, style: str) -> str:
     return f"[{style}]{escape(text)}[/]"
 
 
-def format_hint_label() -> str:
-    """Return the ``Hint:`` label as rich markup, styled as two spans.
-
-    The word and the colon are separate spans so the underline stops at the
-    word: an underscore running under a colon reads as punctuation of its own.
-    The returned markup is rendered to ANSI (or left plain) by
-    :func:`render_lines`.
-
-    Returns:
-        Rich markup for the ``Hint:`` label.
-    """
-    word = f"[{_HINT_WORD_STYLE}]Hint[/{_HINT_WORD_STYLE}]"
-    colon = f"[{_HINT_COLON_STYLE}]:[/{_HINT_COLON_STYLE}]"
-    return f"{word}{colon}"
-
-
 def highlight_inline_code(text: str) -> str:
-    """Replace every ``` `...` ``` span in ``text`` with its content styled yellow.
+    """Replace every ``` `...` ``` span in ``text`` with its content styled blue.
 
     Backticks are stripped whether or not color is active, so callers can embed
     backtick-marked command names in user-facing strings and let
@@ -239,13 +217,43 @@ def highlight_inline_code(text: str) -> str:
 
     Returns:
         Rich markup with each ``` `...` ``` span replaced by its escaped content
-        wrapped in a yellow span.
+        wrapped in a blue span.
     """
 
     def style_span(match: re.Match[str]) -> str:
-        return f"[yellow]{escape(match.group(1))}[/yellow]"
+        return f"[blue]{escape(match.group(1))}[/blue]"
 
     return _INLINE_CODE_PATTERN.sub(style_span, text)
+
+
+def format_hint(text: str) -> str:
+    """Render a hint line as rich markup: dim end to end, inline code blue.
+
+    A hint recedes rather than announces itself, so the whole line is dim and
+    carries no label; the commands and flags it names stay legible through the
+    blue :func:`highlight_inline_code` spans, which read as dim blue inside the
+    surrounding dim span.
+
+    Prose outside the code spans is escaped here rather than by the caller, so a
+    hint naming a metric such as ``[i]`` renders it literally instead of having
+    rich parse it as a style tag. The spans are escaped by
+    :func:`highlight_inline_code`, so escaping the prose separately is what keeps
+    both from being escaped twice.
+
+    Args:
+        text: The bare hint sentence, which may contain ``` `...` ``` spans.
+
+    Returns:
+        Rich markup for the hint line, for :func:`render_lines` to resolve.
+    """
+    parts: list[str] = []
+    position = 0
+    for span in _INLINE_CODE_PATTERN.finditer(text):
+        parts.append(escape(text[position : span.start()]))
+        parts.append(highlight_inline_code(span.group(0)))
+        position = span.end()
+    parts.append(escape(text[position:]))
+    return f"[dim]{''.join(parts)}[/dim]"
 
 
 # ---------------------------------------------------------------------------

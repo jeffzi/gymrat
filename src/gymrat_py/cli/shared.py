@@ -30,7 +30,7 @@ from gymrat_py.git import NotAGitRepositoryError
 from gymrat_py.report.style import (
     RENDER_WIDTH,
     color_from_env,
-    format_hint_label,
+    format_hint,
     highlight_inline_code,
     markup,
     render_lines,
@@ -144,8 +144,8 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
 
     The sections appear in order: the label, the message body (an
     :class:`AdapterError` keeps its class-name prefix), the stack trace when
-    ``debug`` is set, a ``Hint:`` for a :class:`GymratError` that carries one,
-    and a report-a-bug footer for errors that are not :class:`GymratError`.
+    ``debug`` is set, a dim hint line for a :class:`GymratError` that carries
+    one, and a report-a-bug footer for errors that are not :class:`GymratError`.
     """
     error_label = f"{markup('Error', 'red')}: "
 
@@ -159,7 +159,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
 
     hint = hint_of(error)
     if hint is not None:
-        doc += f"\n{format_hint_label()} {highlight_inline_code(hint)}"
+        doc += f"\n{format_hint(hint)}"
 
     if not isinstance(error, GymratError):
         footer = (

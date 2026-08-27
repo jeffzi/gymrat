@@ -209,7 +209,7 @@ def test_iterate_command_when_run_does_measure_the_repo_and_report_on_stdout(
     assert result.exit_code == 0
     lines = _plain_lines(result.stdout)
     assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
-    assert lines[-1] == "Hint: gymrat keep"
+    assert lines[-1] == "gymrat keep"
     assert len(read_records(session_jsonl_path(repo))) == 2
 
 

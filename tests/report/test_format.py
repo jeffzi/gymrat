@@ -37,7 +37,7 @@ from gymrat_py.report.format import (
     select_highlights,
     verdict_summary_parts,
 )
-from gymrat_py.report.style import render_lines
+from gymrat_py.report.style import format_hint, render_lines
 from gymrat_py.report.types import ReportOptions
 from tests.report._inputs import (
     CandidateSpec,
@@ -570,17 +570,16 @@ def test_verdict_summary_parts_pads_counts_to_widest_digit_width():
 # ---------------------------------------------------------------------------
 
 
-def _format_hint(hint: str) -> str:
-    """Formats a hint the way the renderer does, for footer-line assertions."""
-    return f"Hint: {hint}"
+#: The one hint the footer offers, in the prose ``format_hint`` renders it from.
+SAMPLE_SHORTAGE_HINT = "re-run with --samples 6 or more for statistical verdicts"
 
 
 def _verbose_lines(metrics: Metrics) -> list[str]:
     """The verbose method lines, with no hint contribution."""
     return [
         line
-        for line in footer_lines(metrics, verbose=True, format_hint=_format_hint)
-        if not _plain(line).startswith("Hint")
+        for line in footer_lines(metrics, verbose=True, format_hint=format_hint)
+        if SAMPLE_SHORTAGE_HINT not in _plain(line)
     ]
 
 
@@ -608,10 +607,12 @@ def test_footer_lines_dims_the_descriptive_verdict_line():
     assert "2" in _sgr_codes(_colored(verdict_line))
 
 
-def test_footer_lines_leaves_the_sample_shortage_hint_to_non_verbose():
+def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    assert all("Hint" not in _plain(line) for line in _verbose_lines(metrics))
+    lines = footer_lines(metrics, verbose=True, format_hint=format_hint)
+
+    assert lines[-1] == format_hint(SAMPLE_SHORTAGE_HINT)
 
 
 @pytest.mark.parametrize(
@@ -644,12 +645,12 @@ def test_footer_lines_phrases_band_line_by_cause(metrics: Metrics, expected: lis
     assert _band_lines_for(metrics) == expected
 
 
-def test_footer_lines_does_not_dim_the_hint_line():
+def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    assert "2" not in _sgr_codes(
-        _colored(footer_lines(metrics, verbose=False, format_hint=_format_hint)[0])
-    )
+    assert footer_lines(metrics, verbose=False, format_hint=format_hint) == [
+        format_hint(SAMPLE_SHORTAGE_HINT)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -661,7 +662,7 @@ def test_footer_lines_does_not_dim_the_hint_line():
                 "encode/time": band_metric(n=5),
                 "parse/time": approximate_metric(verdict="improved", delta=-10),
             },
-            ["Hint: re-run with --samples 6 or more for statistical verdicts"],
+            [SAMPLE_SHORTAGE_HINT],
             id="every-band-metric-short",
         ),
         pytest.param(
@@ -679,7 +680,7 @@ def test_footer_lines_does_not_dim_the_hint_line():
                 "entity.alive_check/heap": band_metric(n=10, usable_n=3),
                 "parse/time": approximate_metric(verdict="improved", delta=-10),
             },
-            ["Hint: re-run with --samples 6 or more for statistical verdicts"],
+            [SAMPLE_SHORTAGE_HINT],
             id="shortage-and-ties-different-metrics",
         ),
         pytest.param(
@@ -690,7 +691,9 @@ def test_footer_lines_does_not_dim_the_hint_line():
     ],
 )
 def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
-    assert footer_lines(metrics, verbose=False, format_hint=_format_hint) == expected
+    lines = footer_lines(metrics, verbose=False, format_hint=format_hint)
+
+    assert [_plain(line) for line in lines] == expected
 
 
 @pytest.mark.parametrize(
@@ -707,7 +710,7 @@ def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
 def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     metrics: Metrics, samples: int
 ):
-    lines = footer_lines(metrics, verbose=False, format_hint=_format_hint, samples=samples)
+    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, samples=samples)
 
     assert any("re-run with --samples" in line for line in lines)
 
@@ -731,7 +734,7 @@ def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     ],
 )
 def test_footer_lines_when_samples_enough_does_name_dropped_rounds(metrics: Metrics, samples: int):
-    lines = footer_lines(metrics, verbose=False, format_hint=_format_hint, samples=samples)
+    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, samples=samples)
 
     assert not any("re-run with --samples" in line for line in lines)
     assert any("dropped" in line for line in lines)
@@ -740,7 +743,7 @@ def test_footer_lines_when_samples_enough_does_name_dropped_rounds(metrics: Metr
 def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint():
     metrics: Metrics = {"a/time": approximate_metric(verdict="improved", delta=-10)}
 
-    assert footer_lines(metrics, verbose=False, format_hint=_format_hint, samples=10) == []
+    assert footer_lines(metrics, verbose=False, format_hint=format_hint, samples=10) == []
 
 
 # ---------------------------------------------------------------------------

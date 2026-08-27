@@ -37,10 +37,12 @@ from gymrat_py.session import (
     read_records,
     session_jsonl_path,
 )
+from tests._ansi import SGR_RE, strip_ansi
 from tests.loop._settle import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,
+    ExecRecorder,
     checks_config,
     checks_fail,
     checks_pass,
@@ -1032,3 +1034,131 @@ def test_discard_session_when_nothing_measured_does_refuse_settling_again(
 
     assert len(read_records(session_jsonl_path(repo))) == before
     assert status_of(experiment_worktree_dir(repo)) != ""
+
+
+# ---------------------------------------------------------------------------
+# the hint the refusals close on
+# ---------------------------------------------------------------------------
+
+
+def _nothing_measured(repo: str) -> None:
+    """An edited experiment with no iteration measured behind it."""
+    start_with(repo, ())
+    edit_experiment(repo)
+
+
+def _nothing_to_commit(repo: str) -> None:
+    """A measured iteration the agent left the experiment untouched under."""
+    start_with(repo, (iteration(1),))
+
+
+def _edited_after_iteration(repo: str) -> None:
+    """The ordinary keep shape: one measured iteration and an edit to commit."""
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+
+
+def _standing_gating_regression(repo: str) -> None:
+    """An edit standing behind a gating regression the rerun confirmed."""
+    start_with(repo, (confirmed_regression(1),))
+    edit_experiment(repo)
+
+
+def _unmeasured_gating_regression(repo: str) -> None:
+    """An edit standing behind a gating regression the rerun never measured."""
+    start_with(repo, (unmeasured_regression(1),))
+    edit_experiment(repo)
+
+
+@pytest.mark.parametrize(
+    ("arrange", "install_checks"),
+    [
+        pytest.param(_nothing_measured, checks_pass, id="nothing-measured"),
+        pytest.param(_nothing_to_commit, checks_pass, id="nothing-to-commit"),
+        pytest.param(_edited_after_iteration, checks_fail, id="checks-failed"),
+        pytest.param(_standing_gating_regression, checks_pass, id="gating-regression"),
+        pytest.param(_unmeasured_gating_regression, checks_pass, id="unmeasured-regression"),
+    ],
+)
+async def test_keep_session_when_refusing_does_close_on_a_hint_carrying_no_label(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[str], None],
+    install_checks: Callable[[pytest.MonkeyPatch], ExecRecorder],
+):
+    arrange(repo)
+    install_checks(monkeypatch)
+
+    result = await keep_session(repo, checks_config())
+
+    assert "Hint" not in result.report
+    assert "`" not in result.report
+
+
+async def test_keep_session_when_nothing_measured_does_name_iterate_in_bare_prose(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _nothing_measured(repo)
+    checks_pass(monkeypatch)
+
+    result = await keep_session(repo, checks_config())
+
+    assert "run gymrat iterate first" in result.report
+
+
+async def test_keep_session_when_colored_does_dim_the_hint_and_paint_the_command(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _nothing_measured(repo)
+    checks_pass(monkeypatch)
+
+    result = await keep_session(repo, checks_config(), color=True)
+
+    hint = next(line for line in result.report.split("\n") if "gymrat iterate" in strip_ansi(line))
+    assert hint.startswith("\x1b[2m")
+    assert any("34" in run.split(";") for run in SGR_RE.findall(hint))
+
+
+async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_report_it_literally(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _edited_after_iteration(repo)
+    noisy = "FAIL [i] parse_config"
+    install_exec(
+        monkeypatch,
+        ExecResult(
+            stdout=noisy, stderr="", exit_code=1, stdout_bytes=len(noisy.encode()), stderr_bytes=0
+        ),
+    )
+
+    result = await keep_session(repo, checks_config(), color=True)
+
+    assert noisy in strip_ansi(result.report)
+
+
+async def test_keep_session_when_no_checks_configured_does_warn_on_stderr_without_a_label(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    _edited_after_iteration(repo)
+    install_exec(monkeypatch, UNUSED_EXEC)
+
+    await keep_session(repo, checks_config(checks=None))
+
+    warning = capsys.readouterr().err
+    assert "gymrat.toml" in warning
+    assert "Hint" not in warning
+    assert "`" not in warning
+
+
+async def test_keep_session_when_no_checks_configured_and_color_forced_does_dim_the_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    _edited_after_iteration(repo)
+    install_exec(monkeypatch, UNUSED_EXEC)
+
+    await keep_session(repo, checks_config(checks=None))
+
+    hint = capsys.readouterr().err.splitlines()[1]
+    assert hint.startswith("\x1b[2m")

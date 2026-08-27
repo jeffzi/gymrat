@@ -172,7 +172,7 @@ def test_render_report_when_single_pair_does_tally_the_metrics_in_their_own_buck
 
 
 def test_render_report_when_single_pair_does_hint_at_the_longer_run():
-    assert "Hint: re-run with --samples 6 or more for statistical verdicts" in render_report(
+    assert "re-run with --samples 6 or more for statistical verdicts" in render_report(
         single_sample_result()
     )
 
@@ -416,7 +416,7 @@ def test_render_report_when_not_verbose_does_name_dropped_rounds():
     output = render_report(result)
 
     assert "noise band" not in output
-    assert "Hint: some rounds were dropped" in output
+    assert "some rounds were dropped" in output
 
 
 def test_render_report_when_not_verbose_does_keep_the_worktree_footer_below_the_hint():
@@ -428,7 +428,7 @@ def test_render_report_when_not_verbose_does_keep_the_worktree_footer_below_the_
 
     lines = render_report(result).split("\n")
 
-    assert "Hint:" in lines[-3]
+    assert "some rounds were dropped" in lines[-3]
     assert lines[-2] == "1 worktree removed · 1 left behind"
     assert lines[-1] == "  left behind: /tmp/gymrat-abc (is locked)"
 
@@ -462,7 +462,7 @@ def test_render_report_when_verbose_and_band_only_does_name_the_band_and_hint():
     assert "noise band ±(half-range × K)" in output
     assert "below permutation floor (6 pairs)" in output
     assert "sign-flip permutation test" not in output
-    assert "Hint: some rounds were dropped" in output
+    assert "some rounds were dropped" in output
 
 
 def test_render_report_when_verbose_and_all_exact_does_name_no_method_or_hint():
@@ -472,7 +472,7 @@ def test_render_report_when_verbose_and_all_exact_does_name_no_method_or_hint():
 
     assert "sign-flip permutation test" not in output
     assert "noise band" not in output
-    assert "Hint:" not in output
+    assert "some rounds were dropped" not in output
 
 
 def test_render_report_when_verbose_and_permutation_carried_the_run_does_drop_the_hint():
@@ -482,7 +482,7 @@ def test_render_report_when_verbose_and_permutation_carried_the_run_does_drop_th
 
     output = render_report(result, ReportOptions(verbose=True))
 
-    assert "Hint:" not in output
+    assert "some rounds were dropped" not in output
 
 
 def test_render_report_when_verbose_does_phrase_each_band_fallback_by_its_cause():
@@ -541,7 +541,7 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
 def test_render_report_when_methods_differ_does_hint_at_dropped_rounds():
     output = render_report(_mixed_method_result())
 
-    assert "Hint: some rounds were dropped" in output
+    assert "some rounds were dropped" in output
 
 
 # ---------------------------------------------------------------------------

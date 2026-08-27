@@ -748,41 +748,16 @@ def test_render_report_when_colored_does_dim_the_noise_band_description(
     assert DIMMED_LINE.match(band)
 
 
-def test_render_report_when_colored_does_style_the_hint_word_yellow_and_underlined(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_render_report_when_colored_does_dim_the_hint_line(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    hint = line_containing(render_report(_band_fallback_result()), "Hint")
+    hint = line_containing(render_report(_band_fallback_result()), "some rounds were dropped")
 
-    assert "33" in styles_at(hint, "Hint")
-    assert "4" in styles_at(hint, "Hint")
-
-
-def test_render_report_when_colored_does_style_the_hint_colon_yellow_without_underline(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    hint = line_containing(render_report(_band_fallback_result()), "Hint")
-
-    assert "33" in styles_at(hint, ":")
-    assert "4" not in styles_at(hint, ":")
-
-
-def test_render_report_when_colored_does_render_the_hint_sentence_plain(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-
-    hint = line_containing(render_report(_band_fallback_result()), "Hint")
-    after_label = hint[hint.index("some rounds") :]
-
-    assert "\x1b[" not in after_label
+    assert DIMMED_LINE.match(hint)
 
 
 def test_render_report_when_color_off_does_render_the_hint_line_plain():
-    hint = line_containing(render_report(_band_fallback_result()), "Hint:")
+    hint = line_containing(render_report(_band_fallback_result()), "some rounds were dropped")
 
     assert "\x1b[" not in hint
 

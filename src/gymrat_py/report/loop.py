@@ -26,7 +26,7 @@ from rich.markup import escape
 
 from gymrat_py.model import Effect
 from gymrat_py.report.format import format_delta, format_value, get_glyph, is_improvement, pluralize
-from gymrat_py.report.style import format_hint_label
+from gymrat_py.report.style import format_hint
 from gymrat_py.report.table import markup
 from gymrat_py.report.text import paired_samples
 from gymrat_py.stats.descriptive import compute_median
@@ -252,7 +252,7 @@ def format_verdict_block(
     lines.append(verdict_line)
     if target_reached:
         lines.append(markup(_TARGET_REACHED, "green"))
-    lines.append(f"{format_hint_label()} {escape(next_step)}")
+    lines.append(format_hint(next_step))
     return lines
 
 
