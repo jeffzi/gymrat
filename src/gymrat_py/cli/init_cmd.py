@@ -2,10 +2,10 @@
 
 Resolves the base directory to the repository root when inside one (so a run from
 a subdirectory still scaffolds at the root) and the process cwd otherwise; git is
-not required. An existing ``gymrat.toml`` at that base is refused before the
-scaffold runs. The ``--bench`` flag is required; ``--no-runbook`` and
-``--no-skill`` suppress those artifacts. The artifact summary is written to
-stdout.
+not required. Re-running over an existing ``gymrat.toml`` leaves that file alone
+and fills in whatever else is missing, so ``--bench`` is only required when
+there is no config yet. ``--no-runbook`` and ``--no-skill`` suppress those
+artifacts. The artifact summary is written to stdout.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from gymrat_py.init.scaffold import (
     ScaffoldResult,
     scaffold,
 )
-from gymrat_py.report.style import RENDER_WIDTH, highlight_inline_code, render_lines
+from gymrat_py.report.style import RENDER_WIDTH, format_hint, render_lines
 
 _BenchOption = Annotated[str | None, typer.Option("--bench", help="bench command")]
 _NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the runbook")]
@@ -63,8 +63,7 @@ def _format_summary(result: ScaffoldResult, base_dir: str, *, color: bool | None
             escape(_format_artifact("Config:", result.config, base_dir)),
             escape(_format_artifact("Runbook:", result.runbook, base_dir)),
             escape(_format_artifact("Skill:", result.skill, base_dir)),
-            "",
-            highlight_inline_code("Run `gymrat doctor` to verify the setup."),
+            format_hint("Run `gymrat doctor` to verify the setup."),
         ]
     )
     return render_lines(doc, color=color, width=RENDER_WIDTH)
@@ -81,18 +80,14 @@ def init_command(
     """Scaffold a gymrat.toml, skill file, and runbook."""
     if debug:
         set_debug_mode(True)
-    if bench is None:
-        exit_with_error(GymratError("Missing --bench flag."))
 
     color_override = color_override_of(not no_color)
     resolved_color = resolve_stream_color(color_override, sys.stdout)
 
     base_dir = find_implicit_base()
-    config_path = Path(base_dir) / CONFIG_FILENAME
-    if config_path.exists():
-        message = f"{config_path} already exists."
-        hint = "Edit it directly, or run `gymrat doctor` to verify the setup."
-        exit_with_error(GymratError(message, hint=hint))
+    # An existing config is kept as-is, so its bench command stands in for the flag.
+    if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
+        exit_with_error(GymratError("Missing --bench flag."))
 
     try:
         request = ScaffoldRequest(
