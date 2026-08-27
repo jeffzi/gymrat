@@ -9,6 +9,7 @@ report is driven end to end and only its assembled tail is asserted.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,7 @@ from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
     exact_metric,
+    exact_verdict,
     geomean_of,
     grouped_comparison,
     highlight_lines,
@@ -41,6 +43,7 @@ from tests.report._inputs import (
     permutation_metric,
     permutation_verdict,
     single_sample_result,
+    strip_ansi,
     styles_at,
     time_kind,
     two_kind_result,
@@ -658,3 +661,77 @@ def test_render_report_when_cleanup_is_dirty_does_close_with_left_behind_and_pru
     assert "0 worktrees removed · 1 left behind" in lines[-3]
     assert lines[-2] == "  left behind: /tmp/gymrat-abc (is locked)"
     assert lines[-1] == "  worktree prune failed: fatal: not a git repository"
+
+
+# ---------------------------------------------------------------------------
+# verdict cell alignment with mixed band/no-band/nan-delta rows (B21)
+# ---------------------------------------------------------------------------
+
+
+def _mixed_band_result() -> ComparisonResult:
+    """A report mixing a banded row, a no-band exact row, and a NaN-delta row.
+
+    The banded row carries a noise band, the exact row sits beside approximate
+    ones (so the band column exists but the exact row has nothing to put there),
+    and the NaN-delta row has an undefined ratio so its delta is absent. All
+    three must share the same column layout in the verdict cell.
+    """
+    return create_comparison_result(
+        metrics={
+            "banded/time": permutation_metric(
+                verdict="improved", delta=-10, noise_pct=2.5, unit="ns"
+            ),
+            "exact/heap": MetricComparison(
+                baseline_median=49152,
+                baseline_spread=None,
+                candidates=(
+                    CandidateMetric(
+                        median=45261,
+                        verdict=exact_verdict(verdict="improved", delta=-7.9),
+                    ),
+                ),
+                meta=metric_meta("exact/heap", exact=True, unit="bytes"),
+            ),
+            "nan-delta/count": MetricComparison(
+                baseline_median=0,
+                baseline_spread=None,
+                candidates=(CandidateMetric(median=120, verdict=exact_verdict(delta=math.nan)),),
+                meta=metric_meta("nan-delta/count", exact=True),
+            ),
+        },
+    )
+
+
+def test_render_report_when_mixing_banded_exact_and_nan_delta_does_align_verdict_fields():
+    """Mixed band/exact/NaN-delta rows align their verdict fields to the same columns."""
+    report = render_report(_mixed_band_result())
+
+    banded_cell = cells_of(line_starting_with(report, "banded/time"))[-1]
+    exact_cell = cells_of(line_starting_with(report, "exact/heap"))[-1]
+    nan_cell = cells_of(line_starting_with(report, "nan-delta/count"))[-1]
+
+    assert banded_cell.strip() == "✓  -10.0%  ±2.5%"
+    assert exact_cell.strip() == "✓   -7.9%"
+    assert nan_cell.strip() == "~"
+
+    # The delta field in the banded and exact rows must end at the same column
+    # offset, proving the band gap is padded rather than collapsed.
+    banded_delta_end = banded_cell.index("-10.0%") + len("-10.0%")
+    exact_delta_end = exact_cell.index("-7.9%") + len("-7.9%")
+    assert banded_delta_end == exact_delta_end
+
+
+def test_render_report_when_mixing_banded_exact_and_nan_delta_does_match_styled_and_plain(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Styled and plain verdict cells have identical visible text for every row type."""
+    plain_report = render_report(_mixed_band_result())
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    styled_report = render_report(_mixed_band_result())
+
+    for prefix in ("banded/time", "exact/heap", "nan-delta/count"):
+        plain_cell = cells_of(line_starting_with(plain_report, prefix))[-1]
+        styled_cell = cells_of(line_starting_with(styled_report, prefix))[-1]
+        assert strip_ansi(styled_cell) == plain_cell

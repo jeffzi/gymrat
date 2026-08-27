@@ -442,13 +442,13 @@ def format_status_header(session: SessionRecord) -> list[str]:
         _separator().join(
             [
                 markup(f"session {session.session_id}", "bold"),
-                f"baseline {baseline}",
-                f"adapter {session.config.adapter}",
+                f"baseline {escape(baseline)}",
+                f"adapter {escape(session.config.adapter)}",
             ]
         ),
-        f"branch {session.branch}",
-        f"experiment worktree {session.worktrees.experiment}",
-        f"baseline worktree {session.worktrees.baseline}",
+        f"branch {escape(session.branch)}",
+        f"experiment worktree {escape(session.worktrees.experiment)}",
+        f"baseline worktree {escape(session.worktrees.baseline)}",
     ]
 
 
@@ -503,9 +503,9 @@ def format_status_baseline(record: BaselineRecord) -> str:
     here rather than stored — a later statistics change re-reads the same records
     instead of invalidating them.
     """
-    parts = [f"baseline {record.label}"]
+    parts = [f"baseline {escape(record.label)}"]
     parts.extend(
-        f"{name} {format_value(median)}" for name, median in _metric_medians(record.samples)
+        f"{escape(name)} {format_value(median)}" for name, median in _metric_medians(record.samples)
     )
     return _separator().join(parts)
 
@@ -552,7 +552,7 @@ def format_status_finalized(finalized: FinalizeRecord) -> str:
     return _separator().join(
         [
             markup("finalized", "bold"),
-            f"branch {finalized.branch}",
+            f"branch {escape(finalized.branch)}",
             f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",
         ]
     )

@@ -43,7 +43,7 @@ from gymrat_py.report.loop import (
     format_verdict_block,
 )
 from gymrat_py.report.style import render_lines
-from gymrat_py.session import BaselineRecord, BaselineRef
+from gymrat_py.session import BaselineRecord, BaselineRef, Worktrees
 from tests.report._inputs import permutation_metric, styles_at
 from tests.session._records import SESSION_ID, finalize_record, session_record
 
@@ -446,3 +446,41 @@ def test_format_status_finalized_when_colored_does_embolden_finalized():
     line = _colored(format_status_finalized(finalize_record()))
 
     assert "1" in styles_at(line, "finalized")
+
+
+# ---------------------------------------------------------------------------
+# Rich markup escape in status rendering (B22)
+# ---------------------------------------------------------------------------
+
+
+def test_format_status_header_when_worktree_path_contains_brackets_does_render_them_literally():
+    """A worktree path with brackets must render literally, not as Rich markup."""
+    session = session_record(
+        baseline=BaselineRef(ref="main", sha=_BASELINE_SHA),
+        worktrees=Worktrees(
+            experiment="/repo/.gymrat/worktrees/[experiment]",
+            baseline="/repo/.gymrat/worktrees/[baseline]",
+        ),
+    )
+
+    lines = format_status_header(session)
+
+    experiment_line = _plain(lines[2])
+    baseline_line = _plain(lines[3])
+
+    assert "[experiment]" in experiment_line
+    assert "[baseline]" in baseline_line
+
+
+def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
+    """A metric name with brackets must render literally in the baseline line."""
+    record = BaselineRecord(
+        type="baseline",
+        at="2026-08-08T14:15:30.000Z",
+        label="main",
+        samples=({"total[ms]": 15200},),
+    )
+
+    line = _plain(format_status_baseline(record))
+
+    assert "total[ms]" in line
