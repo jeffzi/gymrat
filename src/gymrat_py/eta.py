@@ -15,22 +15,12 @@ left"``).
 """
 
 import math
-import time
 from collections.abc import Callable
 
-from gymrat_py.sampling import PrepareProgressStep, ProgressStep
+from gymrat_py.progress_events import PassStarted, PrepareStarted, ProgressEvent, default_clock
 
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
-
-
-def _default_clock() -> float:
-    """Return a monotonic millisecond timestamp.
-
-    ``perf_counter`` is monotonic, so an NTP correction or DST shift on the wall
-    clock cannot make a gap appear negative or inflate an estimate.
-    """
-    return time.perf_counter() * 1000
 
 
 class EtaTracker:
@@ -45,22 +35,27 @@ class EtaTracker:
 
     def __init__(self, target_count: int, clock: Callable[[], float] | None = None) -> None:
         self._target_count = target_count
-        self._clock = clock if clock is not None else _default_clock
+        self._clock = clock if clock is not None else default_clock
         self._duration_sum = 0.0
         self._duration_count = 0
         self._completed_samples = 0
         self._prev_time: float | None = None
         self._prev_was_prepare = False
 
-    def record(self, step: ProgressStep) -> float | None:
-        """Record a progress step and return an ETA in milliseconds, if known.
+    def record(self, event: ProgressEvent) -> float | None:
+        """Record a progress event and return an ETA in milliseconds, if known.
 
-        Returns ``None`` for a prepare step and for any sample step taken before
-        a usable gap has been measured; otherwise returns the estimated time
-        remaining as ``mean_gap * remaining_steps``.
+        Only ``PassStarted`` events contribute to the estimate. ``PrepareStarted``
+        events mark a gap boundary (the next gap is excluded). All other event
+        types are ignored — they return ``None`` without affecting gap tracking.
         """
+        is_prepare = isinstance(event, PrepareStarted)
+        is_pass = isinstance(event, PassStarted)
+
+        if not is_prepare and not is_pass:
+            return None
+
         now = self._clock()
-        is_prepare = isinstance(step, PrepareProgressStep)
 
         if self._prev_time is not None and not self._prev_was_prepare and not is_prepare:
             gap = now - self._prev_time
@@ -71,10 +66,10 @@ class EtaTracker:
         self._prev_was_prepare = is_prepare
         self._prev_time = now
 
-        if is_prepare:
+        if not isinstance(event, PassStarted):
             return None
 
-        remaining = step.total * self._target_count - self._completed_samples
+        remaining = event.total_rounds * self._target_count - self._completed_samples
         self._completed_samples += 1
 
         if self._duration_count == 0:

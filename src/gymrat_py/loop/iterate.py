@@ -49,6 +49,18 @@ from gymrat_py.model import (
     PermutationVerdict,
     ResolvedMetricMeta,
 )
+from gymrat_py.progress_events import (
+    ConfirmFinished,
+    ConfirmStarted,
+    HookFinished,
+    HookStarted,
+    IterationRecorded,
+    JudgeFinished,
+    PassFinished,
+    PassStarted,
+    ProgressEvent,
+    default_clock,
+)
 from gymrat_py.report.loop import (
     EXPERIMENT_INDEX,
     GeomeanPrimary,
@@ -91,9 +103,7 @@ from gymrat_py.targets import InPlaceTarget
 from gymrat_py.verdict import compute_geomean, compute_kind_aggregates, compute_verdicts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from gymrat_py.sampling import ProgressStep
+    from gymrat_py.progress_events import ProgressCallback
 
 #: What the loop tells the agent to do next, one per outcome.
 _NEXT_STEPS: dict[LoopOutcome, str] = {
@@ -107,6 +117,28 @@ _STOP_HINT = "The loop is done. Report what the session measured instead of meas
 
 #: Characters a POSIX shell passes through untouched, so a word of them needs no quoting.
 _SHELL_SAFE_WORD = re.compile(r"[\w@%+=:,./-]+", re.ASCII)
+
+
+def _emit(options: IterateOptions, event: ProgressEvent) -> None:
+    """Fire a progress event when a callback is registered."""
+    if options.on_progress is not None:
+        options.on_progress(event)
+
+
+async def _run_hook_stage(
+    jsonl_path: str,
+    opts: IterateOptions,
+    *,
+    stage: Literal["before", "after"],
+    invocation: HookInvocation | None,
+) -> str:
+    """Run one lifecycle hook stage, bracketed by progress events when a command is configured."""
+    if invocation is not None:
+        _emit(opts, HookStarted(stage=stage, at_ms=default_clock()))
+    report = await _fire_hook(jsonl_path, invocation)
+    if invocation is not None:
+        _emit(opts, HookFinished(stage=stage, at_ms=default_clock()))
+    return report
 
 
 class LoopStopError(GymratError):
@@ -123,13 +155,14 @@ class IterateOptions:
     """What a caller can hand an iteration beyond its configuration.
 
     Attributes:
-        on_progress: Fire-and-forget callback invoked at the start of each
-            prepare or sample step.
+        on_progress: Fire-and-forget callback invoked for every progress
+            event the iteration emits — prepare and sample steps from sampling,
+            plus hook, judge, confirm, and record events from the loop itself.
         abort: Setting it kills the in-flight bench command. When ``None``, a
             fresh event is used and nothing can interrupt the run.
     """
 
-    on_progress: Callable[[ProgressStep], None] | None = None
+    on_progress: ProgressCallback | None = None
     abort: asyncio.Event | None = None
 
 
@@ -290,9 +323,11 @@ async def iterate_session(
 
     seq = state.last_seq + 1
     before_command = config.hooks.before if config.hooks is not None else None
-    before_report = await _fire_hook(
+    before_report = await _run_hook_stage(
         jsonl_path,
-        HookInvocation(
+        opts,
+        stage="before",
+        invocation=HookInvocation(
             command=before_command,
             stage="before",
             seq=seq,
@@ -317,11 +352,14 @@ async def iterate_session(
 
     record = _build_iteration_record(judged, seq, judgment)
     append_record(jsonl_path, record)
+    _emit(opts, IterationRecorded(seq=seq, outcome=judgment.outcome, at_ms=default_clock()))
 
     after_command = config.hooks.after if config.hooks is not None else None
-    after_report = await _fire_hook(
+    after_report = await _run_hook_stage(
         jsonl_path,
-        HookInvocation(
+        opts,
+        stage="after",
+        invocation=HookInvocation(
             command=after_command,
             stage="after",
             seq=seq,
@@ -344,6 +382,22 @@ async def iterate_session(
 async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
     """Bench the pair, confirm any gating regression, and assemble the comparison."""
     first = await _bench_and_judge(ctx, ctx.config.bench)
+
+    primary = _resolve_primary(ctx.config.primary, first.verdicts, first.metric_meta)
+    regressed_names = tuple(
+        name
+        for name, meta in first.metric_meta.items()
+        if meta.gating and (v := first.verdicts.get(name)) is not None and v.verdict == "regressed"
+    )
+    _emit(
+        ctx.options,
+        JudgeFinished(
+            primary_delta_pct=primary.delta_pct,
+            regressed=regressed_names,
+            at_ms=default_clock(),
+        ),
+    )
+
     confirmation = await _confirm_regressions(ctx, first.verdicts, first.metric_meta)
     verdicts = _apply_confirmation(first.verdicts, confirmation)
     run = BenchRunOutputs(
@@ -397,6 +451,21 @@ def _stop_condition(config: ResolvedConfig, state: SessionState) -> LoopStopErro
     return None
 
 
+def _with_confirm_phase(ctx: _IterationContext) -> _IterationContext:
+    """Return a context whose ``on_progress`` tags pass events as confirmation runs."""
+    original = ctx.options.on_progress
+    if original is None:
+        return ctx
+
+    def wrapper(event: ProgressEvent) -> None:
+        if isinstance(event, PassStarted | PassFinished):
+            original(replace(event, phase="confirm"))
+        else:
+            original(event)
+
+    return replace(ctx, options=replace(ctx.options, on_progress=wrapper))
+
+
 async def _confirm_regressions(
     ctx: _IterationContext,
     verdicts: dict[str, MetricVerdict],
@@ -426,6 +495,9 @@ async def _confirm_regressions(
     if not filtered:
         return None
 
+    filtered_tuple = tuple(filtered)
+    _emit(ctx.options, ConfirmStarted(filtered_metrics=filtered_tuple, at_ms=default_clock()))
+
     names = " ".join(_shell_quote(name) for name in filtered)
     # str.replace is literal, so a metric name carrying a ``$&``-like sequence is
     # its own text rather than a substitution pattern.
@@ -434,15 +506,20 @@ async def _confirm_regressions(
         if ctx.config.filter is None
         else ctx.config.filter.replace(FILTER_PLACEHOLDER, names)
     )
-    rerun = await _bench_and_judge(ctx, bench, metric_meta)
+    confirm_ctx = _with_confirm_phase(ctx)
+    rerun = await _bench_and_judge(confirm_ctx, bench, metric_meta)
     confirmed = frozenset(
         name
         for name in filtered
         if (verdict := rerun.verdicts.get(name)) is not None and verdict.verdict == "regressed"
     )
     absent = frozenset(name for name in filtered if rerun.verdicts.get(name) is None)
+
+    reproduced = len(confirmed) > 0
+    _emit(ctx.options, ConfirmFinished(reproduced=reproduced, at_ms=default_clock()))
+
     return _Confirmation(
-        filtered=tuple(filtered),
+        filtered=filtered_tuple,
         samples=rerun.samples,
         confirmed=confirmed,
         absent=absent,

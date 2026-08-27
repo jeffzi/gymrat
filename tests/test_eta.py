@@ -5,21 +5,29 @@ from collections.abc import Callable
 import pytest
 
 from gymrat_py.eta import EtaTracker, format_duration, format_eta
-from gymrat_py.sampling import (
-    PrepareProgressStep,
-    ProgressStep,
-    SampleProgressStep,
+from gymrat_py.progress_events import (
+    ConfirmFinished,
+    HookStarted,
+    IterationRecorded,
+    PassStarted,
+    PrepareStarted,
+    ProgressEvent,
 )
 
 
-def prepare(label: str) -> ProgressStep:
-    """Build a prepare progress step."""
-    return PrepareProgressStep(label=label)
+def prepare(label: str) -> ProgressEvent:
+    """Build a PrepareStarted event with a dummy timestamp."""
+    return PrepareStarted(label=label, at_ms=0)
 
 
-def sample(index: int, total: int, label: str) -> ProgressStep:
-    """Build a sample progress step."""
-    return SampleProgressStep(index=index, total=total, label=label)
+def sample(index: int, total: int, label: str) -> ProgressEvent:
+    """Build a PassStarted event using old field names for test brevity.
+
+    ``index`` maps to ``round``, ``total`` to ``total_rounds``.
+    """
+    return PassStarted(
+        round=index, total_rounds=total, target_index=0, target_count=1, label=label, at_ms=0
+    )
 
 
 def clock_sequence(*times: float) -> Callable[[], float]:
@@ -48,7 +56,7 @@ def clock_sequence(*times: float) -> Callable[[], float]:
         pytest.param(sample(1, 3, "A"), id="first-sample-step-no-gap"),
     ],
 )
-def test_record_when_no_gap_known_does_return_none(step: ProgressStep) -> None:
+def test_record_when_no_gap_known_does_return_none(step: ProgressEvent) -> None:
     tracker = EtaTracker(1, clock_sequence(0))
 
     result = tracker.record(step)
@@ -103,6 +111,22 @@ def test_record_when_prepare_appears_mid_run_does_exclude_its_gap() -> None:
     result = tracker.record(sample(2, 3, "A"))
 
     assert result == 400
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(HookStarted(stage="before", at_ms=0), id="hook-started"),
+        pytest.param(ConfirmFinished(reproduced=True, at_ms=0), id="confirm-finished"),
+        pytest.param(IterationRecorded(seq=1, outcome="ok", at_ms=0), id="iteration-recorded"),
+    ],
+)
+def test_record_when_non_pass_non_prepare_event_does_return_none(event: ProgressEvent) -> None:
+    tracker = EtaTracker(1, clock_sequence(0))
+
+    result = tracker.record(event)
+
+    assert result is None
 
 
 def test_record_when_clock_moves_backwards_does_discard_negative_gap() -> None:

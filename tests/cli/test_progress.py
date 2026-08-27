@@ -15,7 +15,11 @@ from gymrat_py.cli.progress import (
     create_progress_reporter,
     render_progress_line,
 )
-from gymrat_py.sampling import PrepareProgressStep, SampleProgressStep
+from gymrat_py.progress_events import (
+    HookStarted,
+    PassStarted,
+    PrepareStarted,
+)
 
 
 class _Clock:
@@ -51,8 +55,10 @@ class _SpyStatusLine:
 # ---------------------------------------------------------------------------
 
 
-def test_render_progress_line_prepare_never_shows_an_eta():
-    line = render_progress_line(PrepareProgressStep(label="A"), None, PLAIN_STYLE)
+def test_render_progress_line_when_prepare_started_does_never_show_eta():
+    event = PrepareStarted(label="A", at_ms=0)
+
+    line = render_progress_line(event, None, PLAIN_STYLE)
 
     assert line == "prepare · A"
 
@@ -64,22 +70,32 @@ def test_render_progress_line_prepare_never_shows_an_eta():
         pytest.param(None, "sample 1/2 · A · estimating time left…", id="pending-label"),
     ],
 )
-def test_render_progress_line_sample_appends_eta_or_pending_label(
+def test_render_progress_line_when_pass_started_does_append_eta_or_pending_label(
     eta_ms: int | None, expected: str
 ):
-    line = render_progress_line(
-        SampleProgressStep(index=1, total=2, label="A"), eta_ms, PLAIN_STYLE
-    )
+    event = PassStarted(round=1, total_rounds=2, target_index=0, target_count=1, label="A", at_ms=0)
+
+    line = render_progress_line(event, eta_ms, PLAIN_STYLE)
 
     assert line == expected
 
 
-def test_render_progress_line_styled_wraps_fields_with_ansi():
-    line = render_progress_line(SampleProgressStep(index=1, total=2, label="A"), 1000, STYLED)
+def test_render_progress_line_when_styled_does_wrap_fields_with_ansi():
+    event = PassStarted(round=1, total_rounds=2, target_index=0, target_count=1, label="A", at_ms=0)
+
+    line = render_progress_line(event, 1000, STYLED)
 
     assert "\x1b[" in line
     assert "A" in line
     assert "1/2" in line
+
+
+def test_render_progress_line_when_other_event_type_does_return_empty_string():
+    event = HookStarted(stage="before", at_ms=0)
+
+    line = render_progress_line(event, None, PLAIN_STYLE)
+
+    assert line == ""
 
 
 # ---------------------------------------------------------------------------
@@ -105,20 +121,42 @@ def test_progress_reporter_countdown_resets_per_emit_and_disappears_without_eta(
     reporter = create_progress_reporter("overwrite", 3, clock=clock)
     on_tick = captured_on_tick[0]
 
-    reporter.report(SampleProgressStep(index=1, total=3, label="A"))
+    reporter.report(
+        PassStarted(round=1, total_rounds=3, target_index=0, target_count=1, label="A", at_ms=0)
+    )
     assert spy.writes[-1] == "sample 1/3 · A · estimating time left…"
 
     clock.now = 6000
-    reporter.report(SampleProgressStep(index=2, total=3, label="A"))
+    reporter.report(
+        PassStarted(round=2, total_rounds=3, target_index=0, target_count=1, label="A", at_ms=0)
+    )
     assert spy.writes[-1] == "sample 2/3 · A · ~48s left"
     assert on_tick() == "sample 2/3 · A · ~48s left"
 
     clock.now = 16000
     assert on_tick() == "sample 2/3 · A · ~38s left"
 
-    reporter.report(PrepareProgressStep(label="B"))
+    reporter.report(PrepareStarted(label="B", at_ms=0))
     assert spy.writes[-1] == "prepare · B"
     assert on_tick() == "prepare · B"
+
+
+def test_progress_reporter_when_non_relevant_event_does_silently_ignore(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    spy = _SpyStatusLine()
+
+    def fake_create_status_line(
+        mode: str, on_tick: Callable[[], str] | None = None
+    ) -> _SpyStatusLine:
+        return spy
+
+    monkeypatch.setattr("gymrat_py.cli.progress.create_status_line", fake_create_status_line)
+    reporter = create_progress_reporter("plain", 2)
+
+    reporter.report(HookStarted(stage="before", at_ms=0))
+
+    assert spy.writes == []
 
 
 def test_progress_reporter_stop_stops_the_status_line(monkeypatch: pytest.MonkeyPatch):

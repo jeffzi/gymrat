@@ -10,13 +10,25 @@ order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.config import MetricEntry, StopConfig
+from gymrat_py.config import HooksConfig, MetricEntry, StopConfig
 from gymrat_py.errors import GymratError, hint_of
-from gymrat_py.loop.iterate import LoopStopError, iterate_session
+from gymrat_py.loop.iterate import IterateOptions, LoopStopError, iterate_session
+from gymrat_py.progress_events import (
+    ConfirmFinished,
+    ConfirmStarted,
+    HookFinished,
+    HookStarted,
+    IterationRecorded,
+    JudgeFinished,
+    PassFinished,
+    PassStarted,
+    ProgressEvent,
+)
 from gymrat_py.sampling import TargetContext
 from gymrat_py.session import (
     PairedSamples,
@@ -24,7 +36,11 @@ from gymrat_py.session import (
     session_jsonl_path,
 )
 from gymrat_py.targets import InPlaceTarget
+from tests.loop._hooks import HookScripts
 from tests.loop._iterate import (
+    BASELINE_BYTES,
+    BASELINE_MS,
+    PairedRun,
     as_logged,
     baseline_rounds,
     improved_rounds,
@@ -32,7 +48,9 @@ from tests.loop._iterate import (
     iteration,
     last_iteration_of,
     resolved_config,
+    rounds,
     sampling_call,
+    scaled,
     session_record,
     stub_runs,
     stub_samples,
@@ -52,6 +70,9 @@ if TYPE_CHECKING:
     from tests.loop._iterate import CollectSamplesRecorder
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+#: The confirm-rerun template a consumer configures when their bench can be narrowed.
+FILTER = "npm run bench -- --filter {names}"
 
 
 def _on_target_iteration(seq: int):
@@ -348,3 +369,236 @@ async def test_iterate_session_when_measuring_does_open_report_on_the_loop_heade
     plain = _plain(result.report)
     assert plain.split("\n")[0] == "iteration 2 · experiment vs baseline · 10 paired samples"
     assert "total_ms" in plain
+
+
+def _ensure_dir(path: str) -> None:
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# progress events emitted by iterate_session
+# ---------------------------------------------------------------------------
+
+
+async def test_iterate_session_when_hooks_configured_does_emit_hook_events(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    experiment_dir = session_record(repo).worktrees.experiment
+    _ensure_dir(experiment_dir)
+    hooks = HookScripts(repo, experiment_dir)
+    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
+    events: list[ProgressEvent] = []
+    config = resolved_config(
+        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye"))
+    )
+
+    await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
+
+    hook_events = [e for e in events if isinstance(e, (HookStarted, HookFinished))]
+    assert len(hook_events) == 4
+    assert isinstance(hook_events[0], HookStarted)
+    assert hook_events[0].stage == "before"
+    assert isinstance(hook_events[1], HookFinished)
+    assert hook_events[1].stage == "before"
+    assert isinstance(hook_events[2], HookStarted)
+    assert hook_events[2].stage == "after"
+    assert isinstance(hook_events[3], HookFinished)
+    assert hook_events[3].stage == "after"
+
+
+async def test_iterate_session_when_no_hooks_configured_does_emit_no_hook_events(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    hook_events = [e for e in events if isinstance(e, (HookStarted, HookFinished))]
+    assert hook_events == []
+
+
+async def test_iterate_session_when_measuring_does_emit_judge_finished(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    judge_events = [e for e in events if isinstance(e, JudgeFinished)]
+    assert len(judge_events) == 1
+    judge = judge_events[0]
+    assert judge.primary_delta_pct == pytest.approx(-15.1472, abs=1e-3)
+    assert judge.regressed == ()
+
+
+async def test_iterate_session_when_gating_regression_does_emit_judge_with_regressed_names(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    write_session_log(repo, session_record(repo))
+    regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
+    stub_samples(samples_mock, repo, regressed_rounds, baseline_rounds())
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        repo, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    judge_events = [e for e in events if isinstance(e, JudgeFinished)]
+    assert len(judge_events) == 1
+    assert set(judge_events[0].regressed) == {"total_ms", "alloc_bytes"}
+
+
+async def test_iterate_session_when_confirmation_triggers_does_emit_confirm_events(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    write_session_log(repo, session_record(repo))
+    regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
+    stub_runs(
+        samples_mock,
+        repo,
+        [
+            PairedRun(regressed_rounds, baseline_rounds()),
+            PairedRun(regressed_rounds, baseline_rounds()),
+        ],
+    )
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        repo, resolved_config(filter=FILTER), options=IterateOptions(on_progress=events.append)
+    )
+
+    confirm_started = [e for e in events if isinstance(e, ConfirmStarted)]
+    confirm_finished = [e for e in events if isinstance(e, ConfirmFinished)]
+    assert len(confirm_started) == 1
+    assert set(confirm_started[0].filtered_metrics or ()) == {"total_ms", "alloc_bytes"}
+    assert len(confirm_finished) == 1
+    assert confirm_finished[0].reproduced is True
+
+
+async def test_iterate_session_when_no_confirmation_triggers_does_emit_no_confirm_events(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    confirm_events = [e for e in events if isinstance(e, (ConfirmStarted, ConfirmFinished))]
+    assert confirm_events == []
+
+
+async def test_iterate_session_when_confirmation_rerun_does_tag_pass_events_as_confirm(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    write_session_log(repo, session_record(repo))
+    regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
+    stub_runs(
+        samples_mock,
+        repo,
+        [
+            PairedRun(regressed_rounds, baseline_rounds()),
+            PairedRun(regressed_rounds, baseline_rounds()),
+        ],
+    )
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        repo, resolved_config(filter=FILTER), options=IterateOptions(on_progress=events.append)
+    )
+
+    rerun_callback = samples_mock.calls[1].options.on_progress
+    assert rerun_callback is not None
+    probe_started = PassStarted(
+        round=1, total_rounds=1, target_index=0, target_count=1, label="x", at_ms=0
+    )
+    probe_finished = PassFinished(
+        round=1, total_rounds=1, target_index=0, target_count=1, label="x", at_ms=0
+    )
+    rerun_callback(probe_started)
+    rerun_callback(probe_finished)
+    pass_events = [
+        e for e in events if isinstance(e, (PassStarted, PassFinished)) and e.phase == "confirm"
+    ]
+    assert len(pass_events) >= 2
+
+
+async def test_iterate_session_when_measuring_does_emit_iteration_recorded(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    events: list[ProgressEvent] = []
+
+    result = await iterate_session(
+        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    recorded_events = [e for e in events if isinstance(e, IterationRecorded)]
+    assert len(recorded_events) == 1
+    assert recorded_events[0].seq == result.record.seq
+    assert recorded_events[0].outcome == "improved"
+
+
+async def test_iterate_session_when_improved_does_order_events_without_confirmation(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    event_types = [type(e).__name__ for e in events]
+    judge_idx = event_types.index("JudgeFinished")
+    recorded_idx = event_types.index("IterationRecorded")
+    assert judge_idx < recorded_idx
+    assert "ConfirmStarted" not in event_types
+    assert "ConfirmFinished" not in event_types
+
+
+async def test_iterate_session_when_hooks_and_confirmation_does_order_all_events(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    experiment_dir = session_record(repo).worktrees.experiment
+    _ensure_dir(experiment_dir)
+    hooks = HookScripts(repo, experiment_dir)
+    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
+    stub_runs(
+        samples_mock,
+        repo,
+        [
+            PairedRun(regressed_rounds, baseline_rounds()),
+            PairedRun(regressed_rounds, baseline_rounds()),
+        ],
+    )
+    events: list[ProgressEvent] = []
+    config = resolved_config(
+        filter=FILTER,
+        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye")),
+    )
+
+    await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
+
+    def stage_index(event_type: type[HookStarted | HookFinished], stage: str) -> int:
+        return next(
+            i for i, e in enumerate(events) if isinstance(e, event_type) and e.stage == stage
+        )
+
+    event_types = [type(e).__name__ for e in events]
+    assert event_types.index("HookStarted") < event_types.index("HookFinished")
+    before_finished_idx = stage_index(HookFinished, "before")
+    judge_idx = event_types.index("JudgeFinished")
+    confirm_started_idx = event_types.index("ConfirmStarted")
+    confirm_finished_idx = event_types.index("ConfirmFinished")
+    recorded_idx = event_types.index("IterationRecorded")
+    after_started_idx = stage_index(HookStarted, "after")
+    assert before_finished_idx < judge_idx
+    assert judge_idx < confirm_started_idx
+    assert confirm_started_idx < confirm_finished_idx
+    assert confirm_finished_idx < recorded_idx
+    assert recorded_idx < after_started_idx

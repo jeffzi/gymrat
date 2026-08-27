@@ -16,7 +16,7 @@ import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 from gymrat_py.adapters.types import Adapter, WarnSink
 from gymrat_py.config import KindEntry, MetricEntry, resolve_metric_meta
@@ -26,6 +26,15 @@ from gymrat_py.exec import (
     exec as exec,  # noqa: A004, PLC0414 -- names the subprocess executor `exec`
 )
 from gymrat_py.model import ResolvedMetricMeta
+from gymrat_py.progress_events import (
+    PassFinished,
+    PassStarted,
+    PrepareFinished,
+    PrepareStarted,
+    ProgressCallback,
+    ProgressEvent,
+    default_clock,
+)
 from gymrat_py.report.text import format_cleanup_failures
 from gymrat_py.signals import install_termination_cleanup
 from gymrat_py.stats.descriptive import compute_half_range, compute_median
@@ -38,36 +47,6 @@ from gymrat_py.targets import (
     materialize_worktree,
     plan_worktree,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class PrepareProgressStep:
-    """A prepare command is about to run for a target.
-
-    Attributes:
-        label: The target's display label.
-    """
-
-    label: str
-
-
-@dataclass(frozen=True, slots=True)
-class SampleProgressStep:
-    """A bench command is about to run for one round against a target.
-
-    Attributes:
-        index: The 1-based round number.
-        total: The total number of rounds.
-        label: The target's display label.
-    """
-
-    index: int
-    total: int
-    label: str
-
-
-type ProgressStep = PrepareProgressStep | SampleProgressStep
-"""A step the sampler is starting, reported to a progress callback."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,17 +104,20 @@ class SamplingOptions:
         prepare: A command run once per target before sampling, or ``None``.
         samples: The number of rounds.
         timeout_seconds: Per-command wall-clock budget, in seconds.
-        on_progress: Called at the start of each step, or ``None`` for silence.
+        on_progress: Invoked with each progress event, or ``None`` for silence.
         warn: Where an adapter sends complaints about output it could not read,
             or ``None`` to use the adapter's own default.
+        clock: A source of monotonic millisecond timestamps for event stamping.
+            Defaults to :func:`~gymrat_py.progress_events.default_clock`.
     """
 
     bench: str
     prepare: str | None
     samples: int
     timeout_seconds: float
-    on_progress: Callable[[ProgressStep], None] | None = None
+    on_progress: ProgressCallback | None = None
     warn: WarnSink | None = None
+    clock: Callable[[], float] = default_clock
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -155,7 +137,7 @@ class RunOptions:
         timeout_seconds: Per-command wall-clock budget, in seconds.
         config_metrics: Per-metric overrides from config, or ``None``.
         config_kinds: Per-kind overrides from config, or ``None``.
-        on_progress: Called at the start of each step, or ``None`` for silence.
+        on_progress: Invoked with each progress event, or ``None`` for silence.
         warn: Where an adapter sends complaints about unreadable output, or
             ``None`` to use the adapter's own default.
     """
@@ -167,7 +149,7 @@ class RunOptions:
     timeout_seconds: float
     config_metrics: dict[str, MetricEntry] | None
     config_kinds: dict[str, KindEntry] | None
-    on_progress: Callable[[ProgressStep], None] | None = None
+    on_progress: ProgressCallback | None = None
     warn: WarnSink | None = None
 
 
@@ -192,6 +174,16 @@ _REF_HINT = (
 )
 _LABEL_WIDTH = 11
 _MIN_SPREAD_SAMPLES = 2
+
+
+class _PassFields(TypedDict):
+    """Everything :class:`PassStarted` and :class:`PassFinished` share but ``at_ms``."""
+
+    round: int
+    total_rounds: int
+    target_index: int
+    target_count: int
+    label: str
 
 
 async def collect_samples(
@@ -222,21 +214,28 @@ async def collect_samples(
     """
     timeout_ms = int(options.timeout_seconds * 1000)
     collected: list[list[dict[str, float]]] = [[] for _ in targets]
+    target_count = len(targets)
 
     if options.prepare is not None:
         for ctx in targets:
-            _report(options, PrepareProgressStep(label=ctx.label))
+            _emit(options, PrepareStarted(label=ctx.label, at_ms=options.clock()))
             await _run_command("prepare", None, options.prepare, ctx, timeout_ms, abort)
+            _emit(options, PrepareFinished(label=ctx.label, at_ms=options.clock()))
 
     for round_index in range(options.samples):
         for target_index, ctx in enumerate(targets):
-            _report(
-                options,
-                SampleProgressStep(index=round_index + 1, total=options.samples, label=ctx.label),
-            )
+            pass_fields: _PassFields = {
+                "round": round_index + 1,
+                "total_rounds": options.samples,
+                "target_index": target_index,
+                "target_count": target_count,
+                "label": ctx.label,
+            }
+            _emit(options, PassStarted(**pass_fields, at_ms=options.clock()))
             stdout = await _run_command(
                 "bench", round_index + 1, options.bench, ctx, timeout_ms, abort
             )
+            _emit(options, PassFinished(**pass_fields, at_ms=options.clock()))
             collected[target_index].append(_parse(adapter, stdout, options.warn))
 
     return [
@@ -245,7 +244,7 @@ async def collect_samples(
     ]
 
 
-async def _run_command(  # noqa: PLR0913, PLR0917 -- inlined from the removed _Step/_CommandOutcome round trip
+async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-execution axis
     phase: str,
     sample_index: int | None,
     command: str,
@@ -345,10 +344,10 @@ def _labeled(label: str, text: str, total: int) -> list[str]:
     return [f"--- {label}{suffix} ---", text]
 
 
-def _report(options: SamplingOptions, step: ProgressStep) -> None:
+def _emit(options: SamplingOptions, event: ProgressEvent) -> None:
     """Fire the progress callback when one is registered."""
     if options.on_progress is not None:
-        options.on_progress(step)
+        options.on_progress(event)
 
 
 def _parse(adapter: Adapter, stdout: str, warn: WarnSink | None) -> dict[str, float]:
