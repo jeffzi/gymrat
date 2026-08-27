@@ -178,7 +178,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         bench_section = await build_bench_section(
             BenchSectionInput(
                 bench=inspection.bench,
-                adapter=resolved.adapter,
+                adapter=adapter or resolved.adapter,
                 timeout_seconds=resolved.timeout_seconds,
                 primary=resolved.primary,
                 metrics=config_resolved.metrics if config_resolved else None,

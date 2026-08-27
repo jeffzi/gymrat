@@ -255,6 +255,23 @@ def test_doctor_when_bench_runs_does_forward_an_abort_event_to_the_bench_section
 
 
 # ---------------------------------------------------------------------------
+# config failure + adapter flag
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_when_config_failed_and_adapter_flag_given_does_forward_flag_adapter_to_bench_section(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    handles = _patch_doctor(monkeypatch, config_failure=True)
+
+    result = runner.invoke(app, ["doctor", "--adapter", "custom-adapter"])
+
+    assert result.exit_code in (0, 1)
+    assert len(handles.bench_inputs) == 1
+    assert handles.bench_inputs[0].adapter == "custom-adapter"
+
+
+# ---------------------------------------------------------------------------
 # missing --config is a config failure, not a crash
 # ---------------------------------------------------------------------------
 

@@ -185,6 +185,29 @@ def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
 
 
 # ---------------------------------------------------------------------------
+# init summary prints cwd-relative paths
+# ---------------------------------------------------------------------------
+
+
+def test_init_when_run_from_subdirectory_does_print_cwd_relative_paths_in_summary(
+    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    root = create_scratch_repo()
+    nested = Path(root) / "packages" / "core"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    out = result.stdout
+    # Paths must be navigable from cwd, not bare filenames relative to repo root.
+    # From packages/core/, gymrat.toml is at ../../gymrat.toml.
+    assert "gymrat.toml" in out
+    assert "../../gymrat.toml" in out or str(Path(root) / "gymrat.toml") in out
+
+
+# ---------------------------------------------------------------------------
 # usage errors — unknown flags
 # ---------------------------------------------------------------------------
 

@@ -32,7 +32,7 @@ class FakeAdapter:
         parsed: dict[str, float] | None = None,
         warnings: tuple[str, ...] = (),
         kind: str = "other",
-        parse_error: AdapterError | None = None,
+        parse_error: Exception | None = None,
     ):
         self._parsed = {"latency": 42.0} if parsed is None else parsed
         self._warnings = warnings
@@ -300,6 +300,38 @@ async def test_build_bench_section_when_parse_raises_adapter_error_does_fail_wit
     section = await build_bench_section(make_input())
 
     assert "No usable metrics found" in first_fail(section).detail
+
+
+async def test_build_bench_section_when_parse_raises_non_adapter_error_does_fail_naming_exception_type_and_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_adapter(monkeypatch, FakeAdapter(parse_error=ValueError("unexpected format")))
+    patch_exec(monkeypatch, exec_result(stdout="garbage"))
+
+    section = await build_bench_section(make_input())
+
+    check = first_fail(section)
+    assert check.name == "parse"
+    assert "ValueError" in check.detail
+    assert "unexpected format" in check.detail
+
+
+async def test_build_bench_section_when_adapter_warns_then_parse_fails_does_report_warnings_alongside_parse_fail(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_adapter(
+        monkeypatch,
+        FakeAdapter(
+            warnings=("Skipped line 3: unrecognized format",),
+            parse_error=AdapterError("No usable metrics found"),
+        ),
+    )
+    patch_exec(monkeypatch, exec_result(stdout="garbage"))
+
+    section = await build_bench_section(make_input())
+
+    assert "No usable metrics found" in first_fail(section).detail
+    assert "Skipped line 3" in status_details(section, "warn")
 
 
 # ---------------------------------------------------------------------------

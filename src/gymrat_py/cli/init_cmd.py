@@ -10,6 +10,7 @@ stdout.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -41,19 +42,27 @@ _NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the r
 _NoSkillOption = Annotated[bool, typer.Option("--no-skill", help="skip the skill file")]
 
 
-def _format_artifact(label: str, artifact: ScaffoldArtifact) -> str:
+def _display_path(base_dir: str, relative: str) -> str:
+    """Return a path navigable from the user's cwd, not from the project root."""
+    return os.path.relpath(str(Path(base_dir) / relative))
+
+
+def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> str:
     if artifact.status == "declined":
         return f"  {label} declined"
+    display = _display_path(base_dir, artifact.path)
+    if artifact.status == "is a directory":
+        return f"  {label} is a directory at {display}"
     verb = "created at" if artifact.status == "created" else "already exists at"
-    return f"  {label} {verb} {artifact.path}"
+    return f"  {label} {verb} {display}"
 
 
-def _format_summary(result: ScaffoldResult, *, color: bool | None = None) -> str:
+def _format_summary(result: ScaffoldResult, base_dir: str, *, color: bool | None = None) -> str:
     doc = "\n".join(
         [
-            escape(_format_artifact("Config:", result.config)),
-            escape(_format_artifact("Runbook:", result.runbook)),
-            escape(_format_artifact("Skill:", result.skill)),
+            escape(_format_artifact("Config:", result.config, base_dir)),
+            escape(_format_artifact("Runbook:", result.runbook, base_dir)),
+            escape(_format_artifact("Skill:", result.skill, base_dir)),
             "",
             highlight_inline_code("Run `gymrat doctor` to verify the setup."),
         ]
@@ -97,4 +106,4 @@ def init_command(
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
 
-    write_and_flush(sys.stdout, _format_summary(result, color=resolved_color) + "\n")
+    write_and_flush(sys.stdout, _format_summary(result, base_dir, color=resolved_color) + "\n")

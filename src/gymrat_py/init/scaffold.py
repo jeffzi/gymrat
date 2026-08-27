@@ -3,13 +3,12 @@
 A ``ScaffoldRequest`` carries the three user choices (bench command, runbook
 flag, skill-install flag). The config is serialized as hand-written TOML —
 ``json.dumps`` escapes the bench string, which round-trips through any TOML
-parser because every JSON basic-string escape is valid TOML. Validation runs
-before anything is written, so an invalid config leaves no files behind. The
-bundled skill is read next (only when installing), so a broken install fails
-before the runbook stub is created. Among the writes the config lands last and
-with an exclusive create, so a failure partway through never leaves a
-``gymrat.toml`` pointing at artifacts that were not written, and an existing
-config is never silently overwritten.
+parser because every JSON basic-string escape is valid TOML. Validation and
+the bundled-skill read run before any file is written, so a broken install
+leaves nothing behind. The config is then written first with an exclusive
+create, so an existing file raises ``FileExistsError`` before runbook or skill
+writes start. If a later artifact write fails, the config is removed so no
+partial scaffold is left.
 """
 
 import json
@@ -25,7 +24,7 @@ SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
 
 DEFAULT_RUNBOOK_PATH = "gymrat-runbook.md"
 
-type ArtifactStatus = Literal["created", "exists", "declined"]
+type ArtifactStatus = Literal["created", "exists", "declined", "is a directory"]
 
 _RUNBOOK_STUB = """# Optimization Runbook
 
@@ -94,6 +93,8 @@ def _write_runbook(base_dir: str, *, runbook: bool) -> ScaffoldArtifact:
 
     full_path = Path(base_dir) / DEFAULT_RUNBOOK_PATH
     if full_path.exists():
+        if not full_path.is_file():
+            return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="is a directory")
         return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="exists")
 
     full_path.write_text(_RUNBOOK_STUB, encoding="utf-8")
@@ -103,6 +104,8 @@ def _write_runbook(base_dir: str, *, runbook: bool) -> ScaffoldArtifact:
 def _write_skill(base_dir: str, content: str) -> ScaffoldArtifact:
     full_path = Path(base_dir) / SKILL_RELATIVE_PATH
     if full_path.exists():
+        if not full_path.is_file():
+            return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="is a directory")
         return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="exists")
 
     full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +120,12 @@ def _write_config(base_dir: str, content: str) -> ScaffoldArtifact:
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
+def _path_blocked(base_dir: str, relative: str) -> bool:
+    """True when a non-regular file (directory, symlink to dir, etc.) occupies ``relative``."""
+    full = Path(base_dir) / relative
+    return full.exists() and not full.is_file()
+
+
 def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     """Write the config, runbook stub, and skill file for ``base_dir``.
 
@@ -124,6 +133,10 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     :class:`GymratError` when the config fails validation or the bundled skill
     cannot be read, and :class:`FileExistsError` when ``gymrat.toml`` already
     exists — in every failure case no partial scaffold is left behind.
+
+    When a non-regular file (e.g. a directory) sits at the runbook or skill path,
+    the scaffold returns early with no config written — the config would point at
+    something unusable.
     """
     config_dict: dict[str, object] = {"bench": request.bench}
     if request.runbook:
@@ -134,12 +147,42 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
 
     skill_content = read_bundled_skill() if request.install_skill else None
 
-    runbook_artifact = _write_runbook(base_dir, runbook=request.runbook)
-    skill_artifact = (
-        ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="declined")
-        if skill_content is None
-        else _write_skill(base_dir, skill_content)
-    )
+    # Detect non-regular files at artifact paths before any writes.
+    runbook_blocked = request.runbook and _path_blocked(base_dir, DEFAULT_RUNBOOK_PATH)
+    skill_blocked = request.install_skill and _path_blocked(base_dir, SKILL_RELATIVE_PATH)
+    if runbook_blocked or skill_blocked:
+        return ScaffoldResult(
+            config=ScaffoldArtifact(path=CONFIG_FILENAME, status="declined"),
+            runbook=(
+                ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="is a directory")
+                if runbook_blocked
+                else ScaffoldArtifact(
+                    path=DEFAULT_RUNBOOK_PATH,
+                    status="declined" if not request.runbook else "exists",
+                )
+            ),
+            skill=(
+                ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="is a directory")
+                if skill_blocked
+                else ScaffoldArtifact(
+                    path=SKILL_RELATIVE_PATH,
+                    status="declined" if skill_content is None else "exists",
+                )
+            ),
+        )
+
+    # Config first: the exclusive create fails atomically when the file exists,
+    # so runbook and skill are never orphaned.
     config_artifact = _write_config(base_dir, config_content)
+    try:
+        runbook_artifact = _write_runbook(base_dir, runbook=request.runbook)
+        skill_artifact = (
+            ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="declined")
+            if skill_content is None
+            else _write_skill(base_dir, skill_content)
+        )
+    except BaseException:
+        (Path(base_dir) / CONFIG_FILENAME).unlink(missing_ok=True)
+        raise
 
     return ScaffoldResult(config=config_artifact, runbook=runbook_artifact, skill=skill_artifact)

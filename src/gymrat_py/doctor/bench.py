@@ -140,8 +140,15 @@ async def _run_and_parse_bench(
     warnings: list[str] = []
     try:
         parsed = adapter.parse(result.stdout, warnings.append)
-    except AdapterError as error:
-        return [Check(name="parse", status="fail", detail=str(error))]
+    except Exception as error:  # noqa: BLE001 -- adapter.parse may raise anything; surface it as a check
+        checks: list[Check] = []
+        if warnings:
+            checks.append(Check(name="adapter warnings", status="warn", detail="\n".join(warnings)))
+        detail = (
+            str(error) if isinstance(error, AdapterError) else f"{type(error).__name__}: {error}"
+        )
+        checks.append(Check(name="parse", status="fail", detail=detail))
+        return checks
 
     metric_names = list(parsed)
     checks = [Check(name="bench run", status="ok", detail=_summarize_metric_names(metric_names))]

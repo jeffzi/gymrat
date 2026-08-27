@@ -243,6 +243,46 @@ def test_scaffold_when_config_already_exists_does_raise_instead_of_overwriting(
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
 
+def test_scaffold_when_config_already_exists_does_not_leave_runbook_or_skill_behind(
+    tmp_path: Path,
+):
+    (tmp_path / "gymrat.toml").write_text('bench = "old"\n', encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert not (tmp_path / "gymrat-runbook.md").exists()
+    assert not (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# directory at runbook or skill path
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_when_runbook_path_is_a_directory_does_report_is_a_directory_status(
+    tmp_path: Path,
+):
+    (tmp_path / "gymrat-runbook.md").mkdir()
+
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert "directory" in result.runbook.status
+    assert not (tmp_path / "gymrat.toml").exists()
+
+
+def test_scaffold_when_skill_path_is_a_directory_does_report_is_a_directory_status(
+    tmp_path: Path,
+):
+    skill_dir = tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md"
+    skill_dir.mkdir(parents=True)
+
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert "directory" in result.skill.status
+    assert not (tmp_path / "gymrat.toml").exists()
+
+
 # ---------------------------------------------------------------------------
 # hand-rolled TOML encoding (no tomli_w dependency)
 # ---------------------------------------------------------------------------
