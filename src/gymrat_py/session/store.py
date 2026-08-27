@@ -42,6 +42,7 @@ __all__ = [
     "SessionState",
     "append_record",
     "fold_session",
+    "last_kept_position",
     "read_records",
     "require_open_session",
     "require_session",
@@ -101,6 +102,17 @@ class RequiredSession:
     jsonl_path: str
     #: Every record the log holds, in file order — the same ones ``state`` folds.
     records: list[SessionLogRecord]
+
+
+def last_kept_position(state: SessionState, baseline_sha: str) -> str:
+    """The commit the experiment worktree should stand at after the last keep.
+
+    Returns the commit from the most recent committed keep, falling back to
+    ``baseline_sha`` when the session has kept nothing. Both ``discard_session``
+    and ``finalize_session`` need this position: discard resets the worktree to
+    it, and finalize refuses when the worktree has drifted past it.
+    """
+    return state.last_kept_commit or baseline_sha
 
 
 def append_record(jsonl_path: str, record: SessionLogRecord) -> None:

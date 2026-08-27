@@ -232,6 +232,29 @@ def test_finalize_when_experiment_worktree_dirty_does_refuse_writing_no_record(r
 
 
 # ---------------------------------------------------------------------------
+# when the experiment worktree HEAD is ahead of the last kept commit
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_keep_or_discard(
+    repo: str,
+):
+    _keep_iteration(repo, 1, "cache the regex")
+    worktree = experiment_worktree_dir(repo)
+    (Path(worktree) / "extra.txt").write_text("extra\n", encoding="utf-8")
+    _git(["add", "-A"], worktree)
+    _git(["commit", "-m", "extra commit"], worktree)
+    before = len(_records(repo))
+
+    error = _capture_error(lambda: finalize_session(repo))
+
+    assert error.hint is not None
+    assert re.search(r"keep", error.hint, re.IGNORECASE)
+    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert len(_records(repo)) == before
+
+
+# ---------------------------------------------------------------------------
 # when the experiment worktree is already gone from disk
 # ---------------------------------------------------------------------------
 

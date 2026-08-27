@@ -324,6 +324,28 @@ async def test_iterate_session_when_metric_name_needs_quoting_does_pass_it_as_on
     assert _shell_args(open_repo, sampling_call(samples_mock, 1).bench) == [name, "total_ms"]
 
 
+async def test_iterate_session_when_win32_does_double_quote_metric_names_in_filter(
+    open_repo: str,
+    samples_mock: CollectSamplesRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    name = "decode large payload"
+    regressed = PairedRun(
+        experiment=_paired_with(name, scaled(BASELINE_MS, 1.1)),
+        baseline=_paired_with(name, BASELINE_MS),
+    )
+    stub_runs(samples_mock, open_repo, [regressed, regressed])
+
+    await iterate_session(open_repo, resolved_config(filter=_ARGS_FILTER))
+
+    bench = sampling_call(samples_mock, 1).bench
+    # On win32 the metric name is double-quoted (cmd.exe convention), not
+    # single-quoted the way shlex.quote would produce for a POSIX shell.
+    assert f'"{name}"' in bench
+    assert f"'{name}'" not in bench
+
+
 # ---------------------------------------------------------------------------
 # the rerun never measures one of the regressed metrics
 # ---------------------------------------------------------------------------
@@ -391,6 +413,38 @@ async def test_iterate_session_when_rerun_silent_on_metric_does_report_it_as_unm
     assert "alloc_bytes: not measured on rerun" in lines
     assert "total_ms: regression confirmed on rerun" in lines
     assert "alloc_bytes: regression not confirmed on rerun" not in lines
+
+
+# ---------------------------------------------------------------------------
+# the confirmation rerun produces no parsable metrics at all
+# ---------------------------------------------------------------------------
+
+
+async def test_iterate_session_when_rerun_produces_no_parsable_metrics_does_treat_all_filtered_as_absent(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    empty_rerun = PairedRun([{} for _ in range(10)], [{} for _ in range(10)])
+    stub_runs(
+        samples_mock,
+        open_repo,
+        [PairedRun(_regressed_rounds(), baseline_rounds()), empty_rerun],
+    )
+
+    result = await iterate_session(open_repo, resolved_config(filter=FILTER))
+
+    assert result.record.confirm is not None
+    assert result.record.confirm.ran is True
+    assert result.record.confirm.absent is not None
+    assert set(result.record.confirm.absent) == {"total_ms", "alloc_bytes"}
+    # The iteration carries the first run's samples, not the empty rerun's.
+    assert result.record.samples == PairedSamples(
+        experiment=tuple(_regressed_rounds()),
+        baseline=tuple(baseline_rounds()),
+    )
+    # Both regressions stand (the gate fails closed on absent metrics).
+    assert result.record.metrics["total_ms"].verdict == "regressed"
+    assert result.record.metrics["alloc_bytes"].verdict == "regressed"
+    assert result.record.outcome == "regressed"
 
 
 # ---------------------------------------------------------------------------

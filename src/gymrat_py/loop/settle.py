@@ -34,7 +34,7 @@ from gymrat_py.session.records import (
     KeepRecord,
     MetricVerdict,
 )
-from gymrat_py.session.store import append_record, require_open_session
+from gymrat_py.session.store import append_record, last_kept_position, require_open_session
 from gymrat_py.session.workspace import (
     advance_baseline,
     commit_workspace,
@@ -161,7 +161,7 @@ async def keep_session(
         # commit), or the work is already committed and the baseline has yet to
         # move over it. The baseline's current position distinguishes them.
         return await _keep_clean_worktree(
-            context, baseline_position=state.last_kept_commit or session.baseline.sha
+            context, baseline_position=last_kept_position(state, session.baseline.sha)
         )
 
     return await _gated_keep(
@@ -334,7 +334,12 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
             hint="Run gymrat iterate to measure an edit before settling it.",
         )
 
-    revert_workspace(session.worktrees.experiment)
+    target = last_kept_position(state, session.baseline.sha)
+    revert_workspace(session.worktrees.experiment, target=target)
+
+    # The iteration whose edit was actually thrown away — the last measured
+    # iteration, not the seq a nothing-measured refusal happened to claim.
+    reverted_seq = state.last_iteration.seq if state.last_iteration is not None else state.last_seq
 
     record = DiscardRecord(
         type="discard",
@@ -351,8 +356,7 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
     return DiscardResult(
         record=record,
         report=(
-            f"Discarded iteration {state.last_seq}: the experiment worktree is back "
-            "at its last commit"
+            f"Discarded iteration {reverted_seq}: the experiment worktree is back at {target[:7]}"
         ),
     )
 

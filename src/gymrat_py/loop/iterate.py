@@ -33,6 +33,8 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import subprocess
+import sys
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
@@ -448,18 +450,22 @@ async def _confirm_regressions(
 
 
 def _shell_quote(value: str) -> str:
-    """``value`` as a single word of a POSIX shell command.
+    """``value`` as a single shell-safe word, platform-aware.
 
     Metric names are the bench's to choose, and mitata's ``sort(n=1000)/time``
     alias shape is an ordinary one: spliced into the filter template raw, the
     shell either splits the name across arguments or refuses the command as a
     syntax error — and a rerun that cannot run demotes a real regression to no
-    signal. Single quotes are the only POSIX quoting that suspends every
-    expansion, so a name that is not a plain word is wrapped in them, with each
-    single quote inside closed, escaped and reopened.
+    signal.
+
+    On POSIX, single quotes suspend every expansion; each embedded single quote
+    is closed, escaped, and reopened. On win32, ``cmd.exe`` uses double quotes,
+    and ``subprocess.list2cmdline`` produces the correct escaping.
     """
     if _SHELL_SAFE_WORD.fullmatch(value):
         return value
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([value])
     escaped = value.replace("'", "'\\''")
     return f"'{escaped}'"
 

@@ -901,6 +901,20 @@ def test_discard_session_when_unmeasured_regression_block_stands_does_number_dis
     assert_settling_record(result.record, discard_record(2))
 
 
+def test_discard_session_when_gating_block_then_nothing_measured_keep_does_report_reverted_iteration(
+    repo: str,
+):
+    start_with(repo, (confirmed_regression(1), gating_block(1), nothing_measured_block(2)))
+    edit_experiment(repo)
+
+    result = discard_session(repo)
+
+    # The report names iteration 1 — the one whose edit was actually thrown away —
+    # not the nothing-measured keep's number (2) or the discard's own seq (3).
+    assert re.search(r"iteration 1\b", result.report, re.IGNORECASE)
+    assert not re.search(r"iteration [23]\b", result.report, re.IGNORECASE)
+
+
 async def test_discard_session_when_keep_retried_after_block_does_throw_away_standing_edit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -932,6 +946,67 @@ async def test_discard_session_when_keep_retried_after_block_does_append_after_t
     assert tail[0].status == "blocked"
     assert tail[0].reason == "nothing-measured"
     assert tail[1] == result.record
+
+
+# ---------------------------------------------------------------------------
+# discard_session resets to last kept commit or baseline SHA (D6)
+# ---------------------------------------------------------------------------
+
+
+def test_discard_session_when_nothing_kept_and_agent_committed_does_reset_to_baseline_sha(
+    repo: str,
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    _commit_experiment_directly(repo)
+    worktree = experiment_worktree_dir(repo)
+    baseline_sha = head_of(baseline_worktree_dir(repo))
+    assert head_of(worktree) != baseline_sha
+
+    discard_session(repo)
+
+    assert head_of(worktree) == baseline_sha
+    assert status_of(worktree) == ""
+
+
+async def test_discard_session_when_keep_committed_then_agent_committed_does_reset_to_kept_commit(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    keep_result = await keep_session(repo, checks_config())
+    kept_commit = keep_result.record.commit
+
+    worktree = experiment_worktree_dir(repo)
+    append_record(session_jsonl_path(repo), iteration(2))
+    (Path(worktree) / "post-keep.txt").write_text("after keep\n", encoding="utf-8")
+    git(["add", "-A"], worktree)
+    git(["commit", "-m", "agent commit after keep"], worktree)
+    assert head_of(worktree) != kept_commit
+
+    discard_session(repo)
+
+    assert head_of(worktree) == kept_commit
+    assert status_of(worktree) == ""
+
+
+def test_discard_session_when_resetting_does_report_the_commit_it_landed_on(
+    repo: str,
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    _commit_experiment_directly(repo)
+
+    result = discard_session(repo)
+
+    worktree = experiment_worktree_dir(repo)
+    assert head_of(worktree)[:7] in result.report
+
+
+# ---------------------------------------------------------------------------
+# discard_session when nothing was measured
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
