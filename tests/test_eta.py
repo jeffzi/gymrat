@@ -48,9 +48,10 @@ def test_eta_module_when_inspected_does_not_expose_progress_event_symbol(name: s
         (90_000, "1m 30s"),
         (723_000, "12m 3s"),
         (3_599_999, "59m 59s"),
-        (3_600_000, "1h 0m"),
+        (3_600_000, "1h 00m"),
+        (3_900_000, "1h 05m"),
         (5_400_000, "1h 30m"),
-        (7_200_000, "2h 0m"),
+        (7_200_000, "2h 00m"),
     ],
 )
 def test_format_duration_when_given_milliseconds_does_render_expected_duration(
@@ -90,9 +91,9 @@ def test_format_duration_when_negative_input_does_render_zero(ms: float, expecte
         (120000, "~2m left"),
         (3599999, "~1h left"),
         (3600000, "~1h left"),
-        (3900000, "~1h 5m left"),
+        (3900000, "~1h 05m left"),
         (7200000, "~2h left"),
-        (7260000, "~2h 1m left"),
+        (7260000, "~2h 01m left"),
     ],
 )
 def test_format_eta_when_given_milliseconds_does_render_expected_eta(

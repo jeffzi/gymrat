@@ -2,7 +2,7 @@
 # name: test_dashboard_when_mid_session_does_render_full_layout
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time ━━━━━━━━━━━━━━━━━━━━━━━━━╸                                                   2h 42m / 8h 0m │
+  │ time ━━━━━━━━━━━━━━━━━━━━━━━━━                                                   2h 42m / 8h 00m │
   │ cost $4.12 / $10.00                                                                              │
   │ loop   iter 3/5 · 1 kept · 1 discarded · last -6.8% improved                                     │
   │ best -6.8% (seq 3)                                                                               │
@@ -15,7 +15,7 @@
 # name: test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time ━━━━╸                                                                        31m 1s / 8h 0m │
+  │ time ━━━━╸                                                                       31m 1s / 8h 00m │
   │ cost $—                                                                                          │
   │ loop   no session yet                                                                            │
   │ Bash 31m 0s  gymrat iterate                                                                      │
@@ -26,7 +26,7 @@
 # name: test_liveness_when_three_tools_finish_does_show_last_three
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time                                                                                  4s / 8h 0m │
+  │ time                                                                                 4s / 8h 00m │
   │ cost $—                                                                                          │
   │ loop   no session yet                                                                            │
   │ Read 0s ago                                                                                      │
@@ -39,7 +39,7 @@
 # name: test_panel_title_when_launched_does_contain_label_session_and_branch
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time                                                                                  0s / 8h 0m │
+  │ time                                                                                 0s / 8h 00m │
   │ cost $—                                                                                          │
   │ loop   no session yet                                                                            │
   │ starting                                                                                         │
@@ -49,7 +49,7 @@
 # name: test_time_bar_when_launched_does_show_elapsed_over_max_minutes
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time ━━━━━━━━━━━━━━━━━━━━━━━━━                                                    2h 41m / 8h 0m │
+  │ time ━━━━━━━━━━━━━━━━━━━━━━━━━                                                   2h 41m / 8h 00m │
   │ cost $—                                                                                          │
   │ loop   no session yet                                                                            │
   │ starting                                                                                         │

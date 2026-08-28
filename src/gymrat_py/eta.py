@@ -25,7 +25,8 @@ def format_duration(ms: float) -> str:
     """Format an elapsed duration, flooring to whole seconds.
 
     Uses at most two tiers and always shows a zero remainder in the lower tier
-    (``60_000`` renders ``"1m 0s"``, ``3_600_000`` renders ``"1h 0m"``).
+    (``60_000`` renders ``"1m 0s"``, ``3_600_000`` renders ``"1h 00m"``).  The
+    hour tier zero-pads the minute remainder to two digits.
     """
     total_seconds = math.floor(max(0.0, ms) / 1000)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
@@ -34,7 +35,7 @@ def format_duration(ms: float) -> str:
         return f"{seconds}s"
     if total_seconds < _SECONDS_PER_HOUR:
         return f"{minutes}m {seconds}s"
-    return f"{hours}h {minutes}m"
+    return f"{hours}h {minutes:02d}m"
 
 
 def format_eta(ms: float) -> str:
@@ -53,5 +54,5 @@ def format_eta(ms: float) -> str:
             return f"~{minutes}m {seconds}s left"
         return f"~{minutes}m left"
     if minutes > 0:
-        return f"~{hours}h {minutes}m left"
+        return f"~{hours}h {minutes:02d}m left"
     return f"~{hours}h left"
