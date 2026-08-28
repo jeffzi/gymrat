@@ -133,6 +133,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                     warn=run_opts.warn,
                 )
                 result = await engine.measure(options)
+                progress.set_metric_count(len(result.metrics))
             finally:
                 progress.stop()
 

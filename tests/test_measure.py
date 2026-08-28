@@ -16,8 +16,8 @@ from gymrat_py import sampling
 from gymrat_py.adapters.types import Adapter, WarnSink
 from gymrat_py.errors import GymratError
 from gymrat_py.measure import MeasureOptions, measure
+from gymrat_py.progress_events import ProgressEvent
 from gymrat_py.sampling import (
-    ProgressStep,
     SamplingOptions,
     TargetContext,
     TargetSamples,
@@ -81,7 +81,7 @@ def _options(
     *,
     target: str = "main",
     spec: TargetSpec | None = None,
-    on_progress: Callable[[ProgressStep], None] | None = None,
+    on_progress: Callable[[ProgressEvent], None] | None = None,
     warn: WarnSink | None = None,
 ) -> MeasureOptions:
     resolved_spec = spec if spec is not None else TargetSpec(label=None, target=target)

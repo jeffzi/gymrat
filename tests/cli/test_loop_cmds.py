@@ -14,6 +14,7 @@ subdirectory case).
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from typer.testing import CliRunner
 
 from gymrat_py.cli.app import app
 from gymrat_py.loop.finalize import finalize_session
+from gymrat_py.loop.iterate import IterateOptions, IterateResult
 from gymrat_py.loop.start import start_session
 from gymrat_py.session import (
     FinalizeRecord,
@@ -234,6 +236,209 @@ def test_iterate_command_when_no_session_does_exit_two_with_a_start_hint(repo: s
 
     assert result.exit_code == 2
     assert "gymrat start" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# the iterate command — progress renderer wiring
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _RendererRecord:
+    """Captures the arguments ``create_iterate_renderer`` was called with."""
+
+    mode: object
+    console: object
+    seq: int
+    session_id: str
+    sample_count: int
+    metric_count: int
+    primary_metric: str
+    verbose: bool
+    clock: object
+
+
+class _FakeRenderer:
+    """A stand-in for ``IterateRenderer`` recording ``report`` and ``stop`` calls."""
+
+    def __init__(self) -> None:
+        self.report_calls: list[object] = []
+        self.stop_called = False
+
+    def report(self, event: object) -> None:
+        self.report_calls.append(event)
+
+    def stop(self) -> None:
+        self.stop_called = True
+
+
+class _RendererFactory:
+    """A stand-in for ``create_iterate_renderer`` recording what it was handed."""
+
+    def __init__(self) -> None:
+        self.renderer = _FakeRenderer()
+        self.calls: list[_RendererRecord] = []
+
+    def __call__(  # noqa: PLR0917 -- mirrors create_iterate_renderer signature
+        self,
+        mode: object,
+        console: object,
+        seq: int,
+        session_id: str,
+        sample_count: int,
+        metric_count: int,
+        primary_metric: str,
+        *,
+        verbose: bool,
+        clock: object = None,
+    ) -> _FakeRenderer:
+        self.calls.append(
+            _RendererRecord(
+                mode=mode,
+                console=console,
+                seq=seq,
+                session_id=session_id,
+                sample_count=sample_count,
+                metric_count=metric_count,
+                primary_metric=primary_metric,
+                verbose=verbose,
+                clock=clock,
+            )
+        )
+        return self.renderer
+
+
+class _IterateSessionRecorder:
+    """A stand-in for ``iterate_session`` that captures its ``IterateOptions``."""
+
+    def __init__(self, result: IterateResult) -> None:
+        self._result = result
+        self.captured_options: IterateOptions | None = None
+
+    async def __call__(
+        self,
+        root: str,
+        config: object,
+        options: IterateOptions | None = None,
+        *,
+        color: bool | None = None,
+    ) -> IterateResult:
+        self.captured_options = options
+        return self._result
+
+
+class _IterateSessionRaiser:
+    """A stand-in for ``iterate_session`` that raises on call."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.captured_options: IterateOptions | None = None
+
+    async def __call__(
+        self,
+        root: str,
+        config: object,
+        options: IterateOptions | None = None,
+        *,
+        color: bool | None = None,
+    ) -> IterateResult:
+        self.captured_options = options
+        raise self._error
+
+
+def _install_renderer_factory(monkeypatch: pytest.MonkeyPatch) -> _RendererFactory:
+    """Replace ``create_iterate_renderer`` in the loop_cmds module with a recorder."""
+    factory = _RendererFactory()
+    monkeypatch.setattr("gymrat_py.cli.loop_cmds.create_iterate_renderer", factory)
+    return factory
+
+
+def _install_iterate_session(
+    monkeypatch: pytest.MonkeyPatch, recorder: _IterateSessionRecorder | _IterateSessionRaiser
+) -> None:
+    """Replace ``iterate_session`` in the loop_cmds module with a recorder or raiser."""
+    monkeypatch.setattr("gymrat_py.cli.loop_cmds.iterate_session", recorder)
+
+
+def _make_iterate_result() -> IterateResult:
+    """A minimal ``IterateResult`` with a dummy report and record."""
+    return IterateResult(
+        record=iteration_record(seq=1),
+        report="iteration 1 · experiment vs baseline · 10 paired samples\ngymrat keep",
+    )
+
+
+def _wire_successful_iterate(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_RendererFactory, _IterateSessionRecorder]:
+    """Wire ``iterate`` with a renderer factory and a recording session stub."""
+    write_session_log(repo, iterate_session_header(repo))
+    factory = _install_renderer_factory(monkeypatch)
+    recorder = _IterateSessionRecorder(_make_iterate_result())
+    _install_iterate_session(monkeypatch, recorder)
+    return factory, recorder
+
+
+def test_iterate_command_when_run_does_wire_on_progress_into_iterate_options(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    factory, recorder = _wire_successful_iterate(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert recorder.captured_options is not None
+    assert recorder.captured_options.on_progress is not None
+    assert factory.renderer.stop_called
+
+
+def test_iterate_command_when_error_does_still_call_renderer_stop(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    factory = _install_renderer_factory(monkeypatch)
+    raiser = _IterateSessionRaiser(RuntimeError("bench exploded"))
+    _install_iterate_session(monkeypatch, raiser)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code != 0
+    assert factory.renderer.stop_called
+
+
+@pytest.mark.parametrize("verbose_flag", [True, False])
+def test_iterate_command_when_verbose_flag_does_forward_verbose_to_renderer(
+    repo: str, monkeypatch: pytest.MonkeyPatch, verbose_flag: bool
+):
+    factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+    args = ["iterate", "--bench", "npm run bench"]
+    if verbose_flag:
+        args.append("--verbose")
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
+    assert len(factory.calls) == 1
+    assert factory.calls[0].verbose is verbose_flag
+
+
+def test_iterate_command_when_run_does_pass_session_metadata_to_renderer(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert len(factory.calls) == 1
+    call = factory.calls[0]
+    # seq = last_seq + 1 = 0 + 1 = 1 for a fresh session
+    assert call.seq == 1
+    assert call.session_id == SESSION_ID
+    # The default resolved_config has samples=10
+    assert call.sample_count == 10
+    # The default resolved_config has primary="geomean"
+    assert call.primary_metric == "geomean"
 
 
 # ---------------------------------------------------------------------------

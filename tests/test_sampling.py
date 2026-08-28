@@ -12,11 +12,16 @@ from gymrat_py import sampling
 from gymrat_py.adapters.metric_lines import metric_lines_adapter
 from gymrat_py.errors import CommandError
 from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat_py.progress_events import (
+    PassFinished,
+    PassStarted,
+    PrepareFinished,
+    PrepareStarted,
+    ProgressEvent,
+)
 from gymrat_py.report.text import format_cleanup_failures
 from gymrat_py.sampling import (
     MetricStats,
-    PrepareProgressStep,
-    SampleProgressStep,
     SamplingOptions,
     TargetContext,
     TargetSamples,
@@ -168,30 +173,153 @@ async def test_collect_samples_when_timeout_seconds_given_does_pass_millisecond_
     assert calls[0][2] == 2500
 
 
-async def test_collect_samples_when_progress_given_does_fire_prepare_then_sample_steps(
+async def test_collect_samples_when_progress_given_does_fire_prepare_and_pass_events(
     monkeypatch: pytest.MonkeyPatch,
 ):
     patch_exec(monkeypatch, make_success())
-    steps: list[PrepareProgressStep | SampleProgressStep] = []
+    events: list[ProgressEvent] = []
     targets = two_in_place_targets()
+    clock_ms = 0.0
+
+    def tick() -> float:
+        nonlocal clock_ms
+        clock_ms += 100
+        return clock_ms
+
     options = SamplingOptions(
         bench="run",
         prepare="prep",
         samples=2,
         timeout_seconds=1.0,
-        on_progress=steps.append,
+        on_progress=events.append,
+        clock=tick,
     )
 
     await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
-    assert steps == [
-        PrepareProgressStep(label="old"),
-        PrepareProgressStep(label="new"),
-        SampleProgressStep(index=1, total=2, label="old"),
-        SampleProgressStep(index=1, total=2, label="new"),
-        SampleProgressStep(index=2, total=2, label="old"),
-        SampleProgressStep(index=2, total=2, label="new"),
+    types_and_labels = [
+        (type(e).__name__, e.label)
+        for e in events
+        if isinstance(e, (PrepareStarted, PrepareFinished, PassStarted, PassFinished))
     ]
+    assert types_and_labels == [
+        ("PrepareStarted", "old"),
+        ("PrepareFinished", "old"),
+        ("PrepareStarted", "new"),
+        ("PrepareFinished", "new"),
+        ("PassStarted", "old"),
+        ("PassFinished", "old"),
+        ("PassStarted", "new"),
+        ("PassFinished", "new"),
+        ("PassStarted", "old"),
+        ("PassFinished", "old"),
+        ("PassStarted", "new"),
+        ("PassFinished", "new"),
+    ]
+
+
+async def test_collect_samples_when_progress_given_does_stamp_at_ms_from_clock(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_success())
+    events: list[ProgressEvent] = []
+    call_count = 0
+
+    def deterministic_clock() -> float:
+        nonlocal call_count
+        call_count += 1
+        return call_count * 10.0
+
+    targets = one_in_place_target()
+    options = SamplingOptions(
+        bench="run",
+        prepare="prep",
+        samples=1,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=deterministic_clock,
+    )
+
+    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    assert all(e.at_ms > 0 for e in events)
+    timestamps = [e.at_ms for e in events]
+    assert timestamps == sorted(timestamps)
+
+
+async def test_collect_samples_when_progress_given_does_emit_pass_started_with_correct_fields(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_success())
+    events: list[ProgressEvent] = []
+    targets = two_in_place_targets()
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=2,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=lambda: 0.0,
+    )
+
+    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    pass_started_events = [e for e in events if isinstance(e, PassStarted)]
+    first = pass_started_events[0]
+    assert first.round == 1
+    assert first.total_rounds == 2
+    assert first.target_index == 0
+    assert first.target_count == 2
+    assert first.label == "old"
+    assert first.phase == "measure"
+
+    second = pass_started_events[1]
+    assert second.target_index == 1
+    assert second.label == "new"
+
+
+async def test_collect_samples_when_bench_fails_does_emit_started_but_not_finished(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_failure())
+    events: list[ProgressEvent] = []
+    targets = one_in_place_target()
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=1,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(CommandError):
+        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    assert any(isinstance(e, PassStarted) for e in events)
+    assert not any(isinstance(e, PassFinished) for e in events)
+
+
+async def test_collect_samples_when_prepare_fails_does_emit_prepare_started_but_not_finished(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_failure())
+    events: list[ProgressEvent] = []
+    targets = one_in_place_target()
+    options = SamplingOptions(
+        bench="run",
+        prepare="prep",
+        samples=1,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(CommandError):
+        await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    assert any(isinstance(e, PrepareStarted) for e in events)
+    assert not any(isinstance(e, PrepareFinished) for e in events)
 
 
 async def test_collect_samples_when_warn_sink_given_does_pass_it_through_to_parse(

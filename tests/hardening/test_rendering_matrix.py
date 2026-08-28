@@ -35,8 +35,12 @@ if sys.platform != "win32":
 
 import pytest
 
-from gymrat_py.cli.shared import format_cli_error, resolve_render_mode, resolve_stream_color
-from gymrat_py.cli.status_line import create_status_line
+from gymrat_py.cli.shared import (
+    color_override_of,
+    format_cli_error,
+    resolve_render_mode,
+    resolve_stream_color,
+)
 from gymrat_py.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat_py.doctor.render import render_doctor_report
 from gymrat_py.report.style import shorten_label
@@ -47,10 +51,8 @@ from tests.hardening._bench_helpers import write_committed_bench as _write_commi
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from tests._ansi import ANSI_RE as _ANSI
+from tests._ansi import strip_ansi
 from tests._cli import ENTRY as _ENTRY
-
-_CLEAR_LINE = "\r\x1b[K"
 
 _METRIC_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
@@ -62,11 +64,6 @@ echo 'METRIC x=1'
 """
 
 _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only pty and shell bench")
-
-
-def _strip_ansi(text: str) -> str:
-    """Drop ANSI escape sequences, leaving the visible characters."""
-    return _ANSI.sub("", text)
 
 
 def _neutral_env() -> dict[str, str]:
@@ -131,7 +128,7 @@ def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
 
     output = _run_report_on_pty(["measure", "--bench", "sh bench.sh", "--samples", "1"], repo)
 
-    assert "gymrat measure" in _strip_ansi(output)
+    assert "gymrat measure" in strip_ansi(output)
     assert "\x1b[" in output
 
 
@@ -149,7 +146,7 @@ def test_compare_report_when_stdout_is_a_real_tty_does_render_styled(
         repo,
     )
 
-    assert "gymrat compare" in _strip_ansi(output)
+    assert "gymrat compare" in strip_ansi(output)
     assert "\x1b[" in output
 
 
@@ -249,12 +246,12 @@ def _doctor_report_is_colored() -> bool:
 
 
 def _progress_is_colored() -> bool:
-    """Whether the progress surface would animate (spinner) for the environment.
+    """Whether the progress surface would paint color for the environment.
 
-    The color decision on a terminal is spinner (colored) versus overwrite
-    (plain); ``resolve_render_mode`` is asked with color left to the environment.
+    Color is resolved by the console factory, through the same shared
+    ``resolve_stream_color`` chain every other surface uses.
     """
-    return resolve_render_mode(color_flag=True) == "spinner"
+    return resolve_stream_color(color_override_of(color=True), sys.stderr)
 
 
 def _error_is_colored() -> bool:
@@ -328,7 +325,7 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
     _apply_color_env(monkeypatch, "1", None)
 
-    assert resolve_render_mode(color_flag=True) == "plain"
+    assert resolve_render_mode() == "plain"
 
 
 # ---------------------------------------------------------------------------
@@ -338,60 +335,3 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
 
 def test_shorten_label_when_width_is_zero_does_return_empty_without_garbage():
     assert shorten_label("abcdefghijklmnop", 0) == ""
-
-
-def _zero_width_terminal(*_args: object, **_kwargs: object) -> os.terminal_size:
-    """A ``get_terminal_size`` stand-in for a terminal that reports zero columns."""
-    return os.terminal_size((0, 0))
-
-
-def test_status_line_when_terminal_reports_zero_width_does_not_crash_or_spill(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("COLUMNS", raising=False)
-    monkeypatch.setattr("shutil.get_terminal_size", _zero_width_terminal)
-    fake = _FakeStream(tty=True)
-    monkeypatch.setattr("sys.stderr", fake)
-    line = create_status_line("overwrite")
-
-    line.write("abcdefghijklmnop")
-
-    drawn = fake.getvalue()
-    assert drawn.startswith(_CLEAR_LINE)
-    assert _strip_ansi(drawn).strip() == ""
-
-
-@pytest.mark.parametrize(
-    "columns",
-    [pytest.param("0", id="zero"), pytest.param("", id="empty"), pytest.param("-5", id="negative")],
-)
-def test_status_line_when_columns_env_is_non_positive_does_not_spill(
-    monkeypatch: pytest.MonkeyPatch, columns: str
-):
-    monkeypatch.setenv("COLUMNS", columns)
-    fake = _FakeStream(tty=True)
-    monkeypatch.setattr("sys.stderr", fake)
-    line = create_status_line("overwrite")
-
-    line.write("abcdefghijklmnop")
-
-    drawn = fake.getvalue()
-    assert drawn.startswith(_CLEAR_LINE)
-    assert _strip_ansi(drawn).strip() == ""
-
-
-def test_status_line_when_columns_env_is_positive_does_truncate_to_fit(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("COLUMNS", "10")
-    fake = _FakeStream(tty=True)
-    monkeypatch.setattr("sys.stderr", fake)
-    line = create_status_line("overwrite")
-
-    label = "abcdefghijklmnopqrstuvwxyz0123456789"
-    line.write(label)
-
-    visible = _strip_ansi(fake.getvalue()).strip()
-    assert visible
-    assert visible != label
-    assert len(visible) <= 10
