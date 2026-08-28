@@ -1,14 +1,16 @@
 """Tests for the rich-based progress renderer (live + plain modes).
 
-Tests inject a deterministic clock via ``get_time`` and capture output through
-a ``Console(file=StringIO())``.
+Tests inject a deterministic ``Clock`` from ``tests._rich`` and capture
+output through ``sealed_console``.  Frame content is pinned with syrupy
+golden snapshots; plain-mode milestones use exact-line equality; live wiring
+assertions check ``Live`` attributes directly.
 """
 
-from io import StringIO
-from typing import Literal
+from __future__ import annotations
 
-import pytest
-from rich.console import Console
+import sys
+from io import StringIO
+from typing import TYPE_CHECKING, Literal
 
 from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat_py.progress_events import (
@@ -18,27 +20,39 @@ from gymrat_py.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
-from tests._rich import frame_text
+from tests._rich import Clock, frame_text, screen_lines, sealed_console
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import pytest
+    from rich.console import Console
+    from syrupy.assertion import SnapshotAssertion
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-class _Clock:
-    """A hand-advanced clock for deterministic ``Progress(get_time=...)`` frames."""
-
-    def __init__(self, start: float = 0.0):
-        self.now = start
-
-    def __call__(self) -> float:
-        return self.now
-
-
-def _live_console(width: int = 80) -> Console:
-    """A console that simulates a TTY for live-mode tests."""
-    return Console(file=StringIO(), width=width, force_terminal=True)
-
-
-def _plain_console(width: int = 80) -> Console:
-    """A console that simulates a non-TTY for plain-mode tests."""
-    return Console(file=StringIO(), width=width, force_terminal=False, no_color=True)
+def _reporter(
+    mode: Literal["live", "plain"],
+    *,
+    width: int = 80,
+    height: int = 24,
+    target_count: int = 1,
+    sample_count: int = 3,
+) -> tuple[Console, Clock, ProgressReporter]:
+    """Wire a progress reporter to a sealed console and a hand-advanced clock."""
+    clock = Clock()
+    console = sealed_console(width=width, height=height)
+    reporter = create_progress_reporter(
+        mode=mode,
+        console=console,
+        target_count=target_count,
+        sample_count=sample_count,
+        clock=clock,
+    )
+    return console, clock, reporter
 
 
 def _output(console: Console) -> str:
@@ -48,22 +62,9 @@ def _output(console: Console) -> str:
     return f.getvalue()
 
 
-def _reporter(
-    mode: Literal["live", "plain"],
-    console: Console,
-    clock: _Clock,
-    *,
-    target_count: int = 1,
-    sample_count: int = 3,
-):
-    """Wire a progress reporter to ``console`` and ``clock`` with the given counts."""
-    return create_progress_reporter(
-        mode=mode,
-        console=console,
-        target_count=target_count,
-        sample_count=sample_count,
-        clock=clock,
-    )
+def _ms(clock: Clock) -> int:
+    """Return the clock's current time in milliseconds, for ``at_ms`` fields."""
+    return int(clock.now * 1000)
 
 
 def _pass_started(
@@ -104,196 +105,275 @@ def _pass_finished(
     )
 
 
-# ---------------------------------------------------------------------------
-# live renderer — Progress with auto-refresh disabled + injectable clock
-# ---------------------------------------------------------------------------
+def _fake_install(
+    registered: list[object],
+) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    """A fake ``install_termination_cleanup`` that records registrations."""
 
+    def install(cb: Callable[[], None]) -> Callable[[], None]:
+        registered.append(cb)
+        return lambda: None
 
-def test_create_progress_reporter_when_live_mode_does_accept_injectable_clock():
-    console = _live_console()
-    clock = _Clock()
-
-    reporter = _reporter("live", console, clock)
-
-    assert reporter is not None
-    reporter.stop()
+    return install
 
 
 # ---------------------------------------------------------------------------
-# live renderer — prepare phase
+# Frame golden snapshots via frame_text(reporter.frame())
 # ---------------------------------------------------------------------------
 
 
-def test_live_renderer_when_prepare_started_does_show_spinner_and_label():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareStarted(label="build", at_ms=0))
-    reporter.stop()
-
-    output = _output(console)
-    assert "build" in output
-
-
-def test_live_renderer_when_prepare_finished_does_show_done_marker_and_elapsed():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareStarted(label="build", at_ms=0))
-    clock.now = 2.0
-    reporter.report(PrepareFinished(label="build", at_ms=2000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "✔" in output
-
-
-# ---------------------------------------------------------------------------
-# live renderer — passes phase (single target)
-# ---------------------------------------------------------------------------
-
-
-def test_live_renderer_when_pass_started_does_show_bar_with_completed_total():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock, sample_count=5)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 5, at_ms=1000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "5" in output
-
-
-def test_live_renderer_when_first_pass_started_and_no_pass_finished_does_show_estimating_eta():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 3, at_ms=1000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "estimating time left" in output
-
-
-def test_live_renderer_when_pass_finished_does_show_eta_with_format_eta():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 3, at_ms=1000))
-    clock.now = 11.0
-    reporter.report(_pass_finished(1, 3, at_ms=11000))
-    clock.now = 12.0
-    reporter.report(_pass_started(2, 3, at_ms=12000))
-    reporter.stop()
-
-    output = _output(console)
-    # After the first pass finishes (10s), ETA for remaining 2 passes should use format_eta
-    assert "left" in output
-    if output.count("left") > 1:
-        assert "estimating" not in output.split("left")[-1]
-
-
-def test_live_renderer_when_pass_started_does_show_detail_line_with_round_and_label():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(2, 3, at_ms=1000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "round 2" in output.lower() or "round 2" in output
-
-
-# ---------------------------------------------------------------------------
-# live renderer — multi-target (compare)
-# ---------------------------------------------------------------------------
-
-
-def test_live_renderer_when_multi_target_does_total_samples_times_target_count():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock, target_count=3, sample_count=5)
-
-    reporter.report(PrepareFinished(label="main", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 5, target_count=3, label="main", at_ms=1000))
-    reporter.stop()
-
-    output = _output(console)
-    # Bar total should be 5 * 3 = 15
-    assert "15" in output
-
-
-def test_live_renderer_when_multi_target_detail_line_does_name_running_target():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock, target_count=2)
-
-    reporter.report(PrepareFinished(label="main", at_ms=0))
-    clock.now = 1.0
-    reporter.report(
-        _pass_started(1, 3, target_index=1, target_count=2, label="candidate", at_ms=1000)
-    )
-    reporter.stop()
-
-    output = _output(console)
-    assert "candidate" in output
-
-
-# ---------------------------------------------------------------------------
-# live renderer — transient + summary
-# ---------------------------------------------------------------------------
-
-
-def test_live_renderer_when_measure_finishes_does_print_summary_on_stderr():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock, sample_count=2)
-
+def test_frame_when_prepare_running_does_show_spinner_and_label(
+    snapshot: SnapshotAssertion,
+):
+    """You should see a spinner and the 'bench' prepare label."""
+    _console, _clock, reporter = _reporter("live")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(PrepareFinished(label="bench", at_ms=1000))
-    clock.now = 2.0
-    reporter.report(_pass_started(1, 2, at_ms=2000))
-    clock.now = 12.0
-    reporter.report(_pass_finished(1, 2, at_ms=12000))
-    clock.now = 13.0
-    reporter.report(_pass_started(2, 2, at_ms=13000))
-    clock.now = 23.0
-    reporter.report(_pass_finished(2, 2, at_ms=23000))
+
+    result = frame_text(reporter.frame())
+
+    assert result == snapshot
+    reporter.stop()
+
+
+def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
+    snapshot: SnapshotAssertion,
+):
+    """You should see prepare with a done marker, a progress bar, and 'estimating time left'."""
+    _console, clock, reporter = _reporter("live")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(2)
+    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
+
+    result = frame_text(reporter.frame())
+
+    assert result == snapshot
+    reporter.stop()
+
+
+def test_frame_when_mid_run_with_computed_eta_does_show_detail_line(
+    snapshot: SnapshotAssertion,
+):
+    """You should see a computed ETA (not 'estimating'), a detail line with round and label."""
+    _console, clock, reporter = _reporter("live")
+    reporter.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
+    clock.tick(10)
+    reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(2, 3, at_ms=_ms(clock)))
+
+    result = frame_text(reporter.frame())
+
+    assert result == snapshot
+    reporter.stop()
+
+
+def test_frame_when_multi_target_compare_does_name_running_target(
+    snapshot: SnapshotAssertion,
+):
+    """You should see bar total of samples x targets, running target named in detail."""
+    _console, clock, reporter = _reporter("live", target_count=2, sample_count=5)
+    reporter.report(PrepareFinished(label="main", at_ms=0))
+    clock.tick(1)
+    reporter.report(
+        _pass_started(1, 5, target_index=1, target_count=2, label="candidate", at_ms=_ms(clock))
+    )
+
+    result = frame_text(reporter.frame())
+
+    assert result == snapshot
+    reporter.stop()
+
+
+def test_frame_when_compact_layout_on_short_console_does_show_sample_count(
+    snapshot: SnapshotAssertion,
+):
+    """You should see compact single-row progress with 'sample N/M'."""
+    _console, clock, reporter = _reporter("live", height=10)
+    reporter.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
+
+    result = frame_text(reporter.frame())
+
+    assert result == snapshot
+    reporter.stop()
+
+
+# ---------------------------------------------------------------------------
+# Plain mode -- exact timestamped milestone lines
+# ---------------------------------------------------------------------------
+
+
+def test_plain_renderer_when_prepare_finished_does_print_exact_timestamped_line():
+    console, clock, reporter = _reporter("plain")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(5)
+    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+
+    output = _output(console)
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+
+    assert lines[-1] == "[00:00:00] prepared bench (5s)"
+    reporter.stop()
+
+
+def test_plain_renderer_when_pass_finished_does_print_exact_timestamped_line(
+    snapshot: SnapshotAssertion,
+):
+    console, clock, reporter = _reporter("plain", sample_count=3)
+    reporter.report(PrepareFinished(label="bench", at_ms=0))
+    reporter.report(_pass_started(1, 3, at_ms=0))
+    clock.tick(20)
+    reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
+
+    output = _output(console)
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+
+    assert lines[-1] == snapshot
+    reporter.stop()
+
+
+def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
+    console, clock, reporter = _reporter("plain")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
+    clock.tick(10)
+    reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
     reporter.stop()
 
     output = _output(console)
-    assert "measured" in output.lower() or "✔" in output
+
+    assert "\x1b[" not in output
 
 
-def test_live_renderer_when_compare_finishes_does_print_compare_summary():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock, target_count=2, sample_count=2)
+# ---------------------------------------------------------------------------
+# Live wiring -- Live attributes and refresh path
+# ---------------------------------------------------------------------------
 
+
+def test_live_wiring_when_created_does_set_transient_and_no_redirect_stderr():
+    _console, _clock, reporter = _reporter("live")
+
+    assert reporter._live is not None
+    assert reporter._live.transient is True
+    assert reporter._live._redirect_stderr is False
+    reporter.stop()
+
+
+def test_refresh_live_when_called_does_render_from_frame(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _console, _clock, reporter = _reporter("live")
+    calls: list[object] = []
+    original_frame = reporter.frame
+
+    def spy_frame() -> object:
+        result = original_frame()
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(reporter, "frame", spy_frame)
+
+    reporter._refresh_live()
+
+    assert len(calls) == 1
+    reporter.stop()
+
+
+def test_warn_when_live_mode_does_route_through_console_print():
+    console, _clock, reporter = _reporter("live")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+
+    reporter.warn("heads up: slow disk")
+
+    output = _output(console)
+    assert "heads up: slow disk" in output
+    reporter.stop()
+
+
+def test_live_mode_when_created_does_register_termination_cleanup_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registered: list[object] = []
+    monkeypatch.setattr(
+        "gymrat_py.cli.progress.install_termination_cleanup",
+        _fake_install(registered),
+    )
+
+    _console, _clock, reporter = _reporter("live")
+    reporter.stop()
+
+    assert len(registered) == 1
+
+
+def test_plain_mode_when_created_does_not_register_termination_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registered: list[object] = []
+    monkeypatch.setattr(
+        "gymrat_py.cli.progress.install_termination_cleanup",
+        _fake_install(registered),
+    )
+
+    _console, _clock, reporter = _reporter("plain")
+    reporter.stop()
+
+    assert len(registered) == 0
+
+
+def test_stop_when_called_twice_does_not_raise_and_clears_live():
+    _console, _clock, reporter = _reporter("live")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+
+    reporter.stop()
+    reporter.stop()
+
+    assert reporter._live is None
+
+
+# ---------------------------------------------------------------------------
+# Summary line -- exact via injected clock
+# ---------------------------------------------------------------------------
+
+
+def test_stop_when_measure_done_does_print_summary(snapshot: SnapshotAssertion):
+    console, clock, reporter = _reporter("live", sample_count=2)
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 2, at_ms=_ms(clock)))
+    clock.tick(10)
+    reporter.report(_pass_finished(1, 2, at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(2, 2, at_ms=_ms(clock)))
+    clock.tick(10)
+    reporter.report(_pass_finished(2, 2, at_ms=_ms(clock)))
+
+    reporter.stop()
+
+    visible = screen_lines(_output(console))
+    summary = visible[-1] if visible else ""
+    assert summary == snapshot
+
+
+def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
+    console, clock, reporter = _reporter("live", target_count=2, sample_count=2)
     reporter.report(PrepareStarted(label="main", at_ms=0))
-    clock.now = 1.0
-    reporter.report(PrepareFinished(label="main", at_ms=1000))
+    clock.tick(1)
+    reporter.report(PrepareFinished(label="main", at_ms=_ms(clock)))
     for i in range(4):
         target_idx = i % 2
         label = "main" if target_idx == 0 else "candidate"
         rnd = i // 2 + 1
-        clock.now = 2.0 + i * 10
+        clock.tick(1)
         reporter.report(
             _pass_started(
                 rnd,
@@ -301,10 +381,10 @@ def test_live_renderer_when_compare_finishes_does_print_compare_summary():
                 target_index=target_idx,
                 target_count=2,
                 label=label,
-                at_ms=int(clock.now * 1000),
+                at_ms=_ms(clock),
             )
         )
-        clock.now += 9.0
+        clock.tick(10)
         reporter.report(
             _pass_finished(
                 rnd,
@@ -312,288 +392,66 @@ def test_live_renderer_when_compare_finishes_does_print_compare_summary():
                 target_index=target_idx,
                 target_count=2,
                 label=label,
-                at_ms=int(clock.now * 1000),
+                at_ms=_ms(clock),
             )
         )
+
     reporter.stop()
 
-    output = _output(console)
-    assert "compared" in output.lower() or "2 targets" in output.lower()
+    visible = screen_lines(_output(console))
+    summary = visible[-1] if visible else ""
+    assert summary == snapshot
 
 
 # ---------------------------------------------------------------------------
-# live renderer — compact single-row layout (< 12 rows)
-# ---------------------------------------------------------------------------
-
-
-def test_live_renderer_when_terminal_fewer_than_12_rows_does_use_compact_layout():
-    console = Console(file=StringIO(), width=80, height=10, force_terminal=True)
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 3, at_ms=1000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "sample 1/3" in output
-    assert "bench" in output
-
-
-# ---------------------------------------------------------------------------
-# live renderer — COLUMNS=0 falls back to plain
+# Edge cases
 # ---------------------------------------------------------------------------
 
 
 def test_live_renderer_when_console_width_zero_does_render_as_plain():
-    console = Console(file=StringIO(), width=0, force_terminal=True)
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
+    console, _clock, reporter = _reporter("live", width=0)
 
     reporter.report(PrepareStarted(label="bench", at_ms=0))
     reporter.report(PrepareFinished(label="bench", at_ms=1000))
     reporter.stop()
 
-    output = _output(console)
-    # Should not crash; plain mode output (timestamps or no ANSI) is acceptable
-    assert "\x1b[K" not in output
-
-
-# ---------------------------------------------------------------------------
-# plain renderer (non-TTY)
-# ---------------------------------------------------------------------------
-
-
-def test_plain_renderer_when_prepare_finished_does_show_timestamped_milestone():
-    console = _plain_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("plain", console, clock)
-
-    clock.now = 1.0
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    clock.now = 5.0
-    reporter.report(PrepareFinished(label="bench", at_ms=5000))
-    reporter.stop()
-
-    output = _output(console)
-    # Format: [HH:MM:SS] milestone text
-    assert "[" in output
-    assert "]" in output
-    assert "bench" in output
-
-
-def test_plain_renderer_when_pass_finished_does_show_timestamped_milestone():
-    console = _plain_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("plain", console, clock)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 10.0
-    reporter.report(_pass_started(1, 3, at_ms=0))
-    clock.now = 20.0
-    reporter.report(_pass_finished(1, 3, at_ms=20000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "[" in output
-    assert "]" in output
-
-
-def test_plain_renderer_does_not_emit_ansi_escape_codes():
-    console = _plain_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("plain", console, clock)
-
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    reporter.report(PrepareFinished(label="bench", at_ms=1000))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 3, at_ms=1000))
-    clock.now = 10.0
-    reporter.report(_pass_finished(1, 3, at_ms=10000))
-    reporter.stop()
-
+    assert reporter._live is None
     output = _output(console)
     assert "\x1b[" not in output
-    assert "\x1b[K" not in output
-
-
-def test_plain_renderer_when_run_finished_does_show_timestamped_finish_line():
-    console = _plain_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("plain", console, clock, sample_count=1)
-
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.now = 1.0
-    reporter.report(_pass_started(1, 1, at_ms=1000))
-    clock.now = 10.0
-    reporter.report(_pass_finished(1, 1, at_ms=10000))
-    reporter.stop()
-
-    output = _output(console)
-    assert "[" in output
-    assert "]" in output
-
-
-# ---------------------------------------------------------------------------
-# warn
-# ---------------------------------------------------------------------------
-
-
-def test_warn_when_live_mode_does_print_warning_without_disturbing_live_block():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    reporter.warn("heads up: slow disk")
-    reporter.stop()
-
-    output = _output(console)
-    assert "heads up: slow disk" in output
-
-
-def test_warn_when_plain_mode_does_print_warning_as_own_line():
-    console = _plain_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("plain", console, clock)
-
-    reporter.warn("heads up: slow disk")
-    reporter.stop()
-
-    output = _output(console)
-    assert "heads up: slow disk" in output
-
-
-# ---------------------------------------------------------------------------
-# stop
-# ---------------------------------------------------------------------------
-
-
-def test_stop_when_live_mode_does_clean_up_live_display():
-    console = _live_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    reporter.stop()
-
-    # Calling stop should not raise and should terminate the live block
-    assert True
-
-
-def test_stop_when_plain_mode_does_not_emit_clear_codes():
-    console = _plain_console()
-    clock = _Clock(0.0)
-    reporter = _reporter("plain", console, clock)
-
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    reporter.stop()
-
-    output = _output(console)
-    assert "\x1b[K" not in output
-
-
-# ---------------------------------------------------------------------------
-# factory API
-# ---------------------------------------------------------------------------
-
-
-def test_create_progress_reporter_when_called_does_return_object_with_report_warn_stop():
-    console = _plain_console()
-    clock = _Clock()
-
-    reporter = _reporter("plain", console, clock)
-
-    assert hasattr(reporter, "report")
-    assert hasattr(reporter, "warn")
-    assert hasattr(reporter, "stop")
-    assert callable(reporter.report)
-    assert callable(reporter.warn)
-    assert callable(reporter.stop)
-    reporter.stop()
-
-
-def test_create_progress_reporter_when_mode_live_does_accept_console_and_counts():
-    console = _live_console()
-    clock = _Clock()
-
-    reporter = _reporter("live", console, clock, target_count=2, sample_count=5)
-
-    assert reporter is not None
-    reporter.stop()
-
-
-# ---------------------------------------------------------------------------
-# non-relevant events are silently ignored
-# ---------------------------------------------------------------------------
 
 
 def test_reporter_when_non_relevant_event_does_silently_ignore():
-    console = _plain_console()
-    clock = _Clock()
-    reporter = _reporter("plain", console, clock)
+    console, _clock, reporter = _reporter("plain")
 
     reporter.report(HookStarted(stage="before", at_ms=0))
-    reporter.stop()
 
     output = _output(console)
-    assert "before" not in output
-
-
-# ---------------------------------------------------------------------------
-# old API removed
-# ---------------------------------------------------------------------------
-
-
-def test_old_progress_line_style_is_removed():
-    with pytest.raises(ImportError):
-        from gymrat_py.cli.progress import (
-            ProgressLineStyle,  # type: ignore[missing-module-attribute]  # noqa: F401
-        )
-
-
-def test_old_styled_constant_is_removed():
-    with pytest.raises(ImportError):
-        from gymrat_py.cli.progress import (
-            STYLED,  # type: ignore[missing-module-attribute]  # noqa: F401
-        )
-
-
-def test_old_plain_style_constant_is_removed():
-    with pytest.raises(ImportError):
-        from gymrat_py.cli.progress import (
-            PLAIN_STYLE,  # type: ignore[missing-module-attribute]  # noqa: F401
-        )
-
-
-def test_old_render_progress_line_is_removed():
-    with pytest.raises(ImportError):
-        from gymrat_py.cli.progress import (
-            render_progress_line,  # type: ignore[missing-module-attribute]  # noqa: F401
-        )
-
-
-def test_old_eta_pending_label_is_removed():
-    with pytest.raises(ImportError):
-        from gymrat_py.cli.progress import (
-            ETA_PENDING_LABEL,  # type: ignore[missing-module-attribute]  # noqa: F401
-        )
-
-
-# ---------------------------------------------------------------------------
-# frame() seam — single render path
-# ---------------------------------------------------------------------------
-
-
-def test_frame_when_live_mode_with_event_does_return_renderable_with_content():
-    console = _live_console()
-    clock = _Clock()
-    reporter = _reporter("live", console, clock)
-
-    reporter.report(PrepareStarted(label="build", at_ms=0))
-    text = frame_text(reporter.frame())
-
-    assert isinstance(reporter, ProgressReporter)
-    assert "build" in text
+    assert output == ""
     reporter.stop()
+
+
+def test_clear_on_signal_when_live_up_does_leave_screen_blank(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _console, _clock, reporter = _reporter("live")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    buf = StringIO()
+    monkeypatch.setattr(sys, "stderr", buf)
+
+    reporter._clear_on_signal()
+
+    assert screen_lines(buf.getvalue()) == []
+
+
+def test_clear_on_signal_when_after_stop_does_write_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _console, _clock, reporter = _reporter("live")
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    reporter.stop()
+    buf = StringIO()
+    monkeypatch.setattr(sys, "stderr", buf)
+
+    reporter._clear_on_signal()
+
+    assert buf.getvalue() == ""

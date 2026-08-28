@@ -28,7 +28,6 @@ class Clock:
         return self.now
 
     def tick(self, seconds: float) -> None:
-        """Advance the clock by *seconds*."""
         self.now += seconds
 
 
@@ -48,19 +47,19 @@ def sealed_console(
 
     Returns a ``Console`` writing to a ``StringIO``.
     """
-    kwargs: dict[str, object] = {
-        "file": StringIO(),
-        "width": width,
-        "height": height,
-        "force_terminal": True,
-        "legacy_windows": False,
-        "_environ": {},
-    }
-    if no_color:
-        kwargs["no_color"] = True
-    else:
-        kwargs["color_system"] = color_system or "truecolor"  # cspell:disable-line
-    return Console(**kwargs)  # type: ignore[arg-type]
+    resolved_color_system = (
+        "auto" if no_color else (color_system or "truecolor")  # cspell:disable-line
+    )
+    return Console(
+        file=StringIO(),
+        width=width,
+        height=height,
+        force_terminal=True,
+        legacy_windows=False,
+        _environ={},
+        no_color=no_color or None,
+        color_system=resolved_color_system,  # type: ignore[arg-type]
+    )
 
 
 def frame_text(renderable: RenderableType, *, width: int = 80) -> str:
@@ -78,7 +77,7 @@ def frame_text(renderable: RenderableType, *, width: int = 80) -> str:
         _environ={},
     )
     console.print(renderable)
-    return buf.getvalue()
+    return "\n".join(line.rstrip() for line in buf.getvalue().splitlines())
 
 
 def screen_lines(raw: str, *, width: int = 80, height: int = 24) -> list[str]:
