@@ -35,7 +35,12 @@ if sys.platform != "win32":
 
 import pytest
 
-from gymrat_py.cli.shared import format_cli_error, resolve_render_mode, resolve_stream_color
+from gymrat_py.cli.shared import (
+    color_override_of,
+    format_cli_error,
+    resolve_render_mode,
+    resolve_stream_color,
+)
 from gymrat_py.cli.status_line import create_status_line
 from gymrat_py.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat_py.doctor.render import render_doctor_report
@@ -47,7 +52,7 @@ from tests.hardening._bench_helpers import write_committed_bench as _write_commi
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from tests._ansi import ANSI_RE as _ANSI
+from tests._ansi import strip_ansi
 from tests._cli import ENTRY as _ENTRY
 
 _CLEAR_LINE = "\r\x1b[K"
@@ -62,11 +67,6 @@ echo 'METRIC x=1'
 """
 
 _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only pty and shell bench")
-
-
-def _strip_ansi(text: str) -> str:
-    """Drop ANSI escape sequences, leaving the visible characters."""
-    return _ANSI.sub("", text)
 
 
 def _neutral_env() -> dict[str, str]:
@@ -131,7 +131,7 @@ def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
 
     output = _run_report_on_pty(["measure", "--bench", "sh bench.sh", "--samples", "1"], repo)
 
-    assert "gymrat measure" in _strip_ansi(output)
+    assert "gymrat measure" in strip_ansi(output)
     assert "\x1b[" in output
 
 
@@ -149,7 +149,7 @@ def test_compare_report_when_stdout_is_a_real_tty_does_render_styled(
         repo,
     )
 
-    assert "gymrat compare" in _strip_ansi(output)
+    assert "gymrat compare" in strip_ansi(output)
     assert "\x1b[" in output
 
 
@@ -249,12 +249,12 @@ def _doctor_report_is_colored() -> bool:
 
 
 def _progress_is_colored() -> bool:
-    """Whether the progress surface would animate (spinner) for the environment.
+    """Whether the progress surface would paint color for the environment.
 
-    The color decision on a terminal is spinner (colored) versus overwrite
-    (plain); ``resolve_render_mode`` is asked with color left to the environment.
+    Color is resolved by the console factory, through the same shared
+    ``resolve_stream_color`` chain every other surface uses.
     """
-    return resolve_render_mode(color_flag=True) == "spinner"
+    return resolve_stream_color(color_override_of(color=True), sys.stderr)
 
 
 def _error_is_colored() -> bool:
@@ -328,7 +328,7 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
     _apply_color_env(monkeypatch, "1", None)
 
-    assert resolve_render_mode(color_flag=True) == "plain"
+    assert resolve_render_mode() == "plain"
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +358,7 @@ def test_status_line_when_terminal_reports_zero_width_does_not_crash_or_spill(
 
     drawn = fake.getvalue()
     assert drawn.startswith(_CLEAR_LINE)
-    assert _strip_ansi(drawn).strip() == ""
+    assert strip_ansi(drawn).strip() == ""
 
 
 @pytest.mark.parametrize(
@@ -377,7 +377,7 @@ def test_status_line_when_columns_env_is_non_positive_does_not_spill(
 
     drawn = fake.getvalue()
     assert drawn.startswith(_CLEAR_LINE)
-    assert _strip_ansi(drawn).strip() == ""
+    assert strip_ansi(drawn).strip() == ""
 
 
 def test_status_line_when_columns_env_is_positive_does_truncate_to_fit(
@@ -391,7 +391,7 @@ def test_status_line_when_columns_env_is_positive_does_truncate_to_fit(
     label = "abcdefghijklmnopqrstuvwxyz0123456789"
     line.write(label)
 
-    visible = _strip_ansi(fake.getvalue()).strip()
+    visible = strip_ansi(fake.getvalue()).strip()
     assert visible
     assert visible != label
     assert len(visible) <= 10

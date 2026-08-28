@@ -22,7 +22,6 @@ from rich.markup import escape
 
 from gymrat_py.adapters.types import AdapterError
 from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
-from gymrat_py.cli.status_line import RenderMode
 from gymrat_py.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat_py.errors import GymratError, hint_of
 from gymrat_py.exec import kill_live_process_groups
@@ -289,18 +288,14 @@ def parse_fail_on(value: str) -> FailOnCondition:
 # ---------------------------------------------------------------------------
 
 
-def resolve_render_mode(color_flag: bool) -> RenderMode:  # noqa: FBT001 -- 1:1 map of the --color flag
-    """Map the ``--color`` flag to the output strategy the progress reporter uses.
+def resolve_render_mode() -> Literal["live", "plain"]:
+    """Map the stderr TTY status to the output strategy the progress reporter uses.
 
-    A non-TTY stderr always renders plain; a TTY renders a spinner when color is
-    allowed and falls back to in-place overwrite otherwise. Color follows the
-    shared precedence (:func:`resolve_stream_color`) rather than mutating the
-    environment, so ``--no-color`` never leaks ``NO_COLOR`` into a spawned bench.
+    A non-TTY stderr always renders plain; a TTY gets the rich-based live
+    layout regardless of color — styling is handled by the console's own
+    color resolution.
     """
-    if not is_tty(sys.stderr):
-        return "plain"
-    override = color_override_of(color_flag)
-    return "spinner" if resolve_stream_color(override, sys.stderr) else "overwrite"
+    return "live" if is_tty(sys.stderr) else "plain"
 
 
 # ---------------------------------------------------------------------------
@@ -460,8 +455,13 @@ ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confi
 
 def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
     """Build the progress reporter a run prints through, sized and colored per the flags."""
-    mode = resolve_render_mode(flags.color)
-    return create_progress_reporter(mode, target_count)
+    from gymrat_py.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
+        stderr_console,
+    )
+
+    mode = resolve_render_mode()
+    console = stderr_console(color_flag=flags.color)
+    return create_progress_reporter(mode, console, target_count, flags.samples)
 
 
 def run_options_of(config: ResolvedConfig, progress: ProgressReporter) -> RunOptions:

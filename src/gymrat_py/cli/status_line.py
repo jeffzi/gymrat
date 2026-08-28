@@ -25,7 +25,7 @@ TICK_INTERVAL_MS = 1000
 # The braille frames the minimal spinner cycles through.
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-type RenderMode = Literal["spinner", "overwrite", "plain"]
+type RenderMode = Literal["live", "spinner", "overwrite", "plain"]
 
 
 class StatusLine(Protocol):

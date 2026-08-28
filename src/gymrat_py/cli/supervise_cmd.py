@@ -159,7 +159,7 @@ def _report_result(result: SupervisionResult, log_path: str) -> None:
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly."""
     driver = create_claude_driver()
-    mode = resolve_render_mode(ctx.color)
+    mode = resolve_render_mode()
     reporter = create_supervise_reporter(
         root=ctx.root,
         max_minutes=ctx.max_minutes,

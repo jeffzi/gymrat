@@ -24,6 +24,7 @@ from gymrat_py.cli.shared import (
     CompareFlags,
     MeasureFlags,
     SharedFlags,
+    begin_run,
     color_override_of,
     is_tty,
     parse_max_minutes,
@@ -53,9 +54,22 @@ class _FakeStream(io.StringIO):
         return self._tty
 
 
+class _StubReporter:
+    """A minimal double satisfying the ProgressReporter report/stop contract."""
+
+    def report(self, event: object) -> None: ...
+    def stop(self) -> None: ...
+
+
 def _path_exists(path: Path) -> bool:
     """Filesystem probe kept out of the async body so it is not flagged as blocking I/O."""
     return path.exists()
+
+
+def _clear_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delete FORCE_COLOR/NO_COLOR so a stray value doesn't leak into color resolution."""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -261,30 +275,117 @@ def test_parse_max_minutes_rejects_non_positive_before_bounding():
 
 
 @pytest.mark.parametrize(
-    ("tty", "color_flag", "no_color", "expected"),
+    ("tty", "expected"),
     [
-        pytest.param(False, True, None, "plain", id="non-tty-plain"),
-        pytest.param(True, True, None, "spinner", id="tty-color-spinner"),
-        pytest.param(True, True, "1", "overwrite", id="tty-no-color-env-overwrite"),
-        pytest.param(True, False, None, "overwrite", id="tty-color-vetoed-overwrite"),
+        pytest.param(False, "plain", id="non-tty-plain"),
+        pytest.param(True, "live", id="tty-live"),
     ],
 )
-def test_resolve_render_mode_maps_tty_and_color_to_strategy(
+def test_resolve_render_mode_maps_tty_to_strategy(
     tty: bool,
-    color_flag: bool,
-    no_color: str | None,
     expected: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # Neutralize the color env first so a stray FORCE_COLOR/NO_COLOR — and any
-    # color_override_of() mutation — is reverted at teardown by monkeypatch.
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    if no_color is not None:
-        monkeypatch.setenv("NO_COLOR", no_color)
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=tty))
 
-    assert resolve_render_mode(color_flag) == expected
+    assert resolve_render_mode() == expected
+
+
+def test_resolve_render_mode_ignores_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Color env vars do not affect render mode — only TTY status matters."""
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    assert resolve_render_mode() == "live"
+
+
+def test_render_mode_type_includes_live_and_plain():
+    """RenderMode includes 'live' and 'plain' for the new rich renderer."""
+    import typing
+
+    from gymrat_py.cli.status_line import RenderMode
+
+    actual = set(typing.get_args(RenderMode.__value__))
+
+    assert {"live", "plain"} <= actual
+
+
+# ---------------------------------------------------------------------------
+# begin_run
+# ---------------------------------------------------------------------------
+
+
+def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_color_env(monkeypatch)
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+
+    captured: dict[str, object] = {}
+
+    def fake_create(
+        mode: str,
+        console: object,
+        target_count: int,
+        sample_count: int | None = None,
+        *,
+        clock: object = None,
+    ) -> _StubReporter:
+        captured["mode"] = mode
+        captured["target_count"] = target_count
+        captured["sample_count"] = sample_count
+        return _StubReporter()
+
+    monkeypatch.setattr("gymrat_py.cli.shared.create_progress_reporter", fake_create)
+
+    flags = SharedFlags(bench="b", samples=7)
+
+    begin_run(flags, target_count=3)
+
+    assert captured["mode"] == "live"
+    assert captured["target_count"] == 3
+    assert captured["sample_count"] == 7
+
+
+def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_color_env(monkeypatch)
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+
+    captured: dict[str, object] = {}
+
+    def fake_create(
+        mode: str,
+        console: object,
+        target_count: int,
+        sample_count: int | None = None,
+        *,
+        clock: object = None,
+    ) -> _StubReporter:
+        captured["mode"] = mode
+        return _StubReporter()
+
+    monkeypatch.setattr("gymrat_py.cli.shared.create_progress_reporter", fake_create)
+
+    flags = SharedFlags(bench="b", samples=5)
+
+    begin_run(flags, target_count=1)
+
+    assert captured["mode"] == "plain"
+
+
+def test_begin_run_does_return_progress_reporter(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from gymrat_py.cli.progress import ProgressReporter
+
+    _clear_color_env(monkeypatch)
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+
+    result = begin_run(SharedFlags(bench="b", samples=1), target_count=1)
+
+    assert isinstance(result, ProgressReporter)
 
 
 # ---------------------------------------------------------------------------

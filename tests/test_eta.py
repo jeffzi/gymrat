@@ -1,154 +1,34 @@
-"""Behavioral tests for the ETA tracker and duration/ETA formatting."""
+"""Behavioral tests for duration/ETA formatting and EtaTracker removal."""
 
-from collections.abc import Callable
+import importlib
 
 import pytest
 
-from gymrat_py.eta import EtaTracker, format_duration, format_eta
-from gymrat_py.progress_events import (
-    ConfirmFinished,
-    HookStarted,
-    IterationRecorded,
-    PassStarted,
-    PrepareStarted,
-    ProgressEvent,
-)
-
-
-def prepare(label: str) -> ProgressEvent:
-    """Build a PrepareStarted event with a dummy timestamp."""
-    return PrepareStarted(label=label, at_ms=0)
-
-
-def sample(index: int, total: int, label: str) -> ProgressEvent:
-    """Build a PassStarted event using old field names for test brevity.
-
-    ``index`` maps to ``round``, ``total`` to ``total_rounds``.
-    """
-    return PassStarted(
-        round=index, total_rounds=total, target_index=0, target_count=1, label=label, at_ms=0
-    )
-
-
-def clock_sequence(*times: float) -> Callable[[], float]:
-    """Return a clock that yields each value in turn, raising when exhausted."""
-    it = iter(times)
-
-    def clock() -> float:
-        try:
-            return next(it)
-        except StopIteration:
-            message = "Clock sequence exhausted"
-            raise RuntimeError(message) from None
-
-    return clock
-
+from gymrat_py.eta import format_duration, format_eta
 
 # ---------------------------------------------------------------------------
-# EtaTracker.record
+# EtaTracker removal
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "step",
-    [
-        pytest.param(prepare("A"), id="prepare-step"),
-        pytest.param(sample(1, 3, "A"), id="first-sample-step-no-gap"),
-    ],
-)
-def test_record_when_no_gap_known_does_return_none(step: ProgressEvent) -> None:
-    tracker = EtaTracker(1, clock_sequence(0))
-
-    result = tracker.record(step)
-
-    assert result is None
+def test_eta_tracker_when_imported_does_raise_import_error() -> None:
+    with pytest.raises(ImportError):
+        from gymrat_py.eta import EtaTracker  # type: ignore[missing-module-attribute]  # noqa: F401
 
 
 @pytest.mark.parametrize(
-    ("targets", "total", "expected"),
+    "name",
     [
-        pytest.param(2, 3, 500, id="two-targets"),
-        pytest.param(3, 4, 1100, id="target-count-from-constructor"),
+        pytest.param("PassStarted", id="PassStarted"),
+        pytest.param("PrepareStarted", id="PrepareStarted"),
+        pytest.param("ProgressEvent", id="ProgressEvent"),
+        pytest.param("default_clock", id="default_clock"),
     ],
 )
-def test_record_when_one_gap_known_does_return_estimate(
-    targets: int, total: int, expected: float
-) -> None:
-    tracker = EtaTracker(targets, clock_sequence(0, 100))
+def test_eta_module_when_inspected_does_not_expose_progress_event_symbol(name: str) -> None:
+    eta = importlib.import_module("gymrat_py.eta")
 
-    tracker.record(sample(1, total, "A"))
-    result = tracker.record(sample(1, total, "B"))
-
-    assert result == expected
-
-
-def test_record_when_gaps_from_different_targets_does_pool_into_shared_mean() -> None:
-    tracker = EtaTracker(2, clock_sequence(0, 100, 300))
-
-    tracker.record(sample(1, 3, "A"))
-    tracker.record(sample(1, 3, "B"))
-    result = tracker.record(sample(2, 3, "A"))
-
-    assert result == 600
-
-
-def test_record_when_gap_follows_prepare_does_exclude_from_mean() -> None:
-    tracker = EtaTracker(1, clock_sequence(0, 1000, 1100))
-
-    tracker.record(prepare("A"))
-    tracker.record(sample(1, 3, "A"))
-    result = tracker.record(sample(2, 3, "A"))
-
-    assert result == 200
-
-
-def test_record_when_prepare_appears_mid_run_does_exclude_its_gap() -> None:
-    tracker = EtaTracker(2, clock_sequence(0, 100, 1000, 1100))
-
-    tracker.record(sample(1, 3, "A"))
-    tracker.record(prepare("B"))
-    tracker.record(sample(1, 3, "B"))
-    result = tracker.record(sample(2, 3, "A"))
-
-    assert result == 400
-
-
-@pytest.mark.parametrize(
-    "event",
-    [
-        pytest.param(HookStarted(stage="before", at_ms=0), id="hook-started"),
-        pytest.param(ConfirmFinished(reproduced=True, at_ms=0), id="confirm-finished"),
-        pytest.param(IterationRecorded(seq=1, outcome="ok", at_ms=0), id="iteration-recorded"),
-    ],
-)
-def test_record_when_non_pass_non_prepare_event_does_return_none(event: ProgressEvent) -> None:
-    tracker = EtaTracker(1, clock_sequence(0))
-
-    result = tracker.record(event)
-
-    assert result is None
-
-
-def test_record_when_clock_moves_backwards_does_discard_negative_gap() -> None:
-    tracker = EtaTracker(1, clock_sequence(0, 100, 50))
-
-    tracker.record(sample(1, 3, "A"))
-    tracker.record(sample(2, 3, "A"))
-    result = tracker.record(sample(3, 3, "A"))
-
-    assert result == 100
-
-
-def test_record_when_no_clock_injected_does_measure_gaps_with_perf_counter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("time.perf_counter", clock_sequence(0.0, 0.1))
-    tracker = EtaTracker(1)
-
-    tracker.record(sample(1, 3, "A"))
-    result = tracker.record(sample(2, 3, "A"))
-
-    assert result == 200
+    assert not hasattr(eta, name)
 
 
 # ---------------------------------------------------------------------------
