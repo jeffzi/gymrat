@@ -25,6 +25,7 @@ from gymrat_py.progress_events import (
     HookStarted,
     IterationRecorded,
     JudgeFinished,
+    JudgeStarted,
     PassFinished,
     PassStarted,
     ProgressEvent,
@@ -420,6 +421,23 @@ async def test_iterate_session_when_no_hooks_configured_does_emit_no_hook_events
     assert hook_events == []
 
 
+async def test_iterate_session_when_measuring_does_emit_judge_started_before_judge_finished(
+    settled: str, samples_mock: CollectSamplesRecorder
+):
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+    )
+
+    judge_started = [e for e in events if isinstance(e, JudgeStarted)]
+    assert len(judge_started) == 1
+    event_types = [type(e).__name__ for e in events]
+    started_idx = event_types.index("JudgeStarted")
+    finished_idx = event_types.index("JudgeFinished")
+    assert started_idx < finished_idx
+
+
 async def test_iterate_session_when_measuring_does_emit_judge_finished(
     settled: str, samples_mock: CollectSamplesRecorder
 ):
@@ -553,8 +571,10 @@ async def test_iterate_session_when_improved_does_order_events_without_confirmat
     )
 
     event_types = [type(e).__name__ for e in events]
+    judge_started_idx = event_types.index("JudgeStarted")
     judge_idx = event_types.index("JudgeFinished")
     recorded_idx = event_types.index("IterationRecorded")
+    assert judge_started_idx < judge_idx
     assert judge_idx < recorded_idx
     assert "ConfirmStarted" not in event_types
     assert "ConfirmFinished" not in event_types
@@ -592,12 +612,14 @@ async def test_iterate_session_when_hooks_and_confirmation_does_order_all_events
     event_types = [type(e).__name__ for e in events]
     assert event_types.index("HookStarted") < event_types.index("HookFinished")
     before_finished_idx = stage_index(HookFinished, "before")
+    judge_started_idx = event_types.index("JudgeStarted")
     judge_idx = event_types.index("JudgeFinished")
     confirm_started_idx = event_types.index("ConfirmStarted")
     confirm_finished_idx = event_types.index("ConfirmFinished")
     recorded_idx = event_types.index("IterationRecorded")
     after_started_idx = stage_index(HookStarted, "after")
-    assert before_finished_idx < judge_idx
+    assert before_finished_idx < judge_started_idx
+    assert judge_started_idx < judge_idx
     assert judge_idx < confirm_started_idx
     assert confirm_started_idx < confirm_finished_idx
     assert confirm_finished_idx < recorded_idx

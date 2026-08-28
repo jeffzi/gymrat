@@ -5,20 +5,20 @@
 # name: test_frame_when_mid_run_with_computed_eta_does_show_detail_line
   '''
   sampling ━━━━━━━━━━━━━                            1/3 0:00:11 ~20s left
-  round 2 · bench running · last pass 10s
+  round 2 · running 0:00 · last pass 10s
   '''
 # ---
 # name: test_frame_when_multi_target_compare_does_name_running_target
   '''
   sampling                                      0/10 0:00:00 estimating time left…
-  round 1 · candidate
+  round 1 · candidate · running 0:00
   '''
 # ---
 # name: test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta
   '''
     ✔ bench 0:00:02
   sampling                                       0/3 0:00:00 estimating time left…
-  round 1 · bench running
+  round 1 · running 0:00
   '''
 # ---
 # name: test_frame_when_prepare_running_does_show_spinner_and_label

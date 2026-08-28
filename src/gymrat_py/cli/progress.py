@@ -111,7 +111,7 @@ class ProgressReporter:
     timestamped lines (plain mode).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- mirrors the factory below
         self,
         mode: Literal["live", "plain"],
         console: Console,
@@ -119,11 +119,16 @@ class ProgressReporter:
         sample_count: int | None = None,
         *,
         clock: Callable[[], float] | None = None,
+        command: str | None = None,
+        target_labels: list[str] | None = None,
     ) -> None:
         self._console = console
         self._target_count = target_count
         self._sample_count = sample_count
         self._total = (sample_count or 0) * target_count
+        self._clock = clock
+        self._command = command
+        self._target_labels = target_labels or []
 
         self._completed = 0
         self._prepare_start_ms = 0.0
@@ -143,7 +148,7 @@ class ProgressReporter:
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None
         self._pass_task_id: TaskID | None = None
-        self._detail_text = ""
+        self._current_pass_event: PassStarted | None = None
         self._compact = False
         self._stopped = False
         self._uninstall_cleanup: Callable[[], None] = lambda: None
@@ -192,15 +197,53 @@ class ProgressReporter:
         # terminal. Clearing it here keeps the terminal clean.
         self._uninstall_cleanup = install_termination_cleanup(self._clear_on_signal)
 
+    def _header_text(self) -> Text | None:
+        if not self._command:
+            return None
+        header = Text()
+        header.append(self._command, style="bold blue")
+        label_str = ", ".join(self._target_labels) if self._target_labels else ""
+        sample_str = f"{self._sample_count} samples" if self._sample_count is not None else ""
+        dim_parts = [p for p in (label_str, sample_str) if p]
+        if dim_parts:
+            header.append(" ")
+            header.append(" · ".join(dim_parts), style="dim")
+        return header
+
+    def _live_detail_text(self) -> str:
+        """Compute the detail line with live elapsed for the running pass."""
+        if self._current_pass_event is None:
+            return ""
+        event = self._current_pass_event
+        parts = [f"round {event.round}"]
+
+        if self._target_count > 1:
+            parts.append(event.label)
+
+        if self._clock is not None:
+            elapsed_ms = self._clock() * 1000 - event.at_ms
+            elapsed_seconds = max(0, int(elapsed_ms / 1000))
+            minutes = elapsed_seconds // _SECONDS_PER_MINUTE
+            seconds = elapsed_seconds % _SECONDS_PER_MINUTE
+            parts.append(f"running {minutes}:{seconds:02d}")
+
+        if self._last_pass_duration_ms > 0:
+            parts.append(f"last pass {format_duration(self._last_pass_duration_ms)}")
+        return " · ".join(parts)
+
     def frame(self) -> Group:
         """Return the renderable the live display paints from."""
         parts: list[RenderableType] = []
+        header = self._header_text()
+        if header is not None:
+            parts.append(header)
         if self._prepare_progress is not None:
             parts.append(self._prepare_progress)
         if self._pass_progress is not None:
             parts.append(self._pass_progress)
-        if self._detail_text:
-            parts.append(Text(self._detail_text, style="dim"))
+        detail = self._live_detail_text()
+        if detail:
+            parts.append(Text(detail, style="dim"))
         if not parts:
             parts.append(Text(""))
         return Group(*parts)
@@ -281,16 +324,9 @@ class ProgressReporter:
             )
         else:
             self._pass_progress.update(self._pass_task_id, completed=self._completed)
-            self._detail_text = self._pass_detail_text(event)
+            self._current_pass_event = event
 
         self._refresh_live()
-
-    def _pass_detail_text(self, event: PassStarted) -> str:
-        parts = [f"round {event.round}"]
-        parts.append(event.label if self._target_count > 1 else f"{event.label} running")
-        if self._last_pass_duration_ms > 0:
-            parts.append(f"last pass {format_duration(self._last_pass_duration_ms)}")
-        return " · ".join(parts)
 
     def _on_pass_finished(self, event: PassFinished) -> None:
         duration_ms = event.at_ms - self._pass_start_ms
@@ -372,13 +408,15 @@ class ProgressReporter:
         self._console.print(headline + suffix, highlight=False)
 
 
-def create_progress_reporter(
+def create_progress_reporter(  # noqa: PLR0913 -- mirrors the constructor above
     mode: Literal["live", "plain"],
     console: Console,
     target_count: int,
     sample_count: int | None = None,
     *,
     clock: Callable[[], float] | None = None,
+    command: str | None = None,
+    target_labels: list[str] | None = None,
 ) -> ProgressReporter:
     """Build the reporter a run streams its progress through.
 
@@ -390,5 +428,15 @@ def create_progress_reporter(
         sample_count: Samples per target. When ``None``, inferred from the first
             ``PassStarted`` event.
         clock: Optional deterministic clock for ``Progress(get_time=...)``.
+        command: Command name (e.g. ``"measure"``, ``"compare"``) for the header line.
+        target_labels: Target display labels for the header line.
     """
-    return ProgressReporter(mode, console, target_count, sample_count, clock=clock)
+    return ProgressReporter(
+        mode,
+        console,
+        target_count,
+        sample_count,
+        clock=clock,
+        command=command,
+        target_labels=target_labels,
+    )

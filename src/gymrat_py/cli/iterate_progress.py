@@ -25,6 +25,7 @@ from gymrat_py.progress_events import (
     HookStarted,
     IterationRecorded,
     JudgeFinished,
+    JudgeStarted,
     PassFinished,
     PassStarted,
     PrepareFinished,
@@ -107,6 +108,7 @@ class IterateRenderer:
         *,
         verbose: bool = False,
         clock: Callable[[], float] | None = None,
+        checks_cmd: str | None = None,
     ) -> None:
         self._console = console
         self._seq = seq
@@ -116,7 +118,9 @@ class IterateRenderer:
         self._primary_metric = primary_metric
         self._verbose = verbose
         self._clock = clock
+        self._checks_cmd = checks_cmd
         self._total = sample_count * 2
+        self._start_clock_time: float | None = None
 
         self._is_live = mode == "live" and console.width > 0
         self._compact = False
@@ -149,6 +153,7 @@ class IterateRenderer:
         self._pass_finish_count = 0
         self._total_pass_time_ms: float = 0.0
         self._last_pass_duration_ms: float = 0.0
+        self._last_pass_label: str = ""
         self._pass_start_ms: float = 0.0
         self._pass_eta_text = "estimating time left…"  # noqa: S105 -- not a password
         self._pass_detail = ""
@@ -163,9 +168,6 @@ class IterateRenderer:
         self._judge_regressed: tuple[str, ...] = ()
 
         self._confirm_reproduced: bool | None = None
-
-        self._recorded_seq: int | None = None
-        self._recorded_outcome: str | None = None
 
         self._compact_progress: Progress | None = None
         self._compact_eta_col: _EtaColumn | None = None
@@ -242,7 +244,31 @@ class IterateRenderer:
             node.add(Text(f"  {note}", style="dim"))
 
     def _build_header(self) -> str:
-        return f"iterate #{self._seq} · session {self._session_id}"
+        parts = [f"iterate #{self._seq} session {self._session_id}"]
+
+        if self._clock is not None and self._start_clock_time is not None:
+            elapsed_ms = (self._clock() - self._start_clock_time) * 1000
+            parts.append(f"{format_duration(elapsed_ms)} elapsed")
+
+        eta_text = self._eta_text(
+            self._pass_completed, self._pass_finish_count, self._total_pass_time_ms
+        )
+        if eta_text is not None:
+            parts.append(eta_text)
+
+        return " · ".join(parts)
+
+    def _running_elapsed_ms(self, node: _NodeState) -> float | None:
+        """Live elapsed time for ``node``, or ``None`` if it doesn't tick live.
+
+        Only the judge node ticks while running — it's the one long step
+        that cannot be interrupted and lacks its own progress events.
+        """
+        if node is not self._judge or node.status != "running":
+            return None
+        if self._clock is None or node.start_ms <= 0:
+            return None
+        return self._clock() * 1000 - node.start_ms
 
     def _render_node(self, node: _NodeState) -> Text:
         glyph = node.glyph
@@ -259,6 +285,10 @@ class IterateRenderer:
 
         if node.status == "done" and node.elapsed_ms > 0:
             text.append(f" ({format_duration(node.elapsed_ms)})", style="dim")
+        else:
+            running_ms = self._running_elapsed_ms(node)
+            if running_ms is not None:
+                text.append(f" ({format_duration(running_ms)})", style="dim")
 
         if node.detail:
             text.append(f" {node.detail}")
@@ -298,6 +328,8 @@ class IterateRenderer:
     def _track_timestamp(self, at_ms: float) -> None:
         if self._run_start_ms is None:
             self._run_start_ms = at_ms
+            if self._clock is not None:
+                self._start_clock_time = self._clock()
 
     def _format_timestamp(self, at_ms: float) -> str:
         elapsed_ms = at_ms - (self._run_start_ms or at_ms)
@@ -331,6 +363,8 @@ class IterateRenderer:
             self._on_pass_started(event)
         elif isinstance(event, PassFinished):
             self._on_pass_finished(event)
+        elif isinstance(event, JudgeStarted):
+            self._on_judge_started(event)
         elif isinstance(event, JudgeFinished):
             self._on_judge_finished(event)
         elif isinstance(event, ConfirmStarted):
@@ -381,13 +415,11 @@ class IterateRenderer:
         self._passes.status = "running"
         self._pass_start_ms = event.at_ms
 
-        last_pass = (
-            f"last pass {format_duration(self._last_pass_duration_ms)}"
-            if self._last_pass_duration_ms > 0
-            else ""
-        )
         parts = [f"round {event.round}", f"{event.label} running"]
-        if last_pass:
+        if self._last_pass_duration_ms > 0:
+            last_pass = f"last pass {format_duration(self._last_pass_duration_ms)}"
+            if self._last_pass_label:
+                last_pass += f" ({self._last_pass_label})"
             parts.append(last_pass)
         self._pass_detail = " · ".join(parts)
 
@@ -416,6 +448,7 @@ class IterateRenderer:
 
         duration_ms = event.at_ms - self._pass_start_ms
         self._last_pass_duration_ms = duration_ms
+        self._last_pass_label = event.label
         self._total_pass_time_ms += duration_ms
         self._pass_completed += 1
         self._pass_finish_count += 1
@@ -468,9 +501,18 @@ class IterateRenderer:
         if self._is_live:
             self._refresh_live()
 
+    def _on_judge_started(self, event: JudgeStarted) -> None:
+        self._judge.status = "running"
+        self._judge.start_ms = event.at_ms
+        self._judge.subtext = ""
+        if self._is_live:
+            self._refresh_live()
+
     def _on_judge_finished(self, event: JudgeFinished) -> None:
         self._judge.status = "done"
-        self._judge.elapsed_ms = 0
+        self._judge.elapsed_ms = (
+            event.at_ms - self._judge.start_ms if self._judge.start_ms > 0 else 0
+        )
 
         self._judge_delta = event.primary_delta_pct
         self._judge_regressed = event.regressed
@@ -520,12 +562,13 @@ class IterateRenderer:
 
     def _on_iteration_recorded(self, event: IterationRecorded) -> None:
         self._record.status = "done"
-        self._recorded_seq = event.seq
-        self._recorded_outcome = event.outcome
         self._record.subtext = ""
 
         detail_parts = [f"seq {event.seq}", event.outcome]
-        self._record.detail = " · ".join(detail_parts)
+        detail = " · ".join(detail_parts)
+        if self._checks_cmd is not None:
+            detail += f" — checks ({self._checks_cmd}) run at gymrat keep"
+        self._record.detail = detail
 
         if self._is_live:
             self._refresh_live()
@@ -570,6 +613,7 @@ def create_iterate_renderer(  # noqa: PLR0913, PLR0917 -- mirrors the renderer c
     *,
     verbose: bool = False,
     clock: Callable[[], float] | None = None,
+    checks_cmd: str | None = None,
 ) -> IterateRenderer:
     """Build an iterate renderer for the given mode and configuration.
 
@@ -584,6 +628,8 @@ def create_iterate_renderer(  # noqa: PLR0913, PLR0917 -- mirrors the renderer c
         primary_metric: Name of the primary metric.
         verbose: When ``True`` and live, the tree stays on stderr after stop.
         clock: Optional deterministic clock for ``Progress(get_time=...)``.
+        checks_cmd: Shell command for the project's checks, shown in the record
+            node as ``checks (cmd) run at gymrat keep``.
     """
     return IterateRenderer(
         mode=mode,
@@ -595,6 +641,7 @@ def create_iterate_renderer(  # noqa: PLR0913, PLR0917 -- mirrors the renderer c
         primary_metric=primary_metric,
         verbose=verbose,
         clock=clock,
+        checks_cmd=checks_cmd,
     )
 
 

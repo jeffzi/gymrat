@@ -26,6 +26,7 @@ from gymrat_py.progress_events import (
     HookStarted,
     IterationRecorded,
     JudgeFinished,
+    JudgeStarted,
     PassFinished,
     PassStarted,
     PrepareFinished,
@@ -115,6 +116,7 @@ def _renderer(
     metric_count: int = 3,
     primary_metric: str = "geomean",
     verbose: bool = False,
+    checks_cmd: str | None = None,
 ) -> tuple[Console, Clock, IterateRenderer]:
     clock = Clock()
     console = sealed_console(width=width, height=height)
@@ -128,6 +130,7 @@ def _renderer(
         primary_metric=primary_metric,
         verbose=verbose,
         clock=clock,
+        checks_cmd=checks_cmd,
     )
     return console, clock, renderer
 
@@ -142,6 +145,7 @@ def _live(
     metric_count: int = 3,
     primary_metric: str = "geomean",
     verbose: bool = False,
+    checks_cmd: str | None = None,
 ) -> tuple[Console, Clock, IterateRenderer]:
     return _renderer(
         "live",
@@ -153,6 +157,7 @@ def _live(
         metric_count=metric_count,
         primary_metric=primary_metric,
         verbose=verbose,
+        checks_cmd=checks_cmd,
     )
 
 
@@ -165,6 +170,7 @@ def _plain(
     metric_count: int = 3,
     primary_metric: str = "geomean",
     verbose: bool = False,
+    checks_cmd: str | None = None,
 ) -> tuple[Console, Clock, IterateRenderer]:
     return _renderer(
         "plain",
@@ -175,6 +181,7 @@ def _plain(
         metric_count=metric_count,
         primary_metric=primary_metric,
         verbose=verbose,
+        checks_cmd=checks_cmd,
     )
 
 
@@ -407,6 +414,128 @@ def test_frame_when_compact_layout_does_show_single_row(
         )
     )
     result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
+def test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta(
+    snapshot: SnapshotAssertion,
+):
+    """You should see elapsed in the header but no ETA before any pass finishes."""
+    _console, clock, renderer = _live()
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(7)
+    renderer.report(
+        _pass_started(1, 5, label="baseline", at_ms=_ms(clock)),
+    )
+    clock.tick(3)
+
+    result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
+def test_frame_when_last_pass_done_detail_does_name_side_of_last_pass(
+    snapshot: SnapshotAssertion,
+):
+    """You should see '(baseline)' after last pass duration in the detail line."""
+    _console, clock, renderer = _live(sample_count=3)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    renderer.report(
+        _pass_started(
+            1,
+            3,
+            target_index=0,
+            target_count=2,
+            label="baseline",
+            at_ms=_ms(clock),
+        ),
+    )
+    clock.tick(10)
+    renderer.report(
+        _pass_finished(
+            1,
+            3,
+            target_index=0,
+            target_count=2,
+            label="baseline",
+            at_ms=_ms(clock),
+        ),
+    )
+    clock.tick(1)
+    renderer.report(
+        _pass_started(
+            1,
+            3,
+            target_index=1,
+            target_count=2,
+            label="experiment",
+            at_ms=_ms(clock),
+        ),
+    )
+
+    result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
+def test_frame_when_judge_started_does_show_running_with_elapsed(
+    snapshot: SnapshotAssertion,
+):
+    """You should see running judge spinner with elapsed ticking from JudgeStarted."""
+    _console, clock, renderer = _live(sample_count=1)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
+    clock.tick(6)
+    renderer.report(JudgeStarted(at_ms=_ms(clock)))
+    clock.tick(3)
+
+    result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
+def test_frame_when_judge_finished_after_started_does_show_elapsed(
+    snapshot: SnapshotAssertion,
+):
+    """You should see judge done node with elapsed computed from JudgeStarted to JudgeFinished."""
+    _console, clock, renderer = _live(sample_count=1)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
+    clock.tick(6)
+    renderer.report(JudgeStarted(at_ms=_ms(clock)))
+    clock.tick(4)
+    renderer.report(
+        JudgeFinished(primary_delta_pct=-3.2, regressed=("latency",), at_ms=_ms(clock)),
+    )
+
+    result = frame_text(renderer.frame())
+
+    assert result == snapshot
+    renderer.stop()
+
+
+def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
+    snapshot: SnapshotAssertion,
+):
+    """You should see record node with 'checks (cmd) run at gymrat keep'."""
+    _console, _clock, renderer = _live(
+        seq=3,
+        checks_cmd="npm run check && npm test",
+    )
+
+    renderer.report(IterationRecorded(seq=3, outcome="unsettled", at_ms=15000))
+
+    result = frame_text(renderer.frame(), width=100)
 
     assert result == snapshot
     renderer.stop()

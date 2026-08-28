@@ -41,16 +41,24 @@ def _reporter(
     height: int = 24,
     target_count: int = 1,
     sample_count: int = 3,
+    command: str | None = None,
+    target_labels: list[str] | None = None,
 ) -> tuple[Console, Clock, ProgressReporter]:
     """Wire a progress reporter to a sealed console and a hand-advanced clock."""
     clock = Clock()
     console = sealed_console(width=width, height=height)
+    kwargs: dict[str, object] = {}
+    if command is not None:
+        kwargs["command"] = command
+    if target_labels is not None:
+        kwargs["target_labels"] = target_labels
     reporter = create_progress_reporter(
         mode=mode,
         console=console,
         target_count=target_count,
         sample_count=sample_count,
         clock=clock,
+        **kwargs,  # type: ignore[arg-type]
     )
     return console, clock, reporter
 
@@ -115,6 +123,13 @@ def _fake_install(
         return lambda: None
 
     return install
+
+
+def _running_detail_line(result: str) -> str:
+    """The frame's one detail line reporting a running pass."""
+    lines = [ln for ln in result.splitlines() if "running" in ln.lower()]
+    assert len(lines) == 1
+    return lines[0]
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +215,96 @@ def test_frame_when_compact_layout_on_short_console_does_show_sample_count(
     result = frame_text(reporter.frame())
 
     assert result == snapshot
+    reporter.stop()
+
+
+# ---------------------------------------------------------------------------
+# Header line -- command name, target labels, sample count
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_measure_command_does_show_header_with_command_and_labels():
+    """Header line: ``measure ecstatic-ts · 5 samples``."""
+    _console, _clock, reporter = _reporter(
+        "live",
+        command="measure",
+        target_labels=["ecstatic-ts"],
+        sample_count=5,
+    )
+    reporter.report(PrepareStarted(label="ecstatic-ts", at_ms=0))
+
+    result = frame_text(reporter.frame())
+
+    first_line = result.splitlines()[0]
+    assert "measure" in first_line
+    assert "ecstatic-ts" in first_line
+    assert "5 samples" in first_line
+    reporter.stop()
+
+
+def test_frame_when_compare_command_does_show_header_with_multiple_labels():
+    """Header line: ``compare main, candidate · 5 samples``."""
+    _console, _clock, reporter = _reporter(
+        "live",
+        command="compare",
+        target_labels=["main", "candidate"],
+        target_count=2,
+        sample_count=5,
+    )
+    reporter.report(PrepareStarted(label="main", at_ms=0))
+
+    result = frame_text(reporter.frame())
+
+    first_line = result.splitlines()[0]
+    assert "compare" in first_line
+    assert "main" in first_line
+    assert "candidate" in first_line
+    assert "5 samples" in first_line
+    reporter.stop()
+
+
+# ---------------------------------------------------------------------------
+# Detail line -- live elapsed for running pass
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_pass_running_does_show_live_elapsed():
+    """Detail line shows ``running M:SS`` that ticks with the clock.
+
+    After 41 seconds into pass 3, the detail line should show ``running 0:41``.
+    """
+    _console, clock, reporter = _reporter("live", sample_count=5)
+    reporter.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 5, at_ms=_ms(clock)))
+    clock.tick(240)
+    reporter.report(_pass_finished(1, 5, at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(2, 5, at_ms=_ms(clock)))
+    clock.tick(242)
+    reporter.report(_pass_finished(2, 5, at_ms=_ms(clock)))
+    clock.tick(1)
+    reporter.report(_pass_started(3, 5, at_ms=_ms(clock)))
+    clock.tick(41)
+
+    result = frame_text(reporter.frame())
+
+    detail_line = _running_detail_line(result)
+    assert "running 0:41" in detail_line
+    assert "last pass" in detail_line
+    reporter.stop()
+
+
+def test_frame_when_pass_just_started_does_show_running_zero():
+    """At pass start (0 seconds elapsed), detail line shows ``running 0:00``."""
+    _console, clock, reporter = _reporter("live", sample_count=3)
+    reporter.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
+
+    result = frame_text(reporter.frame())
+
+    assert "running 0:00" in _running_detail_line(result)
     reporter.stop()
 
 

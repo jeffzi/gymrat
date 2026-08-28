@@ -90,6 +90,13 @@ class HookFinished:
 
 
 @dataclass(frozen=True, slots=True)
+class JudgeStarted:
+    """Emitted before the judge evaluates an iteration's samples."""
+
+    at_ms: float
+
+
+@dataclass(frozen=True, slots=True)
 class JudgeFinished:
     """Emitted after the judge evaluates an iteration's samples."""
 
@@ -130,6 +137,7 @@ type ProgressEvent = (
     | PassFinished
     | HookStarted
     | HookFinished
+    | JudgeStarted
     | JudgeFinished
     | ConfirmStarted
     | ConfirmFinished

@@ -56,6 +56,7 @@ from gymrat_py.progress_events import (
     HookStarted,
     IterationRecorded,
     JudgeFinished,
+    JudgeStarted,
     PassFinished,
     PassStarted,
     ProgressEvent,
@@ -381,6 +382,7 @@ async def iterate_session(
 
 async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
     """Bench the pair, confirm any gating regression, and assemble the comparison."""
+    _emit(ctx.options, JudgeStarted(at_ms=default_clock()))
     first = await _bench_and_judge(ctx, ctx.config.bench)
 
     primary = _resolve_primary(ctx.config.primary, first.verdicts, first.metric_meta)
