@@ -179,7 +179,9 @@ def test_measure_when_signalled_mid_bench_does_kill_bench_grandchild_before_exit
 
     assert proc.returncode == expected_code
     _wait_until_dead(grandchild)
-    assert not _is_alive(bench_pid)
+    # Polled rather than checked once: a SIGKILLed leader stays visible to
+    # ``os.kill(pid, 0)`` as a zombie until its parent reaps it.
+    _wait_until_dead(bench_pid)
 
 
 # ---------------------------------------------------------------------------
