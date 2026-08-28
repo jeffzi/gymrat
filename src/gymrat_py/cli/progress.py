@@ -151,6 +151,7 @@ class ProgressReporter:
         self._current_pass_event: PassStarted | None = None
         self._compact = False
         self._stopped = False
+        self._metric_count: int | None = None
         self._uninstall_cleanup: Callable[[], None] = lambda: None
 
         if self._is_live:
@@ -184,11 +185,12 @@ class ProgressReporter:
             )
 
         self._live = Live(
-            self.frame(),
             console=console,
-            auto_refresh=False,
+            auto_refresh=True,
+            refresh_per_second=1,
             transient=True,
             redirect_stderr=False,
+            get_renderable=self.frame,
         )
         self._live.start()
 
@@ -223,8 +225,7 @@ class ProgressReporter:
         if self._clock is not None:
             elapsed_ms = self._clock() * 1000 - event.at_ms
             elapsed_seconds = max(0, int(elapsed_ms / 1000))
-            minutes = elapsed_seconds // _SECONDS_PER_MINUTE
-            seconds = elapsed_seconds % _SECONDS_PER_MINUTE
+            minutes, seconds = divmod(elapsed_seconds, _SECONDS_PER_MINUTE)
             parts.append(f"running {minutes}:{seconds:02d}")
 
         if self._last_pass_duration_ms > 0:
@@ -250,7 +251,6 @@ class ProgressReporter:
 
     def _refresh_live(self) -> None:
         if self._live is not None:
-            self._live.update(self.frame())
             self._live.refresh()
 
     def report(self, event: ProgressEvent) -> None:
@@ -284,18 +284,20 @@ class ProgressReporter:
     def _on_prepare_finished(self, event: PrepareFinished) -> None:
         elapsed_ms = event.at_ms - self._prepare_start_ms
         self._prepare_elapsed_ms += elapsed_ms
-        if self._is_live:
-            if self._prepare_progress is not None and self._prepare_task_id is not None:
-                self._prepare_progress.update(
-                    self._prepare_task_id,
-                    description=f"✔ {event.label}",
-                    total=1,
-                    completed=1,
-                )
-            self._refresh_live()
-        else:
+
+        if not self._is_live:
             elapsed = format_duration(elapsed_ms)
             self._print_plain(event.at_ms, f"prepared {event.label} ({elapsed})")
+            return
+
+        if self._prepare_progress is not None and self._prepare_task_id is not None:
+            self._prepare_progress.update(
+                self._prepare_task_id,
+                description=f"✔ {event.label}",
+                total=1,
+                completed=1,
+            )
+        self._refresh_live()
 
     def _on_pass_started(self, event: PassStarted) -> None:
         self._pass_start_ms = event.at_ms
@@ -306,23 +308,21 @@ class ProgressReporter:
         if not self._is_live or self._pass_progress is None:
             return
 
-        if self._pass_task_id is None:
-            if self._compact:
-                desc = f"sample {event.round}/{event.total_rounds}"
-                self._pass_task_id = self._pass_progress.add_task(
-                    desc, total=self._total, target=event.label
-                )
-            else:
-                self._pass_task_id = self._pass_progress.add_task("sampling", total=self._total)
-
         if self._compact:
+            description = f"sample {event.round}/{event.total_rounds}"
+            if self._pass_task_id is None:
+                self._pass_task_id = self._pass_progress.add_task(
+                    description, total=self._total, target=event.label
+                )
             self._pass_progress.update(
                 self._pass_task_id,
-                description=f"sample {event.round}/{event.total_rounds}",
+                description=description,
                 target=event.label,
                 completed=self._completed,
             )
         else:
+            if self._pass_task_id is None:
+                self._pass_task_id = self._pass_progress.add_task("sampling", total=self._total)
             self._pass_progress.update(self._pass_task_id, completed=self._completed)
             self._current_pass_event = event
 
@@ -362,9 +362,8 @@ class ProgressReporter:
     def _format_timestamp(self, at_ms: float) -> str:
         elapsed_ms = at_ms - (self._run_start_ms or at_ms)
         total_seconds = int(elapsed_ms / 1000)
-        hours = total_seconds // _SECONDS_PER_HOUR
-        minutes = (total_seconds % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE
-        seconds = total_seconds % _SECONDS_PER_MINUTE
+        hours, remainder = divmod(total_seconds, _SECONDS_PER_HOUR)
+        minutes, seconds = divmod(remainder, _SECONDS_PER_MINUTE)
         return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
 
     def _clear_on_signal(self) -> None:
@@ -379,6 +378,10 @@ class ProgressReporter:
     def warn(self, message: str) -> None:
         """Surface a warning without disturbing any active live display."""
         self._console.print(message, highlight=False, markup=False)
+
+    def set_metric_count(self, count: int) -> None:
+        """Record the number of distinct metrics for the summary line."""
+        self._metric_count = count
 
     def stop(self) -> None:
         """Stop the reporter and clean up any live display."""
@@ -398,7 +401,11 @@ class ProgressReporter:
         samples = self._sample_count or (
             self._total // self._target_count if self._target_count else 0
         )
-        suffix = f" · {samples} samples · {elapsed} (prepare {prepare})"
+        parts = [f"{samples} samples"]
+        if self._metric_count is not None:
+            parts.append(f"{self._metric_count} metrics")
+        parts.append(f"{elapsed} (prepare {prepare})")
+        suffix = " · " + " · ".join(parts)
 
         if self._target_count > 1:
             headline = f"✔ compared {self._target_count} targets"

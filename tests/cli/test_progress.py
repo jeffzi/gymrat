@@ -132,6 +132,28 @@ def _running_detail_line(result: str) -> str:
     return lines[0]
 
 
+def _summary_line(console: Console) -> str:
+    """The last visible line of the rendered screen, or '' if nothing was printed."""
+    visible = screen_lines(_output(console))
+    return visible[-1] if visible else ""
+
+
+def _run_two_passes(reporter: ProgressReporter, clock: Clock) -> None:
+    """Drive prepare plus two full 2-sample passes to completion.
+
+    The shared "measure done" setup behind the summary-line tests: prepare,
+    then rounds 1 and 2 of 2, each started and finished.
+    """
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(1)
+    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+    for round_num in (1, 2):
+        clock.tick(1)
+        reporter.report(_pass_started(round_num, 2, at_ms=_ms(clock)))
+        clock.tick(10)
+        reporter.report(_pass_finished(round_num, 2, at_ms=_ms(clock)))
+
+
 # ---------------------------------------------------------------------------
 # Frame golden snapshots via frame_text(reporter.frame())
 # ---------------------------------------------------------------------------
@@ -372,23 +394,30 @@ def test_live_wiring_when_created_does_set_transient_and_no_redirect_stderr():
     reporter.stop()
 
 
-def test_refresh_live_when_called_does_render_from_frame(
+def test_live_wiring_when_created_does_set_auto_refresh_and_get_renderable():
+    """Live display uses get_renderable=self.frame, auto_refresh=True, refresh_per_second=1."""
+    _console, _clock, reporter = _reporter("live")
+
+    live = reporter._live
+    assert live is not None
+    assert live.auto_refresh is True
+    assert live.refresh_per_second == 1
+    assert live._get_renderable == reporter.frame
+    reporter.stop()
+
+
+def test_refresh_live_when_called_does_call_refresh_on_live(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """With get_renderable wired, _refresh_live only needs to call live.refresh()."""
     _console, _clock, reporter = _reporter("live")
-    calls: list[object] = []
-    original_frame = reporter.frame
-
-    def spy_frame() -> object:
-        result = original_frame()
-        calls.append(result)
-        return result
-
-    monkeypatch.setattr(reporter, "frame", spy_frame)
+    refreshed: list[bool] = []
+    assert reporter._live is not None
+    monkeypatch.setattr(reporter._live, "refresh", lambda: refreshed.append(True))
 
     reporter._refresh_live()
 
-    assert len(calls) == 1
+    assert len(refreshed) == 1
     reporter.stop()
 
 
@@ -450,23 +479,56 @@ def test_stop_when_called_twice_does_not_raise_and_clears_live():
 
 def test_stop_when_measure_done_does_print_summary(snapshot: SnapshotAssertion):
     console, clock, reporter = _reporter("live", sample_count=2)
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    clock.tick(1)
-    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
-    clock.tick(1)
-    reporter.report(_pass_started(1, 2, at_ms=_ms(clock)))
-    clock.tick(10)
-    reporter.report(_pass_finished(1, 2, at_ms=_ms(clock)))
-    clock.tick(1)
-    reporter.report(_pass_started(2, 2, at_ms=_ms(clock)))
-    clock.tick(10)
-    reporter.report(_pass_finished(2, 2, at_ms=_ms(clock)))
+    _run_two_passes(reporter, clock)
 
     reporter.stop()
 
-    visible = screen_lines(_output(console))
-    summary = visible[-1] if visible else ""
-    assert summary == snapshot
+    assert _summary_line(console) == snapshot
+
+
+def test_stop_when_metric_count_set_does_include_metrics_in_summary():
+    """Summary reads '... 54 metrics ...' when set_metric_count(54) called before stop()."""
+    console, clock, reporter = _reporter("live", sample_count=5)
+    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(108)
+    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
+    for i in range(1, 6):
+        clock.tick(1)
+        reporter.report(_pass_started(i, 5, at_ms=_ms(clock)))
+        clock.tick(200)
+        reporter.report(_pass_finished(i, 5, at_ms=_ms(clock)))
+
+    reporter.set_metric_count(54)
+    reporter.stop()
+
+    summary = _summary_line(console)
+    assert "5 samples" in summary
+    assert "54 metrics" in summary
+    assert "bench" in summary
+
+
+def test_stop_when_metric_count_not_set_does_omit_metrics_from_summary():
+    """When set_metric_count is never called, summary has no metrics segment."""
+    console, clock, reporter = _reporter("live", sample_count=2)
+    _run_two_passes(reporter, clock)
+
+    reporter.stop()
+
+    summary = _summary_line(console)
+    assert "metrics" not in summary
+    assert "2 samples" in summary
+
+
+def test_stop_when_plain_mode_and_metric_count_set_does_not_print_summary():
+    """Plain mode stays milestone-lines-only: no summary, even with metric count set."""
+    console, clock, reporter = _reporter("plain", sample_count=2)
+    _run_two_passes(reporter, clock)
+
+    reporter.set_metric_count(42)
+    reporter.stop()
+
+    output = _output(console)
+    assert "42 metrics" not in output
 
 
 def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
@@ -503,9 +565,7 @@ def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
 
     reporter.stop()
 
-    visible = screen_lines(_output(console))
-    summary = visible[-1] if visible else ""
-    assert summary == snapshot
+    assert _summary_line(console) == snapshot
 
 
 # ---------------------------------------------------------------------------

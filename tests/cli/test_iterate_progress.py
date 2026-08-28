@@ -671,23 +671,21 @@ def test_live_wiring_when_created_does_set_transient_from_verbose(
     renderer.stop()
 
 
-def test_refresh_live_when_called_does_render_from_frame(
+def test_refresh_live_when_called_does_call_refresh_on_live(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _console, _clock, renderer = _live()
-    calls: list[object] = []
-    original_frame = renderer.frame
+    refreshed = False
 
-    def spy_frame() -> object:
-        result = original_frame()
-        calls.append(result)
-        return result
+    def spy_refresh() -> None:
+        nonlocal refreshed
+        refreshed = True
 
-    monkeypatch.setattr(renderer, "frame", spy_frame)
+    monkeypatch.setattr(renderer._live, "refresh", spy_refresh)
 
     renderer._refresh_live()
 
-    assert len(calls) == 1
+    assert refreshed
     renderer.stop()
 
 

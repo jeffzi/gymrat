@@ -88,7 +88,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     no_color: NoColorOption = False,
     debug: DebugOption = False,
 ) -> None:
-    """Compare one baseline revision against one or more candidates."""
+    """Run each candidate against the baseline and exit non-zero when --fail-on fires."""
     if debug:
         set_debug_mode(True)
     flags = CompareFlags(
@@ -128,7 +128,9 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                     on_progress=run_opts.on_progress,
                     warn=run_opts.warn,
                 )
-                return await engine.compare(options)
+                result = await engine.compare(options)
+                progress.set_metric_count(len(result.metrics))
+                return result
             finally:
                 progress.stop()
 
