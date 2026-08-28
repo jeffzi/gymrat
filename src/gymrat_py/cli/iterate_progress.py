@@ -525,8 +525,6 @@ class IterateRenderer:
         self._record.subtext = ""
 
         detail_parts = [f"seq {event.seq}", event.outcome]
-        if event.outcome == "unsettled":
-            detail_parts.append("unsettled")
         self._record.detail = " · ".join(detail_parts)
 
         if self._is_live:
