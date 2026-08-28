@@ -29,6 +29,7 @@ from gymrat_py.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
+from tests._rich import frame_text
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -727,3 +728,21 @@ def test_create_fan_out_when_no_subscribers_does_not_raise():
 
     event = PrepareStarted(label="test", at_ms=0)
     fan_out(event)
+
+
+# ---------------------------------------------------------------------------
+# frame() seam — single render path
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_live_mode_with_event_does_return_renderable_with_content():
+    console = _live_console()
+    clock = _Clock()
+    renderer = _renderer("live", console, clock)
+
+    renderer.report(HookStarted(stage="before", at_ms=0))
+    text = frame_text(renderer.frame())
+
+    assert isinstance(renderer, IterateRenderer)
+    assert "before" in text.lower()
+    renderer.stop()

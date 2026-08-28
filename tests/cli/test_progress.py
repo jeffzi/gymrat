@@ -10,7 +10,7 @@ from typing import Literal
 import pytest
 from rich.console import Console
 
-from gymrat_py.cli.progress import create_progress_reporter
+from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat_py.progress_events import (
     HookStarted,
     PassFinished,
@@ -18,6 +18,7 @@ from gymrat_py.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
+from tests._rich import frame_text
 
 
 class _Clock:
@@ -578,3 +579,21 @@ def test_old_eta_pending_label_is_removed():
         from gymrat_py.cli.progress import (
             ETA_PENDING_LABEL,  # type: ignore[missing-module-attribute]  # noqa: F401
         )
+
+
+# ---------------------------------------------------------------------------
+# frame() seam — single render path
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_live_mode_with_event_does_return_renderable_with_content():
+    console = _live_console()
+    clock = _Clock()
+    reporter = _reporter("live", console, clock)
+
+    reporter.report(PrepareStarted(label="build", at_ms=0))
+    text = frame_text(reporter.frame())
+
+    assert isinstance(reporter, ProgressReporter)
+    assert "build" in text
+    reporter.stop()

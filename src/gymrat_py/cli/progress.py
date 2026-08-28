@@ -179,7 +179,7 @@ class ProgressReporter:
             )
 
         self._live = Live(
-            self._build_renderable(),
+            self.frame(),
             console=console,
             auto_refresh=False,
             transient=True,
@@ -192,7 +192,8 @@ class ProgressReporter:
         # terminal. Clearing it here keeps the terminal clean.
         self._uninstall_cleanup = install_termination_cleanup(self._clear_on_signal)
 
-    def _build_renderable(self) -> Group:
+    def frame(self) -> Group:
+        """Return the renderable the live display paints from."""
         parts: list[RenderableType] = []
         if self._prepare_progress is not None:
             parts.append(self._prepare_progress)
@@ -206,7 +207,7 @@ class ProgressReporter:
 
     def _refresh_live(self) -> None:
         if self._live is not None:
-            self._live.update(self._build_renderable())
+            self._live.update(self.frame())
             self._live.refresh()
 
     def report(self, event: ProgressEvent) -> None:

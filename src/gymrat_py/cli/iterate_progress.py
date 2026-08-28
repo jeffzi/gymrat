@@ -187,7 +187,7 @@ class IterateRenderer:
             )
 
         self._live = Live(
-            self._build_renderable(),
+            self.frame(),
             console=self._console,
             auto_refresh=False,
             transient=not self._verbose,
@@ -197,7 +197,8 @@ class IterateRenderer:
 
         self._uninstall_cleanup = install_termination_cleanup(self._clear_on_signal)
 
-    def _build_renderable(self) -> RenderableType:
+    def frame(self) -> RenderableType:
+        """Return the renderable the live display paints from."""
         if self._compact and self._compact_progress is not None:
             return self._compact_progress
 
@@ -291,7 +292,7 @@ class IterateRenderer:
 
     def _refresh_live(self) -> None:
         if self._live is not None:
-            self._live.update(self._build_renderable())
+            self._live.update(self.frame())
             self._live.refresh()
 
     def _track_timestamp(self, at_ms: float) -> None:
