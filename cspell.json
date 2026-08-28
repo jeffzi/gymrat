@@ -62,6 +62,7 @@
     "strerror",
     "Taskfile",
     "taskkill",
+    "TIOCSWINSZ",
     "testpaths",
     "tomli",
     "typer",

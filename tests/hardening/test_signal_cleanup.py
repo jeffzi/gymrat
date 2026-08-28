@@ -15,24 +15,32 @@ group with the ``reap_groups`` fixture so no orphan bench survives a failed
 assertion.
 """
 
+from __future__ import annotations
+
 import contextlib
 import os
-import re
 import signal
+import struct
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
 if sys.platform != "win32":
+    import fcntl
     import pty
+    import termios
 
 from tests._cli import ENTRY as _ENTRY
 from tests._process_helpers import is_alive as _is_alive
+from tests._rich import screen_lines
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import env as _env
 from tests.hardening._bench_helpers import git as _git
@@ -43,7 +51,11 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shel
 # The overwrite status line clears its row with a carriage return followed by the
 # ANSI "erase to end of line" sequence.
 _CLEAR_LINE = "\r\x1b[K"
-_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# Fixed pty dimensions for the pyte screen replay. The slave pty is sized to
+# these values via TIOCSWINSZ so Rich in the child renders at a known geometry.
+_PTY_WIDTH = 80
+_PTY_HEIGHT = 24
 
 # A bench that records its own process-group leader pid and a background
 # grandchild pid, emits one metric, then blocks forever on the grandchild. The
@@ -106,17 +118,6 @@ def _wait_for_worktree_count(
             message = f"expected >= {count} worktrees, saw {got}"
             raise AssertionError(message)
         time.sleep(0.05)
-
-
-def _final_line_is_blank(output: str) -> bool:
-    r"""Whether the terminal's current line is empty after replaying the stream.
-
-    Splits on carriage returns and newlines to isolate the text written since
-    the cursor last returned to column zero, then strips ANSI escapes. A cleared
-    status row ends with ``\r\x1b[K``, leaving nothing visible on the line.
-    """
-    tail = re.split(r"[\r\n]", output)[-1]
-    return _ANSI.sub("", tail).strip() == ""
 
 
 @pytest.fixture
@@ -241,6 +242,12 @@ def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
     _write_committed_bench(repo, _TRACKED_BENCH)
 
     master, slave = pty.openpty()
+
+    # Set a known window size on the slave so Rich renders at _PTY_WIDTH x
+    # _PTY_HEIGHT instead of falling back on its defaults from a 0x0 pty.
+    ws = struct.pack("HHHH", _PTY_HEIGHT, _PTY_WIDTH, 0, 0)  # cspell:disable-line
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, ws)
+
     proc = subprocess.Popen(  # noqa: S603
         [*_ENTRY, "measure", "--bench", "sh bench.sh", "--samples", "1"],
         cwd=repo,
@@ -271,7 +278,15 @@ def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
 
     assert proc.returncode == 130
     assert _CLEAR_LINE in output, f"status line never drew progress: {output!r}"
-    assert _final_line_is_blank(output), f"stray status text left on the line: {output!r}"
+
+    # Replay the pty stream through a pyte emulated screen at the same
+    # dimensions. screen_lines strips trailing blank rows, so a properly
+    # cleared status area at the bottom of the screen simply disappears from
+    # the result. If progress content survived the signal, it would remain as
+    # the last visible row — the "━" bar character is unambiguous.
+    visible = screen_lines(output, width=_PTY_WIDTH, height=_PTY_HEIGHT)
+    last = visible[-1] if visible else ""
+    assert "━" not in last, f"progress bar survived signal cleanup: {last!r}"
 
 
 def test_measure_when_signalled_off_a_tty_does_not_emit_terminal_clear_codes(
