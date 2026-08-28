@@ -93,3 +93,8 @@ def lockfile_path(root: str) -> str:
 def supervise_lockfile_path(root: str) -> str:
     """Lockfile guarding the supervisor for a gymrat run over ``root``."""
     return _lock_path("gymrat-supervise-lock", root)
+
+
+def progress_path(root: str) -> str:
+    """Path to the progress sidecar file under ``root``'s session directory."""
+    return str(Path(root) / SESSION_DIR_NAME / "progress.json")
