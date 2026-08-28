@@ -41,7 +41,6 @@ from gymrat_py.cli.shared import (
     resolve_render_mode,
     resolve_stream_color,
 )
-from gymrat_py.cli.status_line import create_status_line
 from gymrat_py.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat_py.doctor.render import render_doctor_report
 from gymrat_py.report.style import shorten_label
@@ -54,8 +53,6 @@ if TYPE_CHECKING:
 
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY as _ENTRY
-
-_CLEAR_LINE = "\r\x1b[K"
 
 _METRIC_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
@@ -338,60 +335,3 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
 
 def test_shorten_label_when_width_is_zero_does_return_empty_without_garbage():
     assert shorten_label("abcdefghijklmnop", 0) == ""
-
-
-def _zero_width_terminal(*_args: object, **_kwargs: object) -> os.terminal_size:
-    """A ``get_terminal_size`` stand-in for a terminal that reports zero columns."""
-    return os.terminal_size((0, 0))
-
-
-def test_status_line_when_terminal_reports_zero_width_does_not_crash_or_spill(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("COLUMNS", raising=False)
-    monkeypatch.setattr("shutil.get_terminal_size", _zero_width_terminal)
-    fake = _FakeStream(tty=True)
-    monkeypatch.setattr("sys.stderr", fake)
-    line = create_status_line("overwrite")
-
-    line.write("abcdefghijklmnop")
-
-    drawn = fake.getvalue()
-    assert drawn.startswith(_CLEAR_LINE)
-    assert strip_ansi(drawn).strip() == ""
-
-
-@pytest.mark.parametrize(
-    "columns",
-    [pytest.param("0", id="zero"), pytest.param("", id="empty"), pytest.param("-5", id="negative")],
-)
-def test_status_line_when_columns_env_is_non_positive_does_not_spill(
-    monkeypatch: pytest.MonkeyPatch, columns: str
-):
-    monkeypatch.setenv("COLUMNS", columns)
-    fake = _FakeStream(tty=True)
-    monkeypatch.setattr("sys.stderr", fake)
-    line = create_status_line("overwrite")
-
-    line.write("abcdefghijklmnop")
-
-    drawn = fake.getvalue()
-    assert drawn.startswith(_CLEAR_LINE)
-    assert strip_ansi(drawn).strip() == ""
-
-
-def test_status_line_when_columns_env_is_positive_does_truncate_to_fit(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("COLUMNS", "10")
-    fake = _FakeStream(tty=True)
-    monkeypatch.setattr("sys.stderr", fake)
-    line = create_status_line("overwrite")
-
-    label = "abcdefghijklmnopqrstuvwxyz0123456789"
-    line.write(label)
-
-    visible = strip_ansi(fake.getvalue()).strip()
-    assert visible
-    assert visible != label
-    assert len(visible) <= 10

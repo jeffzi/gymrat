@@ -61,6 +61,27 @@ class _StubReporter:
     def stop(self) -> None: ...
 
 
+def _capturing_create_progress_reporter(
+    captured: dict[str, object],
+) -> Callable[..., _StubReporter]:
+    """A ``create_progress_reporter`` stub that records the call's mode and counts."""
+
+    def fake_create(
+        mode: str,
+        console: object,
+        target_count: int,
+        sample_count: int | None = None,
+        *,
+        clock: object = None,
+    ) -> _StubReporter:
+        captured["mode"] = mode
+        captured["target_count"] = target_count
+        captured["sample_count"] = sample_count
+        return _StubReporter()
+
+    return fake_create
+
+
 def _path_exists(path: Path) -> bool:
     """Filesystem probe kept out of the async body so it is not flagged as blocking I/O."""
     return path.exists()
@@ -299,15 +320,13 @@ def test_resolve_render_mode_ignores_color_env(monkeypatch: pytest.MonkeyPatch) 
     assert resolve_render_mode() == "live"
 
 
-def test_render_mode_type_includes_live_and_plain():
-    """RenderMode includes 'live' and 'plain' for the new rich renderer."""
-    import typing
+def test_resolve_render_mode_returns_live_or_plain(monkeypatch: pytest.MonkeyPatch):
+    """resolve_render_mode returns one of the two supported modes."""
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    assert resolve_render_mode() in {"live", "plain"}
 
-    from gymrat_py.cli.status_line import RenderMode
-
-    actual = set(typing.get_args(RenderMode.__value__))
-
-    assert {"live", "plain"} <= actual
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
+    assert resolve_render_mode() in {"live", "plain"}
 
 
 # ---------------------------------------------------------------------------
@@ -322,21 +341,10 @@ def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
 
     captured: dict[str, object] = {}
-
-    def fake_create(
-        mode: str,
-        console: object,
-        target_count: int,
-        sample_count: int | None = None,
-        *,
-        clock: object = None,
-    ) -> _StubReporter:
-        captured["mode"] = mode
-        captured["target_count"] = target_count
-        captured["sample_count"] = sample_count
-        return _StubReporter()
-
-    monkeypatch.setattr("gymrat_py.cli.shared.create_progress_reporter", fake_create)
+    monkeypatch.setattr(
+        "gymrat_py.cli.shared.create_progress_reporter",
+        _capturing_create_progress_reporter(captured),
+    )
 
     flags = SharedFlags(bench="b", samples=7)
 
@@ -354,19 +362,10 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
 
     captured: dict[str, object] = {}
-
-    def fake_create(
-        mode: str,
-        console: object,
-        target_count: int,
-        sample_count: int | None = None,
-        *,
-        clock: object = None,
-    ) -> _StubReporter:
-        captured["mode"] = mode
-        return _StubReporter()
-
-    monkeypatch.setattr("gymrat_py.cli.shared.create_progress_reporter", fake_create)
+    monkeypatch.setattr(
+        "gymrat_py.cli.shared.create_progress_reporter",
+        _capturing_create_progress_reporter(captured),
+    )
 
     flags = SharedFlags(bench="b", samples=5)
 
@@ -537,7 +536,6 @@ def test_importing_cli_modules_does_not_pull_the_heavy_stack_or_command_bodies()
     probe = """
 import sys
 import gymrat_py.cli.shared
-import gymrat_py.cli.status_line
 import gymrat_py.cli.progress
 import gymrat_py.cli.gating
 heavy = sorted(
