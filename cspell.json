@@ -48,6 +48,7 @@
     "pylint",
     "pyproject",
     "pyrefly",
+    "pyte",
     "pytest",
     "pytestmark",
     "pythonpath",
