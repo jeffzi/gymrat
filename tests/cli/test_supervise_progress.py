@@ -14,7 +14,9 @@ disk.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
+from unittest.mock import patch
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -91,6 +93,16 @@ def session_state(**changes: Any) -> SessionState:
     return replace(empty_session_state(), **changes)
 
 
+def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
+    """Convert epoch milliseconds to local-time ``HH:MM:SS`` for test assertions.
+
+    Uses the same epoch-to-local conversion the implementation should use, so
+    tests are timezone-independent — they compute the expected string rather
+    than hard-coding a clock time.
+    """
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
+
+
 def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> IterationRecord:
     """An iteration whose only reporter-visible fields are its delta and outcome."""
     return iteration_record(
@@ -101,10 +113,30 @@ def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> Itera
 
 
 def make_read_session(
-    state: SessionState, *, has_baseline: bool
+    state: SessionState,
+    *,
+    has_baseline: bool,
+    best_delta_pct: float | None = None,
+    best_seq: int | None = None,
+    primary_label: str | None = None,
+    baseline_sha: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
-    """A ``read_session`` that always returns ``state`` and ``has_baseline``."""
-    result = ReadSessionResult(state=state, has_baseline=has_baseline)
+    """A ``read_session`` that always returns ``state`` and ``has_baseline``.
+
+    The best-tracking fields are passed to ``ReadSessionResult`` only when
+    explicitly provided, so existing callers that predate those fields are
+    unaffected.
+    """
+    best_kwargs: dict[str, Any] = {}
+    if best_delta_pct is not None:
+        best_kwargs["best_delta_pct"] = best_delta_pct
+    if best_seq is not None:
+        best_kwargs["best_seq"] = best_seq
+    if primary_label is not None:
+        best_kwargs["primary_label"] = primary_label
+    if baseline_sha is not None:
+        best_kwargs["baseline_sha"] = baseline_sha
+    result = ReadSessionResult(state=state, has_baseline=has_baseline, **best_kwargs)
     return lambda: result
 
 
@@ -499,13 +531,77 @@ def test_best_when_kept_iteration_exists_does_show_best_delta_and_seq():
         last_iteration=make_iteration(-6.8, "improved", seq=3),
     )
     kit = make_reporter(
-        read_session=make_read_session(state, has_baseline=True),
+        read_session=make_read_session(
+            state,
+            has_baseline=True,
+            best_delta_pct=-6.8,
+            best_seq=3,
+        ),
     )
     fire_launch_and_bash_cycle(kit.reporter.observer)
 
     frame = render_frame(kit.reporter)
 
     assert "best" in frame
+
+
+# ---------------------------------------------------------------------------
+# true best tracking (#22) — new ReadSessionResult fields
+# ---------------------------------------------------------------------------
+
+
+def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_seq():
+    """The best row renders delta, primary label, baseline SHA (7 chars), and seq."""
+    state = session_state(
+        iteration_count=5,
+        keep_count=2,
+        discard_count=3,
+        last_iteration=make_iteration(-2.0, "improved", seq=5),
+    )
+    kit = make_reporter(
+        read_session=make_read_session(
+            state,
+            has_baseline=True,
+            best_delta_pct=-6.8,
+            best_seq=3,
+            primary_label="geomean",
+            baseline_sha="2ec6e05abcdef1234567890abcdef1234567890a",
+        ),
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+
+    frame = render_frame(kit.reporter)
+
+    assert "best" in frame
+    assert "-6.8%" in frame
+    assert "geomean" in frame
+    assert "2ec6e05" in frame
+    assert "(seq 3)" in frame
+
+
+def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
+    state = session_state(
+        iteration_count=5,
+        keep_count=3,
+        discard_count=2,
+        last_iteration=make_iteration(-2.0, "improved", seq=5),
+    )
+    kit = make_reporter(
+        read_session=make_read_session(
+            state,
+            has_baseline=True,
+            best_delta_pct=-6.8,
+            best_seq=3,
+            primary_label="geomean",
+            baseline_sha="abcdef1234567890abcdef1234567890abcdef12",
+        ),
+    )
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+
+    frame = render_frame(kit.reporter)
+
+    assert "(seq 3)" in frame
+    assert "(seq 5)" not in frame
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +756,32 @@ def test_liveness_when_untracked_tool_ends_does_not_change():
 
 
 # ---------------------------------------------------------------------------
+# wall-clock finished-tool lines (#25/#26)
+# ---------------------------------------------------------------------------
+
+
+def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
+    """Each finished tool line leads with the local-time completion timestamp.
+
+    The expected timestamp is computed from the same epoch-to-local conversion
+    the implementation should use, so the assertion is timezone-independent.
+    """
+    ended_at_ms = 3000
+    expected_time = _epoch_ms_to_local_hms(ended_at_ms)
+
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000)
+
+    frame = render_frame(kit.reporter)
+
+    assert expected_time in frame
+
+
+# ---------------------------------------------------------------------------
 # liveness — idle state
 # ---------------------------------------------------------------------------
 
@@ -689,6 +811,35 @@ def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
     frame = render_frame(kit.reporter)
 
     assert "idle" not in frame
+
+
+# ---------------------------------------------------------------------------
+# idle context (#27) — wall-clock and tool glyph
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_when_idle_past_threshold_does_show_wall_clock_and_last_tool_context():
+    """Idle line shows wall-clock of last tool end plus tool name and success glyph.
+
+    The format is ``idle 4m 5s — no tool call since HH:MM:SS (last: Bash ✔)``.
+    """
+    ended_at_ms = 3000
+    expected_time = _epoch_ms_to_local_hms(ended_at_ms)
+
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000, result="ok")
+    kit.clock.now = 3000 + IDLE_WARN_MS + 1
+
+    frame = render_frame(kit.reporter)
+
+    assert "idle" in frame
+    assert expected_time in frame
+    assert "Bash" in frame
+    assert "✔" in frame
 
 
 # ---------------------------------------------------------------------------
@@ -993,7 +1144,14 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
         max_minutes=480,
         max_usd=10.0,
         max_iterations=5,
-        read_session=make_read_session(state, has_baseline=True),
+        read_session=make_read_session(
+            state,
+            has_baseline=True,
+            best_delta_pct=-6.8,
+            best_seq=3,
+            primary_label="geomean",
+            baseline_sha="abc1234567890abcdef1234567890abcdef123456",
+        ),
     )
     fire_launch(kit.reporter.observer, 1000, max_minutes=480, max_usd=10.0)
 
@@ -1028,3 +1186,33 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
     frame = render_frame(kit.reporter)
 
     assert frame == snapshot
+
+
+# ---------------------------------------------------------------------------
+# ticking display (#28) — Live uses get_renderable
+# ---------------------------------------------------------------------------
+
+LIVE_CLASS_PATH = "gymrat_py.cli.supervise_progress.Live"
+
+
+def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():
+    """Live is constructed with ``get_renderable`` so it rebuilds on its 1 Hz refresh."""
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        make_reporter(mode="live")
+
+        call_kwargs = mock_live_cls.call_args.kwargs
+        assert "get_renderable" in call_kwargs
+        assert callable(call_kwargs["get_renderable"])
+
+
+# ---------------------------------------------------------------------------
+# mounted display (#30) — Live.start() called during creation
+# ---------------------------------------------------------------------------
+
+
+def test_create_reporter_when_live_mode_does_mount_the_live_display():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        mock_live = mock_live_cls.return_value
+        make_reporter(mode="live")
+
+        mock_live.start.assert_called_once()

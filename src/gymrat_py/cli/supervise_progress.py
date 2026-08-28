@@ -14,6 +14,7 @@ import contextlib
 import sys
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, assert_never
 
 if TYPE_CHECKING:
@@ -33,6 +34,12 @@ from gymrat_py.session.clock import now_ms
 from gymrat_py.session.paths import session_jsonl_path
 from gymrat_py.session.progress_file import ProgressSnapshot
 from gymrat_py.session.progress_file import read_progress as _default_read_progress
+from gymrat_py.session.records import (
+    IterationRecord,
+    KeepRecord,
+    SessionLogRecord,
+    SessionRecord,
+)
 from gymrat_py.session.store import SessionState, fold_session, read_records
 from gymrat_py.supervisor.events import (
     CapEvent,
@@ -57,10 +64,19 @@ type CapType = Literal["wall-clock", "spend-cap"]
 
 @dataclass(frozen=True, slots=True)
 class ReadSessionResult:
-    """The folded session state plus whether a baseline has been recorded."""
+    """The folded session state plus whether a baseline has been recorded.
+
+    The ``best_*`` fields track the committed-keep iteration with the best
+    primary delta.  ``_make_default_read`` computes them from the session
+    records; injected test readers set them directly.
+    """
 
     state: SessionState
     has_baseline: bool
+    best_delta_pct: float | None = None
+    best_seq: int | None = None
+    primary_label: str | None = None
+    baseline_sha: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +115,7 @@ class _Ended:
 
     tool_name: str
     since: int
+    result: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +180,14 @@ def _is_iterate_tool(tool: _TrackedTool | _InFlight) -> bool:
     return tool.tool_name == "Bash" and "gymrat iterate" in tool.input_summary
 
 
+def _format_wall_clock(epoch_ms: int) -> str:
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
+
+
+def _format_result_mark(result: str) -> str:
+    return "✔" if result != "error" else "✗"
+
+
 # ---------------------------------------------------------------------------
 # Renderable builders
 # ---------------------------------------------------------------------------
@@ -224,23 +249,28 @@ def _build_loop_text(session_result: ReadSessionResult | None, max_iterations: i
 
 
 def _build_best_text(session_result: ReadSessionResult | None) -> str | None:
-    """Render the best-kept row, or None when no iteration is kept."""
+    """Render the best-kept row, or ``None`` when no committed keep exists."""
     if session_result is None:
         return None
-    state = session_result.state
-    if state.keep_count == 0:
+    if session_result.best_delta_pct is None or session_result.best_seq is None:
         return None
-    # The best kept delta is the last_iteration's primary when there are keeps.
-    # In a full implementation this would track the actual best across all kept
-    # iterations, but for a basic dashboard the last kept primary suffices.
-    if state.last_iteration is not None and state.last_iteration.primary.delta_pct is not None:
-        delta = format_delta(Effect(value=state.last_iteration.primary.delta_pct, unit="percent"))
-        return f"best {delta} (seq {state.last_iteration.seq})"
-    return None
+    delta = format_delta(Effect(value=session_result.best_delta_pct, unit="percent"))
+    parts = [f"best {delta}"]
+    if session_result.primary_label is not None:
+        parts.append(session_result.primary_label)
+    if session_result.baseline_sha is not None:
+        parts.append(f"vs baseline {session_result.baseline_sha[:7]}")
+    parts.append(f"(seq {session_result.best_seq})")
+    return " ".join(parts)
 
 
 def _build_liveness_text(liveness: _Liveness, now: int) -> str:
-    """Render the primary liveness indicator text."""
+    """Render the liveness line for the current state.
+
+    Plain elapsed text for starting/in-flight/recently-ended states, or an
+    idle warning with wall-clock and last-tool context once the ended state's
+    elapsed time exceeds ``IDLE_WARN_MS``.
+    """
     match liveness:
         case _Starting():
             return "starting"
@@ -250,10 +280,14 @@ def _build_liveness_text(liveness: _Liveness, now: int) -> str:
             if summary:
                 label += f"  {summary}"
             return label
-        case _Ended(tool_name=name, since=since):
+        case _Ended(tool_name=name, since=since, result=result):
             ago = now - since
             if ago >= IDLE_WARN_MS:
-                return f"idle {format_duration(ago)}"
+                return (
+                    f"idle {format_duration(ago)}"
+                    f" — no tool call since {_format_wall_clock(since)}"
+                    f" (last: {name} {_format_result_mark(result)})"
+                )
             return f"{name} {format_duration(ago)} ago"
         case _Capped(cap_type=cap_type):
             return f"interrupting ({cap_type})"
@@ -263,8 +297,10 @@ def _build_liveness_text(liveness: _Liveness, now: int) -> str:
 
 def _build_finished_tool_line(tool: _FinishedTool) -> str:
     """Render one finished tool line for the liveness log."""
-    ok = "✔" if tool.result != "error" else "✗"
-    return f"  {tool.tool_name}   {tool.input_summary}  {ok} {format_duration(tool.duration_ms)}"
+    wall_clock = _format_wall_clock(tool.ended_at)
+    mark = _format_result_mark(tool.result)
+    duration = format_duration(tool.duration_ms)
+    return f"  {wall_clock}  {tool.tool_name}   {tool.input_summary}  {mark} {duration}"
 
 
 def _build_iterate_nest(
@@ -414,7 +450,7 @@ def _next_liveness_after_tool_end(ctx: _ReporterCtx, event: ToolEndEvent) -> _Li
         return _InFlight(
             tool_name=last.tool_name, since=last.started_at, input_summary=last.input_summary
         )
-    return _Ended(tool_name=event.tool_name, since=event.timestamp)
+    return _Ended(tool_name=event.tool_name, since=event.timestamp, result=event.result)
 
 
 # ---------------------------------------------------------------------------
@@ -506,12 +542,54 @@ def _handle_event(ctx: _ReporterCtx, event: SessionEvent) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _find_best_kept_iteration(
+    records: list[SessionLogRecord], committed_seqs: set[int]
+) -> tuple[float | None, int | None, str | None]:
+    """Return ``(delta_pct, seq, primary_label)`` for the best committed keep.
+
+    Scans for the committed keep with the lowest primary delta.  Returns
+    all-``None`` when no committed keep has a delta.
+    """
+    best_delta_pct: float | None = None
+    best_seq: int | None = None
+    primary_label: str | None = None
+
+    for r in records:
+        if (
+            isinstance(r, IterationRecord)
+            and r.seq in committed_seqs
+            and r.primary.delta_pct is not None
+            and (best_delta_pct is None or r.primary.delta_pct < best_delta_pct)
+        ):
+            best_delta_pct = float(r.primary.delta_pct)
+            best_seq = r.seq
+            primary_label = r.primary.kind if r.primary.kind != "single" else r.primary.name
+
+    return best_delta_pct, best_seq, primary_label
+
+
+def _find_baseline_sha(records: list[SessionLogRecord]) -> str | None:
+    return next((r.baseline.sha for r in records if isinstance(r, SessionRecord)), None)
+
+
 def _make_default_read(root: str) -> Callable[[], ReadSessionResult]:
     def _read() -> ReadSessionResult:
         records = read_records(session_jsonl_path(root))
+        state = fold_session(records)
+        has_baseline = any(getattr(r, "type", None) == "baseline" for r in records)
+
+        committed_seqs = {
+            r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"
+        }
+        best_delta_pct, best_seq, primary_label = _find_best_kept_iteration(records, committed_seqs)
+
         return ReadSessionResult(
-            state=fold_session(records),
-            has_baseline=any(getattr(r, "type", None) == "baseline" for r in records),
+            state=state,
+            has_baseline=has_baseline,
+            best_delta_pct=best_delta_pct,
+            best_seq=best_seq,
+            primary_label=primary_label,
+            baseline_sha=_find_baseline_sha(records),
         )
 
     return _read
@@ -554,15 +632,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
 
     plain_writes_list: list[str] = []
 
-    live: Live | None = None
-    if not is_plain:
-        live = Live(
-            Text("starting"),
-            console=Console(stderr=True),
-            refresh_per_second=1,
-            transient=True,
-        )
-
     ctx = _ReporterCtx(
         now=resolved_now,
         read_session_fn=resolved_read,
@@ -584,8 +653,20 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         last_loop_text="",
         plain_write_fn=resolved_plain_write,
         plain_writes_list=plain_writes_list,
-        live=live,
+        live=None,
     )
+
+    # Live is created after ctx so that ``get_renderable`` can close over the
+    # fully-initialized context — Rich's ``Live.__init__`` eagerly calls
+    # ``get_renderable()`` to size the initial layout.
+    if not is_plain:
+        ctx.live = Live(
+            console=Console(stderr=True),
+            refresh_per_second=1,
+            transient=True,
+            get_renderable=lambda: _build_frame(ctx),
+        )
+        ctx.live.start()
 
     def get_frame() -> RenderableType:
         return _build_frame(ctx)

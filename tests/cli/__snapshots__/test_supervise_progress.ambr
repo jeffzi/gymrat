@@ -5,10 +5,10 @@
   │ time ━━━━━━━━━━━━━━━━━━━━━━━━━                                                   2h 42m / 8h 00m │
   │ cost $4.12 / $10.00                                                                              │
   │ loop   iter 3/5 · 1 kept · 1 discarded · last -6.8% improved                                     │
-  │ best -6.8% (seq 3)                                                                               │
+  │ best -6.8% geomean vs baseline abc1234 (seq 3)                                                   │
   │ Bash 1m 0s  gymrat iterate                                                                       │
-  │   Read   src/archetype.ts  ✔ 2h 41m                                                              │
-  │   Edit   src/archetype.ts  ✔ 2h 41m                                                              │
+  │   03:41:02  Read   src/archetype.ts  ✔ 2h 41m                                                    │
+  │   03:41:03  Edit   src/archetype.ts  ✔ 2h 41m                                                    │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---
@@ -30,9 +30,9 @@
   │ cost $—                                                                                          │
   │ loop   no session yet                                                                            │
   │ Read 0s ago                                                                                      │
-  │   Edit   src/b.ts  ✔ 1s                                                                          │
-  │   Bash   npm test  ✔ 2s                                                                          │
-  │   Read   src/c.ts  ✔ 3s                                                                          │
+  │   01:00:03  Edit   src/b.ts  ✔ 1s                                                                │
+  │   01:00:04  Bash   npm test  ✔ 2s                                                                │
+  │   01:00:05  Read   src/c.ts  ✔ 3s                                                                │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---
