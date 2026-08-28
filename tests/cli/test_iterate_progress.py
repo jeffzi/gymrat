@@ -105,6 +105,43 @@ def _pass_finished(
     )
 
 
+def _report_full_pass(
+    renderer: IterateRenderer,
+    clock: Clock,
+    round_num: int,
+    total_rounds: int,
+    *,
+    target_index: int = 0,
+    target_count: int = 1,
+    label: str = "bench",
+    phase: Literal["measure", "confirm"] = "measure",
+    duration_s: float,
+) -> None:
+    renderer.report(
+        _pass_started(
+            round_num,
+            total_rounds,
+            target_index=target_index,
+            target_count=target_count,
+            label=label,
+            phase=phase,
+            at_ms=_ms(clock),
+        )
+    )
+    clock.tick(duration_s)
+    renderer.report(
+        _pass_finished(
+            round_num,
+            total_rounds,
+            target_index=target_index,
+            target_count=target_count,
+            label=label,
+            phase=phase,
+            at_ms=_ms(clock),
+        )
+    )
+
+
 def _renderer(
     mode: Literal["live", "plain"],
     *,
@@ -259,48 +296,12 @@ def test_frame_when_passes_mid_run_does_show_bar_eta_and_detail(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    renderer.report(
-        _pass_started(
-            1,
-            5,
-            target_index=0,
-            target_count=2,
-            label="baseline",
-            at_ms=_ms(clock),
-        )
-    )
-    clock.tick(10)
-    renderer.report(
-        _pass_finished(
-            1,
-            5,
-            target_index=0,
-            target_count=2,
-            label="baseline",
-            at_ms=_ms(clock),
-        )
+    _report_full_pass(
+        renderer, clock, 1, 5, target_index=0, target_count=2, label="baseline", duration_s=10
     )
     clock.tick(1)
-    renderer.report(
-        _pass_started(
-            1,
-            5,
-            target_index=1,
-            target_count=2,
-            label="candidate",
-            at_ms=_ms(clock),
-        )
-    )
-    clock.tick(10)
-    renderer.report(
-        _pass_finished(
-            1,
-            5,
-            target_index=1,
-            target_count=2,
-            label="candidate",
-            at_ms=_ms(clock),
-        )
+    _report_full_pass(
+        renderer, clock, 1, 5, target_index=1, target_count=2, label="candidate", duration_s=10
     )
     clock.tick(1)
     renderer.report(
@@ -446,26 +447,8 @@ def test_frame_when_last_pass_done_detail_does_name_side_of_last_pass(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    renderer.report(
-        _pass_started(
-            1,
-            3,
-            target_index=0,
-            target_count=2,
-            label="baseline",
-            at_ms=_ms(clock),
-        ),
-    )
-    clock.tick(10)
-    renderer.report(
-        _pass_finished(
-            1,
-            3,
-            target_index=0,
-            target_count=2,
-            label="baseline",
-            at_ms=_ms(clock),
-        ),
+    _report_full_pass(
+        renderer, clock, 1, 3, target_index=0, target_count=2, label="baseline", duration_s=10
     )
     clock.tick(1)
     renderer.report(
@@ -607,9 +590,7 @@ def test_plain_when_passes_done_does_print_timestamped_line(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    renderer.report(_pass_started(1, 1, at_ms=_ms(clock)))
-    clock.tick(10)
-    renderer.report(_pass_finished(1, 1, at_ms=_ms(clock)))
+    _report_full_pass(renderer, clock, 1, 1, duration_s=10)
 
     assert _last_line(console) == snapshot
     renderer.stop()
@@ -780,6 +761,246 @@ def test_clear_on_signal_when_after_stop_does_write_nothing(
     renderer._clear_on_signal()
 
     assert buf.getvalue() == ""
+
+
+# ---------------------------------------------------------------------------
+# Ticking display (#14) — live auto-refresh and clock-driven frame updates
+# ---------------------------------------------------------------------------
+
+
+def test_live_wiring_when_created_does_set_auto_refresh_true():
+    """Live is configured with auto_refresh so time-derived text ticks between events."""
+    _console, _clock, renderer = _live()
+
+    assert renderer._live is not None
+    assert renderer._live.auto_refresh is True
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# Running pass elapsed (#14) — live elapsed for in-flight passes
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_measure_pass_running_does_show_running_elapsed():
+    """Detail line includes live elapsed for the running measure pass, from the clock."""
+    _console, clock, renderer = _live(sample_count=5)
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    renderer.report(
+        _pass_started(
+            1,
+            5,
+            target_index=0,
+            target_count=2,
+            label="baseline",
+            at_ms=_ms(clock),
+        ),
+    )
+    clock.tick(41)
+
+    result = frame_text(renderer.frame())
+
+    assert "running 41s" in result
+    renderer.stop()
+
+
+def test_frame_when_confirm_pass_running_does_show_running_elapsed():
+    """Confirm detail includes live elapsed for the running confirm pass, from the clock."""
+    _console, clock, renderer = _live(sample_count=5)
+    renderer.report(JudgeFinished(primary_delta_pct=2.5, regressed=("latency",), at_ms=5000))
+    renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=5100))
+    clock.tick(6)
+    renderer.report(
+        _pass_started(
+            1,
+            5,
+            target_index=0,
+            target_count=2,
+            label="baseline",
+            at_ms=_ms(clock),
+            phase="confirm",
+        ),
+    )
+    clock.tick(30)
+
+    result = frame_text(renderer.frame())
+
+    assert "running 30s" in result
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# Judge detail with counts (#16)
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_judge_finished_with_regressions_does_show_improve_noise_and_confirm_arrow():
+    """Judge done shows improve/noise count and 'regressed: ... → confirm'."""
+    _console, clock, renderer = _live(sample_count=1, metric_count=5)
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-6.8,
+            regressed=("latency", "throughput"),
+            at_ms=_ms(clock),
+        ),
+    )
+
+    result = frame_text(renderer.frame())
+
+    assert "3 improve/noise" in result
+    assert "regressed: latency, throughput" in result
+    assert "→ confirm" in result
+    renderer.stop()
+
+
+def test_frame_when_judge_finished_no_regressions_does_show_only_improve_noise():
+    """Judge done without regressions shows delta and improve/noise count only."""
+    _console, clock, renderer = _live(sample_count=1, metric_count=4)
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)),
+    )
+
+    result = frame_text(renderer.frame())
+
+    assert "4 improve/noise" in result
+    assert "regressed" not in result
+    assert "→ confirm" not in result
+    renderer.stop()
+
+
+def test_plain_when_judge_finished_with_regressions_does_show_improve_noise_and_confirm_arrow():
+    """Plain mode judge shows improve/noise count and 'regressed: ... → confirm'."""
+    console, clock, renderer = _plain(metric_count=5)
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-6.8,
+            regressed=("latency",),
+            at_ms=_ms(clock),
+        ),
+    )
+
+    line = _last_line(console)
+
+    assert "4 improve/noise" in line
+    assert "regressed: latency" in line
+    assert "→ confirm" in line
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# Confirm done summary (#17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reproduced", "expected_fragment"),
+    [
+        pytest.param(True, "regressions reproduced", id="reproduced"),
+        pytest.param(False, "regressions not reproduced", id="not-reproduced"),
+    ],
+)
+def test_frame_when_confirm_finished_does_show_summary_on_node_line(
+    reproduced: bool,
+    expected_fragment: str,
+):
+    """Confirm done carries pass count and reproduced status; no stale sub-line text."""
+    _console, clock, renderer = _live(sample_count=2)
+    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(ConfirmStarted(filtered_metrics=("x",), at_ms=5100))
+    at = 5100
+    for rnd in range(1, 3):
+        for t_idx in range(2):
+            lbl = "baseline" if t_idx == 0 else "experiment"
+            at += 500
+            renderer.report(
+                _pass_started(
+                    rnd,
+                    2,
+                    target_index=t_idx,
+                    target_count=2,
+                    label=lbl,
+                    at_ms=at,
+                    phase="confirm",
+                ),
+            )
+            at += 500
+            renderer.report(
+                _pass_finished(
+                    rnd,
+                    2,
+                    target_index=t_idx,
+                    target_count=2,
+                    label=lbl,
+                    at_ms=at,
+                    phase="confirm",
+                ),
+            )
+    clock.tick(20)
+    renderer.report(ConfirmFinished(reproduced=reproduced, at_ms=_ms(clock)))
+
+    result = frame_text(renderer.frame())
+
+    assert f"4/4 · {expected_fragment}" in result
+    assert "estimating time left" not in result
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# Record wording (#18) — outcome suffixed with "suggested"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_fragment"),
+    [
+        pytest.param("improved", "improved suggested", id="improved"),
+        pytest.param("keep", "keep suggested", id="keep"),
+    ],
+)
+def test_frame_when_recorded_does_show_outcome_with_suggested_suffix(
+    outcome: str,
+    expected_fragment: str,
+):
+    """Record node shows '<outcome> suggested' in the detail."""
+    _console, _clock, renderer = _live(seq=3)
+
+    renderer.report(IterationRecorded(seq=3, outcome=outcome, at_ms=15000))
+    result = frame_text(renderer.frame())
+
+    assert expected_fragment in result
+    renderer.stop()
+
+
+def test_frame_when_recorded_with_checks_does_show_suggested_before_checks_suffix():
+    """Record node shows 'suggested' before the checks suffix."""
+    _console, _clock, renderer = _live(seq=3, checks_cmd="npm test")
+
+    renderer.report(IterationRecorded(seq=3, outcome="keep", at_ms=15000))
+    result = frame_text(renderer.frame())
+
+    assert "keep suggested" in result
+    assert "checks (npm test) run at gymrat keep" in result
+    renderer.stop()
+
+
+def test_plain_when_recorded_does_show_outcome_with_suggested_suffix():
+    """Plain mode record shows '<outcome> suggested'."""
+    console, clock, renderer = _plain()
+    clock.tick(15)
+
+    renderer.report(IterationRecorded(seq=2, outcome="improved", at_ms=_ms(clock)))
+    line = _last_line(console)
+
+    assert "improved suggested" in line
+    renderer.stop()
 
 
 # ---------------------------------------------------------------------------
