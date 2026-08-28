@@ -25,8 +25,8 @@ DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
 
 
 def _normalize(text: str) -> str:
-    """Collapse every run of whitespace to a single space, so a reflowed help block matches."""
-    return " ".join(text.split())
+    """Strip ANSI codes then collapse whitespace, so a reflowed help block matches."""
+    return " ".join(strip_ansi(text).split())
 
 
 def _sgr_params(text: str) -> str:
