@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import typer
 
+from gymrat_py.cli.iterate_progress import create_fan_out, create_iterate_renderer
 from gymrat_py.cli.shared import (
     GATE_EXIT_CODE,
     AdapterOption,
@@ -41,9 +42,11 @@ from gymrat_py.cli.shared import (
     PrepareOption,
     SamplesOption,
     TimeoutOption,
+    VerboseOption,
     color_override_of,
     exit_with_error,
     is_tty,
+    resolve_render_mode,
     resolve_stream_color,
     run_cli,
     run_with_signal_abort,
@@ -171,6 +174,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     no_color: NoColorOption = False,
+    verbose: VerboseOption = False,
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
@@ -191,14 +195,39 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     async def run() -> None:
         async def body() -> IterateResult:
             root = repo_root()
-            return await run_with_signal_abort(
-                lambda abort: iterate_session(
-                    root,
-                    resolve_config(flags, root),
-                    IterateOptions(abort=abort),
-                    color=resolved_color,
-                )
+            resolved = resolve_config(flags, root)
+            required = require_open_session(root, "iterate")
+
+            from gymrat_py.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
+                stderr_console,
             )
+
+            mode = resolve_render_mode()
+            console = stderr_console(color_flag=not no_color)
+            seq = required.state.last_seq + 1
+            metric_count = len(resolved.metrics) if resolved.metrics is not None else 0
+            renderer = create_iterate_renderer(
+                mode,
+                console,
+                seq,
+                required.session.session_id,
+                resolved.samples,
+                metric_count,
+                resolved.primary,
+                verbose=verbose,
+            )
+            fan_out = create_fan_out([renderer.report])
+            try:
+                return await run_with_signal_abort(
+                    lambda abort: iterate_session(
+                        root,
+                        resolved,
+                        IterateOptions(abort=abort, on_progress=fan_out),
+                        color=resolved_color,
+                    )
+                )
+            finally:
+                renderer.stop()
 
         try:
             result = await with_repo_lock("iterate", body)

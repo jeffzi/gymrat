@@ -446,6 +446,9 @@ BranchOption = Annotated[
     typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
 ]
 ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
+VerboseOption = Annotated[
+    bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")
+]
 
 
 # ---------------------------------------------------------------------------
