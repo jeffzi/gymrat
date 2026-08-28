@@ -3,6 +3,8 @@
 The sidecar carries a JSON snapshot that a dashboard or supervisor polls via
 ``read_progress``.  ``write_progress`` writes atomically so readers never see a
 partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
+``create_sidecar_writer`` returns a callback that translates ``PassStarted`` /
+``PassFinished`` events into sidecar writes.
 """
 
 import json
@@ -13,11 +15,18 @@ from pathlib import Path
 
 import pytest
 
+from gymrat_py.progress_events import (
+    HookStarted,
+    PassFinished,
+    PassStarted,
+    PrepareStarted,
+)
 from gymrat_py.session.paths import progress_path, session_dir
 from gymrat_py.session.progress_file import (
     STALENESS_BOUND_SECONDS,
     ProgressSnapshot,
     clear_progress,
+    create_sidecar_writer,
     read_progress,
     write_progress,
 )
@@ -75,7 +84,6 @@ def _make_snapshot(**overrides: object) -> ProgressSnapshot:
 
 
 def _progress_file(root: str) -> Path:
-    """The sidecar path under *root* as a ``Path``."""
     return Path(progress_path(root))
 
 
@@ -190,3 +198,113 @@ def test_progress_snapshot_when_constructed_does_be_frozen():
 
     with pytest.raises(AttributeError):
         snapshot.seq = 99  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# create_sidecar_writer
+# ---------------------------------------------------------------------------
+
+
+def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
+    root: str,
+):
+    writer = create_sidecar_writer(root, seq=3, started_at=1700000000.0)
+    event = PassStarted(
+        round=1,
+        total_rounds=5,
+        target_index=0,
+        target_count=2,
+        label="baseline",
+        at_ms=100.0,
+        phase="measure",
+    )
+
+    writer(event)
+
+    snapshot = read_progress(root)
+    assert snapshot is not None
+    assert snapshot.seq == 3
+    assert snapshot.passes_completed == 0
+    assert snapshot.passes_total == 10
+    assert snapshot.current_side == "baseline"
+    assert snapshot.current_round == 1
+    assert snapshot.phase == "measure"
+    assert snapshot.started_at == 1700000000.0
+
+
+def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_record_duration(
+    root: str,
+):
+    writer = create_sidecar_writer(root, seq=1, started_at=1700000000.0)
+    writer(
+        PassStarted(
+            round=1,
+            total_rounds=3,
+            target_index=0,
+            target_count=2,
+            label="experiment",
+            at_ms=100.0,
+        )
+    )
+
+    writer(
+        PassFinished(
+            round=1,
+            total_rounds=3,
+            target_index=0,
+            target_count=2,
+            label="experiment",
+            at_ms=350.0,
+        )
+    )
+
+    snapshot = read_progress(root)
+    assert snapshot is not None
+    assert snapshot.passes_completed == 1
+    assert snapshot.last_pass_duration_ms == 250.0
+
+
+def test_create_sidecar_writer_when_pass_started_with_confirm_phase_does_record_phase(
+    root: str,
+):
+    writer = create_sidecar_writer(root, seq=1, started_at=1700000000.0)
+
+    writer(
+        PassStarted(
+            round=1,
+            total_rounds=2,
+            target_index=0,
+            target_count=1,
+            label="experiment",
+            at_ms=100.0,
+            phase="confirm",
+        )
+    )
+
+    snapshot = read_progress(root)
+    assert snapshot is not None
+    assert snapshot.phase == "confirm"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(
+            PrepareStarted(label="baseline", at_ms=100.0),
+            id="prepare-started",
+        ),
+        pytest.param(
+            HookStarted(stage="before", at_ms=100.0),
+            id="hook-started",
+        ),
+    ],
+)
+def test_create_sidecar_writer_when_non_pass_event_does_not_write(
+    root: str,
+    event: object,
+):
+    writer = create_sidecar_writer(root, seq=1, started_at=1700000000.0)
+
+    writer(event)  # type: ignore[arg-type]
+
+    assert read_progress(root) is None

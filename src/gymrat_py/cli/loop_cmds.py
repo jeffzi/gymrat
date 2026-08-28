@@ -24,6 +24,7 @@ measurement stack these are light, and every loop command reaches one.
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import dataclass
 
 import typer
@@ -70,6 +71,7 @@ from gymrat_py.loop.status import status_session
 from gymrat_py.report.format import pluralize
 from gymrat_py.report.loop import format_baseline_ref
 from gymrat_py.session.paths import repo_root
+from gymrat_py.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat_py.session.store import require_open_session
 
 _RefArgument = typer.Argument(
@@ -216,7 +218,8 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 resolved.primary,
                 verbose=verbose,
             )
-            fan_out = create_fan_out([renderer.report])
+            sidecar_writer = create_sidecar_writer(root, seq, started_at=time.time())
+            fan_out = create_fan_out([renderer.report, sidecar_writer])
             try:
                 return await run_with_signal_abort(
                     lambda abort: iterate_session(
@@ -228,6 +231,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 )
             finally:
                 renderer.stop()
+                clear_progress(root)
 
         try:
             result = await with_repo_lock("iterate", body)

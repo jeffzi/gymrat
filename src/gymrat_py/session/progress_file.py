@@ -14,6 +14,12 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from gymrat_py.progress_events import (
+    PassFinished,
+    PassStarted,
+    ProgressCallback,
+    ProgressEvent,
+)
 from gymrat_py.session.paths import progress_path
 
 #: A reader discards files whose mtime is older than this many seconds.
@@ -91,3 +97,57 @@ def read_progress(root: str) -> ProgressSnapshot | None:
 def clear_progress(root: str) -> None:
     """Remove the progress sidecar if it exists, silently succeed otherwise."""
     Path(progress_path(root)).unlink(missing_ok=True)
+
+
+def create_sidecar_writer(
+    root: str,
+    seq: int,
+    *,
+    started_at: float,
+) -> ProgressCallback:
+    """Return a callback that writes sidecar snapshots on pass events.
+
+    The callback tracks accumulated state from ``PassStarted`` and
+    ``PassFinished`` events and writes a ``ProgressSnapshot`` on each.
+    Other event types are silently ignored (no write).
+    """
+    passes_completed = 0
+    last_start_ms: float = 0.0
+    last_pass_duration_ms: float = 0.0
+    phase: str = "measure"
+    current_side: str | None = None
+    current_round: int = 0
+    passes_total: int = 0
+
+    def _on_event(event: ProgressEvent) -> None:
+        nonlocal passes_completed, last_start_ms, last_pass_duration_ms
+        nonlocal phase, current_side, current_round, passes_total
+
+        if isinstance(event, PassStarted):
+            last_start_ms = event.at_ms
+        elif isinstance(event, PassFinished):
+            passes_completed += 1
+            last_pass_duration_ms = event.at_ms - last_start_ms
+        else:
+            return
+
+        phase = event.phase
+        current_side = event.label
+        current_round = event.round
+        passes_total = event.total_rounds * event.target_count
+
+        write_progress(
+            root,
+            ProgressSnapshot(
+                seq=seq,
+                phase=phase,
+                passes_completed=passes_completed,
+                passes_total=passes_total,
+                current_side=current_side,
+                current_round=current_round,
+                last_pass_duration_ms=last_pass_duration_ms,
+                started_at=started_at,
+            ),
+        )
+
+    return _on_event
