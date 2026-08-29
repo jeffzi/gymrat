@@ -565,11 +565,11 @@ def _degenerate_result() -> ComparisonResult:
 def test_render_report_when_degenerate_and_dirty_cleanup_does_close_with_footer_and_worktrees():
     report = render_report(_degenerate_result())
 
-    assert line_starting_with(report, "✓ 1 improved") == (
-        "✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   "
-        "= 0 identical   ~ 2 within noise   ? 0 inconclusive"
+    assert line_starting_with(report, "✓ 0 improved") == (
+        "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
+        "= 0 identical   ~ 2 within noise   ? 1 inconclusive"
     )
-    assert _normalized_highlights(report) == ["✓ throughput/ops +30.0%"]
+    assert "highlights" not in report
 
     lines = report.split("\n")
     assert lines[-4:] == [
@@ -665,8 +665,8 @@ def test_render_report_when_verbose_two_candidate_does_summarize_group_and_foote
             "= 0 identical ~ 0 within noise ? 0 inconclusive"
         ),
         (
-            "perf/lut-decode ✓ 0 improved ✗ 0 regressed ≈ 1 unstable "
-            "= 0 identical ~ 1 within noise ? 0 inconclusive"
+            "perf/lut-decode ✓ 0 improved ✗ 0 regressed ≈ 0 unstable "
+            "= 0 identical ~ 1 within noise ? 1 inconclusive"
         ),
     ]
     assert _normalized_highlights(report) == [
@@ -674,9 +674,6 @@ def test_render_report_when_verbose_two_candidate_does_summarize_group_and_foote
         "✗ encode#time +2.2%",
         "✓ decode/text=digits#time -17.9%",
         "✓ encode#heap -7.9% (exact)",
-        "perf/lut-decode",
-        "≈ encode#time unstable noise ±30.0%",
-        "unstable metrics won't stabilize with more samples",
     ]
 
     lines = report.split("\n")

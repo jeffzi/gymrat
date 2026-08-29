@@ -238,8 +238,8 @@ def test_render_report_when_spread_exceeds_the_median_does_state_it_in_absolute_
             id="permutation",
         ),
         pytest.param(
-            band_metric(verdict="improved", delta=-5, n=4),
-            "✓  -5.0%  ±2.5%  n=4",
+            band_metric(verdict="improved", delta=-5, n=8),
+            "✓  -5.0%  ±2.5%  n=8",
             id="band",
         ),
         pytest.param(

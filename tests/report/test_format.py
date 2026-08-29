@@ -237,10 +237,10 @@ def test_format_delta_when_undefined_arithmetic_does_render_nothing():
         pytest.param(band_verdict(n=10, usable_n=3), "within-noise", id="ties-short-of-floor"),
         pytest.param(band_verdict(n=10, usable_n=6), "within-noise", id="ties-just-enough"),
         pytest.param(band_verdict(n=6, usable_n=5), "within-noise", id="one-below-floor"),
-        pytest.param(band_verdict(n=5, usable_n=5), "within-noise", id="too-short-for-floor"),
+        pytest.param(band_verdict(n=5, usable_n=5), "inconclusive", id="too-short-for-floor"),
         pytest.param(band_verdict(n=1, usable_n=1), "inconclusive", id="single-pair-only-floor"),
         pytest.param(band_verdict(n=1, usable_n=0), "inconclusive", id="single-pair-tie"),
-        pytest.param(band_verdict(n=2, usable_n=2), "within-noise", id="two-pairs-give-spread"),
+        pytest.param(band_verdict(n=2, usable_n=2), "inconclusive", id="two-pairs-sub-minimum"),
         pytest.param(
             band_verdict(verdict="improved", delta=-10, n=10, usable_n=3),
             "improved",
@@ -256,6 +256,67 @@ def test_format_delta_when_undefined_arithmetic_does_render_nothing():
     ],
 )
 def test_display_class_maps_verdict_to_shown_class(verdict: MetricVerdict, expected: str):
+    assert display_class(verdict) == expected
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        pytest.param(band_verdict(n=2, usable_n=2), id="band-n2"),
+        pytest.param(band_verdict(n=3, usable_n=3), id="band-n3"),
+        pytest.param(band_verdict(n=3, usable_n=0), id="band-all-tied-sub-minimum"),
+        pytest.param(
+            band_verdict(verdict="improved", delta=-10, n=4, usable_n=4), id="band-improved-n4"
+        ),
+        pytest.param(band_verdict(verdict="unstable", n=5, usable_n=5), id="band-unstable-n5"),
+        pytest.param(permutation_verdict(n=3), id="permutation-n3"),
+        pytest.param(
+            permutation_verdict(verdict="improved", delta=-10, n=5), id="permutation-improved-n5"
+        ),
+        pytest.param(
+            permutation_verdict(verdict="regressed", delta=10, n=5), id="permutation-regressed-n5"
+        ),
+    ],
+)
+def test_display_class_when_sub_minimum_non_exact_does_return_inconclusive(
+    verdict: MetricVerdict,
+):
+    assert display_class(verdict) == "inconclusive"
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(
+            exact_verdict(n=1, verdict="improved", delta=-5), "improved", id="improved-n1"
+        ),
+        pytest.param(exact_verdict(n=2), "within-noise", id="no-signal-n2"),
+        pytest.param(
+            exact_verdict(n=3, verdict="regressed", delta=5), "regressed", id="regressed-n3"
+        ),
+        pytest.param(exact_verdict(n=5), "within-noise", id="no-signal-n5"),
+    ],
+)
+def test_display_class_when_exact_at_any_n_does_keep_real_class(
+    verdict: MetricVerdict, expected: DisplayClass
+):
+    assert display_class(verdict) == expected
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(band_verdict(n=6, usable_n=6), "within-noise", id="band-at-minimum"),
+        pytest.param(
+            permutation_verdict(verdict="improved", delta=-10, n=6),
+            "improved",
+            id="permutation-at-minimum",
+        ),
+    ],
+)
+def test_display_class_when_at_minimum_n_does_keep_real_class(
+    verdict: MetricVerdict, expected: DisplayClass
+):
     assert display_class(verdict) == expected
 
 
@@ -444,6 +505,17 @@ def test_select_highlights_ranks_each_candidate_by_its_own_verdicts(
     assert [highlight.name for highlight in highlights] == expected
 
 
+def test_select_highlights_when_sub_minimum_band_does_exclude():
+    metrics: Metrics = {
+        "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
+        "adequate/time": approximate_metric(verdict="improved", delta=-5),
+    }
+
+    highlights = select_highlights(metrics, 0)
+
+    assert [highlight.name for highlight in highlights] == ["adequate/time"]
+
+
 # ---------------------------------------------------------------------------
 # scoped_geomean_label
 # ---------------------------------------------------------------------------
@@ -573,6 +645,18 @@ def test_verdict_summary_parts_pads_counts_to_widest_digit_width():
     assert _plain(_find_plain(parts, "regressed")) == "✗  1 regressed"
     assert _plain(_find_plain(parts, "unstable")) == "≈  1 unstable"
     assert _plain(_find_plain(parts, "within noise")) == "~  0 within noise"
+
+
+def test_verdict_summary_parts_when_sub_minimum_band_does_tally_as_inconclusive():
+    metrics: Metrics = {
+        "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
+        "adequate/time": approximate_metric(verdict="improved", delta=-5),
+    }
+
+    parts = verdict_summary_parts(metrics, 0)
+
+    assert _plain(_find_plain(parts, "improved")) == "✓ 1 improved"
+    assert _plain(_find_plain(parts, "inconclusive")) == "? 1 inconclusive"
 
 
 # ---------------------------------------------------------------------------

@@ -674,7 +674,7 @@ def test_render_report_when_colored_does_style_the_unstable_highlight_glyph_and_
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)}
     )
     entry = highlight_lines(render_report(result))[0]
 
@@ -687,7 +687,9 @@ def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_n
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+        metrics={
+            "unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)
+        }
     )
     entry = highlight_lines(render_report(result))[0]
 
@@ -702,7 +704,7 @@ def test_render_report_when_colored_does_dim_the_evidence_suffixes(
     result = create_comparison_result(
         metrics={
             "cheaper#heap": exact_metric(delta=-7.9),
-            "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30),
+            "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
         }
     )
     highlights = highlight_lines(render_report(result))
@@ -716,7 +718,7 @@ def test_render_report_when_colored_does_dim_the_evidence_suffixes(
 def test_render_report_when_colored_does_dim_the_futility_note(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)}
     )
     note = line_containing(render_report(result), "won't stabilize")
 

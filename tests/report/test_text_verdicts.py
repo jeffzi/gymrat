@@ -188,7 +188,7 @@ def test_render_report_when_highlighting_does_carry_glyph_delta_and_evidence():
         metrics={
             "slower/time": permutation_metric(verdict="regressed", delta=2.2, p=0.002),
             "cheaper/heap": exact_metric(delta=-7.9),
-            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30),
+            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
         }
     )
 

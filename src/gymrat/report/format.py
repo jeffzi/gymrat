@@ -262,15 +262,19 @@ other no-signal verdict reads ``within-noise``. The split is presentation only
 def display_class(verdict: MetricVerdict) -> DisplayClass:
     """Which display class a verdict reads as.
 
-    The pair count is read before anything else about a band verdict: below
-    :data:`MIN_BAND_N` the band is the noise floor constant rather than a
-    measurement, so the verdict reads ``inconclusive``. A band verdict with
-    enough pairs for the permutation test reads ``identical`` only when every
-    one of them tied (``usable_n == 0``); anywhere ``usable_n`` sits between
-    zero and :data:`MIN_PERMUTATION_N` some pairs did differ, so that reads
-    ``within-noise``. An exact no-signal always reads ``within-noise``.
+    Any non-exact verdict whose pair count sits below
+    :data:`MIN_PERMUTATION_N` reads ``inconclusive``: the sample is too
+    small for a statistical verdict — band or permutation — to be trusted.
+    Exact verdicts are decided on paired medians, so no statistical minimum
+    applies to them.
+
+    A band verdict with enough pairs for the permutation test reads
+    ``identical`` only when every one of them tied (``usable_n == 0``);
+    anywhere ``usable_n`` sits between zero and :data:`MIN_PERMUTATION_N`
+    some pairs did differ, so that reads ``within-noise``. An exact
+    no-signal always reads ``within-noise``.
     """
-    if verdict.method == "band" and verdict.n < MIN_BAND_N:
+    if verdict.method != "exact" and verdict.n < MIN_PERMUTATION_N:
         return "inconclusive"
     if verdict.verdict != "no-signal":
         return verdict.verdict
@@ -281,18 +285,15 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
     """The display class a no-signal verdict reads as, by the method that produced it.
 
     The method union is discriminated exhaustively so a new method fails to
-    type-check here until it decides what its no-signal reads as. A band verdict
-    with enough usable pairs but every one tied measured identical; every other
-    no-signal — band or otherwise — reads within noise.
+    type-check here until it decides what its no-signal reads as. A band
+    verdict measured identical when every pair tied (``usable_n == 0`` — the
+    caller has already ruled out a pair count below :data:`MIN_PERMUTATION_N`);
+    every other no-signal — band or otherwise — reads within noise.
     """
     match verdict.method:
         case "band":
-            if verdict.n >= MIN_PERMUTATION_N and verdict.usable_n == 0:
-                return "identical"
-            return "within-noise"
-        case "permutation":
-            return "within-noise"
-        case "exact":
+            return "identical" if verdict.usable_n == 0 else "within-noise"
+        case "permutation" | "exact":
             return "within-noise"
         case _ as unreachable:  # pragma: no cover — exhaustive match over Method
             assert_never(unreachable)
