@@ -78,7 +78,7 @@ def test_get_adapter_when_name_registered_does_return_object_satisfying_protocol
     ("name", "stdout", "expected"),
     [
         pytest.param("metric-lines", "METRIC foo=42", {"foo": 42.0}, id="metric-lines"),
-        pytest.param("mitata", _MITATA_STDOUT, {"test/time": 42.0}, id="mitata"),
+        pytest.param("mitata", _MITATA_STDOUT, {"test#time": 42.0}, id="mitata"),
     ],
 )
 def test_get_adapter_when_registered_adapter_parses_does_return_expected_metrics(
@@ -95,7 +95,7 @@ def test_get_adapter_when_registered_adapter_parses_does_return_expected_metrics
         ),
         pytest.param(
             "mitata",
-            "test/time",
+            "test#time",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="test"),
             id="mitata",
         ),

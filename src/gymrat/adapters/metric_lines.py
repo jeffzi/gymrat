@@ -10,6 +10,7 @@ import re
 
 from gymrat.adapters.defaults import defaults_from_suffixes
 from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
+from gymrat.errors import GymratError
 from gymrat.stats.descriptive import compute_median
 
 _PREFIX = "METRIC"
@@ -116,6 +117,13 @@ class _MetricLinesAdapter:
             if _FORBIDDEN_NAME_CHAR.search(metric_name):
                 warn(parse_failure)
                 continue
+
+            if metric_name.count("#") > 1:
+                msg = (
+                    f"Metric name \"{metric_name}\" contains more than one '#'; "
+                    "only a single '#' is allowed as the metric-type separator"
+                )
+                raise GymratError(msg)
 
             value = _js_number(after[last_eq + 1 :])
             if value is None:

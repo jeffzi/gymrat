@@ -2,6 +2,7 @@ import pytest
 
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
+from gymrat.errors import GymratError
 
 # ---------------------------------------------------------------------------
 # adapter shape
@@ -251,6 +252,22 @@ def test_parse_when_name_holds_line_separator_does_warn_and_skip(code_point: int
 
 
 # ---------------------------------------------------------------------------
+# multi-'#' in name is a hard error
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_name_contains_multiple_hashes_does_raise_gymrat_error():
+    with pytest.raises(GymratError, match="bad#name#extra"):
+        metric_lines_adapter.parse("METRIC bad#name#extra=42")
+
+
+def test_parse_when_name_contains_single_hash_does_accept_it():
+    result = metric_lines_adapter.parse("METRIC bench#time=42")
+
+    assert result == {"bench#time": 42.0}
+
+
+# ---------------------------------------------------------------------------
 # warn routing
 # ---------------------------------------------------------------------------
 
@@ -358,12 +375,12 @@ def test_parse_when_name_embeds_metric_token_does_warn_but_record():
     [
         pytest.param("foo", MetricDefaults(direction="lower"), id="no-suffix"),
         pytest.param(
-            "bench/time",
+            "bench#time",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="bench"),
             id="time-suffix",
         ),
         pytest.param(
-            "bench/heap",
+            "bench#heap",
             MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="bench"),
             id="heap-suffix",
         ),

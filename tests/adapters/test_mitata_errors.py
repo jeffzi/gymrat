@@ -70,7 +70,7 @@ def test_parse_when_benchmark_entries_not_objects_does_warn_and_skip():
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"valid/time": 1}
+    assert result == {"valid#time": 1}
     assert len(warnings) == 3
 
 
@@ -84,7 +84,7 @@ def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip()
         ]
     )
 
-    assert mitata_adapter.parse(stdout) == {"valid/time": 1}
+    assert mitata_adapter.parse(stdout) == {"valid#time": 1}
 
 
 def test_parse_when_runs_are_not_objects_does_warn_and_skip():
@@ -95,7 +95,7 @@ def test_parse_when_runs_are_not_objects_does_warn_and_skip():
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test/time": 1}
+    assert result == {"test#time": 1}
     assert len(warnings) == 2
     assert all("test" in w for w in warnings)
 
@@ -123,7 +123,7 @@ def test_parse_when_run_has_error_field_does_skip_that_run():
         ]
     )
 
-    assert mitata_adapter.parse(stdout) == {"test/x=b/time": 20}
+    assert mitata_adapter.parse(stdout) == {"test/x=b#time": 20}
 
 
 def test_parse_when_all_runs_have_errors_does_raise():
@@ -152,7 +152,7 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
         ]
     )
 
-    assert mitata_adapter.parse(stdout) == {"test/time": 10}
+    assert mitata_adapter.parse(stdout) == {"test#time": 10}
 
 
 def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
@@ -171,7 +171,7 @@ def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test/time": 20}
+    assert result == {"test#time": 20}
     assert any('{"code": 7}' in w for w in warnings)
 
 
@@ -190,7 +190,7 @@ def test_parse_when_arg_value_is_object_does_serialize_via_json():
         ]
     )
 
-    assert mitata_adapter.parse(stdout) == {'bench/opts={"size":100}/time': 5}
+    assert mitata_adapter.parse(stdout) == {'bench/opts={"size":100}#time': 5}
 
 
 def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
@@ -207,8 +207,8 @@ def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
     )
 
     assert mitata_adapter.parse(stdout) == {
-        'bench/opts={"size":100}/time': 5,
-        'bench/opts={"size":200}/time': 10,
+        'bench/opts={"size":100}#time': 5,
+        'bench/opts={"size":200}#time': 10,
     }
 
 
@@ -222,7 +222,7 @@ def test_parse_when_object_arg_has_unsorted_keys_does_serialize_in_sorted_order(
         ]
     )
 
-    assert mitata_adapter.parse(stdout) == {'bench/opts={"a":2,"z":1}/time': 5}
+    assert mitata_adapter.parse(stdout) == {'bench/opts={"a":2,"z":1}#time': 5}
 
 
 def test_parse_when_arg_value_is_array_does_serialize_via_json():
@@ -235,7 +235,7 @@ def test_parse_when_arg_value_is_array_does_serialize_via_json():
         ]
     )
 
-    assert mitata_adapter.parse(stdout) == {"bench/items=[1,2,3]/time": 7}
+    assert mitata_adapter.parse(stdout) == {"bench/items=[1,2,3]#time": 7}
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +259,7 @@ def test_parse_when_p50_missing_does_warn_and_skip():
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test/x=b/time": 20}
+    assert result == {"test/x=b#time": 20}
     assert any("test/$x" in w for w in warnings)
 
 
@@ -299,7 +299,7 @@ def test_parse_when_banner_text_carries_braces_or_quotes_does_still_extract(temp
 
     result = mitata_adapter.parse(template.format(json=payload))
 
-    assert result == {"encode/time": 42}
+    assert result == {"encode#time": 42}
 
 
 def test_parse_when_only_incomplete_brace_fragments_present_does_raise():
@@ -318,7 +318,7 @@ def test_parse_when_unbalanced_brace_precedes_json_does_still_find_payload():
 
     result = mitata_adapter.parse(stdout)
 
-    assert result == {"encode/time": 42}
+    assert result == {"encode#time": 42}
 
 
 def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():
@@ -337,7 +337,7 @@ def test_parse_when_decoy_precedes_real_object_does_prefer_the_benchmarks_carrie
     decoy = json.dumps({"foo": "bar"})
     real = build_stdout([{"alias": "a", "runs": [{"args": {}, "stats": {"p50": 1}}]}])
 
-    assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a/time": 1}
+    assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a#time": 1}
 
 
 def test_parse_when_no_candidate_carries_benchmarks_does_report_missing_array():
@@ -372,10 +372,10 @@ def test_parse_when_given_real_fixture_does_extract_all_metrics():
     result = mitata_adapter.parse(json.dumps(fixture))
 
     assert result == {
-        "decode/text=digits/time": 4.0791015625,
-        "decode/text=digits/heap": 0.13420623129857714,
-        "decode/text=words/time": 7.8125,
-        "decode/text=words/heap": 0.14746411878141288,
-        "encode/time": 42.66357421875,
-        "encode/heap": 80.1967411655276,
+        "decode/text=digits#time": 4.0791015625,
+        "decode/text=digits#heap": 0.13420623129857714,
+        "decode/text=words#time": 7.8125,
+        "decode/text=words#heap": 0.14746411878141288,
+        "encode#time": 42.66357421875,
+        "encode#heap": 80.1967411655276,
     }

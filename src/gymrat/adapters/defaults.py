@@ -11,8 +11,8 @@ from gymrat.adapters.types import MetricDefaults
 from gymrat.model.metrics import MetricUnit
 
 _METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
-    ("/time", "ns", "time"),
-    ("/heap", "bytes", "memory"),
+    ("#time", "ns", "time"),
+    ("#heap", "bytes", "memory"),
 )
 """Suffix→(unit, kind) table walked by :func:`defaults_from_suffixes`; first match wins."""
 
@@ -36,7 +36,7 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
 
     Walks :data:`_METRIC_SUFFIXES` in order and returns the defaults for the
     first suffix ``metric_name`` ends with. When the prefix before the suffix is
-    empty (the name equals the suffix, e.g. ``/time``), ``short_name`` is the
+    empty (the name equals the suffix, e.g. ``#time``), ``short_name`` is the
     full metric name so the report renders a visible label. A name matching no
     suffix yields defaults carrying only ``direction``.
     """

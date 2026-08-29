@@ -1,8 +1,8 @@
 """The ``mitata`` adapter: reads the JSON that ``mitata --json`` writes.
 
 Mitata prints a ``benchmarks`` array whose entries carry an ``alias`` and a list
-of ``runs``. Each run becomes ``<alias>/time`` from ``stats.p50`` and, when mitata
-measured it, ``<alias>/heap`` from ``stats.heap.avg``. Parameterized benchmarks
+of ``runs``. Each run becomes ``<alias>#time`` from ``stats.p50`` and, when mitata
+measured it, ``<alias>#heap`` from ``stats.heap.avg``. Parameterized benchmarks
 carry ``$name`` placeholders in the alias that are substituted with ``name=value``
 so one benchmark becomes one metric per argument combination.
 
@@ -18,6 +18,7 @@ from typing import TypeGuard
 
 from gymrat.adapters.defaults import defaults_from_suffixes
 from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
+from gymrat.errors import GymratError
 
 _FORBIDDEN_NAME_CHARS = re.compile("[\\n\\r\\u2028\\u2029]")
 """Characters a metric name may not carry.
@@ -241,6 +242,12 @@ def _resolve_p50(stats: dict[str, object], alias: str, warn: WarnSink) -> float 
 
 def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) -> str | None:
     prefix = _build_metric_name_prefix(alias, args)
+    if "#" in prefix:
+        msg = (
+            f"Metric prefix \"{prefix}\" contains '#', which is reserved as the "
+            f"metric-type separator (alias: {alias})"
+        )
+        raise GymratError(msg)
     if _FORBIDDEN_NAME_CHARS.search(prefix):
         warn(
             f"Skipping run with a line terminator in its metric name: {alias} "
@@ -257,7 +264,7 @@ def _record_heap_metric(
     metrics: dict[str, float],
     warn: WarnSink,
 ) -> None:
-    """Record ``<prefix>/heap`` from ``stats.heap.avg`` when mitata measured it."""
+    """Record ``<prefix>#heap`` from ``stats.heap.avg`` when mitata measured it."""
     heap = stats.get("heap")
     if heap is None:
         return
@@ -270,7 +277,7 @@ def _record_heap_metric(
     if not _is_number(avg) or not math.isfinite(avg):
         warn(f"Skipping heap metric for {alias}: stats.heap.avg is not a finite number ({avg!r})")
         return
-    _record_metric(metrics, f"{prefix}/heap", avg, warn)
+    _record_metric(metrics, f"{prefix}#heap", avg, warn)
 
 
 def _extract_run_metrics(
@@ -304,7 +311,7 @@ def _extract_run_metrics(
     if prefix is None:
         return
 
-    _record_metric(metrics, f"{prefix}/time", p50, warn)
+    _record_metric(metrics, f"{prefix}#time", p50, warn)
     _record_heap_metric(stats, prefix, alias, metrics, warn)
 
 
@@ -339,8 +346,8 @@ class _MitataAdapter:
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse mitata's JSON output into a metric map.
 
-        Each run yields ``<alias>/time`` from ``stats.p50`` and, when mitata
-        measured it, ``<alias>/heap`` from ``stats.heap.avg``. Runs that errored,
+        Each run yields ``<alias>#time`` from ``stats.p50`` and, when mitata
+        measured it, ``<alias>#heap`` from ``stats.heap.avg``. Runs that errored,
         reported a non-finite ``p50``, resolved to a metric name carrying a line
         terminator, or carried a malformed ``args``/``stats`` shape are skipped
         rather than failing the parse — a single bad argument combination should
