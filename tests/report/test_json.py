@@ -54,8 +54,8 @@ def _two_kind_with_exclusions() -> ComparisonResult:
         -3.2,
         2,
         excluded=[
-            Exclusion(metric="jittery/time", reason="unstable"),
-            Exclusion(metric="broken/ratio", reason="undefined-ratio"),
+            Exclusion(metric="jittery/time#time", reason="unstable"),
+            Exclusion(metric="broken/ratio#time", reason="undefined-ratio"),
         ],
     )
     return create_comparison_result(
@@ -79,13 +79,13 @@ def _two_kind_with_exclusions() -> ComparisonResult:
             ),
         ],
         metrics={
-            "entity.alive_check/time": kind_metric(
+            "entity/alive_check#time": kind_metric(
                 kind="time",
-                short_name="entity.alive_check",
+                short_name="alive_check",
                 verdict="improved",
                 delta=-10,
             ),
-            "encode/heap": kind_metric(
+            "encode#memory": kind_metric(
                 kind="memory",
                 short_name="encode",
                 verdict="improved",
@@ -318,8 +318,8 @@ def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
                 "value": -3.2,
                 "n": 2,
                 "excluded": [
-                    {"metric": "jittery/time", "reason": "unstable"},
-                    {"metric": "broken/ratio", "reason": "undefined-ratio"},
+                    {"metric": "jittery/time#time", "reason": "unstable"},
+                    {"metric": "broken/ratio#time", "reason": "undefined-ratio"},
                 ],
                 "band": 0,
             },
@@ -371,8 +371,8 @@ def test_render_json_when_single_kind_does_use_same_shape_with_one_entry():
 @pytest.mark.parametrize(
     ("metric_name", "kind", "group"),
     [
-        ("entity.alive_check/time", "time", "entity"),
-        ("encode/heap", "memory", None),
+        ("entity/alive_check#time", "time", "entity"),
+        ("encode#memory", "memory", None),
     ],
 )
 def test_render_json_when_reporting_metric_does_carry_kind_and_group(
@@ -631,26 +631,45 @@ def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
 # ---------------------------------------------------------------------------
 
 
-def test_render_measure_json_when_grouped_metric_does_carry_measurement_and_metadata():
-    doc = json.loads(render_measure_json(two_kind_measurement()))
+def test_render_measure_json_when_grouped_metric_does_carry_contract_derived_group():
+    """The group field derives from the metric name (the dict key), not short_name.
 
-    assert doc["metrics"]["entity.alive_check/time"] == {
-        "median": 100,
-        "spreadPct": 1,
-        "unit": "ns",
-        "direction": "lower",
-        "gating": True,
-        "exact": False,
-        "kind": "time",
-        "group": "entity",
-    }
+    Metric name ``entity/alive_check#time`` has path ``("entity", "alive_check")``,
+    so its contract group is ``"entity"``.  The short_name ``alive_check`` has no
+    dot, so the old dot-based ``infer_group`` would return ``None`` — ensuring this
+    test can only pass when ``infer_group`` operates on the metric name key.
+    """
+    result = create_measurement_result(
+        metrics={
+            "entity/alive_check#time": measured_metric(
+                kind="time",
+                short_name="alive_check",
+                unit="ns",
+            ),
+        },
+    )
+
+    doc = json.loads(render_measure_json(result))
+
+    assert doc["metrics"]["entity/alive_check#time"]["group"] == "entity"
+    assert doc["metrics"]["entity/alive_check#time"]["kind"] == "time"
 
 
-def test_render_measure_json_when_metric_names_no_group_does_report_null_group():
-    doc = json.loads(render_measure_json(two_kind_measurement()))
+def test_render_measure_json_when_single_segment_name_does_report_null_group():
+    result = create_measurement_result(
+        metrics={
+            "fib#time": measured_metric(
+                kind="time",
+                short_name="fib",
+                unit="ns",
+            ),
+        },
+    )
 
-    assert doc["metrics"]["encode/heap"]["group"] is None
-    assert doc["metrics"]["encode/heap"]["kind"] == "memory"
+    doc = json.loads(render_measure_json(result))
+
+    assert doc["metrics"]["fib#time"]["group"] is None
+    assert doc["metrics"]["fib#time"]["kind"] == "time"
 
 
 @pytest.mark.parametrize(

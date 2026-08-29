@@ -123,7 +123,7 @@ def plan_sections[Row, Metric: SectionedMetric](
         if meta.gating:
             section.has_gating = True
 
-        group = infer_group(meta.short_name)
+        group = infer_group(name)
         row = measure(name, group, metric)
         ordered.append(row)
 

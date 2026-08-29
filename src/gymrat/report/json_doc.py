@@ -55,7 +55,7 @@ def render_json(result: ComparisonResult) -> str:
         "samples": result.samples,
         "adapter": result.adapter,
         "metrics": {
-            name: _serialize_metric(metric, result.candidates)
+            name: _serialize_metric(name, metric, result.candidates)
             for name, metric in result.metrics.items()
         },
         "perCandidate": _serialize_per_candidate(result),
@@ -79,7 +79,7 @@ def render_measure_json(result: MeasurementResult) -> str:
         "samples": result.samples,
         "adapter": result.adapter,
         "metrics": {
-            name: _serialize_measure_metric(metric) for name, metric in result.metrics.items()
+            name: _serialize_measure_metric(name, metric) for name, metric in result.metrics.items()
         },
         "worktrees": _serialize_worktrees(result),
     }
@@ -87,6 +87,7 @@ def render_measure_json(result: MeasurementResult) -> str:
 
 
 def _serialize_metric(
+    name: str,
     metric: MetricComparison,
     candidates: tuple[CandidateComparison, ...],
 ) -> dict[str, object]:
@@ -104,7 +105,7 @@ def _serialize_metric(
         "direction": metric.meta.direction,
         "gating": metric.meta.gating,
         "kind": metric.meta.kind,
-        "group": infer_group(metric.meta.short_name),
+        "group": infer_group(name),
         "baseline": {"median": metric.baseline_median, "spreadPct": metric.baseline_spread},
         "candidates": rows,
     }
@@ -210,7 +211,7 @@ def _serialize_counts(counts: VerdictCounts) -> dict[str, int]:
     }
 
 
-def _serialize_measure_metric(metric: MetricMeasurement) -> dict[str, object]:
+def _serialize_measure_metric(name: str, metric: MetricMeasurement) -> dict[str, object]:
     """One metric's measurement beside the metadata behind it."""
     return {
         "median": metric.median,
@@ -220,7 +221,7 @@ def _serialize_measure_metric(metric: MetricMeasurement) -> dict[str, object]:
         "gating": metric.meta.gating,
         "exact": metric.meta.exact,
         "kind": metric.meta.kind,
-        "group": infer_group(metric.meta.short_name),
+        "group": infer_group(name),
     }
 
 

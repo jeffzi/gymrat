@@ -400,7 +400,7 @@ def test_render_report_when_metrics_are_excluded_does_count_them_into_the_proven
                         geomean=geomean_of(
                             -3.2,
                             2,
-                            excluded=[Exclusion(metric="warmup/time", reason="unstable")],
+                            excluded=[Exclusion(metric="warmup#time", reason="unstable")],
                         ),
                     ),
                     memory_kind(),
@@ -416,8 +416,8 @@ def test_render_report_when_metrics_are_excluded_does_count_them_into_the_proven
 
 def _several_kinds_gate() -> ComparisonResult:
     metrics = dict(two_kind_metrics())
-    encode = metrics["encode/heap"]
-    metrics["encode/heap"] = replace(encode, meta=replace(encode.meta, gating=True))
+    encode = metrics["encode#memory"]
+    metrics["encode#memory"] = replace(encode, meta=replace(encode.meta, gating=True))
     return create_comparison_result(
         metrics=metrics,
         candidates=[
@@ -430,7 +430,7 @@ def _several_kinds_gate() -> ComparisonResult:
 
 def _no_kind_gates() -> ComparisonResult:
     metrics = dict(two_kind_metrics())
-    for name in ("entity.alive_check/time", "entity.spawn/time", "warmup/time"):
+    for name in ("entity/alive_check#time", "entity/spawn#time", "warmup#time"):
         entry = metrics[name]
         metrics[name] = replace(entry, meta=replace(entry.meta, gating=False))
     return replace(
@@ -698,7 +698,7 @@ def test_render_report_when_sectioned_does_name_each_highlight_by_kind_and_short
 def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_per_subsection():
     result = create_comparison_result(
         metrics={
-            "entity.alive_check/time": n_way_kind_metric(
+            "entity/alive_check#time": n_way_kind_metric(
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
@@ -706,7 +706,7 @@ def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_p
                     NWayCandidate(verdict="regressed", delta=4, median=104),
                 ],
             ),
-            "encode/heap": n_way_kind_metric(
+            "encode#memory": n_way_kind_metric(
                 kind="memory",
                 short_name="encode",
                 gating=False,

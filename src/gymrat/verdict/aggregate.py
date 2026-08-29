@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import GeomeanResult, MetricVerdict, ResolvedMetricMeta
 from gymrat.verdict.geomean import compute_geomean
 
@@ -54,19 +55,18 @@ class _KindBucket:
     groups: dict[str, list[MetricEntry]]
 
 
-def infer_group(short_name: str) -> str | None:
-    """The text before a short name's first dot, or ``None`` when it has none.
+def infer_group(name: str) -> str | None:
+    """The group a metric belongs to, derived from its name's path segments.
 
-    Only the first dot divides: ``decode.utf8.time`` belongs to ``decode``, so a
-    suite reads as one group however deeply its own benchmark names nest. A
-    leading dot would name an empty group, which is no grouping at all.
+    Parses ``name`` through :func:`gymrat.metric_name.parse` and returns the
+    path prefix (all segments but the last, joined with ``/``).  Single-segment
+    paths have no group.
 
     Exposed so a renderer laying out group blocks sorts its rows by the same rule
     the aggregates were computed under — a second rule would put a metric in one
     group and its geomean in another.
     """
-    idx = short_name.find(".")
-    return short_name[:idx] if idx > 0 else None
+    return parse_metric_name(name).group
 
 
 def _bucket_by_kind(
@@ -86,7 +86,7 @@ def _bucket_by_kind(
         entry: MetricEntry = (name, meta)
         bucket.metrics.append(entry)
 
-        group = infer_group(meta.short_name)
+        group = infer_group(name)
         if group is None:
             continue
 

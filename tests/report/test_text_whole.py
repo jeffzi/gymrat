@@ -80,10 +80,10 @@ def _one_kind_result() -> ComparisonResult:
     geomean = geomean_of(-3.2, 2)
     return create_comparison_result(
         metrics={
-            "entity.alive_check/time": kind_metric(
+            "entity/alive_check#time": kind_metric(
                 kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
             ),
-            "entity.spawn/time": kind_metric(
+            "entity/spawn#time": kind_metric(
                 kind="time", short_name="entity.spawn", verdict="regressed", delta=4
             ),
         },
@@ -107,8 +107,8 @@ def test_render_report_when_one_kind_does_keep_the_flat_layout_and_one_geomean_r
         _HEADER,
         "metric",
         "<rule>",
-        "entity.alive_check/time",
-        "entity.spawn/time",
+        "entity/alive_check#time",
+        "entity/spawn#time",
         "<rule>",
         "geomean (2 stable metrics)",
     ]
@@ -117,7 +117,7 @@ def test_render_report_when_one_kind_does_keep_the_flat_layout_and_one_geomean_r
 def test_render_report_when_the_kind_does_not_gate_does_report_no_stable_metrics():
     result = create_comparison_result(
         metrics={
-            "warmup/time": kind_metric(
+            "warmup#time": kind_metric(
                 kind="time", short_name="warmup", verdict="improved", delta=-10, gating=False
             ),
         },
@@ -167,7 +167,7 @@ def _flat_non_gating_result() -> ComparisonResult:
     """A single non-gating ``time`` kind whose informational tag carries the config source."""
     return create_comparison_result(
         metrics={
-            "warmup/time": kind_metric(
+            "warmup#time": kind_metric(
                 kind="time", short_name="warmup", verdict="improved", delta=-10, gating=False
             ),
             "cooldown/time": kind_metric(
@@ -189,7 +189,7 @@ def test_render_report_when_the_sole_kind_gates_nothing_does_tag_before_the_head
         "informational — gating off (config: kinds.time.gating = false)",
         "metric",
         "<rule>",
-        "warmup/time",
+        "warmup#time",
         "cooldown/time",
         "<rule>",
         "geomean",
@@ -293,13 +293,13 @@ def _quiet_two_kind_result() -> ComparisonResult:
     time_geomean = geomean_of(-8.5, 2)
     return create_comparison_result(
         metrics={
-            "entity.alive_check/time": kind_metric(
+            "entity/alive_check#time": kind_metric(
                 kind="time", short_name="entity.alive_check", verdict="no-signal", delta=-9
             ),
-            "entity.spawn/time": kind_metric(
+            "entity/spawn#time": kind_metric(
                 kind="time", short_name="entity.spawn", verdict="no-signal", delta=-8
             ),
-            "encode/heap": kind_metric(
+            "encode#memory": kind_metric(
                 kind="memory",
                 short_name="encode",
                 verdict="no-signal",
@@ -361,7 +361,7 @@ def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
         metrics={
-            "entity.alive_check/time": n_way_kind_metric(
+            "entity/alive_check#time": n_way_kind_metric(
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
@@ -369,7 +369,7 @@ def test_render_report_when_colored_does_judge_each_candidate_column_by_its_own_
                     NWayCandidate(verdict="improved", delta=-12, median=88),
                 ],
             ),
-            "encode/heap": n_way_kind_metric(
+            "encode#memory": n_way_kind_metric(
                 kind="memory",
                 short_name="encode",
                 gating=False,
@@ -724,4 +724,4 @@ def test_render_report_when_flat_non_gating_does_assemble_tag_summary_and_highli
         "✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   "
         "= 0 identical   ~ 1 within noise   ? 0 inconclusive"
     )
-    assert _normalized_highlights(report) == ["✓ warmup/time -10.0%"]
+    assert _normalized_highlights(report) == ["✓ warmup#time -10.0%"]

@@ -59,8 +59,8 @@ def mixed_gating_kind() -> list[MetricSpec]:
     (0.9 * 0.95)^(1/2) - 1 ~= -7.54%, and one over the gating metric alone is -10%.
     """
     return [
-        MetricSpec(name="decode-time", short_name="decode.time", gating=True, delta=-10.0),
-        MetricSpec(name="decode-alloc", short_name="decode.alloc", gating=False, delta=-5.0),
+        MetricSpec(name="decode/time#time", short_name="decode.time", gating=True, delta=-10.0),
+        MetricSpec(name="decode/alloc#time", short_name="decode.alloc", gating=False, delta=-5.0),
     ]
 
 
@@ -70,19 +70,19 @@ def mixed_gating_kind() -> list[MetricSpec]:
 
 
 @pytest.mark.parametrize(
-    ("short_name", "expected"),
+    ("name", "expected"),
     [
-        pytest.param("decode.utf8.time", "decode", id="first-dot-wins"),
-        pytest.param("decode.time", "decode", id="single-dot"),
-        pytest.param("warmup", None, id="no-dot"),
-        pytest.param(".x", None, id="leading-dot"),
+        pytest.param("node/access.get_1field#time", "node", id="two-segment-path"),
+        pytest.param("node/access/get_1field#time", "node/access", id="three-segment-path"),
+        pytest.param("fib#time", None, id="one-segment-no-group"),
+        pytest.param("fib", None, id="one-segment-no-kind"),
     ],
 )
-def test_infer_group_when_given_short_name_does_return_prefix_before_first_dot(
-    short_name: str,
+def test_infer_group_when_given_metric_name_does_return_path_minus_last_segment(
+    name: str,
     expected: str | None,
 ):
-    assert infer_group(short_name) == expected
+    assert infer_group(name) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -110,17 +110,17 @@ def test_compute_kind_aggregates_when_nothing_measured_does_return_no_aggregates
 
 
 # ---------------------------------------------------------------------------
-# Grouping by the first dot of a short name
+# Grouping by metric name contract (path minus last segment)
 # ---------------------------------------------------------------------------
 
 
-def test_compute_kind_aggregates_when_short_names_dotted_does_group_by_first_dot_prefix():
+def test_compute_kind_aggregates_when_multi_segment_names_does_group_by_path_prefix():
     groups = only_kind(
         kinds_of(
             [
-                MetricSpec(name="m1", short_name="decode.time", delta=-10.0),
-                MetricSpec(name="m2", short_name="decode.alloc", delta=-5.0),
-                MetricSpec(name="m3", short_name="encode.time", delta=-10.0),
+                MetricSpec(name="decode/time#time", short_name="decode.time", delta=-10.0),
+                MetricSpec(name="decode/alloc#time", short_name="decode.alloc", delta=-5.0),
+                MetricSpec(name="encode/time#time", short_name="encode.time", delta=-10.0),
             ],
         ),
     ).groups
@@ -130,26 +130,30 @@ def test_compute_kind_aggregates_when_short_names_dotted_does_group_by_first_dot
     assert groups[1].geomean.n == 1
 
 
-def test_compute_kind_aggregates_when_name_deeper_than_one_dot_does_keep_outermost_group():
+def test_compute_kind_aggregates_when_deeper_path_does_use_full_prefix_as_group():
     groups = only_kind(
         kinds_of(
             [
-                MetricSpec(name="m1", short_name="decode.utf8.time", delta=-10.0),
-                MetricSpec(name="m2", short_name="decode.time", delta=-10.0),
+                MetricSpec(
+                    name="node/access/get_1field#time", short_name="access.get_1field", delta=-10.0
+                ),
+                MetricSpec(
+                    name="node/access/get_2field#time", short_name="access.get_2field", delta=-10.0
+                ),
             ],
         ),
     ).groups
 
-    assert [group.group for group in groups] == ["decode"]
+    assert [group.group for group in groups] == ["node/access"]
     assert groups[0].geomean.n == 2
 
 
-def test_compute_kind_aggregates_when_short_name_has_no_dot_does_count_in_kind_not_group():
+def test_compute_kind_aggregates_when_single_segment_name_does_count_in_kind_not_group():
     kind = only_kind(
         kinds_of(
             [
-                MetricSpec(name="m1", short_name="decode.time", delta=-10.0),
-                MetricSpec(name="m2", short_name="warmup", delta=-10.0),
+                MetricSpec(name="decode/time#time", short_name="decode.time", delta=-10.0),
+                MetricSpec(name="warmup#time", short_name="warmup", delta=-10.0),
             ],
         ),
     )
@@ -159,12 +163,12 @@ def test_compute_kind_aggregates_when_short_name_has_no_dot_does_count_in_kind_n
     assert kind.geomean.n == 2
 
 
-def test_compute_kind_aggregates_when_no_short_name_dotted_does_give_kind_no_groups():
+def test_compute_kind_aggregates_when_all_single_segment_does_give_kind_no_groups():
     groups = only_kind(
         kinds_of(
             [
-                MetricSpec(name="m1", short_name="alpha", delta=-10.0),
-                MetricSpec(name="m2", short_name="beta", delta=-5.0),
+                MetricSpec(name="alpha#time", short_name="alpha", delta=-10.0),
+                MetricSpec(name="beta#time", short_name="beta", delta=-5.0),
             ],
         ),
     ).groups
@@ -172,11 +176,11 @@ def test_compute_kind_aggregates_when_no_short_name_dotted_does_give_kind_no_gro
     assert groups == ()
 
 
-def test_compute_kind_aggregates_when_dotted_name_in_one_kind_does_leave_other_kind_flat():
+def test_compute_kind_aggregates_when_grouped_name_in_one_kind_does_leave_other_kind_flat():
     result = kinds_of(
         [
-            MetricSpec(name="m1", kind="time", short_name="decode.time", delta=-10.0),
-            MetricSpec(name="m2", kind="memory", short_name="heap", delta=-10.0),
+            MetricSpec(name="decode/time#time", kind="time", short_name="decode.time", delta=-10.0),
+            MetricSpec(name="heap#memory", kind="memory", short_name="heap", delta=-10.0),
         ],
     )
 
@@ -192,9 +196,11 @@ def test_compute_kind_aggregates_when_dotted_name_in_one_kind_does_leave_other_k
 def test_compute_kind_aggregates_when_many_kinds_and_groups_does_order_by_first_mention():
     result = kinds_of(
         [
-            MetricSpec(name="m1", kind="time", short_name="encode.time", delta=-10.0),
-            MetricSpec(name="m2", kind="memory", short_name="encode.heap", delta=-10.0),
-            MetricSpec(name="m3", kind="time", short_name="decode.time", delta=-10.0),
+            MetricSpec(name="encode/time#time", kind="time", short_name="encode.time", delta=-10.0),
+            MetricSpec(
+                name="encode/heap#memory", kind="memory", short_name="encode.heap", delta=-10.0
+            ),
+            MetricSpec(name="decode/time#time", kind="time", short_name="decode.time", delta=-10.0),
         ],
     )
 
