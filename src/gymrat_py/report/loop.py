@@ -26,7 +26,7 @@ from rich.markup import escape
 
 from gymrat_py.model import Effect
 from gymrat_py.report.format import format_delta, format_value, get_glyph, is_improvement, pluralize
-from gymrat_py.report.style import format_hint
+from gymrat_py.report.style import VARIANT_NAME_STYLE, format_hint
 from gymrat_py.report.table import markup
 from gymrat_py.report.text import paired_samples
 from gymrat_py.stats.descriptive import compute_median
@@ -130,8 +130,12 @@ EXPERIMENT_INDEX = 0
 #: How many leading characters of a commit SHA a report abbreviates it to.
 SHORT_SHA_LENGTH = 7
 
-#: What the loop's header says it compared, fixed for every iteration.
-_COMPARED = "experiment vs baseline"
+#: What the loop's header says it compared, fixed for every iteration. The two
+#: targets wear the style the table heads its columns with, so the header names
+#: them the way the columns below it do.
+_COMPARED = (
+    f"{markup('experiment', VARIANT_NAME_STYLE)} vs {markup('baseline', VARIANT_NAME_STYLE)}"
+)
 
 #: What an iteration that met the configured target says, and what it asks for.
 _TARGET_REACHED = "target reached — keep it"
@@ -202,7 +206,7 @@ def format_loop_header(seq: int, samples: int) -> str:
     Returns:
         The header as a single rich-markup line.
     """
-    parts = [markup(f"iteration {seq}", "bold"), _COMPARED, paired_samples(samples)]
+    parts = [markup(f"iteration {seq}", "bold"), _COMPARED, escape(paired_samples(samples))]
     return _separator().join(parts)
 
 

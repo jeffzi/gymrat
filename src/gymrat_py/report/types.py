@@ -219,9 +219,14 @@ class ReportOptions:
             can say which gate a candidate tripped. Display only.
         header: A run header to open the report with, printed verbatim, in place
             of the one the renderer would build for itself.
+        command: The subcommand the report is printed under, so a hint suggesting
+            a re-run names the invocation the reader would repeat. Defaults to
+            the ``compare`` the renderer is named for; a command borrowing the
+            renderer — ``iterate`` — names itself.
     """
 
     verbose: bool | None = None
     color: bool | None = None
     fail_on: tuple[FailOnCondition, ...] | None = None
     header: str | None = None
+    command: str = "compare"

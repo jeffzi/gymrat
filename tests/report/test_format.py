@@ -33,6 +33,7 @@ from gymrat_py.report.format import (
     format_value,
     geomean_value_style,
     get_glyph,
+    pluralize,
     scoped_geomean_label,
     select_highlights,
     verdict_summary_parts,
@@ -571,15 +572,20 @@ def test_verdict_summary_parts_pads_counts_to_widest_digit_width():
 
 
 #: The one hint the footer offers, in the prose ``format_hint`` renders it from.
-SAMPLE_SHORTAGE_HINT = "re-run with --samples 6 or more for statistical verdicts"
+SAMPLE_SHORTAGE_HINT = "re-run with `gymrat compare --samples 6` or more for statistical verdicts"
+
+#: The hint after ``format_hint`` → ``_plain`` round-trips (backticks stripped).
+SAMPLE_SHORTAGE_HINT_PLAIN = (
+    "re-run with gymrat compare --samples 6 or more for statistical verdicts"
+)
 
 
 def _verbose_lines(metrics: Metrics) -> list[str]:
     """The verbose method lines, with no hint contribution."""
     return [
         line
-        for line in footer_lines(metrics, verbose=True, format_hint=format_hint)
-        if SAMPLE_SHORTAGE_HINT not in _plain(line)
+        for line in footer_lines(metrics, verbose=True, format_hint=format_hint, command="compare")
+        if SAMPLE_SHORTAGE_HINT_PLAIN not in _plain(line)
     ]
 
 
@@ -610,7 +616,7 @@ def test_footer_lines_dims_the_descriptive_verdict_line():
 def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    lines = footer_lines(metrics, verbose=True, format_hint=format_hint)
+    lines = footer_lines(metrics, verbose=True, format_hint=format_hint, command="compare")
 
     assert lines[-1] == format_hint(SAMPLE_SHORTAGE_HINT)
 
@@ -648,7 +654,7 @@ def test_footer_lines_phrases_band_line_by_cause(metrics: Metrics, expected: lis
 def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    assert footer_lines(metrics, verbose=False, format_hint=format_hint) == [
+    assert footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare") == [
         format_hint(SAMPLE_SHORTAGE_HINT)
     ]
 
@@ -662,7 +668,7 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
                 "encode/time": band_metric(n=5),
                 "parse/time": approximate_metric(verdict="improved", delta=-10),
             },
-            [SAMPLE_SHORTAGE_HINT],
+            [SAMPLE_SHORTAGE_HINT_PLAIN],
             id="every-band-metric-short",
         ),
         pytest.param(
@@ -680,7 +686,7 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
                 "entity.alive_check/heap": band_metric(n=10, usable_n=3),
                 "parse/time": approximate_metric(verdict="improved", delta=-10),
             },
-            [SAMPLE_SHORTAGE_HINT],
+            [SAMPLE_SHORTAGE_HINT_PLAIN],
             id="shortage-and-ties-different-metrics",
         ),
         pytest.param(
@@ -691,7 +697,7 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
     ],
 )
 def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint)
+    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare")
 
     assert [_plain(line) for line in lines] == expected
 
@@ -710,9 +716,11 @@ def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
 def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     metrics: Metrics, samples: int
 ):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, samples=samples)
+    lines = footer_lines(
+        metrics, verbose=False, format_hint=format_hint, command="compare", samples=samples
+    )
 
-    assert any("re-run with --samples" in line for line in lines)
+    assert any("gymrat compare --samples" in line for line in lines)
 
 
 @pytest.mark.parametrize(
@@ -734,16 +742,74 @@ def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     ],
 )
 def test_footer_lines_when_samples_enough_does_name_dropped_rounds(metrics: Metrics, samples: int):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, samples=samples)
+    lines = footer_lines(
+        metrics, verbose=False, format_hint=format_hint, command="compare", samples=samples
+    )
 
-    assert not any("re-run with --samples" in line for line in lines)
+    assert not any("gymrat compare --samples" in line for line in lines)
     assert any("dropped" in line for line in lines)
 
 
 def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint():
     metrics: Metrics = {"a/time": approximate_metric(verdict="improved", delta=-10)}
 
-    assert footer_lines(metrics, verbose=False, format_hint=format_hint, samples=10) == []
+    assert (
+        footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare", samples=10)
+        == []
+    )
+
+
+# ---------------------------------------------------------------------------
+# pluralize
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("noun", "expected"),
+    [
+        pytest.param("pass", "2 passes", id="ends-in-s"),
+        pytest.param("box", "2 boxes", id="ends-in-x"),
+        pytest.param("buzz", "2 buzzes", id="ends-in-z"),
+        pytest.param("branch", "2 branches", id="ends-in-ch"),
+        pytest.param("dish", "2 dishes", id="ends-in-sh"),
+        pytest.param("query", "2 queries", id="consonant-then-y"),
+        pytest.param("key", "2 keys", id="vowel-then-y"),
+        pytest.param("metric", "2 metrics", id="regular"),
+        pytest.param("kept iteration", "2 kept iterations", id="multi-word-regular"),
+        pytest.param("uncommitted file", "2 uncommitted files", id="multi-word-adjective"),
+    ],
+)
+def test_pluralize_when_count_is_plural_does_apply_english_suffix_rules(noun: str, expected: str):
+    assert pluralize(2, noun) == expected
+
+
+@pytest.mark.parametrize("noun", ["pass", "query", "box", "metric", "kept iteration"])
+def test_pluralize_when_count_is_one_does_leave_noun_unchanged(noun: str):
+    assert pluralize(1, noun) == f"1 {noun}"
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        pytest.param(0, "0 passes", id="zero"),
+        pytest.param(2, "2 passes", id="many"),
+        pytest.param(-1, "-1 passes", id="negative"),
+    ],
+)
+def test_pluralize_when_count_is_not_one_does_use_the_plural_form(count: int, expected: str):
+    assert pluralize(count, "pass") == expected
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        pytest.param(1, "1 index", id="singular-keeps-noun"),
+        pytest.param(2, "2 indices", id="plural-takes-override"),
+        pytest.param(0, "0 indices", id="zero-takes-override"),
+    ],
+)
+def test_pluralize_when_plural_given_does_override_the_suffix_rules(count: int, expected: str):
+    assert pluralize(count, "index", "indices") == expected
 
 
 # ---------------------------------------------------------------------------

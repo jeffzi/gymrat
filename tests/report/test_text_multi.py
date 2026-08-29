@@ -657,7 +657,7 @@ def test_render_report_when_colored_does_embolden_the_candidate_summary_label(
     summary = next(
         line
         for line in render_report(multi_candidate_result()).split("\n")
-        if re.search(r"✓ \d+ improved", line) and label in strip_ansi(line)
+        if re.search(r"✓ \d+ improved", strip_ansi(line)) and label in strip_ansi(line)
     )
 
     assert "1" in styles_at(summary, label)

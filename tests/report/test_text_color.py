@@ -51,6 +51,15 @@ if TYPE_CHECKING:
     from gymrat_py.report.types import ComparisonResult
 
 
+def _summary_segment(summary: str, label: str) -> str:
+    """The triple-space-delimited summary segment whose plain text contains *label*."""
+    for seg in summary.split("   "):
+        if label in strip_ansi(seg):
+            return seg
+    msg = f"no segment with {label!r} in summary: {strip_ansi(summary)!r}"
+    raise AssertionError(msg)
+
+
 def _colorful_result() -> ComparisonResult:
     """A run whose rows cover every verdict class, plus a geomean figure."""
     return create_comparison_result(
@@ -556,21 +565,21 @@ def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimm
 
 
 @pytest.mark.parametrize(
-    ("glyph", "code"),
+    ("label", "code"),
     [
-        pytest.param("✓", "32", id="improved-green"),
-        pytest.param("✗", "31", id="regressed-red"),
-        pytest.param("≈", "33", id="unstable-yellow"),
+        pytest.param("improved", "32", id="improved-green"),
+        pytest.param("regressed", "31", id="regressed-red"),
+        pytest.param("unstable", "33", id="unstable-yellow"),
     ],
 )
 def test_render_report_when_colored_does_style_the_non_zero_tally_in_the_summary(
-    monkeypatch: pytest.MonkeyPatch, glyph: str, code: str
+    monkeypatch: pytest.MonkeyPatch, label: str, code: str
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     summary = line_containing(render_report(_colorful_result()), "improved")
 
-    assert code in styles_at(summary, glyph)
+    assert f"\x1b[{code}m" in _summary_segment(summary, label)
 
 
 @pytest.mark.parametrize(
@@ -597,7 +606,7 @@ def test_render_report_when_colored_does_paint_the_non_zero_identical_tally_cyan
     )
     summary = line_containing(render_report(result), "identical")
 
-    assert "36" in styles_at(summary, "=")
+    assert "\x1b[36m" in _summary_segment(summary, "identical")
 
 
 def test_render_report_when_colored_does_dim_the_within_noise_segment(
@@ -607,7 +616,7 @@ def test_render_report_when_colored_does_dim_the_within_noise_segment(
 
     summary = line_containing(render_report(_colorful_result()), "within noise")
 
-    assert "2" in styles_at(summary, "~")
+    assert "\x1b[2m" in _summary_segment(summary, "within noise")
 
 
 # ---------------------------------------------------------------------------

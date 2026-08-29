@@ -172,8 +172,9 @@ def test_render_report_when_single_pair_does_tally_the_metrics_in_their_own_buck
 
 
 def test_render_report_when_single_pair_does_hint_at_the_longer_run():
-    assert "re-run with --samples 6 or more for statistical verdicts" in render_report(
-        single_sample_result()
+    assert (
+        "re-run with gymrat compare --samples 6 or more for statistical verdicts"
+        in render_report(single_sample_result())
     )
 
 

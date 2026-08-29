@@ -307,12 +307,13 @@ def _render_candidate_highlights(
 # ---------------------------------------------------------------------------
 
 
-def _render_method_footer(result: ComparisonResult, *, verbose: bool) -> list[str]:
+def _render_method_footer(result: ComparisonResult, *, verbose: bool, command: str) -> list[str]:
     """The verbose method lines naming how each verdict was decided, and the samples hint."""
     return footer_lines(
         result.metrics,
         verbose=verbose,
         format_hint=format_hint,
+        command=command,
         samples=result.samples,
     )
 
@@ -389,7 +390,8 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
         options: The presentation flags. ``options.header`` replaces the run
             header verbatim; ``options.color`` forces color on or off, or defers
             to the environment when ``None``; ``options.verbose`` adds the method
-            footer; ``options.fail_on`` names the gate conditions.
+            footer; ``options.fail_on`` names the gate conditions;
+            ``options.command`` names the subcommand a re-run hint suggests.
 
     Returns:
         The rendered report.
@@ -422,7 +424,7 @@ def render_report(result: ComparisonResult, options: ReportOptions = _DEFAULT_OP
             lines.extend(_render_block(highlights, color=color))
 
     footer = [
-        *_render_method_footer(display, verbose=bool(options.verbose)),
+        *_render_method_footer(display, verbose=bool(options.verbose), command=options.command),
         *_render_worktree_footer(display),
     ]
     if footer:

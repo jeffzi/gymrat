@@ -16,6 +16,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, assert_never
 
+from rich.markup import escape
+
 from gymrat_py.model import (
     BAND_DESCRIPTOR,
     PERMUTATION_DESCRIPTOR,
@@ -628,11 +630,35 @@ NO_GEOMEAN_CELL = f"{NO_GEOMEAN_FIGURE}  {NO_STABLE_METRICS}"
 _SCOPE_SEPARATOR = "·"
 
 
+#: Endings that take ``-es`` rather than a bare ``-s`` ("pass" → "passes").
+_SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
+
+_VOWELS = "aeiou"  # cspell:disable-line -- the vowel set, not a word
+
+
+def _regular_plural(noun: str) -> str:
+    """``noun`` under the regular English suffix rules.
+
+    A sibilant ending takes ``-es``; a consonant followed by ``y`` takes
+    ``-ies``; everything else takes ``-s``. Multi-word nouns inflect on their
+    last word, which the suffix tests already look at.
+    """
+    if noun.endswith(_SIBILANT_ENDINGS):
+        return f"{noun}es"
+    if len(noun) > 1 and noun.endswith("y") and noun[-2] not in _VOWELS:
+        return f"{noun[:-1]}ies"
+    return f"{noun}s"
+
+
 def pluralize(count: int, noun: str, plural: str | None = None) -> str:
-    """Append an ``s`` to ``noun`` for a count other than one, or use ``plural`` instead."""
+    """Inflect ``noun`` for ``count``, or use the explicit ``plural`` instead.
+
+    A count of one keeps ``noun`` as given; any other count — zero and
+    negatives included — takes the plural form.
+    """
     if count == 1:
         return f"{count} {noun}"
-    return f"{count} {plural if plural is not None else f'{noun}s'}"
+    return f"{count} {plural if plural is not None else _regular_plural(noun)}"
 
 
 def geomean_label(n: int) -> str:
@@ -772,10 +798,11 @@ def _display_counts(
 def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> list[str]:
     """One tally part per display class, in legend order, as rich-markup strings.
 
-    Each part carries its class color, and a part counting nothing is dimmed
-    whatever its class — a zero is not news either way. ``within noise`` and
-    ``inconclusive`` read dim at any count. Counts are padded to the widest
-    count's digit width so a renderer can align them.
+    The count is the news, so it alone carries the class color while the glyph
+    and the word beside it stay in the surrounding style. A part counting nothing
+    is dimmed end to end whatever its class — a zero is not news either way.
+    Counts are padded to the widest count's digit width so a renderer can align
+    them.
 
     Args:
         metrics: Every metric of the run, keyed by name.
@@ -791,9 +818,13 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
     for shown in _DISPLAY_CLASS_ORDER:
         count = counts[shown]
         padded = str(count).rjust(max_width)
-        text = f"{get_glyph(shown)} {padded} {VERDICT_GLOSSES[shown]}"
-        style = "dim" if count == 0 else VERDICT_STYLES[shown]
-        parts.append(markup(text, style))
+        glyph = get_glyph(shown)
+        gloss = VERDICT_GLOSSES[shown]
+        if count == 0:
+            parts.append(markup(f"{glyph} {padded} {gloss}", "dim"))
+        else:
+            colored = markup(padded, VERDICT_STYLES[shown])
+            parts.append(f"{escape(glyph)} {colored} {escape(gloss)}")
     return parts
 
 
@@ -801,7 +832,19 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
 # Footer generation
 # ---------------------------------------------------------------------------
 
-_SAMPLES_HINT = f"re-run with --samples {MIN_PERMUTATION_N} or more for statistical verdicts"
+
+def _samples_hint(command: str) -> str:
+    """The hint asking for more samples, naming the command that would carry them.
+
+    The command is stated whole and backtick-marked so
+    :func:`gymrat_py.report.style.format_hint` sets it apart from the prose: a
+    reader copies the line rather than assembling the invocation themselves.
+    """
+    return (
+        f"re-run with `gymrat {command} --samples {MIN_PERMUTATION_N}` "
+        f"or more for statistical verdicts"
+    )
+
 
 # Shown when the run had enough samples but some metrics paired fewer rounds than
 # the permutation test needs: suggesting more samples would be wrong.
@@ -889,7 +932,7 @@ def _method_lines(data: _FooterData) -> list[str]:
     return lines
 
 
-def _shortage_hint(shortage: Sequence[int], samples: int | None) -> str | None:
+def _shortage_hint(shortage: Sequence[int], samples: int | None, command: str) -> str | None:
     """The hint for metrics that fell to the band because their paired count was short.
 
     When the run's own sample count is below the floor, more samples are the
@@ -900,7 +943,7 @@ def _shortage_hint(shortage: Sequence[int], samples: int | None) -> str | None:
         return None
     if samples is not None and samples >= MIN_PERMUTATION_N:
         return _DROPPED_ROUNDS_HINT
-    return _SAMPLES_HINT
+    return _samples_hint(command)
 
 
 def footer_lines(
@@ -908,6 +951,7 @@ def footer_lines(
     *,
     verbose: bool,
     format_hint: Callable[[str], str],
+    command: str,
     samples: int | None = None,
 ) -> list[str]:
     """The footer: how each verdict was decided when verbose, and the samples hint.
@@ -920,6 +964,8 @@ def footer_lines(
         metrics: Every metric of the run, keyed by name.
         verbose: Whether to include the method lines naming each verdict's basis.
         format_hint: Turns a bare hint into the renderer's own hint line.
+        command: The subcommand the report was produced by, so a hint suggesting
+            a re-run names the whole invocation.
         samples: The run's sample count, to distinguish shortage from dropped
             rounds. Left ``None``, a shortage always suggests more samples.
 
@@ -927,7 +973,7 @@ def footer_lines(
         The footer lines, method lines (when verbose) first, then the hint.
     """
     data = _collect_footer_data(metrics)
-    hint = _shortage_hint(data.shortage, samples)
+    hint = _shortage_hint(data.shortage, samples, command)
     lines = _method_lines(data) if verbose else []
     if hint is not None:
         lines.append(format_hint(hint))

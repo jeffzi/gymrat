@@ -570,7 +570,7 @@ def test_render_report_when_degenerate_and_dirty_cleanup_does_close_with_footer_
 
     lines = report.split("\n")
     assert lines[-4:] == [
-        "re-run with --samples 6 or more for statistical verdicts",
+        "re-run with gymrat compare --samples 6 or more for statistical verdicts",
         "1 worktree removed · 1 left behind",
         "  left behind: /tmp/gymrat-abc123 (contains modified files)",
         "  worktree prune failed: could not lock config file",
@@ -709,7 +709,9 @@ def test_render_report_when_single_sample_does_close_on_the_hint_with_no_highlig
         "✓ 0 improved   ✗ 0 regressed   ≈ 0 unstable   "
         "= 0 identical   ~ 0 within noise   ? 2 inconclusive"
     )
-    assert report.split("\n")[-1] == ("re-run with --samples 6 or more for statistical verdicts")
+    assert report.split("\n")[-1] == (
+        "re-run with gymrat compare --samples 6 or more for statistical verdicts"
+    )
 
 
 def test_render_report_when_flat_non_gating_does_assemble_tag_summary_and_highlights():
