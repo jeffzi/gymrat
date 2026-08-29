@@ -38,8 +38,10 @@ from gymrat.cli.shared import (
     ConfigOption,
     DebugOption,
     ForceOption,
+    FormatOption,
     MessageOption,
     NoColorOption,
+    OutputFormat,
     PrepareOption,
     SamplesOption,
     TimeoutOption,
@@ -67,9 +69,16 @@ from gymrat.loop.settle import (
     keep_session,
 )
 from gymrat.loop.start import StartResult, start_session
-from gymrat.loop.status import status_session
+from gymrat.loop.status import status_data, status_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.report.format import pluralize
+from gymrat.report.json_doc import (
+    render_discard_json,
+    render_iterate_json,
+    render_iterate_stop_json,
+    render_keep_json,
+    render_status_json,
+)
 from gymrat.report.loop import format_baseline_ref
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
@@ -178,12 +187,14 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     config: ConfigOption = None,
     no_color: NoColorOption = False,
     verbose: VerboseOption = False,
+    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
     if debug:
         set_debug_mode(True)
 
+    use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
     resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
@@ -239,10 +250,12 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         try:
             result = await with_repo_lock("iterate", body)
         except LoopStopError as error:
-            # A stop condition is a gate trip, not a tool failure: the loop did
-            # what it was configured to do and declined another iteration.
+            if use_json:
+                write_and_flush(sys.stdout, render_iterate_stop_json(str(error)) + "\n")
+                raise typer.Exit(GATE_EXIT_CODE) from None
             exit_with_error(error, GATE_EXIT_CODE)
-        write_and_flush(sys.stdout, result.report + "\n")
+        report = render_iterate_json(result) if use_json else result.report
+        write_and_flush(sys.stdout, report + "\n")
 
     run_cli(run)
 
@@ -256,12 +269,14 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     message: MessageOption = None,
+    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
     if debug:
         set_debug_mode(True)
 
+    use_json = format == OutputFormat.json
     resolved_color = resolve_stream_color(None, sys.stdout)
     flags = CliFlags(
         bench=bench,
@@ -283,25 +298,28 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
             )
 
         result = await with_repo_lock("keep", body)
-        write_and_flush(sys.stdout, result.report + "\n")
-        # A blocked keep reports first, then trips the gate: the agent reads why
-        # the edit was refused on stdout before the exit code says it was.
+        report = render_keep_json(result) if use_json else result.report
+        write_and_flush(sys.stdout, report + "\n")
         if result.record.status == "blocked":
             raise typer.Exit(GATE_EXIT_CODE)
 
     run_cli(run)
 
 
-def discard(*, force: ForceOption = False, debug: DebugOption = False) -> None:
+def discard(
+    *,
+    force: ForceOption = False,
+    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
+    debug: DebugOption = False,
+) -> None:
     """Revert the session's experiment worktree to its last commit."""
     if debug:
         set_debug_mode(True)
 
+    use_json = format == OutputFormat.json
+
     async def run() -> None:
         root = repo_root()
-        # The session id read while prompting guards the locked revert: a session
-        # that turned over between the prompt and the lock is refused rather than
-        # discarded out from under a run that never confirmed this one.
         confirmed_session_id: str | None = None
         if is_tty(sys.stdin) and not force:
             required = require_open_session(root, "discard")
@@ -319,7 +337,8 @@ def discard(*, force: ForceOption = False, debug: DebugOption = False) -> None:
             return discard_session(root, confirmed_session_id)
 
         result = await with_repo_lock("discard", body)
-        write_and_flush(sys.stdout, result.report + "\n")
+        report = render_discard_json(result) if use_json else result.report
+        write_and_flush(sys.stdout, report + "\n")
 
     run_cli(run)
 
@@ -352,6 +371,7 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     samples: SamplesOption = None,
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
+    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
     no_color: NoColorOption = False,
     debug: DebugOption = False,
 ) -> None:
@@ -359,6 +379,7 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     if debug:
         set_debug_mode(True)
 
+    use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
     resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
@@ -372,7 +393,12 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 
     try:
         root = repo_root()
-        report = status_session(root, resolve_benchless_config(flags, root), color=resolved_color)
+        if use_json:
+            report = render_status_json(status_data(root))
+        else:
+            report = status_session(
+                root, resolve_benchless_config(flags, root), color=resolved_color
+            )
     except typer.Exit:
         raise
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter

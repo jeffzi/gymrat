@@ -1,8 +1,8 @@
-"""JSON report document builders for the compare and measure commands.
+"""JSON report document builders for the compare, measure, and loop commands.
 
-Both builders assemble a plain nested structure keyed by the parity JSON surface
+Each builder assembles a plain nested structure keyed by the parity JSON surface
 (camelCase string literals, distinct from the snake_case dataclass fields) and
-serialize it with a two-space indent. Neither takes presentation options, so the
+serializes it with a two-space indent. None takes presentation options, so the
 output never carries ANSI, whatever the ambient environment forces.
 
 ``json.dumps`` emits invalid ``NaN``/``Infinity`` literals by default, whereas
@@ -23,6 +23,9 @@ from gymrat.report.types import CandidateMetric
 from gymrat.verdict import infer_group
 
 if TYPE_CHECKING:
+    from gymrat.loop.iterate import IterateResult
+    from gymrat.loop.settle import DiscardResult, KeepResult
+    from gymrat.loop.status import StatusData
     from gymrat.model import GeomeanResult, MetricVerdict
     from gymrat.report.format import VerdictCounts
     from gymrat.report.types import (
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
         MetricMeasurement,
         WorktreeCleanupOutcome,
     )
+    from gymrat.session.records import IterationRecord
     from gymrat.verdict import KindAggregate
 
 _COMPARE_SCHEMA_VERSION = 2
@@ -234,6 +238,96 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
             for failure in result.worktrees_left_behind
         ],
         "pruneError": result.worktree_prune_error,
+    }
+
+
+def render_iterate_json(result: IterateResult) -> str:
+    """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
+    return _dump(_serialize_iteration(result.record))
+
+
+def render_iterate_stop_json(reason: str) -> str:
+    """Emitted instead of the normal iteration document when a stop condition fires."""
+    return _dump({"stopped": True, "reason": reason})
+
+
+def render_keep_json(result: KeepResult) -> str:
+    """Status, reason, nested checks outcome, commit SHA, and message."""
+    record = result.record
+    checks: dict[str, object] = {
+        "configured": record.checks.configured,
+        "passed": record.checks.passed,
+        "stdoutBytes": record.checks.stdout_bytes,
+        "stderrBytes": record.checks.stderr_bytes,
+    }
+    document: dict[str, object] = {
+        "status": record.status,
+        "reason": record.reason,
+        "checks": checks,
+        "commit": record.commit,
+        "message": record.message,
+    }
+    return _dump(document)
+
+
+def render_discard_json(result: DiscardResult) -> str:
+    """The discarded iteration's sequence number and timestamp."""
+    return _dump({"seq": result.record.seq, "at": result.record.at})
+
+
+def render_status_json(data: StatusData) -> str:
+    """Session identity, branch, nested baseline ref/SHA, and record counts."""
+    return _dump(
+        {
+            "sessionId": data.session_id,
+            "branch": data.branch,
+            "baseline": {"ref": data.baseline_ref, "sha": data.baseline_sha},
+            "iterationCount": data.iteration_count,
+            "keepCount": data.keep_count,
+            "discardCount": data.discard_count,
+            "unsettled": data.unsettled,
+            "finalized": data.finalized,
+        }
+    )
+
+
+def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
+    primary: dict[str, object] = {
+        "kind": record.primary.kind,
+        "deltaPct": record.primary.delta_pct,
+    }
+    if record.primary.name is not None:
+        primary["name"] = record.primary.name
+
+    confirm: dict[str, object] | None = None
+    if record.confirm is not None:
+        confirm = {
+            "ran": record.confirm.ran,
+            "filtered": list(record.confirm.filtered),
+            "absent": list(record.confirm.absent) if record.confirm.absent is not None else None,
+        }
+
+    metrics: dict[str, object] = {}
+    for name, verdict in record.metrics.items():
+        entry: dict[str, object] = {
+            "deltaPct": verdict.delta_pct,
+            "verdict": verdict.verdict,
+            "method": verdict.method,
+            "gating": verdict.gating,
+            "confirmed": verdict.confirmed,
+        }
+        if verdict.p is not None:
+            entry["p"] = verdict.p
+        if verdict.noise_pct is not None:
+            entry["noisePct"] = verdict.noise_pct
+        metrics[name] = entry
+
+    return {
+        "seq": record.seq,
+        "outcome": record.outcome,
+        "primary": primary,
+        "metrics": metrics,
+        "confirm": confirm,
     }
 
 

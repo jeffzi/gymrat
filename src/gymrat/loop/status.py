@@ -215,3 +215,35 @@ def status_session(root: str, config: BenchlessConfig, *, color: bool | None = N
         lines.append(format_status_finalized(state.finalized))
 
     return render_lines(*lines, color=color, width=RENDER_WIDTH)
+
+
+@dataclass(frozen=True, slots=True)
+class StatusData:
+    """Structured status fields the JSON path serializes without touching the renderer."""
+
+    session_id: str
+    branch: str
+    baseline_ref: str
+    baseline_sha: str
+    iteration_count: int
+    keep_count: int
+    discard_count: int
+    unsettled: bool
+    finalized: bool
+
+
+def status_data(root: str) -> StatusData:
+    """The session's structured status, independent of any text rendering."""
+    required = require_session(root, "asking for its status")
+    session, state = required.session, required.state
+    return StatusData(
+        session_id=session.session_id,
+        branch=session.branch,
+        baseline_ref=session.baseline.ref,
+        baseline_sha=session.baseline.sha,
+        iteration_count=state.iteration_count,
+        keep_count=state.keep_count,
+        discard_count=state.discard_count,
+        unsettled=state.unsettled,
+        finalized=state.finalized is not None,
+    )
