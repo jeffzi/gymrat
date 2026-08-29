@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError
-from gymrat_py.session.paths import (
+from gymrat.errors import GymratError
+from gymrat.session.paths import (
     archived_session_path,
     baseline_worktree_dir,
     experiment_worktree_dir,

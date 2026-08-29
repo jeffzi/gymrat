@@ -23,15 +23,15 @@ from unittest.mock import Mock, create_autospec
 import pytest
 from typer.testing import CliRunner, Result
 
-from gymrat_py.cli.app import app
-from gymrat_py.cli.shared import write_and_flush
-from gymrat_py.cli.supervise_progress import create_supervise_reporter
-from gymrat_py.config import BenchlessConfig, StopConfig
-from gymrat_py.errors import GymratError
-from gymrat_py.session.paths import supervise_lockfile_path
-from gymrat_py.session.workspace import ensure_git_exclude
-from gymrat_py.signals import install_termination_cleanup
-from gymrat_py.supervisor import SessionOutcome, SupervisionResult, create_claude_driver
+from gymrat.cli.app import app
+from gymrat.cli.shared import write_and_flush
+from gymrat.cli.supervise_progress import create_supervise_reporter
+from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.errors import GymratError
+from gymrat.session.paths import supervise_lockfile_path
+from gymrat.session.workspace import ensure_git_exclude
+from gymrat.signals import install_termination_cleanup
+from gymrat.supervisor import SessionOutcome, SupervisionResult, create_claude_driver
 
 runner = CliRunner()
 
@@ -142,14 +142,14 @@ def _install_seams(
         seams.reporter_calls.append(kwargs)
         return SimpleNamespace(observer=seams.observer, stop=seams.reporter_stop)
 
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.resolve_benchless_config", fake_resolve)
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.compose_kickoff", fake_compose)
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.create_claude_driver", seams.create_driver)
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.supervise", fake_supervise)
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.create_supervise_reporter", fake_reporter)
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.ensure_git_exclude", seams.ensure_git_exclude)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.resolve_benchless_config", fake_resolve)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.compose_kickoff", fake_compose)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.create_claude_driver", seams.create_driver)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.supervise", fake_supervise)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.create_supervise_reporter", fake_reporter)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.ensure_git_exclude", seams.ensure_git_exclude)
     monkeypatch.setattr(
-        "gymrat_py.cli.supervise_cmd.install_termination_cleanup", seams.install_cleanup
+        "gymrat.cli.supervise_cmd.install_termination_cleanup", seams.install_cleanup
     )
     return seams
 
@@ -575,7 +575,7 @@ def test_supervise_when_run_completes_does_stop_reporter_before_printing_summary
             order.append("write")
         original_waf(stream, data)
 
-    monkeypatch.setattr("gymrat_py.cli.supervise_cmd.write_and_flush", tracking_waf)
+    monkeypatch.setattr("gymrat.cli.supervise_cmd.write_and_flush", tracking_waf)
 
     result = _run("optimize it", "--max-minutes", "10")
 

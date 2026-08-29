@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from gymrat_py.errors import GymratError, hint_of
-from gymrat_py.session import (
+from gymrat.errors import GymratError, hint_of
+from gymrat.session import (
     BaselineRecord,
     HookRecord,
     IterationRecord,
@@ -29,7 +29,7 @@ from gymrat_py.session import (
     record_to_wire,
     session_jsonl_path,
 )
-from gymrat_py.session.store import (
+from gymrat.session.store import (
     RequiredSession,
     SessionState,
     append_record,

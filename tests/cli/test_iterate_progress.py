@@ -14,12 +14,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.cli.iterate_progress import (
+from gymrat.cli.iterate_progress import (
     IterateRenderer,
     create_fan_out,
     create_iterate_renderer,
 )
-from gymrat_py.progress_events import (
+from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
     HookFinished,
@@ -666,7 +666,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat_py.cli.iterate_progress.install_termination_cleanup",
+        "gymrat.cli.iterate_progress.install_termination_cleanup",
         _fake_install(registered),
     )
 
@@ -681,7 +681,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat_py.cli.iterate_progress.install_termination_cleanup",
+        "gymrat.cli.iterate_progress.install_termination_cleanup",
         _fake_install(registered),
     )
 

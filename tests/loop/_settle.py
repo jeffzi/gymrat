@@ -14,16 +14,16 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.config import (
+from gymrat.config import (
     HooksConfig,
     KindEntry,
     MetricEntry,
     ResolvedConfig,
     StopConfig,
 )
-from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
-from gymrat_py.loop.start import start_session
-from gymrat_py.session import (
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.loop.start import start_session
+from gymrat.session import (
     IterationRecord,
     SessionLogRecord,
     append_record,
@@ -142,7 +142,7 @@ def install_exec(
 ) -> ExecRecorder:
     """Replace the settle module's ``exec`` with a recorder answering ``result``."""
     recorder = ExecRecorder(result)
-    monkeypatch.setattr("gymrat_py.loop.settle.exec", recorder)
+    monkeypatch.setattr("gymrat.loop.settle.exec", recorder)
     return recorder
 
 

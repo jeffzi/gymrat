@@ -4,7 +4,7 @@ Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 The seams mocked here mirror the engine suites' boundaries: sampling for
-``iterate`` (``gymrat_py.loop.iterate.collect_samples``), and for ``discard``'s
+``iterate`` (``gymrat.loop.iterate.collect_samples``), and for ``discard``'s
 prompt the ``is_tty`` and ``confirm_action`` helpers as the ``loop_cmds`` module
 imports them. Config resolution is exercised for real where a test lays down a
 ``gymrat.toml`` and stubbed at the ``loop_cmds`` seam where a test needs to pin
@@ -21,11 +21,11 @@ import pytest
 import tomli_w
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.loop.finalize import finalize_session
-from gymrat_py.loop.iterate import IterateOptions, IterateResult
-from gymrat_py.loop.start import start_session
-from gymrat_py.session import (
+from gymrat.cli.app import app
+from gymrat.loop.finalize import finalize_session
+from gymrat.loop.iterate import IterateOptions, IterateResult
+from gymrat.loop.start import start_session
+from gymrat.session import (
     FinalizeRecord,
     SessionRecord,
     append_record,
@@ -123,7 +123,7 @@ def _stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -
     def fake(*_a: object, **_k: object) -> object:
         return config
 
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_config", fake)
     return config
 
 
@@ -358,7 +358,7 @@ class _IterateSessionRaiser:
 def _install_renderer_factory(monkeypatch: pytest.MonkeyPatch) -> _RendererFactory:
     """Replace ``create_iterate_renderer`` in the loop_cmds module with a recorder."""
     factory = _RendererFactory()
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.create_iterate_renderer", factory)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.create_iterate_renderer", factory)
     return factory
 
 
@@ -366,7 +366,7 @@ def _install_iterate_session(
     monkeypatch: pytest.MonkeyPatch, recorder: _IterateSessionRecorder | _IterateSessionRaiser
 ) -> None:
     """Replace ``iterate_session`` in the loop_cmds module with a recorder or raiser."""
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.iterate_session", recorder)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", recorder)
 
 
 def _make_iterate_result() -> IterateResult:
@@ -524,9 +524,9 @@ def test_discard_command_documents_force_in_its_help():
 def test_discard_command_when_tty_and_confirmed_does_prompt_and_proceed(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.is_tty", _always_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _always_tty)
     confirm = _ConfirmRecorder(answer=True)
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.confirm_action", confirm)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
 
     result = runner.invoke(app, ["discard"])
 
@@ -539,8 +539,8 @@ def test_discard_command_when_tty_and_confirmed_does_prompt_and_proceed(
 def test_discard_command_when_tty_and_declined_does_cancel_with_exit_one(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.is_tty", _always_tty)
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.confirm_action", _ConfirmRecorder(answer=False))
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _always_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", _ConfirmRecorder(answer=False))
 
     result = runner.invoke(app, ["discard"])
 
@@ -552,9 +552,9 @@ def test_discard_command_when_tty_and_declined_does_cancel_with_exit_one(
 def test_discard_command_when_force_does_skip_the_prompt(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch, flag: str
 ):
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.is_tty", _always_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _always_tty)
     confirm = _ConfirmRecorder(answer=True)
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.confirm_action", confirm)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
 
     result = runner.invoke(app, ["discard", flag])
 
@@ -566,9 +566,9 @@ def test_discard_command_when_force_does_skip_the_prompt(
 def test_discard_command_when_stdin_not_tty_does_skip_the_prompt(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.is_tty", _never_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _never_tty)
     confirm = _ConfirmRecorder(answer=True)
-    monkeypatch.setattr("gymrat_py.cli.loop_cmds.confirm_action", confirm)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
 
     result = runner.invoke(app, ["discard"])
 
@@ -675,7 +675,7 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     recorder = _ResolverRecorder(resolved_config())
-    monkeypatch.setattr(f"gymrat_py.cli.loop_cmds.{resolver_name}", recorder)
+    monkeypatch.setattr(f"gymrat.cli.loop_cmds.{resolver_name}", recorder)
 
     # Whether the command then finds the session it needs is beside the point;
     # where it looked the configuration up is what is under test.

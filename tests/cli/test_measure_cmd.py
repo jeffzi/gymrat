@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.config import ResolvedConfig
-from gymrat_py.measure import MeasureOptions
-from gymrat_py.report.types import MeasurementResult
-from gymrat_py.sampling import TargetSpec
-from gymrat_py.session import BaselineRecord, read_records, session_jsonl_path
+from gymrat.cli.app import app
+from gymrat.config import ResolvedConfig
+from gymrat.measure import MeasureOptions
+from gymrat.report.types import MeasurementResult
+from gymrat.sampling import TargetSpec
+from gymrat.session import BaselineRecord, read_records, session_jsonl_path
 from tests.report._inputs import create_measurement_result
 from tests.session._records import finalize_record, session_record, write_session_log
 
@@ -54,7 +54,7 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake(*_a: object, **_k: object) -> ResolvedConfig:
         return _resolved()
 
-    monkeypatch.setattr("gymrat_py.cli.measure_cmd.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.measure_cmd.resolve_config", fake)
 
 
 def _capture_measure(
@@ -73,7 +73,7 @@ def _capture_measure(
         captured.append(options)
         return handed_back
 
-    monkeypatch.setattr("gymrat_py.measure.measure", fake_measure)
+    monkeypatch.setattr("gymrat.measure.measure", fake_measure)
     return captured
 
 

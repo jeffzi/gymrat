@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat_py.config import StopConfig
-from gymrat_py.report.loop import (
+from gymrat.config import StopConfig
+from gymrat.report.loop import (
     GeomeanPrimary,
     LoopPrimary,
     MetricPrimary,
@@ -42,15 +42,15 @@ from gymrat_py.report.loop import (
     format_status_iteration,
     format_verdict_block,
 )
-from gymrat_py.report.style import render_lines
-from gymrat_py.session import BaselineRecord, BaselineRef, Worktrees
+from gymrat.report.style import render_lines
+from gymrat.session import BaselineRecord, BaselineRef, Worktrees
 from tests.report._inputs import permutation_metric, styles_at
 from tests.session._records import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
-    from gymrat_py.model import Direction
-    from gymrat_py.report.loop import LoopOutcome, SettleState
-    from gymrat_py.report.types import MetricComparison, MetricComparisons
+    from gymrat.model import Direction
+    from gymrat.report.loop import LoopOutcome, SettleState
+    from gymrat.report.types import MetricComparison, MetricComparisons
 
 # A width wide enough that no loop fragment ever soft-wraps.
 _WIDTH = 200

@@ -35,15 +35,15 @@ if sys.platform != "win32":
 
 import pytest
 
-from gymrat_py.cli.shared import (
+from gymrat.cli.shared import (
     color_override_of,
     format_cli_error,
     resolve_render_mode,
     resolve_stream_color,
 )
-from gymrat_py.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
-from gymrat_py.doctor.render import render_doctor_report
-from gymrat_py.report.style import shorten_label
+from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
+from gymrat.doctor.render import render_doctor_report
+from gymrat.report.style import shorten_label
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import git as _git
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench

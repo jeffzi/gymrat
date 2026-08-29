@@ -28,8 +28,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.session import session_jsonl_path
-from gymrat_py.session.store import append_record, read_records
+from gymrat.session import session_jsonl_path
+from gymrat.session.store import append_record, read_records
 from tests.session._records import committed_keep, session_record
 
 pytestmark = pytest.mark.skipif(
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 # The repository root, so a child process can import the ``tests`` package for
-# the shared record builders alongside the installed ``gymrat_py``.
+# the shared record builders alongside the installed ``gymrat``.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -108,8 +108,8 @@ _TORN_TAIL_CHILD = """\
 import sys
 from pathlib import Path
 
-from gymrat_py.session import session_jsonl_path
-from gymrat_py.session.store import append_record
+from gymrat.session import session_jsonl_path
+from gymrat.session.store import append_record
 from tests.session._records import committed_keep, session_record
 
 root, clean_count_raw, ready_flag, huge_chars_raw = sys.argv[1:5]
@@ -130,8 +130,8 @@ _HARD_EXIT_CHILD = """\
 import os
 import sys
 
-from gymrat_py.session import session_jsonl_path
-from gymrat_py.session.store import append_record
+from gymrat.session import session_jsonl_path
+from gymrat.session.store import append_record
 from tests.session._records import session_record
 
 root = sys.argv[1]
@@ -147,8 +147,8 @@ _RACE_CHILD = """\
 import os
 import sys
 
-from gymrat_py.session import session_jsonl_path
-from gymrat_py.session.store import append_record
+from gymrat.session import session_jsonl_path
+from gymrat.session.store import append_record
 from tests.session._records import committed_keep
 
 root, barrier_path, count_raw, base_raw = sys.argv[1:5]

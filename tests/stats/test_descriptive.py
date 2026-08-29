@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from gymrat_py.stats import (
+from gymrat.stats import (
     Direction,
     GeomeanCombination,
     RatioOutcome,

@@ -13,15 +13,15 @@ import re
 
 import pytest
 
-from gymrat_py.model import Effect, Exclusion, MetricUnit, PermutationVerdict
-from gymrat_py.report import render_json, render_measure_json
-from gymrat_py.report.types import (
+from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
+from gymrat.report import render_json, render_measure_json
+from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
     MetricComparison,
 )
-from gymrat_py.targets import WorktreeRemovalFailure
-from gymrat_py.verdict import GroupAggregate, KindAggregate
+from gymrat.targets import WorktreeRemovalFailure
+from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
     NWayCandidate,
     band_metric,

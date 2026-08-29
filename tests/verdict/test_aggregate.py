@@ -10,13 +10,13 @@ from collections.abc import Sequence
 
 import pytest
 
-from gymrat_py.model import (
+from gymrat.model import (
     Exclusion,
     ExclusionReason,
     GeomeanResult,
     MetricVerdict,
 )
-from gymrat_py.verdict import (
+from gymrat.verdict import (
     GroupAggregate,
     KindAggregate,
     compute_kind_aggregates,

@@ -33,11 +33,11 @@ from typing import Any
 
 import pytest
 
-from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
-from gymrat_py.exec import exec as run_exec
-from gymrat_py.supervisor import create_claude_driver, create_stdio_driver
-from gymrat_py.supervisor.claude import ClaudeClient, ClientFactory
-from gymrat_py.supervisor.events import SessionEvent, UsageUpdateEvent
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.exec import exec as run_exec
+from gymrat.supervisor import create_claude_driver, create_stdio_driver
+from gymrat.supervisor.claude import ClaudeClient, ClientFactory
+from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
 pytestmark = pytest.mark.skipif(
@@ -293,7 +293,7 @@ async def test_stdio_driver_when_child_survives_kill_does_bound_teardown_and_set
 ) -> None:
     # Neutralize the group kill so the child outlives teardown, standing in for a
     # process stuck in an uninterruptible state that a real kill cannot reap.
-    monkeypatch.setattr("gymrat_py.supervisor.stdio.kill_process_group", ignore_kill)
+    monkeypatch.setattr("gymrat.supervisor.stdio.kill_process_group", ignore_kill)
     # The child sends its terminal outcome line, then lingers instead of exiting.
     program = (
         "import json, sys, time\n"
@@ -462,8 +462,8 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     import threading
     import time
 
-    from gymrat_py import exec as exec_mod
-    from gymrat_py import signals
+    from gymrat import exec as exec_mod
+    from gymrat import signals
 
     # Widen the spawn-to-register gap so SIGTERM lands inside it.
     real_spawn = asyncio.create_subprocess_shell

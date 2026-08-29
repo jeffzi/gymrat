@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-import gymrat_py.init.scaffold as scaffold_module
-from gymrat_py.config import load_config_file
-from gymrat_py.errors import GymratError
-from gymrat_py.init.scaffold import (
+import gymrat.init.scaffold as scaffold_module
+from gymrat.config import load_config_file
+from gymrat.errors import GymratError
+from gymrat.init.scaffold import (
     SKILL_RELATIVE_PATH,
     ScaffoldArtifact,
     ScaffoldRequest,
@@ -219,7 +219,7 @@ def _break_bundled_skill(monkeypatch: pytest.MonkeyPatch) -> None:
         message = "bundled skill missing"
         raise GymratError(message)
 
-    monkeypatch.setattr("gymrat_py.init.scaffold.read_bundled_skill", raise_missing)
+    monkeypatch.setattr("gymrat.init.scaffold.read_bundled_skill", raise_missing)
 
 
 def test_scaffold_when_skill_read_fails_does_not_leave_config_behind(

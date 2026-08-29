@@ -20,9 +20,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gymrat_py.errors import GymratError
-from gymrat_py.session import lock as lock_module
-from gymrat_py.session.lock import acquire_lock
+from gymrat.errors import GymratError
+from gymrat.session import lock as lock_module
+from gymrat.session.lock import acquire_lock
 
 # ---------------------------------------------------------------------------
 # Constants and helpers

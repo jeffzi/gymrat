@@ -16,8 +16,8 @@ from typing import override
 import pytest
 import typer
 
-from gymrat_py.cli import shared
-from gymrat_py.cli.shared import (
+from gymrat.cli import shared
+from gymrat.cli.shared import (
     BUGS_URL,
     GATE_EXIT_CODE,
     TOOL_FAILURE_EXIT_CODE,
@@ -36,10 +36,10 @@ from gymrat_py.cli.shared import (
     with_repo_lock,
     write_and_flush,
 )
-from gymrat_py.errors import GymratError
-from gymrat_py.git import NotAGitRepositoryError
-from gymrat_py.report.types import RegressedFailOn
-from gymrat_py.sampling import TargetSpec
+from gymrat.errors import GymratError
+from gymrat.git import NotAGitRepositoryError
+from gymrat.report.types import RegressedFailOn
+from gymrat.sampling import TargetSpec
 
 
 class _FakeStream(io.StringIO):
@@ -144,7 +144,7 @@ def test_write_and_flush_writes_then_flushes():
 def test_run_cli_when_broken_pipe_does_exit_cleanly(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    from gymrat_py.cli.shared import run_cli
+    from gymrat.cli.shared import run_cli
 
     async def boom() -> None:
         raise BrokenPipeError
@@ -342,7 +342,7 @@ def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "gymrat_py.cli.shared.create_progress_reporter",
+        "gymrat.cli.shared.create_progress_reporter",
         _capturing_create_progress_reporter(captured),
     )
 
@@ -363,7 +363,7 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "gymrat_py.cli.shared.create_progress_reporter",
+        "gymrat.cli.shared.create_progress_reporter",
         _capturing_create_progress_reporter(captured),
     )
 
@@ -377,7 +377,7 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
 def test_begin_run_does_return_progress_reporter(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from gymrat_py.cli.progress import ProgressReporter
+    from gymrat.cli.progress import ProgressReporter
 
     _clear_color_env(monkeypatch)
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
@@ -395,7 +395,7 @@ def test_begin_run_does_return_progress_reporter(
 async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releases_before_return(
     create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 ):
-    from gymrat_py.session.paths import lockfile_path, repo_root
+    from gymrat.session.paths import lockfile_path, repo_root
 
     repo = create_scratch_repo()
     monkeypatch.chdir(repo)
@@ -426,8 +426,8 @@ async def test_with_repo_lock_when_outside_repo_runs_body_without_a_lock(
         acquired.append(args)
         return lambda: None
 
-    monkeypatch.setattr("gymrat_py.cli.shared.repo_root", not_a_repo)
-    monkeypatch.setattr("gymrat_py.cli.shared.acquire_lock", spy_acquire)
+    monkeypatch.setattr("gymrat.cli.shared.repo_root", not_a_repo)
+    monkeypatch.setattr("gymrat.cli.shared.acquire_lock", spy_acquire)
 
     async def body() -> str:
         return "ran"
@@ -445,7 +445,7 @@ async def test_with_repo_lock_when_git_fails_otherwise_exits_two_without_running
         message = "detected dubious ownership"
         raise GymratError(message)
 
-    monkeypatch.setattr("gymrat_py.cli.shared.repo_root", broken_git)
+    monkeypatch.setattr("gymrat.cli.shared.repo_root", broken_git)
     called: list[bool] = []
 
     async def body() -> str:
@@ -535,15 +535,15 @@ def test_measure_flags_are_a_shared_flags_subclass():
 def test_importing_cli_modules_does_not_pull_the_heavy_stack_or_command_bodies():
     probe = """
 import sys
-import gymrat_py.cli.shared
-import gymrat_py.cli.progress
-import gymrat_py.cli.gating
+import gymrat.cli.shared
+import gymrat.cli.progress
+import gymrat.cli.gating
 heavy = sorted(
     name
     for name in sys.modules
     if name in {'scipy', 'numpy'} or name.startswith(('scipy.', 'numpy.'))
 )
-bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
+bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
 assert not heavy, f'cli import pulled heavy modules: {heavy}'
 assert not bodies, f'cli import pulled command bodies: {bodies}'
 """

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from gymrat_py.adapters import (
+from gymrat.adapters import (
     ADAPTER_NAMES,
     Adapter,
     MetricDefaults,
@@ -10,7 +10,7 @@ from gymrat_py.adapters import (
     metric_lines_adapter,
     mitata_adapter,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 _MITATA_STDOUT = json.dumps(
     {
@@ -27,7 +27,7 @@ _MITATA_STDOUT = json.dumps(
 
 
 def test_adapters_package_when_imported_does_export_public_surface():
-    from gymrat_py import adapters
+    from gymrat import adapters
 
     assert set(adapters.__all__) == {
         "AdapterError",

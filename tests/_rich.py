@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pyte
 from rich.console import Console, RenderableType
 
-from gymrat_py.cli.style import CLI_THEME
+from gymrat.cli.style import CLI_THEME
 
 if TYPE_CHECKING:
     from collections.abc import Callable

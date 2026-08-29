@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.config import KindEntry
-from gymrat_py.model import Exclusion
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import ReportOptions
-from gymrat_py.verdict import KindAggregate
+from gymrat.config import KindEntry
+from gymrat.model import Exclusion
+from gymrat.report.text import render_report
+from gymrat.report.types import ReportOptions
+from gymrat.verdict import KindAggregate
 from tests.report._inputs import (
     DIMMED_LINE,
     NWayCandidate,
@@ -56,7 +56,7 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.report.types import ComparisonResult
 
 
 def _value_part_of(cell: str, glyph: str) -> str:

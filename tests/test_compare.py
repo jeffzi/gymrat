@@ -13,23 +13,23 @@ from dataclasses import dataclass
 
 import pytest
 
-from gymrat_py import compare as compare_mod
-from gymrat_py import sampling
-from gymrat_py.adapters import get_adapter
-from gymrat_py.adapters.types import Adapter, WarnSink
-from gymrat_py.compare import CompareOptions, compare
-from gymrat_py.errors import GymratError
-from gymrat_py.model import Observations
-from gymrat_py.progress_events import ProgressEvent
-from gymrat_py.sampling import (
+from gymrat import compare as compare_mod
+from gymrat import sampling
+from gymrat.adapters import get_adapter
+from gymrat.adapters.types import Adapter, WarnSink
+from gymrat.compare import CompareOptions, compare
+from gymrat.errors import GymratError
+from gymrat.model import Observations
+from gymrat.progress_events import ProgressEvent
+from gymrat.sampling import (
     SamplingOptions,
     TargetContext,
     TargetSamples,
     TargetSpec,
     resolve_metric_meta_from_samples,
 )
-from gymrat_py.targets import CleanupResult, InPlaceTarget, WorktreeInfo, WorktreeRemovalFailure
-from gymrat_py.verdict import compute_verdicts
+from gymrat.targets import CleanupResult, InPlaceTarget, WorktreeInfo, WorktreeRemovalFailure
+from gymrat.verdict import compute_verdicts
 
 _CLEAN = CleanupResult(removed=0, failures=(), prune_error=None)
 

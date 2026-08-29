@@ -24,10 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gymrat_py.config import BenchlessConfig, StopConfig
-from gymrat_py.errors import GymratError, hint_of
-from gymrat_py.loop.status import status_session
-from gymrat_py.session import (
+from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.errors import GymratError, hint_of
+from gymrat.loop.status import status_session
+from gymrat.session import (
     BaselineRecord,
     BaselineRef,
     IterationPrimary,
@@ -53,7 +53,7 @@ from tests.session._records import (
 )
 
 if TYPE_CHECKING:
-    from gymrat_py.session.schema import Outcome
+    from gymrat.session.schema import Outcome
 
 # A 40-hex baseline sha whose first seven characters are recognizable on their own.
 _BASELINE_SHA = "a1b2c3d" + "e" * 33

@@ -18,14 +18,14 @@ from typing import override
 
 import pytest
 
-from gymrat_py.supervisor import (
+from gymrat.supervisor import (
     SessionOutcome,
     TextDeltaEvent,
     UsageUpdateEvent,
     supervise,
 )
-from gymrat_py.supervisor.driver import Driver, DriverSession, SessionPrompt
-from gymrat_py.supervisor.events import SessionEvent, SessionObserver
+from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
+from gymrat.supervisor.events import SessionEvent, SessionObserver
 from tests.supervisor._fixtures import (
     collecting_observer,
     make_launch,

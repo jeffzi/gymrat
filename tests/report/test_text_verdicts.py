@@ -15,15 +15,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import (
+from gymrat.report.text import render_report
+from gymrat.report.types import (
     CandidateMetric,
     GeomeanFailOn,
     MetricComparison,
     RegressedFailOn,
     ReportOptions,
 )
-from gymrat_py.targets import WorktreeRemovalFailure
+from gymrat.targets import WorktreeRemovalFailure
 from tests.report._inputs import (
     band_metric,
     band_verdict,
@@ -51,7 +51,7 @@ from tests.report._inputs import (
 )
 
 if TYPE_CHECKING:
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.report.types import ComparisonResult
 
 
 # ---------------------------------------------------------------------------

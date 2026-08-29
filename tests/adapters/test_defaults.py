@@ -2,19 +2,19 @@ import dataclasses
 
 import pytest
 
-from gymrat_py.adapters.defaults import (
+from gymrat.adapters.defaults import (
     DEFAULT_GATING,
     DEFAULT_METRIC_KIND,
     defaults_from_suffixes,
 )
-from gymrat_py.adapters.types import (
+from gymrat.adapters.types import (
     Adapter,
     AdapterError,
     MetricDefaults,
     WarnSink,
     warn_to_stderr,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 # ---------------------------------------------------------------------------
 # AdapterError

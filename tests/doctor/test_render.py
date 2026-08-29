@@ -10,13 +10,13 @@ import re
 
 import pytest
 
-from gymrat_py.doctor.checks import (
+from gymrat.doctor.checks import (
     Check,
     CheckSection,
     EnvironmentInfo,
     create_doctor_report,
 )
-from gymrat_py.doctor.render import render_doctor_json, render_doctor_report
+from gymrat.doctor.render import render_doctor_json, render_doctor_report
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

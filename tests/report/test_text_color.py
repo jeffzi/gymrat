@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.model import Exclusion
-from gymrat_py.report.text import render_measure_report, render_report
-from gymrat_py.report.types import MeasurementResult, ReportOptions
-from gymrat_py.targets import WorktreeRemovalFailure
+from gymrat.model import Exclusion
+from gymrat.report.text import render_measure_report, render_report
+from gymrat.report.types import MeasurementResult, ReportOptions
+from gymrat.targets import WorktreeRemovalFailure
 from tests.report._inputs import (
     DIMMED_LINE,
     band_metric,
@@ -47,8 +47,8 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat_py.model import ApproximateVerdict
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.model import ApproximateVerdict
+    from gymrat.report.types import ComparisonResult
 
 
 def _summary_segment(summary: str, label: str) -> str:

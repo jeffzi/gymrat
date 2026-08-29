@@ -3,8 +3,8 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
-from gymrat_py import signals
-from gymrat_py.signals import install_termination_cleanup
+from gymrat import signals
+from gymrat.signals import install_termination_cleanup
 
 # Invokes the handler installed for a signal and returns the code it would exit
 # with. Supplied by the ``raise_signal`` fixture.

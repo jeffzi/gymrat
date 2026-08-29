@@ -1,6 +1,6 @@
 """A scripted mock driver for exercising supervisor orchestration.
 
-``create_mock_driver`` builds a :class:`~gymrat_py.supervisor.driver.Driver`
+``create_mock_driver`` builds a :class:`~gymrat.supervisor.driver.Driver`
 whose ``start`` runs a caller-supplied script of steps in order on the running
 event loop, without a real agent backend. A step emits an event, awaits an async
 action, or reports a cost. Each step's optional ``delay_ms`` races a timer
@@ -12,14 +12,14 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
-from gymrat_py.session.clock import now_ms
-from gymrat_py.supervisor.driver import (
+from gymrat.session.clock import now_ms
+from gymrat.supervisor.driver import (
     Driver,
     DriverSession,
     SessionOutcome,
     SessionPrompt,
 )
-from gymrat_py.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
+from gymrat.supervisor.events import SessionEvent, SessionObserver, UsageUpdateEvent
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

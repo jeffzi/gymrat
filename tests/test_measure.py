@@ -11,19 +11,19 @@ from dataclasses import dataclass
 
 import pytest
 
-from gymrat_py import measure as measure_mod
-from gymrat_py import sampling
-from gymrat_py.adapters.types import Adapter, WarnSink
-from gymrat_py.errors import GymratError
-from gymrat_py.measure import MeasureOptions, measure
-from gymrat_py.progress_events import ProgressEvent
-from gymrat_py.sampling import (
+from gymrat import measure as measure_mod
+from gymrat import sampling
+from gymrat.adapters.types import Adapter, WarnSink
+from gymrat.errors import GymratError
+from gymrat.measure import MeasureOptions, measure
+from gymrat.progress_events import ProgressEvent
+from gymrat.sampling import (
     SamplingOptions,
     TargetContext,
     TargetSamples,
     TargetSpec,
 )
-from gymrat_py.targets import CleanupResult, InPlaceTarget, WorktreeInfo, WorktreeRemovalFailure
+from gymrat.targets import CleanupResult, InPlaceTarget, WorktreeInfo, WorktreeRemovalFailure
 
 _CLEAN = CleanupResult(removed=0, failures=(), prune_error=None)
 

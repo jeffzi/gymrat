@@ -1,10 +1,10 @@
 """Tests for the report formatting and classification primitives.
 
 These tests assert the *intent* of styling rather than exact escape bytes: they
-render the markup string through :func:`gymrat_py.report.style.render_lines`
+render the markup string through :func:`gymrat.report.style.render_lines`
 with color off to check the plain content, and with color on to check that the
 expected SGR attribute code is present. ``format_delta`` takes an
-:class:`~gymrat_py.model.Effect` rather than a bare number.
+:class:`~gymrat.model.Effect` rather than a bare number.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.model import (
+from gymrat.model import (
     PERMUTATION_DESCRIPTOR,
     Effect,
     Exclusion,
@@ -22,7 +22,7 @@ from gymrat_py.model import (
     MetricUnit,
     MetricVerdict,
 )
-from gymrat_py.report.format import (
+from gymrat.report.format import (
     DisplayClass,
     VerdictCounts,
     count_verdicts,
@@ -38,8 +38,8 @@ from gymrat_py.report.format import (
     select_highlights,
     verdict_summary_parts,
 )
-from gymrat_py.report.style import format_hint, render_lines
-from gymrat_py.report.types import ReportOptions
+from gymrat.report.style import format_hint, render_lines
+from gymrat.report.types import ReportOptions
 from tests.report._inputs import (
     CandidateSpec,
     Metrics,

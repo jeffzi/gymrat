@@ -10,15 +10,15 @@ import io
 import pytest
 import typer
 
-from gymrat_py.adapters.types import AdapterError
-from gymrat_py.cli.shared import (
+from gymrat.adapters.types import AdapterError
+from gymrat.cli.shared import (
     BUGS_URL,
     TOOL_FAILURE_EXIT_CODE,
     exit_with_error,
     format_cli_error,
     set_debug_mode,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 
 @pytest.fixture(autouse=True)

@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from gymrat_py.model import (
+from gymrat.model import (
     Observations,
     pair_metric,
 )

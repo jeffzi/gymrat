@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.cli.shared import BUGS_URL
+from gymrat.cli.app import app
+from gymrat.cli.shared import BUGS_URL
 from tests._ansi import SGR_RE, strip_ansi
 from tests.report._inputs import create_measurement_result
 
@@ -47,7 +47,7 @@ def _patched_measure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def fake_measure(_options: object):
         return create_measurement_result()
 
-    monkeypatch.setattr("gymrat_py.measure.measure", fake_measure)
+    monkeypatch.setattr("gymrat.measure.measure", fake_measure)
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ def test_app_when_version_flag_does_print_package_version():
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert importlib.metadata.version("gymrat-py") in result.stdout
+    assert importlib.metadata.version("gymrat") in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_app_when_debug_flag_does_show_traceback_on_error(
         msg = "deliberate boom"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("gymrat_py.measure.measure", exploding_measure)
+    monkeypatch.setattr("gymrat.measure.measure", exploding_measure)
 
     result = runner.invoke(app, list(argv))
 

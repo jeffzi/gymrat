@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.config import HooksConfig, MetricEntry, StopConfig
-from gymrat_py.errors import GymratError, hint_of
-from gymrat_py.loop.iterate import IterateOptions, LoopStopError, iterate_session
-from gymrat_py.progress_events import (
+from gymrat.config import HooksConfig, MetricEntry, StopConfig
+from gymrat.errors import GymratError, hint_of
+from gymrat.loop.iterate import IterateOptions, LoopStopError, iterate_session
+from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
     HookFinished,
@@ -30,13 +30,13 @@ from gymrat_py.progress_events import (
     PassStarted,
     ProgressEvent,
 )
-from gymrat_py.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat_py.session import (
+from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
+from gymrat.session import (
     PairedSamples,
     read_records,
     session_jsonl_path,
 )
-from gymrat_py.targets import InPlaceTarget
+from gymrat.targets import InPlaceTarget
 from tests.loop._hooks import HookScripts
 from tests.loop._iterate import (
     BASELINE_BYTES,
@@ -455,7 +455,7 @@ async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_
             collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
         return collected
 
-    monkeypatch.setattr("gymrat_py.loop.iterate.collect_samples", sample_reporting_passes)
+    monkeypatch.setattr("gymrat.loop.iterate.collect_samples", sample_reporting_passes)
     events: list[ProgressEvent] = []
 
     await iterate_session(

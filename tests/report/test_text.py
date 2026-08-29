@@ -14,9 +14,9 @@ import math
 
 import pytest
 
-from gymrat_py.model import ApproximateVerdict, Exclusion
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import CandidateMetric, MetricComparison, ReportOptions
+from gymrat.model import ApproximateVerdict, Exclusion
+from gymrat.report.text import render_report
+from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from tests.report._inputs import (
     band_metric,
     cells_of,

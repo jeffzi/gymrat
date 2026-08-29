@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.compare import CompareOptions, compare
-from gymrat_py.errors import GymratError
-from gymrat_py.sampling import TargetSpec
+from gymrat.compare import CompareOptions, compare
+from gymrat.errors import GymratError
+from gymrat.sampling import TargetSpec
 from tests._git import git as _git
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")

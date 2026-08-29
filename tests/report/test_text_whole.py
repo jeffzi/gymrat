@@ -19,12 +19,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.config import KindEntry
-from gymrat_py.model import Exclusion
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat_py.targets import WorktreeRemovalFailure
-from gymrat_py.verdict import GroupAggregate, KindAggregate
+from gymrat.config import KindEntry
+from gymrat.model import Exclusion
+from gymrat.report.text import render_report
+from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
+from gymrat.targets import WorktreeRemovalFailure
+from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
     NWayCandidate,
     band_verdict,
@@ -54,7 +54,7 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.report.types import ComparisonResult
 
 _HEADER = (
     "gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: mitata"

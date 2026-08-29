@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.adapters.mitata import mitata_adapter
-from gymrat_py.adapters.types import AdapterError
+from gymrat.adapters.mitata import mitata_adapter
+from gymrat.adapters.types import AdapterError
 from tests.adapters._inputs import build_stdout
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"

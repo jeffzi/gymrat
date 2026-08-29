@@ -11,7 +11,7 @@ This is test-support code, not a test module: ``test_geomean`` and (later)
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from gymrat_py.model import (
+from gymrat.model import (
     BandVerdict,
     Direction,
     Effect,

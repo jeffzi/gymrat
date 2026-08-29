@@ -2,9 +2,9 @@ from typing import Any
 
 import pytest
 
-from gymrat_py.adapters.mitata import find_json_candidates, mitata_adapter
-from gymrat_py.adapters.types import Adapter, AdapterError, MetricDefaults
-from gymrat_py.model.metrics import MetricUnit
+from gymrat.adapters.mitata import find_json_candidates, mitata_adapter
+from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
+from gymrat.model.metrics import MetricUnit
 from tests.adapters._inputs import build_stdout
 
 # ---------------------------------------------------------------------------

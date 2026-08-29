@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from gymrat_py.supervisor import SessionOutcome, TextDeltaEvent
-from gymrat_py.supervisor.events import SessionEvent
+from gymrat.supervisor import SessionOutcome, TextDeltaEvent
+from gymrat.supervisor.events import SessionEvent
 from tests.supervisor._fixtures import collecting_observer, make_prompt, noop_observer
 from tests.supervisor._mock_driver import ActionStep, CostStep, EmitStep, create_mock_driver
 

@@ -1,7 +1,7 @@
 import pytest
 
-from gymrat_py.adapters.metric_lines import metric_lines_adapter
-from gymrat_py.adapters.types import Adapter, AdapterError, MetricDefaults
+from gymrat.adapters.metric_lines import metric_lines_adapter
+from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
 
 # ---------------------------------------------------------------------------
 # adapter shape

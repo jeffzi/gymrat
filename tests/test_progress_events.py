@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from gymrat_py.progress_events import (
+from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
     HookFinished,

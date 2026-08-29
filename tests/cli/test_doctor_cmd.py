@@ -14,10 +14,10 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.config import BenchlessConfig
-from gymrat_py.config_inspect import ConfigInspection
-from gymrat_py.doctor.checks import Check, CheckSection
+from gymrat.cli.app import app
+from gymrat.config import BenchlessConfig
+from gymrat.config_inspect import ConfigInspection
+from gymrat.doctor.checks import Check, CheckSection
 
 runner = CliRunner()
 
@@ -50,14 +50,14 @@ def _patch_doctor(
     def fake_inspect(*_a: object, **_k: object) -> ConfigInspection:
         return inspection
 
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.inspect_config", fake_inspect)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.inspect_config", fake_inspect)
 
     def env_section(*_a: object, **_k: object) -> CheckSection:
         if env_error is not None:
             raise env_error
         return CheckSection(title="Environment", checks=[Check("git", "ok", "available")])
 
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_environment_section", env_section)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_environment_section", env_section)
 
     config_checks = (
         [Check("config", "fail", "not found", hint="create gymrat.json")]
@@ -68,12 +68,12 @@ def _patch_doctor(
     def config_section(*_a: object, **_k: object) -> CheckSection:
         return CheckSection(title="Configuration", checks=config_checks)
 
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_config_section", config_section)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_config_section", config_section)
 
     def workflow_section(*_a: object, **_k: object) -> CheckSection:
         return CheckSection(title="Workflow", checks=[Check("skill file", "ok", "found")])
 
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_workflow_section", workflow_section)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_workflow_section", workflow_section)
 
     bench_calls: list[dict[str, object]] = []
     bench_check = (
@@ -86,7 +86,7 @@ def _patch_doctor(
         bench_calls.append({"bench": bench, "adapter": adapter})
         return CheckSection(title="Bench", checks=[bench_check])
 
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.build_bench_section", bench_section)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_bench_section", bench_section)
 
     def fake_text(_report: object, **_kwargs: object) -> str:
         return "doctor text report"
@@ -94,8 +94,8 @@ def _patch_doctor(
     def fake_json(_report: object) -> str:
         return '{"doctor": true}'
 
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.render_doctor_report", fake_text)
-    monkeypatch.setattr("gymrat_py.cli.doctor_cmd.render_doctor_json", fake_json)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_report", fake_text)
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_json", fake_json)
 
     return SimpleNamespace(bench_calls=bench_calls)
 

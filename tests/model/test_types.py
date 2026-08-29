@@ -3,7 +3,7 @@ from typing import assert_never
 
 import pytest
 
-from gymrat_py.model import (
+from gymrat.model import (
     BAND_DESCRIPTOR,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,

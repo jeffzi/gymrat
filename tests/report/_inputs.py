@@ -4,7 +4,7 @@ These provide the comparison-result fixtures the format tests need, plus the
 metric, approximate-metric, and one-sided-metric helpers those tests build on.
 
 The builders return the frozen dataclasses declared in
-:mod:`gymrat_py.report.types`, so a test writes one metric's shape once and lets
+:mod:`gymrat.report.types`, so a test writes one metric's shape once and lets
 the builder wire the baseline, per-candidate slices, and metadata.
 
 This is test-support code, not a test module: ``test_format`` imports it. It
@@ -17,8 +17,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat_py.config import KindEntry
-from gymrat_py.model import (
+from gymrat.config import KindEntry
+from gymrat.model import (
     ApproximateVerdict,
     BandVerdict,
     Direction,
@@ -31,7 +31,7 @@ from gymrat_py.model import (
     ResolvedMetricMeta,
     Verdict,
 )
-from gymrat_py.report.types import (
+from gymrat.report.types import (
     CandidateComparison,
     CandidateMetric,
     ComparisonResult,
@@ -40,12 +40,12 @@ from gymrat_py.report.types import (
     MetricComparisons,
     MetricMeasurement,
 )
-from gymrat_py.verdict import GroupAggregate, KindAggregate
+from gymrat.verdict import GroupAggregate, KindAggregate
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat_py.targets import WorktreeRemovalFailure
+    from gymrat.targets import WorktreeRemovalFailure
 
 # The name-keyed map of every metric compared in a run.
 Metrics = MetricComparisons

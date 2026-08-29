@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
-from gymrat_py.loop.hooks import run_hook
-from gymrat_py.session import IterationRecord, Worktrees, record_to_wire
-from gymrat_py.session.schema import HookStage
+from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
+from gymrat.loop.hooks import run_hook
+from gymrat.session import IterationRecord, Worktrees, record_to_wire
+from gymrat.session.schema import HookStage
 from tests.loop._hooks import (
     HookScripts,
     expected_hook_record,
@@ -321,7 +321,7 @@ async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
             stderr_bytes=150_000,
         )
 
-    monkeypatch.setattr("gymrat_py.loop.hooks.exec", capped_exec)
+    monkeypatch.setattr("gymrat.loop.hooks.exec", capped_exec)
 
     run = await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
 

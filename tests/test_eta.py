@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-from gymrat_py.eta import format_clock, format_duration, format_eta
+from gymrat.eta import format_clock, format_duration, format_eta
 
 # ---------------------------------------------------------------------------
 # EtaTracker removal
@@ -13,7 +13,7 @@ from gymrat_py.eta import format_clock, format_duration, format_eta
 
 def test_eta_tracker_when_imported_does_raise_import_error() -> None:
     with pytest.raises(ImportError):
-        from gymrat_py.eta import EtaTracker  # type: ignore[missing-module-attribute]  # noqa: F401
+        from gymrat.eta import EtaTracker  # type: ignore[missing-module-attribute]  # noqa: F401
 
 
 @pytest.mark.parametrize(
@@ -26,7 +26,7 @@ def test_eta_tracker_when_imported_does_raise_import_error() -> None:
     ],
 )
 def test_eta_module_when_inspected_does_not_expose_progress_event_symbol(name: str) -> None:
-    eta = importlib.import_module("gymrat_py.eta")
+    eta = importlib.import_module("gymrat.eta")
 
     assert not hasattr(eta, name)
 

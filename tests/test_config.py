@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat_py.config import (
+from gymrat.config import (
     MAX_TIMEOUT_SECONDS,
     CliFlags,
     ConfigFile,
@@ -18,7 +18,7 @@ from gymrat_py.config import (
     load_config_file_collecting,
     resolve_config,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 # Byte-order mark that editors on Windows prepend to UTF-8 files: EF BB BF.
 UTF8_BOM = "﻿"

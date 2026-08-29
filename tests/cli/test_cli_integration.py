@@ -2,7 +2,7 @@
 
 These exercise paths :class:`typer.testing.CliRunner` cannot reach: running the
 installed entry module out of process so the real lock, worktree lifecycle, and
-signal-driven cleanup all run. ``python -m gymrat_py.cli.app`` stands in for the
+signal-driven cleanup all run. ``python -m gymrat.cli.app`` stands in for the
 ``gymrat`` console script.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.session.paths import lockfile_path, repo_root
+from gymrat.session.paths import lockfile_path, repo_root
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
 from tests._git import git as _git

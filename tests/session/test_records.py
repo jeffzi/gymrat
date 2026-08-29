@@ -3,8 +3,8 @@ from typing import cast
 
 import pytest
 
-from gymrat_py.errors import GymratError
-from gymrat_py.session import parse_record, record_to_wire
+from gymrat.errors import GymratError
+from gymrat.session import parse_record, record_to_wire
 
 AT = "2026-08-08T14:15:30.000Z"
 SHA = "a" * 40

@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.session.paths import experiment_worktree_dir, session_jsonl_path
-from gymrat_py.supervisor.supervise import supervise
+from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
+from gymrat.supervisor.supervise import supervise
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
 from tests.supervisor._fixtures import (
     collecting_observer,

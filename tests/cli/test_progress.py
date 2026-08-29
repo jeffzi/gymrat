@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
-from gymrat_py.cli.style import LIVE_REFRESH_PER_SECOND
-from gymrat_py.progress_events import (
+from gymrat.cli.progress import ProgressReporter, create_progress_reporter
+from gymrat.cli.style import LIVE_REFRESH_PER_SECOND
+from gymrat.progress_events import (
     HookStarted,
     PassFinished,
     PassStarted,
@@ -398,7 +398,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat_py.cli.progress.install_termination_cleanup",
+        "gymrat.cli.progress.install_termination_cleanup",
         _fake_install(registered),
     )
 
@@ -413,7 +413,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat_py.cli.progress.install_termination_cleanup",
+        "gymrat.cli.progress.install_termination_cleanup",
         _fake_install(registered),
     )
 

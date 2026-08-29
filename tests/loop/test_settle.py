@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError
-from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
-from gymrat_py.loop.settle import KeepOptions, discard_session, keep_session
-from gymrat_py.session import (
+from gymrat.errors import GymratError
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.loop.settle import KeepOptions, discard_session, keep_session
+from gymrat.session import (
     Confirm,
     DiscardRecord,
     IterationPrimary,

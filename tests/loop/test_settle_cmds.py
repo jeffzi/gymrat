@@ -4,7 +4,7 @@ The command wiring is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 The one boundary these tests mock is the checks command — the consumer's own
-test suite, which no test here can run — replaced at ``gymrat_py.loop.settle.exec``
+test suite, which no test here can run — replaced at ``gymrat.loop.settle.exec``
 by the ``checks_pass`` / ``checks_fail`` recorders. Every git operation is real,
 run against the ``gymrat.toml`` each test lays down at the repository root.
 """
@@ -17,8 +17,8 @@ import pytest
 import tomli_w
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.session import KeepRecord, experiment_worktree_dir
+from gymrat.cli.app import app
+from gymrat.session import KeepRecord, experiment_worktree_dir
 from tests._ansi import SGR_RE
 from tests.loop._settle import (
     CHECKS,

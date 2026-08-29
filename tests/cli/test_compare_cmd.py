@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.config import CliFlags, ResolvedConfig
-from gymrat_py.report.types import ComparisonResult
+from gymrat.cli.app import app
+from gymrat.config import CliFlags, ResolvedConfig
+from gymrat.report.types import ComparisonResult
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
@@ -50,7 +50,7 @@ def _patch_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult) ->
     async def fake_compare(_options: object) -> ComparisonResult:
         return result
 
-    monkeypatch.setattr("gymrat_py.compare.compare", fake_compare)
+    monkeypatch.setattr("gymrat.compare.compare", fake_compare)
 
 
 def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,7 +59,7 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake(*_a: object, **_k: object) -> ResolvedConfig:
         return _resolved()
 
-    monkeypatch.setattr("gymrat_py.cli.compare_cmd.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.compare_cmd.resolve_config", fake)
 
 
 def _regressed_result() -> ComparisonResult:
@@ -85,7 +85,7 @@ def test_compare_when_flags_given_does_feed_them_to_resolve_config(
         captured.append(flags)
         return _resolved()
 
-    monkeypatch.setattr("gymrat_py.cli.compare_cmd.resolve_config", spy_resolve)
+    monkeypatch.setattr("gymrat.cli.compare_cmd.resolve_config", spy_resolve)
     _patch_compare(monkeypatch, create_comparison_result())
 
     result = runner.invoke(

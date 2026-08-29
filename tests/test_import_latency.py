@@ -1,4 +1,4 @@
-"""Guard: importing ``gymrat_py`` must not pull in the heavy statistics stack.
+"""Guard: importing ``gymrat`` must not pull in the heavy statistics stack.
 
 The verdict engine depends on ``scipy`` and ``numpy``, both of which cost
 hundreds of milliseconds to import. Keeping them out of the
@@ -11,14 +11,14 @@ subprocess: the test process has its own imports (pytest pulls in a large
 dependency tree), so inspecting this process's ``sys.modules`` could never prove
 the package itself stayed clean.
 
-The guard extends to the CLI entry module: importing ``gymrat_py.cli.app`` and
+The guard extends to the CLI entry module: importing ``gymrat.cli.app`` and
 rendering ``--help`` must stay just as cheap as importing the package, so the
 command bodies (and the heavy statistics stack they pull) are imported lazily at
 call time, never when the app is assembled.
 
 The same discipline covers ``claude_agent_sdk``, the supervise driver's backend:
 it drags in ``mcp``, ``starlette``, ``uvicorn``, and ``httpx``, so the Claude
-driver imports it lazily inside ``start`` — importing ``gymrat_py.supervisor``
+driver imports it lazily inside ``start`` — importing ``gymrat.supervisor``
 (and the CLI) must never pull it in.
 """
 
@@ -37,15 +37,15 @@ def _child_env() -> dict[str, str]:
 def test_importing_package_does_not_import_scipy_or_numpy():
     probe = """
 import sys
-import gymrat_py
-import gymrat_py.stats
-import gymrat_py.model
-import gymrat_py.adapters
-import gymrat_py.exec
-import gymrat_py.signals
-import gymrat_py.sampling
-import gymrat_py.targets
-import gymrat_py.supervisor
+import gymrat
+import gymrat.stats
+import gymrat.model
+import gymrat.adapters
+import gymrat.exec
+import gymrat.signals
+import gymrat.sampling
+import gymrat.targets
+import gymrat.supervisor
 heavy = sorted(
     name
     for name in sys.modules
@@ -72,7 +72,7 @@ def test_importing_cli_app_and_rendering_help_does_not_import_scipy_or_numpy():
     probe = """
 import sys
 from typer.testing import CliRunner
-from gymrat_py.cli.app import app
+from gymrat.cli.app import app
 result = CliRunner().invoke(app, ["--help"])
 if result.exit_code != 0:
     print(f'--help failed: {result.output}', file=sys.stderr)
@@ -83,7 +83,7 @@ heavy = sorted(
     if name in {'scipy', 'numpy', 'claude_agent_sdk'}
     or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
 )
-bodies = [name for name in ('gymrat_py.compare', 'gymrat_py.measure') if name in sys.modules]
+bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
 if heavy:
     print(f'cli app import pulled heavy modules: {heavy}', file=sys.stderr)
     sys.exit(1)

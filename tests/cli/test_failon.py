@@ -9,9 +9,9 @@ import io
 import pytest
 import typer
 
-from gymrat_py.cli.gating import should_fail_gate, warn_empty_geomean_gates
-from gymrat_py.cli.shared import parse_fail_on
-from gymrat_py.report.types import GeomeanFailOn, RegressedFailOn
+from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
+from gymrat.cli.shared import parse_fail_on
+from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The distribution and import package are now both named `gymrat`, replacing `gymrat-py` /
+  `gymrat_py`: install with `pip install gymrat` (or `uv tool install gymrat`) and
+  `import gymrat`. The `gymrat` command name is unchanged.
 - The configuration file is now `gymrat.toml`, written in TOML with snake_case keys, replacing the
   former `gymrat.json`. Keys that were camelCase are now snake_case: `timeout_seconds`,
   `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the

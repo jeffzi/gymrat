@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from gymrat_py.model import (
+from gymrat.model import (
     BandVerdict,
     Direction,
     Effect,
@@ -21,7 +21,7 @@ from gymrat_py.model import (
     MetricVerdict,
     Observations,
 )
-from gymrat_py.verdict import compute_geomean, compute_verdicts
+from gymrat.verdict import compute_geomean, compute_verdicts
 from tests.verdict._inputs import (
     MetricSpec,
     _noop_warn,

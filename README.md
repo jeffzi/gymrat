@@ -1,1 +1,122 @@
-# gymrat-py
+# gymrat
+
+A CLI that measures whether a code change actually made your benchmarks faster — with statistics,
+not vibes.
+
+## What it does
+
+Benchmark numbers jitter from run to run, so "it got 3% faster" is often noise. gymrat runs your
+existing bench command against two or more revisions, pairs the samples, and judges every metric
+with a statistical test before calling anything improved or regressed. It also drives a keep/discard
+optimization loop — manually or under a supervised AI agent session with time and spend caps.
+
+## Quick example
+
+```console
+gymrat compare main perf/faster-decode --bench "npm run bench"
+```
+
+gymrat checks out each revision into a temporary worktree, runs the bench command ten times per
+side, and prints a verdict per metric plus a geomean summary:
+
+```text
+────────────────────┬──────────────┬──────────────┬────────────────
+time                │ main         │ faster       │ vs main
+────────────────────┼──────────────┼──────────────┼────────────────
+decode              │ 12.0ms ± 0%  │ 11.0ms ± 0%  │ ✓  -8.3%  ±0.5%
+────────────────────┼──────────────┼──────────────┼────────────────
+geomean · time (1)  │              │              │    -8.3%  ±0.5%
+
+✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
+
+highlights
+  ✓ time · decode   -8.3%
+```
+
+Add `--fail-on regressed` to make CI exit non-zero on a regression, or `--format json` for
+machine-readable output.
+
+## Installation
+
+```console
+uv tool install gymrat
+```
+
+or `pipx install gymrat`, or `pip install gymrat`. Requires Python 3.12+.
+
+## Feeding it metrics
+
+gymrat parses your bench command's stdout through an adapter:
+
+- **`metric-lines`** (default): your script prints one `METRIC <name>=<value>` line per sample,
+  e.g. `METRIC decode/time=12400000`. Repeated names are reduced to their median. Names ending in
+  `/time` are treated as nanoseconds and names ending in `/heap` as bytes; anything else is a plain
+  number where lower is better.
+- **`mitata`**: parses [mitata](https://github.com/evanwashere/mitata) benchmark output directly.
+
+Select one with `--adapter` or in the config file.
+
+## Commands
+
+| Command                             | What it does                                                  |
+| ----------------------------------- | ------------------------------------------------------------- |
+| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook  |
+| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline               |
+| `gymrat measure [target]`           | Measure a single revision or directory on its own             |
+| `gymrat doctor`                     | Check the project setup and report problems                   |
+| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                 |
+| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps |
+
+Targets are git refs or directories, optionally labeled: `gymrat compare old=main new=perf/simd`.
+Every command takes `-h` for its full options.
+
+## Configuration
+
+`gymrat init --bench "npm run bench"` writes a `gymrat.toml` so you stop repeating flags. Common
+keys:
+
+```toml
+bench = "npm run bench" # required: the command whose stdout carries metrics
+prepare = "npm ci && npm run build" # run once per revision before sampling
+adapter = "metric-lines" # or "mitata"
+samples = 10 # paired samples per target
+timeout_seconds = 1800 # per bench invocation
+primary = "geomean" # or a metric name
+
+[metrics."decode/time"]
+direction = "lower" # per-metric overrides: direction, gating, exact
+```
+
+Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
+…) > `gymrat.toml` > built-in default.
+
+## The optimization loop
+
+For iterating on performance work, gymrat manages a session with a pinned baseline and an
+experiment worktree:
+
+```console
+gymrat start main          # pin the baseline and open the session
+# ...edit code in the experiment worktree...
+gymrat iterate             # measure the edit against the baseline
+gymrat keep -m "vectorize decode loop"   # commit it if checks pass
+gymrat discard             # ...or revert the worktree to its last commit
+gymrat status              # session history so far
+gymrat finalize            # squash kept iterations into one commit and close
+```
+
+`gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs that loop under an AI
+agent: the runbook scaffolded by `init` describes the goal and constraints, and the session ends
+when the agent finishes or a cap trips.
+
+## How verdicts work
+
+Each candidate is sampled in strict alternation with its baseline, so machine drift hits both
+sides equally. A metric's verdict comes from a sign-flip permutation test on the paired deltas;
+below the sample floor a noise-band fallback applies, and changes inside the noise band are
+reported as `no-signal` rather than celebrated. Erratic metrics come back `unstable` instead of
+misleading you.
+
+## License
+
+[MIT](LICENSE)
