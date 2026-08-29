@@ -16,7 +16,8 @@ class GroupAggregate:
     """The geomean over one group of a kind's metrics.
 
     Attributes:
-        group: Short-name prefix the group's metrics share, dot excluded.
+        group: Path prefix the group's metrics share — the name minus its last
+            segment.
         geomean: Geomean over the group's metrics, gating and non-gating alike.
     """
 
@@ -35,8 +36,8 @@ class KindAggregate:
     Attributes:
         kind: The metric kind these aggregates summarize.
         geomean: Over every metric of the kind, gating and non-gating alike.
-        groups: One entry per group the kind's short names name, empty when none
-            is dotted.
+        groups: One entry per group the kind's metric paths name, empty when
+            every path has a single segment.
         gated_geomean: Over the kind's gating metrics alone, ``None`` when the
             kind has none.
     """
@@ -118,10 +119,10 @@ def compute_kind_aggregates(
     report drawn from these aggregates reads in the same order as the metric
     table.
 
-    Grouping is decided per kind: a group exists only where a short name carries a
-    dot, and a kind whose short names carry none has no groups at all rather than
-    one group per metric. Inside a kind that does have groups, a short name with
-    no dot joins none of them, yet still counts toward the kind.
+    Grouping is decided per kind: a group exists only where a name's path has
+    more than one segment, and a kind of single-segment names has no groups at
+    all rather than one group per metric. Inside a kind that does have groups, a
+    single-segment name joins none of them, yet still counts toward the kind.
 
     Every geomean here is a plain ``compute_geomean`` call over a chosen subset,
     so the unstable, undefined-ratio and infinite-rho exclusions apply throughout,
