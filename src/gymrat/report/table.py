@@ -509,7 +509,18 @@ def _plan_flat_body[Metric, Cell](
             body.append(TitleLine(text=tag))
     body.append(HeaderLine())
     body.append(RuleLine())
-    body.extend(MetricLine(row=row) for row in layout.ordered)
+    has_groups = section is not None and any(
+        isinstance(block, GroupBlock) and len(block.metrics) > 1 for block in section.blocks
+    )
+    if has_groups:
+        block_lines = _plan_blocks(section, None)
+        kind = section.kind
+        for i, line in enumerate(block_lines):
+            if isinstance(line, GroupLine):
+                block_lines[i] = GroupLine(label=f"{line.label} · {kind}")
+        body.extend(block_lines)
+    else:
+        body.extend(MetricLine(row=row) for row in layout.ordered)
     if rows is not None:
         body.append(RuleLine())
         aggregate = rows.flat(layout.ordered)

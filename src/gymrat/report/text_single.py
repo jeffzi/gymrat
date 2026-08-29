@@ -159,7 +159,6 @@ def render_table(
             metric, name, group, candidate_index, result.samples
         ),
     )
-    sectioned = len(layout.sections) > 1
     baseline_fields = value_widths([row.baseline for row in layout.ordered])
     candidate_fields = value_widths([row.candidate for row in layout.ordered])
 
@@ -184,6 +183,7 @@ def render_table(
         aggregates,
         lambda section: section_annotation(section, result.config_kinds),
     )
+    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
 
     aggregate_parts = [line.cell.parts for line in body if isinstance(line, AggregateLine)]
     verdict_fields = verdict_widths(
@@ -192,7 +192,7 @@ def render_table(
 
     def metric_cells(row: _MeasuredRow) -> tuple[str, str, str, str]:
         return (
-            row.label if sectioned else row.name,
+            row.label if grouped else row.name,
             join_value_cell(row.baseline, baseline_fields),
             join_value_cell(row.candidate, candidate_fields),
             "" if row.parts is None else join_verdict_cell(row.parts, verdict_fields),

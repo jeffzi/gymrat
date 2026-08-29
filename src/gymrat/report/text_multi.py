@@ -118,8 +118,6 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         result.metrics,
         lambda name, group, metric: _build_row(metric, name, group, candidates, result.samples),
     )
-    sectioned = len(layout.sections) > 1
-
     column_values = [
         value_widths([row.candidates[index].value for row in layout.ordered])
         for index in range(len(candidates))
@@ -153,10 +151,11 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         lambda section: section_annotation(section, result.config_kinds),
     )
     aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
+    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
 
     metric_width = compute_column_width(
         len(widest_header_label(body)),
-        [len(row.label if sectioned else row.name) for row in layout.ordered]
+        [len(row.label if grouped else row.name) for row in layout.ordered]
         + aggregate_label_lengths(body),
         METRIC_COLUMN_MIN,
     )
@@ -177,7 +176,7 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
     widths = [metric_width, baseline_width, *candidate_widths]
 
     def metric_name(row: _ComparisonRow) -> str:
-        return row.label if sectioned else row.name
+        return row.label if grouped else row.name
 
     def to_cells(line: BodyLine[_ComparisonRow, _AggregateCells]) -> tuple[str, ...]:
         if isinstance(line, HeaderLine):

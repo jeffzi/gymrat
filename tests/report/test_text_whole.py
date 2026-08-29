@@ -107,8 +107,9 @@ def test_render_report_when_one_kind_does_keep_the_flat_layout_and_one_geomean_r
         _HEADER,
         "metric",
         "<rule>",
-        "entity/alive_check#time",
-        "entity/spawn#time",
+        "entity · time",
+        "alive_check",
+        "spawn",
         "<rule>",
         "geomean (2 stable metrics)",
     ]
@@ -422,7 +423,7 @@ def _time_kind_of(value: float) -> KindAggregate:
 def _representative_result() -> ComparisonResult:
     return create_comparison_result(
         metrics={
-            "decode/text=digits/time": MetricComparison(
+            "decode/text=digits#time": MetricComparison(
                 baseline_median=1735,
                 baseline_spread=1,
                 candidates=(
@@ -432,9 +433,9 @@ def _representative_result() -> ComparisonResult:
                         verdict=permutation_verdict(verdict="improved", delta=-17.9, p=0.002),
                     ),
                 ),
-                meta=metric_meta("decode/text=digits/time", unit="ns"),
+                meta=metric_meta("decode/text=digits#time", unit="ns"),
             ),
-            "decode/text=words/time": MetricComparison(
+            "decode/text=words#time": MetricComparison(
                 baseline_median=3065,
                 baseline_spread=1,
                 candidates=(
@@ -444,9 +445,9 @@ def _representative_result() -> ComparisonResult:
                         verdict=permutation_verdict(verdict="no-signal", delta=0.9, p=0.49),
                     ),
                 ),
-                meta=metric_meta("decode/text=words/time", unit="ns"),
+                meta=metric_meta("decode/text=words#time", unit="ns"),
             ),
-            "encode/time": MetricComparison(
+            "encode#time": MetricComparison(
                 baseline_median=914,
                 baseline_spread=1,
                 candidates=(
@@ -456,9 +457,9 @@ def _representative_result() -> ComparisonResult:
                         verdict=permutation_verdict(verdict="regressed", delta=2.2, p=0.002),
                     ),
                 ),
-                meta=metric_meta("encode/time", unit="ns"),
+                meta=metric_meta("encode#time", unit="ns"),
             ),
-            "encode/heap": MetricComparison(
+            "encode#heap": MetricComparison(
                 baseline_median=49152,
                 baseline_spread=0,
                 candidates=(
@@ -468,7 +469,7 @@ def _representative_result() -> ComparisonResult:
                         verdict=exact_verdict(verdict="improved", delta=-7.9),
                     ),
                 ),
-                meta=metric_meta("encode/heap", exact=True, unit="bytes"),
+                meta=metric_meta("encode#heap", exact=True, unit="bytes"),
             ),
         },
         candidates=[create_candidate(kinds=[other_kind(-6, 4)])],
@@ -482,10 +483,12 @@ def test_render_report_when_representative_does_assemble_table_summary_and_highl
         _HEADER,
         "metric",
         "<rule>",
-        "decode/text=digits/time",
-        "decode/text=words/time",
-        "encode/time",
-        "encode/heap",
+        "decode · other",
+        "text=digits#time",
+        "text=words#time",
+        "",
+        "encode#time",
+        "encode#heap",
         "<rule>",
         "geomean (4 stable metrics)",
     ]
@@ -494,9 +497,9 @@ def test_render_report_when_representative_does_assemble_table_summary_and_highl
         "= 0 identical   ~ 1 within noise   ? 0 inconclusive"
     )
     assert _normalized_highlights(report) == [
-        "✗ encode/time +2.2%",
-        "✓ decode/text=digits/time -17.9%",
-        "✓ encode/heap -7.9% (exact)",
+        "✗ encode#time +2.2%",
+        "✓ decode/text=digits#time -17.9%",
+        "✓ encode#heap -7.9% (exact)",
     ]
     assert "some rounds were dropped" not in report
     assert "worktree" not in report
@@ -588,13 +591,13 @@ def _two_candidate_result() -> ComparisonResult:
                         1.2,
                         2,
                         band=30,
-                        excluded=[Exclusion(metric="encode/time", reason="unstable")],
+                        excluded=[Exclusion(metric="encode#time", reason="unstable")],
                     )
                 ],
             ),
         ],
         metrics={
-            "decode/text=digits/time": MetricComparison(
+            "decode/text=digits#time": MetricComparison(
                 baseline_median=1735,
                 baseline_spread=1,
                 candidates=(
@@ -609,9 +612,9 @@ def _two_candidate_result() -> ComparisonResult:
                         verdict=permutation_verdict(verdict="no-signal", delta=-2.1, p=0.32),
                     ),
                 ),
-                meta=metric_meta("decode/text=digits/time", unit="ns"),
+                meta=metric_meta("decode/text=digits#time", unit="ns"),
             ),
-            "encode/time": MetricComparison(
+            "encode#time": MetricComparison(
                 baseline_median=914,
                 baseline_spread=1,
                 candidates=(
@@ -633,9 +636,9 @@ def _two_candidate_result() -> ComparisonResult:
                         ),
                     ),
                 ),
-                meta=metric_meta("encode/time", unit="ns"),
+                meta=metric_meta("encode#time", unit="ns"),
             ),
-            "encode/heap": MetricComparison(
+            "encode#heap": MetricComparison(
                 baseline_median=49152,
                 baseline_spread=0,
                 candidates=(
@@ -646,7 +649,7 @@ def _two_candidate_result() -> ComparisonResult:
                     ),
                     CandidateMetric(),
                 ),
-                meta=metric_meta("encode/heap", exact=True, unit="bytes"),
+                meta=metric_meta("encode#heap", exact=True, unit="bytes"),
             ),
         },
     )
@@ -668,11 +671,11 @@ def test_render_report_when_verbose_two_candidate_does_summarize_group_and_foote
     ]
     assert _normalized_highlights(report) == [
         "perf/simd-decode",
-        "✗ encode/time +2.2%",
-        "✓ decode/text=digits/time -17.9%",
-        "✓ encode/heap -7.9% (exact)",
+        "✗ encode#time +2.2%",
+        "✓ decode/text=digits#time -17.9%",
+        "✓ encode#heap -7.9% (exact)",
         "perf/lut-decode",
-        "≈ encode/time unstable noise ±30.0%",
+        "≈ encode#time unstable noise ±30.0%",
         "unstable metrics won't stabilize with more samples",
     ]
 

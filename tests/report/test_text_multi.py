@@ -22,7 +22,7 @@ from gymrat.config import KindEntry
 from gymrat.model import Exclusion
 from gymrat.report.text import render_report
 from gymrat.report.types import ReportOptions
-from gymrat.verdict import KindAggregate
+from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
     DIMMED_LINE,
     NWayCandidate,
@@ -693,6 +693,69 @@ def test_render_report_when_sectioned_does_name_each_highlight_by_kind_and_short
         "✓ time · entity.alive_check  -10.0%",
         "✓ memory · encode             -7.0%",
     ]
+
+
+# ---------------------------------------------------------------------------
+# single-kind grouping with multiple candidates
+# ---------------------------------------------------------------------------
+
+
+def _multi_candidate_grouped_flat() -> ComparisonResult:
+    """Two candidates, single ``time`` kind with ``entity`` group (2 members)."""
+    return create_comparison_result(
+        metrics={
+            "entity/alive_check#time": n_way_kind_metric(
+                kind="time",
+                short_name="entity.alive_check",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+            ),
+            "entity/spawn#time": n_way_kind_metric(
+                kind="time",
+                short_name="entity.spawn",
+                candidates=[
+                    NWayCandidate(verdict="no-signal", delta=0.3, median=100),
+                    NWayCandidate(verdict="improved", delta=-5, median=95),
+                ],
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label="candidate-a",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(-5, 2),
+                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-5, 2)),),
+                        gated_geomean=geomean_of(-5, 2),
+                    )
+                ],
+            ),
+            create_candidate(
+                label="candidate-b",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(-0.5, 2),
+                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-0.5, 2)),),
+                        gated_geomean=geomean_of(-0.5, 2),
+                    )
+                ],
+            ),
+        ],
+    )
+
+
+def test_render_report_when_many_candidates_single_kind_grouped_does_show_group_headers():
+    """Even with multiple candidates and a single kind, grouped metrics show group headers."""
+    region = table_region(render_report(_multi_candidate_grouped_flat()))
+
+    assert "alive_check" in region
+    assert "spawn" in region
+    assert "entity/alive_check#time" not in region
+    assert "entity/spawn#time" not in region
 
 
 def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_per_subsection():

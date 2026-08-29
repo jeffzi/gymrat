@@ -74,7 +74,6 @@ def render_measure_table(
             value=format_metric_cell_parts(metric.median, metric.spread, metric.meta.unit),
         ),
     )
-    sectioned = len(layout.sections) > 1
     value_fields = value_widths([row.value for row in layout.ordered])
 
     body: list[BodyLine[_MeasureRow, object]] = plan_body(
@@ -82,12 +81,13 @@ def render_measure_table(
         None,
         lambda section: section_annotation(section, result.config_kinds),
     )
+    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
 
     def value_cell(row: _MeasureRow) -> str:
         return join_value_cell(row.value, value_fields)
 
     def name_cell(row: _MeasureRow) -> str:
-        return row.label if sectioned else row.name
+        return row.label if grouped else row.name
 
     widths = [
         compute_column_width(
