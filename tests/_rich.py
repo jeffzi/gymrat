@@ -8,9 +8,20 @@ and isolated from the developer's environment.
 from __future__ import annotations
 
 from io import StringIO
+from typing import TYPE_CHECKING
 
 import pyte
 from rich.console import Console, RenderableType
+
+from gymrat_py.cli.style import CLI_THEME
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+def _fixed_time() -> float:
+    """The default pinned clock for one-shot renders."""
+    return 0.0
 
 
 class Clock:
@@ -37,6 +48,7 @@ def sealed_console(
     height: int = 24,
     no_color: bool = True,
     color_system: str | None = None,
+    get_time: Callable[[], float] | None = None,
 ) -> Console:
     """A ``Console`` sealed from the developer's environment.
 
@@ -44,6 +56,10 @@ def sealed_console(
     ``_environ={}``.  When *no_color* is ``True`` (default), sets
     ``no_color=True``; when ``False``, sets ``color_system`` to the given
     value (default ``"truecolor"``).  # cspell:disable-line
+
+    *get_time* pins the console clock. Without it, a ``Live`` refreshing on
+    this console anchors spinner animations to the wall clock, making frames
+    nondeterministic; pass the test's ``Clock`` so every paint reads it.
 
     Returns a ``Console`` writing to a ``StringIO``.
     """
@@ -59,14 +75,24 @@ def sealed_console(
         _environ={},
         no_color=no_color or None,
         color_system=resolved_color_system,  # type: ignore[arg-type]
+        theme=CLI_THEME,
+        get_time=get_time,
     )
 
 
-def frame_text(renderable: RenderableType, *, width: int = 80) -> str:
+def frame_text(
+    renderable: RenderableType,
+    *,
+    width: int = 80,
+    get_time: Callable[[], float] | None = None,
+) -> str:
     """Render *renderable* through a throwaway non-terminal console, return plain text.
 
     The console is NOT a terminal -- it is a one-shot renderer with
     ``force_terminal=False`` and ``no_color=True``.
+
+    *get_time* pins the console clock so that a ``Spinner`` picks a deterministic
+    frame rather than whatever the wall clock says. Defaults to ``_fixed_time``.
     """
     buf = StringIO()
     console = Console(
@@ -75,6 +101,7 @@ def frame_text(renderable: RenderableType, *, width: int = 80) -> str:
         force_terminal=False,
         no_color=True,
         _environ={},
+        get_time=get_time or _fixed_time,
     )
     console.print(renderable)
     return "\n".join(line.rstrip() for line in buf.getvalue().splitlines())
