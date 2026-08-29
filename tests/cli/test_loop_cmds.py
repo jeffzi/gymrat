@@ -13,7 +13,7 @@ subdirectory case).
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +21,7 @@ import pytest
 import tomli_w
 from typer.testing import CliRunner
 
+from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.iterate import IterateOptions, IterateResult
@@ -685,3 +686,73 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     base_dir = recorder.calls[0][1]
     assert base_dir is not None
     assert Path(base_dir) == Path(root)
+
+
+# ---------------------------------------------------------------------------
+# the sync command
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sync_repo(repo: str) -> str:
+    """A repository with an open session, ready for sync tests."""
+    start_session(repo, "main", resolved_config())
+    return repo
+
+
+def test_sync_command_when_registered_does_appear_in_the_app_commands():
+    result = runner.invoke(app, ["sync", "--help"])
+
+    assert result.exit_code == 0
+    assert "sync" in result.output.lower()
+
+
+def test_sync_command_when_changes_exist_does_print_synced_file_count_and_names(
+    sync_repo: str,
+):
+    root = Path(sync_repo)
+    (root / "extra.py").write_text("# new\n", encoding="utf-8")
+    (root / "README.md").write_text("# updated\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 0
+    assert "2 files" in result.stdout
+    assert "extra.py" in result.stdout
+    assert "README.md" in result.stdout
+
+
+def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
+    sync_repo: str,
+):
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 0
+    assert "nothing to sync" in result.stdout
+
+
+def test_sync_command_when_run_does_take_the_repo_lock(
+    sync_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    lock_names: list[str] = []
+    original_with_repo_lock = loop_cmds.with_repo_lock
+
+    async def recording_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T:
+        lock_names.append(command)
+        return await original_with_repo_lock(command, body)
+
+    monkeypatch.setattr(loop_cmds, "with_repo_lock", recording_lock)
+
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 0
+    assert "sync" in lock_names
+
+
+def test_sync_command_when_no_session_does_exit_two_with_a_start_hint(
+    repo: str,
+):
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 2
+    assert "gymrat start" in result.stderr

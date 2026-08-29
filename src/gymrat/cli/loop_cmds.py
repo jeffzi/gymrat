@@ -68,6 +68,7 @@ from gymrat.loop.settle import (
 )
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.status import status_session
+from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.report.format import pluralize
 from gymrat.report.loop import format_baseline_ref
 from gymrat.session.paths import repo_root
@@ -378,3 +379,27 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
         exit_with_error(error)
 
     write_and_flush(sys.stdout, report + "\n")
+
+
+def _format_sync_summary(result: SyncResult) -> str:
+    """One-line summary when nothing changed, file listing when something did."""
+    if not result.files:
+        return "nothing to sync"
+    header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
+    lines = [header, *(f"  {f}" for f in result.files)]
+    return "\n".join(lines)
+
+
+def sync(*, debug: DebugOption = False) -> None:
+    """Sync uncommitted main-tree changes into the experiment worktree."""
+    if debug:
+        set_debug_mode(True)
+
+    async def run() -> None:
+        async def body() -> SyncResult:
+            return sync_to_experiment(repo_root())
+
+        result = await with_repo_lock("sync", body)
+        write_and_flush(sys.stdout, _format_sync_summary(result) + "\n")
+
+    run_cli(run)
