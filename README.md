@@ -109,6 +109,26 @@ gymrat finalize            # squash kept iterations into one commit and close
 agent: the runbook scaffolded by `init` describes the goal and constraints, and the session ends
 when the agent finishes or a cap trips.
 
+## Two workflows, one tool
+
+gymrat serves two audiences with the same statistical engine:
+
+- **One-shot comparisons** — `gymrat compare` and `gymrat measure` answer a point-in-time question
+  ("is this branch faster?") and clean up after themselves. Use these in CI gates, code reviews, or
+  any time you have specific revisions to judge.
+
+- **Iterative optimization** — `gymrat start` through `gymrat finalize` manage a session with a
+  pinned baseline and an experiment worktree, so you can iterate on performance work with
+  keep/discard decisions backed by statistics. `gymrat supervise` automates the same loop under an
+  AI agent.
+
+### Machine-readable output
+
+Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `status`)
+accepts `--format json` for structured output. The JSON key shapes are a stability contract:
+additions only, no renames or removals without a breaking change. Text output is for humans and may
+change between releases. `start` and `finalize` are text-only.
+
 ## How verdicts work
 
 Each candidate is sampled in strict alternation with its baseline, so machine drift hits both

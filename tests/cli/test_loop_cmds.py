@@ -204,6 +204,22 @@ def test_start_command_when_runbook_absent_does_omit_the_runbook_row(
     assert "runbook" not in result.stdout
 
 
+@pytest.mark.parametrize("resumed", [False, True])
+def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch, resumed: bool
+):
+    if resumed:
+        start_session(repo, "main", resolved_config())
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "main"])
+
+    assert result.exit_code == 0
+    exp_dir = experiment_worktree_dir(repo)
+    assert f"edit in {exp_dir}" in result.stdout
+    assert "gymrat sync" in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # the iterate command
 # ---------------------------------------------------------------------------

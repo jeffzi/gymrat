@@ -136,6 +136,10 @@ def format_start_summary(result: StartResult, runbook: str | None) -> str:
         lines.append(
             f"  archived the finalized session {result.archived} to {result.archived_path}"
         )
+    lines.append(
+        f"  edit in {session.worktrees.experiment}"
+        " — use `gymrat sync` to bring main-tree changes over"
+    )
     return "\n".join(lines)
 
 

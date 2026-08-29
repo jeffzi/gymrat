@@ -101,6 +101,21 @@ Launches an agent to drive the session loop autonomously. Requires `runbook` in 
 `--max-minutes`. `--allow-dirty` permits uncommitted changes. Holds its own lock, separate from the
 session lock.
 
+## Machine-readable output
+
+`iterate`, `keep`, `discard`, and `status` accept `--format json`. When driving the loop
+programmatically, always pass `--format json` — the JSON key shapes are a stability contract
+(additions only; no renames or removals without a breaking change), while the text report may change
+between releases. `start` and `finalize` are text-only (their outputs are one-shot summaries agents
+don't parse).
+
+## Syncing main-tree edits
+
+Edits belong in the experiment worktree (`gymrat start` prints the path). When code must be changed
+in the main working tree first (e.g. a dependency update), use `gymrat sync` to copy uncommitted
+main-tree changes into the experiment worktree before running `iterate`. `sync` refuses when the
+experiment worktree has conflicting uncommitted changes.
+
 ## Loop discipline
 
 1. **Never stop before a stop condition fires.** When `stop.max_iterations` or `stop.target_value` is
