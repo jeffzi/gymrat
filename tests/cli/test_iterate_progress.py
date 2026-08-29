@@ -863,6 +863,65 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 
 
 # ---------------------------------------------------------------------------
+# Inline name formatting in judge row
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_judge_regressed_does_style_names_via_format_inline():
+    """Regressed names carry per-segment format_inline styling: dim group/kind, normal case."""
+    from rich.console import Console as StyledConsole
+
+    from gymrat.cli.style import CLI_THEME
+
+    _console, clock, renderer = _live(sample_count=1, metric_count=3)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-3.2,
+            regressed=("node/access#time",),
+            at_ms=_ms(clock),
+        )
+    )
+
+    styled = StyledConsole(
+        width=120,
+        force_terminal=True,
+        no_color=False,
+        color_system="truecolor",  # cspell:disable-line
+        _environ={},
+        legacy_windows=False,
+        theme=CLI_THEME,
+    )
+    segments = [seg for line in styled.render_lines(renderer.frame()) for seg in line]
+
+    group_dim: bool | None = None
+    case_dim: bool | None = None
+    kind_dim: bool | None = None
+
+    for seg in segments:
+        dim = seg.style is not None and seg.style.dim is True
+        if "node/" in seg.text and group_dim is None:
+            group_dim = dim
+        if "access" in seg.text and case_dim is None:
+            case_dim = dim
+        if "#time" in seg.text and kind_dim is None:
+            kind_dim = dim
+
+    assert case_dim is not None, "No segment containing case part 'access' in the judge row"
+    assert group_dim is True, "Group prefix 'node/' should be dim (format_inline)"
+    assert case_dim is False, (
+        "Case part 'access' should not be dim — "
+        "format_inline leaves the case unstyled while dimming group and kind"
+    )
+    assert kind_dim is True, "Kind suffix '#time' should be dim (format_inline)"
+
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
 # Fan-out on_progress callback
 # ---------------------------------------------------------------------------
 

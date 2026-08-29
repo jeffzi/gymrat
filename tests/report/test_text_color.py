@@ -701,13 +701,13 @@ def test_render_report_when_colored_does_dim_the_evidence_suffixes(
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
         metrics={
-            "cheaper/heap": exact_metric(delta=-7.9),
-            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30),
+            "cheaper#heap": exact_metric(delta=-7.9),
+            "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30),
         }
     )
     highlights = highlight_lines(render_report(result))
-    exact_entry = next(line for line in highlights if "cheaper/heap" in line)
-    unstable_entry = next(line for line in highlights if "jittery/time" in line)
+    exact_entry = next(line for line in highlights if "cheaper#heap" in strip_ansi(line))
+    unstable_entry = next(line for line in highlights if "jittery#time" in strip_ansi(line))
 
     assert "2" in styles_at(exact_entry, "(exact)")
     assert "2" in styles_at(unstable_entry, "noise")

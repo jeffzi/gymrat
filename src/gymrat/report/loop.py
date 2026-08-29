@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rich.markup import escape
 
+from gymrat.metric_name import format_inline, parse
 from gymrat.model import Effect
 from gymrat.report.format import format_delta, format_value, get_glyph, is_improvement, pluralize
 from gymrat.report.style import VARIANT_NAME_STYLE, format_hint
@@ -213,7 +214,8 @@ def format_loop_header(seq: int, samples: int) -> str:
 def _format_rerun_line(rerun: RerunConfirmation) -> str:
     """What the rerun settled about one metric, painted the way the table paints that answer."""
     text, style = _RERUN_PHRASES[rerun.answer]
-    return f"{escape(rerun.metric)}: {markup(text, style)}"
+    name = format_inline(parse(rerun.metric), color=True)
+    return f"{name}: {markup(text, style)}"
 
 
 def format_verdict_block(

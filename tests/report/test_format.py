@@ -33,10 +33,17 @@ from gymrat.report.format import (
     format_value,
     geomean_value_style,
     get_glyph,
+    highlight_label,
     pluralize,
     scoped_geomean_label,
     select_highlights,
     verdict_summary_parts,
+)
+from gymrat.report.loop import (
+    GeomeanPrimary,
+    RerunAnswer,
+    RerunConfirmation,
+    format_verdict_block,
 )
 from gymrat.report.style import format_hint, render_lines
 from gymrat.report.types import ReportOptions
@@ -48,9 +55,11 @@ from tests.report._inputs import (
     band_verdict,
     exact_verdict,
     geomean_of,
+    kind_metric,
     metric_for,
     one_sided_metric,
     permutation_verdict,
+    styles_at,
 )
 
 if TYPE_CHECKING:
@@ -829,3 +838,54 @@ def test_report_options_carries_an_optional_color_override(
     options: ReportOptions, expected: bool | None
 ):
     assert options.color is expected
+
+
+# ---------------------------------------------------------------------------
+# highlight_label — format_inline
+# ---------------------------------------------------------------------------
+
+
+def test_highlight_label_when_unqualified_does_dim_group_and_kind_in_colored_output():
+    metrics: Metrics = {
+        "entity/alive_check#time": kind_metric(
+            kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
+        ),
+    }
+    (highlight,) = select_highlights(metrics, 0)
+
+    label = highlight_label(highlight, qualify=False)
+
+    colored = _colored(label)
+    assert "2" in styles_at(colored, "entity/")
+    assert "2" in styles_at(colored, "#time")
+
+
+# ---------------------------------------------------------------------------
+# rerun confirmation lines — format_inline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("answer", "phrase"),
+    [
+        pytest.param("confirmed", "regression confirmed on rerun", id="confirmed"),
+        pytest.param("disagreed", "regression not confirmed on rerun", id="disagreed"),
+        pytest.param("absent", "not measured on rerun", id="absent"),
+    ],
+)
+def test_format_verdict_block_when_rerun_does_dim_group_and_kind_in_metric_name(
+    answer: RerunAnswer, phrase: str
+):
+    rerun = RerunConfirmation(metric="entity/alive_check#time", answer=answer)
+
+    block = format_verdict_block(
+        outcome="regressed",
+        primary=GeomeanPrimary(delta_pct=3.1),
+        next_step="gymrat discard",
+        reruns=[rerun],
+    )
+
+    rerun_line = next(line for line in block if phrase in _plain(line))
+    colored = _colored(rerun_line)
+    assert "2" in styles_at(colored, "entity/")
+    assert "2" in styles_at(colored, "#time")

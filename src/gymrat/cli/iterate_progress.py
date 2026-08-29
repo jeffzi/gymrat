@@ -38,6 +38,7 @@ from gymrat.cli.style import (
     STYLE_VERB,
 )
 from gymrat.eta import format_clock, format_duration
+from gymrat.metric_name import format_inline, parse
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -99,7 +100,7 @@ class _NodeState:
     hint: str = ""
     note: str = ""
     target: str = ""
-    detail: str = ""
+    detail: str | Text = ""
     status: Literal["pending", "running", "done", "skipped"] = "pending"
     start_ms: float = 0.0
     elapsed_ms: float = 0.0
@@ -336,7 +337,11 @@ class IterateRenderer:
         text.append(f"{node.glyph} ", style=STYLE_ALERT if node.alert else STYLE_DONE)
         text.append(node.past)
         if node.detail:
-            text.append(f" {node.detail}", style=STYLE_META)
+            if isinstance(node.detail, Text):
+                text.append(" ")
+                text.append_text(node.detail)
+            else:
+                text.append(f" {node.detail}", style=STYLE_META)
         if node.elapsed_ms > 0:
             text.append(f" {format_duration(node.elapsed_ms)}", style=STYLE_TIMER_DONE)
         return text
@@ -572,17 +577,6 @@ class IterateRenderer:
         delta_str = (
             f"{event.primary_delta_pct:+.1f}%" if event.primary_delta_pct is not None else "—"
         )
-        # The confirm row right below already announces the hand-off, so the
-        # regressed list carries no arrow. The leading count is the real
-        # information; at most three names follow so the row cannot balloon —
-        # the final iteration report carries the full list.
-        handoff: list[str] = []
-        if event.regressed:
-            shown = ", ".join(event.regressed[:_REGRESSED_NAME_CAP])
-            if len(event.regressed) > _REGRESSED_NAME_CAP:
-                shown += ", …"
-            handoff = [f"{len(event.regressed)} regressed: {shown}"]
-
         # The live row carries only the primary verdict and the regressed
         # names; the per-metric breakdown would crowd the checklist, so it
         # stays in the plain log below.
@@ -594,7 +588,24 @@ class IterateRenderer:
         # No regression means confirm never fires: its row leaves the
         # checklist and the verdict rides on the judge's done line instead.
         verdict = [] if event.regressed else ["no gating regression"]
-        self._judge.detail = " · ".join([primary, *handoff, *verdict])
+
+        # Build the live detail as rich.Text so each regressed metric name
+        # carries its own format_inline styling (dim group/kind, normal case).
+        detail = Text()
+        detail.append(primary, style=STYLE_META)
+        if event.regressed:
+            detail.append(" · ", style=STYLE_META)
+            detail.append(f"{len(event.regressed)} regressed: ", style=STYLE_META)
+            for i, name in enumerate(event.regressed[:_REGRESSED_NAME_CAP]):
+                if i > 0:
+                    detail.append(", ", style=STYLE_META)
+                detail.append_text(Text.from_markup(format_inline(parse(name), color=True)))
+            if len(event.regressed) > _REGRESSED_NAME_CAP:
+                detail.append(", …", style=STYLE_META)
+        for v in verdict:
+            detail.append(" · ", style=STYLE_META)
+            detail.append(v, style=STYLE_META)
+        self._judge.detail = detail
 
         if not event.regressed:
             self._confirm.status = "skipped"
@@ -602,6 +613,17 @@ class IterateRenderer:
         if self._is_live:
             self._refresh_live()
         else:
+            # Plain mode: raw names suffice (no ANSI escapes on plain consoles).
+            # The confirm row right below already announces the hand-off, so the
+            # regressed list carries no arrow. The leading count is the real
+            # information; at most three names follow so the row cannot balloon —
+            # the final iteration report carries the full list.
+            handoff: list[str] = []
+            if event.regressed:
+                shown = ", ".join(event.regressed[:_REGRESSED_NAME_CAP])
+                if len(event.regressed) > _REGRESSED_NAME_CAP:
+                    shown += ", …"
+                handoff = [f"{len(event.regressed)} regressed: {shown}"]
             improve_noise = self._metric_count - len(event.regressed)
             breakdown = " · ".join([delta_str, f"{improve_noise} improve/noise", *handoff])
             self._print_plain(event.at_ms, f"judge {breakdown}")

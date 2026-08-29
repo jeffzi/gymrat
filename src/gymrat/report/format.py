@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
+from gymrat.metric_name import format_inline, parse
 from gymrat.model import (
     BAND_DESCRIPTOR,
     PERMUTATION_DESCRIPTOR,
@@ -581,8 +582,8 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     """
     if qualify:
         meta = highlight.metric.meta
-        return f"{meta.kind} {_SCOPE_SEPARATOR} {meta.short_name}"
-    return highlight.name
+        return f"{escape(meta.kind)} {_SCOPE_SEPARATOR} {escape(meta.short_name)}"
+    return format_inline(parse(highlight.name), color=True)
 
 
 def has_unstable_highlight(highlights: Sequence[MetricHighlight]) -> bool:

@@ -185,10 +185,11 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
 
     qualify = spans_many_kinds(metrics)
     labels = [highlight_label(highlight, qualify=qualify) for highlight in highlights]
-    name_width = max(len(label) for label in labels) + _HIGHLIGHT_NAME_GUTTER
+    label_widths = [len(Text.from_markup(label).plain) for label in labels]
+    name_width = max(label_widths) + _HIGHLIGHT_NAME_GUTTER
 
     entries: list[str] = []
-    for highlight, label in zip(highlights, labels, strict=True):
+    for highlight, label, width in zip(highlights, labels, label_widths, strict=True):
         verdict = highlight.candidate.verdict
         if verdict is None:  # pragma: no cover - select_highlights only keeps judged slices
             msg = f"highlight {highlight.name!r} carries no verdict"
@@ -200,7 +201,7 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
             verdict, highlight.metric.meta.unit, highlight.metric.baseline_median
         )
 
-        label_field = f"{escape(label)}{' ' * (name_width - len(label))}"
+        label_field = f"{label}{' ' * (name_width - width)}"
         delta_field = f"{' ' * max(0, _HIGHLIGHT_DELTA_WIDTH - len(delta))}{markup(delta, style)}"
         suffix = "" if evidence == "" else f"  {markup(evidence, 'dim')}"
         entries.append(f"  {markup(get_glyph(shown), style)} {label_field}{delta_field}{suffix}")
