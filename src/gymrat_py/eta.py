@@ -1,10 +1,11 @@
 """Format durations and ETAs for progress display.
 
-The two formatters are deliberately not unified. :func:`format_duration` reports
+The formatters are deliberately not unified. :func:`format_duration` reports
 elapsed time and floors to whole seconds while always keeping a zero remainder
 (``"1m 0s"``); :func:`format_eta` reports a forward estimate, rounds to whole
 seconds, clamps to at least one second, and drops a zero remainder (``"~1m
-left"``).
+left"``); :func:`format_clock` renders the media-player clock a progress bar
+ticks through (``"07:45"``, ``"1:07:45"``).
 """
 
 import math
@@ -36,6 +37,20 @@ def format_duration(ms: float) -> str:
     if total_seconds < _SECONDS_PER_HOUR:
         return f"{minutes}m {seconds}s"
     return f"{hours}h {minutes:02d}m"
+
+
+def format_clock(ms: float) -> str:
+    """Format a duration as a media-player clock, flooring to whole seconds.
+
+    Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
+    appears only when there are whole hours (``"1:07:45"``).
+    """
+    total_seconds = math.floor(max(0.0, ms) / 1000)
+    hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
+
+    if hours == 0:
+        return f"{minutes:02d}:{seconds:02d}"
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
 
 
 def format_eta(ms: float) -> str:
