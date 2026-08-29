@@ -12,7 +12,10 @@ import sys
 from io import StringIO
 from typing import TYPE_CHECKING, Literal
 
+import pytest
+
 from gymrat_py.cli.progress import ProgressReporter, create_progress_reporter
+from gymrat_py.cli.style import LIVE_REFRESH_PER_SECOND
 from gymrat_py.progress_events import (
     HookStarted,
     PassFinished,
@@ -25,7 +28,6 @@ from tests._rich import Clock, frame_text, screen_lines, sealed_console
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import pytest
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
 
@@ -46,7 +48,7 @@ def _reporter(
 ) -> tuple[Console, Clock, ProgressReporter]:
     """Wire a progress reporter to a sealed console and a hand-advanced clock."""
     clock = Clock()
-    console = sealed_console(width=width, height=height)
+    console = sealed_console(width=width, height=height, get_time=clock)
     kwargs: dict[str, object] = {}
     if command is not None:
         kwargs["command"] = command
@@ -125,13 +127,6 @@ def _fake_install(
     return install
 
 
-def _running_detail_line(result: str) -> str:
-    """The frame's one detail line reporting a running pass."""
-    lines = [ln for ln in result.splitlines() if "running" in ln.lower()]
-    assert len(lines) == 1
-    return lines[0]
-
-
 def _summary_line(console: Console) -> str:
     """The last visible line of the rendered screen, or '' if nothing was printed."""
     visible = screen_lines(_output(console))
@@ -175,7 +170,7 @@ def test_frame_when_prepare_running_does_show_spinner_and_label(
 def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
     snapshot: SnapshotAssertion,
 ):
-    """You should see prepare with a done marker, a progress bar, and 'estimating time left'."""
+    """Prepare row leaves the display; the sampling bar's clock reads --:-- until an ETA exists."""
     _console, clock, reporter = _reporter("live")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
     clock.tick(2)
@@ -189,10 +184,10 @@ def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
     reporter.stop()
 
 
-def test_frame_when_mid_run_with_computed_eta_does_show_detail_line(
+def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
     snapshot: SnapshotAssertion,
 ):
-    """You should see a computed ETA (not 'estimating'), a detail line with round and label."""
+    """Bar clock shows elapsed over a projected total, ticking past the last event."""
     _console, clock, reporter = _reporter("live")
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
@@ -201,6 +196,7 @@ def test_frame_when_mid_run_with_computed_eta_does_show_detail_line(
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
     clock.tick(1)
     reporter.report(_pass_started(2, 3, at_ms=_ms(clock)))
+    clock.tick(41)
 
     result = frame_text(reporter.frame())
 
@@ -211,7 +207,7 @@ def test_frame_when_mid_run_with_computed_eta_does_show_detail_line(
 def test_frame_when_multi_target_compare_does_name_running_target(
     snapshot: SnapshotAssertion,
 ):
-    """You should see bar total of samples x targets, running target named in detail."""
+    """Bar total is samples x targets; the running target is named on the bar row."""
     _console, clock, reporter = _reporter("live", target_count=2, sample_count=5)
     reporter.report(PrepareFinished(label="main", at_ms=0))
     clock.tick(1)
@@ -225,10 +221,10 @@ def test_frame_when_multi_target_compare_does_name_running_target(
     reporter.stop()
 
 
-def test_frame_when_compact_layout_on_short_console_does_show_sample_count(
+def test_frame_when_compact_layout_on_short_console_does_show_single_row(
     snapshot: SnapshotAssertion,
 ):
-    """You should see compact single-row progress with 'sample N/M'."""
+    """A short console collapses the display to the single-row compact bar."""
     _console, clock, reporter = _reporter("live", height=10)
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
@@ -286,65 +282,30 @@ def test_frame_when_compare_command_does_show_header_with_multiple_labels():
 
 
 # ---------------------------------------------------------------------------
-# Detail line -- live elapsed for running pass
-# ---------------------------------------------------------------------------
-
-
-def test_frame_when_pass_running_does_show_live_elapsed():
-    """Detail line shows ``running M:SS`` that ticks with the clock.
-
-    After 41 seconds into pass 3, the detail line should show ``running 0:41``.
-    """
-    _console, clock, reporter = _reporter("live", sample_count=5)
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.tick(1)
-    reporter.report(_pass_started(1, 5, at_ms=_ms(clock)))
-    clock.tick(240)
-    reporter.report(_pass_finished(1, 5, at_ms=_ms(clock)))
-    clock.tick(1)
-    reporter.report(_pass_started(2, 5, at_ms=_ms(clock)))
-    clock.tick(242)
-    reporter.report(_pass_finished(2, 5, at_ms=_ms(clock)))
-    clock.tick(1)
-    reporter.report(_pass_started(3, 5, at_ms=_ms(clock)))
-    clock.tick(41)
-
-    result = frame_text(reporter.frame())
-
-    detail_line = _running_detail_line(result)
-    assert "running 0:41" in detail_line
-    assert "last pass" in detail_line
-    reporter.stop()
-
-
-def test_frame_when_pass_just_started_does_show_running_zero():
-    """At pass start (0 seconds elapsed), detail line shows ``running 0:00``."""
-    _console, clock, reporter = _reporter("live", sample_count=3)
-    reporter.report(PrepareFinished(label="bench", at_ms=0))
-    clock.tick(1)
-    reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
-
-    result = frame_text(reporter.frame())
-
-    assert "running 0:00" in _running_detail_line(result)
-    reporter.stop()
-
-
-# ---------------------------------------------------------------------------
 # Plain mode -- exact timestamped milestone lines
 # ---------------------------------------------------------------------------
 
 
-def test_plain_renderer_when_prepare_finished_does_print_exact_timestamped_line():
+@pytest.mark.parametrize(
+    "run_start_s",
+    [
+        pytest.param(0, id="run-starts-at-zero"),
+        pytest.param(7, id="run-starts-later"),
+    ],
+)
+def test_plain_renderer_when_prepare_finished_does_print_exact_timestamped_line(
+    run_start_s: int,
+):
     console, clock, reporter = _reporter("plain")
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
+    clock.tick(run_start_s)
+    reporter.report(PrepareStarted(label="bench", at_ms=_ms(clock)))
     clock.tick(5)
     reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
 
     output = _output(console)
     lines = [ln for ln in output.splitlines() if ln.strip()]
 
-    assert lines[-1] == "[00:00:00] prepared bench (5s)"
+    assert lines[-1] == "[00:00:05] prepared bench (5s)"
     reporter.stop()
 
 
@@ -395,13 +356,13 @@ def test_live_wiring_when_created_does_set_transient_and_no_redirect_stderr():
 
 
 def test_live_wiring_when_created_does_set_auto_refresh_and_get_renderable():
-    """Live display uses get_renderable=self.frame, auto_refresh=True, refresh_per_second=1."""
+    """Live display uses get_renderable=self.frame, auto_refresh, and the shared refresh rate."""
     _console, _clock, reporter = _reporter("live")
 
     live = reporter._live
     assert live is not None
     assert live.auto_refresh is True
-    assert live.refresh_per_second == 1
+    assert live.refresh_per_second == LIVE_REFRESH_PER_SECOND
     assert live._get_renderable == reporter.frame
     reporter.stop()
 
@@ -486,49 +447,14 @@ def test_stop_when_measure_done_does_print_summary(snapshot: SnapshotAssertion):
     assert _summary_line(console) == snapshot
 
 
-def test_stop_when_metric_count_set_does_include_metrics_in_summary():
-    """Summary reads '... 54 metrics ...' when set_metric_count(54) called before stop()."""
-    console, clock, reporter = _reporter("live", sample_count=5)
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    clock.tick(108)
-    reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
-    for i in range(1, 6):
-        clock.tick(1)
-        reporter.report(_pass_started(i, 5, at_ms=_ms(clock)))
-        clock.tick(200)
-        reporter.report(_pass_finished(i, 5, at_ms=_ms(clock)))
-
-    reporter.set_metric_count(54)
-    reporter.stop()
-
-    summary = _summary_line(console)
-    assert "5 samples" in summary
-    assert "54 metrics" in summary
-    assert "bench" in summary
-
-
-def test_stop_when_metric_count_not_set_does_omit_metrics_from_summary():
-    """When set_metric_count is never called, summary has no metrics segment."""
-    console, clock, reporter = _reporter("live", sample_count=2)
-    _run_two_passes(reporter, clock)
-
-    reporter.stop()
-
-    summary = _summary_line(console)
-    assert "metrics" not in summary
-    assert "2 samples" in summary
-
-
-def test_stop_when_plain_mode_and_metric_count_set_does_not_print_summary():
-    """Plain mode stays milestone-lines-only: no summary, even with metric count set."""
+def test_stop_when_plain_mode_does_not_print_summary():
+    """Plain mode stays milestone-lines-only: stopping prints no summary line."""
     console, clock, reporter = _reporter("plain", sample_count=2)
     _run_two_passes(reporter, clock)
 
-    reporter.set_metric_count(42)
     reporter.stop()
 
-    output = _output(console)
-    assert "42 metrics" not in output
+    assert "measured in" not in _output(console)
 
 
 def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):

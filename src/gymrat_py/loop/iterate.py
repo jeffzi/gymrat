@@ -106,11 +106,12 @@ from gymrat_py.verdict import compute_geomean, compute_kind_aggregates, compute_
 if TYPE_CHECKING:
     from gymrat_py.progress_events import ProgressCallback
 
-#: What the loop tells the agent to do next, one per outcome.
+#: What the loop tells the agent to do next, one per outcome. The commands are
+#: backtick-marked so the hint renderer sets them apart from the prose around them.
 _NEXT_STEPS: dict[LoopOutcome, str] = {
-    "improved": "gymrat keep",
-    "regressed": "fix or gymrat discard",
-    "no-signal": "gymrat keep or gymrat discard",
+    "improved": "`gymrat keep`",
+    "regressed": "fix or run `gymrat discard`",
+    "no-signal": "`gymrat keep` or `gymrat discard`",
 }
 
 #: What every stop condition tells the agent to do once the loop is over.
@@ -382,8 +383,7 @@ async def iterate_session(
 
 async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
     """Bench the pair, confirm any gating regression, and assemble the comparison."""
-    _emit(ctx.options, JudgeStarted(at_ms=default_clock()))
-    first = await _bench_and_judge(ctx, ctx.config.bench)
+    first = await _bench_and_judge(ctx, ctx.config.bench, announce_judging=True)
 
     primary = _resolve_primary(ctx.config.primary, first.verdicts, first.metric_meta)
     regressed_names = tuple(
@@ -498,8 +498,6 @@ async def _confirm_regressions(
         return None
 
     filtered_tuple = tuple(filtered)
-    _emit(ctx.options, ConfirmStarted(filtered_metrics=filtered_tuple, at_ms=default_clock()))
-
     names = " ".join(_shell_quote(name) for name in filtered)
     # str.replace is literal, so a metric name carrying a ``$&``-like sequence is
     # its own text rather than a substitution pattern.
@@ -508,6 +506,16 @@ async def _confirm_regressions(
         if ctx.config.filter is None
         else ctx.config.filter.replace(FILTER_PLACEHOLDER, names)
     )
+    # No filter template means the whole bench re-runs, so the event names no
+    # metrics: a renderer reading a list would claim a narrowing that never happened.
+    _emit(
+        ctx.options,
+        ConfirmStarted(
+            filtered_metrics=None if ctx.config.filter is None else filtered_tuple,
+            at_ms=default_clock(),
+        ),
+    )
+
     confirm_ctx = _with_confirm_phase(ctx)
     rerun = await _bench_and_judge(confirm_ctx, bench, metric_meta)
     confirmed = frozenset(
@@ -553,14 +561,23 @@ async def _bench_and_judge(
     ctx: _IterationContext,
     bench: str,
     metric_meta: dict[str, ResolvedMetricMeta] | None = None,
+    *,
+    announce_judging: bool = False,
 ) -> _BenchRun:
     """Bench a session's worktrees and judge the resulting samples, in one call.
 
     ``metric_meta`` is optional because the first run does not know the metric set
     until it has samples to read it from; the confirmation rerun already has one
     from the first run and passes it through unchanged.
+
+    ``announce_judging`` opens the judge phase once the bench has stopped
+    reporting passes, so a progress renderer shows judging as running only while
+    the verdicts are actually being computed. The confirmation rerun leaves it
+    off: its judging belongs to the confirm phase, which reports itself.
     """
     baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
+    if announce_judging:
+        _emit(ctx.options, JudgeStarted(at_ms=default_clock()))
     adapter = get_adapter(ctx.config.adapter)
     resolved_meta = (
         metric_meta
@@ -793,7 +810,7 @@ def _render_iteration(
         else []
     )
     header = render_lines(format_loop_header(seq, result.samples), color=color, width=RENDER_WIDTH)
-    report = render_report(result, ReportOptions(header=header, color=color))
+    report = render_report(result, ReportOptions(header=header, color=color, command="iterate"))
     verdict = render_lines(
         *format_verdict_block(
             outcome=judgment.outcome,

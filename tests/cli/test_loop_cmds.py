@@ -256,6 +256,9 @@ class _RendererRecord:
     primary_metric: str
     verbose: bool
     clock: object
+    checks_cmd: str | None = None
+    has_before_hook: bool = False
+    has_after_hook: bool = False
 
 
 class _FakeRenderer:
@@ -291,6 +294,9 @@ class _RendererFactory:
         *,
         verbose: bool,
         clock: object = None,
+        checks_cmd: str | None = None,
+        has_before_hook: bool = False,
+        has_after_hook: bool = False,
     ) -> _FakeRenderer:
         self.calls.append(
             _RendererRecord(
@@ -303,6 +309,9 @@ class _RendererFactory:
                 primary_metric=primary_metric,
                 verbose=verbose,
                 clock=clock,
+                checks_cmd=checks_cmd,
+                has_before_hook=has_before_hook,
+                has_after_hook=has_after_hook,
             )
         )
         return self.renderer

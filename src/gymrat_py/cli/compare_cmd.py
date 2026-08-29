@@ -128,9 +128,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                     on_progress=run_opts.on_progress,
                     warn=run_opts.warn,
                 )
-                result = await engine.compare(options)
-                progress.set_metric_count(len(result.metrics))
-                return result
+                return await engine.compare(options)
             finally:
                 progress.stop()
 

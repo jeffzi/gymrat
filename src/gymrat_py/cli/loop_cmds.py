@@ -75,7 +75,7 @@ from gymrat_py.session.progress_file import clear_progress, create_sidecar_write
 from gymrat_py.session.store import require_open_session
 
 _RefArgument = typer.Argument(
-    metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
+    default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
 )
 
 
@@ -217,6 +217,8 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 metric_count,
                 resolved.primary,
                 verbose=verbose,
+                has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
+                has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
             )
             sidecar_writer = create_sidecar_writer(root, seq, started_at=time.time())
             fan_out = create_fan_out([renderer.report, sidecar_writer])

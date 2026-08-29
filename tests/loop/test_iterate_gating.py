@@ -725,7 +725,7 @@ async def test_iterate_session_when_primary_flat_does_record_zero_as_a_percentag
             "regressed",
             "REGRESSED",
             _regressed_rounds(),
-            "fix or gymrat discard",
+            "fix or run gymrat discard",
             id="regressed",
         ),
         pytest.param(

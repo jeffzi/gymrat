@@ -30,7 +30,7 @@ from gymrat_py.progress_events import (
     PassStarted,
     ProgressEvent,
 )
-from gymrat_py.sampling import TargetContext
+from gymrat_py.sampling import SamplingOptions, TargetContext, TargetSamples
 from gymrat_py.session import (
     PairedSamples,
     read_records,
@@ -66,7 +66,7 @@ from tests.session._records import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from tests.loop._iterate import CollectSamplesRecorder
 
@@ -421,13 +421,45 @@ async def test_iterate_session_when_no_hooks_configured_does_emit_no_hook_events
     assert hook_events == []
 
 
-async def test_iterate_session_when_measuring_does_emit_judge_started_before_judge_finished(
-    settled: str, samples_mock: CollectSamplesRecorder
+async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_bench_passes(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
+    """The judge phase opens when the verdict is computed, not while the bench still runs."""
+    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    worktrees = session_record(repo).worktrees
+    by_dir = {worktrees.experiment: improved_rounds(), worktrees.baseline: baseline_rounds()}
+
+    async def sample_reporting_passes(
+        adapter: object,
+        targets: Sequence[TargetContext],
+        options: SamplingOptions,
+        abort: object,
+    ) -> list[TargetSamples]:
+        """Stand in for the bench, reporting one pass per target the way sampling does."""
+        forward = options.on_progress
+        assert forward is not None, "iterate_session should forward sampling progress"
+        contexts = list(targets)
+        collected: list[TargetSamples] = []
+        for index, ctx in enumerate(contexts):
+            for event_type in (PassStarted, PassFinished):
+                forward(
+                    event_type(
+                        round=1,
+                        total_rounds=1,
+                        target_index=index,
+                        target_count=len(contexts),
+                        label=ctx.label,
+                        at_ms=0,
+                    )
+                )
+            collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
+        return collected
+
+    monkeypatch.setattr("gymrat_py.loop.iterate.collect_samples", sample_reporting_passes)
     events: list[ProgressEvent] = []
 
     await iterate_session(
-        settled, resolved_config(), options=IterateOptions(on_progress=events.append)
+        repo, resolved_config(), options=IterateOptions(on_progress=events.append)
     )
 
     judge_started = [e for e in events if isinstance(e, JudgeStarted)]
@@ -435,6 +467,8 @@ async def test_iterate_session_when_measuring_does_emit_judge_started_before_jud
     event_types = [type(e).__name__ for e in events]
     started_idx = event_types.index("JudgeStarted")
     finished_idx = event_types.index("JudgeFinished")
+    last_pass_idx = max(i for i, name in enumerate(event_types) if name == "PassFinished")
+    assert last_pass_idx < started_idx
     assert started_idx < finished_idx
 
 
@@ -496,6 +530,31 @@ async def test_iterate_session_when_confirmation_triggers_does_emit_confirm_even
     assert set(confirm_started[0].filtered_metrics or ()) == {"total_ms", "alloc_bytes"}
     assert len(confirm_finished) == 1
     assert confirm_finished[0].reproduced is True
+
+
+async def test_iterate_session_when_confirmation_without_filter_does_report_no_narrowing(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    """Without a filter template the rerun is the whole bench, so no metric list is claimed."""
+    write_session_log(repo, session_record(repo))
+    regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
+    stub_runs(
+        samples_mock,
+        repo,
+        [
+            PairedRun(regressed_rounds, baseline_rounds()),
+            PairedRun(regressed_rounds, baseline_rounds()),
+        ],
+    )
+    events: list[ProgressEvent] = []
+
+    await iterate_session(
+        repo, resolved_config(filter=None), options=IterateOptions(on_progress=events.append)
+    )
+
+    confirm_started = [e for e in events if isinstance(e, ConfirmStarted)]
+    assert len(confirm_started) == 1
+    assert confirm_started[0].filtered_metrics is None
 
 
 async def test_iterate_session_when_no_confirmation_triggers_does_emit_no_confirm_events(

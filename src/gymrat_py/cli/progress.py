@@ -1,8 +1,12 @@
 """Rich-based progress renderer for measure/compare commands.
 
-Live mode (TTY) shows an animated progress bar with custom ETA, prepare
-spinners, and a detail line. Plain mode (non-TTY) prints timestamped milestone
-lines without ANSI escape codes.
+Live mode (TTY) shows a header, a prepare row while the prepare command runs,
+and a sampling bar with an elapsed-over-total clock. The prepare row is removed
+once prepare finishes, so the display never grows past those two rows. Plain
+mode (non-TTY) prints timestamped milestone lines without ANSI escape codes.
+
+Glyphs, verb forms, and timer colors follow the conventions in
+:mod:`gymrat_py.cli.style`.
 """
 
 from __future__ import annotations
@@ -26,9 +30,19 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.table import Column
 from rich.text import Text
 
-from gymrat_py.eta import format_duration, format_eta
+from gymrat_py.cli.style import (
+    LIVE_REFRESH_PER_SECOND,
+    SPINNER_NAME,
+    STYLE_LABEL,
+    STYLE_META,
+    STYLE_TIMER_DONE,
+    STYLE_TIMER_RUNNING,
+    STYLE_VERB,
+)
+from gymrat_py.eta import format_clock, format_duration
 from gymrat_py.progress_events import (
     PassFinished,
     PassStarted,
@@ -40,28 +54,40 @@ from gymrat_py.signals import install_termination_cleanup
 
 _CLEAR_LINE = "\r\x1b[K"
 
-# Below this terminal height, the two-block layout (prepare spinner + pass bar +
-# detail line) can't fit, so the reporter switches to a single-row compact bar.
+# Below this terminal height, the header plus the prepare and sampling rows
+# can't fit, so the reporter switches to a single-row compact bar.
 _COMPACT_HEIGHT_THRESHOLD = 12
 
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
+_MS_PER_SECOND = 1000
 
 
-class _EtaColumn(ProgressColumn):
-    """Custom ETA that shows a pending label until the first pass finishes."""
+class _ClockColumn(ProgressColumn):
+    """Media-player clock: elapsed over the projected total run time.
+
+    The total is the row's elapsed time plus the remaining estimate last handed
+    to :meth:`set_eta`. Until an estimate exists the total reads ``--:--``.
+    """
 
     def __init__(self) -> None:
         super().__init__()
-        self._text = "estimating time left…"
+        self._remaining_ms: float | None = None
 
     def set_eta(self, ms: float) -> None:
-        """Replace the pending label with a computed ETA."""
-        self._text = format_eta(ms)
+        """Record the milliseconds left, which the total is projected from."""
+        self._remaining_ms = ms
 
     @override
     def render(self, task: object) -> Text:
-        return Text(self._text, style="dim")
+        elapsed_ms = (getattr(task, "elapsed", None) or 0.0) * _MS_PER_SECOND
+        total = (
+            "--:--" if self._remaining_ms is None else format_clock(elapsed_ms + self._remaining_ms)
+        )
+        text = Text()
+        text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
+        text.append(f"/{total}", style=STYLE_META)
+        return text
 
 
 class _TargetColumn(ProgressColumn):
@@ -73,34 +99,84 @@ class _TargetColumn(ProgressColumn):
         if not label:
             return Text("")
         text = Text()
-        text.append("· ", style="dim")
-        text.append(str(label), style="bold blue")
-        text.append(" ·", style="dim")
+        text.append("· ", style=STYLE_META)
+        text.append(str(label), style=STYLE_LABEL)
+        text.append(" ·", style=STYLE_META)
+        return text
+
+
+class _PhaseColumn(ProgressColumn):
+    """Renders the running verb plus the optional context the row carries.
+
+    The task description holds the gerund (``"sampling"``); the optional
+    ``note`` field adds dim context after it, and the optional ``target`` field
+    adds the in-flight target label behind a dim separator.
+
+    The column never wraps: a narrow terminal shrinks the bar rather than
+    spilling the verb onto a second line and breaking the checklist alignment.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(table_column=Column(no_wrap=True))
+
+    @override
+    def render(self, task: object) -> Text:
+        fields = getattr(task, "fields", {})
+        text = Text()
+        text.append(str(getattr(task, "description", "")), style=STYLE_VERB)
+        note = fields.get("note", "")
+        if note:
+            text.append(f" {note}", style=STYLE_META)
+        target = fields.get("target", "")
+        if target:
+            text.append(" · ", style=STYLE_META)
+            text.append(str(target), style=STYLE_LABEL)
         return text
 
 
 def compact_progress(
     console: Console, *, clock: Callable[[], float] | None = None
-) -> tuple[Progress, _EtaColumn]:
+) -> tuple[Progress, _ClockColumn]:
     """Build a single-row compact progress bar for narrow terminals.
 
-    Returns the ``Progress`` and its ``_EtaColumn`` so callers can update the
-    ETA as passes complete.
+    Returns the ``Progress`` and its ``_ClockColumn`` so callers can update the
+    remaining estimate as passes complete.
     """
-    eta_col = _EtaColumn()
+    clock_col = _ClockColumn()
     progress = Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
+        SpinnerColumn(SPINNER_NAME),
+        TextColumn("{task.description}", style=STYLE_VERB),
         BarColumn(),
         TaskProgressColumn(),
         _TargetColumn(),
-        TimeElapsedColumn(),
-        eta_col,
+        clock_col,
         console=console,
         auto_refresh=False,
         get_time=clock,
     )
-    return progress, eta_col
+    return progress, clock_col
+
+
+def passes_progress(
+    console: Console, *, clock: Callable[[], float] | None = None
+) -> tuple[Progress, _ClockColumn]:
+    """Build the sampling bar row shared by the measure/compare and iterate views.
+
+    Returns the ``Progress`` and its ``_ClockColumn`` so callers can update the
+    remaining estimate as passes complete.
+    """
+    clock_col = _ClockColumn()
+    progress = Progress(
+        SpinnerColumn(SPINNER_NAME),
+        _PhaseColumn(),
+        BarColumn(),
+        MofNCompleteColumn(),
+        clock_col,
+        console=console,
+        auto_refresh=False,
+        get_time=clock,
+    )
+    return progress, clock_col
 
 
 class ProgressReporter:
@@ -132,26 +208,21 @@ class ProgressReporter:
 
         self._completed = 0
         self._prepare_start_ms = 0.0
-        self._prepare_elapsed_ms = 0.0
         self._pass_start_ms = 0.0
         self._total_pass_time_ms = 0.0
         self._pass_finish_count = 0
-        self._last_pass_duration_ms = 0.0
         self._run_start_ms: float | None = None
         self._run_end_ms: float | None = None
-        self._labels: set[str] = set()
 
         self._is_live = mode == "live" and console.width > 0
         self._live: Live | None = None
-        self._eta_column: _EtaColumn | None = None
+        self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None
         self._pass_task_id: TaskID | None = None
-        self._current_pass_event: PassStarted | None = None
         self._compact = False
         self._stopped = False
-        self._metric_count: int | None = None
         self._uninstall_cleanup: Callable[[], None] = lambda: None
 
         if self._is_live:
@@ -161,33 +232,22 @@ class ProgressReporter:
         self._compact = console.height < _COMPACT_HEIGHT_THRESHOLD
 
         if self._compact:
-            self._pass_progress, self._eta_column = compact_progress(console, clock=clock)
+            self._pass_progress, self._clock_column = compact_progress(console, clock=clock)
         else:
             self._prepare_progress = Progress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
+                SpinnerColumn(SPINNER_NAME),
+                _PhaseColumn(),
                 TimeElapsedColumn(),
                 console=console,
                 auto_refresh=False,
                 get_time=clock,
             )
-
-            self._eta_column = _EtaColumn()
-            self._pass_progress = Progress(
-                TextColumn("{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                self._eta_column,
-                console=console,
-                auto_refresh=False,
-                get_time=clock,
-            )
+            self._pass_progress, self._clock_column = passes_progress(console, clock=clock)
 
         self._live = Live(
             console=console,
             auto_refresh=True,
-            refresh_per_second=1,
+            refresh_per_second=LIVE_REFRESH_PER_SECOND,
             transient=True,
             redirect_stderr=False,
             get_renderable=self.frame,
@@ -203,34 +263,18 @@ class ProgressReporter:
         if not self._command:
             return None
         header = Text()
-        header.append(self._command, style="bold blue")
+        header.append(self._command, style=STYLE_LABEL)
         label_str = ", ".join(self._target_labels) if self._target_labels else ""
         sample_str = f"{self._sample_count} samples" if self._sample_count is not None else ""
         dim_parts = [p for p in (label_str, sample_str) if p]
         if dim_parts:
             header.append(" ")
-            header.append(" · ".join(dim_parts), style="dim")
+            header.append(" · ".join(dim_parts), style=STYLE_META)
         return header
 
-    def _live_detail_text(self) -> str:
-        """Compute the detail line with live elapsed for the running pass."""
-        if self._current_pass_event is None:
-            return ""
-        event = self._current_pass_event
-        parts = [f"round {event.round}"]
-
-        if self._target_count > 1:
-            parts.append(event.label)
-
-        if self._clock is not None:
-            elapsed_ms = self._clock() * 1000 - event.at_ms
-            elapsed_seconds = max(0, int(elapsed_ms / 1000))
-            minutes, seconds = divmod(elapsed_seconds, _SECONDS_PER_MINUTE)
-            parts.append(f"running {minutes}:{seconds:02d}")
-
-        if self._last_pass_duration_ms > 0:
-            parts.append(f"last pass {format_duration(self._last_pass_duration_ms)}")
-        return " · ".join(parts)
+    def _target_field(self, label: str) -> str:
+        """The label a row shows for ``label``, empty when there is only one target."""
+        return label if self._target_count > 1 else ""
 
     def frame(self) -> Group:
         """Return the renderable the live display paints from."""
@@ -238,13 +282,10 @@ class ProgressReporter:
         header = self._header_text()
         if header is not None:
             parts.append(header)
-        if self._prepare_progress is not None:
+        if self._prepare_progress is not None and self._prepare_task_id is not None:
             parts.append(self._prepare_progress)
-        if self._pass_progress is not None:
+        if self._pass_progress is not None and self._pass_task_id is not None:
             parts.append(self._pass_progress)
-        detail = self._live_detail_text()
-        if detail:
-            parts.append(Text(detail, style="dim"))
         if not parts:
             parts.append(Text(""))
         return Group(*parts)
@@ -258,17 +299,17 @@ class ProgressReporter:
         if not isinstance(event, PrepareStarted | PrepareFinished | PassStarted | PassFinished):
             return
 
-        self._labels.add(event.label)
         self._track_timestamp(event.at_ms)
 
-        if isinstance(event, PrepareStarted):
-            self._on_prepare_started(event)
-        elif isinstance(event, PrepareFinished):
-            self._on_prepare_finished(event)
-        elif isinstance(event, PassStarted):
-            self._on_pass_started(event)
-        elif isinstance(event, PassFinished):
-            self._on_pass_finished(event)
+        match event:
+            case PrepareStarted():
+                self._on_prepare_started(event)
+            case PrepareFinished():
+                self._on_prepare_finished(event)
+            case PassStarted():
+                self._on_pass_started(event)
+            case PassFinished():
+                self._on_pass_finished(event)
 
     def _track_timestamp(self, at_ms: float) -> None:
         if self._run_start_ms is None:
@@ -278,25 +319,24 @@ class ProgressReporter:
     def _on_prepare_started(self, event: PrepareStarted) -> None:
         self._prepare_start_ms = event.at_ms
         if self._is_live and self._prepare_progress is not None:
-            self._prepare_task_id = self._prepare_progress.add_task(event.label)
+            self._prepare_task_id = self._prepare_progress.add_task(
+                "preparing", target=self._target_field(event.label)
+            )
             self._refresh_live()
 
     def _on_prepare_finished(self, event: PrepareFinished) -> None:
         elapsed_ms = event.at_ms - self._prepare_start_ms
-        self._prepare_elapsed_ms += elapsed_ms
 
         if not self._is_live:
             elapsed = format_duration(elapsed_ms)
             self._print_plain(event.at_ms, f"prepared {event.label} ({elapsed})")
             return
 
+        # The prepare row has nothing left to say once sampling starts, so it
+        # leaves the display rather than lingering as a completed row.
         if self._prepare_progress is not None and self._prepare_task_id is not None:
-            self._prepare_progress.update(
-                self._prepare_task_id,
-                description=f"✔ {event.label}",
-                total=1,
-                completed=1,
-            )
+            self._prepare_progress.remove_task(self._prepare_task_id)
+            self._prepare_task_id = None
         self._refresh_live()
 
     def _on_pass_started(self, event: PassStarted) -> None:
@@ -308,29 +348,17 @@ class ProgressReporter:
         if not self._is_live or self._pass_progress is None:
             return
 
-        if self._compact:
-            description = f"sample {event.round}/{event.total_rounds}"
-            if self._pass_task_id is None:
-                self._pass_task_id = self._pass_progress.add_task(
-                    description, total=self._total, target=event.label
-                )
-            self._pass_progress.update(
-                self._pass_task_id,
-                description=description,
-                target=event.label,
-                completed=self._completed,
+        target = self._target_field(event.label)
+        if self._pass_task_id is None:
+            self._pass_task_id = self._pass_progress.add_task(
+                "sampling", total=self._total, target=target
             )
-        else:
-            if self._pass_task_id is None:
-                self._pass_task_id = self._pass_progress.add_task("sampling", total=self._total)
-            self._pass_progress.update(self._pass_task_id, completed=self._completed)
-            self._current_pass_event = event
+        self._pass_progress.update(self._pass_task_id, target=target, completed=self._completed)
 
         self._refresh_live()
 
     def _on_pass_finished(self, event: PassFinished) -> None:
         duration_ms = event.at_ms - self._pass_start_ms
-        self._last_pass_duration_ms = duration_ms
         self._total_pass_time_ms += duration_ms
         self._completed += 1
         self._pass_finish_count += 1
@@ -339,8 +367,8 @@ class ProgressReporter:
         if remaining > 0:
             avg_ms = self._total_pass_time_ms / self._pass_finish_count
             eta_ms = avg_ms * remaining
-            if self._eta_column is not None:
-                self._eta_column.set_eta(eta_ms)
+            if self._clock_column is not None:
+                self._clock_column.set_eta(eta_ms)
 
         if self._is_live and self._pass_progress is not None and self._pass_task_id is not None:
             self._pass_progress.update(self._pass_task_id, completed=self._completed)
@@ -360,7 +388,8 @@ class ProgressReporter:
         self._console.print(f"{ts} {message}", highlight=False, markup=False)
 
     def _format_timestamp(self, at_ms: float) -> str:
-        elapsed_ms = at_ms - (self._run_start_ms or at_ms)
+        run_start_ms = at_ms if self._run_start_ms is None else self._run_start_ms
+        elapsed_ms = at_ms - run_start_ms
         total_seconds = int(elapsed_ms / 1000)
         hours, remainder = divmod(total_seconds, _SECONDS_PER_HOUR)
         minutes, seconds = divmod(remainder, _SECONDS_PER_MINUTE)
@@ -379,10 +408,6 @@ class ProgressReporter:
         """Surface a warning without disturbing any active live display."""
         self._console.print(message, highlight=False, markup=False)
 
-    def set_metric_count(self, count: int) -> None:
-        """Record the number of distinct metrics for the summary line."""
-        self._metric_count = count
-
     def stop(self) -> None:
         """Stop the reporter and clean up any live display."""
         if self._stopped:
@@ -395,24 +420,18 @@ class ProgressReporter:
             self._live = None
 
     def _print_summary(self) -> None:
-        elapsed_ms = (self._run_end_ms or 0) - (self._run_start_ms or 0)
-        elapsed = format_duration(elapsed_ms)
-        prepare = format_duration(self._prepare_elapsed_ms)
-        samples = self._sample_count or (
-            self._total // self._target_count if self._target_count else 0
+        """Print the run's timing; the report right below carries everything else."""
+        elapsed_ms = (
+            0.0
+            if self._run_start_ms is None or self._run_end_ms is None
+            else self._run_end_ms - self._run_start_ms
         )
-        parts = [f"{samples} samples"]
-        if self._metric_count is not None:
-            parts.append(f"{self._metric_count} metrics")
-        parts.append(f"{elapsed} (prepare {prepare})")
-        suffix = " · " + " · ".join(parts)
+        verb = "compared" if self._target_count > 1 else "measured"
 
-        if self._target_count > 1:
-            headline = f"✔ compared {self._target_count} targets"
-        else:
-            headline = f"✔ measured {next(iter(self._labels), 'bench')}"
-
-        self._console.print(headline + suffix, highlight=False)
+        summary = Text()
+        summary.append(f"{verb} in ", style=STYLE_META)
+        summary.append(format_duration(elapsed_ms), style=STYLE_TIMER_DONE)
+        self._console.print(summary, highlight=False)
 
 
 def create_progress_reporter(  # noqa: PLR0913 -- mirrors the constructor above
