@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Windows support for the optimization session: `start`, `iterate`, `keep`, `discard`,
+  `finalize`, and `status` now run on Windows.
+
 ### Changed
 
 - The distribution and import package are now both named `gymrat`, replacing `gymrat-py` /
@@ -17,7 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the
   new file, and existing configs must be converted to TOML and re-keyed.
 - `gymrat init` is now non-interactive: it takes `--bench` (required), `--no-runbook`, and
-  `--no-skill` flags and writes only the `bench` and `runbook` config keys.
+  `--no-skill` flags and writes only the `bench` and `runbook` config keys. It is also
+  re-runnable: an existing `gymrat.toml` is left untouched and any missing runbook or skill file
+  is restored, so `--bench` is only required when no config exists yet.
+- `measure` and `compare` replace the single progress line with per-target progress bars carrying
+  running clock timers and a metric count; `iterate` replaces its line with a step checklist
+  showing live elapsed time and per-pass detail. When the output is not a terminal, plain text is
+  printed instead.
+- `gymrat supervise` replaces its one-line progress with a live dashboard: elapsed time and
+  spend against the caps, the best result so far with wall-clock timestamps, loop tallies, and
+  live progress of the measurement currently running.
+- `gymrat doctor` no longer executes the bench command: the bench section now validates that the
+  adapter resolves, a bench command is configured, and its executable is on `PATH`, instead of
+  running a smoke benchmark. Its summary counts render in their status colors and zero counts
+  are omitted.
+- Report hints render dim without the former `Hint:` label.
 - Significance verdicts now come from an exact sign-flip permutation test instead of the Wilcoxon
   signed-rank test. The permutation test's statistic is the delta each verdict already reports — the
   percent change in the median — so a significant result can no longer point in a different direction
@@ -29,6 +48,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Band verdicts now require pairs that actually differ, so a run dominated by tied samples can no
+  longer produce a false signal; a metric whose median is zero while its samples spread is judged
+  `unstable` instead of measured against a percentage band.
+- `discard` after a blocked keep now reports the iteration that was actually reverted, and
+  `finalize` refuses when the experiment worktree has moved past the last kept commit, hinting to
+  keep or discard first.
+- Metric names containing spaces, parentheses, or quotes now reach the bench command intact when
+  substituted into a `filter` template.
+- `--debug` takes effect whether written before or after the subcommand, and a closed output pipe
+  ends the run quietly instead of printing a bug-report footer.
+- `gymrat status` renders metric names and paths containing square brackets literally instead of
+  interpreting them as styling.
+- The mitata adapter no longer fails to read its report when the bench command prints extra
+  output around the JSON, and warns about entries it cannot use instead of skipping them
+  silently.
+- A session log whose final line was torn by a crash mid-write is read and repaired on the next
+  run, and a record reported as written survives a crash immediately after.
+- A `gymrat.toml` that is not valid UTF-8 is reported as unreadable instead of crashing, and an
+  oversized integer in a `GYMRAT_*` environment variable is reported as invalid instead of
+  crashing.
 - Interrupting a run on a terminal now clears the progress line before exiting, so no stray status
   text is left on the current line.
 - A lock file left behind by another user in a shared temporary directory now reports a clear remedy
@@ -43,15 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (for example `COLUMNS=0`); such a width now collapses the line instead of being treated as 80
   columns.
 - A supervised agent session whose benchmark process emits an oversized, unterminated output line
-  now ends with a clear error instead of crashing on an internal read limit.
+  now ends with a clear error instead of crashing.
 - Tearing down a supervised agent session no longer hangs indefinitely when the supervised process
   ignores the stop signal; teardown now waits briefly, then abandons the wait and warns.
 
 ### Removed
 
 - The interactive wizard prompts in `gymrat init` and the `--adapter`, `--checks`, `--stop-target`,
-  `--stop-max-iterations`, `--primary`, `--runbook PATH`, `--skill/--no-skill` tri-state, and
+  `--stop-max-iterations`, `--primary`, `--runbook PATH`, `--skill`/`--no-skill`, and
   `--yes` flags.
+- `gymrat doctor --no-bench`, along with the smoke benchmark run it used to skip.
 
 ## [0.11.0] - 2026-08-25
 
