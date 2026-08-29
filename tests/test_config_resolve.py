@@ -6,14 +6,14 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat_py.config import (
+from gymrat.config import (
     MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
     resolve_benchless_config,
     resolve_config,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 # Every GYMRAT_* variable the resolvers consult. Cleared before each test so an
 # ambient value in the developer's shell cannot bleed into these cases; the

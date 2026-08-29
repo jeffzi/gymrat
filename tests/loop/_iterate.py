@@ -20,10 +20,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gymrat_py.config import ResolvedConfig
-from gymrat_py.errors import GymratError
-from gymrat_py.sampling import SamplingOptions, TargetContext, TargetSamples
-from gymrat_py.session import (
+from gymrat.config import ResolvedConfig
+from gymrat.errors import GymratError
+from gymrat.sampling import SamplingOptions, TargetContext, TargetSamples
+from gymrat.session import (
     IterationRecord,
     SessionLogRecord,
     SessionRecord,
@@ -168,9 +168,9 @@ class CollectSamplesRecorder:
 
 
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """Replace ``gymrat_py.loop.iterate.collect_samples`` with a fresh recorder."""
+    """Replace ``gymrat.loop.iterate.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
-    monkeypatch.setattr("gymrat_py.loop.iterate.collect_samples", recorder)
+    monkeypatch.setattr("gymrat.loop.iterate.collect_samples", recorder)
     return recorder
 
 

@@ -18,9 +18,9 @@ from typing import Any
 
 import pytest
 
-from gymrat_py.supervisor import create_stdio_driver
-from gymrat_py.supervisor.driver import SessionOutcome
-from gymrat_py.supervisor.events import (
+from gymrat.supervisor import create_stdio_driver
+from gymrat.supervisor.driver import SessionOutcome
+from gymrat.supervisor.events import (
     SessionEvent,
     TextDeltaEvent,
     ToolProgressEvent,

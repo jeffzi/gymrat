@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from gymrat_py.adapters import (
+from gymrat.adapters import (
     ADAPTER_NAMES,
     Adapter,
     MetricDefaults,
@@ -10,7 +10,7 @@ from gymrat_py.adapters import (
     metric_lines_adapter,
     mitata_adapter,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 _MITATA_STDOUT = json.dumps(
     {
@@ -27,7 +27,7 @@ _MITATA_STDOUT = json.dumps(
 
 
 def test_adapters_package_when_imported_does_export_public_surface():
-    from gymrat_py import adapters
+    from gymrat import adapters
 
     assert set(adapters.__all__) == {
         "AdapterError",
@@ -78,7 +78,7 @@ def test_get_adapter_when_name_registered_does_return_object_satisfying_protocol
     ("name", "stdout", "expected"),
     [
         pytest.param("metric-lines", "METRIC foo=42", {"foo": 42.0}, id="metric-lines"),
-        pytest.param("mitata", _MITATA_STDOUT, {"test/time": 42.0}, id="mitata"),
+        pytest.param("mitata", _MITATA_STDOUT, {"test#time": 42.0}, id="mitata"),
     ],
 )
 def test_get_adapter_when_registered_adapter_parses_does_return_expected_metrics(
@@ -95,7 +95,7 @@ def test_get_adapter_when_registered_adapter_parses_does_return_expected_metrics
         ),
         pytest.param(
             "mitata",
-            "test/time",
+            "test#time",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="test"),
             id="mitata",
         ),

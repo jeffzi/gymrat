@@ -4,7 +4,7 @@ These provide the comparison-result fixtures the format tests need, plus the
 metric, approximate-metric, and one-sided-metric helpers those tests build on.
 
 The builders return the frozen dataclasses declared in
-:mod:`gymrat_py.report.types`, so a test writes one metric's shape once and lets
+:mod:`gymrat.report.types`, so a test writes one metric's shape once and lets
 the builder wire the baseline, per-candidate slices, and metadata.
 
 This is test-support code, not a test module: ``test_format`` imports it. It
@@ -17,8 +17,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat_py.config import KindEntry
-from gymrat_py.model import (
+from gymrat.config import KindEntry
+from gymrat.model import (
     ApproximateVerdict,
     BandVerdict,
     Direction,
@@ -31,7 +31,7 @@ from gymrat_py.model import (
     ResolvedMetricMeta,
     Verdict,
 )
-from gymrat_py.report.types import (
+from gymrat.report.types import (
     CandidateComparison,
     CandidateMetric,
     ComparisonResult,
@@ -40,12 +40,12 @@ from gymrat_py.report.types import (
     MetricComparisons,
     MetricMeasurement,
 )
-from gymrat_py.verdict import GroupAggregate, KindAggregate
+from gymrat.verdict import GroupAggregate, KindAggregate
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat_py.targets import WorktreeRemovalFailure
+    from gymrat.targets import WorktreeRemovalFailure
 
 # The name-keyed map of every metric compared in a run.
 Metrics = MetricComparisons
@@ -609,16 +609,16 @@ def two_kind_metrics() -> MetricComparisons:
     holds one ungrouped metric, so its rendered section carries no group rows.
     """
     return {
-        "entity.alive_check/time": kind_metric(
+        "entity/alive_check#time": kind_metric(
             kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
         ),
-        "entity.spawn/time": kind_metric(
+        "entity/spawn#time": kind_metric(
             kind="time", short_name="entity.spawn", verdict="regressed", delta=4
         ),
-        "warmup/time": kind_metric(
+        "warmup#time": kind_metric(
             kind="time", short_name="warmup", verdict="no-signal", delta=0.3
         ),
-        "encode/heap": kind_metric(
+        "encode#memory": kind_metric(
             kind="memory",
             short_name="encode",
             verdict="improved",
@@ -676,7 +676,7 @@ def grouped_comparison() -> ComparisonResult:
     """
     return create_comparison_result(
         metrics={
-            "entity.alive_check/time": n_way_kind_metric(
+            "entity/alive_check#time": n_way_kind_metric(
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
@@ -684,7 +684,7 @@ def grouped_comparison() -> ComparisonResult:
                     NWayCandidate(verdict="regressed", delta=4, median=104),
                 ],
             ),
-            "encode/heap": n_way_kind_metric(
+            "encode#memory": n_way_kind_metric(
                 kind="memory",
                 short_name="encode",
                 gating=False,
@@ -790,19 +790,19 @@ def two_kind_measurement(
     """A measurement spanning a gating ``time`` kind and an informational ``memory`` kind."""
     return create_measurement_result(
         metrics={
-            "entity.alive_check/time": measured_metric(
+            "entity/alive_check#time": measured_metric(
                 kind="time",
                 short_name="entity.alive_check",
                 unit="ns",
             ),
-            "entity.spawn/time": measured_metric(
+            "entity/spawn#time": measured_metric(
                 kind="time",
                 short_name="entity.spawn",
                 median=104,
                 unit="ns",
             ),
-            "warmup/time": measured_metric(kind="time", short_name="warmup", unit="ns"),
-            "encode/heap": measured_metric(
+            "warmup#time": measured_metric(kind="time", short_name="warmup", unit="ns"),
+            "encode#memory": measured_metric(
                 kind="memory",
                 short_name="encode",
                 median=93,

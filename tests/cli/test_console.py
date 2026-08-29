@@ -6,7 +6,7 @@ from typing import override
 
 import pytest
 
-from gymrat_py.cli.console import stderr_console
+from gymrat.cli.console import stderr_console
 
 
 class _FakeStderr(io.StringIO):

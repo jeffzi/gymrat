@@ -8,19 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py import sampling
-from gymrat_py.adapters.metric_lines import metric_lines_adapter
-from gymrat_py.errors import CommandError
-from gymrat_py.exec import ExecOptions, ExecResult, ExecTimeoutError
-from gymrat_py.progress_events import (
+from gymrat import sampling
+from gymrat.adapters.metric_lines import metric_lines_adapter
+from gymrat.errors import CommandError
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.progress_events import (
     PassFinished,
     PassStarted,
     PrepareFinished,
     PrepareStarted,
     ProgressEvent,
 )
-from gymrat_py.report.text import format_cleanup_failures
-from gymrat_py.sampling import (
+from gymrat.report.text import format_cleanup_failures
+from gymrat.sampling import (
     MetricStats,
     SamplingOptions,
     TargetContext,
@@ -33,7 +33,7 @@ from gymrat_py.sampling import (
     resolve_label,
     run_with_worktrees,
 )
-from gymrat_py.targets import (
+from gymrat.targets import (
     CleanupResult,
     InPlaceTarget,
     RefTarget,

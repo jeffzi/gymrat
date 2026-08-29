@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError
-from gymrat_py.supervisor import (
+from gymrat.errors import GymratError
+from gymrat.supervisor import (
     CapEvent,
     UsageUpdateEvent,
     combine_observers,

@@ -15,15 +15,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import (
+from gymrat.report.text import render_report
+from gymrat.report.types import (
     CandidateMetric,
     GeomeanFailOn,
     MetricComparison,
     RegressedFailOn,
     ReportOptions,
 )
-from gymrat_py.targets import WorktreeRemovalFailure
+from gymrat.targets import WorktreeRemovalFailure
 from tests.report._inputs import (
     band_metric,
     band_verdict,
@@ -51,7 +51,7 @@ from tests.report._inputs import (
 )
 
 if TYPE_CHECKING:
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.report.types import ComparisonResult
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +172,9 @@ def test_render_report_when_single_pair_does_tally_the_metrics_in_their_own_buck
 
 
 def test_render_report_when_single_pair_does_hint_at_the_longer_run():
-    assert "re-run with --samples 6 or more for statistical verdicts" in render_report(
-        single_sample_result()
+    assert (
+        "re-run with gymrat compare --samples 6 or more for statistical verdicts"
+        in render_report(single_sample_result())
     )
 
 
@@ -187,7 +188,7 @@ def test_render_report_when_highlighting_does_carry_glyph_delta_and_evidence():
         metrics={
             "slower/time": permutation_metric(verdict="regressed", delta=2.2, p=0.002),
             "cheaper/heap": exact_metric(delta=-7.9),
-            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30),
+            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
         }
     )
 

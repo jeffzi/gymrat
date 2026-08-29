@@ -1,6 +1,6 @@
 import pytest
 
-from gymrat_py.config_env import EnvResult, env_positive_int_result
+from gymrat.config_env import EnvResult, env_positive_int_result
 
 # Every GYMRAT_* variable used by these tests. Cleared before each test so an
 # ambient shell value cannot bleed in.

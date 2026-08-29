@@ -16,14 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.config import ResolvedConfig, StopConfig
-from gymrat_py.errors import GymratError
-from gymrat_py.loop.finalize import (
+from gymrat.config import ResolvedConfig, StopConfig
+from gymrat.errors import GymratError
+from gymrat.loop.finalize import (
     FinalizeOptions,
     finalize_session,
 )
-from gymrat_py.loop.start import start_session
-from gymrat_py.session import (
+from gymrat.loop.start import start_session
+from gymrat.session import (
     SessionLogRecord,
     SessionRecord,
     append_record,
@@ -32,7 +32,7 @@ from gymrat_py.session import (
     read_records,
     session_jsonl_path,
 )
-from gymrat_py.session.workspace import run_git_step as real_run_git_step
+from gymrat.session.workspace import run_git_step as real_run_git_step
 from tests.session._records import committed_keep, iteration_record
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -141,7 +141,7 @@ def git_step_spy(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         calls.append(list(args))
         return real_run_git_step(args, *rest, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("gymrat_py.loop.finalize.run_git_step", spy)
+    monkeypatch.setattr("gymrat.loop.finalize.run_git_step", spy)
     return calls
 
 

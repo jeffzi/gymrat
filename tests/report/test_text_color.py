@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.model import Exclusion
-from gymrat_py.report.text import render_measure_report, render_report
-from gymrat_py.report.types import MeasurementResult, ReportOptions
-from gymrat_py.targets import WorktreeRemovalFailure
+from gymrat.model import Exclusion
+from gymrat.report.text import render_measure_report, render_report
+from gymrat.report.types import MeasurementResult, ReportOptions
+from gymrat.targets import WorktreeRemovalFailure
 from tests.report._inputs import (
     DIMMED_LINE,
     band_metric,
@@ -47,8 +47,17 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat_py.model import ApproximateVerdict
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.model import ApproximateVerdict
+    from gymrat.report.types import ComparisonResult
+
+
+def _summary_segment(summary: str, label: str) -> str:
+    """The triple-space-delimited summary segment whose plain text contains *label*."""
+    for seg in summary.split("   "):
+        if label in strip_ansi(seg):
+            return seg
+    msg = f"no segment with {label!r} in summary: {strip_ansi(summary)!r}"
+    raise AssertionError(msg)
 
 
 def _colorful_result() -> ComparisonResult:
@@ -556,21 +565,21 @@ def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimm
 
 
 @pytest.mark.parametrize(
-    ("glyph", "code"),
+    ("label", "code"),
     [
-        pytest.param("✓", "32", id="improved-green"),
-        pytest.param("✗", "31", id="regressed-red"),
-        pytest.param("≈", "33", id="unstable-yellow"),
+        pytest.param("improved", "32", id="improved-green"),
+        pytest.param("regressed", "31", id="regressed-red"),
+        pytest.param("unstable", "33", id="unstable-yellow"),
     ],
 )
 def test_render_report_when_colored_does_style_the_non_zero_tally_in_the_summary(
-    monkeypatch: pytest.MonkeyPatch, glyph: str, code: str
+    monkeypatch: pytest.MonkeyPatch, label: str, code: str
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     summary = line_containing(render_report(_colorful_result()), "improved")
 
-    assert code in styles_at(summary, glyph)
+    assert f"\x1b[{code}m" in _summary_segment(summary, label)
 
 
 @pytest.mark.parametrize(
@@ -597,7 +606,7 @@ def test_render_report_when_colored_does_paint_the_non_zero_identical_tally_cyan
     )
     summary = line_containing(render_report(result), "identical")
 
-    assert "36" in styles_at(summary, "=")
+    assert "\x1b[36m" in _summary_segment(summary, "identical")
 
 
 def test_render_report_when_colored_does_dim_the_within_noise_segment(
@@ -607,7 +616,7 @@ def test_render_report_when_colored_does_dim_the_within_noise_segment(
 
     summary = line_containing(render_report(_colorful_result()), "within noise")
 
-    assert "2" in styles_at(summary, "~")
+    assert "\x1b[2m" in _summary_segment(summary, "within noise")
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +674,7 @@ def test_render_report_when_colored_does_style_the_unstable_highlight_glyph_and_
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)}
     )
     entry = highlight_lines(render_report(result))[0]
 
@@ -678,7 +687,9 @@ def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_n
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+        metrics={
+            "unstable-parse/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)
+        }
     )
     entry = highlight_lines(render_report(result))[0]
 
@@ -692,13 +703,13 @@ def test_render_report_when_colored_does_dim_the_evidence_suffixes(
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
         metrics={
-            "cheaper/heap": exact_metric(delta=-7.9),
-            "jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30),
+            "cheaper#heap": exact_metric(delta=-7.9),
+            "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
         }
     )
     highlights = highlight_lines(render_report(result))
-    exact_entry = next(line for line in highlights if "cheaper/heap" in line)
-    unstable_entry = next(line for line in highlights if "jittery/time" in line)
+    exact_entry = next(line for line in highlights if "cheaper#heap" in strip_ansi(line))
+    unstable_entry = next(line for line in highlights if "jittery#time" in strip_ansi(line))
 
     assert "2" in styles_at(exact_entry, "(exact)")
     assert "2" in styles_at(unstable_entry, "noise")
@@ -707,7 +718,7 @@ def test_render_report_when_colored_does_dim_the_evidence_suffixes(
 def test_render_report_when_colored_does_dim_the_futility_note(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
     result = create_comparison_result(
-        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30)}
+        metrics={"jittery/time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10)}
     )
     note = line_containing(render_report(result), "won't stabilize")
 

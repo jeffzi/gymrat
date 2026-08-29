@@ -1,8 +1,8 @@
 import pytest
 
-from gymrat_py import warn as warn_module
-from gymrat_py.adapters import types as adapters_types
-from gymrat_py.warn import WarnSink, warn_to_stderr
+from gymrat import warn as warn_module
+from gymrat.adapters import types as adapters_types
+from gymrat.warn import WarnSink, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # warn_to_stderr

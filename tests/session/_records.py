@@ -12,7 +12,7 @@ helper imported as ``tests.session._records``.
 from dataclasses import replace
 from typing import Any
 
-from gymrat_py.session import (
+from gymrat.session import (
     BaselineRef,
     DiscardRecord,
     FinalizeRecord,
@@ -29,7 +29,7 @@ from gymrat_py.session import (
     Worktrees,
     session_jsonl_path,
 )
-from gymrat_py.session.store import append_record
+from gymrat.session.store import append_record
 
 #: The instant every fixture record in this file was written at.
 AT = "2026-08-08T14:15:30.000Z"

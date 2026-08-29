@@ -1,6 +1,6 @@
 """Behavioral tests for the supervise Rich dashboard reporter.
 
-The reporter turns a stream of :class:`~gymrat_py.supervisor.events.SessionEvent`
+The reporter turns a stream of :class:`~gymrat.supervisor.events.SessionEvent`
 values into a bordered ``Live`` dashboard with time/cost/loop summary rows and a
 liveness section showing tool activity.  Every test injects the clock (``now``)
 and the session reader (``read_session``) so nothing depends on real time or
@@ -23,17 +23,17 @@ if TYPE_CHECKING:
 
 import pytest
 
-from gymrat_py.cli.supervise_progress import (
+from gymrat.cli.supervise_progress import (
     IDLE_WARN_MS,
     CapType,
     ReadSessionResult,
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat_py.session import IterationPrimary, IterationRecord
-from gymrat_py.session.progress_file import ProgressSnapshot
-from gymrat_py.session.store import SessionState
-from gymrat_py.supervisor.events import (
+from gymrat.session import IterationPrimary, IterationRecord
+from gymrat.session.progress_file import ProgressSnapshot
+from gymrat.session.store import SessionState
+from gymrat.supervisor.events import (
     CapEvent,
     LaunchEvent,
     SessionObserver,
@@ -1192,7 +1192,7 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
 # ticking display (#28) — Live uses get_renderable
 # ---------------------------------------------------------------------------
 
-LIVE_CLASS_PATH = "gymrat_py.cli.supervise_progress.Live"
+LIVE_CLASS_PATH = "gymrat.cli.supervise_progress.Live"
 
 
 def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():

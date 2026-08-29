@@ -25,16 +25,16 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.loop.finalize import finalize_session
-from gymrat_py.loop.start import start_session
-from gymrat_py.session.paths import (
+from gymrat.loop.finalize import finalize_session
+from gymrat.loop.start import start_session
+from gymrat.session.paths import (
     archived_session_path,
     baseline_worktree_dir,
     experiment_worktree_dir,
     lockfile_path,
     session_jsonl_path,
 )
-from gymrat_py.session.records import (
+from gymrat.session.records import (
     BaselineRecord,
     DiscardRecord,
     IterationRecord,
@@ -42,7 +42,7 @@ from gymrat_py.session.records import (
     SessionLogRecord,
     SessionRecord,
 )
-from gymrat_py.session.store import append_record, read_records
+from gymrat.session.store import append_record, read_records
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
 from tests.loop._iterate import resolved_config
 from tests.session._records import committed_keep, iteration_record

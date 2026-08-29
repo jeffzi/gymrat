@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py import sampling
-from gymrat_py.errors import CommandError
-from gymrat_py.measure import MeasureOptions, measure
-from gymrat_py.sampling import TargetSpec
-from gymrat_py.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
+from gymrat import sampling
+from gymrat.errors import CommandError
+from gymrat.measure import MeasureOptions, measure
+from gymrat.sampling import TargetSpec
+from gymrat.targets import CleanupResult, WorktreeInfo, WorktreeRemovalFailure
 from tests._git import git as _git
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")

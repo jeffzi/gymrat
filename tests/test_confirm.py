@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gymrat_py.confirm import confirm_action
+from gymrat.confirm import confirm_action
 
 # ---------------------------------------------------------------------------
 # confirm_action

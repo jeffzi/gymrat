@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError
-from gymrat_py.targets import (
+from gymrat.errors import GymratError
+from gymrat.targets import (
     InPlaceTarget,
     RefTarget,
     WorktreeInfo,

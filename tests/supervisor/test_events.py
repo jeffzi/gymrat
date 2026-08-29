@@ -14,7 +14,7 @@ import typing
 
 import pytest
 
-from gymrat_py.supervisor.events import (
+from gymrat.supervisor.events import (
     SUMMARY_MAX_CHARS,
     CapEvent,
     DirtyInfo,

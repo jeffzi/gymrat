@@ -1,4 +1,4 @@
-"""Tests for the iterate progress renderer (live tree + plain modes).
+"""Tests for the iterate progress renderer (live checklist + plain modes).
 
 Tests inject a deterministic ``Clock`` from ``tests._rich`` and capture
 output through ``sealed_console``.  Frame content is pinned with syrupy
@@ -14,12 +14,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.cli.iterate_progress import (
+from gymrat.cli.iterate_progress import (
     IterateRenderer,
     create_fan_out,
     create_iterate_renderer,
 )
-from gymrat_py.progress_events import (
+from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
     HookFinished,
@@ -154,9 +154,11 @@ def _renderer(
     primary_metric: str = "geomean",
     verbose: bool = False,
     checks_cmd: str | None = None,
+    has_before_hook: bool = False,
+    has_after_hook: bool = False,
 ) -> tuple[Console, Clock, IterateRenderer]:
     clock = Clock()
-    console = sealed_console(width=width, height=height)
+    console = sealed_console(width=width, height=height, get_time=clock)
     renderer = create_iterate_renderer(
         mode=mode,
         console=console,
@@ -168,6 +170,8 @@ def _renderer(
         verbose=verbose,
         clock=clock,
         checks_cmd=checks_cmd,
+        has_before_hook=has_before_hook,
+        has_after_hook=has_after_hook,
     )
     return console, clock, renderer
 
@@ -183,6 +187,8 @@ def _live(
     primary_metric: str = "geomean",
     verbose: bool = False,
     checks_cmd: str | None = None,
+    has_before_hook: bool = False,
+    has_after_hook: bool = False,
 ) -> tuple[Console, Clock, IterateRenderer]:
     return _renderer(
         "live",
@@ -195,6 +201,8 @@ def _live(
         primary_metric=primary_metric,
         verbose=verbose,
         checks_cmd=checks_cmd,
+        has_before_hook=has_before_hook,
+        has_after_hook=has_after_hook,
     )
 
 
@@ -242,7 +250,7 @@ def _fake_install(
 def test_frame_when_initial_does_show_all_nodes_pending(
     snapshot: SnapshotAssertion,
 ):
-    """All six tree nodes pending, header shows seq and session id."""
+    """All checklist rows pending with their hints; header shows seq and session id."""
     _console, _clock, renderer = _live(
         seq=3,
         session_id="abc-123",
@@ -259,8 +267,8 @@ def test_frame_when_initial_does_show_all_nodes_pending(
 def test_frame_when_before_hook_running_does_show_spinner(
     snapshot: SnapshotAssertion,
 ):
-    """You should see before hook with a running spinner, all others pending."""
-    _console, _clock, renderer = _live()
+    """Before-hook row spins while running; the record hint names the after hook."""
+    _console, _clock, renderer = _live(has_before_hook=True, has_after_hook=True)
 
     renderer.report(HookStarted(stage="before", at_ms=0))
     result = frame_text(renderer.frame())
@@ -272,7 +280,7 @@ def test_frame_when_before_hook_running_does_show_spinner(
 def test_frame_when_both_worktrees_prepared_does_show_elapsed(
     snapshot: SnapshotAssertion,
 ):
-    """Prepare node done with elapsed, sub-items for each prepared label."""
+    """Prepare row done with the elapsed accumulated across both worktrees."""
     _console, clock, renderer = _live()
 
     renderer.report(HookFinished(stage="before", at_ms=0))
@@ -288,10 +296,10 @@ def test_frame_when_both_worktrees_prepared_does_show_elapsed(
     renderer.stop()
 
 
-def test_frame_when_passes_mid_run_does_show_bar_eta_and_detail(
+def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
     snapshot: SnapshotAssertion,
 ):
-    """Passes node running with bar, ETA, and detail line naming round and label."""
+    """Sampling bar mid-run: count, target label, and a clock ticking past the last event."""
     _console, clock, renderer = _live(sample_count=5)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -314,6 +322,7 @@ def test_frame_when_passes_mid_run_does_show_bar_eta_and_detail(
             at_ms=_ms(clock),
         )
     )
+    clock.tick(41)
     result = frame_text(renderer.frame())
 
     assert result == snapshot
@@ -323,7 +332,7 @@ def test_frame_when_passes_mid_run_does_show_bar_eta_and_detail(
 def test_frame_when_judge_finished_does_show_delta_and_regressed(
     snapshot: SnapshotAssertion,
 ):
-    """Judge node done with delta percentage and regressed metric names."""
+    """Judge done line carries the delta plus the regressed count and names."""
     _console, clock, renderer = _live(sample_count=1)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -370,26 +379,13 @@ def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
     renderer.stop()
 
 
-def test_frame_when_recorded_improved_does_show_seq_and_outcome(
+def test_frame_when_recorded_does_show_outcome_suggested(
     snapshot: SnapshotAssertion,
 ):
-    """You should see record node done with 'seq 3 . improved'."""
+    """Record row reads 'recorded <outcome> suggested' with no seq text."""
     _console, _clock, renderer = _live(seq=3)
 
     renderer.report(IterationRecorded(seq=3, outcome="improved", at_ms=15000))
-    result = frame_text(renderer.frame())
-
-    assert result == snapshot
-    renderer.stop()
-
-
-def test_frame_when_recorded_unsettled_does_not_duplicate_outcome(
-    snapshot: SnapshotAssertion,
-):
-    """Record shows 'seq 2 . unsettled' without duplicating the outcome word."""
-    _console, _clock, renderer = _live(seq=2)
-
-    renderer.report(IterationRecorded(seq=2, outcome="unsettled", at_ms=15000))
     result = frame_text(renderer.frame())
 
     assert result == snapshot
@@ -432,35 +428,6 @@ def test_frame_when_header_before_first_pass_completes_does_show_elapsed_without
         _pass_started(1, 5, label="baseline", at_ms=_ms(clock)),
     )
     clock.tick(3)
-
-    result = frame_text(renderer.frame())
-
-    assert result == snapshot
-    renderer.stop()
-
-
-def test_frame_when_last_pass_done_detail_does_name_side_of_last_pass(
-    snapshot: SnapshotAssertion,
-):
-    """You should see '(baseline)' after last pass duration in the detail line."""
-    _console, clock, renderer = _live(sample_count=3)
-
-    renderer.report(PrepareFinished(label="bench", at_ms=0))
-    clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 3, target_index=0, target_count=2, label="baseline", duration_s=10
-    )
-    clock.tick(1)
-    renderer.report(
-        _pass_started(
-            1,
-            3,
-            target_index=1,
-            target_count=2,
-            label="experiment",
-            at_ms=_ms(clock),
-        ),
-    )
 
     result = frame_text(renderer.frame())
 
@@ -590,7 +557,12 @@ def test_plain_when_passes_done_does_print_timestamped_line(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    _report_full_pass(renderer, clock, 1, 1, duration_s=10)
+    _report_full_pass(
+        renderer, clock, 1, 1, target_index=0, target_count=2, label="baseline", duration_s=10
+    )
+    _report_full_pass(
+        renderer, clock, 1, 1, target_index=1, target_count=2, label="experiment", duration_s=10
+    )
 
     assert _last_line(console) == snapshot
     renderer.stop()
@@ -694,7 +666,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat_py.cli.iterate_progress.install_termination_cleanup",
+        "gymrat.cli.iterate_progress.install_termination_cleanup",
         _fake_install(registered),
     )
 
@@ -709,7 +681,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat_py.cli.iterate_progress.install_termination_cleanup",
+        "gymrat.cli.iterate_progress.install_termination_cleanup",
         _fake_install(registered),
     )
 
@@ -776,87 +748,14 @@ def test_live_wiring_when_created_does_set_auto_refresh_true():
 
 
 # ---------------------------------------------------------------------------
-# Running pass elapsed (#14) — live elapsed for in-flight passes
+# Judge verdicts
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_measure_pass_running_does_show_running_elapsed():
-    """Detail line includes live elapsed for the running measure pass, from the clock."""
-    _console, clock, renderer = _live(sample_count=5)
-    renderer.report(PrepareFinished(label="bench", at_ms=0))
-    clock.tick(1)
-    renderer.report(
-        _pass_started(
-            1,
-            5,
-            target_index=0,
-            target_count=2,
-            label="baseline",
-            at_ms=_ms(clock),
-        ),
-    )
-    clock.tick(41)
-
-    result = frame_text(renderer.frame())
-
-    assert "running 41s" in result
-    renderer.stop()
-
-
-def test_frame_when_confirm_pass_running_does_show_running_elapsed():
-    """Confirm detail includes live elapsed for the running confirm pass, from the clock."""
-    _console, clock, renderer = _live(sample_count=5)
-    renderer.report(JudgeFinished(primary_delta_pct=2.5, regressed=("latency",), at_ms=5000))
-    renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=5100))
-    clock.tick(6)
-    renderer.report(
-        _pass_started(
-            1,
-            5,
-            target_index=0,
-            target_count=2,
-            label="baseline",
-            at_ms=_ms(clock),
-            phase="confirm",
-        ),
-    )
-    clock.tick(30)
-
-    result = frame_text(renderer.frame())
-
-    assert "running 30s" in result
-    renderer.stop()
-
-
-# ---------------------------------------------------------------------------
-# Judge detail with counts (#16)
-# ---------------------------------------------------------------------------
-
-
-def test_frame_when_judge_finished_with_regressions_does_show_improve_noise_and_confirm_arrow():
-    """Judge done shows improve/noise count and 'regressed: ... → confirm'."""
-    _console, clock, renderer = _live(sample_count=1, metric_count=5)
-    renderer.report(PrepareFinished(label="bench", at_ms=0))
-    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
-    clock.tick(6)
-    renderer.report(
-        JudgeFinished(
-            primary_delta_pct=-6.8,
-            regressed=("latency", "throughput"),
-            at_ms=_ms(clock),
-        ),
-    )
-
-    result = frame_text(renderer.frame())
-
-    assert "3 improve/noise" in result
-    assert "regressed: latency, throughput" in result
-    assert "→ confirm" in result
-    renderer.stop()
-
-
-def test_frame_when_judge_finished_no_regressions_does_show_only_improve_noise():
-    """Judge done without regressions shows delta and improve/noise count only."""
+def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_verdict(
+    snapshot: SnapshotAssertion,
+):
+    """No regression: the confirm row leaves the checklist and the judge line carries the verdict."""
     _console, clock, renderer = _live(sample_count=1, metric_count=4)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
@@ -867,14 +766,12 @@ def test_frame_when_judge_finished_no_regressions_does_show_only_improve_noise()
 
     result = frame_text(renderer.frame())
 
-    assert "4 improve/noise" in result
-    assert "regressed" not in result
-    assert "→ confirm" not in result
+    assert result == snapshot
     renderer.stop()
 
 
-def test_plain_when_judge_finished_with_regressions_does_show_improve_noise_and_confirm_arrow():
-    """Plain mode judge shows improve/noise count and 'regressed: ... → confirm'."""
+def test_plain_when_judge_finished_with_regressions_does_print_count_and_names():
+    """Plain mode judge line carries delta, improve/noise count, and the regressed list."""
     console, clock, renderer = _plain(metric_count=5)
     clock.tick(6)
     renderer.report(
@@ -885,11 +782,25 @@ def test_plain_when_judge_finished_with_regressions_does_show_improve_noise_and_
         ),
     )
 
-    line = _last_line(console)
+    assert _last_line(console) == "[00:00:00] judge -6.8% · 4 improve/noise · 1 regressed: latency"
+    renderer.stop()
 
-    assert "4 improve/noise" in line
-    assert "regressed: latency" in line
-    assert "→ confirm" in line
+
+def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names():
+    """The regressed list caps at three names and trails off; the count stays exact."""
+    console, clock, renderer = _plain(width=120, metric_count=5)
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-6.8,
+            regressed=("latency", "alloc", "throughput", "parse"),
+            at_ms=_ms(clock),
+        ),
+    )
+
+    assert _last_line(console) == (
+        "[00:00:00] judge -6.8% · 1 improve/noise · 4 regressed: latency, alloc, throughput, …"
+    )
     renderer.stop()
 
 
@@ -952,52 +863,61 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 
 
 # ---------------------------------------------------------------------------
-# Record wording (#18) — outcome suffixed with "suggested"
+# Inline name formatting in judge row
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("outcome", "expected_fragment"),
-    [
-        pytest.param("improved", "improved suggested", id="improved"),
-        pytest.param("keep", "keep suggested", id="keep"),
-    ],
-)
-def test_frame_when_recorded_does_show_outcome_with_suggested_suffix(
-    outcome: str,
-    expected_fragment: str,
-):
-    """Record node shows '<outcome> suggested' in the detail."""
-    _console, _clock, renderer = _live(seq=3)
+def test_frame_when_judge_regressed_does_style_names_via_format_inline():
+    """Regressed names carry per-segment format_inline styling: dim group/kind, normal case."""
+    from rich.console import Console as StyledConsole
 
-    renderer.report(IterationRecorded(seq=3, outcome=outcome, at_ms=15000))
-    result = frame_text(renderer.frame())
+    from gymrat.cli.style import CLI_THEME
 
-    assert expected_fragment in result
-    renderer.stop()
+    _console, clock, renderer = _live(sample_count=1, metric_count=3)
 
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-3.2,
+            regressed=("node/access#time",),
+            at_ms=_ms(clock),
+        )
+    )
 
-def test_frame_when_recorded_with_checks_does_show_suggested_before_checks_suffix():
-    """Record node shows 'suggested' before the checks suffix."""
-    _console, _clock, renderer = _live(seq=3, checks_cmd="npm test")
+    styled = StyledConsole(
+        width=120,
+        force_terminal=True,
+        no_color=False,
+        color_system="truecolor",  # cspell:disable-line
+        _environ={},
+        legacy_windows=False,
+        theme=CLI_THEME,
+    )
+    segments = [seg for line in styled.render_lines(renderer.frame()) for seg in line]
 
-    renderer.report(IterationRecorded(seq=3, outcome="keep", at_ms=15000))
-    result = frame_text(renderer.frame())
+    group_dim: bool | None = None
+    case_dim: bool | None = None
+    kind_dim: bool | None = None
 
-    assert "keep suggested" in result
-    assert "checks (npm test) run at gymrat keep" in result
-    renderer.stop()
+    for seg in segments:
+        dim = seg.style is not None and seg.style.dim is True
+        if "node/" in seg.text and group_dim is None:
+            group_dim = dim
+        if "access" in seg.text and case_dim is None:
+            case_dim = dim
+        if "#time" in seg.text and kind_dim is None:
+            kind_dim = dim
 
+    assert case_dim is not None, "No segment containing case part 'access' in the judge row"
+    assert group_dim is True, "Group prefix 'node/' should be dim (format_inline)"
+    assert case_dim is False, (
+        "Case part 'access' should not be dim — "
+        "format_inline leaves the case unstyled while dimming group and kind"
+    )
+    assert kind_dim is True, "Kind suffix '#time' should be dim (format_inline)"
 
-def test_plain_when_recorded_does_show_outcome_with_suggested_suffix():
-    """Plain mode record shows '<outcome> suggested'."""
-    console, clock, renderer = _plain()
-    clock.tick(15)
-
-    renderer.report(IterationRecorded(seq=2, outcome="improved", at_ms=_ms(clock)))
-    line = _last_line(console)
-
-    assert "improved suggested" in line
     renderer.stop()
 
 

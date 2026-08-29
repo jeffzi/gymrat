@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.config import HooksConfig, ResolvedConfig, StopConfig
-from gymrat_py.errors import GymratError
-from gymrat_py.loop.start import StartResult, start_session
-from gymrat_py.session import (
+from gymrat.config import HooksConfig, ResolvedConfig, StopConfig
+from gymrat.errors import GymratError
+from gymrat.loop.start import StartResult, start_session
+from gymrat.session import (
     BaselineRef,
     SessionConfig,
     SessionHooks,

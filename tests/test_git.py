@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py import git as git_module
-from gymrat_py import signals
-from gymrat_py.errors import GymratError
-from gymrat_py.git import (
+from gymrat import git as git_module
+from gymrat import signals
+from gymrat.errors import GymratError
+from gymrat.git import (
     NotAGitRepositoryError,
     repository_lookup_error,
     run_git,

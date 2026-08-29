@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.config import HooksConfig, MetricEntry
-from gymrat_py.errors import GymratError
-from gymrat_py.loop.iterate import iterate_session
-from gymrat_py.session import (
+from gymrat.config import HooksConfig, MetricEntry
+from gymrat.errors import GymratError
+from gymrat.loop.iterate import iterate_session
+from gymrat.session import (
     Confirm,
     HookRecord,
     IterationPrimary,
@@ -31,7 +31,7 @@ from gymrat_py.session import (
     read_records,
     session_jsonl_path,
 )
-from gymrat_py.session import append_record as append_session_record
+from gymrat.session import append_record as append_session_record
 from tests.loop._hooks import HookScripts, expected_hook_record
 from tests.loop._iterate import (
     BASELINE_BYTES,
@@ -725,7 +725,7 @@ async def test_iterate_session_when_primary_flat_does_record_zero_as_a_percentag
             "regressed",
             "REGRESSED",
             _regressed_rounds(),
-            "fix or gymrat discard",
+            "fix or run gymrat discard",
             id="regressed",
         ),
         pytest.param(

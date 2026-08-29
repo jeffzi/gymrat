@@ -11,8 +11,8 @@ import json
 from pathlib import Path
 from typing import Literal, NamedTuple
 
-from gymrat_py.supervisor.driver import SessionPrompt
-from gymrat_py.supervisor.events import DirtyInfo, LaunchEvent, SessionEvent, SessionObserver
+from gymrat.supervisor.driver import SessionPrompt
+from gymrat.supervisor.events import DirtyInfo, LaunchEvent, SessionEvent, SessionObserver
 
 
 class ObserverProbe(NamedTuple):

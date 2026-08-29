@@ -11,8 +11,8 @@ import os
 import pytest
 from rich.markup import escape
 
-from gymrat_py.report.format import DisplayClass
-from gymrat_py.report.style import (
+from gymrat.report.format import DisplayClass
+from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
     LABEL_DISPLAY_WIDTH,
@@ -473,7 +473,7 @@ def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all
     ],
 )
 def test_report_package_when_queried_does_reexport_public_style_name(name: str):
-    from gymrat_py import report
-    from gymrat_py.report import style
+    from gymrat import report
+    from gymrat.report import style
 
     assert getattr(report, name) is getattr(style, name)

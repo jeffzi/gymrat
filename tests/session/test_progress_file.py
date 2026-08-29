@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.progress_events import (
+from gymrat.progress_events import (
     HookStarted,
     PassFinished,
     PassStarted,
     PrepareStarted,
 )
-from gymrat_py.session.paths import progress_path, session_dir
-from gymrat_py.session.progress_file import (
+from gymrat.session.paths import progress_path, session_dir
+from gymrat.session.progress_file import (
     STALENESS_BOUND_SECONDS,
     ProgressSnapshot,
     clear_progress,

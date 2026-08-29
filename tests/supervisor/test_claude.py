@@ -15,9 +15,9 @@ from typing import override
 
 import pytest
 
-from gymrat_py.supervisor import create_claude_driver
-from gymrat_py.supervisor.driver import Driver, DriverSession, SessionPrompt
-from gymrat_py.supervisor.events import (
+from gymrat.supervisor import create_claude_driver
+from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
+from gymrat.supervisor.events import (
     SessionEvent,
     SessionObserver,
     TextDeltaEvent,
@@ -142,7 +142,7 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: 
         loaded = True
         return object()
 
-    monkeypatch.setattr("gymrat_py.supervisor.claude._load_default_factory", spy)
+    monkeypatch.setattr("gymrat.supervisor.claude._load_default_factory", spy)
 
     create_claude_driver()
 
@@ -616,7 +616,7 @@ async def test_start_when_sdk_import_fails_does_resolve_error_naming_package(
     def raise_missing() -> object:
         raise ModuleNotFoundError
 
-    monkeypatch.setattr("gymrat_py.supervisor.claude._load_default_factory", raise_missing)
+    monkeypatch.setattr("gymrat.supervisor.claude._load_default_factory", raise_missing)
     driver = create_claude_driver()
 
     outcome = await run_session(driver, collecting_observer().observer)

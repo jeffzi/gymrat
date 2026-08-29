@@ -34,10 +34,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.errors import GymratError
-from gymrat_py.session.lock import acquire_lock
-from gymrat_py.session.paths import lockfile_path, supervise_lockfile_path
+from gymrat.cli.app import app
+from gymrat.errors import GymratError
+from gymrat.session.lock import acquire_lock
+from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only named pipes and hard links"
@@ -59,8 +59,8 @@ import sys
 import time
 from pathlib import Path
 
-from gymrat_py.errors import GymratError
-from gymrat_py.session.lock import acquire_lock
+from gymrat.errors import GymratError
+from gymrat.session.lock import acquire_lock
 
 
 def main() -> int:

@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.config import KindEntry
-from gymrat_py.model import Exclusion
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import ReportOptions
-from gymrat_py.verdict import KindAggregate
+from gymrat.config import KindEntry
+from gymrat.model import Exclusion
+from gymrat.report.text import render_report
+from gymrat.report.types import ReportOptions
+from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
     DIMMED_LINE,
     NWayCandidate,
@@ -56,7 +56,7 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat_py.report.types import ComparisonResult
+    from gymrat.report.types import ComparisonResult
 
 
 def _value_part_of(cell: str, glyph: str) -> str:
@@ -400,7 +400,7 @@ def test_render_report_when_metrics_are_excluded_does_count_them_into_the_proven
                         geomean=geomean_of(
                             -3.2,
                             2,
-                            excluded=[Exclusion(metric="warmup/time", reason="unstable")],
+                            excluded=[Exclusion(metric="warmup#time", reason="unstable")],
                         ),
                     ),
                     memory_kind(),
@@ -416,8 +416,8 @@ def test_render_report_when_metrics_are_excluded_does_count_them_into_the_proven
 
 def _several_kinds_gate() -> ComparisonResult:
     metrics = dict(two_kind_metrics())
-    encode = metrics["encode/heap"]
-    metrics["encode/heap"] = replace(encode, meta=replace(encode.meta, gating=True))
+    encode = metrics["encode#memory"]
+    metrics["encode#memory"] = replace(encode, meta=replace(encode.meta, gating=True))
     return create_comparison_result(
         metrics=metrics,
         candidates=[
@@ -430,7 +430,7 @@ def _several_kinds_gate() -> ComparisonResult:
 
 def _no_kind_gates() -> ComparisonResult:
     metrics = dict(two_kind_metrics())
-    for name in ("entity.alive_check/time", "entity.spawn/time", "warmup/time"):
+    for name in ("entity/alive_check#time", "entity/spawn#time", "warmup#time"):
         entry = metrics[name]
         metrics[name] = replace(entry, meta=replace(entry.meta, gating=False))
     return replace(
@@ -657,7 +657,7 @@ def test_render_report_when_colored_does_embolden_the_candidate_summary_label(
     summary = next(
         line
         for line in render_report(multi_candidate_result()).split("\n")
-        if re.search(r"✓ \d+ improved", line) and label in strip_ansi(line)
+        if re.search(r"✓ \d+ improved", strip_ansi(line)) and label in strip_ansi(line)
     )
 
     assert "1" in styles_at(summary, label)
@@ -695,10 +695,16 @@ def test_render_report_when_sectioned_does_name_each_highlight_by_kind_and_short
     ]
 
 
-def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_per_subsection():
-    result = create_comparison_result(
+# ---------------------------------------------------------------------------
+# single-kind grouping with multiple candidates
+# ---------------------------------------------------------------------------
+
+
+def _multi_candidate_grouped_flat() -> ComparisonResult:
+    """Two candidates, single ``time`` kind with ``entity`` group (2 members)."""
+    return create_comparison_result(
         metrics={
-            "entity.alive_check/time": n_way_kind_metric(
+            "entity/alive_check#time": n_way_kind_metric(
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
@@ -706,7 +712,64 @@ def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_p
                     NWayCandidate(verdict="regressed", delta=4, median=104),
                 ],
             ),
-            "encode/heap": n_way_kind_metric(
+            "entity/spawn#time": n_way_kind_metric(
+                kind="time",
+                short_name="entity.spawn",
+                candidates=[
+                    NWayCandidate(verdict="no-signal", delta=0.3, median=100),
+                    NWayCandidate(verdict="improved", delta=-5, median=95),
+                ],
+            ),
+        },
+        candidates=[
+            create_candidate(
+                label="candidate-a",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(-5, 2),
+                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-5, 2)),),
+                        gated_geomean=geomean_of(-5, 2),
+                    )
+                ],
+            ),
+            create_candidate(
+                label="candidate-b",
+                kinds=[
+                    KindAggregate(
+                        kind="time",
+                        geomean=geomean_of(-0.5, 2),
+                        groups=(GroupAggregate(group="entity", geomean=geomean_of(-0.5, 2)),),
+                        gated_geomean=geomean_of(-0.5, 2),
+                    )
+                ],
+            ),
+        ],
+    )
+
+
+def test_render_report_when_many_candidates_single_kind_grouped_does_show_group_headers():
+    """Even with multiple candidates and a single kind, grouped metrics show group headers."""
+    region = table_region(render_report(_multi_candidate_grouped_flat()))
+
+    assert "alive_check" in region
+    assert "spawn" in region
+    assert "entity/alive_check#time" not in region
+    assert "entity/spawn#time" not in region
+
+
+def test_render_report_when_sectioned_and_many_candidates_does_prefix_the_kind_per_subsection():
+    result = create_comparison_result(
+        metrics={
+            "entity/alive_check#time": n_way_kind_metric(
+                kind="time",
+                short_name="entity.alive_check",
+                candidates=[
+                    NWayCandidate(verdict="improved", delta=-10, median=90),
+                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                ],
+            ),
+            "encode#memory": n_way_kind_metric(
                 kind="memory",
                 short_name="encode",
                 gating=False,

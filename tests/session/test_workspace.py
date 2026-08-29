@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.errors import GymratError, hint_of
-from gymrat_py.session.paths import baseline_worktree_dir, experiment_worktree_dir
-from gymrat_py.session.workspace import (
+from gymrat.errors import GymratError, hint_of
+from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
+from gymrat.session.workspace import (
     BaselineRef,
     WorkspaceResult,
     Worktrees,

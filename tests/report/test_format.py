@@ -1,10 +1,10 @@
 """Tests for the report formatting and classification primitives.
 
 These tests assert the *intent* of styling rather than exact escape bytes: they
-render the markup string through :func:`gymrat_py.report.style.render_lines`
+render the markup string through :func:`gymrat.report.style.render_lines`
 with color off to check the plain content, and with color on to check that the
 expected SGR attribute code is present. ``format_delta`` takes an
-:class:`~gymrat_py.model.Effect` rather than a bare number.
+:class:`~gymrat.model.Effect` rather than a bare number.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat_py.model import (
+from gymrat.model import (
     PERMUTATION_DESCRIPTOR,
     Effect,
     Exclusion,
@@ -22,7 +22,7 @@ from gymrat_py.model import (
     MetricUnit,
     MetricVerdict,
 )
-from gymrat_py.report.format import (
+from gymrat.report.format import (
     DisplayClass,
     VerdictCounts,
     count_verdicts,
@@ -33,12 +33,20 @@ from gymrat_py.report.format import (
     format_value,
     geomean_value_style,
     get_glyph,
+    highlight_label,
+    pluralize,
     scoped_geomean_label,
     select_highlights,
     verdict_summary_parts,
 )
-from gymrat_py.report.style import format_hint, render_lines
-from gymrat_py.report.types import ReportOptions
+from gymrat.report.loop import (
+    GeomeanPrimary,
+    RerunAnswer,
+    RerunConfirmation,
+    format_verdict_block,
+)
+from gymrat.report.style import format_hint, render_lines
+from gymrat.report.types import ReportOptions
 from tests.report._inputs import (
     CandidateSpec,
     Metrics,
@@ -47,9 +55,11 @@ from tests.report._inputs import (
     band_verdict,
     exact_verdict,
     geomean_of,
+    kind_metric,
     metric_for,
     one_sided_metric,
     permutation_verdict,
+    styles_at,
 )
 
 if TYPE_CHECKING:
@@ -227,10 +237,10 @@ def test_format_delta_when_undefined_arithmetic_does_render_nothing():
         pytest.param(band_verdict(n=10, usable_n=3), "within-noise", id="ties-short-of-floor"),
         pytest.param(band_verdict(n=10, usable_n=6), "within-noise", id="ties-just-enough"),
         pytest.param(band_verdict(n=6, usable_n=5), "within-noise", id="one-below-floor"),
-        pytest.param(band_verdict(n=5, usable_n=5), "within-noise", id="too-short-for-floor"),
+        pytest.param(band_verdict(n=5, usable_n=5), "inconclusive", id="too-short-for-floor"),
         pytest.param(band_verdict(n=1, usable_n=1), "inconclusive", id="single-pair-only-floor"),
         pytest.param(band_verdict(n=1, usable_n=0), "inconclusive", id="single-pair-tie"),
-        pytest.param(band_verdict(n=2, usable_n=2), "within-noise", id="two-pairs-give-spread"),
+        pytest.param(band_verdict(n=2, usable_n=2), "inconclusive", id="two-pairs-sub-minimum"),
         pytest.param(
             band_verdict(verdict="improved", delta=-10, n=10, usable_n=3),
             "improved",
@@ -246,6 +256,67 @@ def test_format_delta_when_undefined_arithmetic_does_render_nothing():
     ],
 )
 def test_display_class_maps_verdict_to_shown_class(verdict: MetricVerdict, expected: str):
+    assert display_class(verdict) == expected
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        pytest.param(band_verdict(n=2, usable_n=2), id="band-n2"),
+        pytest.param(band_verdict(n=3, usable_n=3), id="band-n3"),
+        pytest.param(band_verdict(n=3, usable_n=0), id="band-all-tied-sub-minimum"),
+        pytest.param(
+            band_verdict(verdict="improved", delta=-10, n=4, usable_n=4), id="band-improved-n4"
+        ),
+        pytest.param(band_verdict(verdict="unstable", n=5, usable_n=5), id="band-unstable-n5"),
+        pytest.param(permutation_verdict(n=3), id="permutation-n3"),
+        pytest.param(
+            permutation_verdict(verdict="improved", delta=-10, n=5), id="permutation-improved-n5"
+        ),
+        pytest.param(
+            permutation_verdict(verdict="regressed", delta=10, n=5), id="permutation-regressed-n5"
+        ),
+    ],
+)
+def test_display_class_when_sub_minimum_non_exact_does_return_inconclusive(
+    verdict: MetricVerdict,
+):
+    assert display_class(verdict) == "inconclusive"
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(
+            exact_verdict(n=1, verdict="improved", delta=-5), "improved", id="improved-n1"
+        ),
+        pytest.param(exact_verdict(n=2), "within-noise", id="no-signal-n2"),
+        pytest.param(
+            exact_verdict(n=3, verdict="regressed", delta=5), "regressed", id="regressed-n3"
+        ),
+        pytest.param(exact_verdict(n=5), "within-noise", id="no-signal-n5"),
+    ],
+)
+def test_display_class_when_exact_at_any_n_does_keep_real_class(
+    verdict: MetricVerdict, expected: DisplayClass
+):
+    assert display_class(verdict) == expected
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(band_verdict(n=6, usable_n=6), "within-noise", id="band-at-minimum"),
+        pytest.param(
+            permutation_verdict(verdict="improved", delta=-10, n=6),
+            "improved",
+            id="permutation-at-minimum",
+        ),
+    ],
+)
+def test_display_class_when_at_minimum_n_does_keep_real_class(
+    verdict: MetricVerdict, expected: DisplayClass
+):
     assert display_class(verdict) == expected
 
 
@@ -434,6 +505,17 @@ def test_select_highlights_ranks_each_candidate_by_its_own_verdicts(
     assert [highlight.name for highlight in highlights] == expected
 
 
+def test_select_highlights_when_sub_minimum_band_does_exclude():
+    metrics: Metrics = {
+        "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
+        "adequate/time": approximate_metric(verdict="improved", delta=-5),
+    }
+
+    highlights = select_highlights(metrics, 0)
+
+    assert [highlight.name for highlight in highlights] == ["adequate/time"]
+
+
 # ---------------------------------------------------------------------------
 # scoped_geomean_label
 # ---------------------------------------------------------------------------
@@ -565,21 +647,38 @@ def test_verdict_summary_parts_pads_counts_to_widest_digit_width():
     assert _plain(_find_plain(parts, "within noise")) == "~  0 within noise"
 
 
+def test_verdict_summary_parts_when_sub_minimum_band_does_tally_as_inconclusive():
+    metrics: Metrics = {
+        "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
+        "adequate/time": approximate_metric(verdict="improved", delta=-5),
+    }
+
+    parts = verdict_summary_parts(metrics, 0)
+
+    assert _plain(_find_plain(parts, "improved")) == "✓ 1 improved"
+    assert _plain(_find_plain(parts, "inconclusive")) == "? 1 inconclusive"
+
+
 # ---------------------------------------------------------------------------
 # footer_lines
 # ---------------------------------------------------------------------------
 
 
 #: The one hint the footer offers, in the prose ``format_hint`` renders it from.
-SAMPLE_SHORTAGE_HINT = "re-run with --samples 6 or more for statistical verdicts"
+SAMPLE_SHORTAGE_HINT = "re-run with `gymrat compare --samples 6` or more for statistical verdicts"
+
+#: The hint after ``format_hint`` → ``_plain`` round-trips (backticks stripped).
+SAMPLE_SHORTAGE_HINT_PLAIN = (
+    "re-run with gymrat compare --samples 6 or more for statistical verdicts"
+)
 
 
 def _verbose_lines(metrics: Metrics) -> list[str]:
     """The verbose method lines, with no hint contribution."""
     return [
         line
-        for line in footer_lines(metrics, verbose=True, format_hint=format_hint)
-        if SAMPLE_SHORTAGE_HINT not in _plain(line)
+        for line in footer_lines(metrics, verbose=True, format_hint=format_hint, command="compare")
+        if SAMPLE_SHORTAGE_HINT_PLAIN not in _plain(line)
     ]
 
 
@@ -610,7 +709,7 @@ def test_footer_lines_dims_the_descriptive_verdict_line():
 def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    lines = footer_lines(metrics, verbose=True, format_hint=format_hint)
+    lines = footer_lines(metrics, verbose=True, format_hint=format_hint, command="compare")
 
     assert lines[-1] == format_hint(SAMPLE_SHORTAGE_HINT)
 
@@ -648,7 +747,7 @@ def test_footer_lines_phrases_band_line_by_cause(metrics: Metrics, expected: lis
 def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    assert footer_lines(metrics, verbose=False, format_hint=format_hint) == [
+    assert footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare") == [
         format_hint(SAMPLE_SHORTAGE_HINT)
     ]
 
@@ -662,7 +761,7 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
                 "encode/time": band_metric(n=5),
                 "parse/time": approximate_metric(verdict="improved", delta=-10),
             },
-            [SAMPLE_SHORTAGE_HINT],
+            [SAMPLE_SHORTAGE_HINT_PLAIN],
             id="every-band-metric-short",
         ),
         pytest.param(
@@ -680,7 +779,7 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
                 "entity.alive_check/heap": band_metric(n=10, usable_n=3),
                 "parse/time": approximate_metric(verdict="improved", delta=-10),
             },
-            [SAMPLE_SHORTAGE_HINT],
+            [SAMPLE_SHORTAGE_HINT_PLAIN],
             id="shortage-and-ties-different-metrics",
         ),
         pytest.param(
@@ -691,7 +790,7 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
     ],
 )
 def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint)
+    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare")
 
     assert [_plain(line) for line in lines] == expected
 
@@ -710,9 +809,11 @@ def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
 def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     metrics: Metrics, samples: int
 ):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, samples=samples)
+    lines = footer_lines(
+        metrics, verbose=False, format_hint=format_hint, command="compare", samples=samples
+    )
 
-    assert any("re-run with --samples" in line for line in lines)
+    assert any("gymrat compare --samples" in line for line in lines)
 
 
 @pytest.mark.parametrize(
@@ -734,16 +835,74 @@ def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     ],
 )
 def test_footer_lines_when_samples_enough_does_name_dropped_rounds(metrics: Metrics, samples: int):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, samples=samples)
+    lines = footer_lines(
+        metrics, verbose=False, format_hint=format_hint, command="compare", samples=samples
+    )
 
-    assert not any("re-run with --samples" in line for line in lines)
+    assert not any("gymrat compare --samples" in line for line in lines)
     assert any("dropped" in line for line in lines)
 
 
 def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint():
     metrics: Metrics = {"a/time": approximate_metric(verdict="improved", delta=-10)}
 
-    assert footer_lines(metrics, verbose=False, format_hint=format_hint, samples=10) == []
+    assert (
+        footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare", samples=10)
+        == []
+    )
+
+
+# ---------------------------------------------------------------------------
+# pluralize
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("noun", "expected"),
+    [
+        pytest.param("pass", "2 passes", id="ends-in-s"),
+        pytest.param("box", "2 boxes", id="ends-in-x"),
+        pytest.param("buzz", "2 buzzes", id="ends-in-z"),
+        pytest.param("branch", "2 branches", id="ends-in-ch"),
+        pytest.param("dish", "2 dishes", id="ends-in-sh"),
+        pytest.param("query", "2 queries", id="consonant-then-y"),
+        pytest.param("key", "2 keys", id="vowel-then-y"),
+        pytest.param("metric", "2 metrics", id="regular"),
+        pytest.param("kept iteration", "2 kept iterations", id="multi-word-regular"),
+        pytest.param("uncommitted file", "2 uncommitted files", id="multi-word-adjective"),
+    ],
+)
+def test_pluralize_when_count_is_plural_does_apply_english_suffix_rules(noun: str, expected: str):
+    assert pluralize(2, noun) == expected
+
+
+@pytest.mark.parametrize("noun", ["pass", "query", "box", "metric", "kept iteration"])
+def test_pluralize_when_count_is_one_does_leave_noun_unchanged(noun: str):
+    assert pluralize(1, noun) == f"1 {noun}"
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        pytest.param(0, "0 passes", id="zero"),
+        pytest.param(2, "2 passes", id="many"),
+        pytest.param(-1, "-1 passes", id="negative"),
+    ],
+)
+def test_pluralize_when_count_is_not_one_does_use_the_plural_form(count: int, expected: str):
+    assert pluralize(count, "pass") == expected
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        pytest.param(1, "1 index", id="singular-keeps-noun"),
+        pytest.param(2, "2 indices", id="plural-takes-override"),
+        pytest.param(0, "0 indices", id="zero-takes-override"),
+    ],
+)
+def test_pluralize_when_plural_given_does_override_the_suffix_rules(count: int, expected: str):
+    assert pluralize(count, "index", "indices") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -763,3 +922,54 @@ def test_report_options_carries_an_optional_color_override(
     options: ReportOptions, expected: bool | None
 ):
     assert options.color is expected
+
+
+# ---------------------------------------------------------------------------
+# highlight_label — format_inline
+# ---------------------------------------------------------------------------
+
+
+def test_highlight_label_when_unqualified_does_dim_group_and_kind_in_colored_output():
+    metrics: Metrics = {
+        "entity/alive_check#time": kind_metric(
+            kind="time", short_name="entity.alive_check", verdict="improved", delta=-10
+        ),
+    }
+    (highlight,) = select_highlights(metrics, 0)
+
+    label = highlight_label(highlight, qualify=False)
+
+    colored = _colored(label)
+    assert "2" in styles_at(colored, "entity/")
+    assert "2" in styles_at(colored, "#time")
+
+
+# ---------------------------------------------------------------------------
+# rerun confirmation lines — format_inline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("answer", "phrase"),
+    [
+        pytest.param("confirmed", "regression confirmed on rerun", id="confirmed"),
+        pytest.param("disagreed", "regression not confirmed on rerun", id="disagreed"),
+        pytest.param("absent", "not measured on rerun", id="absent"),
+    ],
+)
+def test_format_verdict_block_when_rerun_does_dim_group_and_kind_in_metric_name(
+    answer: RerunAnswer, phrase: str
+):
+    rerun = RerunConfirmation(metric="entity/alive_check#time", answer=answer)
+
+    block = format_verdict_block(
+        outcome="regressed",
+        primary=GeomeanPrimary(delta_pct=3.1),
+        next_step="gymrat discard",
+        reruns=[rerun],
+    )
+
+    rerun_line = next(line for line in block if phrase in _plain(line))
+    colored = _colored(rerun_line)
+    assert "2" in styles_at(colored, "entity/")
+    assert "2" in styles_at(colored, "#time")

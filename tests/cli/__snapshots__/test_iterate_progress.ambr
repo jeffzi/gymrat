@@ -1,164 +1,125 @@
 # serializer version: 1
 # name: test_frame_when_before_hook_running_does_show_spinner
   '''
-  iterate #1 session test-session · 0s elapsed
-  ├── ⠹ before hook
-  ├── ○ prepare
-  ├── ○ passes
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 0s elapsed
+  ⠋ before hook
+  ○ prepare
+  ○ passes
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record (then after hook)
   '''
 # ---
 # name: test_frame_when_both_worktrees_prepared_does_show_elapsed
   '''
-  iterate #1 session test-session · 5s elapsed
-  ├── ✔ before hook
-  ├── ✔ prepare (5s) candidate
-  │   ├──   ✔ baseline (3s)
-  │   └──   ✔ candidate (2s)
-  ├── ○ passes
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 5s elapsed
+  ✓ prepared 5s
+  ○ passes
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record
   '''
 # ---
 # name: test_frame_when_compact_layout_does_show_single_row
-  '⠋ sample 1/5                              0% · A · 0:00:00 estimating time left…'
+  '⠋ sampling                                            0% · A · 00:00/--:--'
 # ---
 # name: test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta
   '''
-  iterate #1 session test-session · 10s elapsed
-  ├── ○ before hook
-  ├── ✔ prepare
-  │   └──   ✔ bench (0s)
-  ├── ⠹ passes
-  │   ├──   0/10 (0%) estimating time left…
-  │   └──   round 1 · baseline running 3s
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 10s elapsed
+  ✓ prepared
+  ⠧ sampling · baseline                                           0/10 00:03/--:--
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record
   '''
 # ---
 # name: test_frame_when_initial_does_show_all_nodes_pending
   '''
-  iterate #3 session abc-123
-  ├── ○ before hook
-  ├── ○ prepare
-  ├── ○ passes
-  ├── ○ judge  4 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 3 · then after hook
+  iterate #3 · session abc-123
+  ○ prepare
+  ○ passes
+  ○ judge (4 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record
   '''
 # ---
 # name: test_frame_when_judge_alerting_and_confirm_running_does_show_bar
   '''
-  iterate #1 session test-session · 6s elapsed
-  ├── ○ before hook
-  ├── ○ prepare
-  ├── ○ passes
-  ├── ! judge +2.5% · 2 improve/noise · regressed: latency → confirm
-  ├── ⠹ confirm 1 metrics
-  │   ├──   0/10 (0%) estimating time left…
-  │   └──   round 1 · baseline running 0s
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 6s elapsed
+  ○ prepare
+  ○ passes
+  ! judged +2.5% on geomean · 1 regressed: latency
+  ⠴ confirming 1 metric · baseline                                0/10 00:06/--:--
+  ○ record
   '''
 # ---
 # name: test_frame_when_judge_finished_after_started_does_show_elapsed
   '''
-  iterate #1 session test-session · 10s elapsed · ~5s left
-  ├── ○ before hook
-  ├── ✔ prepare
-  │   └──   ✔ bench (0s)
-  ├── ○ passes
-  ├── ✔ judge (4s) -3.2% · 2 improve/noise · regressed: latency → confirm
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 00:10/00:15
+  ✓ prepared
+  ○ passes
+  ✓ judged -3.2% on geomean · 1 regressed: latency 4s
+  ○ confirm (only if a gating metric regresses)
+  ○ record
   '''
 # ---
 # name: test_frame_when_judge_finished_does_show_delta_and_regressed
   '''
-  iterate #1 session test-session · 6s elapsed · ~5s left
-  ├── ○ before hook
-  ├── ✔ prepare
-  │   └──   ✔ bench (0s)
-  ├── ○ passes
-  ├── ✔ judge -3.2% · 1 improve/noise · regressed: latency, throughput → confirm
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 00:06/00:11
+  ✓ prepared
+  ○ passes
+  ✓ judged -3.2% on geomean · 2 regressed: latency, throughput
+  ○ confirm (only if a gating metric regresses)
+  ○ record
+  '''
+# ---
+# name: test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_verdict
+  '''
+  iterate #1 · session test-session · 00:06/00:11
+  ✓ prepared
+  ○ passes
+  ✓ judged -2.0% on geomean · no gating regression
+  ○ record
   '''
 # ---
 # name: test_frame_when_judge_started_does_show_running_with_elapsed
   '''
-  iterate #1 session test-session · 9s elapsed · ~5s left
-  ├── ○ before hook
-  ├── ✔ prepare
-  │   └──   ✔ bench (0s)
-  ├── ○ passes
-  ├── ⠹ judge (3s)
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 00:09/00:14
+  ✓ prepared
+  ○ passes
+  ⠴ judging 3 metrics · geomean primary 3s
+  ○ confirm (only if a gating metric regresses)
+  ○ record
   '''
 # ---
-# name: test_frame_when_last_pass_done_detail_does_name_side_of_last_pass
+# name: test_frame_when_passes_mid_run_does_show_bar_count_and_clock
   '''
-  iterate #1 session test-session · 12s elapsed · ~50s left
-  ├── ○ before hook
-  ├── ✔ prepare
-  │   └──   ✔ bench (0s)
-  ├── ⠹ passes
-  │   ├──   1/6 (16%) ~50s left
-  │   └──   round 1 · experiment running 0s · last pass 10s (baseline)
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
+  iterate #1 · session test-session · 01:04/02:24
+  ✓ prepared
+  ⠧ sampling · baseline ━━━━━━━━                                  2/10 01:03/02:23
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ○ record
   '''
 # ---
-# name: test_frame_when_passes_mid_run_does_show_bar_eta_and_detail
+# name: test_frame_when_recorded_does_show_outcome_suggested
   '''
-  iterate #1 session test-session · 23s elapsed · ~1m 20s left
-  ├── ○ before hook
-  ├── ✔ prepare
-  │   └──   ✔ bench (0s)
-  ├── ⠹ passes
-  │   ├──   2/10 (20%) ~1m 20s left
-  │   └──   round 2 · baseline running 0s · last pass 10s (candidate)
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ○ record  seq 1 · then after hook
-  '''
-# ---
-# name: test_frame_when_recorded_improved_does_show_seq_and_outcome
-  '''
-  iterate #3 session test-session · 0s elapsed
-  ├── ○ before hook
-  ├── ○ prepare
-  ├── ○ passes
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ✔ record seq 3 · improved suggested
-  '''
-# ---
-# name: test_frame_when_recorded_unsettled_does_not_duplicate_outcome
-  '''
-  iterate #2 session test-session · 0s elapsed
-  ├── ○ before hook
-  ├── ○ prepare
-  ├── ○ passes
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ✔ record seq 2 · unsettled suggested
+  iterate #3 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ✓ recorded improved suggested
   '''
 # ---
 # name: test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep
   '''
-  iterate #3 session test-session · 0s elapsed
-  ├── ○ before hook
-  ├── ○ prepare
-  ├── ○ passes
-  ├── ○ judge  3 metrics · geomean primary
-  ├── ○ confirm  only if a gating metric regresses — reruns the suite
-  └── ✔ record seq 3 · unsettled suggested — checks (npm run check && npm test) run at gymrat keep
+  iterate #3 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ○ judge (3 metrics · geomean primary)
+  ○ confirm (only if a gating metric regresses)
+  ✓ recorded unsettled suggested — checks (npm run check && npm test) run at gymrat keep
   '''
 # ---
 # name: test_plain_when_confirm_finished_does_print_timestamped_line
@@ -168,11 +129,11 @@
   '[00:00:00] judge -2.0% · 3 improve/noise'
 # ---
 # name: test_plain_when_passes_done_does_print_timestamped_line
-  '[00:00:00] prepare bench done (0s)'
+  '[00:00:21] passes done (20s)'
 # ---
 # name: test_plain_when_prepare_done_does_print_timestamped_line
-  '[00:00:00] prepare baseline done (5s)'
+  '[00:00:05] prepare baseline done (5s)'
 # ---
 # name: test_plain_when_recorded_does_print_timestamped_line
-  '[00:00:00] recorded seq 2 · improved suggested'
+  '[00:00:00] recorded improved suggested'
 # ---

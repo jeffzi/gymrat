@@ -2,19 +2,19 @@ import dataclasses
 
 import pytest
 
-from gymrat_py.adapters.defaults import (
+from gymrat.adapters.defaults import (
     DEFAULT_GATING,
     DEFAULT_METRIC_KIND,
     defaults_from_suffixes,
 )
-from gymrat_py.adapters.types import (
+from gymrat.adapters.types import (
     Adapter,
     AdapterError,
     MetricDefaults,
     WarnSink,
     warn_to_stderr,
 )
-from gymrat_py.errors import GymratError
+from gymrat.errors import GymratError
 
 # ---------------------------------------------------------------------------
 # AdapterError
@@ -128,24 +128,24 @@ def test_adapter_when_object_missing_parse_does_not_satisfy_protocol():
     ("metric_name", "expected"),
     [
         (
-            "bench/time",
+            "bench#time",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="bench"),
         ),
         (
-            "a/b/time",
+            "a/b#time",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="a/b"),
         ),
         (
-            "bench/heap",
+            "bench#heap",
             MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="bench"),
         ),
         (
-            "/time",
-            MetricDefaults(direction="lower", unit="ns", kind="time", short_name="/time"),
+            "#time",
+            MetricDefaults(direction="lower", unit="ns", kind="time", short_name="#time"),
         ),
         (
-            "/heap",
-            MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="/heap"),
+            "#heap",
+            MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="#heap"),
         ),
         ("foo", MetricDefaults(direction="lower")),
         ("latency", MetricDefaults(direction="lower")),

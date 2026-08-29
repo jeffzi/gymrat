@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import tomli_w
 
-from gymrat_py.adapters.types import Adapter, MetricDefaults
-from gymrat_py.config import (
+from gymrat.adapters.types import Adapter, MetricDefaults
+from gymrat.config import (
     BenchlessConfig,
     CliFlags,
     HooksConfig,
@@ -15,9 +15,9 @@ from gymrat_py.config import (
     StopConfig,
     resolve_metric_meta,
 )
-from gymrat_py.config_inspect import inspect_config
-from gymrat_py.model import Direction, MetricUnit, ResolvedMetricMeta
-from gymrat_py.warn import WarnSink, warn_to_stderr
+from gymrat.config_inspect import inspect_config
+from gymrat.model import Direction, MetricUnit, ResolvedMetricMeta
+from gymrat.warn import WarnSink, warn_to_stderr
 
 
 def make_adapter(

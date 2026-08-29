@@ -14,9 +14,9 @@ import math
 
 import pytest
 
-from gymrat_py.model import ApproximateVerdict, Exclusion
-from gymrat_py.report.text import render_report
-from gymrat_py.report.types import CandidateMetric, MetricComparison, ReportOptions
+from gymrat.model import ApproximateVerdict, Exclusion
+from gymrat.report.text import render_report
+from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from tests.report._inputs import (
     band_metric,
     cells_of,
@@ -238,8 +238,8 @@ def test_render_report_when_spread_exceeds_the_median_does_state_it_in_absolute_
             id="permutation",
         ),
         pytest.param(
-            band_metric(verdict="improved", delta=-5, n=4),
-            "✓  -5.0%  ±2.5%  n=4",
+            band_metric(verdict="improved", delta=-5, n=8),
+            "✓  -5.0%  ±2.5%  n=8",
             id="band",
         ),
         pytest.param(

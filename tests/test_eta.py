@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-from gymrat_py.eta import format_duration, format_eta
+from gymrat.eta import format_clock, format_duration, format_eta
 
 # ---------------------------------------------------------------------------
 # EtaTracker removal
@@ -13,7 +13,7 @@ from gymrat_py.eta import format_duration, format_eta
 
 def test_eta_tracker_when_imported_does_raise_import_error() -> None:
     with pytest.raises(ImportError):
-        from gymrat_py.eta import EtaTracker  # type: ignore[missing-module-attribute]  # noqa: F401
+        from gymrat.eta import EtaTracker  # type: ignore[missing-module-attribute]  # noqa: F401
 
 
 @pytest.mark.parametrize(
@@ -26,7 +26,7 @@ def test_eta_tracker_when_imported_does_raise_import_error() -> None:
     ],
 )
 def test_eta_module_when_inspected_does_not_expose_progress_event_symbol(name: str) -> None:
-    eta = importlib.import_module("gymrat_py.eta")
+    eta = importlib.import_module("gymrat.eta")
 
     assert not hasattr(eta, name)
 
@@ -70,6 +70,32 @@ def test_format_duration_when_given_milliseconds_does_render_expected_duration(
 )
 def test_format_duration_when_negative_input_does_render_zero(ms: float, expected: str) -> None:
     assert format_duration(ms) == expected
+
+
+# ---------------------------------------------------------------------------
+# format_clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        pytest.param(0, "00:00", id="zero"),
+        pytest.param(9_000, "00:09", id="sub-minute"),
+        pytest.param(9_999, "00:09", id="floors-partial-second"),
+        pytest.param(59_999, "00:59", id="last-second-before-minute-tier"),
+        pytest.param(465_000, "07:45", id="minutes"),
+        pytest.param(3_599_000, "59:59", id="last-second-before-hour-tier"),
+        pytest.param(3_600_000, "1:00:00", id="hour-tier-starts"),
+        pytest.param(4_065_000, "1:07:45", id="hour-tier"),
+        pytest.param(-1, "00:00", id="negative-clamps-to-zero"),
+        pytest.param(-90_000, "00:00", id="large-negative-clamps-to-zero"),
+    ],
+)
+def test_format_clock_when_given_milliseconds_does_render_expected_clock(
+    ms: float, expected: str
+) -> None:
+    assert format_clock(ms) == expected
 
 
 # ---------------------------------------------------------------------------

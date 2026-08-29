@@ -21,15 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py import exec as exec_mod
-from gymrat_py import process_group as pg_mod
-from gymrat_py.exec import (
+from gymrat import exec as exec_mod
+from gymrat import process_group as pg_mod
+from gymrat.exec import (
     ExecOptions,
     ExecResult,
     ExecTimeoutError,
     OutputBuffer,
 )
-from gymrat_py.exec import exec as run_exec
+from gymrat.exec import exec as run_exec
 from tests._process_helpers import is_alive, wait_until_dead
 
 # exec drives POSIX process groups (killpg) and sh-only shell syntax; neither

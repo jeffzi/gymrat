@@ -1,6 +1,6 @@
 """Behavioral tests for the loop output byte-budget limiter."""
 
-from gymrat_py.loop.output_limit import limit_output
+from gymrat.loop.output_limit import limit_output
 
 LIMIT_BYTES = 8192
 

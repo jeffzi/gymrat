@@ -16,9 +16,9 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 
-from gymrat_py.loop.hooks import HookInvocation
-from gymrat_py.session import HookRecord, Worktrees
-from gymrat_py.session.schema import HookStage
+from gymrat.loop.hooks import HookInvocation
+from gymrat.session import HookRecord, Worktrees
+from gymrat.session.schema import HookStage
 from tests.session._records import SESSION_ID, iteration_record, session_record
 
 Channel = Literal["stdout", "stderr"]

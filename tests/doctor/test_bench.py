@@ -7,19 +7,19 @@ patched to control executable availability.
 
 import pytest
 
-from gymrat_py.doctor.bench import build_bench_section
-from gymrat_py.errors import GymratError
+from gymrat.doctor.bench import build_bench_section
+from gymrat.errors import GymratError
 
 
 def _patch_adapter_raises(monkeypatch: pytest.MonkeyPatch, error: GymratError) -> None:
     def boom(_name: str) -> object:
         raise error
 
-    monkeypatch.setattr("gymrat_py.doctor.bench.get_adapter", boom)
+    monkeypatch.setattr("gymrat.doctor.bench.get_adapter", boom)
 
 
 def _patch_adapter_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("gymrat_py.doctor.bench.get_adapter", lambda _name: None)  # pyrefly: ignore
+    monkeypatch.setattr("gymrat.doctor.bench.get_adapter", lambda _name: None)  # pyrefly: ignore
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
+from gymrat.cli.app import app
 from tests._ansi import strip_ansi
 
 runner = CliRunner()
@@ -315,7 +315,7 @@ def test_init_when_run_outside_a_git_repo_does_scaffold_in_cwd(non_repo_cwd: Pat
 
 
 def test_shared_when_stop_target_removed_does_not_export_helpers():
-    from gymrat_py.cli import shared
+    from gymrat.cli import shared
 
     assert not hasattr(shared, "parse_stop_target_value")
     assert not hasattr(shared, "_STOP_TARGET_RE")

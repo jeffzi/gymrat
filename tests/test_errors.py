@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from gymrat_py.errors import (
+from gymrat.errors import (
     CommandError,
     GymratError,
     hint_of,

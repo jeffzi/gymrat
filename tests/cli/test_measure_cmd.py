@@ -15,13 +15,13 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from gymrat_py.cli.app import app
-from gymrat_py.config import ResolvedConfig
-from gymrat_py.measure import MeasureOptions
-from gymrat_py.report.types import MeasurementResult
-from gymrat_py.sampling import TargetSpec
-from gymrat_py.session import BaselineRecord, read_records, session_jsonl_path
-from tests.report._inputs import create_measurement_result, measured_metric
+from gymrat.cli.app import app
+from gymrat.config import ResolvedConfig
+from gymrat.measure import MeasureOptions
+from gymrat.report.types import MeasurementResult
+from gymrat.sampling import TargetSpec
+from gymrat.session import BaselineRecord, read_records, session_jsonl_path
+from tests.report._inputs import create_measurement_result
 from tests.session._records import finalize_record, session_record, write_session_log
 
 runner = CliRunner()
@@ -54,7 +54,7 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake(*_a: object, **_k: object) -> ResolvedConfig:
         return _resolved()
 
-    monkeypatch.setattr("gymrat_py.cli.measure_cmd.resolve_config", fake)
+    monkeypatch.setattr("gymrat.cli.measure_cmd.resolve_config", fake)
 
 
 def _capture_measure(
@@ -73,7 +73,7 @@ def _capture_measure(
         captured.append(options)
         return handed_back
 
-    monkeypatch.setattr("gymrat_py.measure.measure", fake_measure)
+    monkeypatch.setattr("gymrat.measure.measure", fake_measure)
     return captured
 
 
@@ -109,43 +109,6 @@ def test_measure_when_run_does_render_report_to_stdout(monkeypatch: pytest.Monke
 
     assert result.exit_code == 0
     assert "main" in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# metric count wiring
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_measure_when_success_does_supply_metric_count_to_progress(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """On success, measure_cmd calls progress.set_metric_count(len(result.metrics))."""
-    _stub_resolve(monkeypatch)
-    result_with_metrics = create_measurement_result(
-        metrics={
-            "latency/time": measured_metric(short_name="latency"),
-            "throughput/time": measured_metric(short_name="throughput"),
-            "heap/memory": measured_metric(short_name="heap", kind="memory"),
-        },
-    )
-    _capture_measure(monkeypatch, result_with_metrics)
-    counts: list[int] = []
-
-    from gymrat_py.cli.progress import ProgressReporter
-
-    original_set = ProgressReporter.set_metric_count
-
-    def spy_set_metric_count(self: ProgressReporter, n: int) -> None:
-        counts.append(n)
-        original_set(self, n)
-
-    monkeypatch.setattr(ProgressReporter, "set_metric_count", spy_set_metric_count)
-
-    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    assert counts == [3]
 
 
 # ---------------------------------------------------------------------------

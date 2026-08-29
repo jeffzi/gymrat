@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from gymrat_py.model import (
+from gymrat.model import (
     BandVerdict,
     Effect,
     ExactVerdict,
@@ -18,8 +18,8 @@ from gymrat_py.model import (
     Observations,
     PermutationVerdict,
 )
-from gymrat_py.verdict import compute_verdicts
-from gymrat_py.warn import WarnSink
+from gymrat.verdict import compute_verdicts
+from gymrat.warn import WarnSink
 from tests.verdict._inputs import _noop_warn, create_samples
 
 # ---------------------------------------------------------------------------

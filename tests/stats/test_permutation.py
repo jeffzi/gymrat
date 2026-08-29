@@ -14,8 +14,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from gymrat_py.stats import SignificanceResult, sign_flip_permutation_test
-from gymrat_py.stats.permutation import PERMUTATION_SEED, RESAMPLE_BUDGET
+from gymrat.stats import SignificanceResult, sign_flip_permutation_test
+from gymrat.stats.permutation import PERMUTATION_SEED, RESAMPLE_BUDGET
 
 # ---------------------------------------------------------------------------
 # sign_flip_permutation_test — pinned empirical fixtures
@@ -155,7 +155,7 @@ def test_permutation_seed_is_an_integer():
 
 
 def test_sign_flip_permutation_test_is_exported_from_stats_package():
-    from gymrat_py import stats
+    from gymrat import stats
 
     assert stats.sign_flip_permutation_test is sign_flip_permutation_test
     assert "sign_flip_permutation_test" in stats.__all__
@@ -248,7 +248,7 @@ def test_permutation_descriptor_docstring_when_inspected_does_state_strict_inequ
     """The PERMUTATION_DESCRIPTOR docstring states the engine gate: ``p < 0.05``."""
     import inspect
 
-    from gymrat_py.model import methods
+    from gymrat.model import methods
 
     source = inspect.getsource(methods)
     descriptor_region = source[source.index("PERMUTATION_DESCRIPTOR") :]

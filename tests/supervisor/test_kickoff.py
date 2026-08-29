@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from gymrat_py.config import BenchlessConfig
-from gymrat_py.errors import GymratError
-from gymrat_py.supervisor import compose_kickoff
+from gymrat.config import BenchlessConfig
+from gymrat.errors import GymratError
+from gymrat.supervisor import compose_kickoff
 
 # The heading the packaged SKILL.md opens its body with; proves the real
 # bundled skill text made it into the append.
@@ -56,7 +56,7 @@ def test_compose_kickoff_when_bundled_skill_missing_does_raise_before_runbook_ch
         message = "bundled skill unavailable"
         raise GymratError(message)
 
-    monkeypatch.setattr("gymrat_py.supervisor.kickoff.read_bundled_skill", _raise)
+    monkeypatch.setattr("gymrat.supervisor.kickoff.read_bundled_skill", _raise)
     config = _make_config(runbook=None)
 
     with pytest.raises(GymratError, match="bundled skill unavailable"):

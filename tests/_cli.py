@@ -3,7 +3,7 @@
 import os
 import sys
 
-ENTRY = [sys.executable, "-m", "gymrat_py.cli.app"]
+ENTRY = [sys.executable, "-m", "gymrat.cli.app"]
 """The command that launches the CLI the way a user's shell would."""
 
 
