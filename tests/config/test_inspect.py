@@ -17,7 +17,7 @@ from gymrat.config import (
     StopConfig,
     resolve_metric_meta,
 )
-from gymrat.config_inspect import inspect_config
+from gymrat.config.inspect import inspect_config
 from gymrat.model import Direction, MetricUnit, ResolvedMetricMeta
 from gymrat.warn import WarnSink, warn_to_stderr
 

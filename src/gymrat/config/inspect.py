@@ -23,7 +23,7 @@ from gymrat.config import (
     merge_config,
     runbook_problem,
 )
-from gymrat.config_env import (
+from gymrat.config.env import (
     NUMBER_ENV_FIELDS,
     STRING_ENV_FIELDS,
     env_string_result,

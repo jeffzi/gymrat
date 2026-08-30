@@ -1,6 +1,6 @@
 import pytest
 
-from gymrat.config_env import EnvResult, env_positive_int_result
+from gymrat.config.env import EnvResult, env_positive_int_result
 
 # ---------------------------------------------------------------------------
 # positive int overflow (CPython integer-string conversion limit)

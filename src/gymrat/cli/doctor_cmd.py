@@ -37,7 +37,7 @@ from gymrat.cli.shared import (
     write_and_flush,
 )
 from gymrat.config import CONFIG_DEFAULTS, BenchlessConfig, CliFlags
-from gymrat.config_inspect import inspect_config
+from gymrat.config.inspect import inspect_config
 from gymrat.doctor.bench import build_bench_section
 from gymrat.doctor.checks import (
     DoctorReport,
