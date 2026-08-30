@@ -224,7 +224,7 @@ def _to_wire(event: SessionEvent) -> dict[str, object]:
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with camelCase keys."""
     wire = _to_wire(event)
-    return json.dumps(null_non_finite(wire), separators=(",", ":"))
+    return json.dumps(null_non_finite(wire), separators=(",", ":"), default=str)
 
 
 # ---------------------------------------------------------------------------

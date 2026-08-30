@@ -401,3 +401,33 @@ def test_to_json_line_when_cost_is_non_finite_does_serialize_as_null(cost: float
 
     parsed = json.loads(line)
     assert parsed["costUsd"] is None
+
+
+# ---------------------------------------------------------------------------
+# B?? — non-JSON-encodable field fallback
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_line_when_field_not_json_encodable_does_stringify_instead_of_raising():
+    """A non-JSON-encodable value in an event field must not drop the log line.
+
+    ``to_json_line`` should fall back to ``str()`` for values that
+    ``json.dumps`` cannot encode, so the line is always written.
+    """
+
+    class NotSerializable:
+        def __str__(self) -> str:
+            return "fallback-repr"
+
+    event = ToolStartEvent(
+        timestamp=1,
+        tool_use_id="t1",
+        tool_name="Test",
+        input={"key": NotSerializable()},
+        input_summary="test",
+    )
+
+    line = to_json_line(event)
+
+    parsed = json.loads(line)
+    assert parsed["input"]["key"] == "fallback-repr"

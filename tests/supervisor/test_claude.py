@@ -570,6 +570,36 @@ async def test_abort_when_already_set_at_start_does_resolve_interrupted_without_
     assert probe.calls == 0
 
 
+async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
+    """A failing disconnect() must not replace the settled session outcome.
+
+    The exception is swallowed with a warning, and the session's reason, cost,
+    and ended_by remain intact.
+    """
+
+    class DisconnectRaisingClient(FakeClient):
+        @override
+        async def disconnect(self) -> None:
+            self.disconnect_count += 1
+            self._released.set()
+            message = "abort disconnect failed"
+            raise RuntimeError(message)
+
+    client = DisconnectRaisingClient([SimpleNamespace(total_cost_usd=0.10)], hang=True)
+    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    abort = asyncio.Event()
+
+    def observer(event: SessionEvent) -> None:
+        if isinstance(event, UsageUpdateEvent):
+            abort.set()
+
+    with pytest.warns(RuntimeWarning, match="disconnect failed"):
+        outcome = await run_session(driver, observer, abort=abort)
+
+    assert outcome.reason == "interrupted"
+    assert outcome.cost_usd == 0.10
+
+
 # ---------------------------------------------------------------------------
 # outcome
 # ---------------------------------------------------------------------------

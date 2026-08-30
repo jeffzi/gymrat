@@ -51,6 +51,7 @@ from gymrat.supervisor import (
     create_claude_driver,
     supervise,
 )
+from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
 
 _PromptArgument = Annotated[
@@ -219,6 +220,7 @@ def _execute(options: _Options) -> None:
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
         log_path = _resolve_log_path(root, options.log)
+        probe_event_log_path(log_path)
         config = resolve_benchless_config(CliFlags(), root)
         kickoff = compose_kickoff(config, options.prompt)
         head_sha = run_git(["rev-parse", "HEAD"], root).strip()

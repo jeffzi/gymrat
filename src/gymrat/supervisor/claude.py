@@ -157,7 +157,14 @@ class _ClaudeSession:
             self._stopped = SessionOutcome(reason="interrupted", cost_usd=self._cost_usd)
         # Disconnect so the streaming loop unblocks; the first stop already
         # captured the cost, so a later abort leaves it untouched.
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception as err:  # noqa: BLE001 - must not replace the settled outcome
+            warnings.warn(
+                f"claude client disconnect failed: {err!s}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _settled_or(self, default: SessionOutcome) -> SessionOutcome:
         return self._stopped if self._stopped is not None else default

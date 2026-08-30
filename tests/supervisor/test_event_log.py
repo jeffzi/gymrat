@@ -19,6 +19,7 @@ from gymrat.supervisor import (
     combine_observers,
     create_event_log_writer,
 )
+from gymrat.supervisor.event_log import probe_event_log_path
 from tests.supervisor._fixtures import read_log_lines
 
 # ---------------------------------------------------------------------------
@@ -126,3 +127,25 @@ def test_create_event_log_writer_when_parent_removed_after_first_write_does_recr
     assert read_log_lines(log_path) == [
         {"type": "usage_update", "timestamp": 2000, "costUsd": 0.02},
     ]
+
+
+# ---------------------------------------------------------------------------
+# probe_event_log_path — up-front write check
+# ---------------------------------------------------------------------------
+
+
+def test_probe_event_log_path_when_parent_is_a_file_does_raise_gymrat_error_naming_path(
+    tmp_path: Path,
+):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("I am a file", encoding="utf-8")
+    log_path = blocker / "events.jsonl"
+
+    with pytest.raises(GymratError, match=re.escape(str(log_path))):
+        probe_event_log_path(log_path)
+
+
+def test_probe_event_log_path_when_path_writable_does_not_raise(tmp_path: Path):
+    log_path = tmp_path / "events.jsonl"
+
+    probe_event_log_path(log_path)
