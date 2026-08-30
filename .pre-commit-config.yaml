@@ -42,6 +42,11 @@ repos:
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
+      - id: max-lines
+        name: max lines per file
+        entry: uv run python scripts/check_max_lines.py
+        language: system
+        types_or: [python, pyi]
 
   # Python type checking
   - repo: local
@@ -82,7 +87,7 @@ repos:
 
   # Spell checking
   - repo: https://github.com/streetsidesoftware/cspell-cli
-    rev: v10.0.1
+    rev: v10.1.0
     hooks:
       - id: cspell
 

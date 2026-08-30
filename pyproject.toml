@@ -22,7 +22,7 @@ classifiers = [
   "Topic :: System :: Benchmark",
 ]
 dependencies = [
-  "claude-agent-sdk>=0.2.143,<0.3",
+  "claude-agent-sdk>=0.2.144,<0.3",
   "pydantic>=2.13,<3",
   "rich>=15.0,<16",
   "scipy>=1.18,<2",
@@ -51,8 +51,8 @@ dev = [
   "pytest-sugar>=1.1,<2",
   "pytest-xdist>=3.8,<4",
   "ruff>=0.16.4,<0.17",
-  "syrupy>=5.5.3,<6",
-  "tomli-w>=1.2.0",
+  "syrupy>=5.5,<6",
+  "tomli-w>=1.2,<2",
 ]
 
 [build-system]
@@ -69,7 +69,7 @@ malware-check = true
 
 [tool.pyrefly]
 preset = "strict"
-project-includes = ["src", "tests"]
+project-includes = ["src", "tests", "scripts"]
 python-version = "3.12"
 search-path = ["src", "."]
 
@@ -138,6 +138,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-n auto --cov --cov-report=term-missing"
 asyncio_mode = "auto"
+xfail_strict = true
 
 [tool.coverage.run]
 source = ["src/gymrat"]
@@ -149,5 +150,6 @@ exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",
   "if __name__ == .__main__.",
+  "raise NotImplementedError",
 ]
 fail_under = 90
