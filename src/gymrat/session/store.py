@@ -48,9 +48,6 @@ __all__ = [
     "require_session",
 ]
 
-# The byte a completed record line ends with; a file not ending on it was torn.
-_NEWLINE_BYTE = 0x0A
-
 
 @dataclass(frozen=True, slots=True)
 class SessionState:
@@ -177,7 +174,8 @@ def _truncate_torn_tail(jsonl_path: str) -> None:
         data = Path(jsonl_path).read_bytes()
     except FileNotFoundError:
         return
-    if not data or data[-1] == _NEWLINE_BYTE:
+    # The byte a completed record line ends with; a file not ending on it was torn.
+    if not data or data[-1] == ord(b"\n"):
         return
     # rfind returns -1 when the torn line was the only content, so the log
     # truncates to zero bytes and the caller appends the first clean line.
@@ -211,7 +209,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     # finished — a torn append or a crash mid-flush. Each record is written as
     # a single newline-terminated write, so a line lacking the terminator was
     # never completed and must not be trusted.
-    last_unterminated = bool(raw) and raw[-1] != _NEWLINE_BYTE
+    last_unterminated = bool(raw) and raw[-1] != ord(b"\n")
 
     records: list[SessionLogRecord] = []
     for index, raw_line in enumerate(raw_lines):

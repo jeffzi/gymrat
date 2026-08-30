@@ -6,7 +6,7 @@ Optional fields default to ``None`` on the underlying dataclasses, so passing a
 keyword of ``None`` erases the builder's default for that field.
 
 The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.session._records``.
+helper imported as ``tests.session.records._fixtures``.
 """
 
 from dataclasses import replace

@@ -30,7 +30,7 @@ import pytest
 
 from gymrat.session import session_jsonl_path
 from gymrat.session.store import append_record, read_records
-from tests.session._records import committed_keep, session_record
+from tests.session.records._fixtures import committed_keep, session_record
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only signals and named pipes"
@@ -110,7 +110,7 @@ from pathlib import Path
 
 from gymrat.session import session_jsonl_path
 from gymrat.session.store import append_record
-from tests.session._records import committed_keep, session_record
+from tests.session.records._fixtures import committed_keep, session_record
 
 root, clean_count_raw, ready_flag, huge_chars_raw = sys.argv[1:5]
 clean_count = int(clean_count_raw)
@@ -132,7 +132,7 @@ import sys
 
 from gymrat.session import session_jsonl_path
 from gymrat.session.store import append_record
-from tests.session._records import session_record
+from tests.session.records._fixtures import session_record
 
 root = sys.argv[1]
 path = session_jsonl_path(root)
@@ -149,7 +149,7 @@ import sys
 
 from gymrat.session import session_jsonl_path
 from gymrat.session.store import append_record
-from tests.session._records import committed_keep
+from tests.session.records._fixtures import committed_keep
 
 root, barrier_path, count_raw, base_raw = sys.argv[1:5]
 count = int(count_raw)

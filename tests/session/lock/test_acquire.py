@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session import lock as lock_module
+from gymrat.session.lock import acquire as lock_module
 from gymrat.session.lock import acquire_lock
 from tests._process_helpers import dead_pid
 
