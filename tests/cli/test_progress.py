@@ -82,14 +82,12 @@ def _pass_started(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
 ) -> PassStarted:
     return PassStarted(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -101,14 +99,12 @@ def _pass_finished(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
 ) -> PassFinished:
     return PassFinished(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -211,9 +207,7 @@ def test_frame_when_multi_target_compare_does_name_running_target(
     _console, clock, reporter = _reporter("live", target_count=2, sample_count=5)
     reporter.report(PrepareFinished(label="main", at_ms=0))
     clock.tick(1)
-    reporter.report(
-        _pass_started(1, 5, target_index=1, target_count=2, label="candidate", at_ms=_ms(clock))
-    )
+    reporter.report(_pass_started(1, 5, target_count=2, label="candidate", at_ms=_ms(clock)))
 
     result = frame_text(reporter.frame())
 
@@ -471,7 +465,6 @@ def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
             _pass_started(
                 rnd,
                 2,
-                target_index=target_idx,
                 target_count=2,
                 label=label,
                 at_ms=_ms(clock),
@@ -482,7 +475,6 @@ def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
             _pass_finished(
                 rnd,
                 2,
-                target_index=target_idx,
                 target_count=2,
                 label=label,
                 at_ms=_ms(clock),

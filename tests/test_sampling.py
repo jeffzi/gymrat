@@ -268,13 +268,11 @@ async def test_collect_samples_when_progress_given_does_emit_pass_started_with_c
     first = pass_started_events[0]
     assert first.round == 1
     assert first.total_rounds == 2
-    assert first.target_index == 0
     assert first.target_count == 2
     assert first.label == "old"
     assert first.phase == "measure"
 
     second = pass_started_events[1]
-    assert second.target_index == 1
     assert second.label == "new"
 
 

@@ -440,13 +440,12 @@ async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_
         assert forward is not None, "iterate_session should forward sampling progress"
         contexts = list(targets)
         collected: list[TargetSamples] = []
-        for index, ctx in enumerate(contexts):
+        for ctx in contexts:
             for event_type in (PassStarted, PassFinished):
                 forward(
                     event_type(
                         round=1,
                         total_rounds=1,
-                        target_index=index,
                         target_count=len(contexts),
                         label=ctx.label,
                         at_ms=0,
@@ -591,12 +590,8 @@ async def test_iterate_session_when_confirmation_rerun_does_tag_pass_events_as_c
 
     rerun_callback = samples_mock.calls[1].options.on_progress
     assert rerun_callback is not None
-    probe_started = PassStarted(
-        round=1, total_rounds=1, target_index=0, target_count=1, label="x", at_ms=0
-    )
-    probe_finished = PassFinished(
-        round=1, total_rounds=1, target_index=0, target_count=1, label="x", at_ms=0
-    )
+    probe_started = PassStarted(round=1, total_rounds=1, target_count=1, label="x", at_ms=0)
+    probe_finished = PassFinished(round=1, total_rounds=1, target_count=1, label="x", at_ms=0)
     rerun_callback(probe_started)
     rerun_callback(probe_finished)
     pass_events = [

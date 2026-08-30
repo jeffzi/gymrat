@@ -70,14 +70,9 @@ def test_progress_path_when_given_root_does_not_place_file_under_worktrees(
 def _make_snapshot(**overrides: object) -> ProgressSnapshot:
     """Build a ProgressSnapshot with sensible defaults, overridable per-field."""
     defaults: dict[str, object] = {
-        "seq": 1,
-        "phase": "measure",
         "passes_completed": 3,
         "passes_total": 10,
-        "current_side": "experiment",
-        "current_round": 1,
         "last_pass_duration_ms": 1234.5,
-        "started_at": 1700000000.0,
     }
     defaults.update(overrides)
     return ProgressSnapshot(**defaults)  # type: ignore[arg-type]
@@ -103,18 +98,10 @@ def test_write_progress_when_called_does_create_readable_json_file(root: str):
 def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
     root: str,
 ):
-    write_progress(root, _make_snapshot(seq=1))
-    write_progress(root, _make_snapshot(seq=2))
+    write_progress(root, _make_snapshot(passes_completed=1))
+    write_progress(root, _make_snapshot(passes_completed=2))
 
-    assert _read_json(root)["seq"] == 2
-
-
-def test_write_progress_when_snapshot_has_none_side_does_serialize_null(
-    root: str,
-):
-    write_progress(root, _make_snapshot(current_side=None))
-
-    assert _read_json(root)["current_side"] is None
+    assert _read_json(root)["passes_completed"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +184,7 @@ def test_progress_snapshot_when_constructed_does_be_frozen():
     snapshot = _make_snapshot()
 
     with pytest.raises(AttributeError):
-        snapshot.seq = 99  # type: ignore[misc]
+        snapshot.passes_completed = 99  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -208,11 +195,10 @@ def test_progress_snapshot_when_constructed_does_be_frozen():
 def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
     root: str,
 ):
-    writer = create_sidecar_writer(root, seq=3, started_at=1700000000.0)
+    writer = create_sidecar_writer(root)
     event = PassStarted(
         round=1,
         total_rounds=5,
-        target_index=0,
         target_count=2,
         label="baseline",
         at_ms=100.0,
@@ -223,24 +209,18 @@ def test_create_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_c
 
     snapshot = read_progress(root)
     assert snapshot is not None
-    assert snapshot.seq == 3
     assert snapshot.passes_completed == 0
     assert snapshot.passes_total == 10
-    assert snapshot.current_side == "baseline"
-    assert snapshot.current_round == 1
-    assert snapshot.phase == "measure"
-    assert snapshot.started_at == 1700000000.0
 
 
 def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_record_duration(
     root: str,
 ):
-    writer = create_sidecar_writer(root, seq=1, started_at=1700000000.0)
+    writer = create_sidecar_writer(root)
     writer(
         PassStarted(
             round=1,
             total_rounds=3,
-            target_index=0,
             target_count=2,
             label="experiment",
             at_ms=100.0,
@@ -251,7 +231,6 @@ def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_r
         PassFinished(
             round=1,
             total_rounds=3,
-            target_index=0,
             target_count=2,
             label="experiment",
             at_ms=350.0,
@@ -262,28 +241,6 @@ def test_create_sidecar_writer_when_pass_finished_does_increment_completed_and_r
     assert snapshot is not None
     assert snapshot.passes_completed == 1
     assert snapshot.last_pass_duration_ms == 250.0
-
-
-def test_create_sidecar_writer_when_pass_started_with_confirm_phase_does_record_phase(
-    root: str,
-):
-    writer = create_sidecar_writer(root, seq=1, started_at=1700000000.0)
-
-    writer(
-        PassStarted(
-            round=1,
-            total_rounds=2,
-            target_index=0,
-            target_count=1,
-            label="experiment",
-            at_ms=100.0,
-            phase="confirm",
-        )
-    )
-
-    snapshot = read_progress(root)
-    assert snapshot is not None
-    assert snapshot.phase == "confirm"
 
 
 @pytest.mark.parametrize(
@@ -303,7 +260,7 @@ def test_create_sidecar_writer_when_non_pass_event_does_not_write(
     root: str,
     event: object,
 ):
-    writer = create_sidecar_writer(root, seq=1, started_at=1700000000.0)
+    writer = create_sidecar_writer(root)
 
     writer(event)  # type: ignore[arg-type]
 

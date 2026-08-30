@@ -9,7 +9,6 @@ from gymrat.model import (
     NOISE_FLOOR_PCT,
     NOISE_K,
     PERMUTATION_DESCRIPTOR,
-    Aggregate,
     BandVerdict,
     Effect,
     ExactVerdict,
@@ -306,21 +305,8 @@ def test_describe_when_given_each_variant_does_return_method_tag(
 
 
 # ---------------------------------------------------------------------------
-# Aggregate protocol and exclusion taxonomy
+# Exclusion taxonomy
 # ---------------------------------------------------------------------------
-
-
-def _accept_aggregate(aggregate: Aggregate) -> Aggregate:
-    """Type-checked sink proving ``GeomeanResult`` structurally satisfies ``Aggregate``."""
-    return aggregate
-
-
-def test_geomean_result_when_passed_to_aggregate_sink_does_satisfy_protocol():
-    result = GeomeanResult(value=1.0, n=3, band=0.5, excluded=())
-
-    aggregate: Aggregate = _accept_aggregate(result)
-
-    assert aggregate.value == 1.0
 
 
 def test_geomean_result_when_given_all_exclusion_reasons_does_round_trip_fields():

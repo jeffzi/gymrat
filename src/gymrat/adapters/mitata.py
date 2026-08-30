@@ -79,9 +79,9 @@ def _extract_json(stdout: str) -> dict[str, object]:
 
     first_record: dict[str, object] | None = None
     for candidate in candidates:
-        parsed = json.loads(candidate)
-        if not isinstance(parsed, dict):
-            continue
+        # Every candidate starts at a ``{``, so a successful raw_decode can only
+        # have produced a JSON object — no non-dict shape check is needed.
+        parsed: dict[str, object] = json.loads(candidate)
         if isinstance(parsed.get("benchmarks"), list):
             return parsed
         if first_record is None:

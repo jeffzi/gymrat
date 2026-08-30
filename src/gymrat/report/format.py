@@ -20,7 +20,6 @@ from rich.markup import escape
 
 from gymrat.metric_name import format_inline, parse
 from gymrat.model import (
-    BAND_DESCRIPTOR,
     PERMUTATION_DESCRIPTOR,
     Effect,
     GeomeanResult,
@@ -36,8 +35,6 @@ if TYPE_CHECKING:
 
 #: Minimum pairs the permutation test needs; below it a run falls to the band.
 MIN_PERMUTATION_N = PERMUTATION_DESCRIPTOR.min_n
-#: Minimum pairs the band method needs to measure a spread at all.
-MIN_BAND_N = BAND_DESCRIPTOR.min_n
 
 
 # ---------------------------------------------------------------------------

@@ -90,7 +90,6 @@ class SuperviseReporter:
     stop: Callable[[], None]
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
-    plain_writes: Callable[[], list[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +392,6 @@ class _ReporterCtx:
     liveness: _Liveness
     last_loop_text: str
     plain_write_fn: Callable[[str], None]
-    plain_writes_list: list[str]
     live: Live | None
 
 
@@ -420,7 +418,6 @@ def _emit_live(ctx: _ReporterCtx) -> None:
 def _plain_emit(ctx: _ReporterCtx, text: str) -> None:
     """Emit a milestone line in plain mode."""
     ctx.plain_write_fn(text)
-    ctx.plain_writes_list.append(text)
 
 
 def _emit(ctx: _ReporterCtx, plain_text: str) -> None:
@@ -634,8 +631,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     resolved_plain_write = plain_write if plain_write is not None else _stderr_write
     is_plain = mode == "plain"
 
-    plain_writes_list: list[str] = []
-
     ctx = _ReporterCtx(
         now=resolved_now,
         read_session_fn=resolved_read,
@@ -656,7 +651,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         liveness=_Starting(),
         last_loop_text="",
         plain_write_fn=resolved_plain_write,
-        plain_writes_list=plain_writes_list,
         live=None,
     )
 
@@ -689,13 +683,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         elif ctx.live is not None:
             ctx.live.console.print(message)
 
-    def get_plain_writes() -> list[str]:
-        return ctx.plain_writes_list
-
     return SuperviseReporter(
         observer=observer,
         stop=stop,
         frame=get_frame,
         warn=warn,
-        plain_writes=get_plain_writes,
     )

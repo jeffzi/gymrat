@@ -48,12 +48,8 @@ def _one_of_each_event(at_ms: float) -> list[ProgressEvent]:
     return [
         PrepareStarted(label="A", at_ms=at_ms),
         PrepareFinished(label="A", at_ms=at_ms),
-        PassStarted(
-            round=1, total_rounds=3, target_index=0, target_count=2, label="A", at_ms=at_ms
-        ),
-        PassFinished(
-            round=1, total_rounds=3, target_index=0, target_count=2, label="A", at_ms=at_ms
-        ),
+        PassStarted(round=1, total_rounds=3, target_count=2, label="A", at_ms=at_ms),
+        PassFinished(round=1, total_rounds=3, target_count=2, label="A", at_ms=at_ms),
         HookStarted(stage="before", at_ms=at_ms),
         HookFinished(stage="after", at_ms=at_ms),
         JudgeStarted(at_ms=at_ms),
@@ -103,13 +99,10 @@ def test_prepare_event_when_constructed_does_carry_label(
 def test_pass_event_when_constructed_does_carry_all_fields(
     event_class: type[PassStarted | PassFinished],
 ) -> None:
-    event = event_class(
-        round=2, total_rounds=5, target_index=1, target_count=3, label="bench", at_ms=100
-    )
+    event = event_class(round=2, total_rounds=5, target_count=3, label="bench", at_ms=100)
 
     assert event.round == 2
     assert event.total_rounds == 5
-    assert event.target_index == 1
     assert event.target_count == 3
     assert event.label == "bench"
     assert event.phase == "measure"
@@ -117,7 +110,7 @@ def test_pass_event_when_constructed_does_carry_all_fields(
 
 def test_pass_started_when_phase_set_to_confirm_does_carry_confirm() -> None:
     event = PassStarted(
-        round=1, total_rounds=2, target_index=0, target_count=1, label="x", phase="confirm", at_ms=0
+        round=1, total_rounds=2, target_count=1, label="x", phase="confirm", at_ms=0
     )
 
     assert event.phase == "confirm"

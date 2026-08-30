@@ -24,7 +24,6 @@ measurement stack these are light, and every loop command reaches one.
 from __future__ import annotations
 
 import sys
-import time
 from dataclasses import dataclass
 
 import typer
@@ -234,7 +233,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
                 has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
             )
-            sidecar_writer = create_sidecar_writer(root, seq, started_at=time.time())
+            sidecar_writer = create_sidecar_writer(root)
             fan_out = create_fan_out([renderer.report, sidecar_writer])
             try:
                 return await run_with_signal_abort(

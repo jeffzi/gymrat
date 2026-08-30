@@ -68,7 +68,6 @@ def _pass_started(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
@@ -76,7 +75,6 @@ def _pass_started(
     return PassStarted(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -89,7 +87,6 @@ def _pass_finished(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
@@ -97,7 +94,6 @@ def _pass_finished(
     return PassFinished(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -111,7 +107,6 @@ def _report_full_pass(
     round_num: int,
     total_rounds: int,
     *,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
@@ -121,7 +116,6 @@ def _report_full_pass(
         _pass_started(
             round_num,
             total_rounds,
-            target_index=target_index,
             target_count=target_count,
             label=label,
             phase=phase,
@@ -133,7 +127,6 @@ def _report_full_pass(
         _pass_finished(
             round_num,
             total_rounds,
-            target_index=target_index,
             target_count=target_count,
             label=label,
             phase=phase,
@@ -304,19 +297,14 @@ def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 5, target_index=0, target_count=2, label="baseline", duration_s=10
-    )
+    _report_full_pass(renderer, clock, 1, 5, target_count=2, label="baseline", duration_s=10)
     clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 5, target_index=1, target_count=2, label="candidate", duration_s=10
-    )
+    _report_full_pass(renderer, clock, 1, 5, target_count=2, label="candidate", duration_s=10)
     clock.tick(1)
     renderer.report(
         _pass_started(
             2,
             5,
-            target_index=0,
             target_count=2,
             label="baseline",
             at_ms=_ms(clock),
@@ -366,7 +354,6 @@ def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
         _pass_started(
             1,
             5,
-            target_index=0,
             target_count=2,
             label="baseline",
             at_ms=_ms(clock),
@@ -404,7 +391,6 @@ def test_frame_when_compact_layout_does_show_single_row(
         _pass_started(
             1,
             5,
-            target_index=0,
             target_count=2,
             label="A",
             at_ms=_ms(clock),
@@ -557,12 +543,8 @@ def test_plain_when_passes_done_does_print_timestamped_line(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 1, target_index=0, target_count=2, label="baseline", duration_s=10
-    )
-    _report_full_pass(
-        renderer, clock, 1, 1, target_index=1, target_count=2, label="experiment", duration_s=10
-    )
+    _report_full_pass(renderer, clock, 1, 1, target_count=2, label="baseline", duration_s=10)
+    _report_full_pass(renderer, clock, 1, 1, target_count=2, label="experiment", duration_s=10)
 
     assert _last_line(console) == snapshot
     renderer.stop()
@@ -833,7 +815,6 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
                 _pass_started(
                     rnd,
                     2,
-                    target_index=t_idx,
                     target_count=2,
                     label=lbl,
                     at_ms=at,
@@ -845,7 +826,6 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
                 _pass_finished(
                     rnd,
                     2,
-                    target_index=t_idx,
                     target_count=2,
                     label=lbl,
                     at_ms=at,

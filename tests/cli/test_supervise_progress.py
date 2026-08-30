@@ -851,14 +851,9 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar(
     snapshot: SnapshotAssertion,
 ):
     sidecar = ProgressSnapshot(
-        seq=3,
-        phase="measure",
         passes_completed=7,
         passes_total=10,
-        current_side="experiment",
-        current_round=4,
         last_pass_duration_ms=225_000.0,
-        started_at=1700000000.0,
     )
 
     def fake_read_progress(_root: str) -> ProgressSnapshot | None:

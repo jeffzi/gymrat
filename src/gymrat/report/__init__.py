@@ -8,7 +8,6 @@ submodules.
 from gymrat.report.format import (
     GATED_GEOMEAN_LABEL,
     GEOMEAN_LABEL,
-    MIN_BAND_N,
     MIN_PERMUTATION_N,
     NO_GEOMEAN_CELL,
     NO_GEOMEAN_FIGURE,
@@ -131,7 +130,6 @@ __all__ = [
     "GEOMEAN_LABEL",
     "GROUP_LABEL_STYLE",
     "LABEL_DISPLAY_WIDTH",
-    "MIN_BAND_N",
     "MIN_PERMUTATION_N",
     "NO_GEOMEAN_CELL",
     "NO_GEOMEAN_FIGURE",

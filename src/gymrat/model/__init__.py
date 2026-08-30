@@ -1,7 +1,6 @@
 """Core model value types: pure, immutable data with no logic."""
 
 from gymrat.model.aggregate import (
-    Aggregate,
     Exclusion,
     ExclusionReason,
     GeomeanResult,
@@ -23,12 +22,10 @@ from gymrat.model.metrics import (
     ResolvedMetricMeta,
 )
 from gymrat.model.observations import (
-    DROP_UNPAIRED,
     Observations,
     PairingKey,
     PairResult,
     Repeat,
-    UnpairedPolicy,
     pair_metric,
 )
 from gymrat.model.verdicts import (
@@ -43,11 +40,9 @@ from gymrat.model.verdicts import (
 __all__ = [
     "BAND_DESCRIPTOR",
     "DEFAULT_UNSTABLE_NOISE_PCT",
-    "DROP_UNPAIRED",
     "NOISE_FLOOR_PCT",
     "NOISE_K",
     "PERMUTATION_DESCRIPTOR",
-    "Aggregate",
     "ApproximateVerdict",
     "BandVerdict",
     "Direction",
@@ -68,7 +63,6 @@ __all__ = [
     "PermutationVerdict",
     "Repeat",
     "ResolvedMetricMeta",
-    "UnpairedPolicy",
     "Verdict",
     "pair_metric",
 ]

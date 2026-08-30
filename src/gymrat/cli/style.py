@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 
 GLYPH_DONE = "✓"
 GLYPH_PENDING = "○"
-GLYPH_ERROR = "✗"
 
 # The one spinner animation every renderer uses, for ``SpinnerColumn`` in
 # progress bars and ``Spinner`` in checklist rows alike.
@@ -45,7 +44,6 @@ GLYPH_ALERT = "!"
 STYLE_RUNNING = "yellow"
 STYLE_DONE = "green"
 STYLE_PENDING = "dim"
-STYLE_ERROR = "red"
 STYLE_ALERT = "yellow"
 
 STYLE_VERB = "bold"

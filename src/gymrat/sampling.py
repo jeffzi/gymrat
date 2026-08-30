@@ -16,7 +16,7 @@ import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal
 
 from gymrat.adapters.types import Adapter, WarnSink
 from gymrat.config import KindEntry, MetricEntry, resolve_metric_meta
@@ -176,16 +176,6 @@ _LABEL_WIDTH = 11
 _MIN_SPREAD_SAMPLES = 2
 
 
-class _PassFields(TypedDict):
-    """Everything :class:`PassStarted` and :class:`PassFinished` share but ``at_ms``."""
-
-    round: int
-    total_rounds: int
-    target_index: int
-    target_count: int
-    label: str
-
-
 async def collect_samples(
     adapter: Adapter,
     targets: Sequence[TargetContext],
@@ -228,18 +218,29 @@ async def collect_samples(
 
     for round_index in range(options.samples):
         for target_index, ctx in enumerate(targets):
-            pass_fields: _PassFields = {
-                "round": round_index + 1,
-                "total_rounds": options.samples,
-                "target_index": target_index,
-                "target_count": target_count,
-                "label": ctx.label,
-            }
-            emit_progress(options.on_progress, PassStarted(**pass_fields, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress,
+                PassStarted(
+                    round=round_index + 1,
+                    total_rounds=options.samples,
+                    target_count=target_count,
+                    label=ctx.label,
+                    at_ms=options.clock(),
+                ),
+            )
             stdout = await _run_command(
                 "bench", round_index + 1, options.bench, ctx, timeout_ms, abort
             )
-            emit_progress(options.on_progress, PassFinished(**pass_fields, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress,
+                PassFinished(
+                    round=round_index + 1,
+                    total_rounds=options.samples,
+                    target_count=target_count,
+                    label=ctx.label,
+                    at_ms=options.clock(),
+                ),
+            )
             collected[target_index].append(_parse(adapter, stdout, options.warn))
 
     return [
@@ -566,5 +567,4 @@ def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exceptio
         wrapped: Exception = type(error)(combined, hint=hint_of(error))
     else:
         wrapped = Exception(combined)
-    wrapped.__cause__ = error
     return wrapped
