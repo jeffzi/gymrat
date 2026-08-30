@@ -36,6 +36,7 @@ from gymrat.cli.shared import (
     parse_positional,
     run_cli,
     run_options_of,
+    set_stderr_color_override,
     with_repo_lock,
 )
 from gymrat.config import resolve_config
@@ -90,6 +91,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 ) -> None:
     """Run each candidate against the baseline and exit non-zero when --fail-on fires."""
     apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,

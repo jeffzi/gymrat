@@ -53,6 +53,7 @@ from gymrat.cli.shared import (
     resolve_stream_color,
     run_cli,
     run_with_signal_abort,
+    set_stderr_color_override,
     with_repo_lock,
     write_and_flush,
 )
@@ -194,6 +195,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
     apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
 
     use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
@@ -375,6 +377,7 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 ) -> None:
     """Show this repository's session history, read from its log."""
     apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
 
     use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)

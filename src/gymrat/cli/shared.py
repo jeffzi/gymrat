@@ -81,6 +81,21 @@ def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the -
     _DebugState.enabled = value
 
 
+class _StderrColorState:
+    """Holds the ``--no-color`` override for stderr error output.
+
+    Commands set this at startup so ``_resolve_stderr_color`` reads the flag
+    instead of always deferring to env+TTY detection.
+    """
+
+    override: bool | None = None
+
+
+def set_stderr_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 setter for the --no-color flag
+    """Set the module-level color override that ``format_cli_error`` reads."""
+    _StderrColorState.override = override
+
+
 def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a command's --debug flag
     """Enable debug mode when a command's own ``--debug`` flag is set.
 
@@ -141,7 +156,7 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
 
 def _resolve_stderr_color() -> bool:
     """Whether stderr error output should carry color, per the shared precedence."""
-    return resolve_stream_color(None, sys.stderr)
+    return resolve_stream_color(_StderrColorState.override, sys.stderr)
 
 
 # ---------------------------------------------------------------------------

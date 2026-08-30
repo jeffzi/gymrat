@@ -32,6 +32,7 @@ from gymrat.cli.shared import (
     color_override_of,
     resolve_stream_color,
     run_cli,
+    set_stderr_color_override,
     wants_json,
     write_and_flush,
 )
@@ -124,6 +125,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
 ) -> None:
     """Check the project setup and report any problems."""
     apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     flags = SharedFlags(
         bench=bench,
         prepare=prepare,

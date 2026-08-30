@@ -26,6 +26,7 @@ from gymrat.cli.shared import (
     SharedFlags,
     begin_run,
     color_override_of,
+    format_cli_error,
     is_tty,
     parse_max_minutes,
     parse_positional,
@@ -33,6 +34,7 @@ from gymrat.cli.shared import (
     parse_positive_number,
     resolve_render_mode,
     run_with_signal_abort,
+    set_stderr_color_override,
     with_repo_lock,
     write_and_flush,
 )
@@ -171,6 +173,20 @@ def test_run_cli_when_broken_pipe_does_exit_cleanly(
 )
 def test_color_override_of_maps_flag_to_renderer_override(color: bool, expected: object):
     assert color_override_of(color) is expected
+
+
+def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    _clear_color_env(monkeypatch)
+
+    set_stderr_color_override(False)
+    result = format_cli_error(ValueError("boom"))
+    set_stderr_color_override(None)
+
+    assert "\x1b[" not in result
 
 
 # ---------------------------------------------------------------------------

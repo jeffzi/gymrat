@@ -21,13 +21,15 @@ from typing import TYPE_CHECKING, Literal, assert_never
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from rich.console import Console, RenderableType
+    from rich.console import RenderableType
+
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
+from gymrat.cli.console import stderr_console
 from gymrat.eta import format_duration, format_eta
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
@@ -615,6 +617,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     branch: str = "",
     plain_write: Callable[[str], None] | None = None,
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
+    color: bool = True,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
 
@@ -659,7 +662,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     # ``get_renderable()`` to size the initial layout.
     if not is_plain:
         ctx.live = Live(
-            console=Console(stderr=True),
+            console=stderr_console(color_flag=color),
             refresh_per_second=1,
             transient=True,
             get_renderable=lambda: _build_frame(ctx),

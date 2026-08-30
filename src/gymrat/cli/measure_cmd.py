@@ -36,6 +36,7 @@ from gymrat.cli.shared import (
     parse_positional,
     run_cli,
     run_options_of,
+    set_stderr_color_override,
     wants_json,
     with_repo_lock,
     write_and_flush,
@@ -88,6 +89,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
     apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,

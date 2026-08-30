@@ -40,6 +40,7 @@ from gymrat.cli.shared import (
     format_cli_error,
     resolve_render_mode,
     resolve_stream_color,
+    set_stderr_color_override,
 )
 from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat.doctor.render import render_doctor_report
@@ -335,6 +336,39 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     _apply_color_env(monkeypatch, "1", None)
 
     assert resolve_render_mode() == "plain"
+
+
+# ---------------------------------------------------------------------------
+# a zero-width terminal degrades gracefully
+# ---------------------------------------------------------------------------
+
+
+def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    _apply_color_env(monkeypatch, None, None)
+
+    set_stderr_color_override(False)
+    result = format_cli_error(ValueError("boom"))
+    set_stderr_color_override(None)
+
+    assert "\x1b[" not in result
+
+
+def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    _apply_color_env(monkeypatch, None, "1")
+
+    console = stderr_console()
+    with console.capture() as capture:
+        console.print("probe", style="bold", end="")
+
+    assert "\x1b[" not in capture.get()
 
 
 # ---------------------------------------------------------------------------

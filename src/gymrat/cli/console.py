@@ -1,6 +1,5 @@
 """Stderr ``Console`` factory for rich output."""
 
-import os
 import sys
 
 from rich.console import Console
@@ -16,13 +15,20 @@ def stderr_console(*, color_flag: bool | None = None) -> Console:
     ``True`` defers to auto-detection, ``False`` vetoes color, and ``None``
     (the default) runs the full detection chain.
 
-    The console carries :data:`~gymrat.cli.style.CLI_THEME`, which is what
-    makes rich's own progress columns follow the shared state conventions.
+    When colorless the console uses ``color_system=None`` rather than
+    ``no_color=True`` so that **all** SGR is suppressed — including bold and
+    dim — matching the stdout report surface.
+
+    Rich's own ``Console`` already reads ``COLUMNS`` through a guarded path
+    that ignores non-numeric values, so we do not reimplement that lookup.
     """
     override = color_override_of(color_flag) if color_flag is not None else None
     colored = resolve_stream_color(override, sys.stderr)
 
-    columns = os.environ.get("COLUMNS")
-    width = int(columns) if columns is not None else None
+    # no_color pins Rich's own NO_COLOR detection so the shared precedence
+    # (flag > FORCE_COLOR > NO_COLOR > TTY) is the single decider.
+    # color_system=None strips every SGR sequence (bold, dim, italic — not
+    # just color); "auto" lets Rich pick the palette from the terminal.
+    color_system = "auto" if colored else None
 
-    return Console(stderr=True, no_color=not colored, width=width, theme=CLI_THEME)
+    return Console(stderr=True, no_color=not colored, color_system=color_system, theme=CLI_THEME)

@@ -258,6 +258,7 @@ def make_reporter(
     label: str = "ecstatic-ts",
     session_id: str = "20260813-125044-34ec",
     branch: str = "gymrat/20260813-125044-34ec",
+    color: bool | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing."""
     clock = Clock(clock_start)
@@ -272,6 +273,8 @@ def make_reporter(
         kwargs["read_progress"] = read_progress
     if plain_write is not None:
         kwargs["plain_write"] = plain_write
+    if color is not None:
+        kwargs["color"] = color
     reporter = create_supervise_reporter(
         root=root,
         max_minutes=max_minutes,
@@ -310,6 +313,16 @@ def test_create_reporter_when_built_does_expose_frame():
     frame = kit.reporter.frame()
 
     assert frame is not None
+
+
+def test_create_reporter_when_color_false_does_build_colorless_console():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        make_reporter(mode="live", color=False)
+
+        call_kwargs = mock_live_cls.call_args.kwargs
+        console = call_kwargs.get("console")
+        assert console is not None
+        assert console.color_system is None
 
 
 # ---------------------------------------------------------------------------

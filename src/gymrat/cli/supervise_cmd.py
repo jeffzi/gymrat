@@ -24,10 +24,12 @@ from gymrat.cli.shared import (
     DebugOption,
     NoColorOption,
     apply_debug,
+    color_override_of,
     exit_with_error,
     parse_max_minutes,
     parse_positive_number,
     resolve_render_mode,
+    set_stderr_color_override,
     write_and_flush,
 )
 from gymrat.cli.supervise_progress import create_supervise_reporter
@@ -166,6 +168,7 @@ def _run_session(ctx: _SessionContext) -> None:
         max_usd=ctx.max_usd,
         max_iterations=ctx.max_iterations,
         mode=mode,
+        color=ctx.color,
     )
     uninstall_cleanup = install_termination_cleanup(reporter.stop)
 
@@ -261,6 +264,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
     apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     options = _Options(
         prompt=prompt,
         max_minutes=max_minutes,
