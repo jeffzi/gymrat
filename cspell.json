@@ -16,7 +16,6 @@
     "confusables",
     "CREAT",
     "delenv",
-    "diffable",
     "docstrings",
     "dunder",
     "EEXIST",
@@ -33,8 +32,6 @@
     "getpid",
     "gpgsign",
     "gymrat",
-    "htmlcov",
-    "isort",
     "jeffzi",
     "killpg",
     "kwargs",
@@ -47,7 +44,6 @@
     "pvalue",
     "pydantic",
     "pydocstyle",
-    "pylint",
     "pyproject",
     "pyrefly",
     "pyte",
@@ -90,7 +86,6 @@
     "build",
     "coverage.xml",
     "dist",
-    "htmlcov",
     "uv.lock"
   ]
 }

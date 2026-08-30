@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Windows support for the optimization session: `start`, `iterate`, `keep`, `discard`,
   `finalize`, and `status` now run on Windows.
+- `gymrat sync` copies uncommitted main-tree changes into the experiment worktree, for edits that
+  must land in the main working tree first (for example a dependency update); it refuses when the
+  experiment worktree has conflicting uncommitted changes.
+- `iterate`, `keep`, `discard`, and `status` accept `--format json` for machine-readable output
+  under the same additive-only contract as `compare` and `measure`.
 
 ### Changed
 
@@ -89,8 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The interactive wizard prompts in `gymrat init` and the `--adapter`, `--checks`, `--stop-target`,
-  `--stop-max-iterations`, `--primary`, `--runbook PATH`, `--skill`/`--no-skill`, and
-  `--yes` flags.
+  `--stop-max-iterations`, `--primary`, `--runbook PATH`, and `--yes` flags.
 - `gymrat doctor --no-bench`, along with the smoke benchmark run it used to skip.
 
 ## [0.11.0] - 2026-08-25

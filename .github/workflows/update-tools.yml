@@ -5,14 +5,15 @@ on:
     - cron: "0 7 * * 1"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   autoupdate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -26,8 +27,15 @@ jobs:
           uv sync
       - name: Install dprint
         shell: bash
+        env:
+          DPRINT_VERSION: 0.55.2
+          DPRINT_SHA256: d7ccde62d789dfb048717252d259e21253e32feffe4cbf2dab9954eeab492219
         run: |
-          curl -fsSL https://dprint.dev/install.sh | sh
+          curl -fsSL -o dprint.zip "https://github.com/dprint/dprint/releases/download/${DPRINT_VERSION}/dprint-x86_64-unknown-linux-gnu.zip"
+          echo "${DPRINT_SHA256}  dprint.zip" | sha256sum -c -
+          mkdir -p "$HOME/.dprint/bin"
+          unzip -o -d "$HOME/.dprint/bin" dprint.zip
+          rm dprint.zip
           echo "$HOME/.dprint/bin" >> "$GITHUB_PATH"
       - name: Bump hook revs and dprint plugins
         run: |

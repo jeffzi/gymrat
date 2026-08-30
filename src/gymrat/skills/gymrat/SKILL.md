@@ -20,7 +20,8 @@ repository root.
 `samples` defaults to `10`.
 
 **Load the per-repo runbook before your first edit** — the path `gymrat start` prints (also in
-`gymrat status`). No runbook line → ask which metrics gate and what to optimize.
+`gymrat status` text output; the JSON status document carries counts only, not the runbook path or
+per-iteration history). No runbook line → ask which metrics gate and what to optimize.
 
 ## Session lifecycle
 
@@ -63,11 +64,12 @@ gymrat keep -m "describe the optimization"   # commit the edit, advance the base
 gymrat discard                                # revert the experiment worktree
 ```
 
-`keep` refuses when nothing has been measured, when a gating metric regressed, or when `checks`
-fails. Refusals exit 1.
+`keep` refuses when nothing has been measured, when the measured iteration left nothing to commit
+(no edit was made), when a gating metric regressed, or when `checks` fails. Refusals exit 1.
 
 After a checks failure, fix and re-run `gymrat keep`. After a gating-regression refusal, `keep`
-stays blocked — run `iterate` or `discard`.
+stays blocked — run `iterate` or `discard`. A nothing-to-commit refusal settles the iteration:
+edit the worktree, then run `gymrat iterate` — not `keep` again.
 
 **One iteration at a time.** Each must be settled before the next `iterate`.
 
@@ -141,10 +143,12 @@ experiment worktree has conflicting uncommitted changes.
 
 ## Exit codes
 
-| Code | Meaning                                                                                |
-| ---- | -------------------------------------------------------------------------------------- |
-| 0    | Success (report produced, no gate tripped)                                             |
-| 1    | Gate tripped: `keep` refused, `iterate` hit stop condition, `supervise` cap fired      |
-| 2    | Operational error: no session, finalized session, lock contention, bad config, timeout |
+| Code    | Meaning                                                                                |
+| ------- | -------------------------------------------------------------------------------------- |
+| 0       | Success (report produced, no gate tripped)                                             |
+| 1       | Gate tripped: `keep` refused, `iterate` hit stop condition, `supervise` cap fired      |
+| 2       | Operational error: no session, finalized session, lock contention, bad config, timeout |
+| 128 + N | Killed by signal N (e.g. 130 after Ctrl-C); cleanup ran before exiting                 |
 
-Exit 1 is information — read the output. Exit 2 is a real error — diagnose before retrying.
+Exit 1 is information — read the output. Exit 2 is a real error — diagnose before retrying. An exit
+above 128 means the run was interrupted — the iteration may be unsettled; check `gymrat status`.

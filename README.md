@@ -20,17 +20,17 @@ gymrat checks out each revision into a temporary worktree, runs the bench comman
 side, and prints a verdict per metric plus a geomean summary:
 
 ```text
-────────────────────┬──────────────┬──────────────┬────────────────
-time                │ main         │ faster       │ vs main
-────────────────────┼──────────────┼──────────────┼────────────────
-decode              │ 12.0ms ± 0%  │ 11.0ms ± 0%  │ ✓  -8.3%  ±0.5%
-────────────────────┼──────────────┼──────────────┼────────────────
-geomean · time (1)  │              │              │    -8.3%  ±0.5%
+gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
+metric                    │ main         │ perf/faster-decode │ vs main
+──────────────────────────┼──────────────┼────────────────────┼────────────────
+decode#time               │ 12.0ms ± 0%  │ 11.0ms ± 0%        │ ✓  -8.3%  ±0.6%
+──────────────────────────┼──────────────┼────────────────────┼────────────────
+geomean (1 stable metric) │              │                    │    -8.3%  ±0.6%
 
-✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 1 within noise   ? 0 inconclusive
+✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive
 
 highlights
-  ✓ time · decode   -8.3%
+  ✓ decode#time   -8.3%
 ```
 
 Add `--fail-on regressed` to make CI exit non-zero on a regression, or `--format json` for
@@ -49,8 +49,8 @@ or `pipx install gymrat`, or `pip install gymrat`. Requires Python 3.12+.
 gymrat parses your bench command's stdout through an adapter:
 
 - **`metric-lines`** (default): your script prints one `METRIC <name>=<value>` line per sample,
-  e.g. `METRIC decode/time=12400000`. Repeated names are reduced to their median. Names ending in
-  `/time` are treated as nanoseconds and names ending in `/heap` as bytes; anything else is a plain
+  e.g. `METRIC decode#time=12000000`. Repeated names are reduced to their median. Names ending in
+  `#time` are treated as nanoseconds and names ending in `#heap` as bytes; anything else is a plain
   number where lower is better.
 - **`mitata`**: parses [mitata](https://github.com/evanwashere/mitata) benchmark output directly.
 
@@ -65,6 +65,7 @@ Select one with `--adapter` or in the config file.
 | `gymrat measure [target]`           | Measure a single revision or directory on its own             |
 | `gymrat doctor`                     | Check the project setup and report problems                   |
 | `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                 |
+| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree |
 | `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps |
 
 Targets are git refs or directories, optionally labeled: `gymrat compare old=main new=perf/simd`.
@@ -83,7 +84,7 @@ samples = 10 # paired samples per target
 timeout_seconds = 1800 # per bench invocation
 primary = "geomean" # or a metric name
 
-[metrics."decode/time"]
+[metrics."decode#time"]
 direction = "lower" # per-metric overrides: direction, gating, exact
 ```
 
@@ -102,6 +103,7 @@ gymrat iterate             # measure the edit against the baseline
 gymrat keep -m "vectorize decode loop"   # commit it if checks pass
 gymrat discard             # ...or revert the worktree to its last commit
 gymrat status              # session history so far
+gymrat sync                # copy uncommitted main-tree edits into the worktree
 gymrat finalize            # squash kept iterations into one commit and close
 ```
 
@@ -127,7 +129,7 @@ gymrat serves two audiences with the same statistical engine:
 Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `status`)
 accepts `--format json` for structured output. The JSON key shapes are a stability contract:
 additions only, no renames or removals without a breaking change. Text output is for humans and may
-change between releases. `start` and `finalize` are text-only.
+change between releases. `start`, `sync`, and `finalize` are text-only.
 
 ## How verdicts work
 
