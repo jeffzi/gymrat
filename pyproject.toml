@@ -136,7 +136,7 @@ convention = "google"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-n auto --cov --cov-report=term-missing"
+addopts = "--import-mode=importlib -n auto --cov --cov-report=term-missing"
 asyncio_mode = "auto"
 xfail_strict = true
 
