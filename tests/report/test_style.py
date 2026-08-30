@@ -483,6 +483,18 @@ def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_
     assert "hi" in captured
 
 
+def test_make_capture_console_when_term_dumb_and_explicit_width_does_honor_width(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    console = make_capture_console(color=True, width=200)
+
+    assert console.width == 200
+
+
 def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
     monkeypatch: pytest.MonkeyPatch,
 ):

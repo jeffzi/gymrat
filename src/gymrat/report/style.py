@@ -307,9 +307,13 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     else:
         force_terminal, color_system = None, "auto"
 
+    # Both width and height must be explicit: Rich's Console.size only honors an
+    # explicit width when _height is also set; otherwise a dumb terminal
+    # (TERM=dumb, common in git hooks and CI) early-returns (80, 25).
     return Console(
         file=buffer,
         width=width,
+        height=25,
         force_terminal=force_terminal,
         color_system=color_system,
         no_color=False,

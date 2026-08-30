@@ -94,6 +94,7 @@ def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     result = runner.invoke(app, ["--help"], color=True)
