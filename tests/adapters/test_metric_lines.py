@@ -2,7 +2,6 @@ import pytest
 
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
-from gymrat.errors import GymratError
 
 # ---------------------------------------------------------------------------
 # adapter shape
@@ -256,8 +255,8 @@ def test_parse_when_name_holds_line_separator_does_warn_and_skip(code_point: int
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_name_contains_multiple_hashes_does_raise_gymrat_error():
-    with pytest.raises(GymratError, match="bad#name#extra"):
+def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error():
+    with pytest.raises(AdapterError, match="bad#name#extra"):
         metric_lines_adapter.parse("METRIC bad#name#extra=42")
 
 

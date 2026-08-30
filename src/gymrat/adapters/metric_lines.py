@@ -8,9 +8,8 @@ to their median so a benchmark run with several samples yields one value per nam
 import math
 import re
 
-from gymrat.adapters.defaults import SuffixDefaultsMixin
-from gymrat.adapters.types import AdapterError, WarnSink, warn_to_stderr
-from gymrat.errors import GymratError
+from gymrat.adapters.defaults import defaults_from_suffixes
+from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
 from gymrat.stats.descriptive import compute_median
 
 _PREFIX = "METRIC"
@@ -73,10 +72,14 @@ def _js_number(raw: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
-class _MetricLinesAdapter(SuffixDefaultsMixin):
+class _MetricLinesAdapter:
     """Adapter that reads ``METRIC name=value`` lines from a bench script's stdout."""
 
     name = "metric-lines"
+
+    def defaults(self, metric_name: str) -> MetricDefaults:
+        """Return name-derived defaults for ``metric_name`` via suffix matching."""
+        return defaults_from_suffixes(metric_name)
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse ``METRIC`` lines from ``stdout`` into a median-per-name metric map.
@@ -123,7 +126,7 @@ class _MetricLinesAdapter(SuffixDefaultsMixin):
                     f"Metric name \"{metric_name}\" contains more than one '#'; "
                     "only a single '#' is allowed as the metric-type separator"
                 )
-                raise GymratError(msg)
+                raise AdapterError(msg)
 
             value = _js_number(after[last_eq + 1 :])
             if value is None:

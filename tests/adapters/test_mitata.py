@@ -4,7 +4,6 @@ import pytest
 
 from gymrat.adapters.mitata import find_json_candidates, mitata_adapter
 from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
-from gymrat.errors import GymratError
 from gymrat.model.metrics import MetricUnit
 from tests.adapters._inputs import build_stdout
 
@@ -197,16 +196,16 @@ def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_poin
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_alias_contains_hash_does_raise_gymrat_error():
+def test_parse_when_alias_contains_hash_does_raise_adapter_error():
     stdout = build_stdout(
         [{"alias": "enc#ode", "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]}]
     )
 
-    with pytest.raises(GymratError, match="enc#ode"):
+    with pytest.raises(AdapterError, match="enc#ode"):
         mitata_adapter.parse(stdout)
 
 
-def test_parse_when_substituted_arg_introduces_hash_does_raise_gymrat_error():
+def test_parse_when_substituted_arg_introduces_hash_does_raise_adapter_error():
     stdout = build_stdout(
         [
             {
@@ -216,7 +215,7 @@ def test_parse_when_substituted_arg_introduces_hash_does_raise_gymrat_error():
         ]
     )
 
-    with pytest.raises(GymratError):
+    with pytest.raises(AdapterError):
         mitata_adapter.parse(stdout)
 
 
@@ -692,3 +691,19 @@ def test_find_json_candidates_when_scanning_does_return_valid_json_objects(
     text: str, expected: list[str]
 ):
     assert find_json_candidates(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# truncated JSON diagnostic
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure():
+    # Truncated outer JSON — raw_decode at position 0 fails. The inner
+    # {"alias":"encode"} is valid JSON but carries no "benchmarks" key.
+    # The adapter should prefer the decode failure (explaining WHY the real
+    # payload could not parse) over the generic "JSON missing benchmarks array".
+    truncated = '{"benchmarks":[{"alias":"encode"}],"extra":'
+
+    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
+        mitata_adapter.parse(truncated)

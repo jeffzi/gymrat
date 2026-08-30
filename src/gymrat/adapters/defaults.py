@@ -50,16 +50,3 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
                 short_name=metric_name if prefix == "" else prefix,
             )
     return MetricDefaults(direction="lower")
-
-
-class SuffixDefaultsMixin:
-    """Adds a suffix-matching :meth:`defaults` to an adapter class.
-
-    Shared by every adapter whose ``defaults`` does nothing but delegate to
-    :func:`defaults_from_suffixes`, so that behavior lives in one place instead
-    of being copied into each adapter class.
-    """
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)

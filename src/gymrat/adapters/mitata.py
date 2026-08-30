@@ -16,9 +16,8 @@ import math
 import re
 from typing import TypeGuard
 
-from gymrat.adapters.defaults import SuffixDefaultsMixin
-from gymrat.adapters.types import AdapterError, WarnSink, warn_to_stderr
-from gymrat.errors import GymratError
+from gymrat.adapters.defaults import defaults_from_suffixes
+from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
 
 _FORBIDDEN_NAME_CHARS = re.compile("[\\n\\r\\u2028\\u2029]")
 """Characters a metric name may not carry.
@@ -87,10 +86,16 @@ def _extract_json(stdout: str) -> dict[str, object]:
         if first_record is None:
             first_record = parsed
 
-    if first_record is not None:
-        return first_record
-
     longest_failure = _longest_decode_failure(stdout)
+
+    if first_record is not None:
+        # A decode failure spanning more text than first_record means the real
+        # payload was truncated or malformed — that diagnostic is more useful
+        # than the generic "JSON missing benchmarks array" the caller raises.
+        if longest_failure is not None:
+            msg = f"Failed to parse JSON: {longest_failure}"
+            raise AdapterError(msg)
+        return first_record
     if longest_failure is not None:
         msg = f"Failed to parse JSON: {longest_failure}"
         raise AdapterError(msg)
@@ -247,7 +252,7 @@ def _resolve_metric_prefix(alias: str, args: dict[str, object], warn: WarnSink) 
             f"Metric prefix \"{prefix}\" contains '#', which is reserved as the "
             f"metric-type separator (alias: {alias})"
         )
-        raise GymratError(msg)
+        raise AdapterError(msg)
     if _FORBIDDEN_NAME_CHARS.search(prefix):
         warn(
             f"Skipping run with a line terminator in its metric name: {alias} "
@@ -338,10 +343,14 @@ def _extract_benchmark_metrics(
         _extract_run_metrics(run, alias, metrics, warn)
 
 
-class _MitataAdapter(SuffixDefaultsMixin):
+class _MitataAdapter:
     """Adapter for bench scripts that print the JSON ``mitata --json`` writes."""
 
     name = "mitata"
+
+    def defaults(self, metric_name: str) -> MetricDefaults:
+        """Return name-derived defaults for ``metric_name`` via suffix matching."""
+        return defaults_from_suffixes(metric_name)
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse mitata's JSON output into a metric map.
