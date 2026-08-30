@@ -32,8 +32,8 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
     ProgressCallback,
-    ProgressEvent,
     default_clock,
+    emit_progress,
 )
 from gymrat.report.text import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup
@@ -218,9 +218,13 @@ async def collect_samples(
 
     if options.prepare is not None:
         for ctx in targets:
-            _emit(options, PrepareStarted(label=ctx.label, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress, PrepareStarted(label=ctx.label, at_ms=options.clock())
+            )
             await _run_command("prepare", None, options.prepare, ctx, timeout_ms, abort)
-            _emit(options, PrepareFinished(label=ctx.label, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress, PrepareFinished(label=ctx.label, at_ms=options.clock())
+            )
 
     for round_index in range(options.samples):
         for target_index, ctx in enumerate(targets):
@@ -231,11 +235,11 @@ async def collect_samples(
                 "target_count": target_count,
                 "label": ctx.label,
             }
-            _emit(options, PassStarted(**pass_fields, at_ms=options.clock()))
+            emit_progress(options.on_progress, PassStarted(**pass_fields, at_ms=options.clock()))
             stdout = await _run_command(
                 "bench", round_index + 1, options.bench, ctx, timeout_ms, abort
             )
-            _emit(options, PassFinished(**pass_fields, at_ms=options.clock()))
+            emit_progress(options.on_progress, PassFinished(**pass_fields, at_ms=options.clock()))
             collected[target_index].append(_parse(adapter, stdout, options.warn))
 
     return [
@@ -342,12 +346,6 @@ def _labeled(label: str, text: str, total: int) -> list[str]:
     """Build a labeled stream entry, flagging truncation against the byte total."""
     suffix = f" (truncated, {total} bytes total)" if _is_truncated(text, total) else ""
     return [f"--- {label}{suffix} ---", text]
-
-
-def _emit(options: SamplingOptions, event: ProgressEvent) -> None:
-    """Fire the progress callback when one is registered."""
-    if options.on_progress is not None:
-        options.on_progress(event)
 
 
 def _parse(adapter: Adapter, stdout: str, warn: WarnSink | None) -> dict[str, float]:

@@ -145,3 +145,9 @@ type ProgressEvent = (
 )
 
 type ProgressCallback = Callable[[ProgressEvent], None]
+
+
+def emit_progress(on_progress: ProgressCallback | None, event: ProgressEvent) -> None:
+    """Fire ``on_progress`` with ``event`` when a callback is registered."""
+    if on_progress is not None:
+        on_progress(event)

@@ -19,6 +19,7 @@ from rich.markup import escape
 
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
+from gymrat.eta import MS_PER_SECOND
 from gymrat.exec import (
     ExecOptions,
     ExecTimeoutError,
@@ -45,8 +46,6 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
-
-MS_PER_SECOND = 1000
 
 
 @dataclass(frozen=True, slots=True)

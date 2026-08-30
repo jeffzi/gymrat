@@ -61,6 +61,7 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
     default_clock,
+    emit_progress,
 )
 from gymrat.report.loop import (
     EXPERIMENT_INDEX,
@@ -121,12 +122,6 @@ _STOP_HINT = "The loop is done. Report what the session measured instead of meas
 _SHELL_SAFE_WORD = re.compile(r"[\w@%+=:,./-]+", re.ASCII)
 
 
-def _emit(options: IterateOptions, event: ProgressEvent) -> None:
-    """Fire a progress event when a callback is registered."""
-    if options.on_progress is not None:
-        options.on_progress(event)
-
-
 async def _run_hook_stage(
     jsonl_path: str,
     opts: IterateOptions,
@@ -136,10 +131,10 @@ async def _run_hook_stage(
 ) -> str:
     """Run one lifecycle hook stage, bracketed by progress events when a command is configured."""
     if invocation is not None:
-        _emit(opts, HookStarted(stage=stage, at_ms=default_clock()))
+        emit_progress(opts.on_progress, HookStarted(stage=stage, at_ms=default_clock()))
     report = await _fire_hook(jsonl_path, invocation)
     if invocation is not None:
-        _emit(opts, HookFinished(stage=stage, at_ms=default_clock()))
+        emit_progress(opts.on_progress, HookFinished(stage=stage, at_ms=default_clock()))
     return report
 
 
@@ -354,7 +349,10 @@ async def iterate_session(
 
     record = _build_iteration_record(judged, seq, judgment)
     append_record(jsonl_path, record)
-    _emit(opts, IterationRecorded(seq=seq, outcome=judgment.outcome, at_ms=default_clock()))
+    emit_progress(
+        opts.on_progress,
+        IterationRecorded(seq=seq, outcome=judgment.outcome, at_ms=default_clock()),
+    )
 
     after_command = config.hooks.after if config.hooks is not None else None
     after_report = await _run_hook_stage(
@@ -391,8 +389,8 @@ async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
         for name, meta in first.metric_meta.items()
         if meta.gating and (v := first.verdicts.get(name)) is not None and v.verdict == "regressed"
     )
-    _emit(
-        ctx.options,
+    emit_progress(
+        ctx.options.on_progress,
         JudgeFinished(
             primary_delta_pct=primary.delta_pct,
             regressed=regressed_names,
@@ -508,8 +506,8 @@ async def _confirm_regressions(
     )
     # No filter template means the whole bench re-runs, so the event names no
     # metrics: a renderer reading a list would claim a narrowing that never happened.
-    _emit(
-        ctx.options,
+    emit_progress(
+        ctx.options.on_progress,
         ConfirmStarted(
             filtered_metrics=None if ctx.config.filter is None else filtered_tuple,
             at_ms=default_clock(),
@@ -526,7 +524,9 @@ async def _confirm_regressions(
     absent = frozenset(name for name in filtered if rerun.verdicts.get(name) is None)
 
     reproduced = len(confirmed) > 0
-    _emit(ctx.options, ConfirmFinished(reproduced=reproduced, at_ms=default_clock()))
+    emit_progress(
+        ctx.options.on_progress, ConfirmFinished(reproduced=reproduced, at_ms=default_clock())
+    )
 
     return _Confirmation(
         filtered=filtered_tuple,
@@ -577,7 +577,7 @@ async def _bench_and_judge(
     """
     baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
     if announce_judging:
-        _emit(ctx.options, JudgeStarted(at_ms=default_clock()))
+        emit_progress(ctx.options.on_progress, JudgeStarted(at_ms=default_clock()))
     adapter = get_adapter(ctx.config.adapter)
     resolved_meta = (
         metric_meta

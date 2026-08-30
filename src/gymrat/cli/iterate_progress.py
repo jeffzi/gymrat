@@ -11,7 +11,6 @@ Plain mode prints timestamped milestone lines without ANSI escape codes.
 from __future__ import annotations
 
 import logging
-import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -22,6 +21,7 @@ from rich.text import Text
 
 from gymrat.cli.progress import compact_progress, passes_progress
 from gymrat.cli.style import (
+    COMPACT_HEIGHT_THRESHOLD,
     GLYPH_ALERT,
     GLYPH_DONE,
     GLYPH_PENDING,
@@ -36,8 +36,9 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
     STYLE_VERB,
+    LiveDisplayMixin,
 )
-from gymrat.eta import format_clock, format_duration
+from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
 from gymrat.metric_name import format_inline, parse
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -66,15 +67,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_COMPACT_HEIGHT_THRESHOLD = 12
-_CLEAR_LINE = "\r\x1b[K"
-
 # How many regressed metric names the judge's done line spells out before
 # trailing off; the leading count already says how many there are.
 _REGRESSED_NAME_CAP = 3
-_MS_PER_SECOND = 1000
-_SECONDS_PER_MINUTE = 60
-_SECONDS_PER_HOUR = 3600
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +121,7 @@ class _NodeState:
 # ---------------------------------------------------------------------------
 
 
-class IterateRenderer:
+class IterateRenderer(LiveDisplayMixin):
     """Single-use progress renderer for ``gymrat iterate``.
 
     Call ``stop`` exactly once after the iteration ends. The renderer writes to
@@ -236,7 +231,7 @@ class IterateRenderer:
             self._init_live()
 
     def _init_live(self) -> None:
-        self._compact = self._console.height < _COMPACT_HEIGHT_THRESHOLD
+        self._compact = self._console.height < COMPACT_HEIGHT_THRESHOLD
 
         if self._compact:
             self._compact_progress, self._compact_clock_col = compact_progress(
@@ -365,7 +360,7 @@ class IterateRenderer:
             return None
         if self._clock is None or node.start_ms <= 0:
             return None
-        return self._clock() * _MS_PER_SECOND - node.start_ms
+        return self._clock() * MS_PER_SECOND - node.start_ms
 
     # -----------------------------------------------------------------------
     # Timing helpers
@@ -378,15 +373,11 @@ class IterateRenderer:
             return None
         return (total_time_ms / finish_count) * remaining
 
-    def _refresh_live(self) -> None:
-        if self._live is not None:
-            self._live.refresh()
-
     def _clock_elapsed_ms(self, start_clock: float | None) -> float | None:
         """Milliseconds elapsed since ``start_clock``, or ``None`` if unavailable."""
         if start_clock is None or self._clock is None:
             return None
-        return (self._clock() - start_clock) * _MS_PER_SECOND
+        return (self._clock() - start_clock) * MS_PER_SECOND
 
     def _track_timestamp(self, at_ms: float) -> None:
         if self._run_start_ms is None:
@@ -395,13 +386,7 @@ class IterateRenderer:
                 self._start_clock_time = self._clock()
 
     def _format_timestamp(self, at_ms: float) -> str:
-        run_start_ms = at_ms if self._run_start_ms is None else self._run_start_ms
-        elapsed_ms = at_ms - run_start_ms
-        total_seconds = int(elapsed_ms / _MS_PER_SECOND)
-        hours = total_seconds // _SECONDS_PER_HOUR
-        minutes = (total_seconds % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE
-        seconds = total_seconds % _SECONDS_PER_MINUTE
-        return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
+        return format_timestamp(at_ms, self._run_start_ms)
 
     def _print_plain(self, at_ms: float, message: str) -> None:
         ts = self._format_timestamp(at_ms)
@@ -675,17 +660,6 @@ class IterateRenderer:
         else:
             self._print_plain(event.at_ms, f"recorded {self._record.detail}")
 
-    # -----------------------------------------------------------------------
-    # Signal cleanup
-    # -----------------------------------------------------------------------
-
-    def _clear_on_signal(self) -> None:
-        if self._stopped:
-            return
-        self._stopped = True
-        sys.stderr.write(_CLEAR_LINE)
-        sys.stderr.flush()
-
     def stop(self) -> None:
         """Stop the renderer and clean up any live display."""
         if self._stopped:
@@ -718,6 +692,10 @@ def create_iterate_renderer(  # noqa: PLR0913, PLR0917 -- mirrors the renderer c
     has_after_hook: bool = False,
 ) -> IterateRenderer:
     """Build an :class:`IterateRenderer` wired to ``console``.
+
+    Kept as a thin wrapper around the constructor so callers can monkeypatch
+    ``create_iterate_renderer`` in tests without touching ``IterateRenderer``
+    itself.
 
     Args:
         mode: ``"live"`` for a rich animated checklist, ``"plain"`` for

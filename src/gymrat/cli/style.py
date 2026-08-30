@@ -23,7 +23,15 @@ at those conventions, so ``SpinnerColumn``, ``TimeElapsedColumn``,
 rich's defaults, so every style name it does not name keeps its stock value.
 """
 
+from __future__ import annotations
+
+import sys
+from typing import TYPE_CHECKING
+
 from rich.theme import Theme
+
+if TYPE_CHECKING:
+    from rich.live import Live
 
 GLYPH_DONE = "✓"
 GLYPH_PENDING = "○"
@@ -52,6 +60,14 @@ STYLE_TIMER_DONE = "dim green"
 # Spinner frames are 80ms apart; refreshing any slower makes them look frozen.
 LIVE_REFRESH_PER_SECOND = 10
 
+# The escape sequence a live renderer writes to blank the current terminal
+# line before redrawing or clearing it.
+CLEAR_LINE = "\r\x1b[K"
+
+# Below this terminal height, a full checklist or header-plus-rows layout
+# can't fit, so a renderer switches to a single-row compact bar.
+COMPACT_HEIGHT_THRESHOLD = 12
+
 CLI_THEME = Theme(
     {
         "progress.spinner": STYLE_RUNNING,
@@ -67,3 +83,29 @@ CLI_THEME = Theme(
         "bar.pulse": STYLE_BAR,
     }
 )
+
+
+class LiveDisplayMixin:
+    """Shared live-display bookkeeping for ``ProgressReporter`` and ``IterateRenderer``.
+
+    Both renderers own a rich ``Live`` instance (``None`` in plain mode) and a
+    ``_stopped`` guard against a termination signal racing the normal ``stop()``
+    path. Mixing this in keeps the refresh and signal-clear behavior identical
+    without giving the two renderers a shared base class.
+    """
+
+    _live: Live | None
+    _stopped: bool
+
+    def _refresh_live(self) -> None:
+        if self._live is not None:
+            self._live.refresh()
+
+    def _clear_on_signal(self) -> None:
+        # os._exit skips buffer flushing, so the clear must be flushed explicitly
+        # or it never reaches the terminal.
+        if self._stopped:
+            return
+        self._stopped = True
+        sys.stderr.write(CLEAR_LINE)
+        sys.stderr.flush()

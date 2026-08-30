@@ -11,7 +11,6 @@ Glyphs, verb forms, and timer colors follow the conventions in
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING, Literal, override
 
 if TYPE_CHECKING:
@@ -34,6 +33,7 @@ from rich.table import Column
 from rich.text import Text
 
 from gymrat.cli.style import (
+    COMPACT_HEIGHT_THRESHOLD,
     LIVE_REFRESH_PER_SECOND,
     SPINNER_NAME,
     STYLE_LABEL,
@@ -41,8 +41,9 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
     STYLE_VERB,
+    LiveDisplayMixin,
 )
-from gymrat.eta import format_clock, format_duration
+from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -51,16 +52,6 @@ from gymrat.progress_events import (
     ProgressEvent,
 )
 from gymrat.signals import install_termination_cleanup
-
-_CLEAR_LINE = "\r\x1b[K"
-
-# Below this terminal height, the header plus the prepare and sampling rows
-# can't fit, so the reporter switches to a single-row compact bar.
-_COMPACT_HEIGHT_THRESHOLD = 12
-
-_SECONDS_PER_MINUTE = 60
-_SECONDS_PER_HOUR = 3600
-_MS_PER_SECOND = 1000
 
 
 class _ClockColumn(ProgressColumn):
@@ -80,7 +71,7 @@ class _ClockColumn(ProgressColumn):
 
     @override
     def render(self, task: object) -> Text:
-        elapsed_ms = (getattr(task, "elapsed", None) or 0.0) * _MS_PER_SECOND
+        elapsed_ms = (getattr(task, "elapsed", None) or 0.0) * MS_PER_SECOND
         total = (
             "--:--" if self._remaining_ms is None else format_clock(elapsed_ms + self._remaining_ms)
         )
@@ -179,7 +170,7 @@ def passes_progress(
     return progress, clock_col
 
 
-class ProgressReporter:
+class ProgressReporter(LiveDisplayMixin):
     """Single-use progress reporter for measure/compare commands.
 
     Call ``stop`` exactly once after the run ends. The reporter renders to the
@@ -229,7 +220,7 @@ class ProgressReporter:
             self._init_live(console, clock)
 
     def _init_live(self, console: Console, clock: Callable[[], float] | None) -> None:
-        self._compact = console.height < _COMPACT_HEIGHT_THRESHOLD
+        self._compact = console.height < COMPACT_HEIGHT_THRESHOLD
 
         if self._compact:
             self._pass_progress, self._clock_column = compact_progress(console, clock=clock)
@@ -289,10 +280,6 @@ class ProgressReporter:
         if not parts:
             parts.append(Text(""))
         return Group(*parts)
-
-    def _refresh_live(self) -> None:
-        if self._live is not None:
-            self._live.refresh()
 
     def report(self, event: ProgressEvent) -> None:
         """Dispatch ``event`` to the matching handler; ignore unrelated types."""
@@ -388,21 +375,7 @@ class ProgressReporter:
         self._console.print(f"{ts} {message}", highlight=False, markup=False)
 
     def _format_timestamp(self, at_ms: float) -> str:
-        run_start_ms = at_ms if self._run_start_ms is None else self._run_start_ms
-        elapsed_ms = at_ms - run_start_ms
-        total_seconds = int(elapsed_ms / 1000)
-        hours, remainder = divmod(total_seconds, _SECONDS_PER_HOUR)
-        minutes, seconds = divmod(remainder, _SECONDS_PER_MINUTE)
-        return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
-
-    def _clear_on_signal(self) -> None:
-        # os._exit skips buffer flushing, so the clear must be flushed explicitly
-        # or it never reaches the terminal.
-        if self._stopped:
-            return
-        self._stopped = True
-        sys.stderr.write(_CLEAR_LINE)
-        sys.stderr.flush()
+        return format_timestamp(at_ms, self._run_start_ms)
 
     def warn(self, message: str) -> None:
         """Surface a warning without disturbing any active live display."""
@@ -445,6 +418,10 @@ def create_progress_reporter(  # noqa: PLR0913 -- mirrors the constructor above
     target_labels: list[str] | None = None,
 ) -> ProgressReporter:
     """Build the reporter a run streams its progress through.
+
+    Kept as a thin wrapper around the constructor so callers can monkeypatch
+    ``create_progress_reporter`` in tests without touching ``ProgressReporter``
+    itself.
 
     Args:
         mode: ``"live"`` for rich animated output, ``"plain"`` for timestamped
