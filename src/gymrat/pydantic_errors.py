@@ -7,16 +7,29 @@ and a list pruned of parent errors whose only fault is that a child under them
 also failed.
 """
 
+import json
+
 from pydantic_core import ErrorDetails
 
 
-def describe_key(loc: tuple[str, ...]) -> str:
-    """Join an error location into a dotted key.
+def _needs_quoting(part: str) -> bool:
+    """Whether a location part would not read back as itself unquoted.
 
-    An empty part renders as a quoted empty string so the path never ends in a
-    bare dot.
+    An empty part would vanish into a bare dot; a part carrying a dot, a quote,
+    or whitespace would read as a deeper path (or a truncated one) than the
+    writer actually named.
     """
-    return ".".join('""' if part == "" else part for part in loc)
+    return part == "" or any(char in '."' or char.isspace() for char in part)
+
+
+def describe_key(loc: tuple[str, ...]) -> str:
+    """Join an error location into a dotted key path.
+
+    Parts that would be misread bare are quoted with :func:`json.dumps`, which
+    also escapes the quotes, backslashes, and line terminators a part may carry
+    so the rendered path stays on one line.
+    """
+    return ".".join(json.dumps(part) if _needs_quoting(part) else part for part in loc)
 
 
 def drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:

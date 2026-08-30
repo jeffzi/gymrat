@@ -22,7 +22,7 @@ from rich.markup import escape
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli.progress import ProgressReporter, create_progress_reporter
-from gymrat.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
+from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
 from gymrat.git import NotAGitRepositoryError
@@ -394,10 +394,6 @@ class MeasureFlags(SharedFlags):
 # ---------------------------------------------------------------------------
 # CLI option declarations
 # ---------------------------------------------------------------------------
-
-# JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so the samples ceiling this CLI
-# shares with the shipped tool matches it rather than drifting to a new bound.
-MAX_SAFE_INTEGER = 2**53 - 1
 
 
 class OutputFormat(StrEnum):

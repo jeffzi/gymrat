@@ -7,6 +7,7 @@ import pytest
 import tomli_w
 
 from gymrat.config import (
+    MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
@@ -247,18 +248,25 @@ def test_resolve_config_when_integer_env_var_invalid_does_raise_naming_var(
         resolve_config(CliFlags(bench="my-bench"))
 
 
-def test_resolve_config_when_timeout_env_var_exceeds_cap_does_raise_naming_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("env_var", "cap"),
+    [
+        pytest.param("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS, id="timeout"),
+        pytest.param("GYMRAT_SAMPLES", MAX_SAFE_INTEGER, id="samples"),
+    ],
+)
+def test_resolve_config_when_integer_env_var_exceeds_cap_does_raise_naming_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_var: str, cap: int
 ):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("GYMRAT_TIMEOUT", str(MAX_TIMEOUT_SECONDS + 1))
+    monkeypatch.setenv(env_var, str(cap + 1))
 
     with pytest.raises(GymratError) as exc:
         resolve_config(CliFlags(bench="my-bench"))
 
     message = str(exc.value)
-    assert "GYMRAT_TIMEOUT" in message
-    assert "no greater than 2147483" in message
+    assert env_var in message
+    assert f"no greater than {cap}" in message
 
 
 def test_resolve_config_when_config_env_var_names_file_and_config_flag_absent_does_load_it(
@@ -427,6 +435,21 @@ def test_resolve_when_runbook_does_not_name_existing_file_does_raise_naming_fiel
     message = str(exc.value)
     assert "runbook" in message
     assert runbook in message
+
+
+@pytest.mark.parametrize("resolve", RESOLVERS)
+def test_resolve_when_runbook_embeds_nul_does_raise_naming_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolve: Resolver
+):
+    (tmp_path / "gymrat.toml").write_text(
+        'bench = "a-bench"\nrunbook = "a\\u0000b"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(GymratError) as exc:
+        resolve(CliFlags())
+
+    assert "runbook" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

@@ -30,12 +30,14 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    model_validator,
 )
 from pydantic_core import ErrorDetails
 
 from gymrat.adapters.defaults import DEFAULT_GATING, DEFAULT_METRIC_KIND
 from gymrat.adapters.types import Adapter
 from gymrat.config_env import (
+    MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
     NUMBER_ENV_FIELDS,
     STRING_ENV_FIELDS,
@@ -245,12 +247,14 @@ def _reject_non_finite(value: float | None) -> float | None:
 def _reject_bad_dict(value: object) -> object:
     """Reject any mapping whose key embeds a line terminator.
 
-    A non-mapping falls through to the model's own ``dict``-type error.
+    A non-mapping falls through to the model's own ``dict``-type error. The
+    offending key is JSON-escaped so naming it cannot itself split the reported
+    problem across lines.
     """
     if isinstance(value, dict):
         for key in value:
             if isinstance(key, str) and any(char in key for char in _LINE_BREAKS):
-                msg = "config key must not embed a line break"
+                msg = f"key {json.dumps(key)} must not embed a line break"
                 raise ValueError(msg)
     return value
 
@@ -308,10 +312,20 @@ class _HooksModel(BaseModel):
 class _ConfigModel(BaseModel):
     model_config = _STRICT
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_line_break_keys(cls, value: object) -> object:
+        """Apply the line-break key guard to the document root, not just its tables."""
+        return _reject_bad_dict(value)
+
     bench: _NonEmptyStr
     prepare: _NonEmptyStr
     adapter: _NonEmptyStr
-    samples: Annotated[int | None, BeforeValidator(_coerce_integer), Field(default=None, ge=1)]
+    samples: Annotated[
+        int | None,
+        BeforeValidator(_coerce_integer),
+        Field(default=None, ge=1, le=MAX_SAFE_INTEGER),
+    ]
     timeout_seconds: Annotated[
         int | None,
         BeforeValidator(_coerce_integer),
@@ -346,7 +360,7 @@ class _ConfigModel(BaseModel):
 _PHRASES: dict[tuple[str, ...], str] = {
     **{(field,): "a non-empty string" for field in _NON_EMPTY_STRING_FIELDS},
     ("filter",): "a string",
-    ("samples",): "a positive integer",
+    ("samples",): f"a positive integer no greater than {MAX_SAFE_INTEGER}",
     ("timeout_seconds",): f"a positive integer no greater than {MAX_TIMEOUT_SECONDS}",
     ("unstable_noise_pct",): f"a number at or above the {NOISE_FLOOR_PCT}% noise floor",
     ("metrics",): "an object",
@@ -364,6 +378,10 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("metrics", "*", "exact"): "a boolean",
     ("kinds", "*", "gating"): "a boolean",
 }
+
+
+# Marker pydantic prepends to the message a validator raised via ``ValueError``.
+_PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
 
 
 def _phrase_for_loc(loc: tuple[str, ...]) -> str:
@@ -387,10 +405,22 @@ def _invalid_value_message(field_name: str, expected_phrase: str, value: object)
 
 
 def _message_for_error(error: ErrorDetails) -> str:
-    """Translate one pydantic error into a gymrat-worded problem string."""
+    """Translate one pydantic error into a gymrat-worded problem string.
+
+    A custom validator (``_reject_non_finite``, ``_reject_bad_dict``) already
+    knows why it refused the value, so its own message is reported: the shape
+    phrase for the location would describe a fault the value does not have.
+    """
     loc = tuple(str(part) for part in error["loc"])
     if error["type"] == "extra_forbidden":
         return f"Unknown config key: {describe_key(loc)}"
+    if error["type"] == "value_error":
+        detail = error["msg"].removeprefix(_PYDANTIC_VALUE_ERROR_PREFIX)
+        # A model-level validator reports an empty location: the fault belongs to
+        # the document, not to any one key.
+        if not loc:
+            return f"Invalid config file: {detail}"
+        return f"Invalid config value for {describe_key(loc)}: {detail}"
     return _invalid_value_message(describe_key(loc), _phrase_for_loc(loc), error["input"])
 
 
@@ -646,9 +676,11 @@ def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
         info = resolved.stat()
     except FileNotFoundError:
         info = None
-    except OSError as exc:
-        reason = exc.strerror or str(exc)
-        return f"Cannot read runbook path {runbook}: {reason}"
+    except (OSError, ValueError) as exc:
+        # ValueError covers a path the OS cannot even be asked about -- an
+        # embedded NUL, which TOML admits inside a quoted string.
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        return f"Cannot read runbook path {json.dumps(runbook)}: {reason}"
     if info is None or not stat.S_ISREG(info.st_mode):
         return _invalid_value_message("runbook", "a path to an existing file", runbook)
     return None

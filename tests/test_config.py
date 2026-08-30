@@ -4,6 +4,7 @@ import pytest
 import tomli_w
 
 from gymrat.config import (
+    MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
     CliFlags,
     ConfigFile,
@@ -175,6 +176,9 @@ def test_load_config_file_when_noise_pct_non_finite_does_name_key_not_parse(
     message = str(exc.value)
     assert "unstable_noise_pct" in message
     assert "Failed to parse" not in message
+    # The value is rejected for not being finite, not for sitting below the
+    # noise floor, so the floor phrasing would name the wrong fault.
+    assert "noise floor" not in message
 
 
 @pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
@@ -229,6 +233,23 @@ def test_load_config_file_when_empty_string_top_level_key_does_name_quoted_empty
         load_config_file(config_path)
 
     assert 'Unknown config key: ""' in str(exc.value)
+
+
+@pytest.mark.parametrize("char", LINE_BREAKS)
+def test_load_config_file_when_top_level_key_embeds_line_break_does_report_single_line_problem(
+    tmp_path: Path, char: str
+):
+    config_path = write_config(tmp_path, {f"bench{char}samples = 0": 1})
+
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result.config_file is None
+    split_problems = [
+        problem
+        for problem in result.problems
+        if any(line_break in problem for line_break in LINE_BREAKS)
+    ]
+    assert split_problems == []
 
 
 # ---------------------------------------------------------------------------
@@ -330,20 +351,46 @@ def test_load_config_file_when_integer_key_given_integral_float_does_accept(tmp_
     assert load_config_file(config_path) == ConfigFile(samples=5)
 
 
-def test_load_config_file_when_timeout_exceeds_cap_does_name_key_and_cap(tmp_path: Path):
-    config_path = write_config(tmp_path, {"timeout_seconds": MAX_TIMEOUT_SECONDS + 1})
+@pytest.mark.parametrize(
+    ("key", "cap"),
+    [
+        pytest.param("timeout_seconds", MAX_TIMEOUT_SECONDS, id="timeout-seconds"),
+        pytest.param("samples", MAX_SAFE_INTEGER, id="samples"),
+    ],
+)
+def test_load_config_file_when_integer_key_exceeds_cap_does_name_key_and_cap(
+    tmp_path: Path, key: str, cap: int
+):
+    config_path = write_config(tmp_path, {key: cap + 1})
 
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
-    assert "timeout_seconds" in str(exc.value)
-    assert "no greater than 2147483" in str(exc.value)
+    message = str(exc.value)
+    assert key in message
+    assert f"no greater than {cap}" in message
 
 
-def test_load_config_file_when_timeout_on_cap_does_accept(tmp_path: Path):
-    config_path = write_config(tmp_path, {"timeout_seconds": MAX_TIMEOUT_SECONDS})
+@pytest.mark.parametrize(
+    ("key", "cap", "expected"),
+    [
+        pytest.param(
+            "timeout_seconds",
+            MAX_TIMEOUT_SECONDS,
+            ConfigFile(timeout_seconds=MAX_TIMEOUT_SECONDS),
+            id="timeout-seconds",
+        ),
+        pytest.param(
+            "samples", MAX_SAFE_INTEGER, ConfigFile(samples=MAX_SAFE_INTEGER), id="samples"
+        ),
+    ],
+)
+def test_load_config_file_when_integer_key_on_cap_does_accept(
+    tmp_path: Path, key: str, cap: int, expected: ConfigFile
+):
+    config_path = write_config(tmp_path, {key: cap})
 
-    assert load_config_file(config_path) == ConfigFile(timeout_seconds=2_147_483)
+    assert load_config_file(config_path) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -462,14 +509,39 @@ def test_load_config_file_when_metrics_entry_has_unknown_key_does_name_key(tmp_p
 
 
 @pytest.mark.parametrize("char", LINE_BREAKS)
-def test_load_config_file_when_metrics_key_embeds_line_break_does_name_metrics(
+def test_load_config_file_when_metrics_key_embeds_line_break_does_report_key_not_shape(
     tmp_path: Path, char: str
 ):
     smuggled = f"latency{char}direction: 999, gating: 0"
     config_path = write_config(tmp_path, {"metrics": {smuggled: {"direction": "lower"}}})
 
-    with pytest.raises(GymratError, match="metrics"):
+    with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
+
+    message = str(exc.value)
+    assert "metrics" in message
+    # The rejected value is an object; only its key is bad, so any phrasing
+    # that demands an object contradicts what the user wrote.
+    assert "object" not in message
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "expected_path"),
+    [
+        pytest.param("decode.time", 'metrics."decode.time".direction', id="dot"),
+        pytest.param("decode time", 'metrics."decode time".direction', id="space"),
+        pytest.param('decode"time', 'metrics."decode\\"time".direction', id="quote"),
+    ],
+)
+def test_load_config_file_when_metric_name_needs_quoting_does_quote_it_in_key_path(
+    tmp_path: Path, metric_name: str, expected_path: str
+):
+    config_path = write_config(tmp_path, {"metrics": {metric_name: {"direction": "sideways"}}})
+
+    with pytest.raises(GymratError) as exc:
+        load_config_file(config_path)
+
+    assert expected_path in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
