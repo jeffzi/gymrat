@@ -219,13 +219,9 @@ def parse_positional(positional: str) -> TargetSpec:
     ``a``, target ``b=c``. An empty half is always a typo, so each raises its own
     usage error rather than resolving to a silent default.
     """
-    eq_index = positional.find("=")
-    if eq_index == -1:
-        label: str | None = None
-        target = positional
-    else:
-        label = positional[:eq_index]
-        target = positional[eq_index + 1 :]
+    head, sep, tail = positional.partition("=")
+    label: str | None = head if sep else None
+    target = tail if sep else positional
 
     if label == "":
         message = (

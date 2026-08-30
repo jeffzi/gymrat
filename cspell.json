@@ -61,6 +61,7 @@
     "Taskfile",
     "taskkill",
     "testpaths",
+    "timespec",
     "TIOCSWINSZ",
     "tomli",
     "typer",

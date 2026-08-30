@@ -11,19 +11,19 @@ from gymrat.doctor.checks import Check, CheckSection
 from gymrat.errors import GymratError, hint_of
 
 _NO_BENCH_HINT = 'Set the bench command with --bench or the "bench" config key'
+_TITLE = "Bench"
 
 
 def build_bench_section(*, bench: str | None, adapter: str) -> CheckSection:
     """Build the "Bench" section by validating config, without running anything."""
-    checks: list[Check] = []
-
     try:
         get_adapter(adapter)
     except GymratError as error:
-        return _bench_section(
-            [Check(name="adapter", status="fail", detail=str(error), hint=hint_of(error))]
+        return CheckSection(
+            title=_TITLE,
+            checks=[Check(name="adapter", status="fail", detail=str(error), hint=hint_of(error))],
         )
-    checks.append(Check(name="adapter", status="ok", detail=f"adapter: {adapter}"))
+    checks: list[Check] = [Check(name="adapter", status="ok", detail=f"adapter: {adapter}")]
 
     if bench is None:
         checks.append(
@@ -34,7 +34,7 @@ def build_bench_section(*, bench: str | None, adapter: str) -> CheckSection:
                 hint=_NO_BENCH_HINT,
             )
         )
-        return _bench_section(checks)
+        return CheckSection(title=_TITLE, checks=checks)
 
     checks.append(Check(name="bench", status="ok", detail=f"bench: {bench}"))
 
@@ -52,8 +52,4 @@ def build_bench_section(*, bench: str | None, adapter: str) -> CheckSection:
             )
         )
 
-    return _bench_section(checks)
-
-
-def _bench_section(checks: list[Check]) -> CheckSection:
-    return CheckSection(title="Bench", checks=checks)
+    return CheckSection(title=_TITLE, checks=checks)

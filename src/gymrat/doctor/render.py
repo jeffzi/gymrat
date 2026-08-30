@@ -14,7 +14,7 @@ from gymrat.doctor.checks import Check, CheckStatus, DoctorReport
 from gymrat.report import pluralize
 from gymrat.report.style import (
     RENDER_WIDTH,
-    highlight_inline_code,
+    format_hint,
     markup,
     render_lines,
 )
@@ -70,7 +70,7 @@ def _check_lines(status: CheckStatus, detail: str, hint: str | None) -> list[str
     lines = [f"  {glyph} {escape(first)}"]
     lines.extend(f"{_DETAIL_INDENT}{escape(line)}" for line in continuations)
     if hint is not None:
-        lines.append(f"{_DETAIL_INDENT}[dim]{highlight_inline_code(hint)}[/dim]")
+        lines.append(f"{_DETAIL_INDENT}{format_hint(hint)}")
     return lines
 
 
