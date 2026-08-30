@@ -596,6 +596,7 @@ def test_acquire_lock_when_win32_open_process_access_denied_does_treat_holder_as
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, _ = stale_lock_path()
+    # autospec not applicable: ctypes windll has no Python-visible spec
     mock_kernel32 = MagicMock()
     mock_kernel32.OpenProcess.return_value = 0
     mock_kernel32.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
@@ -612,6 +613,7 @@ def test_acquire_lock_when_win32_open_process_invalid_parameter_does_steal(
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, _ = stale_lock_path()
+    # autospec not applicable: ctypes windll has no Python-visible spec
     mock_kernel32 = MagicMock()
     mock_kernel32.OpenProcess.return_value = 0
     mock_kernel32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER
@@ -627,6 +629,7 @@ def test_acquire_lock_when_win32_liveness_probed_does_declare_handle_as_pointer_
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, _ = stale_lock_path()
+    # autospec not applicable: ctypes windll has no Python-visible spec
     mock_kernel32 = MagicMock()
     mock_kernel32.OpenProcess.return_value = 0
     mock_kernel32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER

@@ -780,14 +780,14 @@ def test_load_config_file_collecting_when_file_is_utf16_does_report_read_failure
 
 
 @pytest.mark.parametrize(
-    ("value", "test_id"),
+    "value",
     [
-        pytest.param("", "empty", id="empty"),
-        pytest.param("   ", "whitespace-spaces", id="whitespace-spaces"),
-        pytest.param("\t", "whitespace-tab", id="whitespace-tab"),
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace-spaces"),
+        pytest.param("\t", id="whitespace-tab"),
     ],
 )
-def test_flag_problem_when_value_blank_does_return_problem_naming_flag(value: str, test_id: str):
+def test_flag_problem_when_value_blank_does_return_problem_naming_flag(value: str):
     result = flag_problem("bench", value)
 
     assert result is not None

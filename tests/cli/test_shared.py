@@ -313,20 +313,10 @@ def test_resolve_render_mode_maps_tty_to_strategy(
 
 
 def test_resolve_render_mode_ignores_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Color env vars do not affect render mode — only TTY status matters."""
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
     monkeypatch.setenv("NO_COLOR", "1")
 
     assert resolve_render_mode() == "live"
-
-
-def test_resolve_render_mode_returns_live_or_plain(monkeypatch: pytest.MonkeyPatch):
-    """resolve_render_mode returns one of the two supported modes."""
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
-    assert resolve_render_mode() in {"live", "plain"}
-
-    monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
-    assert resolve_render_mode() in {"live", "plain"}
 
 
 # ---------------------------------------------------------------------------

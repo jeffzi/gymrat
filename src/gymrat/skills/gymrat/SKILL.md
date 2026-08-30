@@ -16,9 +16,8 @@ Covers the full session lifecycle: start, iterate, settle, finalize. Every comma
 repository root.
 
 `bench` must be resolvable — from `gymrat.toml` or `--bench`. `gymrat.toml` is where `checks`,
-`filter` (selects which benchmarks to run), `primary`, `runbook`, `stop`, and `hooks` live;
-`adapter` (names the output parser) and `samples` (measurements per iteration) default to
-`metric-lines` and `10`.
+`filter`, `primary`, `runbook`, `stop`, and `hooks` live. `adapter` defaults to `metric-lines`;
+`samples` defaults to `10`.
 
 **Load the per-repo runbook before your first edit** — the path `gymrat start` prints (also in
 `gymrat status`). No runbook line → ask which metrics gate and what to optimize.
@@ -104,12 +103,15 @@ session lock.
 ## Machine-readable output
 
 `iterate`, `keep`, `discard`, and `status` accept `--format json`. When driving the loop
-programmatically, always pass `--format json` — the JSON key shapes are a stability contract
-(additions only; no renames or removals without a breaking change), while the text report may change
-between releases. `start` and `finalize` are text-only (their outputs are one-shot summaries agents
-don't parse).
+programmatically, always pass `--format json`. The JSON contract is additive-only (no renames or
+removals without a breaking change); the text report may change between releases. `start` and
+`finalize` are text-only (their outputs are one-shot summaries agents don't parse).
 
 ## Syncing main-tree edits
+
+```sh
+gymrat sync
+```
 
 Edits belong in the experiment worktree (`gymrat start` prints the path). When code must be changed
 in the main working tree first (e.g. a dependency update), use `gymrat sync` to copy uncommitted

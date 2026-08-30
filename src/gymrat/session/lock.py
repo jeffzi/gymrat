@@ -204,7 +204,7 @@ def _is_alive_windows(pid: int) -> bool:
     access_denied = 5
     invalid_parameter = 87
 
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined] — windll is Windows-only, unavailable on other platforms
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]

@@ -343,9 +343,9 @@ def test_render_measure_report_when_color_option_set_does_override_the_environme
     assert ("\x1b[" in output) is styled
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # render_report — colored comparison report
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
 
 def test_render_report_when_no_color_is_set_does_leave_the_report_unstyled():

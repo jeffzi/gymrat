@@ -903,7 +903,7 @@ def test_discard_command_documents_force_in_its_help():
     result = runner.invoke(app, ["discard", "--help"])
 
     assert result.exit_code == 0
-    assert "--force" in result.output
+    assert "--force" in _ANSI_RE.sub("", result.output)
 
 
 def test_discard_command_when_tty_and_confirmed_does_prompt_and_proceed(
