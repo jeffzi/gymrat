@@ -16,8 +16,8 @@ import math
 import re
 from typing import TypeGuard
 
-from gymrat.adapters.defaults import defaults_from_suffixes
-from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
+from gymrat.adapters.defaults import SuffixDefaultsMixin
+from gymrat.adapters.types import AdapterError, WarnSink, warn_to_stderr
 from gymrat.errors import GymratError
 
 _FORBIDDEN_NAME_CHARS = re.compile("[\\n\\r\\u2028\\u2029]")
@@ -338,7 +338,7 @@ def _extract_benchmark_metrics(
         _extract_run_metrics(run, alias, metrics, warn)
 
 
-class _MitataAdapter:
+class _MitataAdapter(SuffixDefaultsMixin):
     """Adapter for bench scripts that print the JSON ``mitata --json`` writes."""
 
     name = "mitata"
@@ -380,10 +380,6 @@ class _MitataAdapter:
             raise AdapterError(msg)
 
         return metrics
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
 
 
 mitata_adapter = _MitataAdapter()

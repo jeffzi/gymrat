@@ -8,8 +8,8 @@ to their median so a benchmark run with several samples yields one value per nam
 import math
 import re
 
-from gymrat.adapters.defaults import defaults_from_suffixes
-from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
+from gymrat.adapters.defaults import SuffixDefaultsMixin
+from gymrat.adapters.types import AdapterError, WarnSink, warn_to_stderr
 from gymrat.errors import GymratError
 from gymrat.stats.descriptive import compute_median
 
@@ -73,7 +73,7 @@ def _js_number(raw: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
-class _MetricLinesAdapter:
+class _MetricLinesAdapter(SuffixDefaultsMixin):
     """Adapter that reads ``METRIC name=value`` lines from a bench script's stdout."""
 
     name = "metric-lines"
@@ -143,10 +143,6 @@ class _MetricLinesAdapter:
             raise AdapterError(msg)
 
         return {metric_name: compute_median(values) for metric_name, values in samples.items()}
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
 
 
 metric_lines_adapter = _MetricLinesAdapter()
