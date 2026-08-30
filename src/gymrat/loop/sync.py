@@ -6,18 +6,23 @@ session directory. When the experiment worktree already has uncommitted changes
 that would be overwritten, the sync refuses — no partial application.
 """
 
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.errors import GymratError
+from gymrat.errors import GymratError, stderr_text_of
 from gymrat.git import run_git
 from gymrat.session.paths import SESSION_DIR_NAME, experiment_worktree_dir
 from gymrat.session.store import require_open_session
 
-# porcelain v1: two status chars (positions 0-1) followed by a space, then the
-# path. The leading space of an unstaged-only entry is significant, so this
-# must be a slice offset rather than a strip.
+# ``git status -z`` prefixes each entry with two status characters and a space
+# (``XY<space>``), then the NUL-delimited path. Rename/copy entries (``R`` or
+# ``C`` in X) carry a second NUL-delimited field: ``XY<space>new\0old\0``.
 _STATUS_PREFIX_LEN = 3
+
+# Status codes that carry a second path field (the original name).
+_RENAME_COPY_CODES = frozenset("RC")
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,57 +32,122 @@ class SyncResult:
     files: tuple[str, ...]
 
 
-def _dirty_files(directory: str) -> set[str]:
-    """Relative paths of every uncommitted file in ``directory``, untracked included."""
-    raw = run_git(["status", "--porcelain", "-uall"], directory)  # cspell:disable-line
-    paths: set[str] = set()
-    for line in raw.split("\n"):
-        if not line:
+@dataclass(frozen=True, slots=True)
+class _DirtyEntry:
+    """A single dirty-file entry parsed from ``git status -z``."""
+
+    path: str
+    old_path: str | None
+
+
+def _dirty_entries(directory: str) -> list[_DirtyEntry]:
+    """Parse ``git status -z`` into structured entries.
+
+    NUL-delimited output avoids the C-quoting that ``--porcelain`` applies to
+    non-ASCII and whitespace-containing paths, so every path is the literal
+    filesystem name.
+    """
+    raw = run_git(["status", "-z", "-uall"], directory)  # cspell:disable-line
+    entries: list[_DirtyEntry] = []
+    fields = raw.split("\0")
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        if len(field) < _STATUS_PREFIX_LEN:
+            i += 1
             continue
-        path_part = line[_STATUS_PREFIX_LEN:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        paths.add(path_part)
-    return paths
+        status_x = field[0]
+        path = field[_STATUS_PREFIX_LEN:]
+        old_path: str | None = None
+        if status_x in _RENAME_COPY_CODES:
+            i += 1
+            if i < len(fields):
+                old_path = fields[i]
+        entries.append(_DirtyEntry(path=path, old_path=old_path))
+        i += 1
+    return entries
 
 
-def _exclude_session_dir(paths: set[str]) -> set[str]:
-    """Drop any path rooted under the session directory."""
+def _exclude_session_dir(entries: list[_DirtyEntry]) -> list[_DirtyEntry]:
+    """Drop any entry rooted under the session directory."""
     prefix = f"{SESSION_DIR_NAME}/"
-    return {p for p in paths if not p.startswith(prefix) and p != SESSION_DIR_NAME}
+    return [e for e in entries if not e.path.startswith(prefix) and e.path != SESSION_DIR_NAME]
+
+
+def _copy_entry(src: Path, dst: Path) -> None:
+    """Copy a single file preserving symlinks and file-mode bits."""
+    if src.is_symlink():
+        link_target = src.readlink()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        dst.symlink_to(link_target)
+    elif src.is_file():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    else:
+        message = f"Cannot sync '{src.name}': expected a file but found a directory"
+        raise GymratError(
+            message, hint="If this is a submodule, commit or remove it before syncing."
+        )
 
 
 def sync_to_experiment(root: str) -> SyncResult:
     """Apply uncommitted changes from the main tree onto the experiment worktree.
 
     Raises:
-        GymratError: When no session is open, or when the experiment worktree has
-            uncommitted changes that overlap with the files to sync.
+        GymratError: When no session is open, when the experiment worktree has
+            uncommitted changes that overlap with the files to sync, when the
+            experiment worktree is missing, or when git itself fails.
     """
     require_open_session(root, "syncing changes")
 
     experiment = experiment_worktree_dir(root)
-    main_dirty = _exclude_session_dir(_dirty_files(root))
 
-    if not main_dirty:
+    try:
+        main_entries = _exclude_session_dir(_dirty_entries(root))
+    except (subprocess.CalledProcessError, OSError) as exc:
+        message = f"Cannot read dirty files: {stderr_text_of(exc)}"
+        raise GymratError(message, hint="Check that the repository is not corrupt.") from exc
+
+    if not main_entries:
         return SyncResult(files=())
 
-    experiment_dirty = _dirty_files(experiment)
-    conflicts = main_dirty & experiment_dirty
+    main_paths = {e.path for e in main_entries}
+
+    try:
+        experiment_entries = _dirty_entries(experiment)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        message = f"Cannot read experiment worktree: {stderr_text_of(exc)}"
+        hint = (
+            "The experiment worktree may have been deleted."
+            " Run 'gymrat start' to begin a new session."
+        )
+        raise GymratError(message, hint=hint) from exc
+
+    experiment_paths = {e.path for e in experiment_entries}
+    conflicts = main_paths & experiment_paths
     if conflicts:
         listed = ", ".join(sorted(conflicts))
         message = f"Cannot sync — the experiment worktree has uncommitted changes in: {listed}"
         raise GymratError(message, hint="Settle or revert the experiment worktree first.")
 
-    for relative in sorted(main_dirty):
-        src = Path(root) / relative
-        dst = Path(experiment) / relative
+    for entry in main_entries:
+        src = Path(root) / entry.path
+        dst = Path(experiment) / entry.path
         try:
-            data = src.read_bytes()
-        except FileNotFoundError:
-            dst.unlink(missing_ok=True)
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(data)
+            if not src.exists() and not src.is_symlink():
+                dst.unlink(missing_ok=True)
+                continue
+            _copy_entry(src, dst)
+        except IsADirectoryError as exc:
+            message = f"Cannot sync '{entry.path}': expected a file but found a directory"
+            raise GymratError(
+                message, hint="If this is a submodule, commit or remove it before syncing."
+            ) from exc
 
-    return SyncResult(files=tuple(sorted(main_dirty)))
+        if entry.old_path is not None:
+            old_dst = Path(experiment) / entry.old_path
+            old_dst.unlink(missing_ok=True)
+
+    return SyncResult(files=tuple(sorted(main_paths)))
