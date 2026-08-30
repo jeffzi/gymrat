@@ -72,7 +72,12 @@ def sync_to_experiment(root: str) -> SyncResult:
     for relative in sorted(main_dirty):
         src = Path(root) / relative
         dst = Path(experiment) / relative
+        try:
+            data = src.read_bytes()
+        except FileNotFoundError:
+            dst.unlink(missing_ok=True)
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(src.read_bytes())
+        dst.write_bytes(data)
 
     return SyncResult(files=tuple(sorted(main_dirty)))
