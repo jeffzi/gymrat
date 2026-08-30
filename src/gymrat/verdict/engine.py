@@ -38,6 +38,7 @@ from gymrat.model import (
     pair_metric,
 )
 from gymrat.stats import compute_half_range, compute_median, sign_flip_permutation_test
+from gymrat.stats.results import count_nonzero_pairs
 from gymrat.warn import WarnSink, warn_to_stderr
 
 ONE_BYTE_PCT = 100.0
@@ -180,25 +181,26 @@ def _compute_approximate_verdict(
     must also clear the metric's measurement resolution, or a one-byte
     quantization step reads as signal however many rounds agree on it.
     """
-    result = sign_flip_permutation_test(paired_left, paired_right)
+    _, nonzero_n = count_nonzero_pairs(paired_left, paired_right)
     noise = _compute_noise(paired_left, paired_right, meta.unit)
     n = len(paired_left)
     effect = Effect(value=delta, unit="percent")
 
     record: PermutationVerdict | BandVerdict
-    if result.n < PERMUTATION_DESCRIPTOR.min_n:
-        has_signal = result.n >= BAND_DESCRIPTOR.min_n and abs(delta) > noise.pct
+    if nonzero_n < PERMUTATION_DESCRIPTOR.min_n:
+        has_signal = nonzero_n >= BAND_DESCRIPTOR.min_n and abs(delta) > noise.pct
         verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
             verdict=verdict,
-            usable_n=result.n,
+            usable_n=nonzero_n,
             noise_pct=noise.pct,
             noise_abs=noise.abs,
             delta=effect,
             n=n,
         )
     else:
+        result = sign_flip_permutation_test(paired_left, paired_right)
         # The permutation descriptor always carries a threshold; the union type
         # admits None only for the exact and band descriptors. Surface a
         # misconfiguration rather than compare against None.
