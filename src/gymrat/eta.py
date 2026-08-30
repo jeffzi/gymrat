@@ -25,6 +25,11 @@ def _hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
     return hours, minutes, seconds
 
 
+def _floored_whole_seconds(ms: float) -> int:
+    """Clamp a negative elapsed input to zero, then floor to whole seconds."""
+    return math.floor(max(0.0, ms) / MS_PER_SECOND)
+
+
 def format_duration(ms: float) -> str:
     """Format an elapsed duration, flooring to whole seconds.
 
@@ -32,7 +37,7 @@ def format_duration(ms: float) -> str:
     (``60_000`` renders ``"1m 0s"``, ``3_600_000`` renders ``"1h 00m"``).  The
     hour tier zero-pads the minute remainder to two digits.
     """
-    total_seconds = math.floor(max(0.0, ms) / 1000)
+    total_seconds = _floored_whole_seconds(ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
 
     if total_seconds < SECONDS_PER_MINUTE:
@@ -50,7 +55,7 @@ def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
     """
     start_ms = at_ms if run_start_ms is None else run_start_ms
     elapsed_ms = at_ms - start_ms
-    total_seconds = int(elapsed_ms / MS_PER_SECOND)
+    total_seconds = _floored_whole_seconds(elapsed_ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
     return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
 
@@ -61,7 +66,7 @@ def format_clock(ms: float) -> str:
     Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
     appears only when there are whole hours (``"1:07:45"``).
     """
-    total_seconds = math.floor(max(0.0, ms) / 1000)
+    total_seconds = _floored_whole_seconds(ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
 
     if hours == 0:
