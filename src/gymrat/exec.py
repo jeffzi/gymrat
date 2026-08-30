@@ -19,11 +19,12 @@ into a landmine for the next.
 import asyncio
 import codecs
 import contextlib
+import signal as _signal_module
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from gymrat.process_group import current_platform, kill_process_group
-from gymrat.signals import deferring_termination_signals
+from gymrat.signals import TERMINATION_SIGNALS, deferring_termination_signals, pthread_sigmask
 
 FAILURE_EXIT_CODE = 1
 """Exit code reported when a run fails without a positive child exit code."""
@@ -44,6 +45,12 @@ on the signal path before a worktree sweep runs.
 """
 
 
+def _child_reset_signal_mask() -> None:
+    """Unblock termination signals in the child, reversing the parent's mask."""
+    if pthread_sigmask is not None:
+        pthread_sigmask(_signal_module.SIG_UNBLOCK, TERMINATION_SIGNALS)
+
+
 def kill_live_process_groups() -> None:
     """Kill every process group with a live bench child, never raising.
 
@@ -54,7 +61,7 @@ def kill_live_process_groups() -> None:
     that calls this.
     """
     for pid in list(_live_process_groups):
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(Exception):
             kill_process_group(pid)
 
 
@@ -122,9 +129,12 @@ class OutputBuffer:
     the cap; the chunk that crosses the cap is kept whole, and every later chunk
     is dropped from the text. ``byte_count`` always reflects every byte received,
     so a caller can tell that output was truncated.
+
+    Internally the buffer accumulates into a list and joins on access, avoiding
+    O(n^2) re-copy from repeated string concatenation toward the 64 MiB cap.
     """
 
-    text: str = ""
+    _chunks: list[str] = field(default_factory=list)
     byte_count: int = 0
 
     def append(self, chunk: str, chunk_bytes: int) -> None:
@@ -132,17 +142,21 @@ class OutputBuffer:
         self.byte_count += chunk_bytes
         if self.byte_count - chunk_bytes >= OUTPUT_CAP:
             return
-        self.text += chunk
+        self._chunks.append(chunk)
 
     def append_failure(self, message: str) -> None:
         """Append a failure ``message`` and newline unconditionally, past the cap.
 
         An error explaining why a run failed must always reach the caller, so it
-        bypasses the truncation cap that governs ordinary output.
+        bypasses the truncation cap that governs ordinary output. The diagnostic
+        is not counted as command output — ``byte_count`` is left unchanged.
         """
-        line = f"{message}\n"
-        self.text += line
-        self.byte_count += len(line.encode())
+        self._chunks.append(f"{message}\n")
+
+    @property
+    def text(self) -> str:
+        """The accumulated text, joined from internal chunks."""
+        return "".join(self._chunks)
 
 
 def _exit_code(returncode: int | None) -> int:
@@ -287,6 +301,7 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=current_platform() != "win32",
+                preexec_fn=_child_reset_signal_mask if current_platform() != "win32" else None,
             )
             # Register the group leader before lifting the mask; the enclosing
             # finally guarantees deregistration even if a later step raises.
@@ -323,11 +338,15 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
                 reader_error = normal_task.exception()
                 if reader_error is not None:
                     _terminate(proc)
+                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                    await proc.wait()
                     stderr_buf.append_failure(str(reader_error))
                     return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
                 return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
 
             _terminate(proc)
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            await proc.wait()
             if abort_task is not None and abort_task in done:
                 return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
             if options.timeout_ms is not None:
@@ -353,4 +372,6 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
                 pending.append(abort_task)
             await _cancel_all(pending)
     finally:
+        if proc.returncode is None:
+            _terminate(proc)
         _live_process_groups.discard(proc.pid)

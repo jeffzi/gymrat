@@ -462,8 +462,11 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
     pipe.set_exception(RuntimeError("stream exploded"))
 
     result = await asyncio.wait_for(task, 3)
-    # A read failure on either stream appends its message to stderr and fails.
-    assert result == expected_result("", "stream exploded\n", 1)
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 1
+    assert result.stderr == "stream exploded\n"
+    # The diagnostic text is internal, not command output — byte count stays zero.
+    assert result.stderr_bytes == 0
 
 
 async def test_exec_when_stream_read_fails_does_kill_whole_group(
@@ -718,19 +721,100 @@ def test_kill_live_process_groups_when_registry_empty_does_not_kill_anything(
     assert attempted == []
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(OSError("no such process"), id="oserror"),
+        pytest.param(RuntimeError("unexpected"), id="runtime-error"),
+    ],
+)
 def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
     monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
 ) -> None:
     exec_mod.reset_live_process_groups({4242})
     attempted: list[int] = []
 
     def boom(pid: int, *_a: object, **_k: object) -> None:
         attempted.append(pid)
-        message = "no such process"
-        raise OSError(message)
+        raise exc
 
     monkeypatch.setattr(exec_mod, "kill_process_group", boom)
 
     exec_mod.kill_live_process_groups()
 
     assert attempted == [4242]
+
+
+# ---------------------------------------------------------------------------
+# child signal mask
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="Signal masking requires POSIX pthread_sigmask",
+)
+async def test_exec_when_spawned_does_unblock_termination_signals_in_child(
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    # The child reports its own blocked-signal mask as a JSON list; none of the
+    # termination signals should appear (they must be unblocked after fork).
+    from gymrat.signals import TERMINATION_SIGNALS
+
+    result = await run_exec(
+        'python3 -c "import signal, json; '
+        'print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"',
+        make_opts(),
+    )
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    blocked: list[int] = __import__("json").loads(result.stdout.strip())
+    for sig in TERMINATION_SIGNALS:
+        assert sig not in blocked, f"signal {sig} should be unblocked in child"
+
+
+# ---------------------------------------------------------------------------
+# cancelling exec kills the child before dropping it from the registry
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_when_cancelled_does_kill_child_before_dropping_from_registry(
+    tmp_path: Path,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    task = asyncio.create_task(
+        run_exec("echo $$ > shell.pid; sleep 30", make_opts()),
+    )
+    proc = await wait_for_spawned(spawned_processes)
+    await wait_for_pid(tmp_path / "shell.pid")
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    await wait_until_dead(proc.pid, timeout_s=3.0)
+    assert not is_alive(proc.pid)
+
+
+# ---------------------------------------------------------------------------
+# OutputBuffer list-join accumulation
+# ---------------------------------------------------------------------------
+
+
+def test_output_buffer_when_many_small_appends_does_use_list_join_internally() -> None:
+    buf = OutputBuffer()
+
+    for i in range(1000):
+        chunk = f"chunk-{i}\n"
+        buf.append(chunk, len(chunk.encode()))
+
+    # The internal storage must be a list of chunks (list-join), not a single
+    # string built by repeated concatenation. Access the internal _chunks list.
+    assert hasattr(buf, "_chunks"), "OutputBuffer should use _chunks list, not text concatenation"
+    assert isinstance(buf._chunks, list)
+    assert len(buf._chunks) == 1000
+    expected = "".join(f"chunk-{i}\n" for i in range(1000))
+    assert buf.text == expected

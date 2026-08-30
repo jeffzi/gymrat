@@ -39,6 +39,7 @@
     "mitata",
     "mkfifo",
     "pipx",
+    "preexec",
     "prek",
     "pthread",
     "pvalue",
