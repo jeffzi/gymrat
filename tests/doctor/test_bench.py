@@ -155,3 +155,81 @@ def test_build_bench_section_when_adapter_fails_does_not_check_bench_or_executab
 
     assert len(section.checks) == 1
     assert section.checks[0].name == "adapter"
+
+
+# ---------------------------------------------------------------------------
+# config problems → skip
+# ---------------------------------------------------------------------------
+
+
+def test_build_bench_section_when_config_problems_and_bench_none_does_skip():
+    section = build_bench_section(bench=None, adapter="metric-lines", config_problems=True)
+
+    assert len(section.checks) == 1
+    check = section.checks[0]
+    assert check.status == "ok"
+    assert "Skipped" in check.detail
+
+
+def test_build_bench_section_when_no_config_problems_and_bench_none_does_fail(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _patch_adapter_ok(monkeypatch)
+
+    section = build_bench_section(bench=None, adapter="metric-lines", config_problems=False)
+
+    bench_check = next(c for c in section.checks if c.name == "bench")
+    assert bench_check.status == "fail"
+
+
+# ---------------------------------------------------------------------------
+# PATH probe with shell command strings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("bench", "expected_exe"),
+    [
+        pytest.param('"path with spaces/node" bench.js', "path with spaces/node", id="quoted-exe"),
+        pytest.param("VAR=1 make test", "make", id="env-var-prefix"),
+        pytest.param("VAR=1 FOO=2 node bench.js", "node", id="multiple-env-vars"),
+    ],
+)
+def test_build_bench_section_when_shell_command_does_extract_real_executable(
+    monkeypatch: pytest.MonkeyPatch,
+    bench: str,
+    expected_exe: str,
+):
+    _patch_adapter_ok(monkeypatch)
+    which_calls: list[str] = []
+
+    def fake_which(cmd: str) -> str:
+        which_calls.append(cmd)
+        return f"/usr/bin/{cmd}"
+
+    monkeypatch.setattr("shutil.which", fake_which)
+
+    section = build_bench_section(bench=bench, adapter="metric-lines")
+
+    exe_check = next(c for c in section.checks if c.name == "executable")
+    assert exe_check.status == "ok"
+    assert which_calls[0] == expected_exe
+
+
+@pytest.mark.parametrize(
+    "bench",
+    [
+        pytest.param("cd src && make bench", id="shell-operator-cd"),
+        pytest.param("{ make bench; }", id="shell-brace-group"),
+    ],
+)
+def test_build_bench_section_when_shell_metacharacters_does_skip_path_check(
+    monkeypatch: pytest.MonkeyPatch,
+    bench: str,
+):
+    _patch_adapter_ok(monkeypatch)
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)  # pyrefly: ignore
+
+    section = build_bench_section(bench=bench, adapter="metric-lines")
+
+    assert not any(c.name == "executable" for c in section.checks)

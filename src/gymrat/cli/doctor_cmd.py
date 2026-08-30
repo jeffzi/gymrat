@@ -162,11 +162,12 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         workflow_section = build_workflow_section(
             resolved,
             problems=inspection.problems,
-            skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).exists(),
+            skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).is_file(),
         )
         bench_section = build_bench_section(
             bench=inspection.bench,
             adapter=adapter or resolved.adapter,
+            config_problems=bool(inspection.problems),
         )
 
         return create_doctor_report(
