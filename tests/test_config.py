@@ -807,23 +807,6 @@ def test_flag_problem_when_value_non_empty_does_return_none():
 # resolve_config
 # ---------------------------------------------------------------------------
 
-# Every GYMRAT_* variable resolve_config consults, cleared before each test so
-# an ambient value in the developer's shell cannot bleed into these cases.
-GYMRAT_ENV_VARS = (
-    "GYMRAT_BENCH",
-    "GYMRAT_PREPARE",
-    "GYMRAT_ADAPTER",
-    "GYMRAT_SAMPLES",
-    "GYMRAT_TIMEOUT",
-    "GYMRAT_CONFIG",
-)
-
-
-@pytest.fixture(autouse=True)
-def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in GYMRAT_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-
 
 @pytest.mark.parametrize(
     ("flags", "config", "expected"),

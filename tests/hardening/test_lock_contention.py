@@ -38,6 +38,7 @@ from gymrat.cli.app import app
 from gymrat.errors import GymratError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
+from tests._process_helpers import dead_pid
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only named pipes and hard links"
@@ -92,17 +93,10 @@ if __name__ == "__main__":
 """
 
 
-def _dead_pid() -> int:
-    """Return a pid that is certainly gone: the child ran and was reaped."""
-    proc = subprocess.Popen([sys.executable, "-c", ""])
-    proc.wait()
-    return proc.pid
-
-
 def _write_stale_lock(lock_path: str) -> None:
     """Plant a holder record whose owning process has already exited."""
     Path(lock_path).write_text(
-        json.dumps({"pid": _dead_pid(), "command": "measure", "at": WRITTEN_LOCK_AT}),
+        json.dumps({"pid": dead_pid(), "command": "measure", "at": WRITTEN_LOCK_AT}),
         encoding="utf-8",
     )
 

@@ -11,8 +11,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 from collections.abc import Buffer, Iterator
 from pathlib import Path
@@ -23,6 +21,7 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.session import lock as lock_module
 from gymrat.session.lock import acquire_lock
+from tests._process_helpers import dead_pid
 
 # ---------------------------------------------------------------------------
 # Constants and helpers
@@ -55,13 +54,6 @@ def _cleanup_temp_dirs() -> Iterator[None]:
     yield
     while _temp_dirs:
         shutil.rmtree(_temp_dirs.pop(), ignore_errors=True)
-
-
-def dead_pid() -> int:
-    """Return a pid that is certainly gone: the child ran and was reaped."""
-    proc = subprocess.Popen([sys.executable, "-c", ""])
-    proc.wait()
-    return proc.pid
 
 
 def write_lockfile(lock_path: str, pid: object, command: str) -> None:

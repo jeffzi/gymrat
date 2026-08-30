@@ -7,26 +7,9 @@ its own copy of the same subprocess and pid-checking code.
 """
 
 import os
-import subprocess
 from pathlib import Path
 
-
-def env() -> dict[str, str]:
-    """A child environment with color forced off, so output is deterministic."""
-    result = dict(os.environ)
-    result["NO_COLOR"] = "1"
-    result.pop("FORCE_COLOR", None)
-    return result
-
-
-def git(repo: str, *args: str) -> None:
-    subprocess.run(  # noqa: S603
-        ["git", *args],  # noqa: S607
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+from tests._git import git
 
 
 def write_committed_bench(repo: str, script: str) -> None:

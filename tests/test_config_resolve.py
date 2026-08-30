@@ -15,18 +15,6 @@ from gymrat.config import (
 )
 from gymrat.errors import GymratError
 
-# Every GYMRAT_* variable the resolvers consult. Cleared before each test so an
-# ambient value in the developer's shell cannot bleed into these cases; the
-# suite runs in randomized order across parallel workers, so isolation is mandatory.
-GYMRAT_ENV_VARS = (
-    "GYMRAT_BENCH",
-    "GYMRAT_PREPARE",
-    "GYMRAT_ADAPTER",
-    "GYMRAT_SAMPLES",
-    "GYMRAT_TIMEOUT",
-    "GYMRAT_CONFIG",
-)
-
 # Values every positive-integer env var (GYMRAT_SAMPLES, GYMRAT_TIMEOUT) rejects.
 INVALID_POSITIVE_INTEGER_VALUES = [
     pytest.param("abc", id="non-numeric"),
@@ -44,12 +32,6 @@ RESOLVERS = [
     pytest.param(resolve_config, id="resolve_config"),
     pytest.param(resolve_benchless_config, id="resolve_benchless_config"),
 ]
-
-
-@pytest.fixture(autouse=True)
-def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in GYMRAT_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
 
 
 def write_toml(path: Path, content: dict[str, object]) -> Path:

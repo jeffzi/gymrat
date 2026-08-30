@@ -21,6 +21,28 @@ import pytest
 
 from tests._git import run_git as _run_git
 
+#: Every GYMRAT_* variable the config resolver reads; cleared before each
+#: test so ambient developer environment never leaks into expectations.
+GYMRAT_ENV_VARS = (
+    "GYMRAT_BENCH",
+    "GYMRAT_PREPARE",
+    "GYMRAT_ADAPTER",
+    "GYMRAT_SAMPLES",
+    "GYMRAT_TIMEOUT",
+    "GYMRAT_CONFIG",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_gymrat_env() -> Iterator[None]:
+    # A private MonkeyPatch context rather than the `monkeypatch` fixture: an
+    # autouse dependency on `monkeypatch` would reorder its teardown after
+    # module-level autouse cleanups, running them under still-active patches.
+    with pytest.MonkeyPatch.context() as patcher:
+        for var in GYMRAT_ENV_VARS:
+            patcher.delenv(var, raising=False)
+        yield
+
 
 def _init_scratch_repo() -> str:
     """Create one temporary git repo on ``main`` with a single committed file."""
@@ -100,6 +122,14 @@ def create_scratch_repo() -> Iterator[Callable[[], str]]:
         for directory in created:
             _remove_stranded_worktrees(directory)
             shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture
+def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch) -> str:
+    """A fresh scratch repository, chdir'd into so the command runs there."""
+    root = create_scratch_repo()
+    monkeypatch.chdir(root)
+    return root
 
 
 @pytest.fixture

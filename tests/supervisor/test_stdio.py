@@ -26,6 +26,7 @@ from gymrat.supervisor.events import (
     ToolProgressEvent,
     UsageUpdateEvent,
 )
+from tests._cli import try_read_report
 from tests._process_helpers import wait_until_dead
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
@@ -56,19 +57,6 @@ async def wait_for_event(
         await asyncio.sleep(0.02)
 
 
-def try_load_report(report_path: Path) -> dict[str, Any] | None:
-    """Load the JSON report if it exists and is complete, else ``None``.
-
-    Wrapped in a sync helper so the blocking filesystem read stays out of the
-    async test body, where it would trip the async-blocking-call lint.
-    """
-    try:
-        data = json.loads(report_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def resolved(path: str | Path) -> Path:
     """Resolve symlinks so a path compares equal to a spawned child's ``cwd``."""
     return Path(path).resolve()
@@ -79,7 +67,7 @@ async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, An
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     while True:
-        data = try_load_report(report_path)
+        data = try_read_report(report_path)
         if data is not None:
             return data
         if loop.time() > deadline:

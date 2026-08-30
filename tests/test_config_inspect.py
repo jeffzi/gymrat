@@ -225,18 +225,6 @@ def test_resolve_metric_meta_when_metric_and_kind_disagree_does_let_metric_win()
 # inspect_config — shared helpers and fixtures
 # ---------------------------------------------------------------------------
 
-# Every GYMRAT_* variable inspect_config consults, cleared before each test so an
-# ambient value in the developer's shell cannot bleed into these cases; the suite
-# runs in randomized order across parallel workers, so isolation is mandatory.
-GYMRAT_ENV_VARS = (
-    "GYMRAT_BENCH",
-    "GYMRAT_PREPARE",
-    "GYMRAT_ADAPTER",
-    "GYMRAT_SAMPLES",
-    "GYMRAT_TIMEOUT",
-    "GYMRAT_CONFIG",
-)
-
 # The fully defaulted settled config: what inspect_config yields when neither
 # flags nor a config file supply any value. bench lives on ConfigInspection, not
 # on the settled BenchlessConfig, so it never appears here.
@@ -257,12 +245,6 @@ LOOP_CONFIG: dict[str, object] = {
     "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
-
-
-@pytest.fixture(autouse=True)
-def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in GYMRAT_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
 
 
 def write_config(directory: Path, content: dict[str, object]) -> Path:

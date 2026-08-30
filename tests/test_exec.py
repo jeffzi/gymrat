@@ -30,7 +30,7 @@ from gymrat.exec import (
     OutputBuffer,
 )
 from gymrat.exec import exec as run_exec
-from tests._process_helpers import is_alive, wait_until_dead
+from tests._process_helpers import capture_spawns, is_alive, wait_until_dead
 
 # exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
 # works under cmd.exe, so the whole module is POSIX-only.
@@ -159,15 +159,7 @@ def spawned_processes(
     wrapping that attribute captures the real ``Process`` while leaving the spawn
     itself real.
     """
-    processes: list[asyncio.subprocess.Process] = []
-    real = asyncio.create_subprocess_shell
-
-    async def wrapper(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
-        proc = await real(*args, **kwargs)  # type: ignore[arg-type]
-        processes.append(proc)
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", wrapper)
+    processes = capture_spawns(monkeypatch, "create_subprocess_shell")
     yield processes
 
     # Safety net: reap any group a test deliberately stopped exec from killing.

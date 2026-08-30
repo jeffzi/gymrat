@@ -23,11 +23,16 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
-from tests._rich import Clock, frame_text, screen_lines, sealed_console
+from tests._rich import (
+    Clock,
+    console_output,
+    fake_install,
+    frame_text,
+    screen_lines,
+    sealed_console,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
 
@@ -63,13 +68,6 @@ def _reporter(
         **kwargs,  # type: ignore[arg-type]
     )
     return console, clock, reporter
-
-
-def _output(console: Console) -> str:
-    """Return all text written to the console's StringIO."""
-    f = console.file
-    assert isinstance(f, StringIO)
-    return f.getvalue()
 
 
 def _ms(clock: Clock) -> int:
@@ -111,21 +109,9 @@ def _pass_finished(
     )
 
 
-def _fake_install(
-    registered: list[object],
-) -> Callable[[Callable[[], None]], Callable[[], None]]:
-    """A fake ``install_termination_cleanup`` that records registrations."""
-
-    def install(cb: Callable[[], None]) -> Callable[[], None]:
-        registered.append(cb)
-        return lambda: None
-
-    return install
-
-
 def _summary_line(console: Console) -> str:
     """The last visible line of the rendered screen, or '' if nothing was printed."""
-    visible = screen_lines(_output(console))
+    visible = screen_lines(console_output(console))
     return visible[-1] if visible else ""
 
 
@@ -296,7 +282,7 @@ def test_plain_renderer_when_prepare_finished_does_print_exact_timestamped_line(
     clock.tick(5)
     reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
 
-    output = _output(console)
+    output = console_output(console)
     lines = [ln for ln in output.splitlines() if ln.strip()]
 
     assert lines[-1] == "[00:00:05] prepared bench (5s)"
@@ -312,7 +298,7 @@ def test_plain_renderer_when_pass_finished_does_print_exact_timestamped_line(
     clock.tick(20)
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
 
-    output = _output(console)
+    output = console_output(console)
     lines = [ln for ln in output.splitlines() if ln.strip()]
 
     assert lines[-1] == snapshot
@@ -330,7 +316,7 @@ def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
     reporter.stop()
 
-    output = _output(console)
+    output = console_output(console)
 
     assert "\x1b[" not in output
 
@@ -382,7 +368,7 @@ def test_warn_when_live_mode_does_route_through_console_print():
 
     reporter.warn("heads up: slow disk")
 
-    output = _output(console)
+    output = console_output(console)
     assert "heads up: slow disk" in output
     reporter.stop()
 
@@ -393,7 +379,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, reporter = _reporter("live")
@@ -408,7 +394,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, reporter = _reporter("plain")
@@ -448,7 +434,7 @@ def test_stop_when_plain_mode_does_not_print_summary():
 
     reporter.stop()
 
-    assert "measured in" not in _output(console)
+    assert "measured in" not in console_output(console)
 
 
 def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
@@ -499,7 +485,7 @@ def test_live_renderer_when_console_width_zero_does_render_as_plain():
     reporter.stop()
 
     assert reporter._live is None
-    output = _output(console)
+    output = console_output(console)
     assert "\x1b[" not in output
 
 
@@ -508,7 +494,7 @@ def test_reporter_when_non_relevant_event_does_silently_ignore():
 
     reporter.report(HookStarted(stage="before", at_ms=0))
 
-    output = _output(console)
+    output = console_output(console)
     assert output == ""
     reporter.stop()
 

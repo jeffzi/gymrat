@@ -154,14 +154,6 @@ def _install_seams(
     return seams
 
 
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch) -> str:
-    """A fresh scratch repository, chdir'd into so the command runs there."""
-    root = create_scratch_repo()
-    monkeypatch.chdir(root)
-    return root
-
-
 def _run(*args: str) -> Result:
     """Invoke the assembled app's ``supervise`` command with ``args``."""
     return runner.invoke(app, ["supervise", *args])

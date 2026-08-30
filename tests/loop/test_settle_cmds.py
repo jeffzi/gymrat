@@ -10,7 +10,6 @@ run against the ``gymrat.toml`` each test lays down at the repository root.
 """
 
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -39,14 +38,6 @@ def _write_config(root: str, **extra: object) -> None:
     """Write the ``gymrat.toml`` the settle commands read their checks gate from."""
     payload: dict[str, object] = {"bench": "npm run bench", **extra}
     (Path(root) / "gymrat.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
-
-
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch) -> str:
-    """A fresh scratch repository, chdir'd into so the command runs there."""
-    root = create_scratch_repo()
-    monkeypatch.chdir(root)
-    return root
 
 
 # ---------------------------------------------------------------------------

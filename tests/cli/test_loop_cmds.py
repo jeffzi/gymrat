@@ -113,14 +113,6 @@ class _ResolverRecorder:
         return self.result
 
 
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch) -> str:
-    """A fresh scratch repository, chdir'd into so the command runs there."""
-    root = create_scratch_repo()
-    monkeypatch.chdir(root)
-    return root
-
-
 # ---------------------------------------------------------------------------
 # the start command
 # ---------------------------------------------------------------------------

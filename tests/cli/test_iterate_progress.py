@@ -33,10 +33,16 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
-from tests._rich import Clock, frame_text, screen_lines, sealed_console
+from tests._rich import (
+    Clock,
+    console_output,
+    fake_install,
+    frame_text,
+    screen_lines,
+    sealed_console,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from typing import Literal
 
     from rich.console import Console
@@ -48,14 +54,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _output(console: Console) -> str:
-    f = console.file
-    assert isinstance(f, StringIO)
-    return f.getvalue()
-
-
 def _last_line(console: Console) -> str:
-    lines = [ln for ln in _output(console).splitlines() if ln.strip()]
+    lines = [ln for ln in console_output(console).splitlines() if ln.strip()]
     return lines[-1]
 
 
@@ -221,18 +221,6 @@ def _plain(
         verbose=verbose,
         checks_cmd=checks_cmd,
     )
-
-
-def _fake_install(
-    registered: list[object],
-) -> Callable[[Callable[[], None]], Callable[[], None]]:
-    """A fake ``install_termination_cleanup`` that records registrations."""
-
-    def install(cb: Callable[[], None]) -> Callable[[], None]:
-        registered.append(cb)
-        return lambda: None
-
-    return install
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +585,7 @@ def test_plain_when_any_event_does_not_emit_ansi_codes():
     renderer.report(IterationRecorded(seq=1, outcome="improved", at_ms=_ms(clock)))
     renderer.stop()
 
-    output = _output(console)
+    output = console_output(console)
 
     assert "\x1b[" not in output
 
@@ -649,7 +637,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.iterate_progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, renderer = _live()
@@ -664,7 +652,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.iterate_progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, renderer = _plain()
