@@ -18,13 +18,9 @@ from typing import TYPE_CHECKING
 from rich.cells import cell_len
 from rich.markup import escape
 
-from gymrat.report.format import (
-    GEOMEAN_LABEL,
-    baseline_cell_parts,
-    candidate_cell_parts,
-    geomean_scope_label,
-    shown_class,
-)
+from gymrat.report.display import shown_class
+from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
+from gymrat.report.geomean_label import GEOMEAN_LABEL, geomean_scope_label
 from gymrat.report.sections import (
     flat_geomean_of,
     group_geomean_of,
@@ -70,7 +66,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from gymrat.model import GeomeanResult
-    from gymrat.report.format import DisplayClass, MetricCellParts
+    from gymrat.report.display import DisplayClass
+    from gymrat.report.format import MetricCellParts
     from gymrat.report.table import BodyLine, ValueWidths, VerdictParts, VerdictWidths
     from gymrat.report.types import (
         CandidateComparison,
@@ -78,7 +75,6 @@ if TYPE_CHECKING:
         MetricComparison,
     )
 
-# The per-candidate aggregate cell of one geomean row, one entry per candidate.
 type _AggregateCells = tuple[AggregateColumnCell, ...]
 
 
@@ -102,6 +98,118 @@ class _ComparisonRow:
     gating: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _ColumnFields:
+    """Pre-measured field widths for each candidate column and the baseline."""
+
+    values: list[ValueWidths]
+    verdicts: list[VerdictWidths]
+    baseline: ValueWidths
+
+
+@dataclass(frozen=True, slots=True)
+class _TableContext:
+    """Shared parameters for column width measurement and cell rendering."""
+
+    baseline_header: str
+    candidates: Sequence[CandidateComparison]
+    fields: _ColumnFields
+    grouped: bool
+
+
+def _measure_columns(
+    ordered: Sequence[_ComparisonRow],
+    candidate_count: int,
+) -> _ColumnFields:
+    """Measure each candidate column's value and verdict widths, plus the baseline's."""
+    col_values = [
+        value_widths([row.candidates[index].value for row in ordered])
+        for index in range(candidate_count)
+    ]
+    col_verdicts = [
+        verdict_widths(
+            [parts for row in ordered if (parts := row.candidates[index].verdict) is not None]
+        )
+        for index in range(candidate_count)
+    ]
+    baseline = value_widths([row.baseline for row in ordered])
+    return _ColumnFields(values=col_values, verdicts=col_verdicts, baseline=baseline)
+
+
+def _column_widths(
+    body: Sequence[BodyLine[_ComparisonRow, _AggregateCells]],
+    ordered: Sequence[_ComparisonRow],
+    table: _TableContext,
+) -> list[int]:
+    """The column widths, measured over the plain rows, headers and aggregates."""
+    aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
+
+    def candidate_text(row: _ComparisonRow, index: int) -> str:
+        cell = row.candidates[index]
+        value = join_value_cell(cell.value, table.fields.values[index])
+        if cell.verdict is None:
+            return value
+        verdict = join_verdict_cell(cell.verdict, table.fields.verdicts[index])
+        return f"{value}{CELL_GUTTER}{verdict}"
+
+    metric_width = compute_column_width(
+        cell_len(widest_header_label(body)),
+        [cell_len(row.label if table.grouped else row.name) for row in ordered]
+        + aggregate_label_lengths(body),
+        METRIC_COLUMN_MIN,
+    )
+    baseline_width = compute_column_width(
+        cell_len(table.baseline_header),
+        [cell_len(join_value_cell(row.baseline, table.fields.baseline)) for row in ordered],
+        VALUE_COLUMN_MIN,
+    )
+    candidate_widths = [
+        compute_column_width(
+            cell_len(candidate.label),
+            [cell_len(candidate_text(row, index)) for row in ordered]
+            + [cell_len(line.cell[index].text) for line in aggregate_lines],
+            VALUE_COLUMN_MIN,
+        )
+        for index, candidate in enumerate(table.candidates)
+    ]
+    return [metric_width, baseline_width, *candidate_widths]
+
+
+def _to_cells(
+    line: BodyLine[_ComparisonRow, _AggregateCells],
+    table: _TableContext,
+) -> tuple[str, ...]:
+    """The markup cells one content row renders to."""
+    if isinstance(line, HeaderLine):
+        title = line.title
+        metric_cell = markup(title, "bold") if title is not None else escape(METRIC_COLUMN_HEADER)
+        return (
+            metric_cell,
+            markup(table.baseline_header, VARIANT_NAME_STYLE),
+            *(markup(candidate.label, VARIANT_NAME_STYLE) for candidate in table.candidates),
+        )
+    if isinstance(line, GroupLine):
+        return (markup(line.label, GROUP_LABEL_STYLE), "", *("" for _ in table.candidates))
+    if isinstance(line, MetricLine):
+        row = line.row
+        return (
+            escape(row.label if table.grouped else row.name),
+            escape(join_value_cell(row.baseline, table.fields.baseline)),
+            *(
+                _candidate_markup(cell, table.fields.values[index], table.fields.verdicts[index])
+                for index, cell in enumerate(row.candidates)
+            ),
+        )
+    if isinstance(line, AggregateLine):
+        return (
+            markup(line.label, AGGREGATE_LABEL_STYLE),
+            "",
+            *(_aggregate_cell_markup(cell) for cell in line.cell),
+        )
+    msg = f"unexpected body line {line!r}"
+    raise AssertionError(msg)
+
+
 def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
     """Render a multi-candidate comparison table (one baseline vs. two or more candidates).
 
@@ -119,31 +227,7 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         result.metrics,
         lambda name, group, metric: _build_row(metric, name, group, candidates, result.samples),
     )
-    column_values = [
-        value_widths([row.candidates[index].value for row in layout.ordered])
-        for index in range(len(candidates))
-    ]
-    column_verdicts = [
-        verdict_widths(
-            [
-                parts
-                for row in layout.ordered
-                if (parts := row.candidates[index].verdict) is not None
-            ]
-        )
-        for index in range(len(candidates))
-    ]
-    baseline_fields = value_widths([row.baseline for row in layout.ordered])
-
-    def candidate_text(row: _ComparisonRow, index: int) -> str:
-        cell = row.candidates[index]
-        value = join_value_cell(cell.value, column_values[index])
-        if cell.verdict is None:
-            return value
-        return f"{value}{CELL_GUTTER}{join_verdict_cell(cell.verdict, column_verdicts[index])}"
-
-    def baseline_text(row: _ComparisonRow) -> str:
-        return join_value_cell(row.baseline, baseline_fields)
+    fields = _measure_columns(layout.ordered, len(candidates))
 
     aggregates = _aggregate_rows(candidates)
     body: list[BodyLine[_ComparisonRow, _AggregateCells]] = plan_body(
@@ -151,67 +235,21 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         aggregates,
         lambda section: section_annotation(section, result.config_kinds),
     )
-    aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
     grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
-
-    metric_width = compute_column_width(
-        cell_len(widest_header_label(body)),
-        [cell_len(row.label if grouped else row.name) for row in layout.ordered]
-        + aggregate_label_lengths(body),
-        METRIC_COLUMN_MIN,
+    table = _TableContext(
+        baseline_header=baseline_header,
+        candidates=candidates,
+        fields=fields,
+        grouped=grouped,
     )
-    baseline_width = compute_column_width(
-        cell_len(baseline_header),
-        [cell_len(baseline_text(row)) for row in layout.ordered],
-        VALUE_COLUMN_MIN,
+    widths = _column_widths(body, layout.ordered, table)
+
+    return render_body(
+        body,
+        widths,
+        lambda line: _to_cells(line, table),
+        color=color,
     )
-    candidate_widths = [
-        compute_column_width(
-            cell_len(candidate.label),
-            [cell_len(candidate_text(row, index)) for row in layout.ordered]
-            + [cell_len(line.cell[index].text) for line in aggregate_lines],
-            VALUE_COLUMN_MIN,
-        )
-        for index, candidate in enumerate(candidates)
-    ]
-    widths = [metric_width, baseline_width, *candidate_widths]
-
-    def metric_name(row: _ComparisonRow) -> str:
-        return row.label if grouped else row.name
-
-    def to_cells(line: BodyLine[_ComparisonRow, _AggregateCells]) -> tuple[str, ...]:
-        if isinstance(line, HeaderLine):
-            title = line.title
-            metric_cell = (
-                markup(title, "bold") if title is not None else escape(METRIC_COLUMN_HEADER)
-            )
-            return (
-                metric_cell,
-                markup(baseline_header, VARIANT_NAME_STYLE),
-                *(markup(candidate.label, VARIANT_NAME_STYLE) for candidate in candidates),
-            )
-        if isinstance(line, GroupLine):
-            return (markup(line.label, GROUP_LABEL_STYLE), "", *("" for _ in candidates))
-        if isinstance(line, MetricLine):
-            row = line.row
-            return (
-                escape(metric_name(row)),
-                escape(baseline_text(row)),
-                *(
-                    _candidate_markup(cell, column_values[index], column_verdicts[index])
-                    for index, cell in enumerate(row.candidates)
-                ),
-            )
-        if isinstance(line, AggregateLine):
-            return (
-                markup(line.label, AGGREGATE_LABEL_STYLE),
-                "",
-                *(_aggregate_cell_markup(cell) for cell in line.cell),
-            )
-        msg = f"unexpected body line {line!r}"
-        raise AssertionError(msg)
-
-    return render_body(body, widths, to_cells, color=color)
 
 
 def _build_row(

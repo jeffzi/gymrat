@@ -8,7 +8,7 @@ import sys
 
 from gymrat.cli.shared import write_and_flush
 from gymrat.model import GeomeanResult
-from gymrat.report.format import count_verdicts
+from gymrat.report.tally import count_verdicts
 from gymrat.report.types import (
     CandidateComparison,
     ComparisonResult,

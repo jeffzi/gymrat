@@ -5,29 +5,23 @@ callers can import them from :mod:`gymrat.report` without reaching into
 submodules.
 """
 
-from gymrat.report.format import (
-    GATED_GEOMEAN_LABEL,
-    GEOMEAN_LABEL,
+from gymrat.plural import pluralize
+from gymrat.report.display import (
     MIN_PERMUTATION_N,
-    NO_GEOMEAN_CELL,
-    NO_GEOMEAN_FIGURE,
-    NO_STABLE_METRICS,
-    PLUS_MINUS,
     QUIET_VERDICTS,
-    SPREAD_SEPARATOR,
-    UNSTABLE_FUTILITY_NOTE,
     VERDICT_GLOSSES,
     DisplayClass,
-    GeomeanParts,
-    HighlightBlock,
+    display_class,
+    get_glyph,
+    shown_class,
+)
+from gymrat.report.footer import footer_lines
+from gymrat.report.format import (
+    PLUS_MINUS,
+    SPREAD_SEPARATOR,
     MetricCellParts,
-    MetricHighlight,
-    VerdictCounts,
     baseline_cell_parts,
     candidate_cell_parts,
-    count_verdicts,
-    display_class,
-    footer_lines,
     format_delta,
     format_evidence,
     format_metric_cell_parts,
@@ -35,19 +29,28 @@ from gymrat.report.format import (
     format_pair_count,
     format_value,
     format_verdict_delta,
+    is_improvement,
+)
+from gymrat.report.geomean_label import (
+    GATED_GEOMEAN_LABEL,
+    GEOMEAN_LABEL,
+    NO_GEOMEAN_CELL,
+    NO_GEOMEAN_FIGURE,
+    NO_STABLE_METRICS,
+    GeomeanParts,
     geomean_label,
     geomean_parts,
     geomean_scope_label,
     geomean_value_style,
-    get_glyph,
+    scoped_geomean_label,
+)
+from gymrat.report.highlight import (
+    UNSTABLE_FUTILITY_NOTE,
+    HighlightBlock,
+    MetricHighlight,
     has_unstable_highlight,
     highlight_label,
-    is_improvement,
-    pluralize,
-    scoped_geomean_label,
     select_highlights,
-    shown_class,
-    verdict_summary_parts,
 )
 from gymrat.report.json_doc import render_json, render_measure_json
 from gymrat.report.loop import (
@@ -100,6 +103,7 @@ from gymrat.report.style import (
     shorten_label,
     truncate_labels,
 )
+from gymrat.report.tally import VerdictCounts, count_verdicts, verdict_summary_parts
 from gymrat.report.text import (
     format_cleanup_failures,
     paired_samples,

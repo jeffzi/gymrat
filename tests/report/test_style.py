@@ -11,7 +11,7 @@ import os
 import pytest
 from rich.markup import escape
 
-from gymrat.report.format import DisplayClass
+from gymrat.report.display import DisplayClass
 from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,

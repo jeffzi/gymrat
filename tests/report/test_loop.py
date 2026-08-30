@@ -45,7 +45,7 @@ from gymrat.report.loop import (
 from gymrat.report.style import render_lines
 from gymrat.session import BaselineRecord, BaselineRef, Worktrees
 from tests.report._inputs import permutation_metric, styles_at
-from tests.session._records import SESSION_ID, finalize_record, session_record
+from tests.session.records._fixtures import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
     from gymrat.model import Direction

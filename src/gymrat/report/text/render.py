@@ -23,21 +23,17 @@ from rich.markup import escape
 from rich.text import Text
 
 from gymrat.model import Effect
-from gymrat.report.format import (
-    GATED_GEOMEAN_LABEL,
+from gymrat.plural import pluralize
+from gymrat.report.display import display_class, get_glyph
+from gymrat.report.footer import footer_lines
+from gymrat.report.format import format_delta, format_evidence, format_verdict_delta
+from gymrat.report.geomean_label import GATED_GEOMEAN_LABEL
+from gymrat.report.highlight import (
     UNSTABLE_FUTILITY_NOTE,
     HighlightBlock,
-    display_class,
-    footer_lines,
-    format_delta,
-    format_evidence,
-    format_verdict_delta,
-    get_glyph,
     has_unstable_highlight,
     highlight_label,
-    pluralize,
     select_highlights,
-    verdict_summary_parts,
 )
 from gymrat.report.sections import spans_many_kinds
 from gymrat.report.style import (
@@ -45,13 +41,14 @@ from gymrat.report.style import (
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
+    markup,
     render_lines,
     truncate_labels,
 )
-from gymrat.report.table import markup
-from gymrat.report.text_measure import render_measure_table
-from gymrat.report.text_multi import render_comparison_table
-from gymrat.report.text_single import render_table
+from gymrat.report.tally import verdict_summary_parts
+from gymrat.report.text.measure import render_measure_table
+from gymrat.report.text.multi import render_comparison_table
+from gymrat.report.text.single import render_table
 from gymrat.report.types import GeomeanFailOn, ReportOptions
 
 if TYPE_CHECKING:

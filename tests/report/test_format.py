@@ -22,23 +22,12 @@ from gymrat.model import (
     MetricUnit,
     MetricVerdict,
 )
-from gymrat.report.format import (
-    DisplayClass,
-    VerdictCounts,
-    count_verdicts,
-    display_class,
-    footer_lines,
-    format_delta,
-    format_evidence,
-    format_value,
-    geomean_value_style,
-    get_glyph,
-    highlight_label,
-    pluralize,
-    scoped_geomean_label,
-    select_highlights,
-    verdict_summary_parts,
-)
+from gymrat.plural import pluralize
+from gymrat.report.display import DisplayClass, display_class, get_glyph
+from gymrat.report.footer import footer_lines
+from gymrat.report.format import format_delta, format_evidence, format_value
+from gymrat.report.geomean_label import geomean_value_style, scoped_geomean_label
+from gymrat.report.highlight import highlight_label, select_highlights
 from gymrat.report.loop import (
     GeomeanPrimary,
     RerunAnswer,
@@ -46,6 +35,7 @@ from gymrat.report.loop import (
     format_verdict_block,
 )
 from gymrat.report.style import format_hint, render_lines
+from gymrat.report.tally import VerdictCounts, count_verdicts, verdict_summary_parts
 from gymrat.report.types import ReportOptions
 from tests.report._inputs import (
     CandidateSpec,

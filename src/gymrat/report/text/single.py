@@ -15,18 +15,15 @@ from typing import TYPE_CHECKING
 from rich.cells import cell_len
 from rich.markup import escape
 
-from gymrat.report.format import (
+from gymrat.report.display import QUIET_VERDICTS, display_class, shown_class
+from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
+from gymrat.report.geomean_label import (
     NO_GEOMEAN_FIGURE,
     NO_STABLE_METRICS,
-    QUIET_VERDICTS,
-    baseline_cell_parts,
-    candidate_cell_parts,
-    display_class,
     geomean_label,
     geomean_parts,
     geomean_value_style,
     scoped_geomean_label,
-    shown_class,
 )
 from gymrat.report.sections import (
     flat_geomean_of,
@@ -71,7 +68,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.model import GeomeanResult, MetricVerdict
-    from gymrat.report.format import DisplayClass, MetricCellParts
+    from gymrat.report.display import DisplayClass
+    from gymrat.report.format import MetricCellParts
     from gymrat.report.table import BodyLine, VerdictWidths
     from gymrat.report.types import CandidateComparison, ComparisonResult, MetricComparison
 
@@ -163,22 +161,7 @@ def render_table(
     baseline_fields = value_widths([row.baseline for row in layout.ordered])
     candidate_fields = value_widths([row.candidate for row in layout.ordered])
 
-    def scoped(
-        scope: str, geomean: GeomeanResult, rows: Sequence[_MeasuredRow]
-    ) -> AggregateRow[_AggregateCell]:
-        return AggregateRow(
-            label=scoped_geomean_label(scope, geomean),
-            cell=_geomean_cell(geomean, _measured_outcomes(rows)),
-        )
-
-    aggregates: AggregateRows[_MeasuredRow, _AggregateCell] = AggregateRows(
-        group=lambda kind, group, rows: scoped(
-            group, group_geomean_of(candidate, kind, group), rows
-        ),
-        kind=lambda kind, rows: scoped(kind, kind_geomean_of(candidate, kind), rows),
-        flat=lambda rows: _flat_aggregate(candidate, rows),
-    )
-
+    aggregates = _aggregate_rows(candidate)
     body: list[BodyLine[_MeasuredRow, _AggregateCell]] = plan_body(
         layout,
         aggregates,
@@ -227,6 +210,28 @@ def _build_row(
         verdict=verdict,
         parts=None if verdict is None else verdict_parts(verdict, samples, with_band=True),
         gating=metric.meta.gating,
+    )
+
+
+def _aggregate_rows(
+    candidate: CandidateComparison,
+) -> AggregateRows[_MeasuredRow, _AggregateCell]:
+    """The three aggregate-row builders for a single-candidate table."""
+
+    def scoped(
+        scope: str, geomean: GeomeanResult, rows: Sequence[_MeasuredRow]
+    ) -> AggregateRow[_AggregateCell]:
+        return AggregateRow(
+            label=scoped_geomean_label(scope, geomean),
+            cell=_geomean_cell(geomean, _measured_outcomes(rows)),
+        )
+
+    return AggregateRows(
+        group=lambda kind, group, rows: scoped(
+            group, group_geomean_of(candidate, kind, group), rows
+        ),
+        kind=lambda kind, rows: scoped(kind, kind_geomean_of(candidate, kind), rows),
+        flat=lambda rows: _flat_aggregate(candidate, rows),
     )
 
 

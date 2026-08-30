@@ -25,7 +25,7 @@ from __future__ import annotations
 import io
 import os
 import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from rich.cells import cell_len
 from rich.console import Console
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
     from rich.console import RenderableType
 
-    from gymrat.report.format import DisplayClass
+    from gymrat.report.display import DisplayClass
 
 # ---------------------------------------------------------------------------
 # Label truncation
@@ -293,33 +293,28 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
         printed through it.
     """
     buffer = io.StringIO()
-    if color is True:
-        return Console(
-            file=buffer,
-            width=width,
-            force_terminal=True,
-            color_system="truecolor",
-            no_color=False,
-            soft_wrap=True,
-        )
-    if color is False:
+    resolved = color if color is not None else color_from_env()
+
+    force_terminal: bool | None
+    color_system: Literal["auto", "standard", "256", "truecolor", "windows"] | None
+    if resolved is True:
+        force_terminal, color_system = True, "truecolor"
+    elif resolved is False:
         # `no_color=True` only strips colors, leaving bold/underline/dim intact
         # when FORCE_COLOR has forced a terminal; disabling the color system drops
         # every SGR code, so color=False fully overrides the environment.
-        return Console(file=buffer, width=width, color_system=None, soft_wrap=True)
-    env_color = color_from_env()
-    if env_color is True:
-        return Console(
-            file=buffer,
-            width=width,
-            force_terminal=True,
-            color_system="truecolor",
-            no_color=False,
-            soft_wrap=True,
-        )
-    if env_color is False:
-        return Console(file=buffer, width=width, color_system=None, soft_wrap=True)
-    return Console(file=buffer, width=width, soft_wrap=True)
+        force_terminal, color_system = None, None
+    else:
+        force_terminal, color_system = None, "auto"
+
+    return Console(
+        file=buffer,
+        width=width,
+        force_terminal=force_terminal,
+        color_system=color_system,
+        no_color=False,
+        soft_wrap=True,
+    )
 
 
 def _force_color_env() -> bool:
