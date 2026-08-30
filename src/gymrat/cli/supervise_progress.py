@@ -11,6 +11,7 @@ saw), and otherwise only re-renders.
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -53,6 +54,8 @@ from gymrat.supervisor.events import (
     ToolStartEvent,
     UsageUpdateEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 # After 3 minutes of no tool activity, the liveness segment turns to "idle".
 IDLE_WARN_MS = 180_000
@@ -402,7 +405,8 @@ class _ReporterCtx:
 def _try_read_session(ctx: _ReporterCtx) -> None:
     try:
         ctx.session_result = ctx.read_session_fn()
-    except Exception:  # noqa: BLE001 - a failed read must never break the display; treat as no data
+    except Exception:
+        logger.exception("session read failed")
         ctx.session_result = None
 
 
@@ -595,7 +599,7 @@ def _make_default_read(root: str) -> Callable[[], ReadSessionResult]:
     return _read
 
 
-def _noop_write(text: str) -> None:
+def _stderr_write(text: str) -> None:
     """Default plain_write: write to stderr with a newline."""
     sys.stderr.write(f"{text}\n")
 
@@ -606,7 +610,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     max_minutes: float,
     max_usd: float | None = None,
     max_iterations: int | None = None,
-    mode: str,
+    mode: Literal["live", "plain"],
     now: Callable[[], int] | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
     label: str = "",
@@ -627,7 +631,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     resolved_now = now if now is not None else now_ms
     resolved_read = read_session if read_session is not None else _make_default_read(root)
     resolved_read_progress = read_progress if read_progress is not None else _default_read_progress
-    resolved_plain_write = plain_write if plain_write is not None else _noop_write
+    resolved_plain_write = plain_write if plain_write is not None else _stderr_write
     is_plain = mode == "plain"
 
     plain_writes_list: list[str] = []

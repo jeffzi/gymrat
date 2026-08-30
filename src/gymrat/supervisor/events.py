@@ -13,12 +13,13 @@ event out to several observers in order.
 """
 
 import json
-import math
 import re
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, assert_never, cast
+
+from gymrat.finite_json import null_non_finite
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -220,21 +221,10 @@ def _to_wire(event: SessionEvent) -> dict[str, object]:
     return wire
 
 
-def _sanitize_floats(value: object) -> object:
-    """Replace non-finite floats (NaN, Infinity) with ``None`` for valid JSON."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {k: _sanitize_floats(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_sanitize_floats(item) for item in value]
-    return value
-
-
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with camelCase keys."""
     wire = _to_wire(event)
-    return json.dumps(_sanitize_floats(wire), separators=(",", ":"))
+    return json.dumps(null_non_finite(wire), separators=(",", ":"))
 
 
 # ---------------------------------------------------------------------------

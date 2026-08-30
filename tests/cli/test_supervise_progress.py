@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from unittest.mock import patch
 
 if TYPE_CHECKING:
@@ -246,7 +246,7 @@ class ReporterKit(NamedTuple):
 
 def make_reporter(
     *,
-    mode: str = "live",
+    mode: Literal["live", "plain"] = "live",
     max_minutes: float = 480,
     max_usd: float | None = None,
     max_iterations: int | None = None,
