@@ -180,9 +180,9 @@ def spawned_processes(
 @pytest.fixture(autouse=True)
 def _isolate_live_groups() -> Iterator[None]:
     """Keep the module-level live-group registry from bleeding across tests."""
-    exec_mod._live_process_groups.clear()
+    exec_mod.reset_live_process_groups()
     yield
-    exec_mod._live_process_groups.clear()
+    exec_mod.reset_live_process_groups()
 
 
 @pytest.mark.parametrize(
@@ -729,7 +729,7 @@ def test_kill_live_process_groups_when_registry_empty_does_not_kill_anything(
 def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    exec_mod._live_process_groups.add(4242)
+    exec_mod.reset_live_process_groups({4242})
     attempted: list[int] = []
 
     def boom(pid: int, *_a: object, **_k: object) -> None:

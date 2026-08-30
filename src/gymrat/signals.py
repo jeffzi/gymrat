@@ -59,6 +59,20 @@ _deferring: bool = False
 _deferred_signal: int | None = None
 
 
+def reset() -> None:
+    """Clear the registry, installed-signal set, and in-handler flag.
+
+    Test-only seam: production code never calls this, since handlers are wired
+    up once for the process lifetime and deliberately never torn down. Tests use
+    it to isolate module-global state between cases instead of reaching into the
+    private attributes directly.
+    """
+    global _handling  # noqa: PLW0603 - module-level state the reset owns
+    _registry.clear()
+    _handling = False
+    _installed_signals.clear()
+
+
 def _exit_process(code: int) -> NoReturn:
     """Terminate the process immediately with ``code``.
 
@@ -108,7 +122,9 @@ def _ensure_handlers_installed() -> None:
 # POSIX-only seam for blocking signals. ``None`` on platforms without
 # ``pthread_sigmask`` (win32), where callers fall back to running unmasked.
 # Kept as a module-level reference so the fallback branch stays testable.
-_pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
+# :mod:`gymrat.git` imports this to block the same signals across a git
+# subprocess call, rather than re-resolving ``pthread_sigmask`` itself.
+pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
     signal, "pthread_sigmask", None
 )
 
@@ -132,16 +148,16 @@ def deferring_termination_signals() -> Iterator[None]:
     global _deferring, _deferred_signal  # noqa: PLW0603
 
     _deferring = True
-    if _pthread_sigmask is not None and TERMINATION_SIGNALS:
-        previous: list[int] | None = _pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    if pthread_sigmask is not None and TERMINATION_SIGNALS:
+        previous: list[int] | None = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
     else:
         previous = None
     try:
         yield
     finally:
         _deferring = False
-        if previous is not None and _pthread_sigmask is not None:
-            _pthread_sigmask(signal.SIG_SETMASK, previous)
+        if previous is not None and pthread_sigmask is not None:
+            pthread_sigmask(signal.SIG_SETMASK, previous)
         deferred = _deferred_signal
         _deferred_signal = None
         if deferred is not None:

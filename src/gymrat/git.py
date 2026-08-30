@@ -11,11 +11,12 @@ import os
 import re
 import signal
 import subprocess
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 
 from gymrat.errors import GymratError, stderr_text_of
 from gymrat.signals import TERMINATION_SIGNALS
+from gymrat.signals import pthread_sigmask as _pthread_sigmask
 
 # Env vars an outer git process exports to point child git at a specific repo.
 # Removing them forces this call to resolve the repository from ``cwd`` alone.
@@ -34,13 +35,6 @@ _REPO_TARGETING_ENV_VARS = (
 # stderr. ``LC_ALL=C`` in :func:`run_git` stabilizes the wording across locales,
 # so a case-insensitive flag is not needed.
 _NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
-
-# POSIX-only seam for blocking signals. ``None`` on platforms without
-# ``pthread_sigmask`` (win32), where run_git falls back to running git unmasked.
-# Kept as a module-level reference so the fallback branch stays testable.
-_pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
-    signal, "pthread_sigmask", None
-)
 
 
 @contextmanager

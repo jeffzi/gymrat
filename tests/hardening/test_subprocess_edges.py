@@ -484,8 +484,7 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     monkeypatch.setattr(signals, "_exit_process", lambda code: exit_record.update(code=code))  # pyrefly: ignore
 
     # Keep the live-groups registry clean for this test.
-    saved = set(exec_mod._live_process_groups)
-    exec_mod._live_process_groups.clear()
+    saved = exec_mod.reset_live_process_groups()
 
     uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
 
@@ -507,8 +506,7 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     finally:
         sender.join(timeout=3)
         uninstall()
-        exec_mod._live_process_groups.clear()
-        exec_mod._live_process_groups.update(saved)
+        exec_mod.reset_live_process_groups(saved)
         for proc in spawned:
             if proc.returncode is None and proc.pid:
                 with contextlib.suppress(OSError):

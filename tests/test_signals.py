@@ -39,9 +39,7 @@ def _reset_registry() -> Iterator[None]:
     """
     saved = {sig: signal.getsignal(sig) for sig in signals.TERMINATION_SIGNALS}
     yield
-    signals._registry.clear()
-    signals._handling = False
-    signals._installed_signals.clear()
+    signals.reset()
     for sig, handler in saved.items():
         signal.signal(sig, handler)
 

@@ -19,6 +19,7 @@ into a landmine for the next.
 import asyncio
 import codecs
 import contextlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from gymrat.process_group import current_platform, kill_process_group
@@ -55,6 +56,18 @@ def kill_live_process_groups() -> None:
     for pid in list(_live_process_groups):
         with contextlib.suppress(OSError):
             kill_process_group(pid)
+
+
+def reset_live_process_groups(groups: Iterable[int] = ()) -> set[int]:
+    """Replace the live-group registry, returning what it held before.
+
+    Test-only escape hatch for isolating and seeding :data:`_live_process_groups`
+    across test runs without reaching into module-private state directly.
+    """
+    previous = set(_live_process_groups)
+    _live_process_groups.clear()
+    _live_process_groups.update(groups)
+    return previous
 
 
 @dataclass(frozen=True, slots=True)
