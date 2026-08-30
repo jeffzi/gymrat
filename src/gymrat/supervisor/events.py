@@ -234,7 +234,11 @@ def to_json_line(event: SessionEvent) -> str:
 
 def _dirty_from_wire(value: object) -> Literal[False] | DirtyInfo:
     if isinstance(value, dict):
-        return DirtyInfo(file_count=cast("int", value["fileCount"]))
+        file_count = value["fileCount"]
+        if not isinstance(file_count, int):
+            msg = f"dirty.fileCount must be an int, got {type(file_count).__name__}"
+            raise TypeError(msg)
+        return DirtyInfo(file_count=file_count)
     return False
 
 
@@ -252,7 +256,8 @@ def _launch_from_wire(wire: dict[str, Any]) -> SessionEvent:
 
 
 # Each builder maps a camelCase wire dict back to its event, raising KeyError on
-# a missing required field so :func:`event_from_wire` can report it as unparsed.
+# a missing required field or TypeError on a malformed one so :func:`event_from_wire`
+# can report it as unparsed.
 _WIRE_BUILDERS: dict[str, Callable[[dict[str, Any]], SessionEvent]] = {
     "thinking_update": lambda w: ThinkingUpdateEvent(
         timestamp=w["timestamp"], estimated_tokens=w["estimatedTokens"], delta=w["delta"]
@@ -287,7 +292,8 @@ def event_from_wire(obj: object) -> SessionEvent | None:
 
     The inverse of :func:`to_json_line`'s rendering: given a decoded JSON object,
     return the matching event dataclass. Returns ``None`` when ``obj`` is not a
-    dict, carries no recognized ``type``, or is missing a required field.
+    dict, carries no recognized ``type``, or is missing a required field or has
+    one with the wrong type.
     """
     if not isinstance(obj, dict):
         return None
@@ -298,7 +304,7 @@ def event_from_wire(obj: object) -> SessionEvent | None:
         return None
     try:
         return builder(wire)
-    except KeyError:
+    except (KeyError, TypeError):
         return None
 
 

@@ -20,7 +20,7 @@ import contextlib
 import json
 import warnings
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 from gymrat.process_group import current_platform, kill_process_group
 from gymrat.supervisor.driver import (
@@ -63,9 +63,13 @@ def _start_command(prompt: SessionPrompt) -> dict[str, object]:
     return {"type": "start", "prompt": wire}
 
 
+_SESSION_END_REASONS = frozenset(get_args(SessionEndReason))
+
+
 def _outcome_from_wire(wire: dict[str, Any], cost_usd: float) -> SessionOutcome:
     """Read a terminal ``outcome`` line, falling back to the running cost."""
-    reason = cast("SessionEndReason", wire.get("reason", "error"))
+    raw_reason = wire.get("reason", "error")
+    reason: SessionEndReason = raw_reason if raw_reason in _SESSION_END_REASONS else "error"
     raw_cost = wire.get("costUsd")
     cost = float(raw_cost) if isinstance(raw_cost, (int, float)) else cost_usd
     message = wire.get("message")
