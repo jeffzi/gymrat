@@ -155,6 +155,45 @@ def test_read_progress_when_file_is_stale_does_return_none(root: str):
     assert result is None
 
 
+@pytest.mark.parametrize(
+    "exception",
+    [
+        pytest.param(
+            FileNotFoundError(2, "No such file", "progress.json"),
+            id="file-vanishes-mid-read",
+        ),
+        pytest.param(
+            PermissionError(13, "Permission denied", "progress.json"),
+            id="permission-denied",
+        ),
+    ],
+)
+def test_read_progress_when_read_text_raises_os_error_does_return_none(
+    root: str, monkeypatch: pytest.MonkeyPatch, exception: OSError
+):
+    write_progress(root, _make_snapshot())
+    original_read_text = Path.read_text
+
+    def failing_read(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == str(_progress_file(root)):
+            raise exception
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", failing_read)
+
+    result = read_progress(root)
+
+    assert result is None
+
+
+def test_read_progress_when_file_contains_non_utf8_bytes_does_return_none(root: str):
+    _progress_file(root).write_bytes(b"\x80\x81\x82")
+
+    result = read_progress(root)
+
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # clear_progress
 # ---------------------------------------------------------------------------
@@ -265,3 +304,42 @@ def test_create_sidecar_writer_when_non_pass_event_does_not_write(
     writer(event)  # type: ignore[arg-type]
 
     assert read_progress(root) is None
+
+
+def test_create_sidecar_writer_when_confirm_follows_measure_does_reset_passes_completed(
+    root: str,
+):
+    writer = create_sidecar_writer(root)
+    # Complete all measure passes: 2 rounds * 1 target = 2 total
+    writer(
+        PassStarted(
+            round=1, total_rounds=2, target_count=1, label="x", at_ms=100.0, phase="measure"
+        )
+    )
+    writer(
+        PassFinished(
+            round=1, total_rounds=2, target_count=1, label="x", at_ms=150.0, phase="measure"
+        )
+    )
+    writer(
+        PassStarted(
+            round=2, total_rounds=2, target_count=1, label="x", at_ms=200.0, phase="measure"
+        )
+    )
+    writer(
+        PassFinished(
+            round=2, total_rounds=2, target_count=1, label="x", at_ms=250.0, phase="measure"
+        )
+    )
+
+    # Confirm phase starts: passes_completed must reset to 0, not carry over
+    writer(
+        PassStarted(
+            round=1, total_rounds=2, target_count=1, label="x", at_ms=300.0, phase="confirm"
+        )
+    )
+
+    snapshot = read_progress(root)
+    assert snapshot is not None
+    assert snapshot.passes_completed == 0
+    assert snapshot.passes_total == 2

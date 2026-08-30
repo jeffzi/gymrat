@@ -84,6 +84,7 @@ from gymrat.report.loop import format_baseline_ref
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
+from gymrat.signals import install_termination_cleanup
 
 _RefArgument = typer.Argument(
     default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
@@ -240,6 +241,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             )
             sidecar_writer = create_sidecar_writer(root)
             fan_out = create_fan_out([renderer.report, sidecar_writer])
+            uninstall_progress_cleanup = install_termination_cleanup(lambda: clear_progress(root))
             try:
                 return await run_with_signal_abort(
                     lambda abort: iterate_session(
@@ -251,6 +253,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 )
             finally:
                 renderer.stop()
+                uninstall_progress_cleanup()
                 clear_progress(root)
 
         try:

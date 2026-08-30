@@ -12,6 +12,7 @@ what a command reads (the runbook row) or observe where it looked (the
 subdirectory case).
 """
 
+import contextlib
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -22,6 +23,7 @@ import pytest
 import tomli_w
 from typer.testing import CliRunner
 
+from gymrat import signals
 from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
 from gymrat.loop.finalize import finalize_session
@@ -41,6 +43,8 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
+from gymrat.session.paths import progress_path
+from gymrat.session.progress_file import ProgressSnapshot, write_progress
 from tests.loop._iterate import (
     baseline_rounds,
     improved_rounds,
@@ -466,6 +470,50 @@ def test_iterate_command_when_run_does_pass_session_metadata_to_renderer(
     assert call.sample_count == 10
     # The default resolved_config has primary="geomean"
     assert call.primary_metric == "geomean"
+
+
+def test_iterate_command_when_run_does_register_progress_cleanup_for_termination(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Termination signals must clear the progress sidecar even when finally is skipped."""
+    write_session_log(repo, iterate_session_header(repo))
+    _install_renderer_factory(monkeypatch)
+
+    progress_cleared_mid_run = False
+
+    async def check_cleanup(
+        root: str,
+        config: object,
+        options: IterateOptions | None = None,
+        *,
+        color: bool | None = None,
+    ) -> IterateResult:
+        nonlocal progress_cleared_mid_run
+        # Write a progress sidecar, then run every registered termination cleanup —
+        # exactly what the signal handler does before os._exit.  If a cleanup
+        # for clear_progress was registered, the sidecar will disappear.
+        write_progress(
+            root,
+            ProgressSnapshot(
+                passes_completed=1,
+                passes_total=2,
+                last_pass_duration_ms=100.0,
+            ),
+        )
+        progress = Path(progress_path(root))
+        assert progress.exists()  # noqa: ASYNC240 -- sync check in async test
+        for cleanup in list(signals._registry.values()):
+            with contextlib.suppress(Exception):
+                cleanup()
+        progress_cleared_mid_run = not progress.exists()  # noqa: ASYNC240 -- sync check in async test
+        return _make_iterate_result()
+
+    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", check_cleanup)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert progress_cleared_mid_run
 
 
 # ---------------------------------------------------------------------------

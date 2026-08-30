@@ -85,7 +85,7 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return ProgressSnapshot(**data)
-    except (json.JSONDecodeError, TypeError, KeyError):
+    except (json.JSONDecodeError, TypeError, KeyError, OSError, UnicodeDecodeError):
         return None
 
 
@@ -105,13 +105,21 @@ def create_sidecar_writer(root: str) -> ProgressCallback:
     last_start_ms: float = 0.0
     last_pass_duration_ms: float = 0.0
     passes_total: int = 0
+    current_phase: str = ""
 
     def _on_event(event: ProgressEvent) -> None:
         nonlocal passes_completed, last_start_ms, last_pass_duration_ms, passes_total
+        nonlocal current_phase
 
         if isinstance(event, PassStarted):
+            if event.phase != current_phase:
+                passes_completed = 0
+                current_phase = event.phase
             last_start_ms = event.at_ms
         elif isinstance(event, PassFinished):
+            if event.phase != current_phase:
+                passes_completed = 0
+                current_phase = event.phase
             passes_completed += 1
             last_pass_duration_ms = event.at_ms - last_start_ms
         else:
