@@ -29,13 +29,13 @@ from gymrat.cli.shared import (
     ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    apply_debug,
     begin_run,
     color_override_of,
     emit_report,
     parse_positional,
     run_cli,
     run_options_of,
-    set_debug_mode,
     wants_json,
     with_repo_lock,
     write_and_flush,
@@ -87,8 +87,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,

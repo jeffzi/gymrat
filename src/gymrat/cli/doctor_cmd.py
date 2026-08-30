@@ -28,10 +28,10 @@ from gymrat.cli.shared import (
     SamplesOption,
     SharedFlags,
     TimeoutOption,
+    apply_debug,
     color_override_of,
     resolve_stream_color,
     run_cli,
-    set_debug_mode,
     wants_json,
     write_and_flush,
 )
@@ -123,8 +123,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     debug: DebugOption = False,
 ) -> None:
     """Check the project setup and report any problems."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
     flags = SharedFlags(
         bench=bench,
         prepare=prepare,

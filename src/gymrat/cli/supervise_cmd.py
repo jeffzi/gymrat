@@ -23,11 +23,11 @@ from gymrat.cli.shared import (
     TOOL_FAILURE_EXIT_CODE,
     DebugOption,
     NoColorOption,
+    apply_debug,
     exit_with_error,
     parse_max_minutes,
     parse_positive_number,
     resolve_render_mode,
-    set_debug_mode,
     write_and_flush,
 )
 from gymrat.cli.supervise_progress import create_supervise_reporter
@@ -260,8 +260,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     debug: DebugOption = False,
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
     options = _Options(
         prompt=prompt,
         max_minutes=max_minutes,

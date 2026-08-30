@@ -28,6 +28,7 @@ from gymrat.cli.shared import (
     ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    apply_debug,
     begin_run,
     color_override_of,
     emit_report,
@@ -35,7 +36,6 @@ from gymrat.cli.shared import (
     parse_positional,
     run_cli,
     run_options_of,
-    set_debug_mode,
     with_repo_lock,
 )
 from gymrat.config import resolve_config
@@ -89,8 +89,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Run each candidate against the baseline and exit non-zero when --fail-on fires."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,

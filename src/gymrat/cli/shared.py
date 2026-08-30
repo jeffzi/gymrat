@@ -81,6 +81,17 @@ def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the -
     _DebugState.enabled = value
 
 
+def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a command's --debug flag
+    """Enable debug mode when a command's own ``--debug`` flag is set.
+
+    Never disables debug mode: a command's local ``--debug`` defaulting to
+    ``False`` must not undo the root ``--debug`` flag already applied by
+    :func:`set_debug_mode`.
+    """
+    if debug:
+        set_debug_mode(True)
+
+
 # ---------------------------------------------------------------------------
 # Stream helpers
 # ---------------------------------------------------------------------------

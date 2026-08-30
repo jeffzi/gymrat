@@ -46,6 +46,7 @@ from gymrat.cli.shared import (
     SamplesOption,
     TimeoutOption,
     VerboseOption,
+    apply_debug,
     color_override_of,
     exit_with_error,
     is_tty,
@@ -53,7 +54,6 @@ from gymrat.cli.shared import (
     resolve_stream_color,
     run_cli,
     run_with_signal_abort,
-    set_debug_mode,
     with_repo_lock,
     write_and_flush,
 )
@@ -155,8 +155,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     debug: DebugOption = False,
 ) -> None:
     """Create or resume this repository's optimization session."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     flags = CliFlags(
         bench=bench,
@@ -195,8 +194,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
@@ -277,8 +275,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     use_json = format == OutputFormat.json
     resolved_color = resolve_stream_color(None, sys.stdout)
@@ -317,8 +314,7 @@ def discard(
     debug: DebugOption = False,
 ) -> None:
     """Revert the session's experiment worktree to its last commit."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     use_json = format == OutputFormat.json
 
@@ -354,8 +350,7 @@ def finalize(
     debug: DebugOption = False,
 ) -> None:
     """Collapse the session's kept iterations into one commit and close it."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     async def run() -> None:
         async def body() -> FinalizeResult:
@@ -380,8 +375,7 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     debug: DebugOption = False,
 ) -> None:
     """Show this repository's session history, read from its log."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
@@ -422,8 +416,7 @@ def _format_sync_summary(result: SyncResult) -> str:
 
 def sync(*, debug: DebugOption = False) -> None:
     """Sync uncommitted main-tree changes into the experiment worktree."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     async def run() -> None:
         async def body() -> SyncResult:
