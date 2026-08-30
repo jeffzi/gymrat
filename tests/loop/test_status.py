@@ -39,7 +39,7 @@ from gymrat.session import (
     Worktrees,
     session_jsonl_path,
 )
-from tests.session._records import (
+from tests.session.records._fixtures import (
     AT,
     SESSION_ID,
     blocked_keep,

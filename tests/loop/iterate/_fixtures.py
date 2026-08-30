@@ -9,7 +9,7 @@ come from the wrong worktree, which is what lets the assertions downstream read
 as evidence.
 
 The module is name-prefixed with ``_`` so pytest never collects it: it is a
-helper imported as ``tests.loop._iterate``.
+helper imported as ``tests.loop.iterate._fixtures``.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ from gymrat.session import (
     record_to_wire,
     session_jsonl_path,
 )
-from tests.session._records import SESSION_ID
-from tests.session._records import iteration_record as _iteration_record
-from tests.session._records import session_record as _session_record_defaults
+from tests.session.records._fixtures import SESSION_ID
+from tests.session.records._fixtures import iteration_record as _iteration_record
+from tests.session.records._fixtures import session_record as _session_record_defaults
 
 if TYPE_CHECKING:
     import pytest
@@ -168,9 +168,9 @@ class CollectSamplesRecorder:
 
 
 def install_collect_samples(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
-    """Replace ``gymrat.loop.iterate.collect_samples`` with a fresh recorder."""
+    """Replace ``gymrat.loop.iterate.bench.collect_samples`` with a fresh recorder."""
     recorder = CollectSamplesRecorder()
-    monkeypatch.setattr("gymrat.loop.iterate.collect_samples", recorder)
+    monkeypatch.setattr("gymrat.loop.iterate.bench.collect_samples", recorder)
     return recorder
 
 

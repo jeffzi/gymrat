@@ -26,7 +26,7 @@ from tests.loop._hooks import (
     expected_hook_record,
     labeled_lines,
 )
-from tests.session._records import SESSION_ID, iteration_record, session_record
+from tests.session.records._fixtures import SESSION_ID, iteration_record, session_record
 
 #: The cap the runner holds each of a hook's channels to before it reaches
 #: gymrat's own output.

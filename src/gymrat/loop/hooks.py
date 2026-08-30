@@ -22,6 +22,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
@@ -33,7 +34,14 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.loop.output_limit import limit_output
-from gymrat.session import HookRecord, IterationRecord, SessionRecord, record_to_wire
+from gymrat.progress_events import (
+    HookFinished,
+    HookStarted,
+    ProgressCallback,
+    default_clock,
+    emit_progress,
+)
+from gymrat.session import HookRecord, IterationRecord, SessionRecord, append_record, record_to_wire
 from gymrat.session.schema import HookStage
 
 #: How long a hook may run before it is killed. Long enough to build, short
@@ -145,19 +153,14 @@ def _describe_outcome(result: ExecResult | ExecTimeoutError) -> _CommandOutcome:
     it had one -- so the shared failure code stands in for it.
     """
     if isinstance(result, ExecTimeoutError):
-        return _CommandOutcome(
-            stdout=result.stdout,
-            stderr=result.stderr,
-            exit_code=FAILURE_EXIT_CODE,
-            timed_out=True,
-            stdout_bytes=result.stdout_bytes,
-            stderr_bytes=result.stderr_bytes,
-        )
+        exit_code, timed_out = FAILURE_EXIT_CODE, True
+    else:
+        exit_code, timed_out = result.exit_code, False
     return _CommandOutcome(
         stdout=result.stdout,
         stderr=result.stderr,
-        exit_code=result.exit_code,
-        timed_out=False,
+        exit_code=exit_code,
+        timed_out=timed_out,
         stdout_bytes=result.stdout_bytes,
         stderr_bytes=result.stderr_bytes,
     )
@@ -206,3 +209,33 @@ def _split_lines(text: str) -> list[str]:
     """``text`` as lines, with the trailing newline a command leaves behind dropped."""
     trimmed = text.removesuffix("\n")
     return [] if trimmed == "" else trimmed.split("\n")
+
+
+async def fire_hook(jsonl_path: str, invocation: HookInvocation | None) -> str:
+    """Run the consumer's hook, logging what it did.
+
+    A stage the config leaves out passes ``None`` and runs nothing at all: no
+    process, no record, no line in the report. Returns what to print for the hook
+    — empty when there was no hook or it said nothing.
+    """
+    if invocation is None:
+        return ""
+    run = await run_hook(invocation)
+    append_record(jsonl_path, run.record)
+    return run.report
+
+
+async def run_hook_stage(
+    jsonl_path: str,
+    on_progress: ProgressCallback | None,
+    *,
+    stage: Literal["before", "after"],
+    invocation: HookInvocation | None,
+) -> str:
+    """Run one lifecycle hook stage, bracketed by progress events when a command is configured."""
+    if invocation is not None:
+        emit_progress(on_progress, HookStarted(stage=stage, at_ms=default_clock()))
+    report = await fire_hook(jsonl_path, invocation)
+    if invocation is not None:
+        emit_progress(on_progress, HookFinished(stage=stage, at_ms=default_clock()))
+    return report

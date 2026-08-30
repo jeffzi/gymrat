@@ -38,7 +38,7 @@ from gymrat.session import (
 )
 from gymrat.targets import InPlaceTarget
 from tests.loop._hooks import HookScripts
-from tests.loop._iterate import (
+from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
     PairedRun,
@@ -57,7 +57,7 @@ from tests.loop._iterate import (
     stub_samples,
     trimmed_report_lines,
 )
-from tests.session._records import (
+from tests.session.records._fixtures import (
     committed_keep,
     discard_record,
     finalize_record,
@@ -68,7 +68,7 @@ from tests.session._records import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from tests.loop._iterate import CollectSamplesRecorder
+    from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
@@ -454,7 +454,7 @@ async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_
             collected.append(TargetSamples(ctx=ctx, samples=by_dir[ctx.dir]))
         return collected
 
-    monkeypatch.setattr("gymrat.loop.iterate.collect_samples", sample_reporting_passes)
+    monkeypatch.setattr("gymrat.loop.iterate.bench.collect_samples", sample_reporting_passes)
     events: list[ProgressEvent] = []
 
     await iterate_session(

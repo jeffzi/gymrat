@@ -33,7 +33,7 @@ from gymrat.session import (
 )
 from gymrat.session import append_record as append_session_record
 from tests.loop._hooks import HookScripts, expected_hook_record
-from tests.loop._iterate import (
+from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
     BASELINE_MS,
     PairedRun,
@@ -52,7 +52,7 @@ from tests.loop._iterate import (
     stub_samples,
     trimmed_report_lines,
 )
-from tests.session._records import (
+from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
     iteration_record,
@@ -62,7 +62,7 @@ from tests.session._records import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from tests.loop._iterate import CollectSamplesRecorder
+    from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
 #: The confirm-rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"

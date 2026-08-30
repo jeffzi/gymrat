@@ -8,8 +8,6 @@ import codecs
 # internal knob, not something a caller should tune.
 _OUTPUT_LIMIT_BYTES = 8192
 
-_NEWLINE_BYTE = 0x0A
-
 
 def limit_output(text: str) -> str:
     """Return at most ``_OUTPUT_LIMIT_BYTES`` bytes of ``text`` (UTF-8).
@@ -29,7 +27,7 @@ def limit_output(text: str) -> str:
         return text
 
     head = encoded[:_OUTPUT_LIMIT_BYTES]
-    last_newline = head.rfind(_NEWLINE_BYTE)
+    last_newline = head.rfind(b"\n")
     # Require the newline past byte 0 so a leading-newline single line still
     # relays its content instead of collapsing to an empty string.
     if last_newline > 0:
