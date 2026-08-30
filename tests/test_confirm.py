@@ -1,4 +1,5 @@
 import io
+import sys
 
 import pytest
 
@@ -39,3 +40,28 @@ def test_confirm_action_when_answer_given_does_return_true_only_for_exact_y(
     result = confirm_action("Proceed?", io.StringIO(line))
 
     assert result is expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(BrokenPipeError, id="broken-pipe"),
+        pytest.param(OSError, id="closed-stream"),
+    ],
+)
+def test_confirm_action_when_prompt_write_fails_does_return_false(
+    error: type[OSError],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class BrokenStream:
+        def write(self, data: str) -> None:
+            raise error
+
+        def flush(self) -> None:
+            raise error
+
+    monkeypatch.setattr(sys, "stderr", BrokenStream())
+
+    result = confirm_action("Proceed?", io.StringIO("y\n"))
+
+    assert result is False
