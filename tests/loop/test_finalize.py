@@ -268,6 +268,28 @@ def test_finalize_when_experiment_worktree_gone_does_finalize_anyway(repo: str):
     assert _last_record(repo) == result.record
 
 
+def test_finalize_when_worktree_gone_and_unkept_commits_exist_does_squash_last_kept_tree(
+    repo: str,
+):
+    last_kept_commit = _keep_iteration(repo, 1, "cache the regex")
+    last_kept_tree = _git(["rev-parse", f"{last_kept_commit}^{{tree}}"], repo)
+
+    worktree = experiment_worktree_dir(repo)
+    (Path(worktree) / "unkept.txt").write_text("unkept work\n", encoding="utf-8")
+    _git(["add", "-A"], worktree)
+    _git(["commit", "-m", "unkept commit"], worktree)
+    session_branch = _session_header(repo).branch
+    branch_tip_tree = _git(["rev-parse", f"{session_branch}^{{tree}}"], repo)
+    assert last_kept_tree != branch_tip_tree, "precondition: unkept commit changed the tree"
+
+    shutil.rmtree(worktree)
+
+    result = finalize_session(repo)
+
+    squash_tree = _git(["rev-parse", f"{result.record.branch}^{{tree}}"], repo)
+    assert squash_tree == last_kept_tree
+
+
 # ---------------------------------------------------------------------------
 # when a committed keep carries no message
 # ---------------------------------------------------------------------------
