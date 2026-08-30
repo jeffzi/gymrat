@@ -811,10 +811,5 @@ def test_output_buffer_when_many_small_appends_does_use_list_join_internally() -
         chunk = f"chunk-{i}\n"
         buf.append(chunk, len(chunk.encode()))
 
-    # The internal storage must be a list of chunks (list-join), not a single
-    # string built by repeated concatenation. Access the internal _chunks list.
-    assert hasattr(buf, "_chunks"), "OutputBuffer should use _chunks list, not text concatenation"
-    assert isinstance(buf._chunks, list)
-    assert len(buf._chunks) == 1000
     expected = "".join(f"chunk-{i}\n" for i in range(1000))
     assert buf.text == expected

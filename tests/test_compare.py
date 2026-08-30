@@ -1,30 +1,39 @@
-"""Unit tests for the ``compare`` orchestrator with the sampling seam replayed.
+"""Tests for the ``compare`` orchestrator.
 
-The sampling pipeline (target resolution, worktree lifecycle, exec) is a system
-boundary; these tests stub it so the assertions pin how ``compare`` assembles a
+Unit tests stub the sampling pipeline to pin how ``compare`` assembles a
 :class:`ComparisonResult`: the metric union across targets, the star topology
 that judges every candidate against the shared baseline, and the
-candidate-paired restriction on the displayed baseline median.
+candidate-paired restriction on the displayed baseline median. End-to-end tests
+drive real scratch repos and shell bench scripts through the full pipeline.
 """
 
-from collections.abc import Callable
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat import compare as compare_mod
 from gymrat.adapters import get_adapter
-from gymrat.adapters.types import WarnSink
 from gymrat.compare import CompareOptions, compare
 from gymrat.errors import GymratError
 from gymrat.model import Observations
-from gymrat.progress_events import ProgressEvent
 from gymrat.sampling import (
     TargetSpec,
     resolve_metric_meta_from_samples,
 )
 from gymrat.targets import CleanupResult, WorktreeRemovalFailure
 from gymrat.verdict import compute_verdicts
+from tests._git import git as _git
 from tests._pipeline import install_pipeline
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from gymrat.adapters.types import WarnSink
+    from gymrat.progress_events import ProgressEvent
 
 
 def _options(
@@ -208,3 +217,68 @@ async def test_compare_when_progress_and_warn_given_does_forward_to_sampling(
     assert forwarded.bench == "run"
     assert forwarded.samples == 4
     assert forwarded.timeout_seconds == 1.0
+
+
+# --- End-to-end tests (real subprocesses, POSIX only) ---
+
+_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
+
+
+def _commit_bench(repo: str, value: int) -> None:
+    (Path(repo) / "bench.sh").write_text(f"#!/bin/sh\necho 'METRIC x={value}'\n", encoding="utf-8")
+    _git(repo, "add", "bench.sh")
+    _git(repo, "commit", "-m", f"bench emits {value}")
+
+
+def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
+    return CompareOptions(
+        bench="sh bench.sh",
+        prepare=None,
+        adapter="metric-lines",
+        samples=3,
+        timeout_seconds=30.0,
+        config_metrics=None,
+        config_kinds=None,
+        baseline=TargetSpec(label=None, target=baseline),
+        candidates=[TargetSpec(label=None, target=candidate)],
+        unstable_noise_pct=None,
+    )
+
+
+@_posix_only
+async def test_compare_when_two_refs_does_produce_comparison_and_sweep(
+    create_scratch_repo: Callable[[], str],
+    list_worktree_dirs: Callable[..., list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo = create_scratch_repo()
+    _commit_bench(repo, 1)
+    _git(repo, "switch", "-c", "candidate")
+    _commit_bench(repo, 2)
+    _git(repo, "switch", "main")
+    monkeypatch.chdir(repo)
+
+    result = await compare(_e2e_options("main", "candidate"))
+
+    assert result.baseline_label == "main"
+    assert result.candidates[0].label == "candidate"
+    assert result.metrics["x"].baseline_median == 1.0
+    assert result.metrics["x"].candidates[0].median == 2.0
+    assert result.worktrees_removed >= 2
+    assert list_worktree_dirs(repo, include_main=False) == []
+
+
+@_posix_only
+async def test_compare_when_candidate_unresolvable_does_fail_with_nothing_on_disk(
+    create_scratch_repo: Callable[[], str],
+    list_worktree_dirs: Callable[..., list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    repo = create_scratch_repo()
+    _commit_bench(repo, 1)
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(GymratError, match="no-such-ref"):
+        await compare(_e2e_options("main", "no-such-ref"))
+
+    assert list_worktree_dirs(repo, include_main=False) == []

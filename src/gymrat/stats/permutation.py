@@ -10,7 +10,7 @@ way the reported p-value is deterministic for a given input.
 """
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from gymrat.stats.descriptive import compute_median
 from gymrat.stats.results import SignificanceResult, count_nonzero_pairs
@@ -61,6 +61,43 @@ def _percent_delta(baseline: Sequence[float], candidate: Sequence[float]) -> flo
     return 100.0 * (compute_median(candidate) - base) / denom
 
 
+def _partition_pairs(
+    x: Sequence[float], y: Sequence[float], m: int
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    """Separate tied (zero-diff) and differing pairs over the first ``m`` indices.
+
+    Returns ``(tied_x, tied_y, diff_x, diff_y)``.
+    """
+    tied_x: list[float] = []
+    tied_y: list[float] = []
+    diff_x: list[float] = []
+    diff_y: list[float] = []
+    for i in range(m):
+        if x[i] == y[i]:
+            tied_x.append(x[i])
+            tied_y.append(y[i])
+        else:
+            diff_x.append(x[i])
+            diff_y.append(y[i])
+    return tied_x, tied_y, diff_x, diff_y
+
+
+def _make_statistic(
+    tied_x: list[float],
+    tied_y: list[float],
+    observed: float,
+) -> Callable[[Sequence[float], Sequence[float]], float]:
+    """Build the test statistic closure for scipy's permutation_test."""
+
+    def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
+        delta = _percent_delta(tied_x + list(baseline), tied_y + list(candidate))
+        if math.isnan(delta):
+            return math.copysign(math.inf, observed)
+        return delta
+
+    return statistic
+
+
 def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> SignificanceResult:
     """Run a two-sided sign-flip permutation test on index-paired samples.
 
@@ -80,72 +117,25 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
     exact; otherwise :data:`RESAMPLE_BUDGET` Monte Carlo resamples are drawn from
     a generator seeded with :data:`PERMUTATION_SEED`. Both paths are
     deterministic for a given input.
-
-    Degenerate inputs cannot support the test and short-circuit to a
-    non-significant ``p = 1.0`` without invoking scipy: fewer than two
-    differing pairs, and a non-finite observed statistic (the baseline median
-    is zero, so the percent delta is undefined).
-
-    Args:
-        x: The baseline sample.
-        y: The candidate sample, paired positionally with ``x``.
-
-    Returns:
-        A :class:`SignificanceResult` whose ``p`` is the two-sided permutation
-        p-value clamped to at most ``1.0`` and whose ``n`` is the number of
-        non-zero paired differences.
     """
     m, n = count_nonzero_pairs(x, y)
     if n < _MIN_PAIRS:
         return SignificanceResult(p=1.0, n=n)
 
-    # Separate tied (zero-diff) and differing pairs.  Only the differing pairs
-    # are sign-flipped; tied pairs contribute the same value to both sides
-    # under every flip, so they are held fixed in the statistic.
-    tied_x: list[float] = []
-    tied_y: list[float] = []
-    diff_x: list[float] = []
-    diff_y: list[float] = []
-    for i in range(m):
-        if x[i] == y[i]:
-            tied_x.append(x[i])
-            tied_y.append(y[i])
-        else:
-            diff_x.append(x[i])
-            diff_y.append(y[i])
+    tied_x, tied_y, diff_x, diff_y = _partition_pairs(x, y, m)
 
     observed = _percent_delta(tied_x + diff_x, tied_y + diff_y)
     if not math.isfinite(observed):
         return SignificanceResult(p=1.0, n=n)
 
-    # Import lazily so importing ``gymrat.stats`` never pulls in scipy; see
-    # tests/test_import_latency.py, which guards the package's startup cost.
+    # Lazy import: tests/test_import_latency.py guards the package's startup cost.
     import numpy as np  # noqa: PLC0415
     from scipy.stats import permutation_test  # noqa: PLC0415
 
-    def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
-        # scipy passes numpy arrays; convert to lists so ``compute_median``'s
-        # emptiness check (``if not values``) sees a plain sequence, not an
-        # array whose truthiness is ambiguous.  Tied values are prepended so
-        # that medians reflect all paired observations.
-        delta = _percent_delta(tied_x + list(baseline), tied_y + list(candidate))
-        if math.isnan(delta):
-            # Zero-median permuted baseline with a non-zero candidate median.
-            # Return infinity on the observed tail so scipy's two-sided
-            # comparison (2·min(p_le, p_ge)) counts the rearrangement against
-            # the observed delta rather than discarding it.
-            return math.copysign(math.inf, observed)
-        return delta
-
-    # ``n`` is the number of differing pairs scipy actually sign-flips, hence
-    # the exponent of the null space.  Tied pairs are fixed, so flipping them
-    # adds no information — the effective space is ``2**n``, not ``2**m``.
-    exact_space = 2**n
-    n_resamples = min(exact_space, RESAMPLE_BUDGET)
-
+    n_resamples = min(2**n, RESAMPLE_BUDGET)
     result = permutation_test(
         (diff_x, diff_y),
-        statistic,
+        _make_statistic(tied_x, tied_y, observed),
         permutation_type="samples",
         alternative="two-sided",
         vectorized=False,
