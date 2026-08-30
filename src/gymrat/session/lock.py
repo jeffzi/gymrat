@@ -114,6 +114,15 @@ def _force_unlink(path: str) -> None:
         return
 
 
+def _try_remove_directory(path: str) -> bool:
+    """Remove ``path`` if it is an empty directory. Returns whether it was removed."""
+    try:
+        os.rmdir(path)  # noqa: PTH106 -- low-level os call for consistency with the lock module's atomicity seams
+    except (NotADirectoryError, FileNotFoundError, OSError):
+        return False
+    return True
+
+
 # What a lockfile says at the moment it was read.
 @dataclass(frozen=True, slots=True)
 class _Absent:
@@ -163,7 +172,10 @@ def read_lockfile(lock_path: str) -> _LockfileState:
 
     try:
         identity = _identity_of(fd)
-        contents = _read_all(fd)
+        try:
+            contents = _read_all(fd)
+        except (UnicodeDecodeError, IsADirectoryError):
+            return _Unreadable(identity)
     finally:
         os.close(fd)
 
@@ -191,20 +203,27 @@ def _is_alive_windows(pid: int) -> bool:
     so CPython dispatches through ``GenerateConsoleCtrlEvent`` instead of
     ``OpenProcess``, broadcasting Ctrl+C to the target's console process group.
 
-    When ``OpenProcess`` returns NULL, ``GetLastError`` distinguishes the two
-    interesting cases:
+    When ``OpenProcess`` returns NULL, ``ctypes.get_last_error`` distinguishes
+    the interesting cases:
 
     - **ERROR_ACCESS_DENIED (5)**: the process exists but the caller lacks the
       right to open it — alive, never eligible for a steal.
     - **ERROR_INVALID_PARAMETER (87)**: no process with that PID exists — dead,
       proceed with the steal.
+
+    Any other error code is treated as alive (fail-safe) to avoid stealing from
+    a holder whose liveness cannot be determined.
+
+    ``use_last_error=True`` on ``WinDLL`` makes CPython snapshot ``GetLastError``
+    immediately after the foreign call, before any intervening Python-level
+    Windows API calls can clobber it.  ``ctypes.get_last_error`` retrieves the
+    snapshot reliably.
     """
     import ctypes  # noqa: PLC0415 — Windows-only, deferred to avoid top-level import on POSIX
 
-    access_denied = 5
     invalid_parameter = 87
 
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined] — windll is Windows-only, unavailable on other platforms
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined] — WinDLL is Windows-only, unavailable on other platforms
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
@@ -212,12 +231,11 @@ def _is_alive_windows(pid: int) -> bool:
     if handle:
         kernel32.CloseHandle(handle)
         return True
-    last_error = kernel32.GetLastError()
-    if last_error == access_denied:
-        return True
-    if last_error == invalid_parameter:
-        return False
-    return False
+    last_error = ctypes.get_last_error()  # pyrefly: ignore  # Windows-only, unavailable on other platforms
+    # Only ERROR_INVALID_PARAMETER (no such process) confirms death; every other
+    # code — including unknown ones — is fail-safe: treat as alive so the steal
+    # path never takes a lock from a holder it cannot probe.
+    return last_error != invalid_parameter
 
 
 is_alive = _is_alive_windows if sys.platform == "win32" else _is_alive_posix
@@ -303,13 +321,20 @@ def publish_lock_record(lock_path: str, record: str) -> LockIdentity | None:
 def _rethrow_displacement_failure(lock_path: str, error: OSError) -> NoReturn:
     """Reframe a permission failure to displace a stale lockfile, else re-raise.
 
-    ``EPERM`` and ``EACCES`` say the file belongs to another user — a sticky
-    ``/tmp`` — which no retry can resolve, so they are framed for whoever has to
-    clean up.
+    On POSIX, ``EPERM`` and ``EACCES`` say the file belongs to another user — a
+    sticky ``/tmp`` — which no retry can resolve, so they are framed for whoever
+    has to clean up. On Windows a ``PermissionError`` is a sharing violation
+    (the file is locked by another process), not an ownership signal.
     """
     if isinstance(error, PermissionError):
         message = f"Stale lock file {lock_path} could not be removed: {error!s}"
-        hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
+        if sys.platform == "win32":
+            hint = (
+                f"The file may be locked by another process. "
+                f"Close any program using {lock_path}, then rerun."
+            )
+        else:
+            hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
         raise GymratError(message, hint=hint) from error
     raise error
 
@@ -476,6 +501,9 @@ def attempt_acquire(lock_path: str, record: str) -> _AttemptOutcome:
     if isinstance(state, _Absent):
         return _Retry()
     if isinstance(state, _Unreadable):
+        # A directory cannot be claimed via hard link, so remove it directly.
+        if _try_remove_directory(lock_path):
+            return _Retry()
         return steal_lock(lock_path, state.identity, record, None)
     if is_alive(state.holder.pid):
         raise _held_by_error(state.holder)

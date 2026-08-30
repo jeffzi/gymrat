@@ -307,6 +307,27 @@ def test_acquire_lock_when_record_incomplete_does_reclaim_lockfile(contents: str
     assert_holder_record(read_lockfile(lock_path))
 
 
+def test_acquire_lock_when_lockfile_is_non_utf8_bytes_does_reclaim_lockfile():
+    # Raw bytes that are not valid UTF-8 — the record is undecodable debris.
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(lock_path).write_bytes(b"\x80\x81\x82")
+
+    acquire_lock(lock_path, "compare")
+
+    assert_holder_record(read_lockfile(lock_path))
+
+
+def test_acquire_lock_when_lockfile_is_a_directory_does_reclaim_lockfile():
+    # A directory at the lock path — os.read raises IsADirectoryError on POSIX.
+    lock_path = fresh_lock_path()
+    Path(lock_path).mkdir(parents=True, exist_ok=True)
+
+    acquire_lock(lock_path, "compare")
+
+    assert_holder_record(read_lockfile(lock_path))
+
+
 # ---------------------------------------------------------------------------
 # acquire_lock — lockfile names an impossible process
 # ---------------------------------------------------------------------------
@@ -382,6 +403,28 @@ def test_acquire_lock_when_stale_lock_belongs_to_other_user_does_name_lockfile_a
     assert lock_path in str(caught.value)
     assert re.search("remove", caught.value.hint or "", re.IGNORECASE)
     assert lock_path in (caught.value.hint or "")
+
+
+def test_acquire_lock_when_win32_sharing_violation_does_not_say_belongs_to_another_user(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # On Windows, a PermissionError during displacement is a sharing violation
+    # (file locked by another process), not an ownership signal.
+    lock_path, _ = stale_lock_path()
+    monkeypatch.setattr("sys.platform", "win32")
+
+    def refuse_rename(src: str, dst: str) -> None:
+        raise PermissionError(errno.EACCES, "sharing violation")
+
+    monkeypatch.setattr(os, "rename", refuse_rename)
+
+    with pytest.raises(GymratError) as caught:
+        acquire_lock(lock_path, "compare")
+
+    hint = caught.value.hint or ""
+    assert "belongs to another user" not in hint.lower()
+    assert "locked by another process" in hint.lower()
+    assert lock_path in hint
 
 
 # ---------------------------------------------------------------------------
@@ -584,16 +627,39 @@ def test_acquire_lock_when_wedged_file_no_longer_on_disk_does_report_contention(
 # ---------------------------------------------------------------------------
 
 
+def _mock_win32_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    open_process_return: int,
+    last_error: int,
+) -> MagicMock:
+    """Wire ctypes.WinDLL and ctypes.get_last_error for a Win32 liveness probe.
+
+    Returns the mock kernel32 object so callers can inspect restype / argtypes
+    assignments made by the production code.
+    """
+    # autospec not applicable: ctypes WinDLL has no Python-visible spec
+    mock_kernel32 = MagicMock()
+    mock_kernel32.OpenProcess.return_value = open_process_return
+
+    windll_calls: list[tuple[str, bool]] = []
+
+    def fake_windll(name: str, *, use_last_error: bool = False) -> MagicMock:
+        windll_calls.append((name, use_last_error))
+        return mock_kernel32
+
+    monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
+    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+    mock_kernel32._windll_calls = windll_calls
+    return mock_kernel32
+
+
 def test_acquire_lock_when_win32_open_process_access_denied_does_treat_holder_as_alive(
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, _ = stale_lock_path()
-    # autospec not applicable: ctypes windll has no Python-visible spec
-    mock_kernel32 = MagicMock()
-    mock_kernel32.OpenProcess.return_value = 0
-    mock_kernel32.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
-    monkeypatch.setattr(ctypes, "windll", MagicMock(kernel32=mock_kernel32), raising=False)
-    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+    _mock_win32_probe(monkeypatch, open_process_return=0, last_error=5)
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
@@ -605,32 +671,45 @@ def test_acquire_lock_when_win32_open_process_invalid_parameter_does_steal(
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, _ = stale_lock_path()
-    # autospec not applicable: ctypes windll has no Python-visible spec
-    mock_kernel32 = MagicMock()
-    mock_kernel32.OpenProcess.return_value = 0
-    mock_kernel32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER
-    monkeypatch.setattr(ctypes, "windll", MagicMock(kernel32=mock_kernel32), raising=False)
-    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+    _mock_win32_probe(monkeypatch, open_process_return=0, last_error=87)
 
     acquire_lock(lock_path, "compare")
 
     assert_holder_record(read_lockfile(lock_path))
 
 
+def test_acquire_lock_when_win32_open_process_unknown_error_does_treat_holder_as_alive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path, _ = stale_lock_path()
+    _mock_win32_probe(monkeypatch, open_process_return=0, last_error=999)
+
+    with pytest.raises(GymratError) as caught:
+        acquire_lock(lock_path, "compare")
+
+    assert caught.value.hint == LIVE_HOLDER_HINT
+
+
 def test_acquire_lock_when_win32_liveness_probed_does_declare_handle_as_pointer_width(
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, _ = stale_lock_path()
-    # autospec not applicable: ctypes windll has no Python-visible spec
-    mock_kernel32 = MagicMock()
-    mock_kernel32.OpenProcess.return_value = 0
-    mock_kernel32.GetLastError.return_value = 87  # ERROR_INVALID_PARAMETER
-    monkeypatch.setattr(ctypes, "windll", MagicMock(kernel32=mock_kernel32), raising=False)
-    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
+    mock_kernel32 = _mock_win32_probe(monkeypatch, open_process_return=0, last_error=87)
 
     acquire_lock(lock_path, "compare")
 
     assert mock_kernel32.OpenProcess.restype is ctypes.c_void_p
+
+
+def test_acquire_lock_when_win32_liveness_probed_does_use_last_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path, _ = stale_lock_path()
+    mock_kernel32 = _mock_win32_probe(monkeypatch, open_process_return=0, last_error=87)
+
+    acquire_lock(lock_path, "compare")
+
+    assert mock_kernel32._windll_calls == [("kernel32", True)]
 
 
 # ---------------------------------------------------------------------------
