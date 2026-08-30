@@ -12,6 +12,7 @@ tests can reuse the same building blocks.
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
@@ -19,6 +20,9 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.session.paths import lockfile_path, supervise_lockfile_path
+from gymrat.signals import TERMINATION_SIGNALS
+from gymrat.signals import reset as signals_reset
 from tests._git import run_git as _run_git
 
 #: Every GYMRAT_* variable the config resolver reads; cleared before each
@@ -31,6 +35,28 @@ GYMRAT_ENV_VARS = (
     "GYMRAT_TIMEOUT",
     "GYMRAT_CONFIG",
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_signal_dispositions() -> Iterator[None]:
+    """Restore termination-signal dispositions after every test.
+
+    Any test that reaches the real ``install_termination_cleanup`` — directly
+    or through a live renderer — leaves the gymrat handler installed for the
+    rest of the worker's life; a later Ctrl-C would then ``os._exit`` the
+    worker and skip every remaining teardown. Restoring the saved dispositions
+    keeps pytest's own interrupt handling in charge between tests.
+    """
+    saved = {sig: signal.getsignal(sig) for sig in TERMINATION_SIGNALS}
+    yield
+    if any(signal.getsignal(sig) is not handler for sig, handler in saved.items()):
+        # Un-wiring the OS dispositions alone would strand the module's
+        # installed-signals bookkeeping: the next install would then no-op and
+        # leave a real signal on the default handler. reset() is the sanctioned
+        # seam that clears that state alongside the registry.
+        signals_reset()
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
 
 
 @pytest.fixture(autouse=True)
@@ -122,6 +148,10 @@ def create_scratch_repo() -> Iterator[Callable[[], str]]:
         for directory in created:
             _remove_stranded_worktrees(directory)
             shutil.rmtree(directory, ignore_errors=True)
+            # A signalled child can strand the repo's digest-named lock files in
+            # the system temp dir; sweep them with the repo they belong to.
+            for lock in (lockfile_path(directory), supervise_lockfile_path(directory)):
+                Path(lock).unlink(missing_ok=True)
 
 
 @pytest.fixture

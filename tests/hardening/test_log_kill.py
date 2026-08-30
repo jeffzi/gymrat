@@ -170,26 +170,30 @@ for offset in range(count):
 # ---------------------------------------------------------------------------
 
 
-def test_append_record_when_hard_killed_mid_append_does_leave_a_log_the_next_run_reads_clean(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
+def _torn_tail_attempt(workdir: Path, clean_count: int) -> bool:
+    """One spawn-and-kill attempt; return whether the kill actually tore the tail.
+
+    The clean prefix is asserted unconditionally — a corrupted prefix is a
+    failure whatever happened to the final record. The return value reports
+    whether the kill landed mid-append (log grew, final record dropped by the
+    reader), so the caller can retry a race the child won.
+    """
+    root = str(workdir)
     path = Path(session_jsonl_path(root))
-    clean_count = 5
-    ready_flag = tmp_path / "ready.flag"
+    ready_flag = workdir / "ready.flag"
     child = _spawn(
-        tmp_path,
+        workdir,
         "torn_tail_child",
         _TORN_TAIL_CHILD,
         root,
         str(clean_count),
         str(ready_flag),
-        str(4_000_000),
+        str(64_000_000),
     )
     try:
         _wait_for_file(ready_flag)
         clean_size = path.stat().st_size
-        _wait_until_grew_or_dead(path, clean_size, child)
+        grew = _wait_until_grew_or_dead(path, clean_size, child)
         child.kill()
         child.wait(timeout=30)
     finally:
@@ -203,10 +207,32 @@ def test_append_record_when_hard_killed_mid_append_does_leave_a_log_the_next_run
     expected_prefix = [session_record(), *(committed_keep(seq=seq) for seq in range(clean_count))]
     assert records[: len(expected_prefix)] == expected_prefix
 
-    if len(records) == len(expected_prefix) + 1:
-        pytest.skip("child flushed the full record before the kill tore it — no torn tail to test")
-
+    if not grew or len(records) == len(expected_prefix) + 1:
+        # The child flushed the whole huge record before the kill landed —
+        # the log is legitimately complete, but the tear was never exercised.
+        return False
     assert len(records) == len(expected_prefix)
+    return True
+
+
+def test_append_record_when_hard_killed_mid_append_does_leave_a_log_the_next_run_reads_clean(
+    tmp_path: Path,
+):
+    clean_count = 5
+    for attempt in range(3):
+        workdir = tmp_path / f"attempt-{attempt}"
+        workdir.mkdir()
+        if _torn_tail_attempt(workdir, clean_count):
+            return
+    if sys.platform == "darwin":
+        # Verified on macOS: SIGKILL does not interrupt an in-flight write(2)
+        # to a local file — the kernel completes the system call first — so a kill
+        # can never land mid-append however large the record. The tear this
+        # test exists for is unattainable here; only the clean-prefix
+        # assertions above ran.
+        pytest.skip("macOS completes an in-flight write before honoring SIGKILL — tail cannot tear")
+    message = "kill never landed mid-append in 3 attempts — the torn-tail subject went untested"
+    raise AssertionError(message)
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ from tests._rich import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from typing import Literal
 
     from rich.console import Console
@@ -135,6 +136,22 @@ def _report_full_pass(
     )
 
 
+_live_renderers: list[IterateRenderer] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_renderers() -> Iterator[None]:
+    """Stop every renderer a test built, so a failing test leaks no live display.
+
+    ``stop()`` is idempotent, so tests that already stopped their renderer are
+    unaffected; without this teardown a failure before the in-test ``stop()``
+    leaks a refresh thread and a termination-cleanup registration.
+    """
+    yield
+    while _live_renderers:
+        _live_renderers.pop().stop()
+
+
 def _renderer(
     mode: Literal["live", "plain"],
     *,
@@ -166,6 +183,7 @@ def _renderer(
         has_before_hook=has_before_hook,
         has_after_hook=has_after_hook,
     )
+    _live_renderers.append(renderer)
     return console, clock, renderer
 
 
@@ -687,6 +705,8 @@ def test_clear_on_signal_when_live_up_does_leave_screen_blank(
     renderer._clear_on_signal()
 
     assert screen_lines(buf.getvalue()) == []
+    if renderer._live is not None:
+        renderer._live.stop()
 
 
 def test_clear_on_signal_when_after_stop_does_write_nothing(

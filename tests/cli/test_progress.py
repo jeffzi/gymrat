@@ -33,12 +33,30 @@ from tests._rich import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+_live_reporters: list[ProgressReporter] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_reporters() -> Iterator[None]:
+    """Stop every reporter a test built, so a failing test leaks no live display.
+
+    ``stop()`` is idempotent, so tests that already stopped their reporter are
+    unaffected; without this teardown a failure before the in-test ``stop()``
+    leaks a refresh thread and a termination-cleanup registration.
+    """
+    yield
+    while _live_reporters:
+        _live_reporters.pop().stop()
 
 
 def _reporter(
@@ -67,6 +85,7 @@ def _reporter(
         clock=clock,
         **kwargs,  # type: ignore[arg-type]
     )
+    _live_reporters.append(reporter)
     return console, clock, reporter
 
 
@@ -510,6 +529,11 @@ def test_clear_on_signal_when_live_up_does_leave_screen_blank(
     reporter._clear_on_signal()
 
     assert screen_lines(buf.getvalue()) == []
+    # _clear_on_signal marks the reporter as stopped (as os._exit would follow
+    # in production), so stop() is a no-op; shut down the Live refresh thread
+    # directly so the test leaks neither the thread nor the console registry.
+    if reporter._live is not None:
+        reporter._live.stop()
 
 
 def test_clear_on_signal_when_after_stop_does_write_nothing(

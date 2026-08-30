@@ -477,7 +477,12 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
             timeout=10,
         )
     finally:
-        sender.join(timeout=3)
+        # Release the sender even when the spawn never happened, so its 5 s
+        # barrier wait cannot outlast the join — a survivor would fire SIGTERM
+        # after the exit-seam monkeypatch is undone and kill the worker.
+        spawn_barrier.set()
+        sender.join(timeout=6.0)
+        assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
         uninstall()
         exec_mod.reset_live_process_groups(saved)
         for proc in spawned:
