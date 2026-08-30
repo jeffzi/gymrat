@@ -191,3 +191,43 @@ def test_install_termination_cleanup_when_sighup_undefined_does_register_only_av
     assert calls == ["cleanup"]
     assert code == 128 + signal.SIGINT
     uninstall()
+
+
+# ---------------------------------------------------------------------------
+# reset — deferral state cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_reset_when_deferral_active_does_clear_deferring_state():
+    signals._deferring = True
+    signals._deferred_signal = signal.SIGINT
+
+    signals.reset()
+
+    assert signals._deferring is False
+    assert signals._deferred_signal is None
+
+
+# ---------------------------------------------------------------------------
+# deferring_termination_signals — mask failure safety
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_sigmask"),
+    reason="Signal masking requires POSIX pthread_sigmask",
+)
+def test_deferring_termination_signals_when_mask_raises_does_not_strand_deferral(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def exploding_mask(*args: object, **kwargs: object) -> None:
+        message = "mask failed"
+        raise OSError(message)
+
+    monkeypatch.setattr(signals, "pthread_sigmask", exploding_mask)
+
+    with pytest.raises(OSError, match="mask failed"):
+        with signals.deferring_termination_signals():
+            pass  # pragma: no cover — never reached
+
+    assert signals._deferring is False

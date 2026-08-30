@@ -67,9 +67,11 @@ def reset() -> None:
     it to isolate module-global state between cases instead of reaching into the
     private attributes directly.
     """
-    global _handling  # noqa: PLW0603 - module-level state the reset owns
+    global _handling, _deferring, _deferred_signal  # noqa: PLW0603 - module-level state the reset owns
     _registry.clear()
     _handling = False
+    _deferring = False
+    _deferred_signal = None
     _installed_signals.clear()
 
 
@@ -147,12 +149,11 @@ def deferring_termination_signals() -> Iterator[None]:
     """
     global _deferring, _deferred_signal  # noqa: PLW0603
 
-    _deferring = True
-    if pthread_sigmask is not None and TERMINATION_SIGNALS:
-        previous: list[int] | None = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
-    else:
-        previous = None
+    previous: list[int] | None = None
     try:
+        _deferring = True
+        if pthread_sigmask is not None and TERMINATION_SIGNALS:
+            previous = pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
         yield
     finally:
         _deferring = False
