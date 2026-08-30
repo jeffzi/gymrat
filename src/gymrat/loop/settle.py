@@ -215,7 +215,7 @@ async def _keep_clean_worktree(context: _KeepContext, *, baseline_position: str)
             report=(
                 "Keep refused: the experiment worktree has nothing to commit.\n"
                 + format_hint(
-                    "edit the code in the experiment worktree, then run `gymrat keep` again."
+                    "edit the code in the experiment worktree, then run `gymrat iterate` again."
                 )
             ),
         )

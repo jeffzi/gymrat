@@ -86,7 +86,7 @@ def test_keep_command_when_refusing_does_print_a_report_carrying_no_hint_label(r
 
     assert result.exit_code == 1
     assert "Hint" not in result.stdout
-    assert "gymrat keep" in result.stdout
+    assert "gymrat iterate" in result.stdout
 
 
 @pytest.mark.parametrize(

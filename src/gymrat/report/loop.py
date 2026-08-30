@@ -256,7 +256,7 @@ def format_verdict_block(
     )
     lines = [_format_rerun_line(rerun) for rerun in reruns]
     lines.append(verdict_line)
-    if target_reached:
+    if target_reached and outcome != "regressed":
         lines.append(markup(_TARGET_REACHED, "green"))
     lines.append(format_hint(next_step))
     return lines
