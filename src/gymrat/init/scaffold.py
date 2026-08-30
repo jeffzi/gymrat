@@ -15,12 +15,15 @@ scaffold is left — one that was already there is never touched.
 """
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.config import CONFIG_FILENAME, validate_config_dict
+from gymrat.errors import GymratError
 
 #: Path, relative to the project root, where init writes and doctor checks for the skill.
 SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
@@ -100,7 +103,11 @@ def _write_runbook(base_dir: str, *, runbook: bool) -> ScaffoldArtifact:
             return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="is a directory")
         return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="exists")
 
-    full_path.write_text(_RUNBOOK_STUB, encoding="utf-8")
+    try:
+        full_path.write_text(_RUNBOOK_STUB, encoding="utf-8")
+    except OSError as exc:
+        msg = f"Cannot write {DEFAULT_RUNBOOK_PATH} in {base_dir}"
+        raise GymratError(msg, hint=str(exc)) from exc
     return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="created")
 
 
@@ -111,8 +118,12 @@ def _write_skill(base_dir: str, content: str) -> ScaffoldArtifact:
             return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="is a directory")
         return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="exists")
 
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    full_path.write_text(content, encoding="utf-8")
+    try:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        msg = f"Cannot write {SKILL_RELATIVE_PATH} in {base_dir}"
+        raise GymratError(msg, hint=str(exc)) from exc
     return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
 
 
@@ -126,34 +137,55 @@ def _prepare_config(request: ScaffoldRequest) -> str:
 
 
 def _write_config(base_dir: str, content: str) -> ScaffoldArtifact:
+    """Write the config via a temp file + ``os.replace`` for atomicity.
+
+    A crash or permission error mid-write never leaves a truncated
+    ``gymrat.toml`` — the temp file is cleaned up on failure.
+    """
     full_path = Path(base_dir) / CONFIG_FILENAME
-    with full_path.open("x", encoding="utf-8") as handle:
-        handle.write(content)
+    fd = -1
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="gymrat.toml.", dir=base_dir, suffix=".tmp")
+        os.write(fd, content.encode("utf-8"))
+        os.close(fd)
+        fd = -1
+        Path(tmp_path).replace(full_path)
+        tmp_path = None
+    except OSError as exc:
+        msg = f"Cannot write {CONFIG_FILENAME} in {base_dir}"
+        raise GymratError(msg, hint=str(exc)) from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
 def _path_blocked(base_dir: str, relative: str) -> bool:
-    """True when a non-regular file (directory, symlink to dir, etc.) occupies ``relative``."""
+    """True when a non-regular file occupies ``relative``.
+
+    Symlinks (including dangling ones) are always blocked — writing through a
+    symlink would place the content at a location the user did not choose.
+    Directories are blocked because they cannot be opened as regular files.
+    """
     full = Path(base_dir) / relative
+    if full.is_symlink():
+        return True
     return full.exists() and not full.is_file()
 
 
-def _status_when_blocked(*, blocked: bool, otherwise: ArtifactStatus) -> ArtifactStatus:
-    """Status for one artifact when the scaffold bails out because some path is blocked."""
-    return "is a directory" if blocked else otherwise
-
-
-def _status_on_bail_out(base_dir: str, relative: str, *, requested: bool) -> ArtifactStatus:
-    """Status for an unblocked artifact when the scaffold bails out on another path.
-
-    Nothing is written on that path, so an artifact already on disk is reported
-    as ``exists``. Everything else — not requested, or requested but never
-    written — falls back to ``declined``, the only status the vocabulary offers
-    for "nothing was written".
-    """
-    if not requested:
-        return "declined"
-    return "exists" if (Path(base_dir) / relative).is_file() else "declined"
+def _blocked_paths(base_dir: str, request: ScaffoldRequest) -> list[str]:
+    """Collect artifact paths that are blocked by a non-regular file."""
+    blocked: list[str] = []
+    if _path_blocked(base_dir, CONFIG_FILENAME):
+        blocked.append(CONFIG_FILENAME)
+    if request.runbook and _path_blocked(base_dir, DEFAULT_RUNBOOK_PATH):
+        blocked.append(DEFAULT_RUNBOOK_PATH)
+    if request.install_skill and _path_blocked(base_dir, SKILL_RELATIVE_PATH):
+        blocked.append(SKILL_RELATIVE_PATH)
+    return blocked
 
 
 def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
@@ -162,13 +194,15 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     Returns a :class:`ScaffoldResult` describing each artifact. An existing
     ``gymrat.toml`` is reported as ``exists`` and left byte-identical; the
     remaining artifacts are still created, which makes a re-run the way to
-    restore a deleted runbook or skill. Raises a :class:`GymratError` when the
-    config fails validation or the bundled skill cannot be read — in every
-    failure case no partial scaffold is left behind.
+    restore a deleted runbook or skill.
 
-    When a non-regular file (e.g. a directory) sits at an artifact path, the
-    scaffold returns early with no config written — the config would point at
-    something unusable.
+    Raises :class:`GymratError` when:
+
+    - The config fails validation or the bundled skill cannot be read.
+    - A non-regular file (directory, symlink) occupies an artifact path.
+    - A filesystem error (permission denied, read-only FS) prevents writing.
+
+    In every failure case no partial scaffold is left behind.
     """
     config_path = Path(base_dir) / CONFIG_FILENAME
     config_exists = config_path.exists()
@@ -176,38 +210,11 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     config_content = None if config_exists else _prepare_config(request)
     skill_content = read_bundled_skill() if request.install_skill else None
 
-    # Detect non-regular files at artifact paths before any writes.
-    config_blocked = config_exists and not config_path.is_file()
-    runbook_blocked = request.runbook and _path_blocked(base_dir, DEFAULT_RUNBOOK_PATH)
-    skill_blocked = request.install_skill and _path_blocked(base_dir, SKILL_RELATIVE_PATH)
-    if config_blocked or runbook_blocked or skill_blocked:
-        return ScaffoldResult(
-            config=ScaffoldArtifact(
-                path=CONFIG_FILENAME,
-                status=_status_when_blocked(
-                    blocked=config_blocked,
-                    otherwise="exists" if config_exists else "declined",
-                ),
-            ),
-            runbook=ScaffoldArtifact(
-                path=DEFAULT_RUNBOOK_PATH,
-                status=_status_when_blocked(
-                    blocked=runbook_blocked,
-                    otherwise=_status_on_bail_out(
-                        base_dir, DEFAULT_RUNBOOK_PATH, requested=request.runbook
-                    ),
-                ),
-            ),
-            skill=ScaffoldArtifact(
-                path=SKILL_RELATIVE_PATH,
-                status=_status_when_blocked(
-                    blocked=skill_blocked,
-                    otherwise=_status_on_bail_out(
-                        base_dir, SKILL_RELATIVE_PATH, requested=request.install_skill
-                    ),
-                ),
-            ),
-        )
+    blocked = _blocked_paths(base_dir, request)
+    if blocked:
+        paths = ", ".join(blocked)
+        msg = f"Blocked path: {paths}"
+        raise GymratError(msg, hint="Remove or rename the blocking entry and re-run.")
 
     config_artifact = (
         ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
