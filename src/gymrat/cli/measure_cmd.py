@@ -106,7 +106,13 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         async def body() -> _MeasureOutcome:
-            progress = begin_run(flags, 1)
+            label = resolved_target.label or resolved_target.target
+            progress = begin_run(
+                flags,
+                1,
+                command="measure",
+                target_labels=[label],
+            )
             try:
                 config_resolved = resolve_config(flags)
                 # Recording needs somewhere to write, so the open-session check

@@ -526,7 +526,13 @@ class IterateRenderer(LiveDisplayMixin):
 
     def _on_confirm_pass_started(self, event: PassStarted) -> None:
         self._confirm_pass_start_ms = event.at_ms
-        if self._confirm.bar is not None and self._confirm_task_id is not None:
+        if (
+            self._compact
+            and self._compact_progress is not None
+            and self._compact_task_id is not None
+        ):
+            self._compact_progress.update(self._compact_task_id, target=event.label)
+        elif self._confirm.bar is not None and self._confirm_task_id is not None:
             self._confirm.bar.update(self._confirm_task_id, target=event.label)
         self._refresh_live()
 
@@ -539,10 +545,18 @@ class IterateRenderer(LiveDisplayMixin):
         eta_ms = self._eta_ms(
             self._confirm_completed, self._confirm_finish_count, self._confirm_total_pass_time_ms
         )
-        if eta_ms is not None and self._confirm_clock_col is not None:
-            self._confirm_clock_col.set_eta(eta_ms)
+        if eta_ms is not None:
+            for column in (self._confirm_clock_col, self._compact_clock_col):
+                if column is not None:
+                    column.set_eta(eta_ms)
 
-        if self._confirm.bar is not None and self._confirm_task_id is not None:
+        if (
+            self._compact
+            and self._compact_progress is not None
+            and self._compact_task_id is not None
+        ):
+            self._compact_progress.update(self._compact_task_id, completed=self._confirm_completed)
+        elif self._confirm.bar is not None and self._confirm_task_id is not None:
             self._confirm.bar.update(self._confirm_task_id, completed=self._confirm_completed)
 
         self._refresh_live()
@@ -609,7 +623,7 @@ class IterateRenderer(LiveDisplayMixin):
                 if len(event.regressed) > _REGRESSED_NAME_CAP:
                     shown += ", …"
                 handoff = [f"{len(event.regressed)} regressed: {shown}"]
-            improve_noise = self._metric_count - len(event.regressed)
+            improve_noise = event.metric_count - len(event.regressed)
             breakdown = " · ".join([delta_str, f"{improve_noise} improve/noise", *handoff])
             self._print_plain(event.at_ms, f"judge {breakdown}")
 
@@ -626,7 +640,15 @@ class IterateRenderer(LiveDisplayMixin):
         else:
             self._confirm.note = "full suite"
 
-        if self._confirm.bar is not None and self._confirm_task_id is None:
+        if self._compact and self._compact_progress is not None:
+            # Reset the compact bar for the confirm rerun so it does not stay
+            # frozen at 100 % from the measure phase.
+            if self._compact_task_id is not None:
+                self._compact_progress.remove_task(self._compact_task_id)
+            self._compact_task_id = self._compact_progress.add_task("confirming", total=self._total)
+            if self._compact_clock_col is not None:
+                self._compact_clock_col.set_eta(0)
+        elif self._confirm.bar is not None and self._confirm_task_id is None:
             self._confirm_task_id = self._confirm.bar.add_task(
                 "confirming", total=self._total, note=self._confirm.note
             )

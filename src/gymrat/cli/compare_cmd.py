@@ -108,7 +108,13 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         async def body() -> ComparisonResult:
-            progress = begin_run(flags, 1 + len(candidates))
+            labels = [s.label or s.target for s in [baseline, *candidates]]
+            progress = begin_run(
+                flags,
+                1 + len(candidates),
+                command="compare",
+                target_labels=labels,
+            )
             try:
                 config_resolved = resolve_config(flags)
                 # Lazy: keep the heavy statistics stack out of CLI assembly and --help.

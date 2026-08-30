@@ -338,6 +338,7 @@ def test_frame_when_judge_finished_does_show_delta_and_regressed(
         JudgeFinished(
             primary_delta_pct=-3.2,
             regressed=("latency", "throughput"),
+            metric_count=3,
             at_ms=_ms(clock),
         )
     )
@@ -353,7 +354,9 @@ def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
     """Judge shows ! glyph, confirm shows a bar for the filtered metrics."""
     _console, clock, renderer = _live(sample_count=5)
 
-    renderer.report(JudgeFinished(primary_delta_pct=2.5, regressed=("latency",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.5, regressed=("latency",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=5100))
     clock.tick(6)
     renderer.report(
@@ -457,7 +460,9 @@ def test_frame_when_judge_finished_after_started_does_show_elapsed(
     renderer.report(JudgeStarted(at_ms=_ms(clock)))
     clock.tick(4)
     renderer.report(
-        JudgeFinished(primary_delta_pct=-3.2, regressed=("latency",), at_ms=_ms(clock)),
+        JudgeFinished(
+            primary_delta_pct=-3.2, regressed=("latency",), metric_count=3, at_ms=_ms(clock)
+        ),
     )
 
     result = frame_text(renderer.frame())
@@ -490,7 +495,9 @@ def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
 
 def test_frame_when_confirm_reproduced_does_show_reproduced():
     _console, _clock, renderer = _live(sample_count=1)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
     renderer.report(ConfirmFinished(reproduced=True, at_ms=10000))
 
@@ -503,7 +510,9 @@ def test_frame_when_confirm_reproduced_does_show_reproduced():
 
 def test_frame_when_confirm_not_reproduced_does_show_not_reproduced():
     _console, _clock, renderer = _live(sample_count=1)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
     renderer.report(ConfirmFinished(reproduced=False, at_ms=10000))
 
@@ -515,7 +524,9 @@ def test_frame_when_confirm_not_reproduced_does_show_not_reproduced():
 
 def test_frame_when_confirm_unfiltered_does_show_full_suite_label():
     _console, _clock, renderer = _live(sample_count=5)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
 
     result = frame_text(renderer.frame())
@@ -562,7 +573,9 @@ def test_plain_when_judge_finished_does_print_timestamped_line(
     console, clock, renderer = _plain(sample_count=1)
 
     clock.tick(6)
-    renderer.report(JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=-2.0, regressed=(), metric_count=3, at_ms=_ms(clock))
+    )
 
     assert _last_line(console) == snapshot
     renderer.stop()
@@ -599,7 +612,9 @@ def test_plain_when_any_event_does_not_emit_ansi_codes():
     renderer.report(PrepareStarted(label="bench", at_ms=0))
     clock.tick(1)
     renderer.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
-    renderer.report(JudgeFinished(primary_delta_pct=-1.0, regressed=(), at_ms=_ms(clock)))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=-1.0, regressed=(), metric_count=3, at_ms=_ms(clock))
+    )
     renderer.report(IterationRecorded(seq=1, outcome="improved", at_ms=_ms(clock)))
     renderer.stop()
 
@@ -751,7 +766,7 @@ def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_ver
     renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
     clock.tick(6)
     renderer.report(
-        JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)),
+        JudgeFinished(primary_delta_pct=-2.0, regressed=(), metric_count=4, at_ms=_ms(clock)),
     )
 
     result = frame_text(renderer.frame())
@@ -768,6 +783,7 @@ def test_plain_when_judge_finished_with_regressions_does_print_count_and_names()
         JudgeFinished(
             primary_delta_pct=-6.8,
             regressed=("latency",),
+            metric_count=5,
             at_ms=_ms(clock),
         ),
     )
@@ -784,6 +800,7 @@ def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names()
         JudgeFinished(
             primary_delta_pct=-6.8,
             regressed=("latency", "alloc", "throughput", "parse"),
+            metric_count=5,
             at_ms=_ms(clock),
         ),
     )
@@ -791,6 +808,30 @@ def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names()
     assert _last_line(console) == (
         "[00:00:00] judge -6.8% · 1 improve/noise · 4 regressed: latency, alloc, throughput, …"
     )
+    renderer.stop()
+
+
+def test_plain_when_judge_finished_does_use_event_metric_count_not_renderer_metric_count():
+    """Judge line computes improve/noise from the event's metric_count, not the renderer's.
+
+    When the config ``[metrics]`` table is absent the renderer receives
+    ``metric_count=0`` at construction, but the judge always knows the real
+    total from the collected metric metadata. The plain-mode line should read
+    ``4 improve/noise`` (5 total - 1 regressed), never ``-1 improve/noise``.
+    """
+    console, clock, renderer = _plain(metric_count=0)
+
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-2.5,
+            regressed=("latency",),
+            metric_count=5,
+            at_ms=_ms(clock),
+        ),
+    )
+
+    assert _last_line(console) == "[00:00:00] judge -2.5% · 4 improve/noise · 1 regressed: latency"
     renderer.stop()
 
 
@@ -812,7 +853,9 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 ):
     """Confirm done carries pass count and reproduced status; no stale sub-line text."""
     _console, clock, renderer = _live(sample_count=2)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=("x",), at_ms=5100))
     at = 5100
     for rnd in range(1, 3):
@@ -851,6 +894,53 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 
 
 # ---------------------------------------------------------------------------
+# Compact mode -- confirm phase
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_compact_confirm_started_does_reset_bar_for_rerun():
+    """Compact bar resets and relabels for the confirm rerun instead of staying frozen at 100%.
+
+    In compact mode (short terminal) only one progress bar exists. After the
+    measure passes complete the bar sits at 100 %. When the confirm phase
+    starts, the bar must reset to show confirm progress — not stay frozen.
+    """
+    _console, clock, renderer = _live(height=10, sample_count=1, metric_count=3)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    _report_full_pass(renderer, clock, 1, 1, target_count=1, duration_s=5)
+
+    clock.tick(1)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-2.5,
+            regressed=("latency",),
+            metric_count=3,
+            at_ms=_ms(clock),
+        )
+    )
+    renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=_ms(clock)))
+    clock.tick(1)
+    renderer.report(
+        _pass_started(
+            1,
+            2,
+            target_count=1,
+            label="baseline",
+            at_ms=_ms(clock),
+            phase="confirm",
+        )
+    )
+
+    result = frame_text(renderer.frame())
+
+    assert "confirm" in result.lower()
+    assert "100%" not in result
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
 # Inline name formatting in judge row
 # ---------------------------------------------------------------------------
 
@@ -870,6 +960,7 @@ def test_frame_when_judge_regressed_does_style_names_via_format_inline():
         JudgeFinished(
             primary_delta_pct=-3.2,
             regressed=("node/access#time",),
+            metric_count=3,
             at_ms=_ms(clock),
         )
     )

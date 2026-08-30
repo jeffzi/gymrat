@@ -474,7 +474,13 @@ VerboseOption = Annotated[
 # ---------------------------------------------------------------------------
 
 
-def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
+def begin_run(
+    flags: SharedFlags,
+    target_count: int,
+    *,
+    command: str | None = None,
+    target_labels: list[str] | None = None,
+) -> ProgressReporter:
     """Build the progress reporter a run prints through, sized and colored per the flags."""
     from gymrat.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
         stderr_console,
@@ -482,7 +488,18 @@ def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
 
     mode = resolve_render_mode()
     console = stderr_console(color_flag=flags.color)
-    return create_progress_reporter(mode, console, target_count, flags.samples)
+    extra: dict[str, object] = {}
+    if command is not None:
+        extra["command"] = command
+    if target_labels is not None:
+        extra["target_labels"] = target_labels
+    return create_progress_reporter(
+        mode,
+        console,
+        target_count,
+        flags.samples,
+        **extra,  # type: ignore[arg-type]
+    )
 
 
 def run_options_of(config: ResolvedConfig, progress: ProgressReporter) -> RunOptions:

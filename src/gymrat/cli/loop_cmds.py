@@ -24,6 +24,7 @@ measurement stack these are light, and every loop command reaches one.
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import dataclass
 
 import typer
@@ -232,6 +233,8 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 metric_count,
                 resolved.primary,
                 verbose=verbose,
+                clock=time.perf_counter,
+                checks_cmd=resolved.checks,
                 has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
                 has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
             )

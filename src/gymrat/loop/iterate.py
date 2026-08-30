@@ -394,6 +394,7 @@ async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
         JudgeFinished(
             primary_delta_pct=primary.delta_pct,
             regressed=regressed_names,
+            metric_count=len(first.metric_meta),
             at_ms=default_clock(),
         ),
     )

@@ -99,6 +99,7 @@ class JudgeFinished:
 
     primary_delta_pct: float | None
     regressed: tuple[str, ...]
+    metric_count: int
     at_ms: float
 
 
