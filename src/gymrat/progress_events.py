@@ -6,10 +6,13 @@ union and ``ProgressCallback`` alias give consumers a typed contract without
 coupling them to the sampler's internals.
 """
 
+import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 
 def default_clock() -> float:
@@ -149,3 +152,21 @@ def emit_progress(on_progress: ProgressCallback | None, event: ProgressEvent) ->
     """Fire ``on_progress`` with ``event`` when a callback is registered."""
     if on_progress is not None:
         on_progress(event)
+
+
+def create_fan_out(subscribers: Sequence[ProgressCallback]) -> ProgressCallback:
+    """Fan out each event to every subscriber, isolating failures.
+
+    One subscriber failing (raising an exception) never silences the others:
+    exceptions are logged and swallowed so the remaining subscribers always run.
+    """
+    subs = list(subscribers)
+
+    def fan_out(event: ProgressEvent) -> None:
+        for subscriber in subs:
+            try:
+                subscriber(event)
+            except Exception:
+                logger.exception("fan-out subscriber failed")
+
+    return fan_out

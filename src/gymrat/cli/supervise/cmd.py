@@ -32,12 +32,12 @@ from gymrat.cli.shared import (
     set_stderr_color_override,
     write_and_flush,
 )
-from gymrat.cli.supervise_progress import create_supervise_reporter
+from gymrat.cli.supervise.progress import create_supervise_reporter
 from gymrat.config import CliFlags, resolve_benchless_config
 from gymrat.errors import GymratError
 from gymrat.eta import format_duration
 from gymrat.git import run_git
-from gymrat.report.format import pluralize
+from gymrat.plural import pluralize
 from gymrat.session.clock import now_ms
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import repo_root, session_dir, supervise_lockfile_path
@@ -91,16 +91,19 @@ def _dirty_file_count(root: str) -> int:
 def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
     """Refuse a dirty tree unless ``allow_dirty`` was set, warning when it was."""
     count = _dirty_file_count(root)
-    if count > 0 and not allow_dirty:
+    if count == 0:
+        return count
+
+    if not allow_dirty:
         message = f"Working tree has {pluralize(count, 'uncommitted file')}."
         hint = "Commit or stash your changes, or pass --allow-dirty to proceed anyway."
         exit_with_error(GymratError(message, hint=hint))
-    if count > 0:
-        write_and_flush(
-            sys.stderr,
-            f"warning: working tree has {pluralize(count, 'dirty file')} — "
-            "proceeding because --allow-dirty was set\n",
-        )
+
+    write_and_flush(
+        sys.stderr,
+        f"warning: working tree has {pluralize(count, 'dirty file')} — "
+        "proceeding because --allow-dirty was set\n",
+    )
     return count
 
 

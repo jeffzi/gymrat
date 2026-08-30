@@ -14,9 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.iterate_progress import (
+from gymrat.cli.iterate.progress import (
     IterateRenderer,
-    create_fan_out,
     create_iterate_renderer,
 )
 from gymrat.progress_events import (
@@ -31,7 +30,6 @@ from gymrat.progress_events import (
     PassStarted,
     PrepareFinished,
     PrepareStarted,
-    ProgressEvent,
 )
 from tests._rich import (
     Clock,
@@ -493,7 +491,7 @@ def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_confirm_reproduced_does_show_reproduced():
+def test_frame_when_confirm_reproduced_does_show_reproduced(snapshot: SnapshotAssertion):
     _console, _clock, renderer = _live(sample_count=1)
     renderer.report(
         JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
@@ -503,12 +501,11 @@ def test_frame_when_confirm_reproduced_does_show_reproduced():
 
     result = frame_text(renderer.frame())
 
-    assert "reproduced" in result
-    assert "not reproduced" not in result
+    assert result == snapshot
     renderer.stop()
 
 
-def test_frame_when_confirm_not_reproduced_does_show_not_reproduced():
+def test_frame_when_confirm_not_reproduced_does_show_not_reproduced(snapshot: SnapshotAssertion):
     _console, _clock, renderer = _live(sample_count=1)
     renderer.report(
         JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
@@ -518,11 +515,11 @@ def test_frame_when_confirm_not_reproduced_does_show_not_reproduced():
 
     result = frame_text(renderer.frame())
 
-    assert "not reproduced" in result
+    assert result == snapshot
     renderer.stop()
 
 
-def test_frame_when_confirm_unfiltered_does_show_full_suite_label():
+def test_frame_when_confirm_unfiltered_does_show_full_suite_label(snapshot: SnapshotAssertion):
     _console, _clock, renderer = _live(sample_count=5)
     renderer.report(
         JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
@@ -531,7 +528,7 @@ def test_frame_when_confirm_unfiltered_does_show_full_suite_label():
 
     result = frame_text(renderer.frame())
 
-    assert "full suite" in result.lower()
+    assert result == snapshot
     renderer.stop()
 
 
@@ -641,26 +638,8 @@ def test_live_wiring_when_created_does_set_transient_from_verbose(
 ):
     _console, _clock, renderer = _live(verbose=verbose)
 
-    assert renderer._live is not None
-    assert renderer._live.transient is expected_transient
-    renderer.stop()
-
-
-def test_refresh_live_when_called_does_call_refresh_on_live(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _console, _clock, renderer = _live()
-    refreshed = False
-
-    def spy_refresh() -> None:
-        nonlocal refreshed
-        refreshed = True
-
-    monkeypatch.setattr(renderer._live, "refresh", spy_refresh)
-
-    renderer._refresh_live()
-
-    assert refreshed
+    assert renderer.live is not None
+    assert renderer.live.transient is expected_transient
     renderer.stop()
 
 
@@ -669,7 +648,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat.cli.iterate_progress.install_termination_cleanup",
+        "gymrat.cli.iterate.progress.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -684,7 +663,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
 ):
     registered: list[object] = []
     monkeypatch.setattr(
-        "gymrat.cli.iterate_progress.install_termination_cleanup",
+        "gymrat.cli.iterate.progress.install_termination_cleanup",
         fake_install(registered),
     )
 
@@ -701,7 +680,7 @@ def test_stop_when_called_twice_does_not_raise():
     renderer.stop()
     renderer.stop()
 
-    assert renderer._live is None
+    assert renderer.live is None
 
 
 # ---------------------------------------------------------------------------
@@ -717,11 +696,11 @@ def test_clear_on_signal_when_live_up_does_leave_screen_blank(
     buf = StringIO()
     monkeypatch.setattr(sys, "stderr", buf)
 
-    renderer._clear_on_signal()
+    renderer.clear_on_signal()
 
     assert screen_lines(buf.getvalue()) == []
-    if renderer._live is not None:
-        renderer._live.stop()
+    if renderer.live is not None:
+        renderer.live.stop()
 
 
 def test_clear_on_signal_when_after_stop_does_write_nothing(
@@ -733,7 +712,7 @@ def test_clear_on_signal_when_after_stop_does_write_nothing(
     buf = StringIO()
     monkeypatch.setattr(sys, "stderr", buf)
 
-    renderer._clear_on_signal()
+    renderer.clear_on_signal()
 
     assert buf.getvalue() == ""
 
@@ -747,8 +726,8 @@ def test_live_wiring_when_created_does_set_auto_refresh_true():
     """Live is configured with auto_refresh so time-derived text ticks between events."""
     _console, _clock, renderer = _live()
 
-    assert renderer._live is not None
-    assert renderer._live.auto_refresh is True
+    assert renderer.live is not None
+    assert renderer.live.auto_refresh is True
     renderer.stop()
 
 
@@ -998,42 +977,3 @@ def test_frame_when_judge_regressed_does_style_names_via_format_inline():
     assert kind_dim is True, "Kind suffix '#time' should be dim (format_inline)"
 
     renderer.stop()
-
-
-# ---------------------------------------------------------------------------
-# Fan-out on_progress callback
-# ---------------------------------------------------------------------------
-
-
-def test_create_fan_out_when_called_does_dispatch_event_to_all_subscribers():
-    received_a: list[ProgressEvent] = []
-    received_b: list[ProgressEvent] = []
-    fan_out = create_fan_out([received_a.append, received_b.append])
-
-    event = PrepareStarted(label="test", at_ms=0)
-    fan_out(event)
-
-    assert received_a == [event]
-    assert received_b == [event]
-
-
-def test_create_fan_out_when_subscriber_raises_does_still_call_remaining():
-    received: list[ProgressEvent] = []
-
-    def failing_subscriber(event: ProgressEvent) -> None:
-        msg = "boom"
-        raise RuntimeError(msg)
-
-    fan_out = create_fan_out([failing_subscriber, received.append])
-
-    event = PrepareStarted(label="test", at_ms=0)
-    fan_out(event)
-
-    assert received == [event]
-
-
-def test_create_fan_out_when_no_subscribers_does_not_raise():
-    fan_out = create_fan_out([])
-
-    event = PrepareStarted(label="test", at_ms=0)
-    fan_out(event)

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 import typer
 
-from gymrat.cli.iterate_progress import create_fan_out, create_iterate_renderer
+from gymrat.cli.iterate import create_iterate_renderer
 from gymrat.cli.shared import (
     GATE_EXIT_CODE,
     AdapterOption,
@@ -72,7 +72,8 @@ from gymrat.loop.settle import (
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.status import status_data, status_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
-from gymrat.report.format import pluralize
+from gymrat.plural import pluralize
+from gymrat.progress_events import create_fan_out
 from gymrat.report.json_doc import (
     render_discard_json,
     render_iterate_json,
@@ -182,6 +183,57 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     run_cli(run)
 
 
+async def _iterate_body(
+    flags: CliFlags,
+    *,
+    no_color: bool,
+    verbose: bool,
+    resolved_color: bool,
+) -> IterateResult:
+    root = repo_root()
+    resolved = resolve_config(flags, root)
+    required = require_open_session(root, "iterate")
+
+    from gymrat.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
+        stderr_console,
+    )
+
+    mode = resolve_render_mode()
+    console = stderr_console(color_flag=not no_color)
+    seq = required.state.last_seq + 1
+    metric_count = len(resolved.metrics) if resolved.metrics is not None else 0
+    renderer = create_iterate_renderer(
+        mode,
+        console,
+        seq,
+        required.session.session_id,
+        resolved.samples,
+        metric_count,
+        resolved.primary,
+        verbose=verbose,
+        clock=time.perf_counter,
+        checks_cmd=resolved.checks,
+        has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
+        has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
+    )
+    sidecar_writer = create_sidecar_writer(root)
+    fan_out = create_fan_out([renderer.report, sidecar_writer])
+    uninstall_progress_cleanup = install_termination_cleanup(lambda: clear_progress(root))
+    try:
+        return await run_with_signal_abort(
+            lambda abort: iterate_session(
+                root,
+                resolved,
+                IterateOptions(abort=abort, on_progress=fan_out),
+                color=resolved_color,
+            )
+        )
+    finally:
+        renderer.stop()
+        uninstall_progress_cleanup()
+        clear_progress(root)
+
+
 def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
     *,
     bench: BenchOption = None,
@@ -212,52 +264,13 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     )
 
     async def run() -> None:
-        async def body() -> IterateResult:
-            root = repo_root()
-            resolved = resolve_config(flags, root)
-            required = require_open_session(root, "iterate")
-
-            from gymrat.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
-                stderr_console,
-            )
-
-            mode = resolve_render_mode()
-            console = stderr_console(color_flag=not no_color)
-            seq = required.state.last_seq + 1
-            metric_count = len(resolved.metrics) if resolved.metrics is not None else 0
-            renderer = create_iterate_renderer(
-                mode,
-                console,
-                seq,
-                required.session.session_id,
-                resolved.samples,
-                metric_count,
-                resolved.primary,
-                verbose=verbose,
-                clock=time.perf_counter,
-                checks_cmd=resolved.checks,
-                has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
-                has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
-            )
-            sidecar_writer = create_sidecar_writer(root)
-            fan_out = create_fan_out([renderer.report, sidecar_writer])
-            uninstall_progress_cleanup = install_termination_cleanup(lambda: clear_progress(root))
-            try:
-                return await run_with_signal_abort(
-                    lambda abort: iterate_session(
-                        root,
-                        resolved,
-                        IterateOptions(abort=abort, on_progress=fan_out),
-                        color=resolved_color,
-                    )
-                )
-            finally:
-                renderer.stop()
-                uninstall_progress_cleanup()
-                clear_progress(root)
-
         try:
-            result = await with_repo_lock("iterate", body)
+            result = await with_repo_lock(
+                "iterate",
+                lambda: _iterate_body(
+                    flags, no_color=no_color, verbose=verbose, resolved_color=resolved_color
+                ),
+            )
         except LoopStopError as error:
             if use_json:
                 write_and_flush(sys.stdout, render_iterate_stop_json(str(error)) + "\n")

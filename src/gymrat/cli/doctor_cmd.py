@@ -111,6 +111,38 @@ def _environment_info() -> EnvironmentInfo:
     )
 
 
+def _build_doctor_report(flags: CliFlags) -> DoctorReport:
+    cwd = str(Path.cwd())
+    git_env = detect_git_environment(cwd)
+    base_dir = git_env.repo_root_dir or cwd
+
+    inspection = inspect_config(flags, base_dir)
+    config_resolved = inspection.config
+
+    env_section = build_environment_section(
+        git_available=git_env.git_available,
+        inside_git_repo=git_env.inside_git_repo,
+        git_error=git_env.git_error,
+    )
+    config_section = build_config_section(inspection)
+    resolved = config_resolved or _defaults_as_benchless()
+    workflow_section = build_workflow_section(
+        resolved,
+        problems=inspection.problems,
+        skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).is_file(),
+    )
+    bench_section = build_bench_section(
+        bench=inspection.bench,
+        adapter=flags.adapter or resolved.adapter,
+        config_problems=bool(inspection.problems),
+    )
+
+    return create_doctor_report(
+        _environment_info(),
+        [env_section, config_section, workflow_section, bench_section],
+    )
+
+
 def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
     *,
     bench: BenchOption = None,
@@ -138,47 +170,8 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     )
     color_override = color_override_of(flags.color)
 
-    def _build_report() -> DoctorReport:
-        cwd = str(Path.cwd())
-        git_env = detect_git_environment(cwd)
-        base_dir = git_env.repo_root_dir or cwd
-
-        config_flags = CliFlags(
-            bench=bench,
-            prepare=prepare,
-            adapter=adapter,
-            samples=samples,
-            timeout=timeout,
-            config=config,
-        )
-        inspection = inspect_config(config_flags, base_dir)
-        config_resolved = inspection.config
-
-        env_section = build_environment_section(
-            git_available=git_env.git_available,
-            inside_git_repo=git_env.inside_git_repo,
-            git_error=git_env.git_error,
-        )
-        config_section = build_config_section(inspection)
-        resolved = config_resolved or _defaults_as_benchless()
-        workflow_section = build_workflow_section(
-            resolved,
-            problems=inspection.problems,
-            skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).is_file(),
-        )
-        bench_section = build_bench_section(
-            bench=inspection.bench,
-            adapter=adapter or resolved.adapter,
-            config_problems=bool(inspection.problems),
-        )
-
-        return create_doctor_report(
-            _environment_info(),
-            [env_section, config_section, workflow_section, bench_section],
-        )
-
     async def run() -> None:
-        report = _build_report()
+        report = _build_doctor_report(flags)
 
         if wants_json(flags):
             write_and_flush(sys.stdout, render_doctor_json(report) + "\n")

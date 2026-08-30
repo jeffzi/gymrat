@@ -12,6 +12,26 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---
+# name: test_panel_title_when_launched_does_contain_label_session_and_branch
+  '''
+  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  │ time                                                                                 0s / 8h 00m │
+  │ cost $—                                                                                          │
+  │ loop   no session yet                                                                            │
+  │ starting                                                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---
+# name: test_time_bar_when_launched_does_show_elapsed_over_max_minutes
+  '''
+  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  │ time ━━━━━━━━━━━━━━━━━━━━━━━━━                                                   2h 41m / 8h 00m │
+  │ cost $—                                                                                          │
+  │ loop   no session yet                                                                            │
+  │ starting                                                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---
 # name: test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
@@ -33,26 +53,6 @@
   │   01:00:03  Edit   src/b.ts  ✔ 1s                                                                │
   │   01:00:04  Bash   npm test  ✔ 2s                                                                │
   │   01:00:05  Read   src/c.ts  ✔ 3s                                                                │
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-  '''
-# ---
-# name: test_panel_title_when_launched_does_contain_label_session_and_branch
-  '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time                                                                                 0s / 8h 00m │
-  │ cost $—                                                                                          │
-  │ loop   no session yet                                                                            │
-  │ starting                                                                                         │
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-  '''
-# ---
-# name: test_time_bar_when_launched_does_show_elapsed_over_max_minutes
-  '''
-  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
-  │ time ━━━━━━━━━━━━━━━━━━━━━━━━━                                                   2h 41m / 8h 00m │
-  │ cost $—                                                                                          │
-  │ loop   no session yet                                                                            │
-  │ starting                                                                                         │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---

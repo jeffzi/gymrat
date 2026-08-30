@@ -23,6 +23,36 @@
 # name: test_frame_when_compact_layout_does_show_single_row
   '⠋ sampling                                            0% · A · 00:00/--:--'
 # ---
+# name: test_frame_when_confirm_not_reproduced_does_show_not_reproduced
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ✓ judged +2.0% on geomean · 1 regressed: x
+  ✓ confirmed 0/2 · regressions not reproduced 4s
+  ○ record
+  '''
+# ---
+# name: test_frame_when_confirm_reproduced_does_show_reproduced
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ✓ judged +2.0% on geomean · 1 regressed: x
+  ✓ confirmed 0/2 · regressions reproduced 4s
+  ○ record
+  '''
+# ---
+# name: test_frame_when_confirm_unfiltered_does_show_full_suite_label
+  '''
+  iterate #1 · session test-session · 0s elapsed
+  ○ prepare
+  ○ passes
+  ! judged +2.0% on geomean · 1 regressed: x
+  ⠋ confirming full suite                                         0/10 00:00/--:--
+  ○ record
+  '''
+# ---
 # name: test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta
   '''
   iterate #1 · session test-session · 10s elapsed

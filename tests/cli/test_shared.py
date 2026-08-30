@@ -16,6 +16,7 @@ from typing import override
 import pytest
 import typer
 
+from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
 from gymrat.cli.shared import (
     BUGS_URL,
@@ -26,21 +27,24 @@ from gymrat.cli.shared import (
     SharedFlags,
     begin_run,
     color_override_of,
+    exit_with_error,
     format_cli_error,
     is_tty,
+    parse_fail_on,
     parse_max_minutes,
     parse_positional,
     parse_positive_integer_up_to,
     parse_positive_number,
     resolve_render_mode,
     run_with_signal_abort,
+    set_debug_mode,
     set_stderr_color_override,
     with_repo_lock,
     write_and_flush,
 )
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
-from gymrat.report.types import RegressedFailOn
+from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 
 
@@ -75,6 +79,8 @@ def _capturing_create_progress_reporter(
         sample_count: int | None = None,
         *,
         clock: object = None,
+        command: str | None = None,
+        target_labels: list[str] | None = None,
     ) -> _StubReporter:
         captured["mode"] = mode
         captured["target_count"] = target_count
@@ -93,6 +99,14 @@ def _clear_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Delete FORCE_COLOR/NO_COLOR so a stray value doesn't leak into color resolution."""
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("NO_COLOR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_stderr_color_override():
+    """Reset the module-level color override between tests so xdist workers don't leak state."""
+    set_stderr_color_override(None)
+    yield
+    set_stderr_color_override(None)
 
 
 # ---------------------------------------------------------------------------
@@ -562,3 +576,190 @@ assert not bodies, f'cli import pulled command bodies: {bodies}'
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# parse_fail_on
+# ---------------------------------------------------------------------------
+
+
+def test_parse_fail_on_accepts_regressed():
+    assert parse_fail_on("regressed") == RegressedFailOn()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_pct"),
+    [
+        pytest.param("geomean:2", 2.0, id="integer"),
+        pytest.param("geomean:-1.5", -1.5, id="negative-decimal"),
+    ],
+)
+def test_parse_fail_on_accepts_geomean_percentage(value: str, expected_pct: float):
+    condition = parse_fail_on(value)
+
+    assert condition == GeomeanFailOn(pct=expected_pct)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["geomean:", "geomean:0x10", "unknown", "", " geomean:2"],
+)
+def test_parse_fail_on_rejects_everything_else(value: str):
+    with pytest.raises(typer.BadParameter) as exc:
+        parse_fail_on(value)
+
+    assert (
+        exc.value.message
+        == 'allowed values are "regressed" or "geomean:<number>" (e.g. geomean:2).'
+    )
+
+
+# ---------------------------------------------------------------------------
+# format_cli_error
+# ---------------------------------------------------------------------------
+
+
+def test_format_cli_error_when_colored_paints_the_error_label_red(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    output = format_cli_error(ValueError("boom"))
+
+    assert "\x1b[31m" in output
+    assert "Error" in output
+
+
+def test_format_cli_error_when_no_color_renders_plain_label_and_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    output = format_cli_error(ValueError("boom"))
+
+    assert "Error: boom" in output
+    assert "\x1b[" not in output
+
+
+def test_format_cli_error_when_adapter_error_keeps_its_class_name_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    output = format_cli_error(AdapterError("parse failed"))
+
+    assert "AdapterError: parse failed" in output
+
+
+def test_format_cli_error_includes_stack_only_under_debug():
+    message = "boom"
+    try:
+        raise ValueError(message)
+    except ValueError as error:
+        with_stack = format_cli_error(error, debug=True)
+        without_stack = format_cli_error(error, debug=False)
+
+    assert "Traceback" in with_stack
+    assert "Traceback" not in without_stack
+
+
+def test_format_cli_error_when_gymrat_error_carries_hint_appends_unlabeled_line_without_footer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    output = format_cli_error(GymratError("boom", hint="run gymrat doctor"))
+
+    assert output.splitlines()[-1] == "run gymrat doctor"
+    assert "Hint" not in output
+    assert BUGS_URL not in output
+
+
+def test_format_cli_error_when_hint_colored_does_dim_the_line_and_paint_inline_code_blue(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    output = format_cli_error(GymratError("boom", hint="run `gymrat doctor` first"))
+
+    hint_line = output.splitlines()[-1]
+    assert hint_line.startswith("\x1b[2mrun ")  # cspell:disable-line
+    assert "\x1b[2;34mgymrat doctor" in hint_line  # cspell:disable-line
+
+
+def test_format_cli_error_when_not_gymrat_error_appends_bug_footer():
+    output = format_cli_error(ValueError("boom"))
+
+    assert BUGS_URL in output
+
+
+def test_format_cli_error_when_value_is_not_an_exception_still_renders(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    output = format_cli_error("plain failure")
+
+    assert "Error: plain failure" in output
+    assert BUGS_URL in output
+
+
+# ---------------------------------------------------------------------------
+# exit_with_error
+# ---------------------------------------------------------------------------
+
+
+def test_exit_with_error_writes_to_stderr_and_exits_on_the_given_code(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured = io.StringIO()
+    monkeypatch.setattr("sys.stderr", captured)
+
+    with pytest.raises(typer.Exit) as exc:
+        exit_with_error(ValueError("boom"), code=TOOL_FAILURE_EXIT_CODE)
+
+    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
+    assert "Error: boom" in captured.getvalue()
+
+
+def test_exit_with_error_when_stderr_write_fails_keeps_the_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class BrokenStderr:
+        def write(self, _data: str) -> int:
+            raise OSError
+
+        def flush(self) -> None:
+            raise OSError
+
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr("sys.stderr", BrokenStderr())
+
+    with pytest.raises(typer.Exit) as exc:
+        exit_with_error(ValueError("boom"), code=TOOL_FAILURE_EXIT_CODE)
+
+    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
+
+
+def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.MonkeyPatch):
+    captured = io.StringIO()
+    monkeypatch.setattr("sys.stderr", captured)
+    set_debug_mode(True)
+    message = "boom"
+
+    try:
+        raise ValueError(message)
+    except ValueError as error:
+        with pytest.raises(typer.Exit):
+            exit_with_error(error, code=TOOL_FAILURE_EXIT_CODE)
+
+    set_debug_mode(False)
+    assert "Traceback" in captured.getvalue()

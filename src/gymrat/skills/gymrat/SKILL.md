@@ -5,9 +5,9 @@ description: >-
   comparisons (gymrat compare) or standalone measurements (gymrat measure without --record).
 when_to_use: >-
   Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard, gymrat finalize,
-  gymrat status, or gymrat supervise; when a repo has a gymrat.toml; when asked to optimize a
-  benchmark toward a target or budget; or on errors like "has not been settled", "Keep refused", or
-  "Stop condition met".
+  gymrat status, gymrat supervise, gymrat sync, or gymrat measure --record; when a repo has a
+  gymrat.toml; when asked to optimize a benchmark toward a target or budget; or on errors like "has
+  not been settled", "Keep refused", or "Stop condition met".
 ---
 
 # Driving a gymrat optimization session
@@ -19,9 +19,9 @@ repository root.
 `filter`, `primary`, `runbook`, `stop`, and `hooks` live. `adapter` defaults to `metric-lines`;
 `samples` defaults to `10`.
 
-**Load the per-repo runbook before your first edit** — the path `gymrat start` prints (also in
-`gymrat status` text output; the JSON status document carries counts only, not the runbook path or
-per-iteration history). No runbook line → ask which metrics gate and what to optimize.
+Load the per-repo runbook before your first edit. `gymrat start` prints the path; `gymrat status`
+text output also shows it. The JSON status document carries counts only, not the runbook path or
+per-iteration history. No runbook line → ask which metrics gate and what to optimize.
 
 ## Session lifecycle
 
@@ -150,5 +150,5 @@ experiment worktree has conflicting uncommitted changes.
 | 2       | Operational error: no session, finalized session, lock contention, bad config, timeout |
 | 128 + N | Killed by signal N (e.g. 130 after Ctrl-C); cleanup ran before exiting                 |
 
-Exit 1 is information — read the output. Exit 2 is a real error — diagnose before retrying. An exit
-above 128 means the run was interrupted — the iteration may be unsettled; check `gymrat status`.
+Exit 1 is information: read the output. Exit 2 is a real error: diagnose before retrying. An exit
+above 128 means the run was interrupted. The iteration may be unsettled; check `gymrat status`.

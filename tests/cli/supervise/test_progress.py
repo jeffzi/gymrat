@@ -8,290 +8,45 @@ disk.
 
 **Live mode** tests render ``reporter.frame()`` through ``frame_text()`` from
 ``tests._rich`` at a fixed width, pinning frame content with syrupy snapshots.
-**Plain mode** tests assert on recorded milestone lines.
+**Plain mode** tests assert on recorded milestone lines. Liveness, idle, sidecar,
+cap, and non-rendering event tests also live here.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING
 from unittest.mock import patch
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 import pytest
 
-from gymrat.cli.supervise_progress import (
-    IDLE_WARN_MS,
-    CapType,
-    ReadSessionResult,
-    SuperviseReporter,
-    create_supervise_reporter,
-)
-from gymrat.session import IterationPrimary, IterationRecord
+from gymrat.cli.supervise.progress import IDLE_WARN_MS, CapType, ReadSessionResult
 from gymrat.session.progress_file import ProgressSnapshot
-from gymrat.session.store import SessionState
 from gymrat.supervisor.events import (
-    CapEvent,
-    LaunchEvent,
-    SessionObserver,
     TextDeltaEvent,
     ThinkingUpdateEvent,
-    ToolEndEvent,
     ToolProgressEvent,
-    ToolStartEvent,
-    UsageUpdateEvent,
 )
-from tests._rich import frame_text
-from tests.session._records import finalize_record, iteration_record
+from tests.cli.supervise._fixtures import (
+    _epoch_ms_to_local_hms,
+    _throwing_read,
+    empty_session_state,
+    finalize_record,
+    fire_cap,
+    fire_launch,
+    fire_launch_and_bash_cycle,
+    fire_tool_end,
+    fire_tool_start,
+    fire_usage_update,
+    make_iteration,
+    make_plain_reporter,
+    make_read_session,
+    make_reporter,
+    render_frame,
+    session_state,
+)
 
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
-
-
-# ---------------------------------------------------------------------------
-# Test doubles
-# ---------------------------------------------------------------------------
-
-
-class Clock:
-    """A mutable millisecond clock a test advances by assigning ``now``."""
-
-    def __init__(self, start: int):
-        self.now = start
-
-    def __call__(self) -> int:
-        return self.now
-
-
-# ---------------------------------------------------------------------------
-# Builders
-# ---------------------------------------------------------------------------
-
-
-def empty_session_state() -> SessionState:
-    """A session that has opened but measured nothing yet."""
-    return SessionState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        finalized=None,
-    )
-
-
-def session_state(**changes: Any) -> SessionState:
-    """The empty session state with the named fields overridden."""
-    return replace(empty_session_state(), **changes)
-
-
-def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
-    """Convert epoch milliseconds to local-time ``HH:MM:SS`` for test assertions.
-
-    Uses the same epoch-to-local conversion the implementation should use, so
-    tests are timezone-independent — they compute the expected string rather
-    than hard-coding a clock time.
-    """
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
-
-
-def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> IterationRecord:
-    """An iteration whose only reporter-visible fields are its delta and outcome."""
-    return iteration_record(
-        seq=seq,
-        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
-        outcome=outcome,
-    )
-
-
-def make_read_session(
-    state: SessionState,
-    *,
-    has_baseline: bool,
-    best_delta_pct: float | None = None,
-    best_seq: int | None = None,
-    primary_label: str | None = None,
-    baseline_sha: str | None = None,
-) -> Callable[[], ReadSessionResult]:
-    """A ``read_session`` that always returns ``state`` and ``has_baseline``.
-
-    The best-tracking fields are passed to ``ReadSessionResult`` only when
-    explicitly provided, so existing callers that predate those fields are
-    unaffected.
-    """
-    best_kwargs: dict[str, Any] = {}
-    if best_delta_pct is not None:
-        best_kwargs["best_delta_pct"] = best_delta_pct
-    if best_seq is not None:
-        best_kwargs["best_seq"] = best_seq
-    if primary_label is not None:
-        best_kwargs["primary_label"] = primary_label
-    if baseline_sha is not None:
-        best_kwargs["baseline_sha"] = baseline_sha
-    result = ReadSessionResult(state=state, has_baseline=has_baseline, **best_kwargs)
-    return lambda: result
-
-
-def _throwing_read() -> ReadSessionResult:
-    message = "no session file"
-    raise RuntimeError(message)
-
-
-# ---------------------------------------------------------------------------
-# Event firers
-# ---------------------------------------------------------------------------
-
-
-def fire_launch(
-    observer: SessionObserver,
-    timestamp: int = 1000,
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-) -> None:
-    observer(
-        LaunchEvent(
-            timestamp=timestamp,
-            head_sha="abc123",
-            dirty=False,
-            max_minutes=max_minutes,
-            max_usd=max_usd,
-            model=None,
-            runbook_path="/path/to/runbook.md",
-            kickoff_summary="test kickoff",
-        )
-    )
-
-
-def fire_tool_start(
-    observer: SessionObserver,
-    tool_name: str,
-    tool_use_id: str,
-    timestamp: int = 2000,
-    *,
-    input_summary: str = "...",
-) -> None:
-    observer(
-        ToolStartEvent(
-            timestamp=timestamp,
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            input={},
-            input_summary=input_summary,
-        )
-    )
-
-
-def fire_tool_end(
-    observer: SessionObserver,
-    tool_name: str,
-    tool_use_id: str,
-    timestamp: int = 3000,
-    *,
-    result: str = "ok",
-    result_summary: str = "ok",
-) -> None:
-    observer(
-        ToolEndEvent(
-            timestamp=timestamp,
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            duration_ms=timestamp - 2000,
-            result=result,
-            result_summary=result_summary,
-        )
-    )
-
-
-def fire_usage_update(observer: SessionObserver, cost_usd: float, timestamp: int = 4000) -> None:
-    observer(UsageUpdateEvent(timestamp=timestamp, cost_usd=cost_usd))
-
-
-def fire_cap(observer: SessionObserver, cap: CapType, timestamp: int = 5000) -> None:
-    observer(CapEvent(timestamp=timestamp, cap=cap))
-
-
-def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
-    """Launch, then run a Bash tool start/end cycle at the default timestamps.
-
-    The Bash end is what triggers the reporter's session re-read (see the
-    "session re-read" tests below), so this is the minimum event sequence
-    that gets session state into the loop/best rows.
-    """
-    fire_launch(observer, 1000)
-    fire_tool_start(observer, "Bash", "bash-1", 2000)
-    fire_tool_end(observer, "Bash", "bash-1", 3000)
-
-
-# ---------------------------------------------------------------------------
-# Reporter setup
-# ---------------------------------------------------------------------------
-
-# Fixed width for all golden-snapshot tests so frames are stable.
-FRAME_WIDTH = 100
-
-
-class ReporterKit(NamedTuple):
-    reporter: SuperviseReporter
-    clock: Clock
-
-
-def make_reporter(
-    *,
-    mode: Literal["live", "plain"] = "live",
-    max_minutes: float = 480,
-    max_usd: float | None = None,
-    max_iterations: int | None = None,
-    read_session: Callable[[], ReadSessionResult] | None = None,
-    clock_start: int = 1000,
-    root: str = "/tmp/repo",
-    read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
-    plain_write: Callable[[str], None] | None = None,
-    label: str = "ecstatic-ts",
-    session_id: str = "20260813-125044-34ec",
-    branch: str = "gymrat/20260813-125044-34ec",
-    color: bool | None = None,
-) -> ReporterKit:
-    """Build a reporter with injectable dependencies for deterministic testing."""
-    clock = Clock(clock_start)
-    if read_session is None:
-        read_session = make_read_session(empty_session_state(), has_baseline=False)
-    kwargs: dict[str, Any] = {}
-    if max_iterations is not None:
-        kwargs["max_iterations"] = max_iterations
-    if max_usd is not None:
-        kwargs["max_usd"] = max_usd
-    if read_progress is not None:
-        kwargs["read_progress"] = read_progress
-    if plain_write is not None:
-        kwargs["plain_write"] = plain_write
-    if color is not None:
-        kwargs["color"] = color
-    reporter = create_supervise_reporter(
-        root=root,
-        max_minutes=max_minutes,
-        mode=mode,
-        now=clock,
-        read_session=read_session,
-        label=label,
-        session_id=session_id,
-        branch=branch,
-        **kwargs,
-    )
-    return ReporterKit(reporter, clock)
-
-
-def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
-    """Render the reporter's current frame through a non-terminal console."""
-    return frame_text(reporter.frame(), width=width)
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +419,97 @@ def test_reread_when_tool_end_has_unknown_id_does_reread():
 
 
 # ---------------------------------------------------------------------------
+# full dashboard golden snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAssertion):
+    """A mid-session snapshot with time, cost, loop, best, and liveness."""
+    state = session_state(
+        iteration_count=3,
+        keep_count=1,
+        discard_count=1,
+        last_iteration=make_iteration(-6.8, "improved", seq=3),
+    )
+    kit = make_reporter(
+        max_minutes=480,
+        max_usd=10.0,
+        max_iterations=5,
+        read_session=make_read_session(
+            state,
+            has_baseline=True,
+            best_delta_pct=-6.8,
+            best_seq=3,
+            primary_label="geomean",
+            baseline_sha="abc1234567890abcdef1234567890abcdef123456",
+        ),
+    )
+    fire_launch(kit.reporter.observer, 1000, max_minutes=480, max_usd=10.0)
+
+    # Simulate 2h41m elapsed
+    kit.clock.now = 1000 + (2 * 3600 + 41 * 60) * 1000
+    fire_usage_update(kit.reporter.observer, 4.12, kit.clock.now)
+
+    kit.clock.now += 1000
+    fire_tool_start(
+        kit.reporter.observer, "Read", "read-1", kit.clock.now, input_summary="src/archetype.ts"
+    )
+    kit.clock.now += 500
+    fire_tool_end(kit.reporter.observer, "Read", "read-1", kit.clock.now)
+
+    kit.clock.now += 200
+    fire_tool_start(
+        kit.reporter.observer, "Edit", "edit-1", kit.clock.now, input_summary="src/archetype.ts"
+    )
+    kit.clock.now += 800
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", kit.clock.now)
+
+    kit.clock.now += 100
+    fire_tool_start(
+        kit.reporter.observer,
+        "Bash",
+        "bash-1",
+        kit.clock.now,
+        input_summary="gymrat iterate",
+    )
+    kit.clock.now += 60_000
+
+    frame = render_frame(kit.reporter)
+
+    assert frame == snapshot
+
+
+# ---------------------------------------------------------------------------
+# ticking display (#28) — Live uses get_renderable
+# ---------------------------------------------------------------------------
+
+LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
+
+
+def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():
+    """Live is constructed with ``get_renderable`` so it rebuilds on its 1 Hz refresh."""
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        make_reporter(mode="live")
+
+        call_kwargs = mock_live_cls.call_args.kwargs
+        assert "get_renderable" in call_kwargs
+        assert callable(call_kwargs["get_renderable"])
+
+
+# ---------------------------------------------------------------------------
+# mounted display (#30) — Live.start() called during creation
+# ---------------------------------------------------------------------------
+
+
+def test_create_reporter_when_live_mode_does_mount_the_live_display():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        mock_live = mock_live_cls.return_value
+        make_reporter(mode="live")
+
+        mock_live.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # liveness — starting state
 # ---------------------------------------------------------------------------
 
@@ -769,7 +615,7 @@ def test_liveness_when_untracked_tool_ends_does_not_change():
 
 
 # ---------------------------------------------------------------------------
-# wall-clock finished-tool lines (#25/#26)
+# wall-clock finished-tool lines
 # ---------------------------------------------------------------------------
 
 
@@ -827,7 +673,7 @@ def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
 
 
 # ---------------------------------------------------------------------------
-# idle context (#27) — wall-clock and tool glyph
+# idle context — wall-clock and tool glyph
 # ---------------------------------------------------------------------------
 
 
@@ -984,46 +830,6 @@ def test_warn_when_called_in_live_mode_does_record_warning():
 # ---------------------------------------------------------------------------
 
 
-class PlainCapture(NamedTuple):
-    """A plain-mode reporter paired with a write recorder."""
-
-    kit: ReporterKit
-    writes: list[str]
-
-    @property
-    def reporter(self) -> SuperviseReporter:
-        return self.kit.reporter
-
-    @property
-    def observer(self) -> SessionObserver:
-        return self.kit.reporter.observer
-
-
-def make_plain_reporter(
-    *,
-    max_minutes: float = 60,
-    max_usd: float | None = None,
-    max_iterations: int | None = None,
-    read_session: Callable[[], ReadSessionResult] | None = None,
-    clock_start: int = 1000,
-) -> PlainCapture:
-    """Build a plain-mode reporter with a write-capturing callback.
-
-    Each milestone line the reporter emits is appended to the ``writes`` list.
-    """
-    writes: list[str] = []
-    kit = make_reporter(
-        mode="plain",
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        max_iterations=max_iterations,
-        read_session=read_session,
-        clock_start=clock_start,
-        plain_write=writes.append,
-    )
-    return PlainCapture(kit, writes)
-
-
 def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():
     plain = make_plain_reporter(max_usd=5.0, max_minutes=60)
 
@@ -1133,94 +939,3 @@ def test_stop_when_called_in_plain_mode_does_not_raise():
     fire_launch(plain.observer, 1000)
 
     plain.reporter.stop()
-
-
-# ---------------------------------------------------------------------------
-# full dashboard golden snapshot
-# ---------------------------------------------------------------------------
-
-
-def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAssertion):
-    """A mid-session snapshot with time, cost, loop, best, and liveness."""
-    state = session_state(
-        iteration_count=3,
-        keep_count=1,
-        discard_count=1,
-        last_iteration=make_iteration(-6.8, "improved", seq=3),
-    )
-    kit = make_reporter(
-        max_minutes=480,
-        max_usd=10.0,
-        max_iterations=5,
-        read_session=make_read_session(
-            state,
-            has_baseline=True,
-            best_delta_pct=-6.8,
-            best_seq=3,
-            primary_label="geomean",
-            baseline_sha="abc1234567890abcdef1234567890abcdef123456",
-        ),
-    )
-    fire_launch(kit.reporter.observer, 1000, max_minutes=480, max_usd=10.0)
-
-    # Simulate 2h41m elapsed
-    kit.clock.now = 1000 + (2 * 3600 + 41 * 60) * 1000
-    fire_usage_update(kit.reporter.observer, 4.12, kit.clock.now)
-
-    kit.clock.now += 1000
-    fire_tool_start(
-        kit.reporter.observer, "Read", "read-1", kit.clock.now, input_summary="src/archetype.ts"
-    )
-    kit.clock.now += 500
-    fire_tool_end(kit.reporter.observer, "Read", "read-1", kit.clock.now)
-
-    kit.clock.now += 200
-    fire_tool_start(
-        kit.reporter.observer, "Edit", "edit-1", kit.clock.now, input_summary="src/archetype.ts"
-    )
-    kit.clock.now += 800
-    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", kit.clock.now)
-
-    kit.clock.now += 100
-    fire_tool_start(
-        kit.reporter.observer,
-        "Bash",
-        "bash-1",
-        kit.clock.now,
-        input_summary="gymrat iterate",
-    )
-    kit.clock.now += 60_000
-
-    frame = render_frame(kit.reporter)
-
-    assert frame == snapshot
-
-
-# ---------------------------------------------------------------------------
-# ticking display (#28) — Live uses get_renderable
-# ---------------------------------------------------------------------------
-
-LIVE_CLASS_PATH = "gymrat.cli.supervise_progress.Live"
-
-
-def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():
-    """Live is constructed with ``get_renderable`` so it rebuilds on its 1 Hz refresh."""
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        make_reporter(mode="live")
-
-        call_kwargs = mock_live_cls.call_args.kwargs
-        assert "get_renderable" in call_kwargs
-        assert callable(call_kwargs["get_renderable"])
-
-
-# ---------------------------------------------------------------------------
-# mounted display (#30) — Live.start() called during creation
-# ---------------------------------------------------------------------------
-
-
-def test_create_reporter_when_live_mode_does_mount_the_live_display():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        make_reporter(mode="live")
-
-        mock_live.start.assert_called_once()

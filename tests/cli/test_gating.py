@@ -1,16 +1,10 @@
-"""Tests for fail-on parsing and gate evaluation.
-
-These cover the ``parse_fail_on`` grammar, the ``should_fail_gate`` trip/no-trip
-matrix (gating-only, exactly-on, OR semantics), and the empty-geomean warning.
-"""
+"""Tests for the fail-on gate evaluation and empty-geomean warning."""
 
 import io
 
 import pytest
-import typer
 
 from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
-from gymrat.cli.shared import parse_fail_on
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from tests.report._inputs import (
     create_candidate,
@@ -19,42 +13,6 @@ from tests.report._inputs import (
     permutation_metric,
     without_gated_geomean,
 )
-
-# ---------------------------------------------------------------------------
-# parse_fail_on
-# ---------------------------------------------------------------------------
-
-
-def test_parse_fail_on_accepts_regressed():
-    assert parse_fail_on("regressed") == RegressedFailOn()
-
-
-@pytest.mark.parametrize(
-    ("value", "expected_pct"),
-    [
-        pytest.param("geomean:2", 2.0, id="integer"),
-        pytest.param("geomean:-1.5", -1.5, id="negative-decimal"),
-    ],
-)
-def test_parse_fail_on_accepts_geomean_percentage(value: str, expected_pct: float):
-    condition = parse_fail_on(value)
-
-    assert condition == GeomeanFailOn(pct=expected_pct)
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["geomean:", "geomean:0x10", "unknown", "", " geomean:2"],
-)
-def test_parse_fail_on_rejects_everything_else(value: str):
-    with pytest.raises(typer.BadParameter) as exc:
-        parse_fail_on(value)
-
-    assert (
-        exc.value.message
-        == 'allowed values are "regressed" or "geomean:<number>" (e.g. geomean:2).'
-    )
-
 
 # ---------------------------------------------------------------------------
 # should_fail_gate

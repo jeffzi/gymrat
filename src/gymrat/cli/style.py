@@ -8,7 +8,7 @@ form, and timer color — so a row can be read at a glance:
 | running | spinner | gerund (``sampling``) | yellow    |
 | done    | ``✓``   | past (``sampled``)    | dim green |
 | pending | ``○``   | noun (``judge``)      | none      |
-| error   | ``✗``   | —                     | none      |
+| error   | ``✗``   | —                    | none      |
 
 A step that turns out not to apply (a skipped confirm, a hook that was not
 configured) is dropped from the checklist rather than shown with a skip marker.
@@ -92,14 +92,20 @@ class LiveDisplayMixin:
     without giving the two renderers a shared base class.
     """
 
-    _live: Live | None
-    _stopped: bool
+    _live: Live | None = None
+    _stopped: bool = False
+
+    @property
+    def live(self) -> Live | None:
+        """The active ``Live`` display, or ``None`` outside live mode or after ``stop()``."""
+        return self._live
 
     def _refresh_live(self) -> None:
         if self._live is not None:
             self._live.refresh()
 
-    def _clear_on_signal(self) -> None:
+    def clear_on_signal(self) -> None:
+        """Clear the current line once, guarding against repeated signal delivery."""
         # os._exit skips buffer flushing, so the clear must be flushed explicitly
         # or it never reaches the terminal.
         if self._stopped:

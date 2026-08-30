@@ -19,6 +19,7 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressCallback,
     ProgressEvent,
+    create_fan_out,
     default_clock,
 )
 from gymrat.session.schema import HookStage
@@ -187,3 +188,42 @@ def test_progress_callback_type_alias_accepts_callable() -> None:
     cb(PrepareStarted(label="A", at_ms=0))
 
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# create_fan_out
+# ---------------------------------------------------------------------------
+
+
+def test_create_fan_out_when_called_does_dispatch_event_to_all_subscribers() -> None:
+    received_a: list[ProgressEvent] = []
+    received_b: list[ProgressEvent] = []
+    fan_out = create_fan_out([received_a.append, received_b.append])
+
+    event = PrepareStarted(label="test", at_ms=0)
+    fan_out(event)
+
+    assert received_a == [event]
+    assert received_b == [event]
+
+
+def test_create_fan_out_when_subscriber_raises_does_still_call_remaining() -> None:
+    received: list[ProgressEvent] = []
+
+    def failing_subscriber(event: ProgressEvent) -> None:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    fan_out = create_fan_out([failing_subscriber, received.append])
+
+    event = PrepareStarted(label="test", at_ms=0)
+    fan_out(event)
+
+    assert received == [event]
+
+
+def test_create_fan_out_when_no_subscribers_does_not_raise() -> None:
+    fan_out = create_fan_out([])
+
+    event = PrepareStarted(label="test", at_ms=0)
+    fan_out(event)
