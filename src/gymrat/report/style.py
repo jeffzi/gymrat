@@ -298,6 +298,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
             file=buffer,
             width=width,
             force_terminal=True,
+            color_system="truecolor",
             no_color=False,
             soft_wrap=True,
         )
@@ -312,6 +313,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
             file=buffer,
             width=width,
             force_terminal=True,
+            color_system="truecolor",
             no_color=False,
             soft_wrap=True,
         )

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rich.markup import escape
+
 from gymrat.errors import GymratError
 
 
@@ -90,6 +92,6 @@ def format_inline(metric: MetricName, *, color: bool) -> str:
         return metric.full
 
     group = metric.group
-    prefix = f"[dim]{group}/[/dim]" if group is not None else ""
-    suffix = f"[dim]#{metric.kind}[/dim]" if metric.kind is not None else ""
-    return f"{prefix}{metric.case}{suffix}"
+    prefix = f"[dim]{escape(group)}/[/dim]" if group is not None else ""
+    suffix = f"[dim]#{escape(metric.kind)}[/dim]" if metric.kind is not None else ""
+    return f"{prefix}{escape(metric.case)}{suffix}"

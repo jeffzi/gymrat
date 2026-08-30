@@ -4,6 +4,7 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.metric_name import format_inline, parse
+from gymrat.report.style import render_lines
 
 # ---------------------------------------------------------------------------
 # parse — with kind
@@ -109,3 +110,54 @@ def test_metric_name_when_mutated_does_raise():
 
     with pytest.raises(AttributeError):
         name.kind = "time"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# format_inline — bracket escaping (rich markup metacharacters)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "expected_plain"),
+    [
+        pytest.param(
+            "parse[js]#time",
+            "parse[js]#time",
+            id="square-brackets-in-case",
+        ),
+        pytest.param(
+            "codec[h264]/decode#time",
+            "codec[h264]/decode#time",
+            id="square-brackets-in-group",
+        ),
+        pytest.param(
+            "render#fps[avg]",
+            "render#fps[avg]",
+            id="square-brackets-in-kind",
+        ),
+        pytest.param(
+            "parse[/html]#time",
+            "parse[/html]#time",
+            id="closing-tag-shaped-bracket",
+        ),
+    ],
+)
+def test_format_inline_when_color_on_and_brackets_in_segments_does_render_literally(
+    raw_name: str,
+    expected_plain: str,
+):
+    """Metric names with rich-markup-shaped brackets must survive color rendering."""
+    name = parse(raw_name)
+
+    markup = format_inline(name, color=True)
+    rendered = render_lines(markup, color=False, width=200)
+
+    assert rendered == expected_plain
+
+
+def test_format_inline_when_color_off_and_brackets_in_segments_does_render_literally():
+    name = parse("parse[js]#time")
+
+    result = format_inline(name, color=False)
+
+    assert result == "parse[js]#time"

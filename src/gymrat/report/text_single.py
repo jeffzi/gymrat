@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
 from rich.markup import escape
 
 from gymrat.report.format import (
@@ -253,21 +254,21 @@ def _column_widths(
 
     def value_width(index: int) -> int:
         return compute_column_width(
-            len(headers[index]), [len(row[index]) for row in rows], VALUE_COLUMN_MIN
+            cell_len(headers[index]), [cell_len(row[index]) for row in rows], VALUE_COLUMN_MIN
         )
 
-    verdict_lengths = [len(row[3]) for row in rows] + [
-        len(join_verdict_cell(parts, verdict_fields)) for parts in aggregate_parts
+    verdict_lengths = [cell_len(row[3]) for row in rows] + [
+        cell_len(join_verdict_cell(parts, verdict_fields)) for parts in aggregate_parts
     ]
     return [
         compute_column_width(
-            len(widest_header_label(body)),
-            [len(row[0]) for row in rows] + aggregate_label_lengths(body),
+            cell_len(widest_header_label(body)),
+            [cell_len(row[0]) for row in rows] + aggregate_label_lengths(body),
             METRIC_COLUMN_MIN,
         ),
         value_width(1),
         value_width(2),
-        compute_column_width(len(headers[3]), verdict_lengths, VERDICT_COLUMN_MIN),
+        compute_column_width(cell_len(headers[3]), verdict_lengths, VERDICT_COLUMN_MIN),
     ]
 
 

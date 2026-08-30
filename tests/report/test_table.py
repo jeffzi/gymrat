@@ -4,10 +4,22 @@ A single-kind comparison uses the flat (single-section) layout path.  These
 tests verify that the flat body groups metrics under group headers, uses case
 names for member rows, places ungrouped rows after groups, preserves
 first-appearance ordering, and renders the full path prefix for deeper groups.
+
+The verdict-cell alignment section tests that the styled (colored) and plain
+verdict cells produce the same visible width for every field combination,
+including the NaN-delta case where the delta field is empty but the column
+carries a non-zero width from sibling rows.
 """
 
 from __future__ import annotations
 
+from gymrat.report.style import render_lines
+from gymrat.report.table import (
+    VerdictParts,
+    VerdictWidths,
+    join_verdict_cell,
+    style_verdict_cell,
+)
 from gymrat.report.text import render_report
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
@@ -214,3 +226,56 @@ def test_table_region_when_flat_body_with_deeper_path_does_use_full_prefix_as_gr
     assert "get_2field" in region
     assert "node/access/get_1field#time" not in region
     assert "node/access/get_2field#time" not in region
+
+
+# ---------------------------------------------------------------------------
+# styled verdict cell alignment with plain verdict cell
+# ---------------------------------------------------------------------------
+
+
+def _plain_of_styled(markup: str) -> str:
+    """Render markup through rich to get visible text (ANSI stripped)."""
+    return render_lines(markup, color=False, width=200)
+
+
+def test_verdict_cell_when_delta_empty_and_band_present_does_match_plain_and_styled_width():
+    """NaN delta with a band column must pad equally in plain and styled paths.
+
+    The plain path pads delta to ``widths.delta`` spaces; the styled path
+    must not drop the padding.
+    """
+    parts = VerdictParts(glyph="~", delta="", word="", band="±2.5%", pairs="")
+    widths = VerdictWidths(delta=7, band=5)
+
+    plain = join_verdict_cell(parts, widths)
+    styled = style_verdict_cell(
+        parts, widths, glyph_style="dim", delta_style=None, band_style="dim"
+    )
+
+    assert len(plain) == len(_plain_of_styled(styled))
+
+
+def test_verdict_cell_when_all_fields_present_does_match_plain_and_styled_width():
+    """A fully populated verdict cell must render to the same visible width in both paths."""
+    parts = VerdictParts(glyph="✓", delta="-10.0%", word="", band="±2.5%", pairs="")
+    widths = VerdictWidths(delta=7, band=5)
+
+    plain = join_verdict_cell(parts, widths)
+    styled = style_verdict_cell(
+        parts, widths, glyph_style="green", delta_style="green", band_style="dim"
+    )
+
+    assert len(plain) == len(_plain_of_styled(styled))
+
+
+def test_verdict_cell_when_word_empty_and_delta_present_does_match_plain_and_styled_width():
+    """An empty word with a present delta must produce matching widths."""
+    parts = VerdictParts(glyph="~", delta="+4.0%", word="", band="", pairs="")
+    widths = VerdictWidths(delta=6, band=0)
+
+    plain = join_verdict_cell(parts, widths)
+    styled = style_verdict_cell(
+        parts, widths, glyph_style="dim", delta_style="dim", band_style=None
+    )
+
+    assert len(plain) == len(_plain_of_styled(styled))

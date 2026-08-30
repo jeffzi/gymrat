@@ -64,6 +64,7 @@
     "timespec",
     "TIOCSWINSZ",
     "tomli",
+    "truecolor",
     "typer",
     "unitless",
     "unparseable",
