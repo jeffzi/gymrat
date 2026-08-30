@@ -11,10 +11,23 @@ from gymrat.config import (
     MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
+    HooksConfig,
+    KindEntry,
+    MetricEntry,
+    ResolvedConfig,
+    StopConfig,
     resolve_benchless_config,
     resolve_config,
 )
 from gymrat.errors import GymratError
+
+LOOP_CONFIG: dict[str, object] = {
+    "checks": "npm test",
+    "filter": "npm run bench -- {names}",
+    "primary": "decode/time",
+    "stop": {"target_value": 1.5, "max_iterations": 20},
+    "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
+}
 
 # Values every positive-integer env var (GYMRAT_SAMPLES, GYMRAT_TIMEOUT) rejects.
 INVALID_POSITIVE_INTEGER_VALUES = [
@@ -470,3 +483,282 @@ def test_resolve_when_cwd_inside_git_repo_does_find_config_at_repo_root(
     result = resolve(CliFlags(bench="flag-bench"))
 
     assert result.checks == "repo-checks"
+
+
+# ---------------------------------------------------------------------------
+# resolve_config — precedence, flags, and loop keys
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("flags", "config", "expected"),
+    [
+        pytest.param(
+            CliFlags(bench="my-bench"),
+            None,
+            ResolvedConfig(
+                bench="my-bench",
+                adapter="metric-lines",
+                samples=10,
+                timeout_seconds=1800,
+                unstable_noise_pct=200,
+                primary="geomean",
+            ),
+            id="defaults-when-flags-and-config-empty",
+        ),
+        pytest.param(
+            CliFlags(),
+            {
+                "bench": "config-bench",
+                "adapter": "custom-adapter",
+                "samples": 20,
+                "timeout_seconds": 3600,
+                "unstable_noise_pct": 150.5,
+            },
+            ResolvedConfig(
+                bench="config-bench",
+                adapter="custom-adapter",
+                samples=20,
+                timeout_seconds=3600,
+                unstable_noise_pct=150.5,
+                primary="geomean",
+            ),
+            id="config-beats-defaults",
+        ),
+        pytest.param(
+            CliFlags(bench="flag-bench", adapter="flag-adapter"),
+            {"bench": "config-bench", "adapter": "config-adapter", "samples": 20},
+            ResolvedConfig(
+                bench="flag-bench",
+                adapter="flag-adapter",
+                samples=20,
+                timeout_seconds=1800,
+                unstable_noise_pct=200,
+                primary="geomean",
+            ),
+            id="flags-beat-config",
+        ),
+        pytest.param(
+            CliFlags(bench="flag-bench", adapter="flag-adapter", samples=25, timeout=900),
+            None,
+            ResolvedConfig(
+                bench="flag-bench",
+                adapter="flag-adapter",
+                samples=25,
+                timeout_seconds=900,
+                unstable_noise_pct=200,
+                primary="geomean",
+            ),
+            id="flags-beat-defaults",
+        ),
+    ],
+)
+def test_resolve_config_when_flags_and_config_vary_does_merge_by_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: CliFlags,
+    config: dict[str, object] | None,
+    expected: ResolvedConfig,
+):
+    if config is not None:
+        write_config(tmp_path, config)
+    monkeypatch.chdir(tmp_path)
+
+    assert resolve_config(flags) == expected
+
+
+def test_resolve_config_when_bench_missing_from_flags_and_config_does_raise_naming_bench(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {})
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(GymratError) as exc:
+        resolve_config(CliFlags())
+
+    message = str(exc.value)
+    assert "--bench" in message
+    assert "config file" in message
+
+
+def test_resolve_config_when_prepare_provided_does_include_prepare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags(bench="my-bench", prepare="prepare-cmd"))
+
+    assert result.prepare == "prepare-cmd"
+
+
+@pytest.mark.parametrize(
+    ("key", "flags"),
+    [
+        pytest.param("bench", CliFlags(bench=""), id="bench"),
+        pytest.param("prepare", CliFlags(bench="my-bench", prepare=""), id="prepare"),
+        pytest.param("adapter", CliFlags(bench="my-bench", adapter=""), id="adapter"),
+        pytest.param("config", CliFlags(bench="my-bench", config=""), id="config"),
+    ],
+)
+def test_resolve_config_when_flag_holds_empty_string_does_raise_naming_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, flags: CliFlags
+):
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(GymratError, match=rf"--{key}.*non-empty"):
+        resolve_config(flags)
+
+
+def test_resolve_config_when_explicit_config_path_given_does_load_it(tmp_path: Path):
+    config_path = tmp_path / "custom-config.toml"
+    config_path.write_text(tomli_w.dumps({"bench": "custom-bench"}), encoding="utf-8")
+
+    result = resolve_config(CliFlags(config=str(config_path)))
+
+    assert result.bench == "custom-bench"
+
+
+def test_resolve_config_when_explicit_config_path_missing_does_raise_naming_path(tmp_path: Path):
+    missing = tmp_path / "typo.toml"
+
+    with pytest.raises(GymratError) as exc:
+        resolve_config(CliFlags(bench="my-bench", config=str(missing)))
+
+    assert str(missing) in str(exc.value)
+
+
+def test_resolve_config_when_config_has_metrics_does_propagate_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(
+        tmp_path,
+        {
+            "bench": "config-bench",
+            "metrics": {"decode/time": {"direction": "higher", "gating": False, "exact": True}},
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags())
+
+    assert result == ResolvedConfig(
+        bench="config-bench",
+        adapter="metric-lines",
+        samples=10,
+        timeout_seconds=1800,
+        unstable_noise_pct=200,
+        primary="geomean",
+        metrics={"decode/time": MetricEntry(direction="higher", gating=False, exact=True)},
+    )
+
+
+def test_resolve_config_when_config_has_kinds_does_propagate_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {"bench": "config-bench", "kinds": {"memory": {"gating": False}}})
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags())
+
+    assert result == ResolvedConfig(
+        bench="config-bench",
+        adapter="metric-lines",
+        samples=10,
+        timeout_seconds=1800,
+        unstable_noise_pct=200,
+        primary="geomean",
+        kinds={"memory": KindEntry(gating=False)},
+    )
+
+
+def test_resolve_config_when_config_has_no_metrics_does_omit_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {"bench": "config-bench"})
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags())
+
+    assert result.metrics is None
+
+
+def test_resolve_config_when_timeout_flag_given_does_beat_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {"timeout_seconds": 3600})
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags(bench="my-bench", timeout=1200))
+
+    assert result.timeout_seconds == 1200
+
+
+def test_resolve_config_when_config_has_loop_keys_does_propagate_over_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {"bench": "config-bench", **LOOP_CONFIG})
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags())
+
+    assert result == ResolvedConfig(
+        bench="config-bench",
+        adapter="metric-lines",
+        samples=10,
+        timeout_seconds=1800,
+        unstable_noise_pct=200,
+        primary="decode/time",
+        checks="npm test",
+        filter="npm run bench -- {names}",
+        stop=StopConfig(target_value=1.5, max_iterations=20),
+        hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
+    )
+
+
+def test_resolve_config_when_filter_omits_names_placeholder_does_raise_naming_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {"bench": "config-bench", "filter": "npm run bench"})
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(GymratError) as exc:
+        resolve_config(CliFlags())
+
+    message = str(exc.value)
+    assert "filter" in message
+    assert "{names}" in message
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"primary": "geomean"}, id="geomean-explicit"),
+        pytest.param({}, id="geomean-by-default"),
+    ],
+)
+def test_resolve_config_when_stop_target_value_with_geomean_does_raise_naming_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object]
+):
+    write_config(
+        tmp_path,
+        {"bench": "config-bench", "stop": {"target_value": 1.5}, **overrides},
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(GymratError) as exc:
+        resolve_config(CliFlags())
+
+    message = str(exc.value)
+    assert "target_value" in message
+    assert "geomean" in message
+
+
+def test_resolve_config_when_stop_sets_only_max_iterations_under_geomean_does_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(tmp_path, {"bench": "config-bench", "stop": {"max_iterations": 5}})
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags())
+
+    assert result.stop == StopConfig(max_iterations=5)
