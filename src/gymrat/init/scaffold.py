@@ -205,7 +205,11 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     In every failure case no partial scaffold is left behind.
     """
     config_path = Path(base_dir) / CONFIG_FILENAME
-    config_exists = config_path.exists()
+    try:
+        config_exists = config_path.exists()
+    except OSError as error:
+        msg = f"Cannot access {config_path}: {error}"
+        raise GymratError(msg, hint="Check directory permissions.") from error
 
     config_content = None if config_exists else _prepare_config(request)
     skill_content = read_bundled_skill() if request.install_skill else None
