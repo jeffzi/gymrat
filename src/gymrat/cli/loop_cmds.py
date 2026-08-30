@@ -46,6 +46,7 @@ from gymrat.cli.shared import (
     SamplesOption,
     TimeoutOption,
     VerboseOption,
+    apply_debug,
     color_override_of,
     exit_with_error,
     is_tty,
@@ -53,7 +54,7 @@ from gymrat.cli.shared import (
     resolve_stream_color,
     run_cli,
     run_with_signal_abort,
-    set_debug_mode,
+    set_stderr_color_override,
     with_repo_lock,
     write_and_flush,
 )
@@ -83,6 +84,7 @@ from gymrat.report.loop import format_baseline_ref
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
+from gymrat.signals import install_termination_cleanup
 
 _RefArgument = typer.Argument(
     default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
@@ -155,8 +157,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     debug: DebugOption = False,
 ) -> None:
     """Create or resume this repository's optimization session."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     flags = CliFlags(
         bench=bench,
@@ -195,8 +196,8 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
 
     use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
@@ -233,11 +234,14 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 metric_count,
                 resolved.primary,
                 verbose=verbose,
+                clock=time.perf_counter,
+                checks_cmd=resolved.checks,
                 has_before_hook=resolved.hooks is not None and resolved.hooks.before is not None,
                 has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
             )
-            sidecar_writer = create_sidecar_writer(root, seq, started_at=time.time())
+            sidecar_writer = create_sidecar_writer(root)
             fan_out = create_fan_out([renderer.report, sidecar_writer])
+            uninstall_progress_cleanup = install_termination_cleanup(lambda: clear_progress(root))
             try:
                 return await run_with_signal_abort(
                     lambda abort: iterate_session(
@@ -249,6 +253,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 )
             finally:
                 renderer.stop()
+                uninstall_progress_cleanup()
                 clear_progress(root)
 
         try:
@@ -277,8 +282,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     use_json = format == OutputFormat.json
     resolved_color = resolve_stream_color(None, sys.stdout)
@@ -317,8 +321,7 @@ def discard(
     debug: DebugOption = False,
 ) -> None:
     """Revert the session's experiment worktree to its last commit."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     use_json = format == OutputFormat.json
 
@@ -354,8 +357,7 @@ def finalize(
     debug: DebugOption = False,
 ) -> None:
     """Collapse the session's kept iterations into one commit and close it."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     async def run() -> None:
         async def body() -> FinalizeResult:
@@ -380,8 +382,8 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     debug: DebugOption = False,
 ) -> None:
     """Show this repository's session history, read from its log."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
 
     use_json = format == OutputFormat.json
     color_override = color_override_of(not no_color)
@@ -422,8 +424,7 @@ def _format_sync_summary(result: SyncResult) -> str:
 
 def sync(*, debug: DebugOption = False) -> None:
     """Sync uncommitted main-tree changes into the experiment worktree."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
 
     async def run() -> None:
         async def body() -> SyncResult:

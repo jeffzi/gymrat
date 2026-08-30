@@ -16,7 +16,7 @@ import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal
 
 from gymrat.adapters.types import Adapter, WarnSink
 from gymrat.config import KindEntry, MetricEntry, resolve_metric_meta
@@ -32,8 +32,8 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
     ProgressCallback,
-    ProgressEvent,
     default_clock,
+    emit_progress,
 )
 from gymrat.report.text import format_cleanup_failures
 from gymrat.signals import install_termination_cleanup
@@ -176,16 +176,6 @@ _LABEL_WIDTH = 11
 _MIN_SPREAD_SAMPLES = 2
 
 
-class _PassFields(TypedDict):
-    """Everything :class:`PassStarted` and :class:`PassFinished` share but ``at_ms``."""
-
-    round: int
-    total_rounds: int
-    target_index: int
-    target_count: int
-    label: str
-
-
 async def collect_samples(
     adapter: Adapter,
     targets: Sequence[TargetContext],
@@ -218,24 +208,39 @@ async def collect_samples(
 
     if options.prepare is not None:
         for ctx in targets:
-            _emit(options, PrepareStarted(label=ctx.label, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress, PrepareStarted(label=ctx.label, at_ms=options.clock())
+            )
             await _run_command("prepare", None, options.prepare, ctx, timeout_ms, abort)
-            _emit(options, PrepareFinished(label=ctx.label, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress, PrepareFinished(label=ctx.label, at_ms=options.clock())
+            )
 
     for round_index in range(options.samples):
         for target_index, ctx in enumerate(targets):
-            pass_fields: _PassFields = {
-                "round": round_index + 1,
-                "total_rounds": options.samples,
-                "target_index": target_index,
-                "target_count": target_count,
-                "label": ctx.label,
-            }
-            _emit(options, PassStarted(**pass_fields, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress,
+                PassStarted(
+                    round=round_index + 1,
+                    total_rounds=options.samples,
+                    target_count=target_count,
+                    label=ctx.label,
+                    at_ms=options.clock(),
+                ),
+            )
             stdout = await _run_command(
                 "bench", round_index + 1, options.bench, ctx, timeout_ms, abort
             )
-            _emit(options, PassFinished(**pass_fields, at_ms=options.clock()))
+            emit_progress(
+                options.on_progress,
+                PassFinished(
+                    round=round_index + 1,
+                    total_rounds=options.samples,
+                    target_count=target_count,
+                    label=ctx.label,
+                    at_ms=options.clock(),
+                ),
+            )
             collected[target_index].append(_parse(adapter, stdout, options.warn))
 
     return [
@@ -342,12 +347,6 @@ def _labeled(label: str, text: str, total: int) -> list[str]:
     """Build a labeled stream entry, flagging truncation against the byte total."""
     suffix = f" (truncated, {total} bytes total)" if _is_truncated(text, total) else ""
     return [f"--- {label}{suffix} ---", text]
-
-
-def _emit(options: SamplingOptions, event: ProgressEvent) -> None:
-    """Fire the progress callback when one is registered."""
-    if options.on_progress is not None:
-        options.on_progress(event)
 
 
 def _parse(adapter: Adapter, stdout: str, warn: WarnSink | None) -> dict[str, float]:
@@ -568,5 +567,4 @@ def _with_cleanup_failures(error: Exception, cleanup: CleanupResult) -> Exceptio
         wrapped: Exception = type(error)(combined, hint=hint_of(error))
     else:
         wrapped = Exception(combined)
-    wrapped.__cause__ = error
     return wrapped

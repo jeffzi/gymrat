@@ -35,17 +35,18 @@ if sys.platform != "win32":
 
 import pytest
 
+from gymrat.cli.console import stderr_console
 from gymrat.cli.shared import (
-    color_override_of,
     format_cli_error,
     resolve_render_mode,
     resolve_stream_color,
+    set_stderr_color_override,
 )
 from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat.doctor.render import render_doctor_report
 from gymrat.report.style import shorten_label
+from tests._git import git as _git
 from tests.hardening._bench_helpers import drain as _drain
-from tests.hardening._bench_helpers import git as _git
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 if TYPE_CHECKING:
@@ -248,10 +249,16 @@ def _doctor_report_is_colored() -> bool:
 def _progress_is_colored() -> bool:
     """Whether the progress surface would paint color for the environment.
 
-    Color is resolved by the console factory, through the same shared
-    ``resolve_stream_color`` chain every other surface uses.
+    Builds the console through the real stderr factory — the one every progress
+    renderer receives — and checks whether a styled print carries ANSI. A
+    surface that stops going through the factory, or a factory that breaks the
+    shared precedence, fails this probe where a bare ``resolve_stream_color``
+    call would keep passing.
     """
-    return resolve_stream_color(color_override_of(color=True), sys.stderr)
+    console = stderr_console()
+    with console.capture() as capture:
+        console.print("probe", style="red", end="")
+    return "\x1b[" in capture.get()
 
 
 def _error_is_colored() -> bool:
@@ -289,6 +296,9 @@ def test_color_precedence_is_consistent_across_report_progress_and_error_surface
     expected: bool,
 ):
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    # Pin TERM so the console factory's own terminal detection is capable of
+    # color, leaving FORCE_COLOR/NO_COLOR as the only deciders under test.
+    monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, force_color, no_color)
 
     assert _report_is_colored() is expected
@@ -326,6 +336,39 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
     _apply_color_env(monkeypatch, "1", None)
 
     assert resolve_render_mode() == "plain"
+
+
+# ---------------------------------------------------------------------------
+# a zero-width terminal degrades gracefully
+# ---------------------------------------------------------------------------
+
+
+def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    _apply_color_env(monkeypatch, None, None)
+
+    set_stderr_color_override(False)
+    result = format_cli_error(ValueError("boom"))
+    set_stderr_color_override(None)
+
+    assert "\x1b[" not in result
+
+
+def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    _apply_color_env(monkeypatch, None, "1")
+
+    console = stderr_console()
+    with console.capture() as capture:
+        console.print("probe", style="bold", end="")
+
+    assert "\x1b[" not in capture.get()
 
 
 # ---------------------------------------------------------------------------

@@ -5,76 +5,20 @@ boundary; these tests stub it so the assertions pin how ``measure`` assembles a
 :class:`MeasurementResult` from canned per-round samples.
 """
 
-import asyncio
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable
 
 import pytest
 
 from gymrat import measure as measure_mod
-from gymrat import sampling
-from gymrat.adapters.types import Adapter, WarnSink
+from gymrat.adapters.types import WarnSink
 from gymrat.errors import GymratError
 from gymrat.measure import MeasureOptions, measure
 from gymrat.progress_events import ProgressEvent
 from gymrat.sampling import (
-    SamplingOptions,
-    TargetContext,
-    TargetSamples,
     TargetSpec,
 )
-from gymrat.targets import CleanupResult, InPlaceTarget, WorktreeInfo, WorktreeRemovalFailure
-
-_CLEAN = CleanupResult(removed=0, failures=(), prune_error=None)
-
-
-@dataclass
-class _CapturedCall:
-    """The ``SamplingOptions`` and contexts the stubbed collector was handed."""
-
-    options: SamplingOptions | None = None
-    contexts: list[TargetContext] | None = None
-
-
-def _install_pipeline(
-    monkeypatch: pytest.MonkeyPatch,
-    samples: list[dict[str, float]],
-    cleanup: CleanupResult = _CLEAN,
-) -> _CapturedCall:
-    """Replace resolution, collection, and worktree cleanup with in-memory stubs.
-
-    ``resolve_target`` yields an in-place target rooted at the spec's raw target
-    (so the derived label is that string's basename), ``collect_samples`` echoes
-    the built context back paired with ``samples``, and the cleanup seam returns
-    ``cleanup`` unchanged. Returns the ``SamplingOptions`` and contexts the
-    orchestrator handed the collector.
-    """
-    captured = _CapturedCall()
-
-    def fake_resolve_target(target_input: str, repo_dir: str) -> InPlaceTarget:
-        return InPlaceTarget(dir=f"/repo/{target_input}")
-
-    async def fake_collect(
-        adapter: Adapter,
-        contexts: Sequence[TargetContext],
-        options: SamplingOptions,
-        abort: asyncio.Event,
-    ) -> list[TargetSamples]:
-        captured.options = options
-        captured.contexts = list(contexts)
-        return [TargetSamples(ctx=contexts[0], samples=samples)]
-
-    def fake_install(cleanup_cb: Callable[[], None]) -> Callable[[], None]:
-        return lambda: None
-
-    def fake_cleanup_worktrees(worktrees: Sequence[WorktreeInfo], repo_dir: str) -> CleanupResult:
-        return cleanup
-
-    monkeypatch.setattr(measure_mod, "resolve_target", fake_resolve_target)
-    monkeypatch.setattr(measure_mod, "collect_samples", fake_collect)
-    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install)
-    monkeypatch.setattr(sampling, "cleanup_worktrees", fake_cleanup_worktrees)
-    return captured
+from gymrat.targets import CleanupResult, WorktreeRemovalFailure
+from tests._pipeline import install_pipeline
 
 
 def _options(
@@ -102,7 +46,7 @@ def _options(
 async def test_measure_when_target_benched_does_report_metric_median_and_spread(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _install_pipeline(monkeypatch, [{"x": 10.0}, {"x": 20.0}, {"x": 30.0}])
+    install_pipeline(monkeypatch, measure_mod, [[{"x": 10.0}, {"x": 20.0}, {"x": 30.0}]])
 
     result = await measure(_options(target="main"))
 
@@ -115,7 +59,7 @@ async def test_measure_when_target_benched_does_report_metric_median_and_spread(
 
 
 async def test_measure_when_explicit_label_given_does_use_it(monkeypatch: pytest.MonkeyPatch):
-    _install_pipeline(monkeypatch, [{"x": 1.0}])
+    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
 
     result = await measure(_options(spec=TargetSpec(label="custom", target="whatever")))
 
@@ -125,7 +69,7 @@ async def test_measure_when_explicit_label_given_does_use_it(monkeypatch: pytest
 async def test_measure_when_rounds_report_different_metrics_does_median_over_present_rounds(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _install_pipeline(monkeypatch, [{"x": 1.0}, {"y": 2.0}, {"x": 3.0}])
+    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}, {"y": 2.0}, {"x": 3.0}]])
 
     result = await measure(_options())
 
@@ -135,7 +79,7 @@ async def test_measure_when_rounds_report_different_metrics_does_median_over_pre
 
 
 async def test_measure_when_no_metrics_does_raise_gymrat_error(monkeypatch: pytest.MonkeyPatch):
-    _install_pipeline(monkeypatch, [{}, {}])
+    install_pipeline(monkeypatch, measure_mod, [[{}, {}]])
 
     with pytest.raises(GymratError, match="No metrics found in benchmark output"):
         await measure(_options())
@@ -144,7 +88,7 @@ async def test_measure_when_no_metrics_does_raise_gymrat_error(monkeypatch: pyte
 async def test_measure_when_metric_median_zero_does_report_no_spread(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _install_pipeline(monkeypatch, [{"x": -1.0}, {"x": 0.0}, {"x": 1.0}])
+    install_pipeline(monkeypatch, measure_mod, [[{"x": -1.0}, {"x": 0.0}, {"x": 1.0}]])
 
     result = await measure(_options())
 
@@ -160,7 +104,7 @@ async def test_measure_when_cleanup_reports_removals_does_map_worktree_fields(
         failures=(WorktreeRemovalFailure(dir="/tmp/wt", error="busy"),),
         prune_error="could not prune",
     )
-    _install_pipeline(monkeypatch, [{"x": 1.0}], cleanup=dirty)
+    install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]], cleanup=dirty)
 
     result = await measure(_options())
 
@@ -172,7 +116,7 @@ async def test_measure_when_cleanup_reports_removals_does_map_worktree_fields(
 async def test_measure_when_progress_and_warn_given_does_forward_to_sampling(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured = _install_pipeline(monkeypatch, [{"x": 1.0}])
+    captured = install_pipeline(monkeypatch, measure_mod, [[{"x": 1.0}]])
     steps: list[object] = []
     warnings: list[str] = []
     options = _options(on_progress=steps.append, warn=warnings.append)

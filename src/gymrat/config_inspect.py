@@ -112,7 +112,7 @@ def _resolve_config_source(
 ) -> tuple[str | None, ConfigFile | None, list[str]]:
     """Resolve which config file to load, load it, and report any problems.
 
-    When the config source itself is broken (empty ``--config``, blank
+    When the config source itself is broken (blank ``--config``, blank
     ``GYMRAT_CONFIG``), file loading is skipped and an empty ``ConfigFile`` is
     returned so the merge still yields defaults without probing the filesystem.
     """
@@ -127,7 +127,11 @@ def _resolve_config_source(
             env_config_failed = True
         env_config_path = str(result.value) if result.value is not None else None
 
-    if flags.config == "" or env_config_failed:
+    # A whitespace-only --config is as blank as an empty one, and
+    # `_collect_flag_problems` has already reported it; probing it on disk would
+    # add a second problem for a path the user never named.
+    config_flag_blank = flags.config is not None and not flags.config.strip()
+    if config_flag_blank or env_config_failed:
         return None, ConfigFile(), problems
 
     explicit_config = flags.config if flags.config is not None else env_config_path

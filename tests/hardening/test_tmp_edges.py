@@ -36,7 +36,7 @@ from gymrat.targets import (
     materialize_worktree,
     plan_worktree,
 )
-from tests.hardening._bench_helpers import env as _env
+from tests._cli import no_color_env as _env
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
 
 # A sha no repository holds, so planning never needs a real commit to build a path.

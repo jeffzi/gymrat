@@ -10,16 +10,24 @@ ticks through (``"07:45"``, ``"1:07:45"``).
 
 import math
 
-_SECONDS_PER_MINUTE = 60
-_SECONDS_PER_HOUR = 3600
+#: Shared by every module that converts between milliseconds and clock tiers,
+#: so the conversion factors are declared once.
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
+MS_PER_SECOND = 1000
 
 
 def _hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
     """Split a whole-second count into an hours/minutes/seconds tier."""
-    hours = total_seconds // _SECONDS_PER_HOUR
-    minutes = (total_seconds % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE
-    seconds = total_seconds % _SECONDS_PER_MINUTE
+    hours = total_seconds // SECONDS_PER_HOUR
+    minutes = (total_seconds % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE
+    seconds = total_seconds % SECONDS_PER_MINUTE
     return hours, minutes, seconds
+
+
+def _floored_whole_seconds(ms: float) -> int:
+    """Clamp a negative elapsed input to zero, then floor to whole seconds."""
+    return math.floor(max(0.0, ms) / MS_PER_SECOND)
 
 
 def format_duration(ms: float) -> str:
@@ -29,14 +37,27 @@ def format_duration(ms: float) -> str:
     (``60_000`` renders ``"1m 0s"``, ``3_600_000`` renders ``"1h 00m"``).  The
     hour tier zero-pads the minute remainder to two digits.
     """
-    total_seconds = math.floor(max(0.0, ms) / 1000)
+    total_seconds = _floored_whole_seconds(ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
 
-    if total_seconds < _SECONDS_PER_MINUTE:
+    if total_seconds < SECONDS_PER_MINUTE:
         return f"{seconds}s"
-    if total_seconds < _SECONDS_PER_HOUR:
+    if total_seconds < SECONDS_PER_HOUR:
         return f"{minutes}m {seconds}s"
     return f"{hours}h {minutes:02d}m"
+
+
+def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
+    """Format an elapsed timestamp as ``[HH:MM:SS]`` since ``run_start_ms``.
+
+    Falls back to zero elapsed when ``run_start_ms`` is ``None`` (the run has not
+    yet been anchored), matching how each caller anchors its own run start.
+    """
+    start_ms = at_ms if run_start_ms is None else run_start_ms
+    elapsed_ms = at_ms - start_ms
+    total_seconds = _floored_whole_seconds(elapsed_ms)
+    hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
+    return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
 
 
 def format_clock(ms: float) -> str:
@@ -45,7 +66,7 @@ def format_clock(ms: float) -> str:
     Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
     appears only when there are whole hours (``"1:07:45"``).
     """
-    total_seconds = math.floor(max(0.0, ms) / 1000)
+    total_seconds = _floored_whole_seconds(ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
 
     if hours == 0:
@@ -62,9 +83,9 @@ def format_eta(ms: float) -> str:
     total_seconds = max(1, round(ms / 1000))
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
 
-    if total_seconds < _SECONDS_PER_MINUTE:
+    if total_seconds < SECONDS_PER_MINUTE:
         return f"~{seconds}s left"
-    if total_seconds < _SECONDS_PER_HOUR:
+    if total_seconds < SECONDS_PER_HOUR:
         if seconds > 0:
             return f"~{minutes}m {seconds}s left"
         return f"~{minutes}m left"

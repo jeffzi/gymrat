@@ -28,6 +28,7 @@ from gymrat.cli.shared import (
     ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    apply_debug,
     begin_run,
     color_override_of,
     emit_report,
@@ -35,7 +36,7 @@ from gymrat.cli.shared import (
     parse_positional,
     run_cli,
     run_options_of,
-    set_debug_mode,
+    set_stderr_color_override,
     with_repo_lock,
 )
 from gymrat.config import resolve_config
@@ -89,8 +90,8 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Run each candidate against the baseline and exit non-zero when --fail-on fires."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,
@@ -107,7 +108,13 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         async def body() -> ComparisonResult:
-            progress = begin_run(flags, 1 + len(candidates))
+            labels = [s.label or s.target for s in [baseline, *candidates]]
+            progress = begin_run(
+                flags,
+                1 + len(candidates),
+                command="compare",
+                target_labels=labels,
+            )
             try:
                 config_resolved = resolve_config(flags)
                 # Lazy: keep the heavy statistics stack out of CLI assembly and --help.

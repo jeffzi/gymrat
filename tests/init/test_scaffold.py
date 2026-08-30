@@ -298,109 +298,168 @@ def test_scaffold_when_every_artifact_already_exists_does_report_all_of_them_exi
 
 
 # ---------------------------------------------------------------------------
-# directory at runbook or skill path
+# blocked artifact path raises GymratError
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_runbook_path_is_a_directory_does_report_is_a_directory_status(
+def test_scaffold_when_runbook_path_is_a_directory_does_raise_gymrat_error(
     tmp_path: Path,
 ):
     (tmp_path / "gymrat-runbook.md").mkdir()
 
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
-
-    assert "directory" in result.runbook.status
-    assert not (tmp_path / "gymrat.toml").exists()
+    with pytest.raises(GymratError, match="gymrat-runbook.md"):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
 
-def test_scaffold_when_skill_path_is_a_directory_does_report_is_a_directory_status(
+def test_scaffold_when_skill_path_is_a_directory_does_raise_gymrat_error(
     tmp_path: Path,
 ):
-    skill_dir = tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md"
-    skill_dir.mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
 
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+    with pytest.raises(GymratError, match="SKILL.md"):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
-    assert "directory" in result.skill.status
+
+def test_scaffold_when_runbook_path_blocked_does_not_write_config(tmp_path: Path):
+    (tmp_path / "gymrat-runbook.md").mkdir()
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
     assert not (tmp_path / "gymrat.toml").exists()
 
 
-def test_scaffold_when_skill_path_is_a_directory_and_config_exists_does_report_config_exists(
+def test_scaffold_when_skill_path_blocked_does_not_write_config(tmp_path: Path):
+    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert not (tmp_path / "gymrat.toml").exists()
+
+
+def test_scaffold_when_blocked_and_config_exists_does_not_touch_existing_config(
     existing_config_dir: Path,
 ):
     (existing_config_dir / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
 
-    result = scaffold(str(existing_config_dir), ScaffoldRequest(install_skill=True))
+    with pytest.raises(GymratError):
+        scaffold(str(existing_config_dir), ScaffoldRequest(install_skill=True))
 
-    assert result.config == ScaffoldArtifact(path="gymrat.toml", status="exists")
-    assert result.skill.status == "is a directory"
     assert (existing_config_dir / "gymrat.toml").read_text(encoding="utf-8") == EXISTING_CONFIG
 
 
-def test_scaffold_when_runbook_path_is_a_directory_and_config_exists_does_report_config_exists(
-    existing_config_dir: Path,
-):
-    (existing_config_dir / "gymrat-runbook.md").mkdir()
-
-    result = scaffold(str(existing_config_dir), ScaffoldRequest(install_skill=True))
-
-    assert result.config == ScaffoldArtifact(path="gymrat.toml", status="exists")
-    assert result.runbook.status == "is a directory"
-    assert (existing_config_dir / "gymrat.toml").read_text(encoding="utf-8") == EXISTING_CONFIG
+# ---------------------------------------------------------------------------
+# symlinks at artifact paths are blocked
+# ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_skill_path_is_a_directory_and_runbook_on_disk_does_report_runbook_exists(
+def test_scaffold_when_runbook_path_is_a_symlink_does_raise_gymrat_error(
     tmp_path: Path,
 ):
-    (tmp_path / "gymrat-runbook.md").write_text("# Existing\n", encoding="utf-8")
-    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
+    target = tmp_path / "some-file.md"
+    target.write_text("# target\n", encoding="utf-8")
+    (tmp_path / "gymrat-runbook.md").symlink_to(target)
 
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-    assert result.runbook.status == "exists"
-
-
-def test_scaffold_when_skill_path_is_a_directory_and_runbook_absent_does_report_runbook_unwritten(
-    tmp_path: Path,
-):
-    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
-
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-    assert result.runbook.status == "declined"
-    assert not (tmp_path / "gymrat-runbook.md").exists()
+    with pytest.raises(GymratError, match="gymrat-runbook.md"):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
 
-def test_scaffold_when_runbook_path_is_a_directory_and_skill_on_disk_does_report_skill_exists(
+def test_scaffold_when_skill_path_is_a_symlink_does_raise_gymrat_error(
     tmp_path: Path,
 ):
     skill_dir = tmp_path / ".claude" / "skills" / "gymrat"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# Custom\n", encoding="utf-8")
-    (tmp_path / "gymrat-runbook.md").mkdir()
+    target = tmp_path / "real-skill.md"
+    target.write_text("# skill\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").symlink_to(target)
 
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+    with pytest.raises(GymratError, match="SKILL.md"):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
-    assert result.skill.status == "exists"
 
-
-@pytest.mark.parametrize(
-    "install_skill",
-    [
-        pytest.param(True, id="requested-but-not-written"),
-        pytest.param(False, id="not-requested"),
-    ],
-)
-def test_scaffold_when_runbook_path_is_a_directory_and_skill_absent_does_report_skill_unwritten(
-    tmp_path: Path, install_skill: bool
+def test_scaffold_when_runbook_path_is_a_dangling_symlink_does_raise_gymrat_error(
+    tmp_path: Path,
 ):
-    (tmp_path / "gymrat-runbook.md").mkdir()
+    (tmp_path / "gymrat-runbook.md").symlink_to(tmp_path / "nonexistent")
 
-    result = scaffold(
-        str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=install_skill)
-    )
+    with pytest.raises(GymratError, match="gymrat-runbook.md"):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
-    assert result.skill.status == "declined"
+
+def test_scaffold_when_symlink_blocked_does_not_write_config(tmp_path: Path):
+    target = tmp_path / "some-file.md"
+    target.write_text("# target\n", encoding="utf-8")
+    (tmp_path / "gymrat-runbook.md").symlink_to(target)
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert not (tmp_path / "gymrat.toml").exists()
+
+
+# ---------------------------------------------------------------------------
+# atomic config write
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_when_config_write_fails_does_not_leave_partial_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A crash during the config write must not leave a truncated gymrat.toml."""
+
+    def exploding_replace(src: object, dst: object) -> None:
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr("os.replace", exploding_replace)
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert not (tmp_path / "gymrat.toml").exists()
+    # Also verify no .tmp sibling was left behind.
+    tmp_files = list(tmp_path.glob("gymrat.toml.*"))
+    assert tmp_files == []
+
+
+# ---------------------------------------------------------------------------
+# filesystem failures surface as GymratError
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(
+    tmp_path: Path,
+):
+    read_only = tmp_path / "locked"
+    read_only.mkdir()
+    read_only.chmod(0o444)
+
+    with pytest.raises(GymratError, match="locked"):
+        scaffold(str(read_only), ScaffoldRequest(bench="npm run bench"))
+
+    read_only.chmod(0o755)
+
+
+def test_scaffold_when_filesystem_error_does_include_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """OSError during writing surfaces as GymratError with a hint.
+
+    The report-a-bug footer must never appear.
+    """
+    from gymrat.errors import hint_of
+
+    def exploding_replace(src: object, dst: object) -> None:
+        msg = "Read-only file system"
+        raise OSError(msg)
+
+    monkeypatch.setattr("os.replace", exploding_replace)
+
+    with pytest.raises(GymratError) as exc_info:
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert hint_of(exc_info.value) is not None
 
 
 # ---------------------------------------------------------------------------

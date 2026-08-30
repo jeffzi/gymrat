@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich import box
+from rich.cells import cell_len
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
@@ -234,14 +235,19 @@ def style_verdict_cell(
     glyph = _wrap(parts.glyph, glyph_style)
     if parts.word != "":
         delta = _wrap(parts.word, delta_style)
-    else:
+        plain_delta = parts.word
+    elif parts.delta != "":
         pad = " " * max(0, widths.delta - len(parts.delta))
-        delta = f"{pad}{_wrap(parts.delta, delta_style)}" if parts.delta != "" else ""
+        delta = f"{pad}{_wrap(parts.delta, delta_style)}"
+        plain_delta = parts.delta
+    else:
+        delta = " " * widths.delta if widths.delta > 0 else ""
+        plain_delta = delta
     band = band_field(parts.band, widths.band)
     styled_band = _wrap(band, band_style)
     band_cell = _empty_band_cell(widths.band) if band == "" and widths.band > 0 else styled_band
     fields = [glyph, delta, band_cell, escape(parts.pairs)]
-    plain_fields = [parts.glyph, parts.delta if parts.word == "" else parts.word, band, parts.pairs]
+    plain_fields = [parts.glyph, plain_delta, band, parts.pairs]
     return _join_styled(fields, plain_fields)
 
 
@@ -530,7 +536,7 @@ def _plan_flat_body[Metric, Cell](
 
 def aggregate_label_lengths[Metric, Cell](body: Sequence[BodyLine[Metric, Cell]]) -> list[int]:
     """The labels of every non-metric row — what the name column widens for."""
-    return [len(line.label) for line in body if isinstance(line, (GroupLine, AggregateLine))]
+    return [cell_len(line.label) for line in body if isinstance(line, (GroupLine, AggregateLine))]
 
 
 def widest_header_label[Metric, Cell](body: Sequence[BodyLine[Metric, Cell]]) -> str:
@@ -539,7 +545,7 @@ def widest_header_label[Metric, Cell](body: Sequence[BodyLine[Metric, Cell]]) ->
     for line in body:
         if isinstance(line, HeaderLine):
             label = line.title if line.title is not None else METRIC_COLUMN_HEADER
-            if len(label) > len(widest):
+            if cell_len(label) > cell_len(widest):
                 widest = label
     return widest
 

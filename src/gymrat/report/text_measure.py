@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
 from rich.markup import escape
 
 from gymrat.report.format import format_metric_cell_parts
@@ -91,13 +92,13 @@ def render_measure_table(
 
     widths = [
         compute_column_width(
-            len(widest_header_label(body)),
-            [len(name_cell(row)) for row in layout.ordered] + aggregate_label_lengths(body),
+            cell_len(widest_header_label(body)),
+            [cell_len(name_cell(row)) for row in layout.ordered] + aggregate_label_lengths(body),
             METRIC_COLUMN_MIN,
         ),
         compute_column_width(
-            len(label),
-            [len(value_cell(row)) for row in layout.ordered],
+            cell_len(label),
+            [cell_len(value_cell(row)) for row in layout.ordered],
             VALUE_COLUMN_MIN,
         ),
     ]

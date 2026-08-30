@@ -606,3 +606,38 @@ def test_render_report_when_closing_the_table_does_end_on_the_geomean_row():
     row = last_table_row(render_report(result))
 
     assert cells_of(row)[0].strip() == "geomean (10 stable metrics)"
+
+
+# ---------------------------------------------------------------------------
+# CJK metric names — column widths measured in terminal cells
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_metric_name_has_cjk_does_align_separator_columns():
+    """CJK characters occupy 2 terminal cells each.
+
+    The column-width logic must use cell_len rather than len so separators
+    align across ASCII and CJK rows.
+    """
+    result = create_comparison_result(
+        metrics={
+            "ascii-name": permutation_metric(
+                verdict="improved", delta=-10, baseline_median=1000, unit="ns"
+            ),
+            "测试指标": permutation_metric(
+                verdict="regressed", delta=5, baseline_median=2000, unit="ns"
+            ),
+        }
+    )
+
+    report = render_report(result)
+    ascii_row = line_starting_with(report, "ascii-name")
+    cjk_row = line_starting_with(report, "测试指标")
+
+    # Column separators must sit at the same terminal cell position in both rows,
+    # meaning the label column accounted for double-width CJK cells.
+    from rich.cells import cell_len
+
+    ascii_sep = cell_len(ascii_row[: ascii_row.index("│")])
+    cjk_sep = cell_len(cjk_row[: cjk_row.index("│")])
+    assert ascii_sep == cjk_sep

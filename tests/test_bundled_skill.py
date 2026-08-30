@@ -2,6 +2,7 @@ import re
 import zipfile
 from importlib import resources
 from importlib.resources.abc import Traversable
+from typing import NoReturn
 from unittest.mock import create_autospec
 
 import pytest
@@ -10,6 +11,14 @@ from gymrat.bundled_skill import read_bundled_skill
 from gymrat.errors import GymratError
 
 SKILL_HEADING = "# Driving a gymrat optimization session"
+
+
+def _assert_reinstall_error(error: GymratError, cause_type: type[BaseException]) -> None:
+    """Assert the failure's SKILL.md message, reinstall hint, and cause."""
+    assert "SKILL.md" in str(error)
+    assert error.hint is not None
+    assert re.search("reinstall", error.hint, re.IGNORECASE)
+    assert isinstance(error.__cause__, cause_type)
 
 
 # ---------------------------------------------------------------------------
@@ -32,12 +41,8 @@ def test_read_bundled_skill_when_file_unreadable_does_raise_gymrat_error(
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()
 
-    error = caught.value
-    assert "SKILL.md" in str(error)
-    assert str(missing) in str(error)
-    assert error.hint is not None
-    assert re.search("reinstall", error.hint, re.IGNORECASE)
-    assert isinstance(error.__cause__, FileNotFoundError)
+    _assert_reinstall_error(caught.value, FileNotFoundError)
+    assert str(missing) in str(caught.value)
 
 
 def test_read_bundled_skill_when_file_has_bad_encoding_does_raise_gymrat_error(
@@ -52,11 +57,7 @@ def test_read_bundled_skill_when_file_has_bad_encoding_does_raise_gymrat_error(
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()
 
-    error = caught.value
-    assert "SKILL.md" in str(error)
-    assert error.hint is not None
-    assert re.search("reinstall", error.hint, re.IGNORECASE)
-    assert isinstance(error.__cause__, UnicodeDecodeError)
+    _assert_reinstall_error(caught.value, UnicodeDecodeError)
 
 
 def test_read_bundled_skill_when_archive_corrupt_does_raise_gymrat_error(
@@ -69,8 +70,19 @@ def test_read_bundled_skill_when_archive_corrupt_does_raise_gymrat_error(
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()
 
-    error = caught.value
-    assert "SKILL.md" in str(error)
-    assert error.hint is not None
-    assert re.search("reinstall", error.hint, re.IGNORECASE)
-    assert isinstance(error.__cause__, zipfile.BadZipFile)
+    _assert_reinstall_error(caught.value, zipfile.BadZipFile)
+
+
+def test_read_bundled_skill_when_resource_lookup_fails_does_raise_gymrat_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def unresolvable_resource() -> NoReturn:
+        message = "Bad magic number"
+        raise zipfile.BadZipFile(message)
+
+    monkeypatch.setattr("gymrat.bundled_skill._skill_resource", unresolvable_resource)
+
+    with pytest.raises(GymratError) as caught:
+        read_bundled_skill()
+
+    _assert_reinstall_error(caught.value, zipfile.BadZipFile)

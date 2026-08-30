@@ -121,3 +121,22 @@ def screen_lines(raw: str, *, width: int = 80, height: int = 24) -> list[str]:
     while lines and not lines[-1]:
         lines.pop()
     return lines
+
+
+def console_output(console: Console) -> str:
+    """Return all text written to the console's StringIO."""
+    f = console.file
+    assert isinstance(f, StringIO)
+    return f.getvalue()
+
+
+def fake_install(
+    registered: list[object],
+) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    """A fake ``install_termination_cleanup`` that records registrations."""
+
+    def install(cb: Callable[[], None]) -> Callable[[], None]:
+        registered.append(cb)
+        return lambda: None
+
+    return install

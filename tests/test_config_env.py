@@ -2,17 +2,6 @@ import pytest
 
 from gymrat.config_env import EnvResult, env_positive_int_result
 
-# Every GYMRAT_* variable used by these tests. Cleared before each test so an
-# ambient shell value cannot bleed in.
-GYMRAT_ENV_VARS = ("GYMRAT_SAMPLES",)
-
-
-@pytest.fixture(autouse=True)
-def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in GYMRAT_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-
-
 # ---------------------------------------------------------------------------
 # positive int overflow (CPython integer-string conversion limit)
 # ---------------------------------------------------------------------------

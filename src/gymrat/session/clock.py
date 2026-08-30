@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 
 def format_iso(dt: datetime) -> str:
-    """``dt`` as ISO-8601 with millisecond precision and a ``Z`` suffix."""
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+    """A UTC-aware ``dt`` as ISO-8601 with millisecond precision and a ``Z`` suffix."""
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def now_iso() -> str:

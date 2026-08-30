@@ -6,6 +6,9 @@ and safe under ``pytest-xdist`` / ``pytest-randomly``. No git call is mocked: th
 sync only reveals its behavior against real worktrees and real dirty files.
 """
 
+import shutil
+import stat
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,6 +19,7 @@ from gymrat.errors import GymratError, hint_of
 from gymrat.loop.start import start_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.session import experiment_worktree_dir
+from tests._git import git as run_git
 
 CONFIG = ResolvedConfig(
     bench="echo ok",
@@ -166,3 +170,144 @@ def test_sync_to_experiment_when_no_session_does_raise_pointing_at_start(
         sync_to_experiment(repo)
 
     assert "gymrat start" in (hint_of(excinfo.value) or "")
+
+
+# ---------------------------------------------------------------------------
+# non-ASCII / quoted-by-git filenames
+# ---------------------------------------------------------------------------
+
+
+def test_sync_to_experiment_when_filename_contains_non_ascii_does_sync_real_path(
+    session: str,
+):
+    """Sync uses the real filesystem path, not the C-quoted string.
+
+    Git with core.quotePath=true C-quotes non-ASCII names.
+    """
+    run_git(session, "config", "core.quotePath", "true")
+    non_ascii_name = "été.txt"  # ete with accents
+    (Path(session) / non_ascii_name).write_text("summer\n", encoding="utf-8")
+
+    result = sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    assert (Path(experiment) / non_ascii_name).read_text(encoding="utf-8") == "summer\n"
+    assert non_ascii_name in result.files
+
+
+# ---------------------------------------------------------------------------
+# renames
+# ---------------------------------------------------------------------------
+
+
+def test_sync_to_experiment_when_file_renamed_does_remove_old_path_from_experiment(
+    session: str,
+):
+    """A staged rename removes the old path and syncs the new one."""
+    run_git(session, "mv", "README.md", "GUIDE.md")
+
+    result = sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    assert not (Path(experiment) / "README.md").exists()
+    assert (Path(experiment) / "GUIDE.md").read_text(encoding="utf-8") == "# Test Repo\n"
+    assert "GUIDE.md" in result.files
+
+
+def test_sync_to_experiment_when_path_contains_arrow_literal_does_not_misparse_as_rename(  # cspell:disable-line
+    session: str,
+):
+    """A filename containing ' -> ' is not wrongly parsed as a rename entry."""
+    arrow_name = "a -> b.txt"
+    (Path(session) / arrow_name).write_text("literal arrow\n", encoding="utf-8")
+
+    result = sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    assert (Path(experiment) / arrow_name).read_text(encoding="utf-8") == "literal arrow\n"
+    assert arrow_name in result.files
+
+
+# ---------------------------------------------------------------------------
+# file metadata preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_sync_to_experiment_when_file_is_executable_does_preserve_exec_bit(
+    session: str,
+):
+    script = Path(session) / "run.sh"
+    script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    synced = Path(experiment) / "run.sh"
+    assert synced.exists()
+    assert synced.stat().st_mode & stat.S_IXUSR
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_sync_to_experiment_when_file_is_symlink_does_sync_as_symlink(
+    session: str,
+):
+    target = Path(session) / "target.txt"
+    target.write_text("real content\n", encoding="utf-8")
+    link = Path(session) / "link.txt"
+    link.symlink_to("target.txt")
+
+    sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    synced_link = Path(experiment) / "link.txt"
+    assert synced_link.is_symlink()
+    assert synced_link.readlink() == Path("target.txt")
+
+
+# ---------------------------------------------------------------------------
+# error wrapping
+# ---------------------------------------------------------------------------
+
+
+def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_error_with_hint(
+    session: str,
+):
+    """A deleted experiment worktree surfaces as GymratError with a hint."""
+    experiment = experiment_worktree_dir(session)
+    shutil.rmtree(experiment)
+    (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")
+
+    with pytest.raises(GymratError) as excinfo:
+        sync_to_experiment(session)
+
+    assert hint_of(excinfo.value) is not None
+
+
+def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
+    session: str,
+):
+    """A git failure surfaces as GymratError, not CalledProcessError."""
+    # Break the git index to trigger a git failure
+    index = Path(session) / ".git" / "index"
+    index.write_bytes(b"corrupt")
+    (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")
+
+    with pytest.raises(GymratError):
+        sync_to_experiment(session)
+
+
+def test_sync_to_experiment_when_dirty_entry_is_directory_does_raise_gymrat_error_with_hint(
+    session: str,
+):
+    """A directory where a file is expected surfaces as GymratError with a hint."""
+    readme = Path(session) / "README.md"
+    readme.unlink()
+    readme.mkdir()
+    (readme / "nested.txt").write_text("inside\n", encoding="utf-8")
+
+    with pytest.raises(GymratError) as excinfo:
+        sync_to_experiment(session)
+
+    assert hint_of(excinfo.value) is not None

@@ -72,6 +72,8 @@ def test_app_when_help_does_show_description():
 
     assert result.exit_code == 0
     assert "Performance comparison tool for benchmarks" in result.stdout
+    assert "compare" in result.stdout
+    assert "measure" in result.stdout
 
 
 def test_app_when_help_does_show_root_epilogue_examples_and_links():
@@ -156,11 +158,3 @@ def test_app_when_unknown_command_does_exit_two():
     result = runner.invoke(app, ["banana"])
 
     assert result.exit_code == 2
-
-
-# The registered command set the app exposes.
-def test_app_registers_compare_and_measure():
-    result = runner.invoke(app, ["--help"])
-
-    assert "compare" in result.stdout
-    assert "measure" in result.stdout

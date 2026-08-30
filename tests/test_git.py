@@ -222,11 +222,26 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
+def test_run_git_does_not_define_own_signal_deferral():
+    assert not hasattr(git_module, "_deferring_termination_signals")
+
+
+def test_run_git_when_object_env_vars_set_does_scrub_them_and_use_cwd(
+    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    for key in ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+        monkeypatch.setenv(key, "/nonexistent/objects")
+
+    result = run_git(["rev-parse", "--git-dir"], scratch_repo)
+
+    assert result.strip() == ".git"
+
+
 def test_run_git_when_pthread_sigmask_unavailable_does_run_unmasked_and_return_stdout(
     create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 ):
     repo = create_scratch_repo()
-    monkeypatch.setattr(git_module, "_pthread_sigmask", None)
+    monkeypatch.setattr(signals, "pthread_sigmask", None)
 
     result = run_git(["rev-parse", "HEAD"], repo)
 

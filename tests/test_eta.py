@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-from gymrat.eta import format_clock, format_duration, format_eta
+from gymrat.eta import format_clock, format_duration, format_eta, format_timestamp
 
 # ---------------------------------------------------------------------------
 # EtaTracker removal
@@ -70,6 +70,25 @@ def test_format_duration_when_given_milliseconds_does_render_expected_duration(
 )
 def test_format_duration_when_negative_input_does_render_zero(ms: float, expected: str) -> None:
     assert format_duration(ms) == expected
+
+
+# ---------------------------------------------------------------------------
+# format_timestamp
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("at_ms", "run_start_ms"),
+    [
+        pytest.param(1_000, 1_000, id="zero-elapsed"),
+        pytest.param(999, 1_000, id="negative-elapsed-clamps-to-zero"),
+        pytest.param(0, 90_000, id="large-negative-elapsed-clamps-to-zero"),
+    ],
+)
+def test_format_timestamp_when_elapsed_not_positive_does_render_zero_timestamp(
+    at_ms: float, run_start_ms: float
+) -> None:
+    assert format_timestamp(at_ms, run_start_ms) == "[00:00:00]"
 
 
 # ---------------------------------------------------------------------------

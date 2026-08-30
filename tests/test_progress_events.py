@@ -21,6 +21,7 @@ from gymrat.progress_events import (
     ProgressEvent,
     default_clock,
 )
+from gymrat.session.schema import HookStage
 
 # ---------------------------------------------------------------------------
 # default_clock
@@ -47,16 +48,12 @@ def _one_of_each_event(at_ms: float) -> list[ProgressEvent]:
     return [
         PrepareStarted(label="A", at_ms=at_ms),
         PrepareFinished(label="A", at_ms=at_ms),
-        PassStarted(
-            round=1, total_rounds=3, target_index=0, target_count=2, label="A", at_ms=at_ms
-        ),
-        PassFinished(
-            round=1, total_rounds=3, target_index=0, target_count=2, label="A", at_ms=at_ms
-        ),
+        PassStarted(round=1, total_rounds=3, target_count=2, label="A", at_ms=at_ms),
+        PassFinished(round=1, total_rounds=3, target_count=2, label="A", at_ms=at_ms),
         HookStarted(stage="before", at_ms=at_ms),
         HookFinished(stage="after", at_ms=at_ms),
         JudgeStarted(at_ms=at_ms),
-        JudgeFinished(primary_delta_pct=1.5, regressed=(), at_ms=at_ms),
+        JudgeFinished(primary_delta_pct=1.5, regressed=(), metric_count=3, at_ms=at_ms),
         ConfirmStarted(filtered_metrics=None, at_ms=at_ms),
         ConfirmFinished(reproduced=True, at_ms=at_ms),
         IterationRecorded(seq=1, outcome="improved", at_ms=at_ms),
@@ -89,26 +86,23 @@ def test_event_when_constructed_does_carry_at_ms(event: ProgressEvent) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_prepare_started_when_constructed_does_carry_label() -> None:
-    event = PrepareStarted(label="build", at_ms=0)
+@pytest.mark.parametrize("event_class", [PrepareStarted, PrepareFinished], ids=lambda c: c.__name__)
+def test_prepare_event_when_constructed_does_carry_label(
+    event_class: type[PrepareStarted | PrepareFinished],
+) -> None:
+    event = event_class(label="build", at_ms=0)
 
     assert event.label == "build"
 
 
-def test_prepare_finished_when_constructed_does_carry_label() -> None:
-    event = PrepareFinished(label="build", at_ms=0)
-
-    assert event.label == "build"
-
-
-def test_pass_started_when_constructed_does_carry_all_fields() -> None:
-    event = PassStarted(
-        round=2, total_rounds=5, target_index=1, target_count=3, label="bench", at_ms=100
-    )
+@pytest.mark.parametrize("event_class", [PassStarted, PassFinished], ids=lambda c: c.__name__)
+def test_pass_event_when_constructed_does_carry_all_fields(
+    event_class: type[PassStarted | PassFinished],
+) -> None:
+    event = event_class(round=2, total_rounds=5, target_count=3, label="bench", at_ms=100)
 
     assert event.round == 2
     assert event.total_rounds == 5
-    assert event.target_index == 1
     assert event.target_count == 3
     assert event.label == "bench"
     assert event.phase == "measure"
@@ -116,48 +110,44 @@ def test_pass_started_when_constructed_does_carry_all_fields() -> None:
 
 def test_pass_started_when_phase_set_to_confirm_does_carry_confirm() -> None:
     event = PassStarted(
-        round=1, total_rounds=2, target_index=0, target_count=1, label="x", phase="confirm", at_ms=0
+        round=1, total_rounds=2, target_count=1, label="x", phase="confirm", at_ms=0
     )
 
     assert event.phase == "confirm"
 
 
-def test_pass_finished_when_constructed_does_carry_all_fields() -> None:
-    event = PassFinished(
-        round=2, total_rounds=5, target_index=1, target_count=3, label="bench", at_ms=100
-    )
+@pytest.mark.parametrize(
+    ("event_class", "stage"),
+    [
+        pytest.param(HookStarted, "before", id="HookStarted"),
+        pytest.param(HookFinished, "after", id="HookFinished"),
+    ],
+)
+def test_hook_event_when_constructed_does_carry_stage(
+    event_class: type[HookStarted | HookFinished], stage: HookStage
+) -> None:
+    event = event_class(stage=stage, at_ms=0)
 
-    assert event.round == 2
-    assert event.total_rounds == 5
-    assert event.target_index == 1
-    assert event.target_count == 3
-    assert event.label == "bench"
-    assert event.phase == "measure"
-
-
-def test_hook_started_when_constructed_does_carry_stage() -> None:
-    event = HookStarted(stage="before", at_ms=0)
-
-    assert event.stage == "before"
-
-
-def test_hook_finished_when_constructed_does_carry_stage() -> None:
-    event = HookFinished(stage="after", at_ms=0)
-
-    assert event.stage == "after"
+    assert event.stage == stage
 
 
 def test_judge_finished_when_constructed_does_carry_delta_and_regressed() -> None:
-    event = JudgeFinished(primary_delta_pct=2.5, regressed=("x", "y"), at_ms=0)
+    event = JudgeFinished(primary_delta_pct=2.5, regressed=("x", "y"), metric_count=4, at_ms=0)
 
     assert event.primary_delta_pct == 2.5
     assert event.regressed == ("x", "y")
 
 
 def test_judge_finished_when_delta_none_does_carry_none() -> None:
-    event = JudgeFinished(primary_delta_pct=None, regressed=(), at_ms=0)
+    event = JudgeFinished(primary_delta_pct=None, regressed=(), metric_count=0, at_ms=0)
 
     assert event.primary_delta_pct is None
+
+
+def test_judge_finished_when_constructed_does_carry_metric_count() -> None:
+    event = JudgeFinished(primary_delta_pct=-1.0, regressed=("x",), metric_count=5, at_ms=0)
+
+    assert event.metric_count == 5
 
 
 def test_confirm_started_when_filtered_none_does_carry_none() -> None:

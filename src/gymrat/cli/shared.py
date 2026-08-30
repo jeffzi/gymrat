@@ -22,7 +22,7 @@ from rich.markup import escape
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli.progress import ProgressReporter, create_progress_reporter
-from gymrat.config import MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
+from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
 from gymrat.git import NotAGitRepositoryError
@@ -81,6 +81,32 @@ def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the -
     _DebugState.enabled = value
 
 
+class _StderrColorState:
+    """Holds the ``--no-color`` override for stderr error output.
+
+    Commands set this at startup so ``_resolve_stderr_color`` reads the flag
+    instead of always deferring to env+TTY detection.
+    """
+
+    override: bool | None = None
+
+
+def set_stderr_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 setter for the --no-color flag
+    """Set the module-level color override that ``format_cli_error`` reads."""
+    _StderrColorState.override = override
+
+
+def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a command's --debug flag
+    """Enable debug mode when a command's own ``--debug`` flag is set.
+
+    Never disables debug mode: a command's local ``--debug`` defaulting to
+    ``False`` must not undo the root ``--debug`` flag already applied by
+    :func:`set_debug_mode`.
+    """
+    if debug:
+        set_debug_mode(True)
+
+
 # ---------------------------------------------------------------------------
 # Stream helpers
 # ---------------------------------------------------------------------------
@@ -130,7 +156,7 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
 
 def _resolve_stderr_color() -> bool:
     """Whether stderr error output should carry color, per the shared precedence."""
-    return resolve_stream_color(None, sys.stderr)
+    return resolve_stream_color(_StderrColorState.override, sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -208,13 +234,9 @@ def parse_positional(positional: str) -> TargetSpec:
     ``a``, target ``b=c``. An empty half is always a typo, so each raises its own
     usage error rather than resolving to a silent default.
     """
-    eq_index = positional.find("=")
-    if eq_index == -1:
-        label: str | None = None
-        target = positional
-    else:
-        label = positional[:eq_index]
-        target = positional[eq_index + 1 :]
+    head, sep, tail = positional.partition("=")
+    label: str | None = head if sep else None
+    target = tail if sep else positional
 
     if label == "":
         message = (
@@ -388,10 +410,6 @@ class MeasureFlags(SharedFlags):
 # CLI option declarations
 # ---------------------------------------------------------------------------
 
-# JavaScript's ``Number.MAX_SAFE_INTEGER``, kept so the samples ceiling this CLI
-# shares with the shipped tool matches it rather than drifting to a new bound.
-MAX_SAFE_INTEGER = 2**53 - 1
-
 
 class OutputFormat(StrEnum):
     """The ``--format`` choices: a human report or a machine-readable document."""
@@ -456,7 +474,13 @@ VerboseOption = Annotated[
 # ---------------------------------------------------------------------------
 
 
-def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
+def begin_run(
+    flags: SharedFlags,
+    target_count: int,
+    *,
+    command: str | None = None,
+    target_labels: list[str] | None = None,
+) -> ProgressReporter:
     """Build the progress reporter a run prints through, sized and colored per the flags."""
     from gymrat.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
         stderr_console,
@@ -464,7 +488,18 @@ def begin_run(flags: SharedFlags, target_count: int) -> ProgressReporter:
 
     mode = resolve_render_mode()
     console = stderr_console(color_flag=flags.color)
-    return create_progress_reporter(mode, console, target_count, flags.samples)
+    extra: dict[str, object] = {}
+    if command is not None:
+        extra["command"] = command
+    if target_labels is not None:
+        extra["target_labels"] = target_labels
+    return create_progress_reporter(
+        mode,
+        console,
+        target_count,
+        flags.samples,
+        **extra,  # type: ignore[arg-type]
+    )
 
 
 def run_options_of(config: ResolvedConfig, progress: ProgressReporter) -> RunOptions:

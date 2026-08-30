@@ -109,3 +109,40 @@ def test_stderr_console_when_columns_unset_does_use_terminal_width(
     console = stderr_console(color_flag=False)
 
     assert console.width > 0
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param("", id="empty-string"),
+        pytest.param("abc", id="non-numeric"),
+        pytest.param("  ", id="whitespace-only"),
+    ],
+)
+def test_stderr_console_when_columns_is_not_a_valid_integer_does_not_crash(
+    columns: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("COLUMNS", columns)
+    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=False))
+
+    console = stderr_console(color_flag=False)
+
+    assert console.width > 0
+
+
+# ---------------------------------------------------------------------------
+# colorless SGR suppression (color_system=None, not just no_color=True)
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_console_when_colorless_does_strip_all_sgr_including_bold(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("sys.stderr", _FakeStderr(tty=True))
+
+    console = stderr_console(color_flag=False)
+    with console.capture() as capture:
+        console.print("probe", style="bold", end="")
+
+    assert "\x1b[" not in capture.get()

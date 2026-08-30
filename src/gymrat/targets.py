@@ -7,7 +7,6 @@ carried.
 """
 
 import errno
-import os
 import stat
 import subprocess
 import tempfile
@@ -149,7 +148,7 @@ def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
         return None
     # realpath collapses symlinks so a symlinked target and its destination
     # compare as the same place.
-    return InPlaceTarget(dir=os.path.realpath(absolute_path))
+    return InPlaceTarget(dir=str(absolute_path.resolve()))
 
 
 def resolve_target(target_input: str, repo_dir: str) -> Target:
@@ -208,7 +207,7 @@ def plan_worktree(ref: RefTarget) -> WorktreeInfo:
     """
     tmp_base = tempfile.gettempdir()
     try:
-        resolved_base = os.path.realpath(tmp_base, strict=True)
+        resolved_base = str(Path(tmp_base).resolve(strict=True))
     except OSError as error:
         message = f"Cannot resolve temp directory '{tmp_base}': {stderr_text_of(error)}"
         raise GymratError(message) from error

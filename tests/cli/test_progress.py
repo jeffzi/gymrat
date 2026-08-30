@@ -23,10 +23,17 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
-from tests._rich import Clock, frame_text, screen_lines, sealed_console
+from tests._rich import (
+    Clock,
+    console_output,
+    fake_install,
+    frame_text,
+    screen_lines,
+    sealed_console,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Iterator
 
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
@@ -34,6 +41,22 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+_live_reporters: list[ProgressReporter] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_reporters() -> Iterator[None]:
+    """Stop every reporter a test built, so a failing test leaks no live display.
+
+    ``stop()`` is idempotent, so tests that already stopped their reporter are
+    unaffected; without this teardown a failure before the in-test ``stop()``
+    leaks a refresh thread and a termination-cleanup registration.
+    """
+    yield
+    while _live_reporters:
+        _live_reporters.pop().stop()
 
 
 def _reporter(
@@ -62,14 +85,8 @@ def _reporter(
         clock=clock,
         **kwargs,  # type: ignore[arg-type]
     )
+    _live_reporters.append(reporter)
     return console, clock, reporter
-
-
-def _output(console: Console) -> str:
-    """Return all text written to the console's StringIO."""
-    f = console.file
-    assert isinstance(f, StringIO)
-    return f.getvalue()
 
 
 def _ms(clock: Clock) -> int:
@@ -82,14 +99,12 @@ def _pass_started(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
 ) -> PassStarted:
     return PassStarted(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -101,35 +116,21 @@ def _pass_finished(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
 ) -> PassFinished:
     return PassFinished(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
     )
 
 
-def _fake_install(
-    registered: list[object],
-) -> Callable[[Callable[[], None]], Callable[[], None]]:
-    """A fake ``install_termination_cleanup`` that records registrations."""
-
-    def install(cb: Callable[[], None]) -> Callable[[], None]:
-        registered.append(cb)
-        return lambda: None
-
-    return install
-
-
 def _summary_line(console: Console) -> str:
     """The last visible line of the rendered screen, or '' if nothing was printed."""
-    visible = screen_lines(_output(console))
+    visible = screen_lines(console_output(console))
     return visible[-1] if visible else ""
 
 
@@ -211,9 +212,7 @@ def test_frame_when_multi_target_compare_does_name_running_target(
     _console, clock, reporter = _reporter("live", target_count=2, sample_count=5)
     reporter.report(PrepareFinished(label="main", at_ms=0))
     clock.tick(1)
-    reporter.report(
-        _pass_started(1, 5, target_index=1, target_count=2, label="candidate", at_ms=_ms(clock))
-    )
+    reporter.report(_pass_started(1, 5, target_count=2, label="candidate", at_ms=_ms(clock)))
 
     result = frame_text(reporter.frame())
 
@@ -302,7 +301,7 @@ def test_plain_renderer_when_prepare_finished_does_print_exact_timestamped_line(
     clock.tick(5)
     reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
 
-    output = _output(console)
+    output = console_output(console)
     lines = [ln for ln in output.splitlines() if ln.strip()]
 
     assert lines[-1] == "[00:00:05] prepared bench (5s)"
@@ -318,7 +317,7 @@ def test_plain_renderer_when_pass_finished_does_print_exact_timestamped_line(
     clock.tick(20)
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
 
-    output = _output(console)
+    output = console_output(console)
     lines = [ln for ln in output.splitlines() if ln.strip()]
 
     assert lines[-1] == snapshot
@@ -336,7 +335,7 @@ def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
     reporter.report(_pass_finished(1, 3, at_ms=_ms(clock)))
     reporter.stop()
 
-    output = _output(console)
+    output = console_output(console)
 
     assert "\x1b[" not in output
 
@@ -388,7 +387,7 @@ def test_warn_when_live_mode_does_route_through_console_print():
 
     reporter.warn("heads up: slow disk")
 
-    output = _output(console)
+    output = console_output(console)
     assert "heads up: slow disk" in output
     reporter.stop()
 
@@ -399,7 +398,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, reporter = _reporter("live")
@@ -414,7 +413,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, reporter = _reporter("plain")
@@ -454,7 +453,7 @@ def test_stop_when_plain_mode_does_not_print_summary():
 
     reporter.stop()
 
-    assert "measured in" not in _output(console)
+    assert "measured in" not in console_output(console)
 
 
 def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
@@ -471,7 +470,6 @@ def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
             _pass_started(
                 rnd,
                 2,
-                target_index=target_idx,
                 target_count=2,
                 label=label,
                 at_ms=_ms(clock),
@@ -482,7 +480,6 @@ def test_stop_when_compare_done_does_print_summary(snapshot: SnapshotAssertion):
             _pass_finished(
                 rnd,
                 2,
-                target_index=target_idx,
                 target_count=2,
                 label=label,
                 at_ms=_ms(clock),
@@ -507,7 +504,7 @@ def test_live_renderer_when_console_width_zero_does_render_as_plain():
     reporter.stop()
 
     assert reporter._live is None
-    output = _output(console)
+    output = console_output(console)
     assert "\x1b[" not in output
 
 
@@ -516,7 +513,7 @@ def test_reporter_when_non_relevant_event_does_silently_ignore():
 
     reporter.report(HookStarted(stage="before", at_ms=0))
 
-    output = _output(console)
+    output = console_output(console)
     assert output == ""
     reporter.stop()
 
@@ -532,6 +529,11 @@ def test_clear_on_signal_when_live_up_does_leave_screen_blank(
     reporter._clear_on_signal()
 
     assert screen_lines(buf.getvalue()) == []
+    # _clear_on_signal marks the reporter as stopped (as os._exit would follow
+    # in production), so stop() is a no-op; shut down the Live refresh thread
+    # directly so the test leaks neither the thread nor the console registry.
+    if reporter._live is not None:
+        reporter._live.stop()
 
 
 def test_clear_on_signal_when_after_stop_does_write_nothing(

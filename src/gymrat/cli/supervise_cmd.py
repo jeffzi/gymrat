@@ -23,11 +23,13 @@ from gymrat.cli.shared import (
     TOOL_FAILURE_EXIT_CODE,
     DebugOption,
     NoColorOption,
+    apply_debug,
+    color_override_of,
     exit_with_error,
     parse_max_minutes,
     parse_positive_number,
     resolve_render_mode,
-    set_debug_mode,
+    set_stderr_color_override,
     write_and_flush,
 )
 from gymrat.cli.supervise_progress import create_supervise_reporter
@@ -49,6 +51,7 @@ from gymrat.supervisor import (
     create_claude_driver,
     supervise,
 )
+from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
 
 _PromptArgument = Annotated[
@@ -166,6 +169,7 @@ def _run_session(ctx: _SessionContext) -> None:
         max_usd=ctx.max_usd,
         max_iterations=ctx.max_iterations,
         mode=mode,
+        color=ctx.color,
     )
     uninstall_cleanup = install_termination_cleanup(reporter.stop)
 
@@ -216,6 +220,7 @@ def _execute(options: _Options) -> None:
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
         log_path = _resolve_log_path(root, options.log)
+        probe_event_log_path(log_path)
         config = resolve_benchless_config(CliFlags(), root)
         kickoff = compose_kickoff(config, options.prompt)
         head_sha = run_git(["rev-parse", "HEAD"], root).strip()
@@ -260,8 +265,8 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     debug: DebugOption = False,
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     options = _Options(
         prompt=prompt,
         max_minutes=max_minutes,

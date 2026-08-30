@@ -35,14 +35,9 @@ class ProgressSnapshot:
     and ``last_pass_duration_ms``; this snapshot carries no ETA itself.
     """
 
-    seq: int
-    phase: str
     passes_completed: int
     passes_total: int
-    current_side: str | None
-    current_round: int
     last_pass_duration_ms: float
-    started_at: float
 
 
 def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
@@ -90,7 +85,7 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return ProgressSnapshot(**data)
-    except (json.JSONDecodeError, TypeError, KeyError):
+    except (json.JSONDecodeError, TypeError, KeyError, OSError, UnicodeDecodeError):
         return None
 
 
@@ -99,12 +94,7 @@ def clear_progress(root: str) -> None:
     Path(progress_path(root)).unlink(missing_ok=True)
 
 
-def create_sidecar_writer(
-    root: str,
-    seq: int,
-    *,
-    started_at: float,
-) -> ProgressCallback:
+def create_sidecar_writer(root: str) -> ProgressCallback:
     """Return a callback that writes sidecar snapshots on pass events.
 
     The callback tracks accumulated state from ``PassStarted`` and
@@ -114,39 +104,35 @@ def create_sidecar_writer(
     passes_completed = 0
     last_start_ms: float = 0.0
     last_pass_duration_ms: float = 0.0
-    phase: str = "measure"
-    current_side: str | None = None
-    current_round: int = 0
     passes_total: int = 0
+    current_phase: str = ""
 
     def _on_event(event: ProgressEvent) -> None:
-        nonlocal passes_completed, last_start_ms, last_pass_duration_ms
-        nonlocal phase, current_side, current_round, passes_total
+        nonlocal passes_completed, last_start_ms, last_pass_duration_ms, passes_total
+        nonlocal current_phase
 
         if isinstance(event, PassStarted):
+            if event.phase != current_phase:
+                passes_completed = 0
+                current_phase = event.phase
             last_start_ms = event.at_ms
         elif isinstance(event, PassFinished):
+            if event.phase != current_phase:
+                passes_completed = 0
+                current_phase = event.phase
             passes_completed += 1
             last_pass_duration_ms = event.at_ms - last_start_ms
         else:
             return
 
-        phase = event.phase
-        current_side = event.label
-        current_round = event.round
         passes_total = event.total_rounds * event.target_count
 
         write_progress(
             root,
             ProgressSnapshot(
-                seq=seq,
-                phase=phase,
                 passes_completed=passes_completed,
                 passes_total=passes_total,
-                current_side=current_side,
-                current_round=current_round,
                 last_pass_duration_ms=last_pass_duration_ms,
-                started_at=started_at,
             ),
         )
 

@@ -26,6 +26,7 @@ from gymrat.targets import (
     plan_worktree,
     resolve_target,
 )
+from tests._git import run_git as _run_git
 
 # A sha no repository holds, so ``git worktree add`` rejects it outright.
 UNKNOWN_SHA = "0" * 40
@@ -43,9 +44,6 @@ skip_on_windows_or_root = pytest.mark.skipif(
     sys.platform == "win32" or _IS_ROOT,
     reason="Windows lacks EACCES from chmod and root bypasses the mode bits",
 )
-
-
-from tests._git import run_git as _run_git
 
 
 def _get_head_sha(repo_dir: str) -> str:

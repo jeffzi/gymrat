@@ -15,6 +15,14 @@ from functools import partial
 MAX_TIMEOUT_SECONDS = 2_147_483
 """Largest ``timeout_seconds`` a 32-bit millisecond timer can represent."""
 
+MAX_SAFE_INTEGER = 2**53 - 1
+"""Largest ``samples`` count, matching JavaScript's ``Number.MAX_SAFE_INTEGER``.
+
+Every source that can supply ``samples`` -- the ``--samples`` flag,
+``GYMRAT_SAMPLES``, and the config file -- shares this ceiling, so the same input
+is accepted or rejected no matter which one it arrives through.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class EnvResult:
@@ -87,6 +95,6 @@ _NumberReader = Callable[[str], EnvResult]
 
 #: Each ``GYMRAT_*`` numeric field's ``(CliFlags field, env var, reader)`` association.
 NUMBER_ENV_FIELDS: tuple[tuple[str, str, _NumberReader], ...] = (
-    ("samples", "GYMRAT_SAMPLES", env_positive_int_result),
+    ("samples", "GYMRAT_SAMPLES", partial(env_positive_int_result, maximum=MAX_SAFE_INTEGER)),
     ("timeout", "GYMRAT_TIMEOUT", partial(env_positive_int_result, maximum=MAX_TIMEOUT_SECONDS)),
 )

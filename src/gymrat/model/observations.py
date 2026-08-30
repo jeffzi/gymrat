@@ -10,23 +10,13 @@ shared key where either side is missing that metric.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Self, assert_never
+from typing import Self
 
 type PairingKey = int
-"""Pairing-axis key. A round index today; a general key for future eval-mode shapes."""
+"""Pairing-axis key: a round index."""
 
 type Repeat = Mapping[str, float]
 """One repeat: a mapping of metric name to value."""
-
-type UnpairedPolicy = Literal["drop-unpaired"]
-"""How :func:`pair_metric` treats shared keys missing the metric on a side."""
-
-DROP_UNPAIRED: UnpairedPolicy = "drop-unpaired"
-"""Silently drop any shared key where either side lacks the metric.
-
-Named explicitly so a future caller can hang a warning on this policy rather than rediscovering the
-drops.
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,8 +51,8 @@ class Observations:
 def _require_single_repeat(observations: Observations) -> None:
     """Raise ``ValueError`` if any key carries more than one repeat.
 
-    The repeat-reducer is future scope: a multi-repeat container is constructible, but pairing over
-    one is not defined yet — surface it rather than silently taking the first repeat.
+    A multi-repeat container is constructible, but pairing over one is not defined — surface it
+    rather than silently taking the first repeat.
     """
     for key, repeats in observations.by_key.items():
         if len(repeats) != 1:
@@ -77,8 +67,6 @@ def pair_metric(
     left: Observations,
     right: Observations,
     metric: str,
-    *,
-    policy: UnpairedPolicy = DROP_UNPAIRED,
 ) -> PairResult:
     """Align two containers on their shared keys, in order, for a single metric.
 
@@ -93,9 +81,6 @@ def pair_metric(
 
     Both containers must be single-repeat; a multi-repeat container raises ``ValueError``.
     """
-    if policy != DROP_UNPAIRED:
-        assert_never(policy)
-
     _require_single_repeat(left)
     _require_single_repeat(right)
 

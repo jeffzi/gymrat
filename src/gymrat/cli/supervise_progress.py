@@ -11,6 +11,7 @@ saw), and otherwise only re-renders.
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -20,13 +21,15 @@ from typing import TYPE_CHECKING, Literal, assert_never
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from rich.console import Console, RenderableType
+    from rich.console import RenderableType
+
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
+from gymrat.cli.console import stderr_console
 from gymrat.eta import format_duration, format_eta
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
@@ -53,6 +56,8 @@ from gymrat.supervisor.events import (
     ToolStartEvent,
     UsageUpdateEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 # After 3 minutes of no tool activity, the liveness segment turns to "idle".
 IDLE_WARN_MS = 180_000
@@ -87,7 +92,6 @@ class SuperviseReporter:
     stop: Callable[[], None]
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
-    plain_writes: Callable[[], list[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +394,6 @@ class _ReporterCtx:
     liveness: _Liveness
     last_loop_text: str
     plain_write_fn: Callable[[str], None]
-    plain_writes_list: list[str]
     live: Live | None
 
 
@@ -402,7 +405,8 @@ class _ReporterCtx:
 def _try_read_session(ctx: _ReporterCtx) -> None:
     try:
         ctx.session_result = ctx.read_session_fn()
-    except Exception:  # noqa: BLE001 - a failed read must never break the display; treat as no data
+    except Exception:
+        logger.exception("session read failed")
         ctx.session_result = None
 
 
@@ -416,7 +420,6 @@ def _emit_live(ctx: _ReporterCtx) -> None:
 def _plain_emit(ctx: _ReporterCtx, text: str) -> None:
     """Emit a milestone line in plain mode."""
     ctx.plain_write_fn(text)
-    ctx.plain_writes_list.append(text)
 
 
 def _emit(ctx: _ReporterCtx, plain_text: str) -> None:
@@ -595,7 +598,7 @@ def _make_default_read(root: str) -> Callable[[], ReadSessionResult]:
     return _read
 
 
-def _noop_write(text: str) -> None:
+def _stderr_write(text: str) -> None:
     """Default plain_write: write to stderr with a newline."""
     sys.stderr.write(f"{text}\n")
 
@@ -606,7 +609,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     max_minutes: float,
     max_usd: float | None = None,
     max_iterations: int | None = None,
-    mode: str,
+    mode: Literal["live", "plain"],
     now: Callable[[], int] | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
     label: str = "",
@@ -614,6 +617,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     branch: str = "",
     plain_write: Callable[[str], None] | None = None,
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
+    color: bool = True,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
 
@@ -627,10 +631,8 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     resolved_now = now if now is not None else now_ms
     resolved_read = read_session if read_session is not None else _make_default_read(root)
     resolved_read_progress = read_progress if read_progress is not None else _default_read_progress
-    resolved_plain_write = plain_write if plain_write is not None else _noop_write
+    resolved_plain_write = plain_write if plain_write is not None else _stderr_write
     is_plain = mode == "plain"
-
-    plain_writes_list: list[str] = []
 
     ctx = _ReporterCtx(
         now=resolved_now,
@@ -652,7 +654,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         liveness=_Starting(),
         last_loop_text="",
         plain_write_fn=resolved_plain_write,
-        plain_writes_list=plain_writes_list,
         live=None,
     )
 
@@ -661,7 +662,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     # ``get_renderable()`` to size the initial layout.
     if not is_plain:
         ctx.live = Live(
-            console=Console(stderr=True),
+            console=stderr_console(color_flag=color),
             refresh_per_second=1,
             transient=True,
             get_renderable=lambda: _build_frame(ctx),
@@ -685,13 +686,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         elif ctx.live is not None:
             ctx.live.console.print(message)
 
-    def get_plain_writes() -> list[str]:
-        return ctx.plain_writes_list
-
     return SuperviseReporter(
         observer=observer,
         stop=stop,
         frame=get_frame,
         warn=warn,
-        plain_writes=get_plain_writes,
     )

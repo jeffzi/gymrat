@@ -1095,6 +1095,18 @@ async def test_keep_session_when_refusing_does_close_on_a_hint_carrying_no_label
     assert "`" not in result.report
 
 
+async def test_keep_session_when_nothing_to_commit_does_name_iterate_not_keep_in_the_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _nothing_to_commit(repo)
+    checks_pass(monkeypatch)
+
+    result = await keep_session(repo, checks_config())
+
+    assert "gymrat iterate" in result.report
+    assert "gymrat keep" not in result.report
+
+
 async def test_keep_session_when_nothing_measured_does_name_iterate_in_bare_prose(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):

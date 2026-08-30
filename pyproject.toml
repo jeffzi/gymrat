@@ -96,8 +96,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["E402", "F401"]
-"**/{tests,docs}/*" = ["D101", "D102", "D103", "E402"]
 "**/tests/*" = [
+  "D101", # missing docstring in public class
+  "D102", # missing docstring in public method
+  "D103", # missing docstring in public function
+  "E402", # module import not at top of file
   "ANN001", # missing type annotation for function argument
   "ANN003", # missing type annotation for **kwargs
   "ANN201", # missing return type for public function
@@ -140,14 +143,11 @@ asyncio_mode = "auto"
 source = ["src/gymrat"]
 branch = true
 parallel = true
-omit = ["tests/**/conftest.py"]
 
 [tool.coverage.report]
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",
   "if __name__ == .__main__.",
-  "raise NotImplementedError",
 ]
-show_missing = true
 fail_under = 90

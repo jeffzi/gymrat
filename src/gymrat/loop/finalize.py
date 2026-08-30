@@ -121,7 +121,7 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
         raise GymratError(message, hint=hint)
 
     message = opts.message if opts.message is not None else _generated_message(required.records)
-    commit = _squash_onto_baseline(root, session.branch, session.baseline.sha, message)
+    commit = _squash_onto_baseline(root, expected_position, session.baseline.sha, message)
     # `--` ends git's options, so the branch name can never be read as one whatever
     # the leading-dash check let through.
     run_git_step(
@@ -153,21 +153,23 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
 
 def _squash_onto_baseline(
     root: str,
-    session_branch: str,
+    tree_source: str,
     baseline_sha: str,
     message: str,
 ) -> str:
-    """Build the one commit carrying the session branch's tree onto the pinned baseline.
+    """Build one commit carrying ``tree_source``'s tree onto the pinned baseline.
 
-    Reading the tree and writing the commit are both plumbing, so neither needs —
-    or moves — a checkout. The single parent is the baseline the session started
-    from, which is what makes the result a squash rather than a merge.
+    ``tree_source`` is the last-kept position — the commit whose tree the squash
+    should carry. Reading the tree and writing the commit are both plumbing, so
+    neither needs — or moves — a checkout. The single parent is the baseline the
+    session started from, which is what makes the result a squash rather than a
+    merge.
     """
     tree = run_git_step(
-        ["rev-parse", f"{session_branch}^{{tree}}"],
+        ["rev-parse", f"{tree_source}^{{tree}}"],
         root,
-        f"Cannot read the tree of the session branch '{session_branch}'",
-        f"Check that the branch is still there: git branch --list {session_branch}",
+        f"Cannot read the tree at {tree_source[:SHORT_SHA_LENGTH]}",
+        f"Check that the commit is still there: git cat-file -t {tree_source}",
     ).strip()
 
     build_hint = (
@@ -176,7 +178,7 @@ def _squash_onto_baseline(
     return run_git_step(
         ["commit-tree", tree, "-p", baseline_sha, "-m", message],
         root,
-        f"Cannot build the squash commit from {session_branch} onto {baseline_sha}",
+        f"Cannot build the squash commit from {tree_source[:SHORT_SHA_LENGTH]} onto {baseline_sha}",
         build_hint,
     ).strip()
 

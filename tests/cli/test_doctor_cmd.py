@@ -9,6 +9,7 @@ the adapter flag reaching the bench section.
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -82,8 +83,8 @@ def _patch_doctor(
         else Check("bench", "ok", "1 metric found")
     )
 
-    def bench_section(*, bench: object, adapter: object) -> CheckSection:
-        bench_calls.append({"bench": bench, "adapter": adapter})
+    def bench_section(*, bench: object, adapter: object, **kwargs: object) -> CheckSection:
+        bench_calls.append({"bench": bench, "adapter": adapter, **kwargs})
         return CheckSection(title="Bench", checks=[bench_check])
 
     monkeypatch.setattr("gymrat.cli.doctor_cmd.build_bench_section", bench_section)
@@ -249,3 +250,68 @@ def test_doctor_when_command_crashes_does_exit_two_with_message_on_stderr(
 
     assert result.exit_code == 2
     assert "unexpected doctor crash" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# config_problems forwarded to bench section
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_when_config_problems_does_forward_config_problems_true_to_bench_section(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    handles = _patch_doctor(monkeypatch, config_failure=True)
+
+    runner.invoke(app, ["doctor"])
+
+    assert len(handles.bench_calls) == 1
+    assert handles.bench_calls[0]["config_problems"] is True
+
+
+def test_doctor_when_config_ok_does_forward_config_problems_false_to_bench_section(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    handles = _patch_doctor(monkeypatch, config_failure=False)
+
+    runner.invoke(app, ["doctor"])
+
+    assert len(handles.bench_calls) == 1
+    assert handles.bench_calls[0]["config_problems"] is False
+
+
+# ---------------------------------------------------------------------------
+# skill file: directory at path
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_when_skill_path_is_directory_does_not_report_installed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """A directory at the skill path must not count as 'installed'."""
+    from gymrat.cli.doctor_cmd import GitEnvironment
+    from gymrat.init.scaffold import SKILL_RELATIVE_PATH
+
+    skill_dir = tmp_path / SKILL_RELATIVE_PATH
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
+    monkeypatch.setattr(
+        "gymrat.cli.doctor_cmd.detect_git_environment",
+        lambda _cwd: git_env,  # pyrefly: ignore
+    )
+
+    _patch_doctor(monkeypatch)
+
+    workflow_calls: list[dict[str, object]] = []
+
+    def workflow_section(*_a: object, **kwargs: object) -> CheckSection:
+        workflow_calls.append(dict(kwargs))
+        return CheckSection(title="Workflow", checks=[Check("skill file", "ok", "found")])
+
+    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_workflow_section", workflow_section)
+
+    runner.invoke(app, ["doctor"])
+
+    assert len(workflow_calls) >= 1
+    assert workflow_calls[0].get("skill_file_exists") is False

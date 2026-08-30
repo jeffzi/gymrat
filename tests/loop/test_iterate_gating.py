@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, MetricEntry
+from gymrat.config import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate import iterate_session
 from gymrat.session import (
@@ -754,6 +754,21 @@ async def test_iterate_session_when_outcome_settles_does_close_report_on_verdict
     assert result.record.outcome == outcome
     assert word in lines[-2]
     assert lines[-1] == next_step
+
+
+async def test_iterate_session_when_target_reached_but_regressed_does_omit_target_hint(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    experiment = rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 1.1))
+    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
+
+    result = await iterate_session(
+        open_repo, resolved_config(primary="total_ms", stop=StopConfig(target_value=95))
+    )
+
+    assert result.record.target_reached is True
+    assert result.record.outcome == "regressed"
+    assert "target reached" not in _plain(result.report)
 
 
 # ---------------------------------------------------------------------------

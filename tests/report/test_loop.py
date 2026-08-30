@@ -174,6 +174,18 @@ def test_format_verdict_block_when_colored_does_paint_the_verdict_word(
         assert color_code in codes
 
 
+def test_format_verdict_block_when_target_reached_but_regressed_does_omit_target_hint():
+    block = format_verdict_block(
+        outcome="regressed",
+        primary=_geomean_primary(3.1),
+        next_step="fix or run gymrat discard",
+        target_reached=True,
+    )
+
+    plain = "\n".join(_plain(line) for line in block)
+    assert "target reached" not in plain
+
+
 # ---------------------------------------------------------------------------
 # derive_outcome
 # ---------------------------------------------------------------------------

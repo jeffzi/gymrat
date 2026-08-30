@@ -44,7 +44,6 @@ class PassStarted:
     Attributes:
         round: 1-based round number.
         total_rounds: Total number of rounds in the schedule.
-        target_index: 0-based position of the target in the target list.
         target_count: Number of targets in the schedule.
         label: The target's display label.
         phase: Whether this pass is a measurement or confirmation run.
@@ -53,7 +52,6 @@ class PassStarted:
 
     round: int
     total_rounds: int
-    target_index: int
     target_count: int
     label: str
     at_ms: float
@@ -66,7 +64,6 @@ class PassFinished:
 
     round: int
     total_rounds: int
-    target_index: int
     target_count: int
     label: str
     at_ms: float
@@ -102,6 +99,7 @@ class JudgeFinished:
 
     primary_delta_pct: float | None
     regressed: tuple[str, ...]
+    metric_count: int
     at_ms: float
 
 
@@ -145,3 +143,9 @@ type ProgressEvent = (
 )
 
 type ProgressCallback = Callable[[ProgressEvent], None]
+
+
+def emit_progress(on_progress: ProgressCallback | None, event: ProgressEvent) -> None:
+    """Fire ``on_progress`` with ``event`` when a callback is registered."""
+    if on_progress is not None:
+        on_progress(event)

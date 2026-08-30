@@ -7,6 +7,8 @@ import tomli_w
 
 from gymrat.adapters.types import Adapter, MetricDefaults
 from gymrat.config import (
+    MAX_SAFE_INTEGER,
+    MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
     HooksConfig,
@@ -225,18 +227,6 @@ def test_resolve_metric_meta_when_metric_and_kind_disagree_does_let_metric_win()
 # inspect_config — shared helpers and fixtures
 # ---------------------------------------------------------------------------
 
-# Every GYMRAT_* variable inspect_config consults, cleared before each test so an
-# ambient value in the developer's shell cannot bleed into these cases; the suite
-# runs in randomized order across parallel workers, so isolation is mandatory.
-GYMRAT_ENV_VARS = (
-    "GYMRAT_BENCH",
-    "GYMRAT_PREPARE",
-    "GYMRAT_ADAPTER",
-    "GYMRAT_SAMPLES",
-    "GYMRAT_TIMEOUT",
-    "GYMRAT_CONFIG",
-)
-
 # The fully defaulted settled config: what inspect_config yields when neither
 # flags nor a config file supply any value. bench lives on ConfigInspection, not
 # on the settled BenchlessConfig, so it never appears here.
@@ -257,12 +247,6 @@ LOOP_CONFIG: dict[str, object] = {
     "stop": {"target_value": 1.5, "max_iterations": 20},
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
-
-
-@pytest.fixture(autouse=True)
-def _clear_gymrat_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in GYMRAT_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
 
 
 def write_config(directory: Path, content: dict[str, object]) -> Path:
@@ -504,6 +488,17 @@ def test_inspect_config_when_runbook_missing_does_report_naming_field_and_path(
     assert "missing.md" in "\n".join(result.problems)
 
 
+def test_inspect_config_when_runbook_embeds_nul_does_report_problem_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_raw_config(tmp_path, 'bench = "config-bench"\nrunbook = "a\\u0000b"\n')
+    monkeypatch.chdir(tmp_path)
+
+    result = inspect_config(CliFlags())
+
+    assert has_problem(result.problems, "runbook")
+
+
 @pytest.mark.parametrize(
     ("key", "flags"),
     [
@@ -535,14 +530,25 @@ def test_inspect_config_when_multiple_flags_empty_does_collect_all(
     assert has_problem(result.problems, r"--adapter.*non-empty")
 
 
-def test_inspect_config_when_config_flag_empty_does_report_and_skip_file_lookup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "config_flag",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="spaces"),
+        pytest.param("\t", id="tab"),
+    ],
+)
+def test_inspect_config_when_config_flag_blank_does_report_and_skip_file_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_flag: str
 ):
     write_config(tmp_path, {"bench": "cwd-bench"})
     monkeypatch.chdir(tmp_path)
 
-    result = inspect_config(CliFlags(config=""))
+    result = inspect_config(CliFlags(config=config_flag))
 
+    # A blank value is one mistake: probing it on disk would add a second,
+    # spurious "file not found" problem for a path the user never named.
+    assert len(result.problems) == 1
     assert has_problem(result.problems, r"--config.*non-empty")
     assert result.config_path is None
     assert result.config is None
@@ -601,13 +607,21 @@ def test_inspect_config_when_integer_env_var_invalid_does_report_naming_var(
     assert has_problem(result.problems, rf"{env_var}.*positive integer")
 
 
-def test_inspect_config_when_timeout_env_var_exceeds_cap_does_report_naming_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("env_var", "cap"),
+    [
+        pytest.param("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS, id="timeout"),
+        pytest.param("GYMRAT_SAMPLES", MAX_SAFE_INTEGER, id="samples"),
+    ],
+)
+def test_inspect_config_when_integer_env_var_exceeds_cap_does_report_naming_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_var: str, cap: int
 ):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("GYMRAT_TIMEOUT", "2147484")
+    monkeypatch.setenv(env_var, str(cap + 1))
 
     result = inspect_config(CliFlags(bench="my-bench"))
 
-    assert has_problem(result.problems, "GYMRAT_TIMEOUT")
-    assert "no greater than 2147483" in "\n".join(result.problems)
+    joined = "\n".join(result.problems)
+    assert has_problem(result.problems, env_var)
+    assert f"no greater than {cap}" in joined

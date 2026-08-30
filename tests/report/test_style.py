@@ -451,6 +451,51 @@ def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all
     assert "\x1b[" not in captured
 
 
+def test_make_capture_console_when_color_true_and_term_dumb_does_still_emit_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    console = make_capture_console(color=True, width=80)
+    console.print("[red]hi[/red]")
+
+    assert isinstance(console.file, io.StringIO)
+    captured = console.file.getvalue()
+    assert "\x1b[" in captured
+    assert "hi" in captured
+
+
+def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_does_emit_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+
+    console = make_capture_console(color=None, width=80)
+    console.print("[red]hi[/red]")
+
+    assert isinstance(console.file, io.StringIO)
+    captured = console.file.getvalue()
+    assert "\x1b[" in captured
+    assert "hi" in captured
+
+
+def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    result = render_lines("[red]hi[/red]", color=True, width=80)
+
+    assert "\x1b[" in result
+    assert "hi" in result
+
+
 # ---------------------------------------------------------------------------
 # report package re-exports
 # ---------------------------------------------------------------------------

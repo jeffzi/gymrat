@@ -19,7 +19,7 @@ from typing import Any, Literal
 from gymrat.loop.hooks import HookInvocation
 from gymrat.session import HookRecord, Worktrees
 from gymrat.session.schema import HookStage
-from tests.session._records import SESSION_ID, iteration_record, session_record
+from tests.session._records import SESSION_ID, session_record
 
 Channel = Literal["stdout", "stderr"]
 
@@ -140,7 +140,5 @@ def expected_hook_record(**overrides: Any) -> HookRecord:
 __all__ = [
     "HookScripts",
     "expected_hook_record",
-    "iteration_record",
     "labeled_lines",
-    "session_record",
 ]

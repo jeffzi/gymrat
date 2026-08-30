@@ -154,14 +154,6 @@ def _install_seams(
     return seams
 
 
-@pytest.fixture
-def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch) -> str:
-    """A fresh scratch repository, chdir'd into so the command runs there."""
-    root = create_scratch_repo()
-    monkeypatch.chdir(root)
-    return root
-
-
 def _run(*args: str) -> Result:
     """Invoke the assembled app's ``supervise`` command with ``args``."""
     return runner.invoke(app, ["supervise", *args])
@@ -169,7 +161,9 @@ def _run(*args: str) -> Result:
 
 def _err_text(result: Result) -> str:
     """The combined stdout+stderr of a run, for flag-name and message probes."""
-    return (result.stdout or "") + (result.stderr or "")
+    from tests._ansi import strip_ansi
+
+    return strip_ansi((result.stdout or "") + (result.stderr or ""))
 
 
 # ---------------------------------------------------------------------------

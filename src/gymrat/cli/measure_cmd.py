@@ -29,13 +29,14 @@ from gymrat.cli.shared import (
     ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    apply_debug,
     begin_run,
     color_override_of,
     emit_report,
     parse_positional,
     run_cli,
     run_options_of,
-    set_debug_mode,
+    set_stderr_color_override,
     wants_json,
     with_repo_lock,
     write_and_flush,
@@ -87,8 +88,8 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     debug: DebugOption = False,
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,
@@ -105,7 +106,13 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         async def body() -> _MeasureOutcome:
-            progress = begin_run(flags, 1)
+            label = resolved_target.label or resolved_target.target
+            progress = begin_run(
+                flags,
+                1,
+                command="measure",
+                target_labels=[label],
+            )
             try:
                 config_resolved = resolve_config(flags)
                 # Recording needs somewhere to write, so the open-session check

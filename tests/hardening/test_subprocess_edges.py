@@ -38,6 +38,8 @@ from gymrat.exec import exec as run_exec
 from gymrat.supervisor import create_claude_driver, create_stdio_driver
 from gymrat.supervisor.claude import ClaudeClient, ClientFactory
 from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
+from tests._cli import try_read_report
+from tests._process_helpers import capture_spawns
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
 pytestmark = pytest.mark.skipif(
@@ -54,19 +56,6 @@ _LEAK_MARKERS = ("was destroyed but it is pending", "exception was never retriev
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def try_read_report(report_path: Path) -> dict[str, Any] | None:
-    """Load the JSON report if it exists and is complete, else ``None``.
-
-    Wrapped in a sync helper so the blocking filesystem read stays out of the
-    async test body, where it would trip the async-blocking-call lint.
-    """
-    try:
-        data = json.loads(report_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
 
 
 async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -221,15 +210,7 @@ async def stdio_children(
     attribute captures the real ``Process`` while leaving the spawn real, so a
     child left running by a deliberately hobbled kill never outlives the test.
     """
-    processes: list[asyncio.subprocess.Process] = []
-    real = asyncio.create_subprocess_exec
-
-    async def wrapper(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
-        proc = await real(*args, **kwargs)  # type: ignore[arg-type]
-        processes.append(proc)
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", wrapper)
+    processes = capture_spawns(monkeypatch, "create_subprocess_exec")
     yield processes
 
     await reap_children(processes)
@@ -240,15 +221,7 @@ async def exec_children(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[list[asyncio.subprocess.Process]]:
     """Record every child ``exec`` spawns and reap any survivor in-loop on teardown."""
-    processes: list[asyncio.subprocess.Process] = []
-    real = asyncio.create_subprocess_shell
-
-    async def wrapper(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
-        proc = await real(*args, **kwargs)  # type: ignore[arg-type]
-        processes.append(proc)
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", wrapper)
+    processes = capture_spawns(monkeypatch, "create_subprocess_shell")
     yield processes
 
     await reap_children(processes)
@@ -484,8 +457,7 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     monkeypatch.setattr(signals, "_exit_process", lambda code: exit_record.update(code=code))  # pyrefly: ignore
 
     # Keep the live-groups registry clean for this test.
-    saved = set(exec_mod._live_process_groups)
-    exec_mod._live_process_groups.clear()
+    saved = exec_mod.reset_live_process_groups()
 
     uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
 
@@ -505,10 +477,14 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
             timeout=10,
         )
     finally:
-        sender.join(timeout=3)
+        # Release the sender even when the spawn never happened, so its 5 s
+        # barrier wait cannot outlast the join — a survivor would fire SIGTERM
+        # after the exit-seam monkeypatch is undone and kill the worker.
+        spawn_barrier.set()
+        sender.join(timeout=6.0)
+        assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
         uninstall()
-        exec_mod._live_process_groups.clear()
-        exec_mod._live_process_groups.update(saved)
+        exec_mod.reset_live_process_groups(saved)
         for proc in spawned:
             if proc.returncode is None and proc.pid:
                 with contextlib.suppress(OSError):

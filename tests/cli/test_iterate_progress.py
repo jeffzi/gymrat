@@ -33,10 +33,17 @@ from gymrat.progress_events import (
     PrepareStarted,
     ProgressEvent,
 )
-from tests._rich import Clock, frame_text, screen_lines, sealed_console
+from tests._rich import (
+    Clock,
+    console_output,
+    fake_install,
+    frame_text,
+    screen_lines,
+    sealed_console,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Iterator
     from typing import Literal
 
     from rich.console import Console
@@ -48,14 +55,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _output(console: Console) -> str:
-    f = console.file
-    assert isinstance(f, StringIO)
-    return f.getvalue()
-
-
 def _last_line(console: Console) -> str:
-    lines = [ln for ln in _output(console).splitlines() if ln.strip()]
+    lines = [ln for ln in console_output(console).splitlines() if ln.strip()]
     return lines[-1]
 
 
@@ -68,7 +69,6 @@ def _pass_started(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
@@ -76,7 +76,6 @@ def _pass_started(
     return PassStarted(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -89,7 +88,6 @@ def _pass_finished(
     total_rounds: int,
     *,
     at_ms: int,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
@@ -97,7 +95,6 @@ def _pass_finished(
     return PassFinished(
         round=round_num,
         total_rounds=total_rounds,
-        target_index=target_index,
         target_count=target_count,
         label=label,
         at_ms=at_ms,
@@ -111,7 +108,6 @@ def _report_full_pass(
     round_num: int,
     total_rounds: int,
     *,
-    target_index: int = 0,
     target_count: int = 1,
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
@@ -121,7 +117,6 @@ def _report_full_pass(
         _pass_started(
             round_num,
             total_rounds,
-            target_index=target_index,
             target_count=target_count,
             label=label,
             phase=phase,
@@ -133,13 +128,28 @@ def _report_full_pass(
         _pass_finished(
             round_num,
             total_rounds,
-            target_index=target_index,
             target_count=target_count,
             label=label,
             phase=phase,
             at_ms=_ms(clock),
         )
     )
+
+
+_live_renderers: list[IterateRenderer] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_renderers() -> Iterator[None]:
+    """Stop every renderer a test built, so a failing test leaks no live display.
+
+    ``stop()`` is idempotent, so tests that already stopped their renderer are
+    unaffected; without this teardown a failure before the in-test ``stop()``
+    leaks a refresh thread and a termination-cleanup registration.
+    """
+    yield
+    while _live_renderers:
+        _live_renderers.pop().stop()
 
 
 def _renderer(
@@ -173,6 +183,7 @@ def _renderer(
         has_before_hook=has_before_hook,
         has_after_hook=has_after_hook,
     )
+    _live_renderers.append(renderer)
     return console, clock, renderer
 
 
@@ -228,18 +239,6 @@ def _plain(
         verbose=verbose,
         checks_cmd=checks_cmd,
     )
-
-
-def _fake_install(
-    registered: list[object],
-) -> Callable[[Callable[[], None]], Callable[[], None]]:
-    """A fake ``install_termination_cleanup`` that records registrations."""
-
-    def install(cb: Callable[[], None]) -> Callable[[], None]:
-        registered.append(cb)
-        return lambda: None
-
-    return install
 
 
 # ---------------------------------------------------------------------------
@@ -304,19 +303,14 @@ def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 5, target_index=0, target_count=2, label="baseline", duration_s=10
-    )
+    _report_full_pass(renderer, clock, 1, 5, target_count=2, label="baseline", duration_s=10)
     clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 5, target_index=1, target_count=2, label="candidate", duration_s=10
-    )
+    _report_full_pass(renderer, clock, 1, 5, target_count=2, label="candidate", duration_s=10)
     clock.tick(1)
     renderer.report(
         _pass_started(
             2,
             5,
-            target_index=0,
             target_count=2,
             label="baseline",
             at_ms=_ms(clock),
@@ -344,6 +338,7 @@ def test_frame_when_judge_finished_does_show_delta_and_regressed(
         JudgeFinished(
             primary_delta_pct=-3.2,
             regressed=("latency", "throughput"),
+            metric_count=3,
             at_ms=_ms(clock),
         )
     )
@@ -359,14 +354,15 @@ def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
     """Judge shows ! glyph, confirm shows a bar for the filtered metrics."""
     _console, clock, renderer = _live(sample_count=5)
 
-    renderer.report(JudgeFinished(primary_delta_pct=2.5, regressed=("latency",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.5, regressed=("latency",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=5100))
     clock.tick(6)
     renderer.report(
         _pass_started(
             1,
             5,
-            target_index=0,
             target_count=2,
             label="baseline",
             at_ms=_ms(clock),
@@ -404,7 +400,6 @@ def test_frame_when_compact_layout_does_show_single_row(
         _pass_started(
             1,
             5,
-            target_index=0,
             target_count=2,
             label="A",
             at_ms=_ms(clock),
@@ -465,7 +460,9 @@ def test_frame_when_judge_finished_after_started_does_show_elapsed(
     renderer.report(JudgeStarted(at_ms=_ms(clock)))
     clock.tick(4)
     renderer.report(
-        JudgeFinished(primary_delta_pct=-3.2, regressed=("latency",), at_ms=_ms(clock)),
+        JudgeFinished(
+            primary_delta_pct=-3.2, regressed=("latency",), metric_count=3, at_ms=_ms(clock)
+        ),
     )
 
     result = frame_text(renderer.frame())
@@ -498,7 +495,9 @@ def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
 
 def test_frame_when_confirm_reproduced_does_show_reproduced():
     _console, _clock, renderer = _live(sample_count=1)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
     renderer.report(ConfirmFinished(reproduced=True, at_ms=10000))
 
@@ -511,7 +510,9 @@ def test_frame_when_confirm_reproduced_does_show_reproduced():
 
 def test_frame_when_confirm_not_reproduced_does_show_not_reproduced():
     _console, _clock, renderer = _live(sample_count=1)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
     renderer.report(ConfirmFinished(reproduced=False, at_ms=10000))
 
@@ -523,7 +524,9 @@ def test_frame_when_confirm_not_reproduced_does_show_not_reproduced():
 
 def test_frame_when_confirm_unfiltered_does_show_full_suite_label():
     _console, _clock, renderer = _live(sample_count=5)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
 
     result = frame_text(renderer.frame())
@@ -557,12 +560,8 @@ def test_plain_when_passes_done_does_print_timestamped_line(
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
-    _report_full_pass(
-        renderer, clock, 1, 1, target_index=0, target_count=2, label="baseline", duration_s=10
-    )
-    _report_full_pass(
-        renderer, clock, 1, 1, target_index=1, target_count=2, label="experiment", duration_s=10
-    )
+    _report_full_pass(renderer, clock, 1, 1, target_count=2, label="baseline", duration_s=10)
+    _report_full_pass(renderer, clock, 1, 1, target_count=2, label="experiment", duration_s=10)
 
     assert _last_line(console) == snapshot
     renderer.stop()
@@ -574,7 +573,9 @@ def test_plain_when_judge_finished_does_print_timestamped_line(
     console, clock, renderer = _plain(sample_count=1)
 
     clock.tick(6)
-    renderer.report(JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=-2.0, regressed=(), metric_count=3, at_ms=_ms(clock))
+    )
 
     assert _last_line(console) == snapshot
     renderer.stop()
@@ -611,11 +612,13 @@ def test_plain_when_any_event_does_not_emit_ansi_codes():
     renderer.report(PrepareStarted(label="bench", at_ms=0))
     clock.tick(1)
     renderer.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
-    renderer.report(JudgeFinished(primary_delta_pct=-1.0, regressed=(), at_ms=_ms(clock)))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=-1.0, regressed=(), metric_count=3, at_ms=_ms(clock))
+    )
     renderer.report(IterationRecorded(seq=1, outcome="improved", at_ms=_ms(clock)))
     renderer.stop()
 
-    output = _output(console)
+    output = console_output(console)
 
     assert "\x1b[" not in output
 
@@ -667,7 +670,7 @@ def test_live_mode_when_created_does_register_termination_cleanup_once(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.iterate_progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, renderer = _live()
@@ -682,7 +685,7 @@ def test_plain_mode_when_created_does_not_register_termination_cleanup(
     registered: list[object] = []
     monkeypatch.setattr(
         "gymrat.cli.iterate_progress.install_termination_cleanup",
-        _fake_install(registered),
+        fake_install(registered),
     )
 
     _console, _clock, renderer = _plain()
@@ -717,6 +720,8 @@ def test_clear_on_signal_when_live_up_does_leave_screen_blank(
     renderer._clear_on_signal()
 
     assert screen_lines(buf.getvalue()) == []
+    if renderer._live is not None:
+        renderer._live.stop()
 
 
 def test_clear_on_signal_when_after_stop_does_write_nothing(
@@ -761,7 +766,7 @@ def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_ver
     renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
     clock.tick(6)
     renderer.report(
-        JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)),
+        JudgeFinished(primary_delta_pct=-2.0, regressed=(), metric_count=4, at_ms=_ms(clock)),
     )
 
     result = frame_text(renderer.frame())
@@ -778,6 +783,7 @@ def test_plain_when_judge_finished_with_regressions_does_print_count_and_names()
         JudgeFinished(
             primary_delta_pct=-6.8,
             regressed=("latency",),
+            metric_count=5,
             at_ms=_ms(clock),
         ),
     )
@@ -794,6 +800,7 @@ def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names()
         JudgeFinished(
             primary_delta_pct=-6.8,
             regressed=("latency", "alloc", "throughput", "parse"),
+            metric_count=5,
             at_ms=_ms(clock),
         ),
     )
@@ -801,6 +808,30 @@ def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names()
     assert _last_line(console) == (
         "[00:00:00] judge -6.8% · 1 improve/noise · 4 regressed: latency, alloc, throughput, …"
     )
+    renderer.stop()
+
+
+def test_plain_when_judge_finished_does_use_event_metric_count_not_renderer_metric_count():
+    """Judge line computes improve/noise from the event's metric_count, not the renderer's.
+
+    When the config ``[metrics]`` table is absent the renderer receives
+    ``metric_count=0`` at construction, but the judge always knows the real
+    total from the collected metric metadata. The plain-mode line should read
+    ``4 improve/noise`` (5 total - 1 regressed), never ``-1 improve/noise``.
+    """
+    console, clock, renderer = _plain(metric_count=0)
+
+    clock.tick(6)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-2.5,
+            regressed=("latency",),
+            metric_count=5,
+            at_ms=_ms(clock),
+        ),
+    )
+
+    assert _last_line(console) == "[00:00:00] judge -2.5% · 4 improve/noise · 1 regressed: latency"
     renderer.stop()
 
 
@@ -822,7 +853,9 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 ):
     """Confirm done carries pass count and reproduced status; no stale sub-line text."""
     _console, clock, renderer = _live(sample_count=2)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=5000))
+    renderer.report(
+        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
+    )
     renderer.report(ConfirmStarted(filtered_metrics=("x",), at_ms=5100))
     at = 5100
     for rnd in range(1, 3):
@@ -833,7 +866,6 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
                 _pass_started(
                     rnd,
                     2,
-                    target_index=t_idx,
                     target_count=2,
                     label=lbl,
                     at_ms=at,
@@ -845,7 +877,6 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
                 _pass_finished(
                     rnd,
                     2,
-                    target_index=t_idx,
                     target_count=2,
                     label=lbl,
                     at_ms=at,
@@ -859,6 +890,53 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 
     assert f"4/4 · {expected_fragment}" in result
     assert "estimating time left" not in result
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# Compact mode -- confirm phase
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_compact_confirm_started_does_reset_bar_for_rerun():
+    """Compact bar resets and relabels for the confirm rerun instead of staying frozen at 100%.
+
+    In compact mode (short terminal) only one progress bar exists. After the
+    measure passes complete the bar sits at 100 %. When the confirm phase
+    starts, the bar must reset to show confirm progress — not stay frozen.
+    """
+    _console, clock, renderer = _live(height=10, sample_count=1, metric_count=3)
+
+    renderer.report(PrepareFinished(label="bench", at_ms=0))
+    clock.tick(1)
+    _report_full_pass(renderer, clock, 1, 1, target_count=1, duration_s=5)
+
+    clock.tick(1)
+    renderer.report(
+        JudgeFinished(
+            primary_delta_pct=-2.5,
+            regressed=("latency",),
+            metric_count=3,
+            at_ms=_ms(clock),
+        )
+    )
+    renderer.report(ConfirmStarted(filtered_metrics=("latency",), at_ms=_ms(clock)))
+    clock.tick(1)
+    renderer.report(
+        _pass_started(
+            1,
+            2,
+            target_count=1,
+            label="baseline",
+            at_ms=_ms(clock),
+            phase="confirm",
+        )
+    )
+
+    result = frame_text(renderer.frame())
+
+    assert "confirm" in result.lower()
+    assert "100%" not in result
     renderer.stop()
 
 
@@ -882,6 +960,7 @@ def test_frame_when_judge_regressed_does_style_names_via_format_inline():
         JudgeFinished(
             primary_delta_pct=-3.2,
             regressed=("node/access#time",),
+            metric_count=3,
             at_ms=_ms(clock),
         )
     )

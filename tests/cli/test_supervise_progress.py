@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from unittest.mock import patch
 
 if TYPE_CHECKING:
@@ -246,7 +246,7 @@ class ReporterKit(NamedTuple):
 
 def make_reporter(
     *,
-    mode: str = "live",
+    mode: Literal["live", "plain"] = "live",
     max_minutes: float = 480,
     max_usd: float | None = None,
     max_iterations: int | None = None,
@@ -258,6 +258,7 @@ def make_reporter(
     label: str = "ecstatic-ts",
     session_id: str = "20260813-125044-34ec",
     branch: str = "gymrat/20260813-125044-34ec",
+    color: bool | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing."""
     clock = Clock(clock_start)
@@ -272,6 +273,8 @@ def make_reporter(
         kwargs["read_progress"] = read_progress
     if plain_write is not None:
         kwargs["plain_write"] = plain_write
+    if color is not None:
+        kwargs["color"] = color
     reporter = create_supervise_reporter(
         root=root,
         max_minutes=max_minutes,
@@ -310,6 +313,16 @@ def test_create_reporter_when_built_does_expose_frame():
     frame = kit.reporter.frame()
 
     assert frame is not None
+
+
+def test_create_reporter_when_color_false_does_build_colorless_console():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        make_reporter(mode="live", color=False)
+
+        call_kwargs = mock_live_cls.call_args.kwargs
+        console = call_kwargs.get("console")
+        assert console is not None
+        assert console.color_system is None
 
 
 # ---------------------------------------------------------------------------
@@ -851,14 +864,9 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_bar(
     snapshot: SnapshotAssertion,
 ):
     sidecar = ProgressSnapshot(
-        seq=3,
-        phase="measure",
         passes_completed=7,
         passes_total=10,
-        current_side="experiment",
-        current_round=4,
         last_pass_duration_ms=225_000.0,
-        started_at=1700000000.0,
     )
 
     def fake_read_progress(_root: str) -> ProgressSnapshot | None:

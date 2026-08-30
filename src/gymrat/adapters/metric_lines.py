@@ -10,7 +10,6 @@ import re
 
 from gymrat.adapters.defaults import defaults_from_suffixes
 from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
-from gymrat.errors import GymratError
 from gymrat.stats.descriptive import compute_median
 
 _PREFIX = "METRIC"
@@ -78,6 +77,10 @@ class _MetricLinesAdapter:
 
     name = "metric-lines"
 
+    def defaults(self, metric_name: str) -> MetricDefaults:
+        """Return name-derived defaults for ``metric_name`` via suffix matching."""
+        return defaults_from_suffixes(metric_name)
+
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
         """Parse ``METRIC`` lines from ``stdout`` into a median-per-name metric map.
 
@@ -123,7 +126,7 @@ class _MetricLinesAdapter:
                     f"Metric name \"{metric_name}\" contains more than one '#'; "
                     "only a single '#' is allowed as the metric-type separator"
                 )
-                raise GymratError(msg)
+                raise AdapterError(msg)
 
             value = _js_number(after[last_eq + 1 :])
             if value is None:
@@ -143,10 +146,6 @@ class _MetricLinesAdapter:
             raise AdapterError(msg)
 
         return {metric_name: compute_median(values) for metric_name, values in samples.items()}
-
-    def defaults(self, metric_name: str) -> MetricDefaults:
-        """Return name-derived defaults for ``metric_name`` via suffix matching."""
-        return defaults_from_suffixes(metric_name)
 
 
 metric_lines_adapter = _MetricLinesAdapter()

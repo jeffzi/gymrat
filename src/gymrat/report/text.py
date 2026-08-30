@@ -18,6 +18,7 @@ import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
 from rich.markup import escape
 from rich.text import Text
 
@@ -164,7 +165,7 @@ def _render_summary(metrics: MetricComparisons, candidate_index: int) -> str:
 
 def _render_summaries(result: ComparisonResult) -> list[str]:
     """One markup summary line per candidate, each behind that candidate's bold label."""
-    label_width = max(len(candidate.label) for candidate in result.candidates)
+    label_width = max(cell_len(candidate.label) for candidate in result.candidates)
     return [
         f"{markup(candidate.label.ljust(label_width), 'bold')}  "
         f"{_render_summary(result.metrics, index)}"
@@ -185,7 +186,7 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
 
     qualify = spans_many_kinds(metrics)
     labels = [highlight_label(highlight, qualify=qualify) for highlight in highlights]
-    label_widths = [len(Text.from_markup(label).plain) for label in labels]
+    label_widths = [cell_len(Text.from_markup(label).plain) for label in labels]
     name_width = max(label_widths) + _HIGHLIGHT_NAME_GUTTER
 
     entries: list[str] = []
@@ -202,7 +203,9 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         )
 
         label_field = f"{label}{' ' * (name_width - width)}"
-        delta_field = f"{' ' * max(0, _HIGHLIGHT_DELTA_WIDTH - len(delta))}{markup(delta, style)}"
+        delta_field = (
+            f"{' ' * max(0, _HIGHLIGHT_DELTA_WIDTH - cell_len(delta))}{markup(delta, style)}"
+        )
         suffix = "" if evidence == "" else f"  {markup(evidence, 'dim')}"
         entries.append(f"  {markup(get_glyph(shown), style)} {label_field}{delta_field}{suffix}")
 

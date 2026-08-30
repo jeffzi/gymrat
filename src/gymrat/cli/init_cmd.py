@@ -21,10 +21,11 @@ from rich.markup import escape
 from gymrat.cli.shared import (
     DebugOption,
     NoColorOption,
+    apply_debug,
     color_override_of,
     exit_with_error,
     resolve_stream_color,
-    set_debug_mode,
+    set_stderr_color_override,
     write_and_flush,
 )
 from gymrat.config import CONFIG_FILENAME, find_implicit_base
@@ -78,8 +79,8 @@ def init_command(
     debug: DebugOption = False,
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
-    if debug:
-        set_debug_mode(True)
+    apply_debug(debug)
+    set_stderr_color_override(color_override_of(not no_color))
 
     color_override = color_override_of(not no_color)
     resolved_color = resolve_stream_color(color_override, sys.stdout)

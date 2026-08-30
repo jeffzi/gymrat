@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
 from rich.markup import escape
 
 from gymrat.report.format import (
@@ -154,21 +155,21 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
     grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
 
     metric_width = compute_column_width(
-        len(widest_header_label(body)),
-        [len(row.label if grouped else row.name) for row in layout.ordered]
+        cell_len(widest_header_label(body)),
+        [cell_len(row.label if grouped else row.name) for row in layout.ordered]
         + aggregate_label_lengths(body),
         METRIC_COLUMN_MIN,
     )
     baseline_width = compute_column_width(
-        len(baseline_header),
-        [len(baseline_text(row)) for row in layout.ordered],
+        cell_len(baseline_header),
+        [cell_len(baseline_text(row)) for row in layout.ordered],
         VALUE_COLUMN_MIN,
     )
     candidate_widths = [
         compute_column_width(
-            len(candidate.label),
-            [len(candidate_text(row, index)) for row in layout.ordered]
-            + [len(line.cell[index].text) for line in aggregate_lines],
+            cell_len(candidate.label),
+            [cell_len(candidate_text(row, index)) for row in layout.ordered]
+            + [cell_len(line.cell[index].text) for line in aggregate_lines],
             VALUE_COLUMN_MIN,
         )
         for index, candidate in enumerate(candidates)

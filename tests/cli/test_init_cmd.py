@@ -162,14 +162,37 @@ def test_init_when_config_already_exists_and_bench_given_does_not_rewrite_it(
     assert (existing_config_cwd / "gymrat.toml").read_text(encoding="utf-8") == EXISTING_CONFIG
 
 
-def test_init_when_config_exists_and_skill_path_is_a_directory_does_report_config_exists(
-    existing_config_cwd: Path,
-):
+# ---------------------------------------------------------------------------
+# blocked artifact path exits with code 2
+# ---------------------------------------------------------------------------
+
+
+def test_init_when_skill_path_is_a_directory_does_exit_two(existing_config_cwd: Path):
     (existing_config_cwd / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
 
     result = runner.invoke(app, ["init"])
 
-    assert re.search(r"config.*already exists at gymrat\.toml", result.stdout, re.IGNORECASE)
+    assert result.exit_code == 2
+
+
+def test_init_when_runbook_path_is_a_directory_does_exit_two_naming_path(non_repo_cwd: Path):
+    (non_repo_cwd / "gymrat-runbook.md").mkdir()
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 2
+    assert "gymrat-runbook.md" in result.stderr
+
+
+def test_init_when_runbook_is_a_symlink_does_exit_two(non_repo_cwd: Path):
+    target = non_repo_cwd / "real.md"
+    target.write_text("# target\n", encoding="utf-8")
+    (non_repo_cwd / "gymrat-runbook.md").symlink_to(target)
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 2
+    assert "gymrat-runbook.md" in result.stderr
 
 
 # ---------------------------------------------------------------------------
