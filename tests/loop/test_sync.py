@@ -214,6 +214,7 @@ def test_sync_to_experiment_when_file_renamed_does_remove_old_path_from_experime
     assert "GUIDE.md" in result.files
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="'>' is illegal in Windows filenames")
 def test_sync_to_experiment_when_path_contains_arrow_literal_does_not_misparse_as_rename(  # cspell:disable-line
     session: str,
 ):

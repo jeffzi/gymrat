@@ -54,6 +54,7 @@ from gymrat.supervisor.events import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import tzinfo
 
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
@@ -67,6 +68,11 @@ __all__ = [
     "SuperviseReporter",
     "create_supervise_reporter",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Emit / refresh
+# ---------------------------------------------------------------------------
 
 
 def _try_read_session(ctx: ReporterCtx) -> None:
@@ -121,6 +127,11 @@ def _next_liveness_after_tool_end(
             tool_name=last.tool_name, since=last.started_at, input_summary=last.input_summary
         )
     return Ended(tool_name=event.tool_name, since=event.timestamp, result=event.result)
+
+
+# ---------------------------------------------------------------------------
+# Event handlers
+# ---------------------------------------------------------------------------
 
 
 def _handle_cap_event(ctx: ReporterCtx, cap: CapEvent) -> None:
@@ -197,6 +208,11 @@ def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
             assert_never(event)
 
 
+# ---------------------------------------------------------------------------
+# Reporter factory
+# ---------------------------------------------------------------------------
+
+
 def _stderr_write(text: str) -> None:
     sys.stderr.write(f"{text}\n")
 
@@ -215,6 +231,7 @@ def _build_ctx(  # noqa: PLR0913 - mirrors create_supervise_reporter parameters
     label: str,
     session_id: str,
     branch: str,
+    tz: tzinfo | None = None,
 ) -> ReporterCtx:
     return ReporterCtx(
         now=now,
@@ -235,6 +252,7 @@ def _build_ctx(  # noqa: PLR0913 - mirrors create_supervise_reporter parameters
         session_result=None,
         liveness=Starting(),
         last_loop_text="",
+        tz=tz,
         plain_write_fn=plain_write,
         warn_fn=plain_write,
         live=None,
@@ -256,6 +274,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     plain_write: Callable[[str], None] | None = None,
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     color: bool = True,
+    tz: tzinfo | None = None,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard."""
     is_plain = mode == "plain"
@@ -272,6 +291,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         label=label,
         session_id=session_id,
         branch=branch,
+        tz=tz,
     )
 
     # Live is created after ctx — Rich's Live.__init__ eagerly calls
@@ -304,6 +324,11 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         frame=lambda: build_frame(ctx),
         warn=warn,
     )
+
+
+# ---------------------------------------------------------------------------
+# Session reading
+# ---------------------------------------------------------------------------
 
 
 def _find_best_kept_iteration(

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections import deque
     from collections.abc import Callable
+    from datetime import tzinfo
 
     from rich.console import RenderableType
     from rich.live import Live
@@ -27,7 +28,7 @@ class ReadSessionResult:
     """The folded session state plus whether a baseline has been recorded.
 
     The ``best_*`` fields track the committed-keep iteration with the best
-    primary delta.  ``_make_default_read`` computes them from the session
+    primary delta.  ``make_default_read`` computes them from the session
     records; injected test readers set them directly.
     """
 
@@ -125,5 +126,6 @@ class ReporterCtx:
     liveness: Liveness
     last_loop_text: str
     plain_write_fn: Callable[[str], None]
+    tz: tzinfo | None
     warn_fn: Callable[[str], None]
     live: Live | None

@@ -316,6 +316,7 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
         height=25,
         force_terminal=force_terminal,
         color_system=color_system,
+        legacy_windows=False,
         no_color=False,
         soft_wrap=True,
     )

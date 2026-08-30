@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, assert_never
 
 from rich.panel import Panel
@@ -56,8 +56,9 @@ def _is_iterate_tool(tool: TrackedTool | InFlight) -> bool:
     return tool.tool_name == "Bash" and "gymrat iterate" in tool.input_summary
 
 
-def _format_wall_clock(epoch_ms: int) -> str:
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone().strftime("%H:%M:%S")
+def _format_wall_clock(epoch_ms: int, tz: tzinfo | None) -> str:
+    dt = datetime.fromtimestamp(epoch_ms / 1000, tz=UTC)
+    return dt.astimezone(tz).strftime("%H:%M:%S")
 
 
 def _format_result_mark(result: str) -> str:
@@ -133,7 +134,7 @@ def _build_best_text(session_result: ReadSessionResult | None) -> str | None:
     return " ".join(parts)
 
 
-def _build_liveness_text(liveness: Liveness, now: int) -> str:
+def _build_liveness_text(liveness: Liveness, now: int, tz: tzinfo | None) -> str:
     match liveness:
         case Starting():
             return "starting"
@@ -148,7 +149,7 @@ def _build_liveness_text(liveness: Liveness, now: int) -> str:
             if ago >= IDLE_WARN_MS:
                 return (
                     f"idle {format_duration(ago)}"
-                    f" — no tool call since {_format_wall_clock(since)}"
+                    f" — no tool call since {_format_wall_clock(since, tz)}"
                     f" (last: {name} {_format_result_mark(result)})"
                 )
             return f"{name} {format_duration(ago)} ago"
@@ -158,8 +159,8 @@ def _build_liveness_text(liveness: Liveness, now: int) -> str:
             assert_never(liveness)
 
 
-def _build_finished_tool_line(tool: FinishedTool) -> str:
-    wall_clock = _format_wall_clock(tool.ended_at)
+def _build_finished_tool_line(tool: FinishedTool, tz: tzinfo | None) -> str:
+    wall_clock = _format_wall_clock(tool.ended_at, tz)
     mark = _format_result_mark(tool.result)
     duration = format_duration(tool.duration_ms)
     return f"  {wall_clock}  {tool.tool_name}   {tool.input_summary}  {mark} {duration}"
@@ -203,7 +204,7 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
 
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
-    liveness_table.add_row(Text(_build_liveness_text(ctx.liveness, now)))
+    liveness_table.add_row(Text(_build_liveness_text(ctx.liveness, now, ctx.tz)))
 
     if isinstance(ctx.liveness, InFlight) and _is_iterate_tool(ctx.liveness):
         sidecar = ctx.read_progress_fn(ctx.root)
@@ -212,7 +213,7 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
             liveness_table.add_row(Text(f"  {nest_text}"))
 
     for tool in ctx.finished_tools:
-        liveness_table.add_row(Text(_build_finished_tool_line(tool)))
+        liveness_table.add_row(Text(_build_finished_tool_line(tool, ctx.tz)))
 
     body = Table.grid(padding=(0, 0))
     body.add_column()

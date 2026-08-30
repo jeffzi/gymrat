@@ -7,7 +7,7 @@ helper imported as ``tests.cli.supervise._fixtures``.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
@@ -130,9 +130,9 @@ def make_read_session(
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    The best-tracking fields are passed to ``ReadSessionResult`` only when
-    explicitly provided, so existing callers that predate those fields are
-    unaffected.
+    Only forward a ``best_*`` / ``baseline_sha`` kwarg when the caller supplies
+    a value, so callers that omit best-tracking still get a valid two-field
+    result.
     """
     best_kwargs: dict[str, Any] = {}
     if best_delta_pct is not None:
@@ -266,8 +266,14 @@ def make_reporter(
     session_id: str = "20260813-125044-34ec",
     branch: str = "gymrat/20260813-125044-34ec",
     color: bool | None = None,
+    tz: tzinfo | None = UTC,
 ) -> ReporterKit:
-    """Build a reporter with injectable dependencies for deterministic testing."""
+    """Build a reporter with injectable dependencies for deterministic testing.
+
+    The ``tz`` parameter defaults to ``UTC`` so snapshot tests produce stable
+    timestamps regardless of host timezone.  Pass ``tz=None`` to exercise the
+    system-local fallback path.
+    """
     clock = Clock(clock_start)
     if read_session is None:
         read_session = make_read_session(empty_session_state(), has_baseline=False)
@@ -291,6 +297,7 @@ def make_reporter(
         label=label,
         session_id=session_id,
         branch=branch,
+        tz=tz,
         **kwargs,
     )
     return ReporterKit(reporter, clock)
@@ -328,10 +335,12 @@ def make_plain_reporter(
     max_iterations: int | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
     clock_start: int = 1000,
+    tz: tzinfo | None = UTC,
 ) -> PlainCapture:
     """Build a plain-mode reporter with a write-capturing callback.
 
     Each milestone line the reporter emits is appended to the ``writes`` list.
+    The ``tz`` parameter defaults to ``UTC`` for stable assertions.
     """
     writes: list[str] = []
     kit = make_reporter(
@@ -342,5 +351,6 @@ def make_plain_reporter(
         read_session=read_session,
         clock_start=clock_start,
         plain_write=writes.append,
+        tz=tz,
     )
     return PlainCapture(kit, writes)

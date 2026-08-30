@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 from collections.abc import Buffer, Iterator
 from pathlib import Path
@@ -318,6 +319,7 @@ def test_acquire_lock_when_lockfile_is_non_utf8_bytes_does_reclaim_lockfile():
     assert_holder_record(read_lockfile(lock_path))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX: os.open on a directory succeeds")
 def test_acquire_lock_when_lockfile_is_a_directory_does_reclaim_lockfile():
     # A directory at the lock path — os.read raises IsADirectoryError on POSIX.
     lock_path = fresh_lock_path()
@@ -385,6 +387,7 @@ def test_acquire_lock_when_open_fails_unexpectedly_does_propagate_error_unwrappe
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX: EPERM signals another user")
 def test_acquire_lock_when_stale_lock_belongs_to_other_user_does_name_lockfile_and_manual_remedy(
     monkeypatch: pytest.MonkeyPatch,
 ):

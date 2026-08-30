@@ -620,20 +620,44 @@ def test_liveness_when_untracked_tool_ends_does_not_change():
 
 
 def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
-    """Each finished tool line leads with the local-time completion timestamp.
+    """Each finished tool line leads with the UTC completion timestamp.
 
-    The expected timestamp is computed from the same epoch-to-local conversion
-    the implementation should use, so the assertion is timezone-independent.
+    The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
+    string is a fixed UTC value regardless of the host timezone.
     """
-    ended_at_ms = 3000
-    expected_time = _epoch_ms_to_local_hms(ended_at_ms)
-
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
     fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
     kit.clock.now = 3000
     fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000)
+
+    frame = render_frame(kit.reporter)
+
+    assert "00:00:03" in frame
+
+
+# ---------------------------------------------------------------------------
+# wall-clock — local-timezone default
+# ---------------------------------------------------------------------------
+
+
+def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
+    """A reporter built without an explicit tz falls back to system-local time.
+
+    The expected timestamp is computed from the same epoch-to-local conversion
+    the implementation should use, so this assertion is the only remaining user
+    of ``_epoch_ms_to_local_hms``.
+    """
+    ended_at_ms = 3000
+    expected_time = _epoch_ms_to_local_hms(ended_at_ms)
+
+    kit = make_reporter(tz=None)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.clock.now = ended_at_ms
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", ended_at_ms)
 
     frame = render_frame(kit.reporter)
 
@@ -681,10 +705,9 @@ def test_liveness_when_idle_past_threshold_does_show_wall_clock_and_last_tool_co
     """Idle line shows wall-clock of last tool end plus tool name and success glyph.
 
     The format is ``idle 4m 5s — no tool call since HH:MM:SS (last: Bash ✔)``.
+    The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
+    string is a fixed UTC value.
     """
-    ended_at_ms = 3000
-    expected_time = _epoch_ms_to_local_hms(ended_at_ms)
-
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -696,7 +719,7 @@ def test_liveness_when_idle_past_threshold_does_show_wall_clock_and_last_tool_co
     frame = render_frame(kit.reporter)
 
     assert "idle" in frame
-    assert expected_time in frame
+    assert "00:00:03" in frame
     assert "Bash" in frame
     assert "✔" in frame
 

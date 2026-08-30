@@ -8,6 +8,7 @@ reporting, and the re-run behavior over an existing ``gymrat.toml`` (left
 byte-identical, remaining artifacts still filled in).
 """
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -428,6 +429,7 @@ def test_scaffold_when_config_write_fails_does_not_leave_partial_config(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(
     tmp_path: Path,
 ):

@@ -100,6 +100,7 @@ def frame_text(
         width=width,
         force_terminal=False,
         no_color=True,
+        legacy_windows=False,
         _environ={},
         get_time=get_time or _fixed_time,
     )

@@ -282,7 +282,8 @@ def test_init_when_run_from_subdirectory_does_print_cwd_relative_paths_in_summar
     # Paths must be navigable from cwd, not bare filenames relative to repo root.
     # From packages/core/, gymrat.toml is at ../../gymrat.toml.
     assert "gymrat.toml" in out
-    assert "../../gymrat.toml" in out or str(Path(root) / "gymrat.toml") in out
+    relative = str(Path("../..") / "gymrat.toml")
+    assert relative in out or str(Path(root) / "gymrat.toml") in out
 
 
 # ---------------------------------------------------------------------------
