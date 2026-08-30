@@ -26,9 +26,10 @@ from rich.markup import escape
 
 from gymrat.metric_name import format_inline, parse
 from gymrat.model import Effect
-from gymrat.report.format import format_delta, format_value, get_glyph, is_improvement, pluralize
-from gymrat.report.style import VARIANT_NAME_STYLE, format_hint
-from gymrat.report.table import markup
+from gymrat.plural import pluralize
+from gymrat.report.display import get_glyph
+from gymrat.report.format import format_delta, format_value, is_improvement
+from gymrat.report.style import VARIANT_NAME_STYLE, format_hint, markup
 from gymrat.report.text import paired_samples
 from gymrat.stats.descriptive import compute_median
 
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.config import StopConfig
-    from gymrat.report.format import DisplayClass
+    from gymrat.report.display import DisplayClass
     from gymrat.report.types import MetricComparison, MetricComparisons
     from gymrat.session import (
         BaselineRecord,

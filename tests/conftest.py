@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.cli.shared import set_stderr_color_override
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
@@ -68,6 +69,13 @@ def _clear_gymrat_env() -> Iterator[None]:
         for var in GYMRAT_ENV_VARS:
             patcher.delenv(var, raising=False)
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_stderr_color() -> Iterator[None]:
+    set_stderr_color_override(None)
+    yield
+    set_stderr_color_override(None)
 
 
 def _init_scratch_repo() -> str:

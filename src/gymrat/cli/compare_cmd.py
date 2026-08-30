@@ -73,6 +73,42 @@ _FailOnOption = Annotated[
 ]
 
 
+async def _compare_body(
+    flags: CompareFlags,
+    baseline: TargetSpec,
+    candidates: list[TargetSpec],
+) -> ComparisonResult:
+    labels = [s.label or s.target for s in [baseline, *candidates]]
+    progress = begin_run(
+        flags,
+        1 + len(candidates),
+        command="compare",
+        target_labels=labels,
+    )
+    try:
+        config_resolved = resolve_config(flags)
+        from gymrat import compare as engine  # noqa: PLC0415
+
+        run_opts = run_options_of(config_resolved, progress)
+        options = engine.CompareOptions(
+            baseline=baseline,
+            candidates=candidates,
+            unstable_noise_pct=config_resolved.unstable_noise_pct,
+            bench=run_opts.bench,
+            prepare=run_opts.prepare,
+            adapter=run_opts.adapter,
+            samples=run_opts.samples,
+            timeout_seconds=run_opts.timeout_seconds,
+            config_metrics=run_opts.config_metrics,
+            config_kinds=run_opts.config_kinds,
+            on_progress=run_opts.on_progress,
+            warn=run_opts.warn,
+        )
+        return await engine.compare(options)
+    finally:
+        progress.stop()
+
+
 def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
     baseline: _BaselineArgument,
     candidates: _CandidatesArgument,
@@ -107,40 +143,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     color_override = color_override_of(flags.color)
 
     async def run() -> None:
-        async def body() -> ComparisonResult:
-            labels = [s.label or s.target for s in [baseline, *candidates]]
-            progress = begin_run(
-                flags,
-                1 + len(candidates),
-                command="compare",
-                target_labels=labels,
-            )
-            try:
-                config_resolved = resolve_config(flags)
-                # Lazy: keep the heavy statistics stack out of CLI assembly and --help.
-                from gymrat import compare as engine  # noqa: PLC0415
-
-                run_opts = run_options_of(config_resolved, progress)
-                options = engine.CompareOptions(
-                    baseline=baseline,
-                    candidates=candidates,
-                    unstable_noise_pct=config_resolved.unstable_noise_pct,
-                    bench=run_opts.bench,
-                    prepare=run_opts.prepare,
-                    adapter=run_opts.adapter,
-                    samples=run_opts.samples,
-                    timeout_seconds=run_opts.timeout_seconds,
-                    config_metrics=run_opts.config_metrics,
-                    config_kinds=run_opts.config_kinds,
-                    on_progress=run_opts.on_progress,
-                    warn=run_opts.warn,
-                )
-                return await engine.compare(options)
-            finally:
-                progress.stop()
-
-        result = await with_repo_lock("compare", body)
-
+        result = await with_repo_lock("compare", lambda: _compare_body(flags, baseline, candidates))
         emit_report(
             result,
             flags,

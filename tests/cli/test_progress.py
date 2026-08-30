@@ -240,7 +240,9 @@ def test_frame_when_compact_layout_on_short_console_does_show_single_row(
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_measure_command_does_show_header_with_command_and_labels():
+def test_frame_when_measure_command_does_show_header_with_command_and_labels(
+    snapshot: SnapshotAssertion,
+):
     """Header line: ``measure ecstatic-ts · 5 samples``."""
     _console, _clock, reporter = _reporter(
         "live",
@@ -252,14 +254,13 @@ def test_frame_when_measure_command_does_show_header_with_command_and_labels():
 
     result = frame_text(reporter.frame())
 
-    first_line = result.splitlines()[0]
-    assert "measure" in first_line
-    assert "ecstatic-ts" in first_line
-    assert "5 samples" in first_line
+    assert result == snapshot
     reporter.stop()
 
 
-def test_frame_when_compare_command_does_show_header_with_multiple_labels():
+def test_frame_when_compare_command_does_show_header_with_multiple_labels(
+    snapshot: SnapshotAssertion,
+):
     """Header line: ``compare main, candidate · 5 samples``."""
     _console, _clock, reporter = _reporter(
         "live",
@@ -272,11 +273,7 @@ def test_frame_when_compare_command_does_show_header_with_multiple_labels():
 
     result = frame_text(reporter.frame())
 
-    first_line = result.splitlines()[0]
-    assert "compare" in first_line
-    assert "main" in first_line
-    assert "candidate" in first_line
-    assert "5 samples" in first_line
+    assert result == snapshot
     reporter.stop()
 
 
@@ -345,39 +342,26 @@ def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
 # ---------------------------------------------------------------------------
 
 
-def test_live_wiring_when_created_does_set_transient_and_no_redirect_stderr():
+def test_live_wiring_when_created_does_set_transient_and_not_redirect_stderr():
+    """redirect_stderr=False keeps stderr untouched so a signal's raw write reaches the terminal."""
+    real_stderr = sys.stderr
     _console, _clock, reporter = _reporter("live")
 
-    assert reporter._live is not None
-    assert reporter._live.transient is True
-    assert reporter._live._redirect_stderr is False
+    assert reporter.live is not None
+    assert reporter.live.transient is True
+    assert sys.stderr is real_stderr
     reporter.stop()
 
 
-def test_live_wiring_when_created_does_set_auto_refresh_and_get_renderable():
-    """Live display uses get_renderable=self.frame, auto_refresh, and the shared refresh rate."""
+def test_live_wiring_when_created_does_set_auto_refresh_and_render_current_frame():
+    """Live display auto-refreshes at the shared rate and paints from the current frame."""
     _console, _clock, reporter = _reporter("live")
 
-    live = reporter._live
+    live = reporter.live
     assert live is not None
     assert live.auto_refresh is True
     assert live.refresh_per_second == LIVE_REFRESH_PER_SECOND
-    assert live._get_renderable == reporter.frame
-    reporter.stop()
-
-
-def test_refresh_live_when_called_does_call_refresh_on_live(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """With get_renderable wired, _refresh_live only needs to call live.refresh()."""
-    _console, _clock, reporter = _reporter("live")
-    refreshed: list[bool] = []
-    assert reporter._live is not None
-    monkeypatch.setattr(reporter._live, "refresh", lambda: refreshed.append(True))
-
-    reporter._refresh_live()
-
-    assert len(refreshed) == 1
+    assert frame_text(live.get_renderable()) == frame_text(reporter.frame())
     reporter.stop()
 
 
@@ -429,7 +413,7 @@ def test_stop_when_called_twice_does_not_raise_and_clears_live():
     reporter.stop()
     reporter.stop()
 
-    assert reporter._live is None
+    assert reporter.live is None
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +487,7 @@ def test_live_renderer_when_console_width_zero_does_render_as_plain():
     reporter.report(PrepareFinished(label="bench", at_ms=1000))
     reporter.stop()
 
-    assert reporter._live is None
+    assert reporter.live is None
     output = console_output(console)
     assert "\x1b[" not in output
 
@@ -526,14 +510,14 @@ def test_clear_on_signal_when_live_up_does_leave_screen_blank(
     buf = StringIO()
     monkeypatch.setattr(sys, "stderr", buf)
 
-    reporter._clear_on_signal()
+    reporter.clear_on_signal()
 
     assert screen_lines(buf.getvalue()) == []
-    # _clear_on_signal marks the reporter as stopped (as os._exit would follow
+    # clear_on_signal marks the reporter as stopped (as os._exit would follow
     # in production), so stop() is a no-op; shut down the Live refresh thread
     # directly so the test leaks neither the thread nor the console registry.
-    if reporter._live is not None:
-        reporter._live.stop()
+    if reporter.live is not None:
+        reporter.live.stop()
 
 
 def test_clear_on_signal_when_after_stop_does_write_nothing(
@@ -545,6 +529,6 @@ def test_clear_on_signal_when_after_stop_does_write_nothing(
     buf = StringIO()
     monkeypatch.setattr(sys, "stderr", buf)
 
-    reporter._clear_on_signal()
+    reporter.clear_on_signal()
 
     assert buf.getvalue() == ""

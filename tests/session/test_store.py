@@ -38,7 +38,7 @@ from gymrat.session.store import (
     require_open_session,
     require_session,
 )
-from tests.session._records import (
+from tests.session.records._fixtures import (
     AT,
     COMMIT,
     Worktrees,

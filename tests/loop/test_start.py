@@ -34,7 +34,7 @@ from gymrat.session import (
     remove_worktrees,
     session_jsonl_path,
 )
-from tests.session._records import committed_keep, finalize_record, iteration_record
+from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 BRANCH_PATTERN = re.compile(r"^gymrat/\d{8}-\d{6}-[0-9a-f]{4}$")

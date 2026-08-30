@@ -19,7 +19,7 @@ from typing import Any, Literal
 from gymrat.loop.hooks import HookInvocation
 from gymrat.session import HookRecord, Worktrees
 from gymrat.session.schema import HookStage
-from tests.session._records import SESSION_ID, session_record
+from tests.session.records._fixtures import SESSION_ID, session_record
 
 Channel = Literal["stdout", "stderr"]
 

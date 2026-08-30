@@ -198,14 +198,17 @@ def test_install_termination_cleanup_when_sighup_undefined_does_register_only_av
 # ---------------------------------------------------------------------------
 
 
-def test_reset_when_deferral_active_does_clear_deferring_state():
-    signals._deferring = True
-    signals._deferred_signal = signal.SIGINT
+def test_reset_when_called_during_deferral_does_handle_next_signal_immediately(
+    raise_signal: RaiseSignal,
+):
+    install_termination_cleanup(lambda: None)
 
-    signals.reset()
+    with signals.deferring_termination_signals():
+        signals.reset()
 
-    assert signals._deferring is False
-    assert signals._deferred_signal is None
+        code = raise_signal(signal.SIGINT)
+
+    assert code == 128 + signal.SIGINT
 
 
 # ---------------------------------------------------------------------------

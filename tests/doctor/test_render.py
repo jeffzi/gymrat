@@ -6,7 +6,6 @@ driven through ``NO_COLOR`` / ``FORCE_COLOR`` the way a shell would set it.
 """
 
 import json
-import re
 
 import pytest
 
@@ -17,12 +16,7 @@ from gymrat.doctor.checks import (
     create_doctor_report,
 )
 from gymrat.doctor.render import render_doctor_json, render_doctor_report
-
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def strip_ansi(text: str) -> str:
-    return _ANSI.sub("", text)
+from tests._ansi import strip_ansi
 
 
 def lines(output: str) -> list[str]:

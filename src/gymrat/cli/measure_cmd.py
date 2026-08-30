@@ -73,6 +73,51 @@ class _MeasureOutcome:
     recording: RequiredSession | None
 
 
+async def _measure_body(
+    flags: MeasureFlags,
+    resolved_target: TargetSpec,
+) -> _MeasureOutcome:
+    label = resolved_target.label or resolved_target.target
+    progress = begin_run(flags, 1, command="measure", target_labels=[label])
+    try:
+        config_resolved = resolve_config(flags)
+        # Session check before bench: failing after a long run would lose samples.
+        recording = (
+            require_open_session(repo_root(), "recording a measurement") if flags.record else None
+        )
+        from gymrat import measure as engine  # noqa: PLC0415
+
+        run_opts = run_options_of(config_resolved, progress)
+        options = engine.MeasureOptions(
+            target=resolved_target,
+            bench=run_opts.bench,
+            prepare=run_opts.prepare,
+            adapter=run_opts.adapter,
+            samples=run_opts.samples,
+            timeout_seconds=run_opts.timeout_seconds,
+            config_metrics=run_opts.config_metrics,
+            config_kinds=run_opts.config_kinds,
+            on_progress=run_opts.on_progress,
+            warn=run_opts.warn,
+        )
+        result = await engine.measure(options)
+    finally:
+        progress.stop()
+
+    # Still under the repo lock: only a completed run reaches here.
+    if recording is not None:
+        append_record(
+            recording.jsonl_path,
+            BaselineRecord(
+                type="baseline",
+                at=now_iso(),
+                label=result.label,
+                samples=tuple(result.rounds),
+            ),
+        )
+    return _MeasureOutcome(result=result, recording=recording)
+
+
 def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
     target: _TargetArgument = None,
     *,
@@ -105,74 +150,18 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     color_override = color_override_of(flags.color)
 
     async def run() -> None:
-        async def body() -> _MeasureOutcome:
-            label = resolved_target.label or resolved_target.target
-            progress = begin_run(
-                flags,
-                1,
-                command="measure",
-                target_labels=[label],
-            )
-            try:
-                config_resolved = resolve_config(flags)
-                # Recording needs somewhere to write, so the open-session check
-                # comes before any benching: failing after a long run would throw
-                # the samples away with nowhere to record them.
-                recording = (
-                    require_open_session(repo_root(), "recording a measurement")
-                    if flags.record
-                    else None
-                )
-                # Lazy: keep the heavy statistics stack out of CLI assembly and --help.
-                from gymrat import measure as engine  # noqa: PLC0415
-
-                run_opts = run_options_of(config_resolved, progress)
-                options = engine.MeasureOptions(
-                    target=resolved_target,
-                    bench=run_opts.bench,
-                    prepare=run_opts.prepare,
-                    adapter=run_opts.adapter,
-                    samples=run_opts.samples,
-                    timeout_seconds=run_opts.timeout_seconds,
-                    config_metrics=run_opts.config_metrics,
-                    config_kinds=run_opts.config_kinds,
-                    on_progress=run_opts.on_progress,
-                    warn=run_opts.warn,
-                )
-                result = await engine.measure(options)
-            finally:
-                progress.stop()
-
-            # Still under the repo lock: a failed bench raised above and appended
-            # nothing, so only a completed run reaches here.
-            if recording is not None:
-                append_record(
-                    recording.jsonl_path,
-                    BaselineRecord(
-                        type="baseline",
-                        at=now_iso(),
-                        label=result.label,
-                        samples=tuple(result.rounds),
-                    ),
-                )
-            return _MeasureOutcome(result=result, recording=recording)
-
-        outcome = await with_repo_lock("measure", body)
-
+        outcome = await with_repo_lock("measure", lambda: _measure_body(flags, resolved_target))
         emit_report(
             outcome.result,
             flags,
             ReportRenderers(text=render_measure_report, json=render_measure_json),
             ReportOptions(color=color_override),
         )
-
-        recording = outcome.recording
-        if recording is not None:
+        if outcome.recording is not None:
             note = (
                 f'baseline "{outcome.result.label}" '
-                f"recorded to session {recording.session.session_id}\n"
+                f"recorded to session {outcome.recording.session.session_id}\n"
             )
-            # A JSON run keeps stdout a clean document, so the note rides stderr.
             stream = sys.stderr if wants_json(flags) else sys.stdout
             write_and_flush(stream, note)
 

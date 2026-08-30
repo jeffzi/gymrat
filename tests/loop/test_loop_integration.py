@@ -44,8 +44,8 @@ from gymrat.session.records import (
 )
 from gymrat.session.store import append_record, read_records
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
-from tests.loop._iterate import resolved_config
-from tests.session._records import committed_keep, iteration_record
+from tests.loop.iterate._fixtures import resolved_config
+from tests.session.records._fixtures import committed_keep, iteration_record
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only worktrees and gating")
 

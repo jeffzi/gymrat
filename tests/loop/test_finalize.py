@@ -33,7 +33,7 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from gymrat.session.workspace import run_git_step as real_run_git_step
-from tests.session._records import committed_keep, iteration_record
+from tests.session.records._fixtures import committed_keep, iteration_record
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 

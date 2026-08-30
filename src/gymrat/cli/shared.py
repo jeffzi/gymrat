@@ -488,17 +488,13 @@ def begin_run(
 
     mode = resolve_render_mode()
     console = stderr_console(color_flag=flags.color)
-    extra: dict[str, object] = {}
-    if command is not None:
-        extra["command"] = command
-    if target_labels is not None:
-        extra["target_labels"] = target_labels
     return create_progress_reporter(
         mode,
         console,
         target_count,
         flags.samples,
-        **extra,  # type: ignore[arg-type]
+        command=command,
+        target_labels=target_labels,
     )
 
 

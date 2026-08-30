@@ -270,25 +270,8 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
-async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001 -- names the subprocess executor `exec`
-    """Run ``command`` through the shell and capture its output.
-
-    The run never raises for a spawn or child failure: a shell that cannot be
-    spawned, a non-zero exit, a signal kill, an abort, and a stream error all
-    resolve as an :class:`ExecResult`. Only exceeding ``options.timeout_ms``
-    resolves the distinct :class:`ExecTimeoutError` value.
-
-    Args:
-        command: The shell command line to run.
-        options: Working directory, timeout, abort event, and stdin.
-
-    Returns:
-        An :class:`ExecResult` for any completed or cancelled run, or an
-        :class:`ExecTimeoutError` when the timeout is exceeded.
-    """
-    if options.abort is not None and options.abort.is_set():
-        return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
-
+async def _spawn(command: str, options: ExecOptions) -> asyncio.subprocess.Process | ExecResult:
+    """Spawn the command, registering its process group. Returns ExecResult on failure."""
     # Mask termination signals across the spawn + registration pair so a
     # signal delivered between the two still finds the child in the live
     # registry when the deferred handler fires kill_live_process_groups.
@@ -303,74 +286,90 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
                 start_new_session=current_platform() != "win32",
                 preexec_fn=_child_reset_signal_mask if current_platform() != "win32" else None,
             )
-            # Register the group leader before lifting the mask; the enclosing
-            # finally guarantees deregistration even if a later step raises.
             _live_process_groups.add(proc.pid)
     except OSError as error:
         stderr = f"{error}\n"
         return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
+    return proc
+
+
+async def _settle(
+    proc: asyncio.subprocess.Process,
+    options: ExecOptions,
+    stdout_buf: OutputBuffer,
+    stderr_buf: OutputBuffer,
+) -> ExecResult | ExecTimeoutError:
+    """Wait for the run to complete, abort, or time out, and return the outcome."""
+    assert proc.stdout is not None  # noqa: S101 -- guaranteed by stdout=PIPE
+    assert proc.stderr is not None  # noqa: S101 -- guaranteed by stderr=PIPE
+    stdout_task = asyncio.create_task(_read_stream(proc.stdout, stdout_buf))
+    stderr_task = asyncio.create_task(_read_stream(proc.stderr, stderr_buf))
+    stdin_task = asyncio.create_task(_feed_stdin(proc, options.stdin))
+    normal_task = asyncio.create_task(_await_normal(proc, stdout_task, stderr_task))
+    abort_task = asyncio.create_task(options.abort.wait()) if options.abort is not None else None
+
+    waiters: list[asyncio.Task[object]] = [normal_task]
+    if abort_task is not None:
+        waiters.append(abort_task)
+    timeout = options.timeout_ms / 1000 if options.timeout_ms is not None else None
+
     try:
-        stdout_buf = OutputBuffer()
-        stderr_buf = OutputBuffer()
-        assert proc.stdout is not None  # noqa: S101 -- guaranteed by stdout=PIPE
-        assert proc.stderr is not None  # noqa: S101 -- guaranteed by stderr=PIPE
-        stdout_task = asyncio.create_task(_read_stream(proc.stdout, stdout_buf))
-        stderr_task = asyncio.create_task(_read_stream(proc.stderr, stderr_buf))
-        stdin_task = asyncio.create_task(_feed_stdin(proc, options.stdin))
-        normal_task = asyncio.create_task(_await_normal(proc, stdout_task, stderr_task))
-        abort_task = (
-            asyncio.create_task(options.abort.wait()) if options.abort is not None else None
+        done, _ = await asyncio.wait(
+            waiters,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
         )
 
-        waiters: list[asyncio.Task[object]] = [normal_task]
-        if abort_task is not None:
-            waiters.append(abort_task)
-        timeout = options.timeout_ms / 1000 if options.timeout_ms is not None else None
-
-        try:
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            if normal_task in done:
-                reader_error = normal_task.exception()
-                if reader_error is not None:
-                    _terminate(proc)
-                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-                    await proc.wait()
-                    stderr_buf.append_failure(str(reader_error))
-                    return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
-                return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
-
-            _terminate(proc)
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            await proc.wait()
-            if abort_task is not None and abort_task in done:
+        if normal_task in done:
+            reader_error = normal_task.exception()
+            if reader_error is not None:
+                _terminate(proc)
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                await proc.wait()
+                stderr_buf.append_failure(str(reader_error))
                 return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
-            if options.timeout_ms is not None:
-                return ExecTimeoutError(
-                    stdout_buf.text,
-                    stderr_buf.text,
-                    options.timeout_ms,
-                    stdout_buf.byte_count,
-                    stderr_buf.byte_count,
-                )
-            # asyncio.wait only returns empty-handed when a timeout elapsed, so with
-            # no timeout set this branch cannot be reached.
-            msg = "exec settled without a normal, abort, or timeout outcome"
-            raise RuntimeError(msg)
-        finally:
-            pending: list[asyncio.Task[object]] = [
-                stdout_task,
-                stderr_task,
-                stdin_task,
-                normal_task,
-            ]
-            if abort_task is not None:
-                pending.append(abort_task)
-            await _cancel_all(pending)
+            return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
+
+        _terminate(proc)
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        await proc.wait()
+        if abort_task is not None and abort_task in done:
+            return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
+        if options.timeout_ms is not None:
+            return ExecTimeoutError(
+                stdout_buf.text,
+                stderr_buf.text,
+                options.timeout_ms,
+                stdout_buf.byte_count,
+                stderr_buf.byte_count,
+            )
+        msg = "exec settled without a normal, abort, or timeout outcome"
+        raise RuntimeError(msg)
+    finally:
+        pending: list[asyncio.Task[object]] = [stdout_task, stderr_task, stdin_task, normal_task]
+        if abort_task is not None:
+            pending.append(abort_task)
+        await _cancel_all(pending)
+
+
+async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001 -- names the subprocess executor `exec`
+    """Run ``command`` through the shell and capture its output.
+
+    The run never raises for a spawn or child failure: a shell that cannot be
+    spawned, a non-zero exit, a signal kill, an abort, and a stream error all
+    resolve as an :class:`ExecResult`. Only exceeding ``options.timeout_ms``
+    resolves the distinct :class:`ExecTimeoutError` value.
+    """
+    if options.abort is not None and options.abort.is_set():
+        return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
+
+    spawn_result = await _spawn(command, options)
+    if isinstance(spawn_result, ExecResult):
+        return spawn_result
+    proc = spawn_result
+
+    try:
+        return await _settle(proc, options, OutputBuffer(), OutputBuffer())
     finally:
         if proc.returncode is None:
             _terminate(proc)

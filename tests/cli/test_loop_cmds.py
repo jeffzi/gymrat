@@ -1,62 +1,54 @@
-"""Command-level tests for the loop subcommands: start, iterate, discard, finalize, status.
+"""Command-level tests for start, status, keep, discard, finalize, sync, and subdirectory resolution.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
-The seams mocked here mirror the engine suites' boundaries: sampling for
-``iterate`` (``gymrat.loop.iterate.collect_samples``), and for ``discard``'s
+The seams mocked here mirror the engine suites' boundaries: for ``discard``'s
 prompt the ``is_tty`` and ``confirm_action`` helpers as the ``loop_cmds`` module
 imports them. Config resolution is exercised for real where a test lays down a
 ``gymrat.toml`` and stubbed at the ``loop_cmds`` seam where a test needs to pin
 what a command reads (the runbook row) or observe where it looked (the
 subdirectory case).
+
+Iterate and JSON-contract tests live in ``test_loop_cmds_iterate`` and
+``test_loop_cmds_json``.
 """
 
-import contextlib
-import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-import tomli_w
-from typer.testing import CliRunner
 
-from gymrat import signals
 from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
 from gymrat.loop.finalize import finalize_session
-from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError
-from gymrat.loop.settle import DiscardResult, KeepResult
 from gymrat.loop.start import start_session
 from gymrat.session import (
-    Confirm,
-    DiscardRecord,
     FinalizeRecord,
-    KeepChecks,
     KeepRecord,
-    PairedSamples,
     SessionRecord,
     append_record,
     experiment_worktree_dir,
     read_records,
     session_jsonl_path,
 )
-from gymrat.session.paths import progress_path
-from gymrat.session.progress_file import ProgressSnapshot, write_progress
-from tests.loop._iterate import (
-    baseline_rounds,
-    improved_rounds,
-    install_collect_samples,
-    resolved_config,
-    stub_samples,
+from tests._ansi import SGR_RE
+from tests.cli._loop_cmds import runner, strip_ansi, write_config
+from tests.loop.iterate._fixtures import resolved_config
+from tests.loop.settle._fixtures import (
+    CHECKS,
+    checks_fail,
+    checks_pass,
+    edit_experiment,
+    git,
+    head_of,
+    iteration,
+    last_record_of,
+    start_with,
+    status_of,
 )
-from tests.loop._iterate import session_record as iterate_session_header
-from tests.loop._settle import git, head_of, last_record_of
-from tests.session._records import (
-    AT,
-    COMMIT,
+from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
     iteration_record,
@@ -64,17 +56,10 @@ from tests.session._records import (
     write_session_log,
 )
 
-runner = CliRunner()
-
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 #: The runbook path a session's config points an agent at, when it has one.
 _RUNBOOK_PATH = ".claude/skills/ecstatic-bench/SKILL.md"
-
-
-def _plain_lines(text: str) -> list[str]:
-    """The non-blank lines of ``text``, stripped of color and surrounding space."""
-    return [_ANSI_RE.sub("", line).strip() for line in text.split("\n") if line.strip()]
 
 
 def _always_tty(_stream: object) -> bool:
@@ -85,12 +70,6 @@ def _always_tty(_stream: object) -> bool:
 def _never_tty(_stream: object) -> bool:
     """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
     return False
-
-
-def _write_config(root: str, **extra: object) -> None:
-    """Write the implicit ``gymrat.toml`` at the repository root."""
-    payload: dict[str, object] = {"bench": "npm run bench", **extra}
-    (Path(root) / "gymrat.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
 
 
 class _ConfirmRecorder:
@@ -217,596 +196,18 @@ def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
 
 
 # ---------------------------------------------------------------------------
-# the iterate command
-# ---------------------------------------------------------------------------
-
-
-def test_iterate_command_when_run_does_measure_the_repo_and_report_on_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_session_log(repo, iterate_session_header(repo))
-    mock = install_collect_samples(monkeypatch)
-    stub_samples(mock, repo, improved_rounds(), baseline_rounds())
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    lines = _plain_lines(result.stdout)
-    assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
-    assert lines[-1] == "gymrat keep"
-    assert len(read_records(session_jsonl_path(repo))) == 2
-
-
-def test_iterate_command_when_stop_condition_met_does_exit_one_without_measuring(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_session_log(
-        repo, iterate_session_header(repo), (iteration_record(seq=1), committed_keep(1))
-    )
-    mock = install_collect_samples(monkeypatch)
-    _write_config(repo, stop={"max_iterations": 1})
-
-    result = runner.invoke(app, ["iterate"])
-
-    assert result.exit_code == 1
-    assert "max iterations" in result.stderr
-    assert mock.call_count == 0
-
-
-def test_iterate_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 2
-    assert "gymrat start" in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# the iterate command — progress renderer wiring
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _RendererRecord:
-    """Captures the arguments ``create_iterate_renderer`` was called with."""
-
-    mode: object
-    console: object
-    seq: int
-    session_id: str
-    sample_count: int
-    metric_count: int
-    primary_metric: str
-    verbose: bool
-    clock: object
-    checks_cmd: str | None = None
-    has_before_hook: bool = False
-    has_after_hook: bool = False
-
-
-class _FakeRenderer:
-    """A stand-in for ``IterateRenderer`` recording ``report`` and ``stop`` calls."""
-
-    def __init__(self) -> None:
-        self.report_calls: list[object] = []
-        self.stop_called = False
-
-    def report(self, event: object) -> None:
-        self.report_calls.append(event)
-
-    def stop(self) -> None:
-        self.stop_called = True
-
-
-class _RendererFactory:
-    """A stand-in for ``create_iterate_renderer`` recording what it was handed."""
-
-    def __init__(self) -> None:
-        self.renderer = _FakeRenderer()
-        self.calls: list[_RendererRecord] = []
-
-    def __call__(  # noqa: PLR0917 -- mirrors create_iterate_renderer signature
-        self,
-        mode: object,
-        console: object,
-        seq: int,
-        session_id: str,
-        sample_count: int,
-        metric_count: int,
-        primary_metric: str,
-        *,
-        verbose: bool,
-        clock: object = None,
-        checks_cmd: str | None = None,
-        has_before_hook: bool = False,
-        has_after_hook: bool = False,
-    ) -> _FakeRenderer:
-        self.calls.append(
-            _RendererRecord(
-                mode=mode,
-                console=console,
-                seq=seq,
-                session_id=session_id,
-                sample_count=sample_count,
-                metric_count=metric_count,
-                primary_metric=primary_metric,
-                verbose=verbose,
-                clock=clock,
-                checks_cmd=checks_cmd,
-                has_before_hook=has_before_hook,
-                has_after_hook=has_after_hook,
-            )
-        )
-        return self.renderer
-
-
-class _IterateSessionRecorder:
-    """A stand-in for ``iterate_session`` that captures its ``IterateOptions``."""
-
-    def __init__(self, result: IterateResult) -> None:
-        self._result = result
-        self.captured_options: IterateOptions | None = None
-
-    async def __call__(
-        self,
-        root: str,
-        config: object,
-        options: IterateOptions | None = None,
-        *,
-        color: bool | None = None,
-    ) -> IterateResult:
-        self.captured_options = options
-        return self._result
-
-
-class _IterateSessionRaiser:
-    """A stand-in for ``iterate_session`` that raises on call."""
-
-    def __init__(self, error: BaseException) -> None:
-        self._error = error
-        self.captured_options: IterateOptions | None = None
-
-    async def __call__(
-        self,
-        root: str,
-        config: object,
-        options: IterateOptions | None = None,
-        *,
-        color: bool | None = None,
-    ) -> IterateResult:
-        self.captured_options = options
-        raise self._error
-
-
-def _install_renderer_factory(monkeypatch: pytest.MonkeyPatch) -> _RendererFactory:
-    """Replace ``create_iterate_renderer`` in the loop_cmds module with a recorder."""
-    factory = _RendererFactory()
-    monkeypatch.setattr("gymrat.cli.loop_cmds.create_iterate_renderer", factory)
-    return factory
-
-
-def _install_iterate_session(
-    monkeypatch: pytest.MonkeyPatch, recorder: _IterateSessionRecorder | _IterateSessionRaiser
-) -> None:
-    """Replace ``iterate_session`` in the loop_cmds module with a recorder or raiser."""
-    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", recorder)
-
-
-def _make_iterate_result() -> IterateResult:
-    """A minimal ``IterateResult`` with a dummy report and record."""
-    return IterateResult(
-        record=iteration_record(seq=1),
-        report="iteration 1 · experiment vs baseline · 10 paired samples\ngymrat keep",
-    )
-
-
-def _wire_successful_iterate(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-) -> tuple[_RendererFactory, _IterateSessionRecorder]:
-    """Wire ``iterate`` with a renderer factory and a recording session stub."""
-    write_session_log(repo, iterate_session_header(repo))
-    factory = _install_renderer_factory(monkeypatch)
-    recorder = _IterateSessionRecorder(_make_iterate_result())
-    _install_iterate_session(monkeypatch, recorder)
-    return factory, recorder
-
-
-def test_iterate_command_when_run_does_wire_on_progress_into_iterate_options(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    factory, recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    assert recorder.captured_options is not None
-    assert recorder.captured_options.on_progress is not None
-    assert factory.renderer.stop_called
-
-
-def test_iterate_command_when_error_does_still_call_renderer_stop(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_session_log(repo, iterate_session_header(repo))
-    factory = _install_renderer_factory(monkeypatch)
-    raiser = _IterateSessionRaiser(RuntimeError("bench exploded"))
-    _install_iterate_session(monkeypatch, raiser)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code != 0
-    assert factory.renderer.stop_called
-
-
-@pytest.mark.parametrize("verbose_flag", [True, False])
-def test_iterate_command_when_verbose_flag_does_forward_verbose_to_renderer(
-    repo: str, monkeypatch: pytest.MonkeyPatch, verbose_flag: bool
-):
-    factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-    args = ["iterate", "--bench", "npm run bench"]
-    if verbose_flag:
-        args.append("--verbose")
-
-    result = runner.invoke(app, args)
-
-    assert result.exit_code == 0
-    assert len(factory.calls) == 1
-    assert factory.calls[0].verbose is verbose_flag
-
-
-def test_iterate_command_when_run_does_pass_session_metadata_to_renderer(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    assert len(factory.calls) == 1
-    call = factory.calls[0]
-    # seq = last_seq + 1 = 0 + 1 = 1 for a fresh session
-    assert call.seq == 1
-    assert call.session_id == SESSION_ID
-    # The default resolved_config has samples=10
-    assert call.sample_count == 10
-    # The default resolved_config has primary="geomean"
-    assert call.primary_metric == "geomean"
-
-
-def test_iterate_command_when_run_does_register_progress_cleanup_for_termination(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    """Termination signals must clear the progress sidecar even when finally is skipped."""
-    write_session_log(repo, iterate_session_header(repo))
-    _install_renderer_factory(monkeypatch)
-
-    progress_cleared_mid_run = False
-
-    async def check_cleanup(
-        root: str,
-        config: object,
-        options: IterateOptions | None = None,
-        *,
-        color: bool | None = None,
-    ) -> IterateResult:
-        nonlocal progress_cleared_mid_run
-        # Write a progress sidecar, then run every registered termination cleanup —
-        # exactly what the signal handler does before os._exit.  If a cleanup
-        # for clear_progress was registered, the sidecar will disappear.
-        write_progress(
-            root,
-            ProgressSnapshot(
-                passes_completed=1,
-                passes_total=2,
-                last_pass_duration_ms=100.0,
-            ),
-        )
-        progress = Path(progress_path(root))
-        assert progress.exists()  # noqa: ASYNC240 -- sync check in async test
-        for cleanup in list(signals._registry.values()):
-            with contextlib.suppress(Exception):
-                cleanup()
-        progress_cleared_mid_run = not progress.exists()  # noqa: ASYNC240 -- sync check in async test
-        return _make_iterate_result()
-
-    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", check_cleanup)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    assert progress_cleared_mid_run
-
-
-# ---------------------------------------------------------------------------
-# iterate --format json
-# ---------------------------------------------------------------------------
-
-
-def test_iterate_command_when_format_json_does_emit_structured_json_on_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["seq"] == 1
-    assert doc["outcome"] == "improved"
-    assert doc["primary"]["kind"] == "geomean"
-    assert doc["primary"]["deltaPct"] == pytest.approx(-7.2)
-    assert "metrics" in doc
-    assert doc["confirm"] is None
-
-
-def test_iterate_command_when_format_json_does_include_confirm_when_rerun_happened(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    confirm = Confirm(
-        ran=True,
-        filtered=("total_ms",),
-        samples=PairedSamples(
-            experiment=({"total_ms": 14100},),
-            baseline=({"total_ms": 15200},),
-        ),
-        absent=None,
-    )
-    record = iteration_record(seq=1, confirm=confirm)
-    iterate_result = IterateResult(record=record, report="confirmed iteration report")
-    write_session_log(repo, iterate_session_header(repo))
-    _install_renderer_factory(monkeypatch)
-    recorder = _IterateSessionRecorder(iterate_result)
-    _install_iterate_session(monkeypatch, recorder)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["confirm"] is not None
-    assert doc["confirm"]["ran"] is True
-    assert doc["confirm"]["filtered"] == ["total_ms"]
-
-
-def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_document(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_session_log(repo, iterate_session_header(repo))
-    _install_renderer_factory(monkeypatch)
-    raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
-    _install_iterate_session(monkeypatch, raiser)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 1
-    doc = json.loads(result.stdout)
-    assert doc["stopped"] is True
-    assert "max iterations" in doc["reason"]
-
-
-def test_iterate_command_when_format_json_does_include_stable_key_names(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert {"seq", "outcome", "primary", "metrics", "confirm"} <= doc.keys()
-    assert {"kind", "deltaPct"} <= doc["primary"].keys()
-
-
-def test_iterate_command_when_format_text_does_produce_plain_report(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "text"])
-
-    assert result.exit_code == 0
-    lines = _plain_lines(result.stdout)
-    assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
-    assert lines[-1] == "gymrat keep"
-
-
-def test_iterate_command_when_format_absent_does_produce_plain_report(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    lines = _plain_lines(result.stdout)
-    assert lines[-1] == "gymrat keep"
-
-
-# ---------------------------------------------------------------------------
-# keep --format json
-# ---------------------------------------------------------------------------
-
-
-class _KeepSessionRecorder:
-    """A stand-in for ``keep_session`` that returns a fixed ``KeepResult``."""
-
-    def __init__(self, result: KeepResult) -> None:
-        self._result = result
-
-    async def __call__(self, *_args: object, **_kwargs: object) -> KeepResult:
-        return self._result
-
-
-def _make_committed_keep_result() -> KeepResult:
-    """A ``KeepResult`` for a committed keep with checks passing."""
-    record = KeepRecord(
-        type="keep",
-        seq=1,
-        at=AT,
-        status="committed",
-        checks=KeepChecks(configured=True, passed=True, stdout_bytes=80, stderr_bytes=0),
-        commit=COMMIT,
-        message="cache the regex",
-    )
-    return KeepResult(record=record, report="committed keep report")
-
-
-def _make_blocked_keep_result() -> KeepResult:
-    """A ``KeepResult`` for a blocked keep where checks failed."""
-    record = KeepRecord(
-        type="keep",
-        seq=1,
-        at=AT,
-        status="blocked",
-        checks=KeepChecks(configured=True, passed=False, stdout_bytes=120, stderr_bytes=45),
-        reason="checks-failed",
-    )
-    return KeepResult(record=record, report="blocked keep report")
-
-
-def _wire_keep(repo: str, monkeypatch: pytest.MonkeyPatch, keep_result: KeepResult) -> None:
-    """Wire ``keep`` with a config resolver and a recording keep_session stub."""
-    start_session(repo, "main", resolved_config())
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    monkeypatch.setattr("gymrat.cli.loop_cmds.keep_session", _KeepSessionRecorder(keep_result))
-
-
-def test_keep_command_when_format_json_and_committed_does_emit_structured_json(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_keep(repo, monkeypatch, _make_committed_keep_result())
-
-    result = runner.invoke(app, ["keep", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["status"] == "committed"
-    assert doc["commit"] == COMMIT
-    assert doc["message"] == "cache the regex"
-    assert doc["reason"] is None
-    assert doc["checks"]["configured"] is True
-    assert doc["checks"]["passed"] is True
-    assert doc["checks"]["stdoutBytes"] == 80
-    assert doc["checks"]["stderrBytes"] == 0
-
-
-def test_keep_command_when_format_json_and_blocked_does_emit_blocked_json_with_reason(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_keep(repo, monkeypatch, _make_blocked_keep_result())
-
-    result = runner.invoke(app, ["keep", "--format", "json"])
-
-    assert result.exit_code == 1
-    doc = json.loads(result.stdout)
-    assert doc["status"] == "blocked"
-    assert doc["reason"] == "checks-failed"
-    assert doc["commit"] is None
-    assert doc["message"] is None
-
-
-def test_keep_command_when_format_json_does_include_stable_key_names(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_keep(repo, monkeypatch, _make_committed_keep_result())
-
-    result = runner.invoke(app, ["keep", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert {"status", "reason", "checks", "commit", "message"} <= doc.keys()
-    assert {"configured", "passed", "stdoutBytes", "stderrBytes"} <= doc["checks"].keys()
-
-
-def test_keep_command_when_format_text_does_produce_plain_report(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_keep(repo, monkeypatch, _make_committed_keep_result())
-
-    result = runner.invoke(app, ["keep", "--format", "text"])
-
-    assert result.exit_code == 0
-    assert "committed keep report" in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# discard --format json
-# ---------------------------------------------------------------------------
-
-
-class _DiscardSessionRecorder:
-    """A stand-in for ``discard_session`` that returns a fixed ``DiscardResult``."""
-
-    def __init__(self, result: DiscardResult) -> None:
-        self._result = result
-
-    def __call__(self, *_args: object, **_kwargs: object) -> DiscardResult:
-        return self._result
-
-
-def _make_discard_result() -> DiscardResult:
-    """A ``DiscardResult`` for a discarded iteration 1."""
-    return DiscardResult(
-        record=DiscardRecord(type="discard", seq=1, at=AT),
-        report="discarded iteration 1",
-    )
-
-
-def _wire_discard(monkeypatch: pytest.MonkeyPatch, discard_result: DiscardResult) -> None:
-    """Wire ``discard`` with a recording discard_session stub and skip its TTY prompt."""
-    monkeypatch.setattr(
-        "gymrat.cli.loop_cmds.discard_session", _DiscardSessionRecorder(discard_result)
-    )
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _never_tty)
-
-
-def test_discard_command_when_format_json_does_emit_structured_json(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_discard(monkeypatch, _make_discard_result())
-
-    result = runner.invoke(app, ["discard", "--force", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["seq"] == 1
-    assert doc["at"] == AT
-
-
-def test_discard_command_when_format_json_does_include_stable_key_names(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_discard(monkeypatch, _make_discard_result())
-
-    result = runner.invoke(app, ["discard", "--force", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert {"seq", "at"} <= doc.keys()
-
-
-def test_discard_command_when_format_text_does_produce_plain_report(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _never_tty)
-
-    result = runner.invoke(app, ["discard", "--force", "--format", "text"])
-
-    assert result.exit_code == 0
-    assert "discard" in result.stdout.lower()
-
-
-# ---------------------------------------------------------------------------
 # the status command
 # ---------------------------------------------------------------------------
 
 
 def test_status_command_when_run_does_render_the_session_on_stdout(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    _write_config(repo)
+    write_config(repo)
 
     result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 0
-    text = _ANSI_RE.sub("", result.stdout)
+    text = strip_ansi(result.stdout)
     assert f"session {SESSION_ID}" in text
     assert "1 kept" in text
 
@@ -816,7 +217,7 @@ def test_status_command_when_no_session_does_exit_two_with_a_start_hint(
     repo: str, has_config: bool
 ):
     if has_config:
-        _write_config(repo)
+        write_config(repo)
 
     result = runner.invoke(app, ["status"])
 
@@ -837,93 +238,12 @@ def test_status_command_color(
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    _write_config(repo)
+    write_config(repo)
 
     result = runner.invoke(app, ["status", *args])
 
     assert result.exit_code == 0
     assert bool(_ANSI_RE.search(result.stdout)) is expect_ansi
-
-
-# ---------------------------------------------------------------------------
-# status --format json
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def status_repo(repo: str) -> str:
-    """A repository with a configured session and one kept iteration."""
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    _write_config(repo)
-    return repo
-
-
-def test_status_command_when_format_json_does_emit_structured_json_on_stdout(status_repo: str):
-    result = runner.invoke(app, ["status", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["sessionId"] == SESSION_ID
-    assert doc["branch"] == f"gymrat/{SESSION_ID}"
-    assert doc["baseline"]["ref"] == "main"
-    assert doc["baseline"]["sha"] == "a" * 40
-    assert doc["iterationCount"] == 1
-    assert doc["keepCount"] == 1
-    assert doc["discardCount"] == 0
-    assert doc["unsettled"] is False
-    assert doc["finalized"] is False
-
-
-def test_status_command_when_format_json_and_finalized_does_set_finalized_true(repo: str):
-    write_session_log(
-        repo,
-        session_record(),
-        (
-            iteration_record(seq=1),
-            committed_keep(1),
-            FinalizeRecord(
-                type="finalize",
-                at=AT,
-                branch=f"gymrat/{SESSION_ID}-final",
-                commit=COMMIT,
-                message="squash 1 kept iteration",
-            ),
-        ),
-    )
-    _write_config(repo)
-
-    result = runner.invoke(app, ["status", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert doc["finalized"] is True
-
-
-def test_status_command_when_format_json_does_include_stable_key_names(status_repo: str):
-    result = runner.invoke(app, ["status", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert {
-        "sessionId",
-        "branch",
-        "baseline",
-        "iterationCount",
-        "keepCount",
-        "discardCount",
-        "unsettled",
-        "finalized",
-    } <= doc.keys()
-    assert {"ref", "sha"} <= doc["baseline"].keys()
-
-
-def test_status_command_when_format_text_does_produce_identical_output(status_repo: str):
-    result_text = runner.invoke(app, ["status", "--format", "text"])
-    result_default = runner.invoke(app, ["status"])
-
-    assert result_text.exit_code == 0
-    assert result_default.exit_code == 0
-    assert result_text.stdout == result_default.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1177,6 +497,116 @@ def test_sync_command_when_no_session_does_exit_two_with_a_start_hint(
     repo: str,
 ):
     result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 2
+    assert "gymrat start" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# the keep command
+# ---------------------------------------------------------------------------
+
+
+def test_keep_command_when_checks_pass_does_commit_and_print_the_short_commit(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep", "-m", "cache the regex"])
+
+    assert result.exit_code == 0
+    record = last_record_of(repo)
+    assert isinstance(record, KeepRecord)
+    assert record.status == "committed"
+    assert head_of(experiment_worktree_dir(repo))[:7] in result.stdout
+
+
+def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    record = last_record_of(repo)
+    assert isinstance(record, KeepRecord)
+    assert record.status == "blocked"
+    assert record.reason == "nothing-to-commit"
+
+
+def test_keep_command_when_refusing_does_print_a_report_carrying_no_hint_label(repo: str):
+    start_with(repo, (iteration(1),))
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    assert "Hint" not in result.stdout
+    assert "gymrat iterate" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("variable", "expect_ansi"),
+    [
+        pytest.param("FORCE_COLOR", True, id="force-color"),
+        pytest.param("NO_COLOR", False, id="no-color"),
+    ],
+)
+def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
+    repo: str, monkeypatch: pytest.MonkeyPatch, variable: str, expect_ansi: bool
+):
+    for name in ("FORCE_COLOR", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "1")
+    start_with(repo, (iteration(1),))
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert bool(SGR_RE.search(result.stdout)) is expect_ansi
+
+
+def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    checks_fail(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    record = last_record_of(repo)
+    assert isinstance(record, KeepRecord)
+    assert record.status == "blocked"
+    assert record.reason == "checks-failed"
+
+
+def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard(repo: str):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    write_config(repo)
+
+    result = runner.invoke(app, ["discard"])
+
+    assert result.exit_code == 0
+    assert status_of(experiment_worktree_dir(repo)) == ""
+    assert last_record_of(repo).type == "discard"
+    assert re.search(r"discard", result.stdout, re.IGNORECASE)
+
+
+@pytest.mark.parametrize("command", ["keep", "discard"])
+def test_settle_command_when_no_session_does_exit_two_with_a_start_hint(repo: str, command: str):
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, [command])
 
     assert result.exit_code == 2
     assert "gymrat start" in result.stderr

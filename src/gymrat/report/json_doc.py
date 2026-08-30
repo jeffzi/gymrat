@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, assert_never
 
 from gymrat.finite_json import null_non_finite
 from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
-from gymrat.report.format import count_verdicts
+from gymrat.report.tally import count_verdicts
 from gymrat.report.types import CandidateMetric
 from gymrat.verdict import infer_group
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from gymrat.loop.settle import DiscardResult, KeepResult
     from gymrat.loop.status import StatusData
     from gymrat.model import GeomeanResult, MetricVerdict
-    from gymrat.report.format import VerdictCounts
+    from gymrat.report.tally import VerdictCounts
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,

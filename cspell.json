@@ -3,7 +3,7 @@
   "version": "0.2",
   "language": "en-US",
   "files": [
-    "**/*.{py,pyi,md,yml,yaml,toml,json}"
+    "**/*.{py,pyi,md,yml,yaml,toml,json,jsonc}"
   ],
   "words": [
     "addopts",
@@ -32,6 +32,7 @@
     "getpid",
     "gpgsign",
     "gymrat",
+    "htmlcov",
     "jeffzi",
     "killpg",
     "kwargs",
@@ -77,6 +78,7 @@
     "worktrees",
     "WRONLY",
     "xdist",
+    "xfail",
     "zizmor"
   ],
   "ignorePaths": [
@@ -89,6 +91,7 @@
     "build",
     "coverage.xml",
     "dist",
+    "htmlcov",
     "uv.lock"
   ]
 }

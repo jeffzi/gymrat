@@ -19,7 +19,7 @@ import json
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from math import ceil
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from gymrat.session.clock import now_ms
 from gymrat.supervisor.driver import (
@@ -72,15 +72,25 @@ ClientFactory = Callable[[Mapping[str, object]], ClaudeClient]
 """Builds a :class:`ClaudeClient` from an SDK-native options mapping."""
 
 
+class _ClaudeAgentSdkModule(Protocol):
+    """The two SDK constructors the default factory needs.
+
+    Narrower than ``Any``: the SDK's ``ClaudeAgentOptions`` takes many typed
+    keyword-only fields the driver forwards as a validated mapping rather than
+    threading through individually, so only the two entry points are typed
+    here — but a typo or signature change on either still fails type-check.
+    """
+
+    ClaudeAgentOptions: Callable[..., object]
+    ClaudeSDKClient: Callable[[object], ClaudeClient]
+
+
 def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the package + live CLI
     # Imported lazily, not at module top: keeps claude-agent-sdk an optional
     # dependency and off the import-latency path the guard test protects.
     import claude_agent_sdk  # noqa: PLC0415
 
-    # The SDK constructors expose many typed keyword-only fields; the driver
-    # forwards a validated subset as a mapping, so treat the module as untyped
-    # at this one boundary rather than thread every optional field through.
-    sdk = cast("Any", claude_agent_sdk)
+    sdk = cast("_ClaudeAgentSdkModule", claude_agent_sdk)
 
     def factory(options: Mapping[str, object]) -> ClaudeClient:
         return sdk.ClaudeSDKClient(sdk.ClaudeAgentOptions(**options))

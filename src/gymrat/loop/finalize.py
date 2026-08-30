@@ -12,11 +12,16 @@ from pathlib import Path
 
 from gymrat.errors import GymratError
 from gymrat.git import try_git
-from gymrat.report.format import pluralize
+from gymrat.plural import pluralize
 from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.clock import now_iso
-from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord
-from gymrat.session.store import append_record, last_kept_position, require_open_session
+from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
+from gymrat.session.store import (
+    SessionState,
+    append_record,
+    last_kept_position,
+    require_open_session,
+)
 from gymrat.session.workspace import (
     is_worktree_dirty,
     remove_worktrees,
@@ -51,29 +56,13 @@ class FinalizeResult:
     report: str
 
 
-def finalize_session(root: str, options: FinalizeOptions | None = None) -> FinalizeResult:
-    """Collapse a session's kept commits into one commit on the pinned baseline and close it.
-
-    The squash is built with plumbing — ``commit-tree`` against the session
-    branch's tree — so nothing is ever checked out: the user's own working copy
-    stays on whatever branch it was on, which a ``merge --squash`` could not
-    promise. The session branch is left in place too, so the per-iteration history
-    that earned the squash stays readable.
-
-    Holding the repository lock across the call is the caller's job: the record
-    and the worktree removal it explains must not be separable by another run.
-
-    Raises:
-        GymratError: When no open session exists, when the session kept nothing,
-            when an iteration is still unsettled, when the experiment worktree
-            carries uncommitted work, when the caller's branch name would read as
-            a git flag, when the target branch already exists, or when git refuses
-            to build the squash commit.
-    """
-    opts = options if options is not None else FinalizeOptions()
-    required = require_open_session(root, "closing the session")
-    session, state = required.session, required.state
-
+def _validate_finalize(
+    root: str,
+    opts: FinalizeOptions,
+    session: SessionRecord,
+    state: SessionState,
+) -> str:
+    """Guard the session against all finalize refusals and return the expected baseline position."""
     if state.keep_count == 0:
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
         hint = "Run gymrat keep on a measured edit before closing the session."
@@ -100,9 +89,6 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
             )
             raise GymratError(message, hint=_SETTLE_FIRST_HINT)
 
-    # Rejected before any ref is read or written: git's own argument parser would
-    # read a leading dash as an option, so `--branch -m` reaches `git branch` as
-    # the rename flag and moves a branch the session never asked about.
     if opts.branch is not None and opts.branch.startswith("-"):
         message = (
             f"Finalize refused: '{opts.branch}' starts with a dash, so git reads it as a flag "
@@ -119,6 +105,35 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
         message = f"Finalize refused: the branch '{branch}' already exists."
         hint = f"Name another with --branch <name>, or delete it with: git branch -D {branch}"
         raise GymratError(message, hint=hint)
+
+    return expected_position
+
+
+def finalize_session(root: str, options: FinalizeOptions | None = None) -> FinalizeResult:
+    """Collapse a session's kept commits into one commit on the pinned baseline and close it.
+
+    The squash is built with plumbing — ``commit-tree`` against the session
+    branch's tree — so nothing is ever checked out: the user's own working copy
+    stays on whatever branch it was on, which a ``merge --squash`` could not
+    promise. The session branch is left in place too, so the per-iteration history
+    that earned the squash stays readable.
+
+    Holding the repository lock across the call is the caller's job: the record
+    and the worktree removal it explains must not be separable by another run.
+
+    Raises:
+        GymratError: When no open session exists, when the session kept nothing,
+            when an iteration is still unsettled, when the experiment worktree
+            carries uncommitted work, when the caller's branch name would read as
+            a git flag, when the target branch already exists, or when git refuses
+            to build the squash commit.
+    """
+    opts = options if options is not None else FinalizeOptions()
+    required = require_open_session(root, "closing the session")
+    session, state = required.session, required.state
+
+    expected_position = _validate_finalize(root, opts, session, state)
+    branch = opts.branch if opts.branch is not None else f"{session.branch}-final"
 
     message = opts.message if opts.message is not None else _generated_message(required.records)
     commit = _squash_onto_baseline(root, expected_position, session.baseline.sha, message)

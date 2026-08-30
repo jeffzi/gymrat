@@ -22,7 +22,7 @@ from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session import BaselineRecord, read_records, session_jsonl_path
 from tests.report._inputs import create_measurement_result
-from tests.session._records import finalize_record, session_record, write_session_log
+from tests.session.records._fixtures import finalize_record, session_record, write_session_log
 
 runner = CliRunner()
 

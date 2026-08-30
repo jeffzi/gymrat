@@ -145,6 +145,32 @@ def _settle_states(records: Sequence[SessionLogRecord]) -> dict[int, SettleState
     return states
 
 
+def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
+    """Walk the log and render each record into its status line."""
+    settled = _settle_states(records)
+    history: list[str] = []
+    for position, record in enumerate(records):
+        if isinstance(record, BaselineRecord):
+            history.append(format_status_baseline(record))
+        elif isinstance(record, IterationRecord):
+            settle = settled.get(position)
+            history.append(
+                format_status_iteration(
+                    StatusIteration(
+                        seq=record.seq,
+                        delta_pct=record.primary.delta_pct,
+                        outcome=record.outcome,
+                        settle=settle if settle is not None else SettleUnsettled(),
+                    )
+                )
+            )
+        elif isinstance(record, (KeepRecord, DiscardRecord)):
+            settle = settled.get(position)
+            if settle is not None:
+                history.append(format_status_settle(settle))
+    return history
+
+
 def status_session(root: str, config: BenchlessConfig, *, color: bool | None = None) -> str:
     """The session's whole history, as the agent reads it back.
 
@@ -174,28 +200,7 @@ def status_session(root: str, config: BenchlessConfig, *, color: bool | None = N
     required = require_session(root, "asking for its status")
     session, state, records = required.session, required.state, required.records
 
-    settled = _settle_states(records)
-    history: list[str] = []
-    for position, record in enumerate(records):
-        if isinstance(record, BaselineRecord):
-            history.append(format_status_baseline(record))
-        elif isinstance(record, IterationRecord):
-            settle = settled.get(position)
-            history.append(
-                format_status_iteration(
-                    StatusIteration(
-                        seq=record.seq,
-                        delta_pct=record.primary.delta_pct,
-                        outcome=record.outcome,
-                        settle=settle if settle is not None else SettleUnsettled(),
-                    )
-                )
-            )
-        elif isinstance(record, (KeepRecord, DiscardRecord)):
-            settle = settled.get(position)
-            if settle is not None:
-                history.append(format_status_settle(settle))
-
+    history = _history_lines(records)
     lines: list[str] = list(format_status_header(session))
     if config.runbook is not None:
         lines.append(f"runbook {config.runbook}")

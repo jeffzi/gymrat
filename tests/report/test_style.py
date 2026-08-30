@@ -11,7 +11,7 @@ import os
 import pytest
 from rich.markup import escape
 
-from gymrat.report.format import DisplayClass
+from gymrat.report.display import DisplayClass
 from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
     GROUP_LABEL_STYLE,
@@ -481,6 +481,18 @@ def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_
     captured = console.file.getvalue()
     assert "\x1b[" in captured
     assert "hi" in captured
+
+
+def test_make_capture_console_when_term_dumb_and_explicit_width_does_honor_width(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    console = make_capture_console(color=True, width=200)
+
+    assert console.width == 200
 
 
 def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(

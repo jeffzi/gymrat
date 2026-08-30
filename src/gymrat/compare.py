@@ -14,12 +14,18 @@ Rendering is the caller's job. Worktree cleanup and signal handling belong to
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from gymrat.adapters import get_adapter
-from gymrat.adapters.types import WarnSink
+from gymrat.adapters.types import WarnSink, warn_to_stderr
 from gymrat.config import KindEntry
-from gymrat.model import MetricVerdict, Observations, ResolvedMetricMeta, pair_metric
+from gymrat.model import (
+    DEFAULT_UNSTABLE_NOISE_PCT,
+    MetricVerdict,
+    Observations,
+    ResolvedMetricMeta,
+    pair_metric,
+)
 from gymrat.report.types import (
     CandidateComparison,
     CandidateMetric,
@@ -123,11 +129,10 @@ def _measure_candidates(
     warn: WarnSink | None,
 ) -> list[CandidateMeasurement]:
     """Judge every candidate against the same baseline samples, one comparison each."""
-    verdict_kwargs: dict[str, Any] = {}
-    if unstable_noise_pct is not None:
-        verdict_kwargs["unstable_noise_pct"] = unstable_noise_pct
-    if warn is not None:
-        verdict_kwargs["warn"] = warn
+    resolved_noise_pct = (
+        unstable_noise_pct if unstable_noise_pct is not None else DEFAULT_UNSTABLE_NOISE_PCT
+    )
+    resolved_warn = warn if warn is not None else warn_to_stderr
 
     baseline_obs = Observations.from_rounds(baseline_samples)
     measured: list[CandidateMeasurement] = []
@@ -136,7 +141,8 @@ def _measure_candidates(
             baseline_obs,
             Observations.from_rounds(candidate.samples),
             metric_meta,
-            **verdict_kwargs,
+            unstable_noise_pct=resolved_noise_pct,
+            warn=resolved_warn,
         )
         measured.append(
             CandidateMeasurement(
@@ -210,86 +216,83 @@ def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an i
     )
 
 
+def _to_context(
+    spec: TargetSpec,
+    target: Target,
+    position: Literal["old", "new"],
+    repo_dir: str,
+    worktrees: list[WorktreeInfo],
+) -> TargetContext:
+    return TargetContext(
+        target=target,
+        dir=resolve_dir(target, repo_dir, worktrees),
+        label=resolve_label(spec.label, target),
+        position=position,
+    )
+
+
+async def _compare_phase(
+    options: CompareOptions,
+    repo_dir: str,
+    worktrees: list[WorktreeInfo],
+    abort: asyncio.Event,
+) -> _Measurement:
+    adapter = get_adapter(options.adapter)
+
+    baseline_target = resolve_target(options.baseline.target, repo_dir)
+    candidate_targets = [
+        (spec, resolve_target(spec.target, repo_dir)) for spec in options.candidates
+    ]
+
+    baseline_context = _to_context(options.baseline, baseline_target, "old", repo_dir, worktrees)
+    candidate_contexts = [
+        _to_context(spec, target, "new", repo_dir, worktrees) for spec, target in candidate_targets
+    ]
+
+    baseline, *candidates = await collect_samples(
+        adapter,
+        [baseline_context, *candidate_contexts],
+        SamplingOptions(
+            bench=options.bench,
+            prepare=options.prepare,
+            samples=options.samples,
+            timeout_seconds=options.timeout_seconds,
+            on_progress=options.on_progress,
+            warn=options.warn,
+        ),
+        abort,
+    )
+
+    metric_meta = resolve_metric_meta_from_samples(
+        [baseline.samples, *(candidate.samples for candidate in candidates)],
+        options.config_metrics,
+        adapter,
+        options.config_kinds,
+    )
+
+    return _Measurement(
+        baseline_label=baseline.ctx.label,
+        baseline_samples=baseline.samples,
+        candidates=_measure_candidates(
+            baseline.samples,
+            candidates,
+            metric_meta,
+            options.unstable_noise_pct,
+            options.warn,
+        ),
+        metric_meta=metric_meta,
+    )
+
+
 async def compare(options: CompareOptions) -> ComparisonResult:
     """Compare one baseline revision against one or more candidate revisions.
 
     Resolves every target's directory or ref, runs the bench round-robin across
     all of them, parses each run with the configured adapter, and computes each
     candidate's verdicts against the shared baseline.
-
-    Args:
-        options: The baseline, candidates, bench/prepare commands, adapter, and
-            config overrides for the run.
-
-    Returns:
-        The assembled comparison, ready for a renderer.
     """
-
-    async def phase(
-        repo_dir: str,
-        worktrees: list[WorktreeInfo],
-        abort: asyncio.Event,
-    ) -> _Measurement:
-        adapter = get_adapter(options.adapter)
-
-        # Every target is resolved before any worktree is materialized, so an
-        # unresolvable candidate fails the run without leaving a directory on disk.
-        baseline_target = resolve_target(options.baseline.target, repo_dir)
-        candidate_targets = [
-            (spec, resolve_target(spec.target, repo_dir)) for spec in options.candidates
-        ]
-
-        def to_context(
-            spec: TargetSpec, target: Target, position: Literal["old", "new"]
-        ) -> TargetContext:
-            return TargetContext(
-                target=target,
-                dir=resolve_dir(target, repo_dir, worktrees),
-                label=resolve_label(spec.label, target),
-                position=position,
-            )
-
-        # Baseline first: its worktree is the one a cleanup sweep should find even
-        # if a candidate's checkout is what failed.
-        baseline_context = to_context(options.baseline, baseline_target, "old")
-        candidate_contexts = [to_context(spec, target, "new") for spec, target in candidate_targets]
-
-        baseline, *candidates = await collect_samples(
-            adapter,
-            [baseline_context, *candidate_contexts],
-            SamplingOptions(
-                bench=options.bench,
-                prepare=options.prepare,
-                samples=options.samples,
-                timeout_seconds=options.timeout_seconds,
-                on_progress=options.on_progress,
-                warn=options.warn,
-            ),
-            abort,
-        )
-
-        metric_meta = resolve_metric_meta_from_samples(
-            [baseline.samples, *(candidate.samples for candidate in candidates)],
-            options.config_metrics,
-            adapter,
-            options.config_kinds,
-        )
-
-        return _Measurement(
-            baseline_label=baseline.ctx.label,
-            baseline_samples=baseline.samples,
-            candidates=_measure_candidates(
-                baseline.samples,
-                candidates,
-                metric_meta,
-                options.unstable_noise_pct,
-                options.warn,
-            ),
-            metric_meta=metric_meta,
-        )
-
     return await run_with_worktrees(
-        phase,
+        lambda repo_dir, worktrees, abort: _compare_phase(options, repo_dir, worktrees, abort),
         lambda measurement, cleanup: build_comparison_result(
             measurement.baseline_label,
             measurement.baseline_samples,

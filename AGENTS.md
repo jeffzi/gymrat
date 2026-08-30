@@ -12,7 +12,8 @@ preferred entrypoints; each shells out to the underlying `uv` command shown afte
 
 - `task install` — sync the project and dev dependencies from the lockfile (`uv sync --locked`),
   then install the prek hooks.
-- `task test` — `uv run pytest` (append args after `--`, e.g. `task test -- -k name`).
+- `task test` — `uv run pytest` (append args after `--`, e.g. `task test -- -k name`; passing args
+  disables coverage, since a subset run would fail the global coverage threshold).
 - `task test:matrix` — run the suite on every supported Python version.
 - `task check` — `uv run prek run -a` (all hooks). Run before committing.
 - `task check:fix` — auto-fix everything that supports it: `uv run ruff check --fix`,
@@ -25,3 +26,23 @@ preferred entrypoints; each shells out to the underlying `uv` command shown afte
   the hooks are the gate, not an obstacle.
 - Fix a failing check at its source. Never edit a test to make it pass; never widen a lint ignore to
   silence a real finding.
+
+## Linter and type-checker configuration
+
+Treat lint and type-check config as fixed. Never add to an ignore list, disable a rule, lower a
+severity, or exclude a file to get a check passing — fix the code instead. A suppression is
+warranted only when the finding is a genuine false positive or the rule cannot apply (e.g. a
+generated file, a documented upstream bug); then suppress at the narrowest scope — an inline
+directive with a reason — not in the shared config. When the same inline directive keeps recurring
+for the same rule, that is a signal the rule may deserve a config-level ignore — propose it to the
+user and wait for explicit approval; never promote a suppression into config on your own.
+
+## Spelling (cspell)
+
+Treat a cspell failure as a prompt to reword, not to grow the dictionary. Prefer plain words in
+prose and identifiers. A word earns a `cspell.json` entry only when it comes from outside the
+project and cannot be renamed — command names, API identifiers, file formats, proper nouns, domain
+vocabulary (e.g. `taskkill`, `killpg`, `pytestmark`). In tests, never invent gibberish that needs a
+suppression — any real word works for an unknown command, a bogus flag, or filler data, so pick one
+(`banana`, not an invented pseudo-word). `# cspell:disable-line` is reserved for fixtures where
+the gibberish itself is the behavior under test, never a dictionary entry.

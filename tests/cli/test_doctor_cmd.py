@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.config import BenchlessConfig
-from gymrat.config_inspect import ConfigInspection
+from gymrat.config.inspect import ConfigInspection
 from gymrat.doctor.checks import Check, CheckSection
 
 runner = CliRunner()

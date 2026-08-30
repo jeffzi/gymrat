@@ -248,7 +248,7 @@ class ProgressReporter(LiveDisplayMixin):
         # A termination signal exits via os._exit without unwinding the run's
         # finally block, so the live display would strand its last frame on the
         # terminal. Clearing it here keeps the terminal clean.
-        self._uninstall_cleanup = install_termination_cleanup(self._clear_on_signal)
+        self._uninstall_cleanup = install_termination_cleanup(self.clear_on_signal)
 
     def _header_text(self) -> Text | None:
         if not self._command:

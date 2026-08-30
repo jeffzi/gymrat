@@ -31,4 +31,10 @@ def stderr_console(*, color_flag: bool | None = None) -> Console:
     # just color); "auto" lets Rich pick the palette from the terminal.
     color_system = "auto" if colored else None
 
-    return Console(stderr=True, no_color=not colored, color_system=color_system, theme=CLI_THEME)
+    return Console(
+        stderr=True,
+        no_color=not colored,
+        color_system=color_system,
+        legacy_windows=False,
+        theme=CLI_THEME,
+    )
