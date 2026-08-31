@@ -133,7 +133,12 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     line = _serialize_record(record)
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     payload = f"{line}\n".encode()
-    fd = os.open(jsonl_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    # O_BINARY prevents \n → \r\n translation on Windows.
+    fd = os.open(
+        jsonl_path,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0),
+        0o644,
+    )
     try:
         view = memoryview(payload)
         while view:
