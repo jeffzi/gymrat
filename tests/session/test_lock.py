@@ -67,11 +67,16 @@ def assert_holder_record(
 
 
 def refuse_open(monkeypatch: pytest.MonkeyPatch, lock_path: str) -> None:
-    """Make every ``os.open`` of ``lock_path`` raise PermissionError."""
+    """Make every ``os.open`` of the OS lock file raise PermissionError.
+
+    The OS lock lives at ``lock_path + ".lock"``; targeting that path matches
+    the seam where ``filelock`` opens the file on Unix (via ``os.open``).
+    """
     real_open = os.open
+    os_lock_path = lock_path + ".lock"
 
     def spy_open(path: str, *args: int) -> int:
-        if path == lock_path:
+        if path == os_lock_path:
             raise PermissionError(13, "Permission denied")
         return real_open(path, *args)
 
@@ -138,7 +143,7 @@ def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without
 ):
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    blocker = FileLock(lock_path, timeout=0)
+    blocker = FileLock(lock_path + ".lock", timeout=0)
     blocker.acquire()
     Path(lock_path).write_bytes(content)
 
@@ -252,15 +257,15 @@ def test_acquire_lock_when_permission_error_posix_does_advise_removal(
 ):
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(lock_path).touch()
     refuse_open(monkeypatch, lock_path)
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
 
+    os_lock_path = lock_path + ".lock"
     hint = caught.value.hint or ""
     assert "belongs to another user" in hint
-    assert lock_path in hint
+    assert os_lock_path in hint
     assert re.search("remove", hint, re.IGNORECASE)
 
 
@@ -269,16 +274,20 @@ def test_acquire_lock_when_permission_error_windows_does_advise_close_program(
 ):
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(lock_path).touch()
     monkeypatch.setattr("sys.platform", "win32")
-    refuse_open(monkeypatch, lock_path)
+
+    def raise_perm(_self: FileLock, **_kw: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(FileLock, "acquire", raise_perm)
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
 
+    os_lock_path = lock_path + ".lock"
     hint = caught.value.hint or ""
     assert "locked by another process" in hint.lower()
-    assert lock_path in hint
+    assert os_lock_path in hint
     assert "belongs to another user" not in hint.lower()
 
 

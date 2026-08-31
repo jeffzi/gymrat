@@ -424,11 +424,12 @@ async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releas
     repo = create_scratch_repo()
     monkeypatch.chdir(repo)
     lock_path = str(lockfile_path(repo_root()))
+    os_lock_path = lock_path + ".lock"
     probed: dict[str, bool] = {}
 
     async def body() -> str:
         try:
-            FileLock(lock_path, timeout=0).acquire()
+            FileLock(os_lock_path, timeout=0).acquire()
             probed["held_during"] = False
         except Timeout:
             probed["held_during"] = True
@@ -439,7 +440,7 @@ async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releas
     assert result == "measured"
     assert probed["held_during"] is True
     try:
-        probe = FileLock(lock_path, timeout=0)
+        probe = FileLock(os_lock_path, timeout=0)
         probe.acquire()
         probe.release()
     except Timeout:
