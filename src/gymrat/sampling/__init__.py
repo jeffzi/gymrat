@@ -32,34 +32,18 @@ from gymrat.progress_events import (
 from gymrat.report.text import format_cleanup_failures
 from gymrat.sampling.errors import to_command_error
 from gymrat.sampling.stats import (
-    compute_metric_stats as compute_metric_stats,
-)
-from gymrat.sampling.stats import (
-    own_values as own_values,
-)
-from gymrat.sampling.stats import (
-    paired_or_own_values as paired_or_own_values,
-)
-from gymrat.sampling.stats import (
-    resolve_metric_meta_from_samples as resolve_metric_meta_from_samples,
+    compute_metric_stats,
+    own_values,
+    paired_or_own_values,
+    resolve_metric_meta_from_samples,
 )
 from gymrat.sampling.types import (
-    MetricStats as MetricStats,
-)
-from gymrat.sampling.types import (
-    RunOptions as RunOptions,
-)
-from gymrat.sampling.types import (
-    SamplingOptions as SamplingOptions,
-)
-from gymrat.sampling.types import (
-    TargetContext as TargetContext,
-)
-from gymrat.sampling.types import (
-    TargetSamples as TargetSamples,
-)
-from gymrat.sampling.types import (
-    TargetSpec as TargetSpec,
+    MetricStats,
+    RunOptions,
+    SamplingOptions,
+    TargetContext,
+    TargetSamples,
+    TargetSpec,
 )
 from gymrat.signals import install_termination_cleanup
 from gymrat.targets import (
@@ -71,6 +55,23 @@ from gymrat.targets import (
     materialize_worktree,
     plan_worktree,
 )
+
+__all__ = [
+    "MetricStats",
+    "RunOptions",
+    "SamplingOptions",
+    "TargetContext",
+    "TargetSamples",
+    "TargetSpec",
+    "collect_samples",
+    "compute_metric_stats",
+    "own_values",
+    "paired_or_own_values",
+    "resolve_dir",
+    "resolve_label",
+    "resolve_metric_meta_from_samples",
+    "run_with_worktrees",
+]
 
 
 @dataclass(frozen=True, slots=True)

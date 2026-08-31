@@ -6,10 +6,10 @@ import pytest
 
 from gymrat.adapters.mitata import find_json_candidates, mitata_adapter
 from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
-
-_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 from gymrat.model.metrics import MetricUnit
 from tests.adapters._inputs import build_stdout
+
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mitata.json"
 
 # ---------------------------------------------------------------------------
 # adapter shape
@@ -484,7 +484,7 @@ def test_parse_when_heap_is_not_an_object_does_warn_and_skip_heap(heap_value: ob
 
     assert result == {"test#time": 42}
     assert len(warnings) == 1
-    assert str(heap_value) in warnings[0] or repr(heap_value) in warnings[0]
+    assert "stats.heap is not an object" in warnings[0]
 
 
 def test_parse_when_heap_absent_does_not_warn():
@@ -538,7 +538,7 @@ def test_parse_when_heap_avg_non_finite_does_warn_and_skip_heap():
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert result == {"test#time": 42}
-    assert any("test" in w for w in warnings)
+    assert any("stats.heap.avg is not a finite number" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -713,21 +713,6 @@ def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure(
         mitata_adapter.parse(truncated)
 
 
-def _decode_error_reason(text: str, pos: int = 0) -> str:
-    """Return the JSONDecodeError message from attempting ``raw_decode`` at *pos*.
-
-    Uses :meth:`json.JSONDecoder.raw_decode` to match how the adapter now
-    discovers candidates. The resulting char offset is absolute within *text*,
-    not relative to a pre-sliced candidate.
-    """
-    try:
-        json.JSONDecoder().raw_decode(text, pos)
-    except json.JSONDecodeError as exc:
-        return str(exc)
-    msg = f"expected raw_decode at pos {pos} in {text!r} to fail"
-    raise AssertionError(msg)
-
-
 # ---------------------------------------------------------------------------
 # error handling
 # ---------------------------------------------------------------------------
@@ -777,7 +762,7 @@ def test_parse_when_benchmark_entries_not_objects_does_warn_and_skip():
     assert len(warnings) == 3
 
 
-def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip():
+def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_warn_and_skip():
     stdout = build_stdout(
         [
             {"alias": 42, "runs": []},
@@ -786,8 +771,15 @@ def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_skip()
             {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
         ]
     )
+    warnings: list[str] = []
 
-    assert mitata_adapter.parse(stdout) == {"valid#time": 1}
+    result = mitata_adapter.parse(stdout, warnings.append)
+
+    assert result == {"valid#time": 1}
+    assert len(warnings) == 3
+    assert "alias is not a string" in warnings[0]
+    assert "runs is not an array" in warnings[1]
+    assert "alias is not a string" in warnings[2]
 
 
 def test_parse_when_runs_are_not_objects_does_warn_and_skip():
@@ -808,7 +800,7 @@ def test_parse_when_runs_are_not_objects_does_warn_and_skip():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_run_has_error_field_does_skip_that_run():
+def test_parse_when_run_has_error_field_does_warn_and_skip_that_run():
     stdout = build_stdout(
         [
             {
@@ -825,8 +817,14 @@ def test_parse_when_run_has_error_field_does_skip_that_run():
             }
         ]
     )
+    warnings: list[str] = []
 
-    assert mitata_adapter.parse(stdout) == {"test/x=b#time": 20}
+    result = mitata_adapter.parse(stdout, warnings.append)
+
+    assert result == {"test/x=b#time": 20}
+    assert len(warnings) == 1
+    assert "Skipping run with an error" in warnings[0]
+    assert "something went wrong" in warnings[0]
 
 
 def test_parse_when_all_runs_have_errors_does_raise():
@@ -1048,6 +1046,21 @@ def test_parse_when_no_candidate_carries_benchmarks_does_report_missing_array():
 
     with pytest.raises(AdapterError, match=r"^JSON missing benchmarks array$"):
         mitata_adapter.parse(stdout)
+
+
+def _decode_error_reason(text: str, pos: int = 0) -> str:
+    """Return the JSONDecodeError message from attempting ``raw_decode`` at *pos*.
+
+    Uses :meth:`json.JSONDecoder.raw_decode` to match how the adapter now
+    discovers candidates. The resulting char offset is absolute within *text*,
+    not relative to a pre-sliced candidate.
+    """
+    try:
+        json.JSONDecoder().raw_decode(text, pos)
+    except json.JSONDecodeError as exc:
+        return str(exc)
+    msg = f"expected raw_decode at pos {pos} in {text!r} to fail"
+    raise AssertionError(msg)
 
 
 def test_parse_when_several_candidates_fail_does_report_longest_candidates_error():

@@ -22,6 +22,7 @@ import warnings
 from collections.abc import Sequence
 from typing import Any, cast, get_args
 
+from gymrat.exec import READ_CHUNK
 from gymrat.process_group import current_platform, kill_process_group
 from gymrat.supervisor.driver import (
     Driver,
@@ -32,9 +33,6 @@ from gymrat.supervisor.driver import (
     SessionPrompt,
 )
 from gymrat.supervisor.events import UsageUpdateEvent, event_from_wire
-
-_READ_CHUNK = 65536
-"""Bytes requested per read while draining the child's stderr."""
 
 _STREAM_LIMIT = 8 * 1024 * 1024
 """Max bytes buffered for a single child stdout line before the reader overruns.
@@ -71,7 +69,11 @@ def _outcome_from_wire(wire: dict[str, Any], cost_usd: float) -> SessionOutcome:
     raw_reason = wire.get("reason", "error")
     reason: SessionEndReason = raw_reason if raw_reason in _SESSION_END_REASONS else "error"
     raw_cost = wire.get("costUsd")
-    cost = float(raw_cost) if isinstance(raw_cost, (int, float)) else cost_usd
+    cost = (
+        float(raw_cost)
+        if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
+        else cost_usd
+    )
     message = wire.get("message")
     return SessionOutcome(reason=reason, cost_usd=cost, message=message)
 
@@ -222,7 +224,7 @@ class _StdioSession:
         Draining keeps a chatty child from blocking on a full stderr pipe.
         """
         with contextlib.suppress(OSError):
-            while await reader.read(_READ_CHUNK):
+            while await reader.read(READ_CHUNK):
                 pass
 
     async def _teardown(self, proc: asyncio.subprocess.Process) -> None:

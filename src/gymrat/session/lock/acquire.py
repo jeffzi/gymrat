@@ -33,7 +33,6 @@ from gymrat.session.lock.steal import (
     _Acquired,
     _AttemptOutcome,
     _Blocked,
-    _is_alive_windows,  # noqa: F401 -- monkeypatch target for tests/session/test_lock.py
     _Retry,
     is_alive,
     steal_lock,

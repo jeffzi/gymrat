@@ -47,6 +47,7 @@ from gymrat.cli.shared import (
     TimeoutOption,
     VerboseOption,
     apply_debug,
+    broken_pipe_guard,
     color_override_of,
     exit_with_error,
     is_tty,
@@ -249,10 +250,10 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
+    color_override = color_override_of(not no_color)
+    set_stderr_color_override(color_override)
 
     use_json = format == OutputFormat.json
-    color_override = color_override_of(not no_color)
     resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
         bench=bench,
@@ -396,10 +397,10 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 ) -> None:
     """Show this repository's session history, read from its log."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
+    color_override = color_override_of(not no_color)
+    set_stderr_color_override(color_override)
 
     use_json = format == OutputFormat.json
-    color_override = color_override_of(not no_color)
     resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
         bench=bench,
@@ -423,7 +424,8 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
 
-    write_and_flush(sys.stdout, report + "\n")
+    with broken_pipe_guard():
+        write_and_flush(sys.stdout, report + "\n")
 
 
 def _format_sync_summary(result: SyncResult) -> str:

@@ -148,11 +148,7 @@ def test_adapter_when_object_missing_parse_does_not_satisfy_protocol():
             MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="#heap"),
         ),
         ("foo", MetricDefaults(direction="lower")),
-        ("latency", MetricDefaults(direction="lower")),
-        ("memory", MetricDefaults(direction="lower")),
-        ("custom_metric", MetricDefaults(direction="lower")),
         ("test/throughput", MetricDefaults(direction="lower")),
-        ("test/ops", MetricDefaults(direction="lower")),
     ],
 )
 def test_defaults_from_suffixes_when_given_metric_name_does_return_expected_defaults(

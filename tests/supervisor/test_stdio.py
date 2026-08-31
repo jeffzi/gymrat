@@ -101,7 +101,7 @@ async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, An
         ),
     ],
 )
-async def test_stdio_driver_when_started_does_spawn_in_cwd_and_send_camelcase_start_line(
+async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(
     tmp_path: Path,
     overrides: dict[str, Any],
     expected_prompt: dict[str, Any],
@@ -129,7 +129,7 @@ async def test_stdio_driver_when_started_does_spawn_in_cwd_and_send_camelcase_st
 # ---------------------------------------------------------------------------
 
 
-async def test_stdio_driver_when_child_emits_lines_does_relay_events_and_ignore_noise(
+async def test_stdio_driver_when_child_emits_lines_does_relay_typed_events(
     tmp_path: Path,
 ) -> None:
     config = {
@@ -193,7 +193,32 @@ async def test_stdio_driver_when_outcome_line_received_does_settle_with_its_fiel
     assert outcome == SessionOutcome(reason="completed", cost_usd=0.5, message="all done")
 
 
-async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exit_code_and_last_cost(
+@pytest.mark.parametrize(
+    "bool_cost", [pytest.param(True, id="true"), pytest.param(False, id="false")]
+)
+async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_running_cost(
+    tmp_path: Path,
+    bool_cost: bool,
+) -> None:
+    config = {
+        "mode": "script",
+        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.42}}],
+        "outcome": {
+            "type": "outcome",
+            "reason": "completed",
+            "costUsd": bool_cost,
+        },
+    }
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+
+    outcome = await asyncio.wait_for(session.outcome, 5)
+
+    assert outcome.cost_usd == 0.42
+
+
+async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exit_details(
     tmp_path: Path,
 ) -> None:
     config = {
@@ -277,7 +302,7 @@ async def test_stdio_driver_when_interrupt_precedes_a_later_outcome_line_does_wi
 # ---------------------------------------------------------------------------
 
 
-async def test_stdio_driver_when_abort_fires_does_kill_child_tree_and_settle_interrupted(
+async def test_stdio_driver_when_abort_fires_does_settle_interrupted(
     tmp_path: Path,
 ) -> None:
     report = tmp_path / "child-processes.json"

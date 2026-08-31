@@ -94,6 +94,46 @@ def clear_progress(root: str) -> None:
     Path(progress_path(root)).unlink(missing_ok=True)
 
 
+@dataclass(slots=True)
+class _SidecarWriter:
+    """Pass-event state accumulator that writes a sidecar snapshot per pass event.
+
+    A phase change resets ``passes_completed`` so each phase's progress is
+    counted from zero.
+    """
+
+    root: str
+    passes_completed: int = 0
+    last_start_ms: float = 0.0
+    last_pass_duration_ms: float = 0.0
+    current_phase: str = ""
+
+    def __call__(self, event: ProgressEvent) -> None:
+        if isinstance(event, PassStarted):
+            self._enter_phase(event.phase)
+            self.last_start_ms = event.at_ms
+        elif isinstance(event, PassFinished):
+            self._enter_phase(event.phase)
+            self.passes_completed += 1
+            self.last_pass_duration_ms = event.at_ms - self.last_start_ms
+        else:
+            return
+
+        write_progress(
+            self.root,
+            ProgressSnapshot(
+                passes_completed=self.passes_completed,
+                passes_total=event.total_rounds * event.target_count,
+                last_pass_duration_ms=self.last_pass_duration_ms,
+            ),
+        )
+
+    def _enter_phase(self, phase: str) -> None:
+        if phase != self.current_phase:
+            self.passes_completed = 0
+            self.current_phase = phase
+
+
 def create_sidecar_writer(root: str) -> ProgressCallback:
     """Return a callback that writes sidecar snapshots on pass events.
 
@@ -101,39 +141,4 @@ def create_sidecar_writer(root: str) -> ProgressCallback:
     ``PassFinished`` events and writes a ``ProgressSnapshot`` on each.
     Other event types are silently ignored (no write).
     """
-    passes_completed = 0
-    last_start_ms: float = 0.0
-    last_pass_duration_ms: float = 0.0
-    passes_total: int = 0
-    current_phase: str = ""
-
-    def _on_event(event: ProgressEvent) -> None:
-        nonlocal passes_completed, last_start_ms, last_pass_duration_ms, passes_total
-        nonlocal current_phase
-
-        if isinstance(event, PassStarted):
-            if event.phase != current_phase:
-                passes_completed = 0
-                current_phase = event.phase
-            last_start_ms = event.at_ms
-        elif isinstance(event, PassFinished):
-            if event.phase != current_phase:
-                passes_completed = 0
-                current_phase = event.phase
-            passes_completed += 1
-            last_pass_duration_ms = event.at_ms - last_start_ms
-        else:
-            return
-
-        passes_total = event.total_rounds * event.target_count
-
-        write_progress(
-            root,
-            ProgressSnapshot(
-                passes_completed=passes_completed,
-                passes_total=passes_total,
-                last_pass_duration_ms=last_pass_duration_ms,
-            ),
-        )
-
-    return _on_event
+    return _SidecarWriter(root)

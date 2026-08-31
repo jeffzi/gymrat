@@ -80,7 +80,7 @@ class Capped:
     cap_type: CapType
 
 
-Liveness = Starting | InFlight | Ended | Capped
+type Liveness = Starting | InFlight | Ended | Capped
 
 
 @dataclass(frozen=True, slots=True)

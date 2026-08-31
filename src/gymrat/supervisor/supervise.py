@@ -148,7 +148,6 @@ class _Supervision:
         if self._pending_cap is not None:
             self._trigger_cap(self._pending_cap)
 
-        # Arm the wall-clock timer only when no cap fired during start.
         if not self._cap_fired:
             self._wall_task = asyncio.create_task(self._run_wall_clock())
 

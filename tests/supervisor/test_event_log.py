@@ -8,6 +8,7 @@ directory creation, the failure surface, and ``SessionObserver`` compatibility.
 """
 
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -119,8 +120,6 @@ def test_create_event_log_writer_when_parent_removed_after_first_write_does_recr
     writer = create_event_log_writer(log_path)
 
     writer(UsageUpdateEvent(timestamp=1000, cost_usd=0.01))
-    import shutil
-
     shutil.rmtree(log_dir)
     writer(UsageUpdateEvent(timestamp=2000, cost_usd=0.02))
 

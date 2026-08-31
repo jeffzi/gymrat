@@ -352,22 +352,7 @@ def test_combine_observers_when_given_no_observers_does_not_raise():
     combined(event)
 
 
-def test_combine_observers_when_an_observer_raises_does_still_call_later_observers():
-    boom_message = "observer failure"
-
-    def boom(_: object) -> None:
-        raise RuntimeError(boom_message)
-
-    later = collecting_observer()
-    combined = combine_observers(boom, later.observer)
-    event = UsageUpdateEvent(timestamp=1, cost_usd=0.01)
-
-    combined(event)
-
-    assert later.events == [event]
-
-
-def test_combine_observers_when_an_observer_raises_does_warn_about_the_failure():
+def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining():
     boom_message = "observer failure"
 
     def boom(_: object) -> None:
@@ -379,6 +364,8 @@ def test_combine_observers_when_an_observer_raises_does_warn_about_the_failure()
 
     with pytest.warns(RuntimeWarning, match=boom_message):
         combined(event)
+
+    assert later.events == [event]
 
 
 # ---------------------------------------------------------------------------

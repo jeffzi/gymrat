@@ -31,6 +31,7 @@ from gymrat.session.workspace import (
     revert_workspace,
     worktree_head,
 )
+from tests._git import run_git as _run_git
 
 SESSION_ID = "20260808-141530-a3f2"
 BRANCH = f"gymrat/{SESSION_ID}"
@@ -44,9 +45,7 @@ NEXT_BRANCH = f"gymrat/{NEXT_SESSION_ID}"
 
 def _git(args: list[str], cwd: str) -> str:
     """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    from tests._git import run_git
-
-    return run_git(args, cwd).strip()
+    return _run_git(args, cwd).strip()
 
 
 def _checked_out_ref(worktree: str) -> str:
@@ -80,16 +79,19 @@ def _worktrees(root: str) -> Worktrees:
 
 @pytest.fixture
 def repo(create_scratch_repo: Callable[[], str]) -> str:
+    """A throwaway git repository for workspace operations."""
     return create_scratch_repo()
 
 
 @pytest.fixture
 def baseline_sha(repo: str) -> str:
+    """The HEAD commit SHA of the scratch repo's initial commit."""
     return _git(["rev-parse", "HEAD"], repo)
 
 
 @pytest.fixture
 def baseline(baseline_sha: str) -> BaselineRef:
+    """A ``BaselineRef`` pointing at the scratch repo's initial commit on ``main``."""
     return BaselineRef(ref=BASELINE_REF, sha=baseline_sha)
 
 

@@ -164,6 +164,7 @@ def fire_launch(
     max_minutes: float = 60,
     max_usd: float | None = None,
 ) -> None:
+    """Publish a ``LaunchEvent`` with sensible defaults for cap and model fields."""
     observer(
         LaunchEvent(
             timestamp=timestamp,
@@ -186,6 +187,7 @@ def fire_tool_start(
     *,
     input_summary: str = "...",
 ) -> None:
+    """Publish a ``ToolStartEvent`` for *tool_name* at *timestamp*."""
     observer(
         ToolStartEvent(
             timestamp=timestamp,
@@ -206,6 +208,7 @@ def fire_tool_end(
     result: str = "ok",
     result_summary: str = "ok",
 ) -> None:
+    """Publish a ``ToolEndEvent`` for *tool_name* at *timestamp*."""
     observer(
         ToolEndEvent(
             timestamp=timestamp,
@@ -219,10 +222,12 @@ def fire_tool_end(
 
 
 def fire_usage_update(observer: SessionObserver, cost_usd: float, timestamp: int = 4000) -> None:
+    """Publish a ``UsageUpdateEvent`` carrying *cost_usd* at *timestamp*."""
     observer(UsageUpdateEvent(timestamp=timestamp, cost_usd=cost_usd))
 
 
 def fire_cap(observer: SessionObserver, cap: CapType, timestamp: int = 5000) -> None:
+    """Publish a ``CapEvent`` of type *cap* at *timestamp*."""
     observer(CapEvent(timestamp=timestamp, cap=cap))
 
 
@@ -247,6 +252,8 @@ FRAME_WIDTH = 100
 
 
 class ReporterKit(NamedTuple):
+    """A live-mode reporter paired with the injectable clock that drives it."""
+
     reporter: SuperviseReporter
     clock: Clock
 

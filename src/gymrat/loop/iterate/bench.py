@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class _IterationContext:
+class IterationContext:
     """The session, config, caller options, and log path that every iteration step shares."""
 
     session: SessionRecord
@@ -72,7 +72,7 @@ class BenchRunOutputs:
 
 
 @dataclass(frozen=True, slots=True)
-class _Judged:
+class Judged:
     """The first run, judged and confirmed: the outputs, the comparison, and the rerun."""
 
     run: BenchRunOutputs
@@ -91,7 +91,7 @@ def build_iteration_comparison(
         CandidateMeasurement,
         build_comparison_result,
     )
-    from gymrat.targets import CleanupResult  # noqa: PLC0415
+    from gymrat.targets import CleanupResult  # noqa: PLC0415 -- same deferral as above
 
     candidate = CandidateMeasurement(
         label=run.experiment.ctx.label,
@@ -112,7 +112,7 @@ def build_iteration_comparison(
 
 
 async def bench_and_judge(
-    ctx: _IterationContext,
+    ctx: IterationContext,
     bench: str,
     metric_meta: dict[str, ResolvedMetricMeta] | None = None,
     *,

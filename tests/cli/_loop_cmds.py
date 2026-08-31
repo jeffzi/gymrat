@@ -5,29 +5,51 @@ is test-support code, not a test module: it carries no test functions or pytest
 fixtures of its own.
 """
 
-import re
 from pathlib import Path
 
 import tomli_w
 from typer.testing import CliRunner
 
-from tests._ansi import strip_ansi
+from tests._ansi import SGR_RE, strip_ansi
 
-__all__ = ["never_tty", "plain_lines", "runner", "strip_ansi", "write_config"]
+__all__ = [
+    "always_tty",
+    "make_discard_repo",
+    "never_tty",
+    "plain_lines",
+    "runner",
+    "strip_ansi",
+    "write_config",
+]
 
 runner = CliRunner()
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def plain_lines(text: str) -> list[str]:
     """The non-blank lines of ``text``, stripped of color and surrounding space."""
-    return [_ANSI_RE.sub("", line).strip() for line in text.split("\n") if line.strip()]
+    return [SGR_RE.sub("", line).strip() for line in text.split("\n") if line.strip()]
+
+
+def always_tty(_stream: object) -> bool:
+    """Stand in for ``is_tty`` so the discard command takes its interactive path."""
+    return True
 
 
 def never_tty(_stream: object) -> bool:
     """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
     return False
+
+
+def make_discard_repo(repo: str) -> str:
+    """Set up ``repo`` with an open session and one unsettled iteration to discard."""
+    from gymrat.loop.start import start_session
+    from gymrat.session import append_record, session_jsonl_path
+    from tests.loop.iterate._fixtures import resolved_config
+    from tests.session.records._fixtures import iteration_record
+
+    start_session(repo, "main", resolved_config())
+    append_record(session_jsonl_path(repo), iteration_record(seq=1))
+    return repo
 
 
 def write_config(root: str, **extra: object) -> None:

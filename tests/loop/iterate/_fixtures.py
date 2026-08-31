@@ -15,7 +15,6 @@ helper imported as ``tests.loop.iterate._fixtures``.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +31,7 @@ from gymrat.session import (
     record_to_wire,
     session_jsonl_path,
 )
+from tests._ansi import SGR_RE
 from tests.session.records._fixtures import SESSION_ID
 from tests.session.records._fixtures import iteration_record as _iteration_record
 from tests.session.records._fixtures import session_record as _session_record_defaults
@@ -44,8 +44,6 @@ BASELINE_MS: list[float] = [100, 101, 99, 100, 102, 98, 100, 101, 99, 100]
 
 #: The same ten rounds, an order of magnitude larger, so a second metric reads differently.
 BASELINE_BYTES: list[float] = [value * 10 for value in BASELINE_MS]
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def scaled(values: list[float], factor: float) -> list[float]:
@@ -242,7 +240,7 @@ def sampling_call(mock: CollectSamplesRecorder, index: int) -> SamplingCall:
 
 def trimmed_report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color and of the indentation a grouped metric carries."""
-    return [_ANSI_RE.sub("", line).strip() for line in report.split("\n")]
+    return [SGR_RE.sub("", line).strip() for line in report.split("\n")]
 
 
 def as_logged(value: SessionLogRecord) -> object:

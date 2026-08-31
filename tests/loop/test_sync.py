@@ -118,44 +118,20 @@ def test_sync_to_experiment_when_working_tree_clean_does_return_empty_file_list(
 # ---------------------------------------------------------------------------
 
 
-def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_raise_naming_files(
+def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_leaving_worktree_intact(
     session: str,
 ):
-    (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
     experiment = experiment_worktree_dir(session)
+    (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
     (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
 
     with pytest.raises(GymratError) as excinfo:
         sync_to_experiment(session)
 
     assert "README.md" in str(excinfo.value)
-
-
-def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_leave_worktree_unchanged(
-    session: str,
-):
-    experiment = experiment_worktree_dir(session)
-    (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
-    (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
-
-    with pytest.raises(GymratError):
-        sync_to_experiment(session)
-
-    assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Experiment change\n"
-
-
-def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_hint_to_settle_or_revert(
-    session: str,
-):
-    (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
-    experiment = experiment_worktree_dir(session)
-    (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
-
-    with pytest.raises(GymratError) as excinfo:
-        sync_to_experiment(session)
-
     hint = hint_of(excinfo.value) or ""
     assert "settle" in hint.lower() or "revert" in hint.lower()
+    assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Experiment change\n"
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ from gymrat.session.records import (
     SessionRecord,
 )
 from gymrat.session.store import append_record, read_records
+from tests._git import run_git as _run_git
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import committed_keep, iteration_record
@@ -91,9 +92,7 @@ def _run_cli(repo: str, *argv: str) -> subprocess.CompletedProcess[str]:
 
 def _git(repo: str, *args: str) -> str:
     """Run git in ``repo`` for test setup and inspection, returning trimmed stdout."""
-    from tests._git import run_git
-
-    return run_git(list(args), repo).strip()
+    return _run_git(list(args), repo).strip()
 
 
 def _tune_experiment(repo: str, latency: int) -> None:

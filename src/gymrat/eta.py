@@ -80,7 +80,7 @@ def format_eta(ms: float) -> str:
     Clamps to at least one second and drops a zero remainder in the lower tier
     (``60_000`` renders ``"~1m left"``, not ``"~1m 0s left"``).
     """
-    total_seconds = max(1, round(ms / 1000))
+    total_seconds = max(1, round(ms / MS_PER_SECOND))
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
 
     if total_seconds < SECONDS_PER_MINUTE:

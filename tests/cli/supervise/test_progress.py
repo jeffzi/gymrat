@@ -54,14 +54,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def test_create_reporter_when_built_does_expose_observer_and_stop():
-    kit = make_reporter()
-
-    assert callable(kit.reporter.observer)
-    assert callable(kit.reporter.stop)
-    kit.reporter.stop()
-
-
 def test_create_reporter_when_built_does_expose_frame():
     kit = make_reporter()
 
@@ -97,9 +89,6 @@ def test_panel_title_when_launched_does_contain_label_session_and_branch(
 
     frame = render_frame(kit.reporter)
 
-    assert "supervise" in frame
-    assert "ecstatic-ts" in frame
-    assert "20260813-125044-34ec" in frame
     assert frame == snapshot
 
 
@@ -133,6 +122,7 @@ def test_cost_when_no_cap_and_no_usage_does_show_placeholder(snapshot: SnapshotA
 
     assert "cost" in frame
     assert "$—" in frame
+    assert frame == snapshot
 
 
 def test_cost_when_cap_set_and_usage_received_does_show_cost_against_cap(
@@ -147,6 +137,7 @@ def test_cost_when_cap_set_and_usage_received_does_show_cost_against_cap(
 
     assert "$4.12" in frame
     assert "$10.00" in frame
+    assert frame == snapshot
 
 
 def test_cost_when_no_cap_and_usage_received_does_show_bare_cost():
@@ -207,6 +198,7 @@ def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: Snapsh
     assert "1 discarded" in frame
     assert "-3.2%" in frame
     assert "improved" in frame
+    assert frame == snapshot
 
 
 def test_loop_when_max_iterations_absent_does_omit_the_denominator():
@@ -388,7 +380,7 @@ class CountingRead:
         return ReadSessionResult(state=empty_session_state(), has_baseline=False)
 
 
-def test_reread_when_non_bash_tool_ends_does_not_reread_but_bash_does():
+def test_reread_when_bash_tool_ends_does_reread_unlike_non_bash():
     counting = CountingRead()
     kit = make_reporter(read_session=counting)
     observer = kit.reporter.observer
@@ -803,7 +795,7 @@ def test_cap_when_fired_does_freeze_liveness_against_later_tool_events():
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_text_delta_or_thinking_update_does_not_crash():
+def test_liveness_when_non_tool_events_fired_does_not_crash():
     kit = make_reporter()
     observer = kit.reporter.observer
 
@@ -833,12 +825,7 @@ def test_liveness_when_tool_progress_after_launch_does_not_crash():
 # ---------------------------------------------------------------------------
 
 
-def test_warn_when_called_in_live_mode_does_record_warning():
-    """In live mode, warn() should print above the live block.
-
-    Since we test via frame(), we verify the reporter accepts warn() calls
-    and the warning text is accessible.
-    """
+def test_warn_when_called_in_live_mode_does_not_crash():
     kit = make_reporter(mode="live")
     fire_launch(kit.reporter.observer, 1000)
 
@@ -858,7 +845,9 @@ def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():
 
     fire_launch(plain.observer, 1000, max_usd=5.0)
 
-    assert any("caps" in w and "$5.00" in w for w in plain.writes)
+    caps_line = plain.writes[-1]
+    assert "caps" in caps_line
+    assert "$5.00" in caps_line
 
 
 def test_plain_when_launched_without_spend_cap_does_print_bare_caps():
@@ -866,7 +855,7 @@ def test_plain_when_launched_without_spend_cap_does_print_bare_caps():
 
     fire_launch(plain.observer, 1000, max_minutes=30)
 
-    assert any("caps 30m" in w for w in plain.writes)
+    assert "caps 30m" in plain.writes[-1]
 
 
 @pytest.mark.parametrize(
@@ -883,7 +872,7 @@ def test_plain_caps_when_max_minutes_given_does_render_the_actual_cap_value(
 
     fire_launch(plain.observer, 1000, max_minutes=max_minutes)
 
-    assert any(expected in w for w in plain.writes)
+    assert expected in plain.writes[-1]
 
 
 def test_plain_when_usage_update_does_print_cost():
@@ -892,7 +881,7 @@ def test_plain_when_usage_update_does_print_cost():
     fire_launch(plain.observer, 1000, max_usd=5.0)
     fire_usage_update(plain.observer, 1.42, 2000)
 
-    assert any("cost $1.42" in w for w in plain.writes)
+    assert "cost $1.42" in plain.writes[-1]
 
 
 def test_plain_when_loop_changes_does_print_loop_segment():
@@ -922,8 +911,8 @@ def test_plain_when_no_session_yet_does_not_print_loop_segment():
 
     fire_launch(plain.observer, 1000)
 
-    assert any("caps" in w for w in plain.writes)
-    assert not any("no session yet" in w for w in plain.writes)
+    assert "caps" in plain.writes[-1]
+    assert all("no session yet" not in w for w in plain.writes)
 
 
 def test_plain_when_capped_does_print_cap_interrupting():
@@ -932,8 +921,9 @@ def test_plain_when_capped_does_print_cap_interrupting():
     fire_launch(plain.observer, 1000)
     fire_cap(plain.observer, "wall-clock")
 
-    assert any("cap wall-clock" in w for w in plain.writes)
-    assert any("interrupting" in w for w in plain.writes)
+    cap_line = plain.writes[-1]
+    assert "cap wall-clock" in cap_line
+    assert "interrupting" in cap_line
 
 
 def test_plain_when_warn_called_does_record_warning():
@@ -942,7 +932,7 @@ def test_plain_when_warn_called_does_record_warning():
 
     plain.reporter.warn("heads up")
 
-    assert any("heads up" in w for w in plain.writes)
+    assert "heads up" in plain.writes[-1]
 
 
 # ---------------------------------------------------------------------------

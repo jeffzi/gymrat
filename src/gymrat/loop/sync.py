@@ -47,7 +47,7 @@ def _dirty_entries(directory: str) -> list[_DirtyEntry]:
     non-ASCII and whitespace-containing paths, so every path is the literal
     filesystem name.
     """
-    raw = run_git(["status", "-z", "-uall"], directory)  # cspell:disable-line
+    raw = run_git(["status", "-z", "--untracked-files=all"], directory)
     entries: list[_DirtyEntry] = []
     fields = raw.split("\0")
     i = 0
@@ -79,8 +79,7 @@ def _copy_entry(src: Path, dst: Path) -> None:
     if src.is_symlink():
         link_target = src.readlink()
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() or dst.is_symlink():
-            dst.unlink()
+        dst.unlink(missing_ok=True)
         dst.symlink_to(link_target)
     elif src.is_file():
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -117,7 +116,7 @@ def sync_to_experiment(root: str) -> SyncResult:
 
     try:
         experiment_entries = _dirty_entries(experiment)
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+    except (subprocess.CalledProcessError, OSError) as exc:
         message = f"Cannot read experiment worktree: {stderr_text_of(exc)}"
         hint = (
             "The experiment worktree may have been deleted."

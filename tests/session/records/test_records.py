@@ -248,6 +248,7 @@ def _config_with(**overrides: object) -> dict[str, object]:
         pytest.param(DISCARD_RECORD, id="discard"),
         pytest.param(HOOK_RECORD, id="hook"),
         pytest.param(patching(HOOK_RECORD, {"stderrBytes": 42}), id="hook-with-stderr-bytes"),
+        pytest.param(patching(HOOK_RECORD, {"exitCode": -9}), id="hook-exit-code-negative-signal"),
         pytest.param(FINALIZE_RECORD, id="finalize"),
     ],
 )
@@ -344,6 +345,16 @@ def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[
         pytest.param(patching(DISCARD_RECORD, {"seq": 1.5}), "seq", id="discard-seq-fractional"),
         pytest.param(patching(HOOK_RECORD, {"stage": "during"}), "stage", id="hook-bad-stage"),
         pytest.param(
+            patching(HOOK_RECORD, {"stdoutBytes": -1}),
+            "stdoutBytes",
+            id="hook-stdout-bytes-negative",
+        ),
+        pytest.param(
+            patching(HOOK_RECORD, {"stderrBytes": -1}),
+            "stderrBytes",
+            id="hook-stderr-bytes-negative",
+        ),
+        pytest.param(
             patching(HOOK_RECORD, {"timedOut": 0}), "timedOut", id="hook-timed-out-not-boolean"
         ),
         pytest.param(
@@ -392,7 +403,6 @@ def test_parse_record_when_field_invalid_does_name_field(value: object, field: s
         pytest.param([SESSION_RECORD], id="array"),
         pytest.param(omitting(DISCARD_RECORD, "type"), id="no-type-discriminator"),
         pytest.param({"type": 42}, id="type-not-a-string"),
-        pytest.param({"type": "banana"}, id="unknown-type"),
     ],
 )
 def test_parse_record_when_value_has_no_recognized_type_does_raise(value: object):

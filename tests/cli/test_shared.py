@@ -11,13 +11,13 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import override
 
 import pytest
 import typer
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
+from gymrat.cli.progress import ProgressReporter
 from gymrat.cli.shared import (
     BUGS_URL,
     GATE_EXIT_CODE,
@@ -36,6 +36,7 @@ from gymrat.cli.shared import (
     parse_positive_integer_up_to,
     parse_positive_number,
     resolve_render_mode,
+    run_cli,
     run_with_signal_abort,
     set_debug_mode,
     set_stderr_color_override,
@@ -48,24 +49,13 @@ from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 from gymrat.session import append_record, read_records, session_jsonl_path
 from gymrat.session.paths import lockfile_path, repo_root
+from tests._streams import FakeStream as _FakeStream
 from tests.session.records._fixtures import (
     iteration_record,
     session_record,
     tear_final_line,
     write_session_log,
 )
-
-
-class _FakeStream(io.StringIO):
-    """A stderr stand-in whose TTY status the test controls."""
-
-    def __init__(self, *, tty: bool):
-        super().__init__()
-        self._tty = tty
-
-    @override
-    def isatty(self) -> bool:
-        return self._tty
 
 
 class _StubReporter:
@@ -127,7 +117,7 @@ def _reset_stderr_color_override():
 # ---------------------------------------------------------------------------
 
 
-def test_exit_code_and_url_constants_match_the_shipped_contract():
+def test_constants_when_checked_does_match_the_shipped_contract():
     assert GATE_EXIT_CODE == 1
     assert TOOL_FAILURE_EXIT_CODE == 2
     assert BUGS_URL == "https://github.com/jeffzi/gymrat/issues"
@@ -146,11 +136,11 @@ def test_exit_code_and_url_constants_match_the_shipped_contract():
         pytest.param(object(), False, id="no-isatty"),
     ],
 )
-def test_is_tty_reflects_the_streams_isatty(stream: object, expected: bool):
+def test_is_tty_when_called_does_reflect_the_streams_isatty(stream: object, expected: bool):
     assert is_tty(stream) is expected
 
 
-def test_write_and_flush_writes_then_flushes():
+def test_write_and_flush_when_called_does_write_then_flush():
     class Recorder:
         def __init__(self):
             self.data = ""
@@ -173,8 +163,6 @@ def test_write_and_flush_writes_then_flushes():
 def test_run_cli_when_broken_pipe_does_exit_cleanly(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    from gymrat.cli.shared import run_cli
-
     async def boom() -> None:
         raise BrokenPipeError
 
@@ -198,7 +186,9 @@ def test_run_cli_when_broken_pipe_does_exit_cleanly(
         pytest.param(False, False, id="color-off-vetoes"),
     ],
 )
-def test_color_override_of_maps_flag_to_renderer_override(color: bool, expected: object):
+def test_color_override_of_when_called_does_map_flag_to_renderer_override(
+    color: bool, expected: object
+):
     assert color_override_of(color) is expected
 
 
@@ -229,7 +219,9 @@ def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
         pytest.param("HEAD", TargetSpec(label=None, target="HEAD"), id="no-equals"),
     ],
 )
-def test_parse_positional_splits_on_the_first_equals(positional: str, expected: TargetSpec):
+def test_parse_positional_when_called_does_split_on_the_first_equals(
+    positional: str, expected: TargetSpec
+):
     assert parse_positional(positional) == expected
 
 
@@ -260,7 +252,7 @@ def test_parse_positional_when_target_empty_raises_dedicated_message(positional:
 
 
 @pytest.mark.parametrize("value", ["1", "5", "100"])
-def test_parse_positive_integer_accepts_positive_integers(value: str):
+def test_parse_positive_integer_when_positive_does_accept(value: str):
     parse = parse_positive_integer_up_to(2_147_483)
 
     assert parse(value) == int(value)
@@ -270,7 +262,7 @@ def test_parse_positive_integer_accepts_positive_integers(value: str):
     "value",
     ["0", "-1", "1.5", "abc", "", " 5", "5 "],
 )
-def test_parse_positive_integer_rejects_non_positive_integers(value: str):
+def test_parse_positive_integer_when_non_positive_does_reject(value: str):
     parse = parse_positive_integer_up_to(2_147_483)
 
     with pytest.raises(typer.BadParameter) as exc:
@@ -279,7 +271,7 @@ def test_parse_positive_integer_rejects_non_positive_integers(value: str):
     assert exc.value.message == "must be a positive integer."
 
 
-def test_parse_positive_integer_rejects_values_over_the_maximum():
+def test_parse_positive_integer_when_over_maximum_does_reject():
     parse = parse_positive_integer_up_to(10)
 
     with pytest.raises(typer.BadParameter) as exc:
@@ -294,12 +286,12 @@ def test_parse_positive_integer_rejects_values_over_the_maximum():
 
 
 @pytest.mark.parametrize(("value", "expected"), [("1", 1.0), ("2.5", 2.5)])
-def test_parse_positive_number_accepts_positive_decimals(value: str, expected: float):
+def test_parse_positive_number_when_positive_decimal_does_accept(value: str, expected: float):
     assert parse_positive_number(value) == expected
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "abc", "", "1."])
-def test_parse_positive_number_rejects_non_positive_or_malformed(value: str):
+def test_parse_positive_number_when_non_positive_or_malformed_does_reject(value: str):
     with pytest.raises(typer.BadParameter) as exc:
         parse_positive_number(value)
 
@@ -315,18 +307,18 @@ def test_parse_positive_number_when_value_overflows_to_infinity_does_reject():
     assert exc.value.message == "must be a positive number."
 
 
-def test_parse_max_minutes_accepts_within_the_timer_ceiling():
+def test_parse_max_minutes_when_within_ceiling_does_accept():
     assert parse_max_minutes("10") == 10.0
 
 
-def test_parse_max_minutes_rejects_over_the_timer_ceiling():
+def test_parse_max_minutes_when_over_ceiling_does_reject():
     with pytest.raises(typer.BadParameter) as exc:
         parse_max_minutes("35792")
 
     assert exc.value.message == "must be at most 35791 minutes."
 
 
-def test_parse_max_minutes_rejects_non_positive_before_bounding():
+def test_parse_max_minutes_when_non_positive_does_reject_before_bounding():
     with pytest.raises(typer.BadParameter) as exc:
         parse_max_minutes("0")
 
@@ -345,7 +337,7 @@ def test_parse_max_minutes_rejects_non_positive_before_bounding():
         pytest.param(True, "live", id="tty-live"),
     ],
 )
-def test_resolve_render_mode_maps_tty_to_strategy(
+def test_resolve_render_mode_when_called_does_map_tty_to_strategy(
     tty: bool,
     expected: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -355,7 +347,9 @@ def test_resolve_render_mode_maps_tty_to_strategy(
     assert resolve_render_mode() == expected
 
 
-def test_resolve_render_mode_ignores_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_render_mode_when_no_color_set_does_still_use_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
     monkeypatch.setenv("NO_COLOR", "1")
 
@@ -410,8 +404,6 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
 def test_begin_run_does_return_progress_reporter(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from gymrat.cli.progress import ProgressReporter
-
     _clear_color_env(monkeypatch)
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
 
@@ -557,7 +549,7 @@ async def test_run_with_signal_abort_when_cleanup_invoked_kills_groups_before_se
 # ---------------------------------------------------------------------------
 
 
-def test_shared_flags_carry_the_config_set_plus_color_and_format_defaults():
+def test_shared_flags_when_built_does_carry_config_set_plus_defaults():
     flags = SharedFlags(bench="my-bench", samples=5)
 
     assert flags.bench == "my-bench"
@@ -566,7 +558,7 @@ def test_shared_flags_carry_the_config_set_plus_color_and_format_defaults():
     assert flags.format == "text"
 
 
-def test_compare_flags_add_verbose_and_fail_on_to_the_shared_set():
+def test_compare_flags_when_built_does_add_verbose_and_fail_on():
     flags = CompareFlags(verbose=True, fail_on=(RegressedFailOn(),))
 
     assert flags.verbose is True
@@ -574,7 +566,7 @@ def test_compare_flags_add_verbose_and_fail_on_to_the_shared_set():
     assert flags.color is True
 
 
-def test_measure_flags_are_a_shared_flags_subclass():
+def test_measure_flags_when_built_does_subclass_shared_flags():
     flags = MeasureFlags(adapter="mitata")
 
     assert flags.adapter == "mitata"
@@ -617,7 +609,7 @@ assert not bodies, f'cli import pulled command bodies: {bodies}'
 # ---------------------------------------------------------------------------
 
 
-def test_parse_fail_on_accepts_regressed():
+def test_parse_fail_on_when_regressed_does_accept():
     assert parse_fail_on("regressed") == RegressedFailOn()
 
 
@@ -628,7 +620,7 @@ def test_parse_fail_on_accepts_regressed():
         pytest.param("geomean:-1.5", -1.5, id="negative-decimal"),
     ],
 )
-def test_parse_fail_on_accepts_geomean_percentage(value: str, expected_pct: float):
+def test_parse_fail_on_when_geomean_percentage_does_accept(value: str, expected_pct: float):
     condition = parse_fail_on(value)
 
     assert condition == GeomeanFailOn(pct=expected_pct)
@@ -797,3 +789,13 @@ def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.Mon
 
     set_debug_mode(False)
     assert "Traceback" in captured.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# stop-target helpers — removed from the public surface
+# ---------------------------------------------------------------------------
+
+
+def test_shared_when_stop_target_removed_does_not_export_helpers():
+    assert not hasattr(shared, "parse_stop_target_value")
+    assert not hasattr(shared, "_STOP_TARGET_RE")

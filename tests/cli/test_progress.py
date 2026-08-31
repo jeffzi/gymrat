@@ -18,8 +18,6 @@ from gymrat.cli.progress import ProgressReporter, create_progress_reporter
 from gymrat.cli.style import LIVE_REFRESH_PER_SECOND
 from gymrat.progress_events import (
     HookStarted,
-    PassFinished,
-    PassStarted,
     PrepareFinished,
     PrepareStarted,
 )
@@ -30,6 +28,15 @@ from tests._rich import (
     frame_text,
     screen_lines,
     sealed_console,
+)
+from tests.cli._progress_helpers import (
+    ms_from_clock as _ms,
+)
+from tests.cli._progress_helpers import (
+    pass_finished as _pass_finished,
+)
+from tests.cli._progress_helpers import (
+    pass_started as _pass_started,
 )
 
 if TYPE_CHECKING:
@@ -87,45 +94,6 @@ def _reporter(
     )
     _live_reporters.append(reporter)
     return console, clock, reporter
-
-
-def _ms(clock: Clock) -> int:
-    """Return the clock's current time in milliseconds, for ``at_ms`` fields."""
-    return int(clock.now * 1000)
-
-
-def _pass_started(
-    round_num: int,
-    total_rounds: int,
-    *,
-    at_ms: int,
-    target_count: int = 1,
-    label: str = "bench",
-) -> PassStarted:
-    return PassStarted(
-        round=round_num,
-        total_rounds=total_rounds,
-        target_count=target_count,
-        label=label,
-        at_ms=at_ms,
-    )
-
-
-def _pass_finished(
-    round_num: int,
-    total_rounds: int,
-    *,
-    at_ms: int,
-    target_count: int = 1,
-    label: str = "bench",
-) -> PassFinished:
-    return PassFinished(
-        round=round_num,
-        total_rounds=total_rounds,
-        target_count=target_count,
-        label=label,
-        at_ms=at_ms,
-    )
 
 
 def _summary_line(console: Console) -> str:

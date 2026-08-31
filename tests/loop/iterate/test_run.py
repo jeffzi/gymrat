@@ -92,12 +92,12 @@ def repo(create_scratch_repo: Callable[[], str]) -> str:
 
 
 @pytest.fixture
-def samples_mock(monkeypatch: pytest.MonkeyPatch):
+def samples_mock(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
     return install_collect_samples(monkeypatch)
 
 
 @pytest.fixture
-def settled(repo: str, samples_mock: CollectSamplesRecorder):
+def settled(repo: str, samples_mock: CollectSamplesRecorder) -> str:
     """A settled session on disk — one kept iteration — with sampling stubbed improved."""
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())

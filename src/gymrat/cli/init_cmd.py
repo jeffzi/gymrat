@@ -22,6 +22,7 @@ from gymrat.cli.shared import (
     DebugOption,
     NoColorOption,
     apply_debug,
+    broken_pipe_guard,
     color_override_of,
     exit_with_error,
     resolve_stream_color,
@@ -80,9 +81,9 @@ def init_command(
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
-
     color_override = color_override_of(not no_color)
+    set_stderr_color_override(color_override)
+
     resolved_color = resolve_stream_color(color_override, sys.stdout)
 
     base_dir = find_implicit_base()
@@ -102,4 +103,5 @@ def init_command(
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
         exit_with_error(error)
 
-    write_and_flush(sys.stdout, _format_summary(result, base_dir, color=resolved_color) + "\n")
+    with broken_pipe_guard():
+        write_and_flush(sys.stdout, _format_summary(result, base_dir, color=resolved_color) + "\n")

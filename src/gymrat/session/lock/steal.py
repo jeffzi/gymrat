@@ -7,6 +7,7 @@ the holder is dead.
 import errno
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from gymrat.errors import GymratError
@@ -208,4 +209,4 @@ def _is_alive_windows(pid: int) -> bool:
     return last_error != invalid_parameter
 
 
-is_alive = _is_alive_windows if sys.platform == "win32" else _is_alive_posix
+is_alive: Callable[[int], bool] = _is_alive_windows if sys.platform == "win32" else _is_alive_posix

@@ -136,7 +136,7 @@ def test_install_termination_cleanup_when_a_cleanup_raises_does_warn_and_run_rem
     install_termination_cleanup(boom)
     install_termination_cleanup(lambda: survivors.append("survivor"))
 
-    with pytest.warns(UserWarning, match="cleanup boom"):
+    with pytest.warns(RuntimeWarning, match="cleanup boom"):
         code = raise_signal(signal.SIGINT)
 
     assert survivors == ["survivor"]
@@ -233,4 +233,6 @@ def test_deferring_termination_signals_when_mask_raises_does_not_strand_deferral
         with signals.deferring_termination_signals():
             pass  # pragma: no cover — never reached
 
-    assert signals._deferring is False
+    monkeypatch.setattr(signals, "pthread_sigmask", signal.pthread_sigmask)
+    with signals.deferring_termination_signals():
+        pass

@@ -86,7 +86,7 @@ def test_discard_session_when_unsettled_edit_does_append_discard_naming_iteratio
     assert last_record_of(repo) == result.record
 
 
-def test_discard_session_when_primary_delta_undefined_does_throw_it_away(repo: str):
+def test_discard_session_when_primary_delta_undefined_does_record_discard(repo: str):
     start_with(repo, (undefined_delta(1),))
     edit_experiment(repo)
 

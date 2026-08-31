@@ -61,8 +61,14 @@ def _validate_finalize(
     opts: FinalizeOptions,
     session: SessionRecord,
     state: SessionState,
-) -> str:
-    """Guard the session against all finalize refusals and return the expected baseline position."""
+) -> tuple[str, str]:
+    """Guard the session against all finalize refusals.
+
+    Returns:
+        The expected baseline position and the branch the squash will be pointed
+        at — resolved here so the collision check and the branch that gets created
+        can never name different refs.
+    """
     if state.keep_count == 0:
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
         hint = "Run gymrat keep on a measured edit before closing the session."
@@ -106,7 +112,7 @@ def _validate_finalize(
         hint = f"Name another with --branch <name>, or delete it with: git branch -D {branch}"
         raise GymratError(message, hint=hint)
 
-    return expected_position
+    return expected_position, branch
 
 
 def finalize_session(root: str, options: FinalizeOptions | None = None) -> FinalizeResult:
@@ -132,8 +138,7 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
     required = require_open_session(root, "closing the session")
     session, state = required.session, required.state
 
-    expected_position = _validate_finalize(root, opts, session, state)
-    branch = opts.branch if opts.branch is not None else f"{session.branch}-final"
+    expected_position, branch = _validate_finalize(root, opts, session, state)
 
     message = opts.message if opts.message is not None else _generated_message(required.records)
     commit = _squash_onto_baseline(root, expected_position, session.baseline.sha, message)

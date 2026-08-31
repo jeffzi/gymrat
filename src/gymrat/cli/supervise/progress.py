@@ -17,10 +17,10 @@ from rich.live import Live
 
 from gymrat.cli.console import stderr_console
 from gymrat.cli.supervise.frame import (
-    _build_loop_text,
-    _format_cost,
     build_frame,
+    build_loop_text,
     format_caps,
+    format_cost,
 )
 from gymrat.cli.supervise.state import (
     IDLE_WARN_MS,
@@ -38,7 +38,7 @@ from gymrat.cli.supervise.state import (
 from gymrat.session.clock import now_ms
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.progress_file import read_progress as _default_read_progress
-from gymrat.session.records import IterationRecord, KeepRecord, SessionRecord
+from gymrat.session.records import BaselineRecord, IterationRecord, KeepRecord, SessionRecord
 from gymrat.session.store import fold_session, read_records
 from gymrat.supervisor.events import (
     CapEvent,
@@ -104,7 +104,7 @@ def _emit(ctx: ReporterCtx, plain_text: str) -> None:
 def _plain_loop_update(ctx: ReporterCtx) -> None:
     if not ctx.is_plain:
         return
-    loop_text = _build_loop_text(ctx.session_result, ctx.max_iterations)
+    loop_text = build_loop_text(ctx.session_result, ctx.max_iterations)
     if loop_text not in {ctx.last_loop_text, "no session yet"}:
         ctx.last_loop_text = loop_text
         _plain_emit(ctx, loop_text)
@@ -147,7 +147,7 @@ def _handle_launch(ctx: ReporterCtx, event: LaunchEvent) -> None:
 
 def _handle_usage_update(ctx: ReporterCtx, event: UsageUpdateEvent) -> None:
     ctx.cost_usd = event.cost_usd
-    _emit(ctx, f"cost {_format_cost(event.cost_usd)}")
+    _emit(ctx, f"cost {format_cost(event.cost_usd)}")
 
 
 def _handle_tool_start(ctx: ReporterCtx, event: ToolStartEvent) -> None:
@@ -165,7 +165,7 @@ def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
     tracked = ctx.in_flight_tools.get(event.tool_use_id)
     tool_name = tracked.tool_name if tracked is not None else event.tool_name
     input_summary = tracked.input_summary if tracked is not None else ""
-    is_bash_end = tracked is None or tool_name == "Bash"
+    should_refresh_session = tracked is None or tool_name == "Bash"
 
     ctx.in_flight_tools.pop(event.tool_use_id, None)
 
@@ -182,7 +182,7 @@ def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
     if tracked is not None:
         ctx.liveness = _next_liveness_after_tool_end(ctx, event)
 
-    if is_bash_end:
+    if should_refresh_session:
         _refresh_session(ctx)
     else:
         _emit_live(ctx)
@@ -363,7 +363,7 @@ def make_default_read(root: str) -> Callable[[], ReadSessionResult]:
     def _read() -> ReadSessionResult:
         records = read_records(session_jsonl_path(root))
         state = fold_session(records)
-        has_baseline = any(getattr(r, "type", None) == "baseline" for r in records)
+        has_baseline = any(isinstance(r, BaselineRecord) for r in records)
 
         committed_seqs = {
             r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"

@@ -90,7 +90,9 @@ def _try_remove_directory(path: str) -> bool:
     """Remove ``path`` if it is an empty directory. Returns whether it was removed."""
     try:
         os.rmdir(path)  # noqa: PTH106 -- low-level os call for consistency with the lock module's atomicity seams
-    except (NotADirectoryError, FileNotFoundError, OSError):
+    except (
+        OSError
+    ):  # all filesystem errors — path is not a directory, absent, permission denied, etc.
         return False
     return True
 

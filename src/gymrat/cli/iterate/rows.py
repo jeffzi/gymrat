@@ -45,7 +45,7 @@ _REGRESSED_NAME_CAP = 3
 """How many regressed metric names the judge's done line spells out."""
 
 
-@dataclass
+@dataclass(slots=True)
 class NodeState:
     """Status, wording, and timing of a single checklist row.
 
@@ -100,7 +100,7 @@ def render_row(node: NodeState, running_ms: float | None) -> RenderableType:
 
 
 def render_running_row(node: NodeState, running_ms: float | None) -> RenderableType:
-    """Render a row that is currently running."""
+    """Alert state shows a static glyph; normal state spins."""
     style = STYLE_ALERT if node.alert else STYLE_RUNNING
     text = Text()
     text.append(node.gerund, style=STYLE_VERB)
@@ -121,7 +121,7 @@ def render_running_row(node: NodeState, running_ms: float | None) -> RenderableT
 
 
 def render_done_row(node: NodeState) -> Text:
-    """Render a row that has finished."""
+    """A ``Text`` detail is appended unstyled; a plain string gets ``STYLE_META``."""
     text = Text()
     text.append(f"{node.glyph} ", style=STYLE_ALERT if node.alert else STYLE_DONE)
     text.append(node.past)
@@ -158,7 +158,6 @@ def build_judge_detail(
     """Build the rich Text detail for the judge's done row."""
     delta_str = f"{primary_delta_pct:+.1f}%" if primary_delta_pct is not None else "—"
     primary = f"{delta_str} on {primary_metric}" if primary_delta_pct is not None else delta_str
-    verdict = [] if regressed else ["no gating regression"]
 
     detail = Text()
     detail.append(primary, style=STYLE_META)
@@ -171,9 +170,9 @@ def build_judge_detail(
             detail.append_text(Text.from_markup(format_inline(parse(name), color=True)))
         if len(regressed) > _REGRESSED_NAME_CAP:
             detail.append(", …", style=STYLE_META)
-    for v in verdict:
+    if not regressed:
         detail.append(" · ", style=STYLE_META)
-        detail.append(v, style=STYLE_META)
+        detail.append("no gating regression", style=STYLE_META)
     return detail
 
 

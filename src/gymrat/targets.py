@@ -251,8 +251,8 @@ def materialize_worktree(worktree: WorktreeInfo, repo_dir: str) -> None:
 # both describe a directory that vanished behind git's back; only ``stale`` may
 # leave an entry a prune must collect. ``untouched`` is a worktree git never put
 # on disk. A :class:`WorktreeRemovalFailure` is a directory git refused to remove.
-_RemovalStatus = Literal["removed", "deregistered", "stale", "untouched"]
-_RemovalOutcome = _RemovalStatus | WorktreeRemovalFailure
+type _RemovalStatus = Literal["removed", "deregistered", "stale", "untouched"]
+type _RemovalOutcome = _RemovalStatus | WorktreeRemovalFailure
 
 
 def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:

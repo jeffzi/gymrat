@@ -37,12 +37,12 @@ def repo_root(cwd: str | None = None) -> str:
             :class:`~gymrat.git.NotAGitRepositoryError`) or git otherwise
             fails to resolve the repository.
     """
-    directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109 -- low-level os call for atomicity guarantees pathlib cannot provide
+    directory = os.getcwd() if cwd is None else cwd  # noqa: PTH109 -- returns str directly, matching the str return type of this function
     try:
         toplevel = run_git(["rev-parse", "--show-toplevel"], directory).strip()
     except (subprocess.SubprocessError, OSError) as error:
         raise repository_lookup_error(directory, error) from error
-    return os.path.normpath(toplevel)
+    return str(Path(toplevel))
 
 
 def session_dir(root: str) -> str:

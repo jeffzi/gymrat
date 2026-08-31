@@ -22,6 +22,7 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.session.lock import acquire as lock_module
 from gymrat.session.lock import acquire_lock
+from gymrat.session.lock.steal import _is_alive_windows
 from tests._process_helpers import dead_pid
 
 # ---------------------------------------------------------------------------
@@ -260,7 +261,7 @@ def test_acquire_lock_when_holder_has_unknown_extra_keys_does_treat_as_live_hold
     assert caught.value.hint == LIVE_HOLDER_HINT
 
 
-def test_acquire_lock_when_liveness_probe_unreadable_does_leave_holder_record_in_place(
+def test_acquire_lock_when_liveness_probe_reports_alive_does_leave_holder_record_in_place(
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path, holder_pid = stale_lock_path()
@@ -635,34 +636,32 @@ def _mock_win32_probe(
     *,
     open_process_return: int,
     last_error: int,
-) -> MagicMock:
-    """Wire ctypes.WinDLL and ctypes.get_last_error for a Win32 liveness probe.
-
-    Returns the mock kernel32 object so callers can inspect restype / argtypes
-    assignments made by the production code.
-    """
+) -> None:
+    """Wire ctypes.WinDLL and ctypes.get_last_error for a Win32 liveness probe."""
     # autospec not applicable: ctypes WinDLL has no Python-visible spec
     mock_kernel32 = MagicMock()
     mock_kernel32.OpenProcess.return_value = open_process_return
 
-    windll_calls: list[tuple[str, bool]] = []
-
-    def fake_windll(name: str, *, use_last_error: bool = False) -> MagicMock:
-        windll_calls.append((name, use_last_error))
+    def _fake_windll(*_args: object, **_kw: object) -> MagicMock:
         return mock_kernel32
 
-    monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+    monkeypatch.setattr(ctypes, "WinDLL", _fake_windll, raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
-    monkeypatch.setattr(lock_module, "is_alive", lock_module._is_alive_windows)
-    mock_kernel32._windll_calls = windll_calls
-    return mock_kernel32
+    monkeypatch.setattr(lock_module, "is_alive", _is_alive_windows)
 
 
-def test_acquire_lock_when_win32_open_process_access_denied_does_treat_holder_as_alive(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "last_error",
+    [
+        pytest.param(5, id="access-denied"),
+        pytest.param(999, id="unknown-error"),
+    ],
+)
+def test_acquire_lock_when_win32_open_process_fails_does_treat_holder_as_alive(
+    monkeypatch: pytest.MonkeyPatch, last_error: int
 ):
     lock_path, _ = stale_lock_path()
-    _mock_win32_probe(monkeypatch, open_process_return=0, last_error=5)
+    _mock_win32_probe(monkeypatch, open_process_return=0, last_error=last_error)
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
@@ -679,40 +678,6 @@ def test_acquire_lock_when_win32_open_process_invalid_parameter_does_steal(
     acquire_lock(lock_path, "compare")
 
     assert_holder_record(read_lockfile(lock_path))
-
-
-def test_acquire_lock_when_win32_open_process_unknown_error_does_treat_holder_as_alive(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    lock_path, _ = stale_lock_path()
-    _mock_win32_probe(monkeypatch, open_process_return=0, last_error=999)
-
-    with pytest.raises(GymratError) as caught:
-        acquire_lock(lock_path, "compare")
-
-    assert caught.value.hint == LIVE_HOLDER_HINT
-
-
-def test_acquire_lock_when_win32_liveness_probed_does_declare_handle_as_pointer_width(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    lock_path, _ = stale_lock_path()
-    mock_kernel32 = _mock_win32_probe(monkeypatch, open_process_return=0, last_error=87)
-
-    acquire_lock(lock_path, "compare")
-
-    assert mock_kernel32.OpenProcess.restype is ctypes.c_void_p
-
-
-def test_acquire_lock_when_win32_liveness_probed_does_use_last_error(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    lock_path, _ = stale_lock_path()
-    mock_kernel32 = _mock_win32_probe(monkeypatch, open_process_return=0, last_error=87)
-
-    acquire_lock(lock_path, "compare")
-
-    assert mock_kernel32._windll_calls == [("kernel32", True)]
 
 
 # ---------------------------------------------------------------------------

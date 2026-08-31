@@ -222,8 +222,8 @@ def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_unt
     assert list_worktree_dirs(repo, include_main=False) == []
 
 
-def test_run_git_does_not_define_own_signal_deferral():
-    assert not hasattr(git_module, "_deferring_termination_signals")
+def test_run_git_when_inspected_does_delegate_signal_deferral_to_signals_module():
+    assert git_module.deferring_termination_signals is signals.deferring_termination_signals
 
 
 def test_run_git_when_object_env_vars_set_does_scrub_them_and_use_cwd(

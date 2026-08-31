@@ -154,7 +154,7 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: 
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_launched_does_forward_cwd_permission_mode_and_kickoff():
+async def test_start_when_launched_does_forward_options_to_client():
     client = FakeClient([])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
@@ -272,7 +272,7 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
     assert ends[0].duration_ms >= 0
 
 
-async def test_mapping_when_tool_result_has_no_matching_start_does_use_unknown_and_zero_duration():
+async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_fields():
     orphan = assistant(SimpleNamespace(tool_use_id="tu_orphan", content="result"))
     driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([orphan])))
     probe = collecting_observer()
@@ -518,7 +518,7 @@ async def test_interrupt_when_called_repeatedly_before_client_does_resolve_inter
 # ---------------------------------------------------------------------------
 
 
-async def test_abort_when_fired_does_disconnect_and_resolve_interrupted():
+async def test_abort_when_fired_does_resolve_interrupted():
     client = FakeClient([SimpleNamespace(total_cost_usd=0.1)], hang=True)
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     abort = asyncio.Event()

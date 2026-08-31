@@ -1,7 +1,7 @@
 """Iterate command tests: basic execution, progress renderer wiring, and format flags."""
 
-import contextlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -296,6 +296,15 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
     write_session_log(repo, iterate_session_header(repo))
     _install_renderer_factory(monkeypatch)
 
+    captured_cleanups: list[Callable[[], None]] = []
+    real_install = signals.install_termination_cleanup
+
+    def capturing_install(cleanup: Callable[[], None]) -> Callable[[], None]:
+        captured_cleanups.append(cleanup)
+        return real_install(cleanup)
+
+    monkeypatch.setattr("gymrat.cli.loop_cmds.install_termination_cleanup", capturing_install)
+
     progress_cleared_mid_run = False
 
     async def check_cleanup(
@@ -306,9 +315,6 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
         color: bool | None = None,
     ) -> IterateResult:
         nonlocal progress_cleared_mid_run
-        # Write a progress sidecar, then run every registered termination cleanup —
-        # exactly what the signal handler does before os._exit.  If a cleanup
-        # for clear_progress was registered, the sidecar will disappear.
         write_progress(
             root,
             ProgressSnapshot(
@@ -319,9 +325,8 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
         )
         progress = Path(progress_path(root))
         assert progress.exists()  # noqa: ASYNC240 -- sync check in async test
-        for cleanup in list(signals._registry.values()):
-            with contextlib.suppress(Exception):
-                cleanup()
+        for cleanup in captured_cleanups:
+            cleanup()
         progress_cleared_mid_run = not progress.exists()  # noqa: ASYNC240 -- sync check in async test
         return _make_iterate_result()
 
@@ -399,39 +404,21 @@ def test_iterate_command_when_format_json_and_stop_condition_does_emit_stop_docu
     assert "max iterations" in doc["reason"]
 
 
-def test_iterate_command_when_format_json_does_include_stable_key_names(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert {"seq", "outcome", "primary", "metrics", "confirm"} <= doc.keys()
-    assert {"kind", "deltaPct"} <= doc["primary"].keys()
-
-
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param(["--format", "text"], id="explicit-text"),
+        pytest.param([], id="default-format"),
+    ],
+)
 def test_iterate_command_when_format_text_does_produce_plain_report(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch, extra_args: list[str]
 ):
     _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
 
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "text"])
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", *extra_args])
 
     assert result.exit_code == 0
     lines = plain_lines(result.stdout)
     assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
-    assert lines[-1] == "gymrat keep"
-
-
-def test_iterate_command_when_format_absent_does_produce_plain_report(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    lines = plain_lines(result.stdout)
     assert lines[-1] == "gymrat keep"

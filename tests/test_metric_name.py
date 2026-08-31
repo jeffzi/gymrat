@@ -41,6 +41,31 @@ def test_parse_when_name_has_multiple_hashes_does_raise_gymrat_error():
 
 
 # ---------------------------------------------------------------------------
+# parse — malformed segments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw_name",
+    [
+        pytest.param("a//b", id="empty-inner-segment"),
+        pytest.param("a/", id="empty-trailing-segment"),
+        pytest.param("/x", id="empty-leading-segment"),
+        pytest.param("", id="empty-name"),
+        pytest.param("#time", id="empty-path-before-kind"),
+        pytest.param("a/#time", id="empty-trailing-segment-before-kind"),
+        pytest.param("a#", id="empty-kind"),
+    ],
+)
+def test_parse_when_name_has_empty_segment_does_raise_gymrat_error(raw_name: str):
+    """The grammar requires every path segment and the kind to be non-empty."""
+    with pytest.raises(GymratError) as excinfo:
+        parse(raw_name)
+
+    assert raw_name in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # parse — group key
 # ---------------------------------------------------------------------------
 

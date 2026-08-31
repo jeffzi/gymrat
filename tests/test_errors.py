@@ -30,42 +30,27 @@ def _error_with_streams(message: str, *, stdout: str | bytes, stderr: str | byte
 # ---------------------------------------------------------------------------
 
 
-def test_gymrat_error_when_only_message_given_does_set_message_and_null_hint():
-    err = GymratError("something broke")
+def test_gymrat_error_when_constructed_does_expose_message_and_optional_hint():
+    without_hint = GymratError("something broke")
+    with_hint = GymratError("something broke", hint="try restarting")
 
-    assert isinstance(err, Exception)
-    assert str(err) == "something broke"
-    assert err.hint is None
-
-
-def test_gymrat_error_when_hint_given_does_expose_hint_without_changing_message():
-    err = GymratError("something broke", hint="try restarting")
-
-    assert err.hint == "try restarting"
-    assert str(err) == "something broke"
-
-
-def test_gymrat_error_subclass_when_declared_inline_does_inherit_signature():
-    class CustomError(GymratError):
-        pass
-
-    with_hint = CustomError("boom", hint="reset it")
-    without_hint = CustomError("boom")
-
+    assert isinstance(without_hint, Exception)
+    assert str(without_hint) == "something broke"
     assert without_hint.hint is None
-    assert with_hint.hint == "reset it"
-    assert str(with_hint) == "boom"
+    assert str(with_hint) == "something broke"
+    assert with_hint.hint == "try restarting"
 
 
-def test_gymrat_error_subclass_when_declared_inline_does_catch_as_gymrat_error():
+def test_gymrat_error_subclass_when_declared_inline_does_inherit_signature_and_handling():
     class CustomError(GymratError):
         pass
 
-    err = CustomError("boom")
+    err = CustomError("boom", hint="reset it")
 
-    with pytest.raises(GymratError) as caught:
-        raise err
-    assert str(caught.value) == "boom"
+    assert isinstance(err, GymratError)
+    assert str(err) == "boom"
+    assert err.hint == "reset it"
+    assert CustomError("boom").hint is None
 
 
 # ---------------------------------------------------------------------------
@@ -86,16 +71,16 @@ def test_command_error_when_raised_does_subclass_gymrat_error_and_share_signatur
 # ---------------------------------------------------------------------------
 
 
-def test_hint_of_when_gymrat_error_has_hint_does_return_hint():
-    assert hint_of(GymratError("boom", hint="try that")) == "try that"
-
-
-def test_hint_of_when_gymrat_error_has_no_hint_does_return_none():
-    assert hint_of(GymratError("boom")) is None
-
-
-def test_hint_of_when_plain_exception_does_return_none():
-    assert hint_of(ValueError("boom")) is None
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(GymratError("boom", hint="try that"), "try that", id="gymrat-with-hint"),
+        pytest.param(GymratError("boom"), None, id="gymrat-no-hint"),
+        pytest.param(ValueError("boom"), None, id="plain-exception"),
+    ],
+)
+def test_hint_of_when_called_does_return_hint_or_none(error: Exception, expected: str | None):
+    assert hint_of(error) == expected
 
 
 # ---------------------------------------------------------------------------

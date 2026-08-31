@@ -135,15 +135,22 @@ async def test_measure_when_progress_and_warn_given_does_forward_to_sampling(
 
     forwarded = captured.options
     assert forwarded is not None
-    assert forwarded.on_progress is options.on_progress
-    assert forwarded.warn is options.warn
     assert forwarded.bench == "run"
     assert forwarded.prepare is None
     assert forwarded.samples == 3
     assert forwarded.timeout_seconds == 1.0
 
+    sentinel = object()
+    forwarded.on_progress(sentinel)  # type: ignore[arg-type]
+    assert steps[-1] is sentinel
+    assert forwarded.warn is not None
+    forwarded.warn("test warning")
+    assert warnings[-1] == "test warning"
 
-# --- End-to-end tests (real subprocesses, POSIX only) ---
+
+# ---------------------------------------------------------------------------
+# End-to-end tests (real subprocesses, POSIX only)
+# ---------------------------------------------------------------------------
 
 _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 

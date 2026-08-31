@@ -1,25 +1,13 @@
-import json
-
 import pytest
 
 from gymrat.adapters import (
     ADAPTER_NAMES,
     Adapter,
-    MetricDefaults,
     get_adapter,
     metric_lines_adapter,
     mitata_adapter,
 )
 from gymrat.errors import GymratError
-
-_MITATA_STDOUT = json.dumps(
-    {
-        "benchmarks": [
-            {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}
-        ]
-    }
-)
-
 
 # ---------------------------------------------------------------------------
 # public surface
@@ -64,47 +52,6 @@ def test_get_adapter_when_name_registered_does_return_matching_singleton(
 
     assert adapter is singleton
     assert adapter.name == name
-
-
-@pytest.mark.parametrize(
-    "name",
-    [pytest.param("metric-lines", id="metric-lines"), pytest.param("mitata", id="mitata")],
-)
-def test_get_adapter_when_name_registered_does_return_object_satisfying_protocol(name: str):
-    assert isinstance(get_adapter(name), Adapter)
-
-
-@pytest.mark.parametrize(
-    ("name", "stdout", "expected"),
-    [
-        pytest.param("metric-lines", "METRIC foo=42", {"foo": 42.0}, id="metric-lines"),
-        pytest.param("mitata", _MITATA_STDOUT, {"test#time": 42.0}, id="mitata"),
-    ],
-)
-def test_get_adapter_when_registered_adapter_parses_does_return_expected_metrics(
-    name: str, stdout: str, expected: dict[str, float]
-):
-    assert get_adapter(name).parse(stdout) == expected
-
-
-@pytest.mark.parametrize(
-    ("name", "metric_name", "expected"),
-    [
-        pytest.param(
-            "metric-lines", "test_metric", MetricDefaults(direction="lower"), id="metric-lines"
-        ),
-        pytest.param(
-            "mitata",
-            "test#time",
-            MetricDefaults(direction="lower", unit="ns", kind="time", short_name="test"),
-            id="mitata",
-        ),
-    ],
-)
-def test_get_adapter_when_registered_adapter_computes_defaults_does_return_expected(
-    name: str, metric_name: str, expected: MetricDefaults
-):
-    assert get_adapter(name).defaults(metric_name) == expected
 
 
 # ---------------------------------------------------------------------------

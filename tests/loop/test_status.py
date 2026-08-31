@@ -17,7 +17,6 @@ carried.
 
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,6 +38,7 @@ from gymrat.session import (
     Worktrees,
     session_jsonl_path,
 )
+from tests._ansi import SGR_RE
 from tests.session.records._fixtures import (
     AT,
     SESSION_ID,
@@ -65,12 +65,10 @@ _RUNBOOK_PATH = "docs/runbook.md"
 # The four lines every report opens on: the session, its branch, and its worktrees.
 _HEADER_LINE_COUNT = 4
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
 
 def _report_lines(report: str) -> list[str]:
     """The report's lines, stripped of color, with trailing blanks dropped."""
-    lines = [_ANSI_RE.sub("", line) for line in report.split("\n")]
+    lines = [SGR_RE.sub("", line) for line in report.split("\n")]
     while lines and lines[-1] == "":
         lines.pop()
     return lines

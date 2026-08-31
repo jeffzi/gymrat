@@ -38,6 +38,7 @@ from gymrat.cli.app import app
 from gymrat.errors import GymratError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
+from tests._ansi import strip_ansi
 from tests._process_helpers import dead_pid
 
 pytestmark = pytest.mark.skipif(
@@ -101,7 +102,7 @@ def _write_stale_lock(lock_path: str) -> None:
     )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class _RaceOutcome:
     """What a whole race left behind, once every child has exited."""
 
@@ -346,8 +347,6 @@ def test_supervise_when_run_outside_a_git_repository_does_exit_two_naming_the_re
     result = CliRunner().invoke(app, ["supervise", "optimize it", "--max-minutes", "10"])
 
     assert result.exit_code == 2
-    from tests._ansi import strip_ansi
-
     combined = strip_ansi((result.stdout or "") + (result.stderr or ""))
     assert re.search("git repository", combined, re.IGNORECASE)
     assert "Traceback" not in combined

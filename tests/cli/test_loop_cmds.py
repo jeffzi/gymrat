@@ -34,7 +34,15 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests._ansi import SGR_RE
-from tests.cli._loop_cmds import runner, strip_ansi, write_config
+from tests.cli._help import help_output
+from tests.cli._loop_cmds import (
+    always_tty,
+    make_discard_repo,
+    never_tty,
+    runner,
+    strip_ansi,
+    write_config,
+)
 from tests.loop.iterate._fixtures import resolved_config
 from tests.loop.settle._fixtures import (
     CHECKS,
@@ -56,20 +64,8 @@ from tests.session.records._fixtures import (
     write_session_log,
 )
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
 #: The runbook path a session's config points an agent at, when it has one.
 _RUNBOOK_PATH = ".claude/skills/ecstatic-bench/SKILL.md"
-
-
-def _always_tty(_stream: object) -> bool:
-    """Stand in for ``is_tty`` so the discard command takes its interactive path."""
-    return True
-
-
-def _never_tty(_stream: object) -> bool:
-    """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
-    return False
 
 
 class _ConfirmRecorder:
@@ -243,7 +239,23 @@ def test_status_command_color(
     result = runner.invoke(app, ["status", *args])
 
     assert result.exit_code == 0
-    assert bool(_ANSI_RE.search(result.stdout)) is expect_ansi
+    assert bool(SGR_RE.search(result.stdout)) is expect_ansi
+
+
+def test_status_command_when_stdout_broken_pipe_does_exit_zero(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    def broken_write(_stream: object, _data: str) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr("gymrat.cli.loop_cmds.write_and_flush", broken_write)
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -254,22 +266,17 @@ def test_status_command_color(
 @pytest.fixture
 def discard_repo(repo: str) -> str:
     """A repository with an open session and one unsettled iteration to discard."""
-    start_session(repo, "main", resolved_config())
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    return repo
+    return make_discard_repo(repo)
 
 
 def test_discard_command_documents_force_in_its_help():
-    result = runner.invoke(app, ["discard", "--help"])
-
-    assert result.exit_code == 0
-    assert "--force" in _ANSI_RE.sub("", result.output)
+    assert "--force" in help_output("discard")
 
 
 def test_discard_command_when_tty_and_confirmed_does_prompt_and_proceed(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _always_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
     confirm = _ConfirmRecorder(answer=True)
     monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
 
@@ -284,7 +291,7 @@ def test_discard_command_when_tty_and_confirmed_does_prompt_and_proceed(
 def test_discard_command_when_tty_and_declined_does_cancel_with_exit_one(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _always_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
     monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", _ConfirmRecorder(answer=False))
 
     result = runner.invoke(app, ["discard"])
@@ -297,7 +304,7 @@ def test_discard_command_when_tty_and_declined_does_cancel_with_exit_one(
 def test_discard_command_when_force_does_skip_the_prompt(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch, flag: str
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _always_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", always_tty)
     confirm = _ConfirmRecorder(answer=True)
     monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
 
@@ -311,7 +318,7 @@ def test_discard_command_when_force_does_skip_the_prompt(
 def test_discard_command_when_stdin_not_tty_does_skip_the_prompt(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", _never_tty)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.is_tty", never_tty)
     confirm = _ConfirmRecorder(answer=True)
     monkeypatch.setattr("gymrat.cli.loop_cmds.confirm_action", confirm)
 
@@ -344,10 +351,8 @@ def _session_with_one_keep(root: str) -> str:
 
 
 def test_finalize_command_documents_its_flags_and_default_branch_in_help():
-    result = runner.invoke(app, ["finalize", "--help"])
+    out = help_output("finalize")
 
-    assert result.exit_code == 0
-    out = result.output
     assert "--message" in out
     assert "--branch" in out
     assert "-final" in out
@@ -445,10 +450,7 @@ def sync_repo(repo: str) -> str:
 
 
 def test_sync_command_when_registered_does_appear_in_the_app_commands():
-    result = runner.invoke(app, ["sync", "--help"])
-
-    assert result.exit_code == 0
-    assert "sync" in result.output.lower()
+    assert "sync" in help_output("sync").lower()
 
 
 def test_sync_command_when_changes_exist_does_print_synced_file_count_and_names(

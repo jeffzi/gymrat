@@ -126,12 +126,12 @@ def repo(create_scratch_repo: Callable[[], str]) -> str:
 
 
 @pytest.fixture
-def samples_mock(monkeypatch: pytest.MonkeyPatch):
+def samples_mock(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
     return install_collect_samples(monkeypatch)
 
 
 @pytest.fixture
-def open_repo(repo: str, samples_mock: CollectSamplesRecorder):
+def open_repo(repo: str, samples_mock: CollectSamplesRecorder) -> str:
     """A fresh open session on disk, no history, sampling left for the test to stub."""
     write_session_log(repo, session_record(repo))
     return repo
@@ -374,22 +374,11 @@ def partial_rerun_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
     return open_repo
 
 
-async def test_iterate_session_when_rerun_silent_on_metric_does_leave_it_regressed(
-    partial_rerun_repo: str,
-):
-    result = await iterate_session(partial_rerun_repo, resolved_config(filter=FILTER))
-
-    _assert_permutation(
-        result.record.metrics["alloc_bytes"], delta=10, verdict="regressed", confirmed=False
-    )
-    assert result.record.outcome == "regressed"
-
-
-async def test_iterate_session_when_rerun_silent_on_metric_does_name_it_in_confirm(
+async def test_iterate_session_when_rerun_silent_on_metric_does_leave_it_regressed_and_record_absence(
     partial_rerun_repo: str,
 ):
     partial = _partial_rerun()
-    expected = Confirm(
+    expected_confirm = Confirm(
         ran=True,
         filtered=("total_ms", "alloc_bytes"),
         samples=PairedSamples(
@@ -400,15 +389,12 @@ async def test_iterate_session_when_rerun_silent_on_metric_does_name_it_in_confi
 
     result = await iterate_session(partial_rerun_repo, resolved_config(filter=FILTER))
 
-    assert result.record.confirm == expected
-    assert last_iteration_of(partial_rerun_repo).confirm == expected
-
-
-async def test_iterate_session_when_rerun_silent_on_metric_does_report_it_as_unmeasured(
-    partial_rerun_repo: str,
-):
-    result = await iterate_session(partial_rerun_repo, resolved_config(filter=FILTER))
-
+    _assert_permutation(
+        result.record.metrics["alloc_bytes"], delta=10, verdict="regressed", confirmed=False
+    )
+    assert result.record.outcome == "regressed"
+    assert result.record.confirm == expected_confirm
+    assert last_iteration_of(partial_rerun_repo).confirm == expected_confirm
     lines = trimmed_report_lines(result.report)
     assert "alloc_bytes: not measured on rerun" in lines
     assert "total_ms: regression confirmed on rerun" in lines

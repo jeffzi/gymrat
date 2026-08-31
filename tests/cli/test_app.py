@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.cli.shared import BUGS_URL
 from tests._ansi import SGR_RE, strip_ansi
+from tests.cli._help import help_output
 from tests.report._inputs import create_measurement_result
 
 runner = CliRunner()
@@ -68,17 +69,15 @@ def test_app_when_version_flag_does_print_package_version():
 
 
 def test_app_when_help_does_show_description():
-    result = runner.invoke(app, ["--help"])
+    out = help_output()
 
-    assert result.exit_code == 0
-    assert "Performance comparison tool for benchmarks" in result.stdout
-    assert "compare" in result.stdout
-    assert "measure" in result.stdout
+    assert "Performance comparison tool for benchmarks" in out
+    assert "compare" in out
+    assert "measure" in out
 
 
 def test_app_when_help_does_show_root_epilogue_examples_and_links():
-    result = runner.invoke(app, ["--help"])
-    normalized = _normalize(result.stdout)
+    normalized = _normalize(help_output())
 
     assert 'gymrat compare main my-branch --bench "npm run bench"' in normalized
     assert (
@@ -98,7 +97,7 @@ def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", True)
 
-    result = runner.invoke(app, ["--help"], color=True)
+    result = runner.invoke(app, ["--help"], color=True, env={"COLUMNS": "200"})
 
     docs_line = next(line for line in result.stdout.splitlines() if "Docs:" in strip_ansi(line))
     assert docs_line.lstrip().startswith("\x1b[2m")  # cspell:disable-line

@@ -12,7 +12,7 @@ import math
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Annotated, Any, Literal, NoReturn, Protocol
@@ -211,6 +211,20 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
     raise typer.Exit(code)
 
 
+@contextlib.contextmanager
+def broken_pipe_guard() -> Iterator[None]:
+    """Catch BrokenPipeError from a stdout write and exit cleanly.
+
+    Sync counterpart of the same mapping in ``run_cli``: a broken pipe from the
+    reading end closing is not an error for a CLI that already produced its
+    output.
+    """
+    try:
+        yield
+    except BrokenPipeError:
+        raise typer.Exit(0) from None
+
+
 def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
     """Run an async CLI body, routing any failure through the shared error formatter."""
     try:
@@ -256,10 +270,13 @@ def parse_positive_integer_up_to(max_value: int) -> Callable[[str], int]:
     """Build a coercer accepting only a positive integer at or below ``max_value``."""
 
     def parse(value: str) -> int:
-        if _POSITIVE_INTEGER_RE.fullmatch(value) is None or int(value) <= 0:
+        if _POSITIVE_INTEGER_RE.fullmatch(value) is None:
             message = "must be a positive integer."
             raise typer.BadParameter(message)
         parsed = int(value)
+        if parsed <= 0:
+            message = "must be a positive integer."
+            raise typer.BadParameter(message)
         if parsed > max_value:
             message = f"must be a positive integer no greater than {max_value}."
             raise typer.BadParameter(message)

@@ -34,6 +34,7 @@ from gymrat.session import (
     remove_worktrees,
     session_jsonl_path,
 )
+from tests._git import run_git
 from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
@@ -95,8 +96,6 @@ CONFIG_SNAPSHOT = SessionConfig(
 
 def _git(args: list[str], cwd: str) -> str:
     """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    from tests._git import run_git
-
     return run_git(args, cwd).strip()
 
 

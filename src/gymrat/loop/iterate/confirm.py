@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from gymrat.config import FILTER_PLACEHOLDER
-from gymrat.loop.iterate.bench import _IterationContext, bench_and_judge
+from gymrat.loop.iterate.bench import IterationContext, bench_and_judge
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -52,7 +52,7 @@ class Confirmation:
     absent: frozenset[str]
 
 
-def with_confirm_phase(ctx: _IterationContext) -> _IterationContext:
+def with_confirm_phase(ctx: IterationContext) -> IterationContext:
     """Return a context whose ``on_progress`` tags pass events as confirmation runs."""
     original = ctx.options.on_progress
     if original is None:
@@ -68,7 +68,7 @@ def with_confirm_phase(ctx: _IterationContext) -> _IterationContext:
 
 
 async def confirm_regressions(
-    ctx: _IterationContext,
+    ctx: IterationContext,
     verdicts: dict[str, MetricVerdict],
     metric_meta: dict[str, ResolvedMetricMeta],
 ) -> Confirmation | None:
