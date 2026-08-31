@@ -34,7 +34,6 @@ _LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to f
 
 
 def _os_lock_file(lock_path: str) -> str:
-    """Derive the OS lock file path from the caller-visible metadata path."""
     return lock_path + ".lock"
 
 

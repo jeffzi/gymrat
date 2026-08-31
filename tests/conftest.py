@@ -24,6 +24,7 @@ from filelock import FileLock
 
 from gymrat.cli.shared import set_stderr_color_override
 from gymrat.session.clock import now_iso
+from gymrat.session.lock import _os_lock_file
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
@@ -57,7 +58,7 @@ def hold_lock(
     built from ``command`` and the current process.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(lock_path + ".lock", timeout=0)
+    lock = FileLock(_os_lock_file(lock_path), timeout=0)
     lock.acquire()
     if holder is None:
         holder = {"pid": os.getpid(), "command": command, "at": now_iso()}

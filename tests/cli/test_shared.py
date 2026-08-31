@@ -49,6 +49,7 @@ from gymrat.git import NotAGitRepositoryError
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 from gymrat.session import append_record, read_records, session_jsonl_path
+from gymrat.session.lock import _os_lock_file
 from gymrat.session.paths import lockfile_path, repo_root
 from tests._streams import FakeStream as _FakeStream
 from tests.session.records._fixtures import (
@@ -424,7 +425,7 @@ async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releas
     repo = create_scratch_repo()
     monkeypatch.chdir(repo)
     lock_path = str(lockfile_path(repo_root()))
-    os_lock_path = lock_path + ".lock"
+    os_lock_path = _os_lock_file(lock_path)
     probed: dict[str, bool] = {}
 
     async def body() -> str:
