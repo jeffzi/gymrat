@@ -211,6 +211,47 @@ def test_to_json_line_when_launch_has_optionals_does_emit_them():
 
 
 # ---------------------------------------------------------------------------
+# LaunchEvent.model_dump — None-optional omission
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("by_alias", "usd_key", "model_key"),
+    [
+        pytest.param(False, "max_usd", "model", id="python-names"),
+        pytest.param(True, "maxUsd", "model", id="aliased-names"),
+    ],
+)
+def test_launch_event_model_dump_when_optionals_are_none_does_omit_them(
+    by_alias: bool, usd_key: str, model_key: str
+):
+    event = make_launch(max_usd=None, model=None)
+
+    dumped = event.model_dump(by_alias=by_alias)
+
+    assert usd_key not in dumped
+    assert model_key not in dumped
+
+
+@pytest.mark.parametrize(
+    ("by_alias", "usd_key", "model_key"),
+    [
+        pytest.param(False, "max_usd", "model", id="python-names"),
+        pytest.param(True, "maxUsd", "model", id="aliased-names"),
+    ],
+)
+def test_launch_event_model_dump_when_optionals_are_set_does_include_them(
+    by_alias: bool, usd_key: str, model_key: str
+):
+    event = make_launch(max_usd=1.5, model="opus")
+
+    dumped = event.model_dump(by_alias=by_alias)
+
+    assert dumped[usd_key] == 1.5
+    assert dumped[model_key] == "opus"
+
+
+# ---------------------------------------------------------------------------
 # event_from_wire
 # ---------------------------------------------------------------------------
 

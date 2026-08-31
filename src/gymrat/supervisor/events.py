@@ -149,6 +149,7 @@ class LaunchEvent(_EventModel):
         data: dict[str, object] = handler(self)
         if self.max_usd is None:
             data.pop("maxUsd", None)
+            data.pop("max_usd", None)
         if self.model is None:
             data.pop("model", None)
         return data
@@ -199,8 +200,6 @@ def event_from_wire(obj: object) -> SessionEvent | None:
     one with the wrong type.
     """
     if not isinstance(obj, dict):
-        return None
-    if not isinstance(obj.get("type"), str):
         return None
     try:
         return _SessionEventAdapter.validate_python(obj)
