@@ -10,6 +10,7 @@ helper imported as ``tests.session.records._fixtures``.
 """
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from gymrat.session import (
@@ -42,6 +43,15 @@ SQUASH_COMMIT = "c" * 40
 
 #: The session id every fixture record belongs to.
 SESSION_ID = "20260808-141530-a3f2"
+
+#: The unterminated JSON prefix a writer killed mid-append leaves as the log's tail.
+TORN_PREFIX: bytes = b'{"type":"iter'
+
+
+def tear_final_line(path: str | Path) -> None:
+    """Append ``TORN_PREFIX`` so the log ends on an unterminated final line."""
+    with Path(path).open("ab") as handle:
+        handle.write(TORN_PREFIX)
 
 
 def session_record(**overrides: Any) -> SessionRecord:

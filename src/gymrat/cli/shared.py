@@ -37,7 +37,8 @@ from gymrat.report.style import (
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn, ReportOptions
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, repo_root
+from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
+from gymrat.session.store import recover_torn_tail
 from gymrat.signals import install_termination_cleanup
 
 # ---------------------------------------------------------------------------
@@ -333,6 +334,10 @@ async def with_repo_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T
     renders its report. Outside every git repository the answer is to run
     ``body`` with no lock at all; any other git failure exits without
     benchmarking rather than running unlocked.
+
+    Holding the lock is what makes repairing the session log safe: a torn final
+    line can only belong to a writer the previous run left dead, so the tail is
+    dropped here — once per command, before ``body`` reads or appends anything.
     """
     try:
         root = repo_root()
@@ -343,6 +348,7 @@ async def with_repo_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T
 
     release = acquire_lock(lockfile_path(root), command)
     try:
+        recover_torn_tail(session_jsonl_path(root))
         return await body()
     finally:
         release()

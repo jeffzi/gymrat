@@ -46,6 +46,14 @@ from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
+from gymrat.session import append_record, read_records, session_jsonl_path
+from gymrat.session.paths import lockfile_path, repo_root
+from tests.session.records._fixtures import (
+    iteration_record,
+    session_record,
+    tear_final_line,
+    write_session_log,
+)
 
 
 class _FakeStream(io.StringIO):
@@ -93,6 +101,11 @@ def _capturing_create_progress_reporter(
 def _path_exists(path: Path) -> bool:
     """Filesystem probe kept out of the async body so it is not flagged as blocking I/O."""
     return path.exists()
+
+
+def _read_bytes(path: Path) -> bytes:
+    """Filesystem read kept out of the async body so it is not flagged as blocking I/O."""
+    return path.read_bytes()
 
 
 def _clear_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -415,8 +428,6 @@ def test_begin_run_does_return_progress_reporter(
 async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releases_before_return(
     create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 ):
-    from gymrat.session.paths import lockfile_path, repo_root
-
     repo = create_scratch_repo()
     monkeypatch.chdir(repo)
     lock_path = Path(lockfile_path(repo_root()))
@@ -456,6 +467,29 @@ async def test_with_repo_lock_when_outside_repo_runs_body_without_a_lock(
 
     assert result == "ran"
     assert acquired == []
+
+
+async def test_with_repo_lock_when_session_log_torn_does_repair_it_before_running_the_body(
+    repo: str,
+):
+    header = session_record()
+    write_session_log(repo, header)
+    jsonl_path = Path(session_jsonl_path(repo_root()))
+    intact_log = _read_bytes(jsonl_path)
+    tear_final_line(jsonl_path)
+    iteration = iteration_record()
+    seen: dict[str, bytes] = {}
+
+    async def body() -> str:
+        seen["log"] = _read_bytes(jsonl_path)
+        append_record(str(jsonl_path), iteration)
+        return "ran"
+
+    result = await with_repo_lock("compare", body)
+
+    assert result == "ran"
+    assert seen["log"] == intact_log
+    assert read_records(str(jsonl_path)) == [header, iteration]
 
 
 async def test_with_repo_lock_when_git_fails_otherwise_exits_two_without_running_body(

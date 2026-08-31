@@ -3,9 +3,12 @@
 A session log is an append-only file of one record per line. This module owns
 the two ends of that contract:
 
-- :func:`append_record` writes a record only after proving it reads back, and
-  recovers a torn final line before appending so a crash mid-write never leaves
-  the log unparseable.
+- :func:`append_record` writes a record only after proving it reads back, in a
+  single append that never reads or truncates the log — so two writers appending
+  at once cannot lose each other's records.
+- :func:`recover_torn_tail` is the separate repair step for a log a crash left
+  ending mid-line. It must run while the session lock is held, never from the
+  append path.
 - :func:`read_records` reads the log back in file order, and :func:`fold_session`
   folds the records into the :class:`SessionState` every loop command consults
   before acting.
@@ -44,6 +47,7 @@ __all__ = [
     "fold_session",
     "last_kept_position",
     "read_records",
+    "recover_torn_tail",
     "require_open_session",
     "require_session",
 ]
@@ -116,7 +120,10 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     """Append ``record`` to the session log at ``jsonl_path``, creating its directory.
 
     One record is one write of one line, so a reader can treat the log as
-    append-only truth rather than a file that may be caught half-written.
+    append-only truth rather than a file that may be caught half-written. The
+    existing bytes are never read or truncated: a writer holding no lock must not
+    be able to destroy a record another writer is still appending. Repairing a
+    torn final line is :func:`recover_torn_tail`'s job, under the lock.
 
     Raises:
         GymratError: When ``record`` would not read back. The log is left
@@ -125,7 +132,6 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     """
     line = _serialize_record(record)
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    _truncate_torn_tail(jsonl_path)
     payload = f"{line}\n".encode()
     fd = os.open(jsonl_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
@@ -163,24 +169,30 @@ def _serialize_record(record: SessionLogRecord) -> str:
     return line
 
 
-def _truncate_torn_tail(jsonl_path: str) -> None:
-    """Remove an unterminated last line left by a torn write.
+def recover_torn_tail(jsonl_path: str) -> None:
+    """Remove an unterminated last line left by a torn write, if the log has one.
 
     The reader already skips such a line, so the data is already lost; truncating
-    it here keeps the next append from landing on the same line and making the
-    log unparseable on re-read.
+    it keeps a later append from landing on the same line and making the log
+    unparseable on re-read. A log that ends on a newline, an empty log, and a log
+    that does not exist are all left exactly as they are.
+
+    Truncation is destructive and unsynchronized, so this must run only while the
+    session lock is held — never from :func:`append_record`, which appends
+    concurrently with writers that hold no lock.
     """
+    path = Path(jsonl_path)
     try:
-        data = Path(jsonl_path).read_bytes()
+        data = path.read_bytes()
     except FileNotFoundError:
         return
     # The byte a completed record line ends with; a file not ending on it was torn.
     if not data or data[-1] == ord(b"\n"):
         return
     # rfind returns -1 when the torn line was the only content, so the log
-    # truncates to zero bytes and the caller appends the first clean line.
+    # truncates to zero bytes and a later append writes the first clean line.
     last_newline = data.rfind(b"\n")
-    with Path(jsonl_path).open("rb+") as handle:
+    with path.open("rb+") as handle:
         handle.truncate(last_newline + 1)
 
 

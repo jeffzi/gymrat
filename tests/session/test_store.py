@@ -27,6 +27,7 @@ from gymrat.session import (
     SessionLogRecord,
     SessionRecord,
     record_to_wire,
+    recover_torn_tail,
     session_jsonl_path,
 )
 from gymrat.session.store import (
@@ -41,6 +42,7 @@ from gymrat.session.store import (
 from tests.session.records._fixtures import (
     AT,
     COMMIT,
+    TORN_PREFIX,
     Worktrees,
     blocked_keep,
     committed_keep,
@@ -49,6 +51,7 @@ from tests.session.records._fixtures import (
     hook_record,
     iteration_record,
     session_record,
+    tear_final_line,
     write_session_log,
 )
 
@@ -144,6 +147,17 @@ def _jsonl_holding(root: str, lines: list[str]) -> str:
     return jsonl_path
 
 
+def _jsonl_holding_bytes(root: str, raw: bytes) -> str:
+    """Write a session log holding exactly ``raw``, newline-terminated or not."""
+    jsonl_path = session_jsonl_path(root)
+    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(jsonl_path).write_bytes(raw)
+    return jsonl_path
+
+
+SESSION_LINE: bytes = _line(SESSION).encode("utf-8") + b"\n"
+
+
 # ---------------------------------------------------------------------------
 # append_record
 # ---------------------------------------------------------------------------
@@ -176,41 +190,20 @@ def test_append_record_when_log_holds_records_does_add_one_line_leaving_earlier_
     assert read_records(jsonl_path) == [SESSION, ITERATION_1]
 
 
-def test_append_record_when_final_line_torn_does_truncate_it_and_append_cleanly(fresh_root: str):
-    jsonl_path = session_jsonl_path(fresh_root)
-    append_record(jsonl_path, SESSION)
-    with Path(jsonl_path).open("a", encoding="utf-8") as handle:
-        handle.write('{"type":"iter')
-
-    append_record(jsonl_path, ITERATION_1)
-
-    assert read_records(jsonl_path) == [SESSION, ITERATION_1]
-
-
-def test_append_record_when_only_line_torn_does_recover(fresh_root: str):
-    jsonl_path = session_jsonl_path(fresh_root)
-    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(jsonl_path).write_text('{"type":"ses', encoding="utf-8")
-
-    append_record(jsonl_path, SESSION)
-
-    assert read_records(jsonl_path) == [SESSION]
-
-
-def test_append_record_when_final_line_torn_mid_utf8_does_repair_and_append_cleanly(
+def test_append_record_when_final_line_torn_does_add_its_line_leaving_the_torn_bytes_intact(
     fresh_root: str,
 ):
+    # A torn tail is another writer's record still in flight. Appending must not
+    # read the log or truncate it, or a concurrent append would destroy that
+    # record; repairing the tail belongs to recover_torn_tail alone.
     jsonl_path = session_jsonl_path(fresh_root)
-    valid_line = _line(SESSION).encode("utf-8") + b"\n"
-    # \xc3 is the first byte of a 2-byte UTF-8 sequence; without the second byte
-    # the tail is a truncated character the writer must discard before appending.
-    raw = valid_line + b'{"type":"iter\xc3'
-    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(jsonl_path).write_bytes(raw)
+    append_record(jsonl_path, SESSION)
+    tear_final_line(jsonl_path)
+    before = Path(jsonl_path).read_bytes()
 
     append_record(jsonl_path, ITERATION_1)
 
-    assert read_records(jsonl_path) == [SESSION, ITERATION_1]
+    assert Path(jsonl_path).read_bytes() == before + _line(ITERATION_1).encode("utf-8") + b"\n"
 
 
 def test_append_record_when_record_unreadable_does_raise_and_leave_the_log_byte_identical(
@@ -260,6 +253,65 @@ def test_append_record_when_record_written_does_fsync_before_close(
     append_record(jsonl_path, SESSION)
 
     assert len(fsynced_fds) >= 1
+
+
+# ---------------------------------------------------------------------------
+# recover_torn_tail
+# ---------------------------------------------------------------------------
+
+# \xc3 is the first byte of a 2-byte UTF-8 sequence; without the second byte
+# the tail ends mid-character.
+TORN_MID_UTF8: bytes = SESSION_LINE + TORN_PREFIX + b"\xc3"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(SESSION_LINE + TORN_PREFIX, SESSION_LINE, id="a-torn-line-after-a-whole-one"),
+        pytest.param(b'{"type":"ses', b"", id="a-log-whose-only-line-is-torn"),
+        pytest.param(TORN_MID_UTF8, SESSION_LINE, id="a-line-torn-mid-utf8-character"),
+    ],
+)
+def test_recover_torn_tail_when_final_line_unterminated_does_truncate_to_the_last_newline(
+    fresh_root: str, raw: bytes, expected: bytes
+):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, raw)
+
+    recover_torn_tail(jsonl_path)
+
+    assert Path(jsonl_path).read_bytes() == expected
+
+
+def test_recover_torn_tail_when_torn_tail_removed_does_let_a_later_append_read_back(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, TORN_MID_UTF8)
+    recover_torn_tail(jsonl_path)
+
+    append_record(jsonl_path, ITERATION_1)
+
+    assert read_records(jsonl_path) == [SESSION, ITERATION_1]
+
+
+def test_recover_torn_tail_when_log_ends_in_a_newline_does_leave_it_byte_identical(
+    fresh_root: str,
+):
+    jsonl_path = session_jsonl_path(fresh_root)
+    append_record(jsonl_path, SESSION)
+    append_record(jsonl_path, ITERATION_1)
+    before = Path(jsonl_path).read_bytes()
+
+    recover_torn_tail(jsonl_path)
+
+    assert Path(jsonl_path).read_bytes() == before
+
+
+def test_recover_torn_tail_when_log_missing_does_leave_no_file_behind(fresh_root: str):
+    jsonl_path = session_jsonl_path(fresh_root)
+
+    recover_torn_tail(jsonl_path)
+
+    assert not Path(jsonl_path).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -328,8 +380,7 @@ def test_read_records_when_first_record_not_session_does_raise_naming_the_first_
 
 def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str):
     jsonl_path = _jsonl_holding(fresh_root, [_line(SESSION)])
-    with Path(jsonl_path).open("a", encoding="utf-8") as handle:
-        handle.write('{"type":"iter')
+    tear_final_line(jsonl_path)
 
     assert read_records(jsonl_path) == [SESSION]
 
@@ -339,7 +390,7 @@ def test_read_records_when_final_line_torn_mid_utf8_does_skip_it(fresh_root: str
     valid_line = _line(SESSION).encode("utf-8") + b"\n"
     # \xc3 is the leading byte of a 2-byte UTF-8 code point; alone at the end
     # it forms a truncated character the reader must silently discard.
-    raw = valid_line + b'{"type":"iter\xc3'
+    raw = valid_line + TORN_PREFIX + b"\xc3"
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     Path(jsonl_path).write_bytes(raw)
 
