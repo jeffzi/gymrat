@@ -12,7 +12,6 @@ helper imported as ``tests.loop.settle._fixtures``.
 import re
 import subprocess
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -313,7 +312,7 @@ def assert_settling_record(
     is checked against the ISO shape and then aligned before the structural compare.
     """
     assert ISO_PATTERN.match(actual.at)
-    assert replace(actual, at=expected.at) == expected
+    assert actual.model_copy(update={"at": expected.at}) == expected
 
 
 def commit_experiment_directly(repo: str) -> str:

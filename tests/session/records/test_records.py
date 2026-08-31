@@ -4,7 +4,8 @@ from typing import cast
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session import parse_record, record_to_wire
+from gymrat.session import BaselineRef, Worktrees, parse_record, record_to_wire
+from gymrat.session.records import HookRecord, SessionConfig, SessionRecord
 
 AT = "2026-08-08T14:15:30.000Z"
 SHA = "a" * 40
@@ -118,8 +119,12 @@ def mentions(field: str) -> re.Pattern[str]:
     return re.compile(rf"\b{re.escape(field)}\b")
 
 
+def _field(record: dict[str, object], key: str) -> dict[str, object]:
+    return cast("dict[str, object]", record[key])
+
+
 def _config_with(**overrides: object) -> dict[str, object]:
-    base = dict(cast("dict[str, object]", SESSION_RECORD["config"]))
+    base = dict(_field(SESSION_RECORD, "config"))
     base.update(overrides)
     return base
 
@@ -217,9 +222,7 @@ def _config_with(**overrides: object) -> dict[str, object]:
                 {
                     "samples": {
                         "experiment": [{"__proto__": 100, "total_ms": 200}],
-                        "baseline": cast("dict[str, object]", ITERATION_RECORD["samples"])[
-                            "baseline"
-                        ],
+                        "baseline": _field(ITERATION_RECORD, "samples")["baseline"],
                     }
                 },
             ),
@@ -283,11 +286,7 @@ def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[
         pytest.param(
             patching(
                 ITERATION_RECORD,
-                {
-                    "primary": omitting(
-                        cast("dict[str, object]", ITERATION_RECORD["primary"]), "deltaPct"
-                    )
-                },
+                {"primary": omitting(_field(ITERATION_RECORD, "primary"), "deltaPct")},
             ),
             "primary.deltaPct",
             id="primary-drops-delta",
@@ -439,3 +438,51 @@ def test_parse_record_when_metric_name_all_digits_does_phrase_expected_value_cor
     # fallback that the expected-type lookup misses when the metric name is all
     # digits and _normalize_loc conflates it with an array index.
     assert "a number or null" in msg
+
+
+# ---------------------------------------------------------------------------
+# Record model behavior
+# ---------------------------------------------------------------------------
+
+
+def test_record_when_model_copy_called_does_return_updated_copy():
+    record = HookRecord(
+        type="hook",
+        stage="before",
+        seq=4,
+        exit_code=0,
+        duration_ms=120,
+        stdout_bytes=80,
+        timed_out=False,
+    )
+
+    updated = record.model_copy(update={"exit_code": 42})
+
+    assert updated.exit_code == 42
+    assert record.exit_code == 0
+
+
+def test_record_when_model_dump_called_does_produce_camel_case_wire():
+    record = SessionRecord(
+        type="session",
+        schema_version=1,
+        session_id="20260808-141530-a3f2",
+        created_at=AT,
+        baseline=BaselineRef(ref="main", sha=SHA),
+        branch="gymrat/20260808-141530-a3f2",
+        worktrees=Worktrees(
+            experiment="/repo/.gymrat/experiment",
+            baseline="/repo/.gymrat/baseline",
+        ),
+        config=SessionConfig(
+            bench="npm run bench",
+            adapter="metric-lines",
+            samples=10,
+            timeout_seconds=1800,
+            primary="geomean",
+        ),
+    )
+
+    wire = record.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    assert wire == SESSION_RECORD

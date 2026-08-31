@@ -8,7 +8,6 @@ order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import re
 import subprocess
@@ -18,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, MetricEntry, StopConfig
+from gymrat.config import HooksConfig, MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate import iterate_session
 from gymrat.session import (
@@ -93,6 +92,16 @@ def _filtered_rounds(name: str, values: list[float]) -> list[dict[str, float]]:
     return [{name: value} for value in values]
 
 
+def _regressed_run() -> PairedRun:
+    """The first run every gating test starts from: both metrics 10% worse than baseline's."""
+    return PairedRun(_regressed_rounds(), baseline_rounds())
+
+
+def _total_ms_gating_config() -> ResolvedConfig:
+    """A config reran through the filter with ``alloc_bytes`` excused from gating."""
+    return resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
+
+
 def _plain(report: str) -> str:
     """The report stripped of color, as a terminal's visible text would read."""
     return "\n".join(trimmed_report_lines(report))
@@ -145,14 +154,7 @@ def open_repo(repo: str, samples_mock: CollectSamplesRecorder) -> str:
 async def test_iterate_session_when_gating_regression_does_rerun_through_the_filter_template(
     open_repo: str, samples_mock: CollectSamplesRecorder
 ):
-    stub_runs(
-        samples_mock,
-        open_repo,
-        [
-            PairedRun(_regressed_rounds(), baseline_rounds()),
-            PairedRun(_regressed_rounds(), baseline_rounds()),
-        ],
-    )
+    stub_runs(samples_mock, open_repo, [_regressed_run(), _regressed_run()])
 
     await iterate_session(open_repo, resolved_config(filter=FILTER))
 
@@ -164,14 +166,7 @@ async def test_iterate_session_when_gating_regression_does_rerun_through_the_fil
 async def test_iterate_session_when_no_filter_configured_does_rerun_the_whole_bench(
     open_repo: str, samples_mock: CollectSamplesRecorder
 ):
-    stub_runs(
-        samples_mock,
-        open_repo,
-        [
-            PairedRun(_regressed_rounds(), baseline_rounds()),
-            PairedRun(_regressed_rounds(), baseline_rounds()),
-        ],
-    )
+    stub_runs(samples_mock, open_repo, [_regressed_run(), _regressed_run()])
 
     await iterate_session(open_repo, resolved_config())
 
@@ -185,8 +180,8 @@ async def test_iterate_session_when_gating_regression_does_record_the_rerun_raw_
         experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
         baseline=_filtered_rounds("total_ms", BASELINE_MS),
     )
-    stub_runs(samples_mock, open_repo, [PairedRun(_regressed_rounds(), baseline_rounds()), rerun])
-    resolved = resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
+    stub_runs(samples_mock, open_repo, [_regressed_run(), rerun])
+    resolved = _total_ms_gating_config()
 
     result = await iterate_session(open_repo, resolved)
 
@@ -204,14 +199,14 @@ async def test_iterate_session_when_rerun_agrees_does_confirm_and_read_regressed
         samples_mock,
         open_repo,
         [
-            PairedRun(_regressed_rounds(), baseline_rounds()),
+            _regressed_run(),
             PairedRun(
                 _filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
                 _filtered_rounds("total_ms", BASELINE_MS),
             ),
         ],
     )
-    resolved = resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
+    resolved = _total_ms_gating_config()
 
     result = await iterate_session(open_repo, resolved)
 
@@ -236,14 +231,14 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
         samples_mock,
         open_repo,
         [
-            PairedRun(_regressed_rounds(), baseline_rounds()),
+            _regressed_run(),
             PairedRun(
                 _filtered_rounds("total_ms", experiment),
                 _filtered_rounds("total_ms", BASELINE_MS),
             ),
         ],
     )
-    resolved = resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
+    resolved = _total_ms_gating_config()
 
     result = await iterate_session(open_repo, resolved)
 
@@ -257,12 +252,8 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
 async def test_iterate_session_when_rerun_bench_fails_does_fail_and_record_nothing(
     open_repo: str, samples_mock: CollectSamplesRecorder
 ):
-    stub_runs(
-        samples_mock,
-        open_repo,
-        [PairedRun(_regressed_rounds(), baseline_rounds()), GymratError("bench command failed")],
-    )
-    resolved = resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
+    stub_runs(samples_mock, open_repo, [_regressed_run(), GymratError("bench command failed")])
+    resolved = _total_ms_gating_config()
 
     with pytest.raises(GymratError) as exc:
         await iterate_session(open_repo, resolved)
@@ -366,11 +357,7 @@ def _partial_rerun() -> PairedRun:
 @pytest.fixture
 def partial_rerun_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
     partial = _partial_rerun()
-    stub_runs(
-        samples_mock,
-        open_repo,
-        [PairedRun(_regressed_rounds(), baseline_rounds()), partial],
-    )
+    stub_runs(samples_mock, open_repo, [_regressed_run(), partial])
     return open_repo
 
 
@@ -410,11 +397,7 @@ async def test_iterate_session_when_rerun_produces_no_parsable_metrics_does_trea
     open_repo: str, samples_mock: CollectSamplesRecorder
 ):
     empty_rerun = PairedRun([{} for _ in range(10)], [{} for _ in range(10)])
-    stub_runs(
-        samples_mock,
-        open_repo,
-        [PairedRun(_regressed_rounds(), baseline_rounds()), empty_rerun],
-    )
+    stub_runs(samples_mock, open_repo, [_regressed_run(), empty_rerun])
 
     result = await iterate_session(open_repo, resolved_config(filter=FILTER))
 
@@ -467,7 +450,7 @@ async def test_iterate_session_when_metric_is_exact_does_leave_it_out_of_the_fil
         samples_mock,
         open_repo,
         [
-            PairedRun(_regressed_rounds(), baseline_rounds()),
+            _regressed_run(),
             PairedRun(
                 _filtered_rounds("alloc_bytes", scaled(BASELINE_BYTES, 1.2)),
                 _filtered_rounds("alloc_bytes", BASELINE_BYTES),
@@ -820,7 +803,7 @@ async def test_iterate_session_when_hooks_configured_does_fire_before_then_after
         "hook",
     ]
     hook_records = [record for record in records if isinstance(record, HookRecord)]
-    assert [dataclasses.replace(record, duration_ms=0) for record in hook_records] == [
+    assert [record.model_copy(update={"duration_ms": 0}) for record in hook_records] == [
         expected_hook_record(stage="before", seq=2, exit_code=0, stdout_bytes=3),
         expected_hook_record(stage="after", seq=2, exit_code=0, stdout_bytes=4),
     ]
@@ -892,7 +875,7 @@ async def test_iterate_session_when_before_hook_fails_does_measure_on_reporting_
         "[before] hook exited 3",
         "[before] no warm copy",
     ]
-    hook_records = [dataclasses.replace(record, duration_ms=0) for record in _hook_records(repo)]
+    hook_records = [record.model_copy(update={"duration_ms": 0}) for record in _hook_records(repo)]
     assert hook_records == [
         expected_hook_record(stage="before", seq=2, exit_code=3, stdout_bytes=0, stderr_bytes=13)
     ]

@@ -1,207 +1,23 @@
-"""Inbound codec: wire value to typed session-log dataclass.
+"""Inbound codec: wire value to typed session-log model.
 
 Includes validation-error translation from pydantic errors to problem strings.
 """
 
 import json
-from collections.abc import Callable
+from typing import Annotated
 
-from pydantic import BaseModel, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import describe_key, drop_prefix_errors
 from gymrat.session.records.models import (
-    BaselineModel,
-    DiscardModel,
-    FinalizeModel,
-    HookModel,
-    IterationModel,
-    KeepModel,
-    MetricVerdictModel,
-    PairedSamplesModel,
-    SessionModel,
-)
-from gymrat.session.records.types import (
-    BaselineRecord,
-    Confirm,
-    DiscardRecord,
-    FinalizeRecord,
-    HookRecord,
-    IterationPrimary,
-    IterationRecord,
-    KeepChecks,
-    KeepRecord,
-    MetricVerdict,
-    PairedSamples,
-    SampleRound,
-    SessionConfig,
-    SessionHooks,
     SessionLogRecord,
-    SessionRecord,
+    _wire_validation,
 )
 from gymrat.session.schema import SCHEMA_VERSION
-from gymrat.session.workspace import BaselineRef, Worktrees
 
-_Number = int | float
-
-
-def _rounds(rounds: list[dict[str, _Number]]) -> tuple[SampleRound, ...]:
-    return tuple(dict(round_) for round_ in rounds)
-
-
-def _to_paired(model: PairedSamplesModel) -> PairedSamples:
-    return PairedSamples(experiment=_rounds(model.experiment), baseline=_rounds(model.baseline))
-
-
-def _to_verdict(model: MetricVerdictModel) -> MetricVerdict:
-    return MetricVerdict(
-        delta_pct=model.delta_pct,
-        verdict=model.verdict,
-        method=model.method,
-        gating=model.gating,
-        confirmed=model.confirmed,
-        p=model.p,
-        noise_pct=model.noise_pct,
-    )
-
-
-def _to_session(model: SessionModel) -> SessionRecord:
-    hooks = (
-        SessionHooks(before=model.config.hooks.before, after=model.config.hooks.after)
-        if model.config.hooks is not None
-        else None
-    )
-    config = SessionConfig(
-        bench=model.config.bench,
-        adapter=model.config.adapter,
-        samples=model.config.samples,
-        timeout_seconds=model.config.timeout_seconds,
-        primary=model.config.primary,
-        prepare=model.config.prepare,
-        filter=model.config.filter,
-        hooks=hooks,
-    )
-    return SessionRecord(
-        type=model.type,
-        schema_version=model.schema_version,
-        session_id=model.session_id,
-        created_at=model.created_at,
-        baseline=BaselineRef(ref=model.baseline.ref, sha=model.baseline.sha),
-        branch=model.branch,
-        worktrees=Worktrees(
-            experiment=model.worktrees.experiment, baseline=model.worktrees.baseline
-        ),
-        config=config,
-    )
-
-
-def _to_baseline(model: BaselineModel) -> BaselineRecord:
-    return BaselineRecord(
-        type=model.type, at=model.at, label=model.label, samples=_rounds(model.samples)
-    )
-
-
-def _to_iteration(model: IterationModel) -> IterationRecord:
-    confirm = (
-        Confirm(
-            ran=model.confirm.ran,
-            filtered=tuple(model.confirm.filtered),
-            samples=_to_paired(model.confirm.samples),
-            absent=tuple(model.confirm.absent) if model.confirm.absent is not None else None,
-        )
-        if model.confirm is not None
-        else None
-    )
-    return IterationRecord(
-        type=model.type,
-        seq=model.seq,
-        at=model.at,
-        samples=_to_paired(model.samples),
-        metrics={name: _to_verdict(entry) for name, entry in model.metrics.items()},
-        primary=IterationPrimary(
-            kind=model.primary.kind, delta_pct=model.primary.delta_pct, name=model.primary.name
-        ),
-        outcome=model.outcome,
-        target_reached=model.target_reached,
-        confirm=confirm,
-    )
-
-
-def _to_keep(model: KeepModel) -> KeepRecord:
-    return KeepRecord(
-        type=model.type,
-        seq=model.seq,
-        at=model.at,
-        status=model.status,
-        checks=KeepChecks(
-            configured=model.checks.configured,
-            passed=model.checks.passed,
-            stdout_bytes=model.checks.stdout_bytes,
-            stderr_bytes=model.checks.stderr_bytes,
-        ),
-        commit=model.commit,
-        message=model.message,
-        reason=model.reason,
-    )
-
-
-def _to_discard(model: DiscardModel) -> DiscardRecord:
-    return DiscardRecord(type=model.type, seq=model.seq, at=model.at)
-
-
-def _to_hook(model: HookModel) -> HookRecord:
-    return HookRecord(
-        type=model.type,
-        stage=model.stage,
-        seq=model.seq,
-        exit_code=model.exit_code,
-        duration_ms=model.duration_ms,
-        stdout_bytes=model.stdout_bytes,
-        timed_out=model.timed_out,
-        stderr_bytes=model.stderr_bytes,
-    )
-
-
-def _to_finalize(model: FinalizeModel) -> FinalizeRecord:
-    return FinalizeRecord(
-        type=model.type,
-        at=model.at,
-        branch=model.branch,
-        commit=model.commit,
-        message=model.message,
-    )
-
-
-def _parser_for[M: BaseModel](
-    record_type: str,
-    model_cls: type[M],
-    to_dataclass: Callable[[M], SessionLogRecord],
-) -> Callable[[dict[str, object]], SessionLogRecord]:
-    """Build a parser that validates against ``model_cls`` and words its failures."""
-
-    def parse(value: dict[str, object]) -> SessionLogRecord:
-        try:
-            model = model_cls.model_validate(value)
-        except ValidationError as exc:
-            error = drop_prefix_errors(exc.errors())[0]
-            raise GymratError(message_for_error(error, record_type)) from exc
-        return to_dataclass(model)
-
-    return parse
-
-
-_PARSERS: dict[str, Callable[[dict[str, object]], SessionLogRecord]] = {
-    "session": _parser_for("session", SessionModel, _to_session),
-    "baseline": _parser_for("baseline", BaselineModel, _to_baseline),
-    "iteration": _parser_for("iteration", IterationModel, _to_iteration),
-    "keep": _parser_for("keep", KeepModel, _to_keep),
-    "discard": _parser_for("discard", DiscardModel, _to_discard),
-    "hook": _parser_for("hook", HookModel, _to_hook),
-    "finalize": _parser_for("finalize", FinalizeModel, _to_finalize),
-}
-
-_MISSING = object()
+_SessionLogUnion = TypeAdapter(Annotated[SessionLogRecord, Field(discriminator="type")])
 
 
 def parse_record(value: object) -> SessionLogRecord:
@@ -212,7 +28,7 @@ def parse_record(value: object) -> SessionLogRecord:
             ``type`` discriminator.
 
     Returns:
-        The typed dataclass for the matching record type.
+        The typed model for the matching record type.
 
     Raises:
         GymratError: When ``value`` is not an object, carries no recognized
@@ -221,11 +37,36 @@ def parse_record(value: object) -> SessionLogRecord:
     if not isinstance(value, dict):
         message = f"Invalid session record: expected a JSON object, got {json.dumps(value)}"
         raise GymratError(message)
-    type_value = value.get("type", _MISSING)
-    if isinstance(type_value, str) and type_value in _PARSERS:
-        return _PARSERS[type_value](value)
-    rendered = "undefined" if type_value is _MISSING else json.dumps(type_value)
-    hint = "Expected one of: " + ", ".join(_PARSERS) + "."
+    token = _wire_validation.set(True)
+    try:
+        return _SessionLogUnion.validate_python(value)
+    except ValidationError as exc:
+        errors = exc.errors()
+        _raise_discriminator_error(errors, value)
+        error = drop_prefix_errors(errors)[0]
+        record_type = value.get("type", "")
+        raise GymratError(message_for_error(error, str(record_type))) from exc
+    finally:
+        _wire_validation.reset(token)
+
+
+_KNOWN_TYPES = ("session", "baseline", "iteration", "keep", "discard", "hook", "finalize")
+
+
+def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, object]) -> None:
+    """Raise with the canonical "Unknown session record type" message.
+
+    Callers match on this exact wording and the ``_KNOWN_TYPES`` hint.
+    """
+    if not errors:
+        return
+    error_type = errors[0]["type"]
+    if error_type not in ("union_tag_not_found", "union_tag_invalid"):
+        return
+    type_value = value.get("type")
+    tag_missing = error_type == "union_tag_not_found" and type_value is None and "type" not in value
+    rendered = "undefined" if tag_missing else json.dumps(type_value)
+    hint = "Expected one of: " + ", ".join(_KNOWN_TYPES) + "."
     message = f"Unknown session record type: {rendered}"
     raise GymratError(message, hint=hint)
 
@@ -351,7 +192,7 @@ def _normalize_loc(loc: tuple[int | str, ...]) -> tuple[str, ...]:
 
     An array index is an ``int`` segment (pydantic preserves the type). A dynamic
     map key is either a metric name directly under ``metrics``, or a metric name
-    inside a sample round — the segment following an index. Both are collapsed so
+    inside a sample round -- the segment following an index. Both are collapsed so
     one phrase entry covers every concrete name.
 
     Using ``isinstance(segment, int)`` instead of ``str.isdigit`` keeps all-digit
@@ -374,9 +215,21 @@ def _normalize_loc(loc: tuple[int | str, ...]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _strip_type_prefix(loc: tuple[int | str, ...], record_type: str) -> tuple[int | str, ...]:
+    """Strip the discriminated-union type prefix from an error location.
+
+    The ``TypeAdapter`` on the tagged union prepends the record type (e.g.
+    ``"iteration"``) to every field-level error location.  The ``_PHRASES``
+    table and the display path both expect the location without that prefix.
+    """
+    if loc and loc[0] == record_type:
+        return loc[1:]
+    return loc
+
+
 def message_for_error(error: ErrorDetails, record_type: str) -> str:
     """Translate one pydantic error into a session-record problem string."""
-    raw_loc = error["loc"]
+    raw_loc = _strip_type_prefix(error["loc"], record_type)
     display_loc = tuple(str(part) for part in raw_loc)
     if error["type"] == "extra_forbidden":
         return f"Unknown session record key: {describe_key(display_loc)}"
