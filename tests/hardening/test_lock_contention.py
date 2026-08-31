@@ -6,21 +6,15 @@ genuine pressure:
 
 - a burst of real processes racing for one lockfile grants exactly one holder
   and hands every loser the contention error, with the lockfile never torn,
-- two processes racing to steal the same stale lock never both end up holding
-  it, and never delete a lock a live winner is using,
-- a leftover file another user owns at any of the lock's auxiliary scratch
-  paths (the scratch record, the claim link, the stale-aside) yields the
-  "belongs to another user" remedy rather than a raw permission traceback,
 - the repository lock and the supervise lock are independent, so holding one
   never blocks the command guarded by the other,
 - ``supervise`` run outside a git repository exits cleanly, naming the
   requirement, rather than crashing with an unhandled error.
 
 The multi-process tests are POSIX-only: they rendezvous children on a named
-pipe and rely on hard links for the claim protocol.
+pipe.
 """
 
-import errno
 import json
 import os
 import re
@@ -35,7 +29,6 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.errors import GymratError
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from tests._ansi import strip_ansi
@@ -194,14 +187,6 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
     )
 
 
-def _assert_belongs_to_other_user(error: GymratError, lock_path: str) -> None:
-    """Assert ``error`` is the manual-remedy reframing for a lock another user owns."""
-    assert lock_path in str(error)
-    hint = error.hint or ""
-    assert re.search("remove", hint, re.IGNORECASE)
-    assert lock_path in hint
-
-
 # ---------------------------------------------------------------------------
 # real multi-process contention over one lockfile
 # ---------------------------------------------------------------------------
@@ -237,73 +222,6 @@ def test_acquire_lock_when_processes_race_does_grant_one_holder_and_contend_the_
 
     for payload in outcome.lost_payloads:
         assert f"PID {winner_pid}" in payload
-
-
-# ---------------------------------------------------------------------------
-# a leftover another user owns at an auxiliary scratch path
-# ---------------------------------------------------------------------------
-
-
-def test_acquire_lock_when_scratch_record_owned_by_other_user_does_reframe_with_manual_remedy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    # A sticky /tmp left a read-only ``<lock>.<pid>.record`` behind, so opening
-    # the scratch file the holder record is staged through is refused.
-    lock_path = str(tmp_path / "gymrat.lock.json")
-    real_open = os.open
-
-    def refuse_scratch_record(path: str, *args: int) -> int:
-        if path.startswith(lock_path) and path.endswith(".record"):
-            raise OSError(errno.EPERM, "operation not permitted")
-        return real_open(path, *args)
-
-    monkeypatch.setattr(os, "open", refuse_scratch_record)
-
-    with pytest.raises(GymratError) as caught:
-        acquire_lock(lock_path, "compare")
-
-    _assert_belongs_to_other_user(caught.value, lock_path)
-
-
-def test_acquire_lock_when_claim_link_owned_by_other_user_does_reframe_with_manual_remedy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    # The stale lock is another user's, so hard-linking it to the claim path is
-    # refused mid-takeover.
-    lock_path = str(tmp_path / "gymrat.lock.json")
-    _write_stale_lock(lock_path)
-    real_link = os.link
-
-    def refuse_claim_link(src: str, dst: str) -> None:
-        if dst.endswith(".claim"):
-            raise OSError(errno.EPERM, "operation not permitted")
-        real_link(src, dst)
-
-    monkeypatch.setattr(os, "link", refuse_claim_link)
-
-    with pytest.raises(GymratError) as caught:
-        acquire_lock(lock_path, "compare")
-
-    _assert_belongs_to_other_user(caught.value, lock_path)
-
-
-def test_acquire_lock_when_stale_aside_owned_by_other_user_does_reframe_with_manual_remedy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    # The stale lock is another user's, so renaming it aside to take it over is
-    # refused.
-    lock_path = str(tmp_path / "gymrat.lock.json")
-    _write_stale_lock(lock_path)
-
-    def refuse_rename(src: str, dst: str) -> None:
-        raise OSError(errno.EPERM, "operation not permitted")
-
-    monkeypatch.setattr(os, "rename", refuse_rename)
-
-    with pytest.raises(GymratError) as caught:
-        acquire_lock(lock_path, "compare")
-
-    _assert_belongs_to_other_user(caught.value, lock_path)
 
 
 # ---------------------------------------------------------------------------

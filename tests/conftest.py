@@ -10,6 +10,7 @@ The helpers expose a common fixture surface so later worktree and driver
 tests can reuse the same building blocks.
 """
 
+import json
 import os
 import shutil
 import signal
@@ -19,8 +20,10 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 
 from gymrat.cli.shared import set_stderr_color_override
+from gymrat.session.clock import now_iso
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
@@ -36,6 +39,26 @@ GYMRAT_ENV_VARS = (
     "GYMRAT_TIMEOUT",
     "GYMRAT_CONFIG",
 )
+
+
+def hold_lock(
+    lock_path: str, command: str = "measure", *, holder: dict[str, object] | None = None
+) -> FileLock:
+    """Acquire a real OS lock on ``lock_path`` and stamp it with holder JSON.
+
+    Simulates another live process holding the repository lock, so a rival
+    ``acquire_lock`` call sees contention. Returns the acquired ``FileLock`` so
+    the caller can release it during teardown. Pass ``holder`` to stamp an
+    exact record; otherwise one is built from ``command`` and the current
+    process.
+    """
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(lock_path, timeout=0)
+    lock.acquire()
+    if holder is None:
+        holder = {"pid": os.getpid(), "command": command, "at": now_iso()}
+    Path(lock_path).write_text(json.dumps(holder), encoding="utf-8")
+    return lock
 
 
 @pytest.fixture(autouse=True)
@@ -156,8 +179,8 @@ def create_scratch_repo() -> Iterator[Callable[[], str]]:
         for directory in created:
             _remove_stranded_worktrees(directory)
             shutil.rmtree(directory, ignore_errors=True)
-            # A signalled child can strand the repo's digest-named lock files in
-            # the system temp dir; sweep them with the repo they belong to.
+            # Lock files persist after release (filelock preserves the file);
+            # every process using them is dead by cleanup time.
             for lock in (lockfile_path(directory), supervise_lockfile_path(directory)):
                 Path(lock).unlink(missing_ok=True)
 

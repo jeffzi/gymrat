@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import typer
+from filelock import FileLock, Timeout
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
@@ -422,18 +423,27 @@ async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releas
 ):
     repo = create_scratch_repo()
     monkeypatch.chdir(repo)
-    lock_path = Path(lockfile_path(repo_root()))
-    held: dict[str, bool] = {}
+    lock_path = str(lockfile_path(repo_root()))
+    probed: dict[str, bool] = {}
 
     async def body() -> str:
-        held["during"] = _path_exists(lock_path)
+        try:
+            FileLock(lock_path, timeout=0).acquire()
+            probed["held_during"] = False
+        except Timeout:
+            probed["held_during"] = True
         return "measured"
 
     result = await with_repo_lock("compare", body)
 
     assert result == "measured"
-    assert held["during"] is True
-    assert not _path_exists(lock_path)
+    assert probed["held_during"] is True
+    try:
+        probe = FileLock(lock_path, timeout=0)
+        probe.acquire()
+        probe.release()
+    except Timeout:
+        pytest.fail("lock was still held after with_repo_lock returned")
 
 
 async def test_with_repo_lock_when_outside_repo_runs_body_without_a_lock(

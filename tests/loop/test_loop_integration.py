@@ -14,7 +14,7 @@ faked. Three flows are covered:
 POSIX-only: the flows lean on real subprocesses, worktrees, and file gating.
 """
 
-import os
+import json
 import re
 import shutil
 import subprocess
@@ -88,6 +88,21 @@ def _run_cli(repo: str, *argv: str) -> subprocess.CompletedProcess[str]:
         timeout=LONG_RUN_TIMEOUT,
         check=False,
     )
+
+
+def _lock_holder_pid(lock_path: str) -> int | None:
+    """Pid stamped into the lock file's holder record, or ``None`` if unreadable.
+
+    A pure read on purpose: probing with ``flock`` would itself acquire the lock
+    whenever it is still free and steal it from the process under test for the
+    instant before the probe closes its descriptor. ``None`` covers a missing
+    file, a partially written record, and a stale record without a pid.
+    """
+    try:
+        pid = json.loads(Path(lock_path).read_text(encoding="utf-8"))["pid"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    return pid if isinstance(pid, int) else None
 
 
 def _git(repo: str, *args: str) -> str:
@@ -228,14 +243,15 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
         text=True,
     )
     try:
-        # The gated bench holds the first run open; wait for it to grab the lock.
         deadline = time.monotonic() + 30
-        while not os.path.exists(lock_path):  # noqa: PTH110
+        while True:
             if first.poll() is not None:
                 pytest.fail(f"first iterate exited early: {first.communicate()}")
             if time.monotonic() > deadline:
                 first.kill()
                 pytest.fail("first iterate never grabbed the lock")
+            if _lock_holder_pid(lock_path) == first.pid:
+                break
             time.sleep(0.025)
 
         second = _run_cli(repo, "iterate")
@@ -248,7 +264,6 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
 
     assert second.returncode == 2, second.stderr
     assert first.returncode == 0, first_stderr or first_stdout
-    assert not os.path.exists(lock_path)  # noqa: PTH110
     assert len(_pick(read_records(session_jsonl_path(repo)), IterationRecord)) == 1
 
 
