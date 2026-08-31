@@ -1,9 +1,9 @@
 """Session event vocabulary and the helpers that render and fan them out.
 
 A session emits a fixed set of eight events to any number of
-:data:`SessionObserver` callbacks. Each event is a frozen dataclass tagged by a
-``type`` literal and stamped with an epoch-millisecond ``timestamp``; together
-they form the :data:`SessionEvent` union.
+:data:`SessionObserver` callbacks. Each event is a frozen pydantic model tagged
+by a ``type`` literal and stamped with an epoch-millisecond ``timestamp``;
+together they form the :data:`SessionEvent` union.
 
 :func:`to_json_line` renders an event to a single compact JSON line with
 camelCase keys — the shared wire form the event log and the stdio driver both
@@ -16,8 +16,18 @@ import json
 import re
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, Literal, assert_never, cast
+from typing import Annotated, Literal
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    ValidationError,
+    model_serializer,
+)
+from pydantic.alias_generators import to_camel
 
 from gymrat.finite_json import null_non_finite
 
@@ -28,16 +38,27 @@ from gymrat.finite_json import null_non_finite
 # Maximum code-point length for a session-event summary before it is truncated.
 SUMMARY_MAX_CHARS = 200
 
+# json.dumps separators for the wire's no-padding compact form: `{"key":"value"}`.
+_COMPACT_JSON_SEPARATORS = (",", ":")
 
-@dataclass(frozen=True, slots=True)
-class DirtyInfo:
+
+class _EventModel(BaseModel):
+    """Shared config for the event vocabulary: frozen, camelCase wire aliases."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        populate_by_name=True,
+        alias_generator=to_camel,
+    )
+
+
+class DirtyInfo(_EventModel):
     """The dirty-worktree provenance carried on a launch event."""
 
     file_count: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ThinkingUpdateEvent:
+class ThinkingUpdateEvent(_EventModel):
     """Emitted as the model's extended-thinking token estimate changes mid-turn."""
 
     type: Literal["thinking_update"] = "thinking_update"
@@ -46,8 +67,7 @@ class ThinkingUpdateEvent:
     delta: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ToolStartEvent:
+class ToolStartEvent(_EventModel):
     """Emitted when the model invokes a tool."""
 
     type: Literal["tool_start"] = "tool_start"
@@ -58,8 +78,7 @@ class ToolStartEvent:
     input_summary: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ToolProgressEvent:
+class ToolProgressEvent(_EventModel):
     """Emitted periodically while a long-running tool call is still in flight."""
 
     type: Literal["tool_progress"] = "tool_progress"
@@ -68,8 +87,7 @@ class ToolProgressEvent:
     elapsed_ms: int
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ToolEndEvent:
+class ToolEndEvent(_EventModel):
     """Emitted when a tool call completes and its result is available."""
 
     type: Literal["tool_end"] = "tool_end"
@@ -81,8 +99,7 @@ class ToolEndEvent:
     result_summary: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class TextDeltaEvent:
+class TextDeltaEvent(_EventModel):
     """Emitted for each chunk of assistant text as it streams in."""
 
     type: Literal["text_delta"] = "text_delta"
@@ -90,8 +107,7 @@ class TextDeltaEvent:
     chunk: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class UsageUpdateEvent:
+class UsageUpdateEvent(_EventModel):
     """Emitted when the driver observes updated cumulative cost."""
 
     type: Literal["usage_update"] = "usage_update"
@@ -99,8 +115,7 @@ class UsageUpdateEvent:
     cost_usd: float
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class CapEvent:
+class CapEvent(_EventModel):
     """Emitted when a supervision cap (wall-clock or spend) fires."""
 
     type: Literal["cap"] = "cap"
@@ -108,19 +123,35 @@ class CapEvent:
     cap: Literal["wall-clock", "spend-cap"]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class LaunchEvent:
-    """Written by the supervisor as the log's first line: launch provenance."""
+class LaunchEvent(_EventModel):
+    """Written by the supervisor as the log's first line: launch provenance.
+
+    ``max_usd`` and ``model`` are omitted from the wire form when ``None``
+    (not serialized as ``null`` — absent from the dict), matching the shipped
+    log format.
+    """
 
     type: Literal["launch"] = "launch"
     timestamp: int
     head_sha: str
     dirty: Literal[False] | DirtyInfo
     max_minutes: float
-    max_usd: float | None
-    model: str | None
+    max_usd: float | None = None
+    model: str | None = None
     runbook_path: str
     kickoff_summary: str
+
+    @model_serializer(mode="wrap")
+    def _omit_none_optionals(
+        self,
+        handler: SerializerFunctionWrapHandler,
+    ) -> dict[str, object]:
+        data: dict[str, object] = handler(self)
+        if self.max_usd is None:
+            data.pop("maxUsd", None)
+        if self.model is None:
+            data.pop("model", None)
+        return data
 
 
 SessionEvent = (
@@ -138,93 +169,20 @@ SessionEvent = (
 SessionObserver = Callable[[SessionEvent], None]
 """Receives :data:`SessionEvent`s as a session streams them."""
 
+_SessionEventAdapter: TypeAdapter[SessionEvent] = TypeAdapter(
+    Annotated[SessionEvent, Field(discriminator="type")]
+)
+
 
 # ---------------------------------------------------------------------------
 # to_json_line
 # ---------------------------------------------------------------------------
 
 
-def _dirty_to_wire(dirty: Literal[False] | DirtyInfo) -> object:
-    if dirty is False:
-        return False
-    return {"fileCount": dirty.file_count}
-
-
-def _launch_to_wire(event: LaunchEvent) -> dict[str, object]:
-    """Render a launch event, omitting ``maxUsd``/``model`` when they are ``None``.
-
-    Omission (rather than a ``null``) matches the shipped log format.
-    """
-    wire: dict[str, object] = {
-        "type": event.type,
-        "timestamp": event.timestamp,
-        "headSha": event.head_sha,
-        "dirty": _dirty_to_wire(event.dirty),
-        "maxMinutes": event.max_minutes,
-    }
-    if event.max_usd is not None:
-        wire["maxUsd"] = event.max_usd
-    if event.model is not None:
-        wire["model"] = event.model
-    wire["runbookPath"] = event.runbook_path
-    wire["kickoffSummary"] = event.kickoff_summary
-    return wire
-
-
-def _to_wire(event: SessionEvent) -> dict[str, object]:
-    """Render an event to its camelCase wire dict in declared field order."""
-    wire: dict[str, object]
-    match event:
-        case ThinkingUpdateEvent():
-            wire = {
-                "type": event.type,
-                "timestamp": event.timestamp,
-                "estimatedTokens": event.estimated_tokens,
-                "delta": event.delta,
-            }
-        case ToolStartEvent():
-            wire = {
-                "type": event.type,
-                "timestamp": event.timestamp,
-                "toolUseId": event.tool_use_id,
-                "toolName": event.tool_name,
-                "input": event.input,
-                "inputSummary": event.input_summary,
-            }
-        case ToolProgressEvent():
-            wire = {
-                "type": event.type,
-                "timestamp": event.timestamp,
-                "toolUseId": event.tool_use_id,
-                "elapsedMs": event.elapsed_ms,
-            }
-        case ToolEndEvent():
-            wire = {
-                "type": event.type,
-                "timestamp": event.timestamp,
-                "toolUseId": event.tool_use_id,
-                "toolName": event.tool_name,
-                "durationMs": event.duration_ms,
-                "result": event.result,
-                "resultSummary": event.result_summary,
-            }
-        case TextDeltaEvent():
-            wire = {"type": event.type, "timestamp": event.timestamp, "chunk": event.chunk}
-        case UsageUpdateEvent():
-            wire = {"type": event.type, "timestamp": event.timestamp, "costUsd": event.cost_usd}
-        case CapEvent():
-            wire = {"type": event.type, "timestamp": event.timestamp, "cap": event.cap}
-        case LaunchEvent():
-            wire = _launch_to_wire(event)
-        case _ as unreachable:  # pragma: no cover — exhaustive match over the event union
-            assert_never(unreachable)
-    return wire
-
-
 def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with camelCase keys."""
-    wire = _to_wire(event)
-    return json.dumps(null_non_finite(wire), separators=(",", ":"), default=str)
+    wire = event.model_dump(mode="python", by_alias=True)
+    return json.dumps(null_non_finite(wire), separators=_COMPACT_JSON_SEPARATORS, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -232,79 +190,21 @@ def to_json_line(event: SessionEvent) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _dirty_from_wire(value: object) -> Literal[False] | DirtyInfo:
-    if isinstance(value, dict):
-        file_count = value["fileCount"]
-        if not isinstance(file_count, int):
-            msg = f"dirty.fileCount must be an int, got {type(file_count).__name__}"
-            raise TypeError(msg)
-        return DirtyInfo(file_count=file_count)
-    return False
-
-
-def _launch_from_wire(wire: dict[str, Any]) -> SessionEvent:
-    return LaunchEvent(
-        timestamp=wire["timestamp"],
-        head_sha=wire["headSha"],
-        dirty=_dirty_from_wire(wire["dirty"]),
-        max_minutes=wire["maxMinutes"],
-        max_usd=wire.get("maxUsd"),
-        model=wire.get("model"),
-        runbook_path=wire["runbookPath"],
-        kickoff_summary=wire["kickoffSummary"],
-    )
-
-
-# Each builder maps a camelCase wire dict back to its event, raising KeyError on
-# a missing required field or TypeError on a malformed one so :func:`event_from_wire`
-# can report it as unparsed.
-_WIRE_BUILDERS: dict[str, Callable[[dict[str, Any]], SessionEvent]] = {
-    "thinking_update": lambda w: ThinkingUpdateEvent(
-        timestamp=w["timestamp"], estimated_tokens=w["estimatedTokens"], delta=w["delta"]
-    ),
-    "tool_start": lambda w: ToolStartEvent(
-        timestamp=w["timestamp"],
-        tool_use_id=w["toolUseId"],
-        tool_name=w["toolName"],
-        input=w["input"],
-        input_summary=w["inputSummary"],
-    ),
-    "tool_progress": lambda w: ToolProgressEvent(
-        timestamp=w["timestamp"], tool_use_id=w["toolUseId"], elapsed_ms=w["elapsedMs"]
-    ),
-    "tool_end": lambda w: ToolEndEvent(
-        timestamp=w["timestamp"],
-        tool_use_id=w["toolUseId"],
-        tool_name=w["toolName"],
-        duration_ms=w["durationMs"],
-        result=w["result"],
-        result_summary=w["resultSummary"],
-    ),
-    "text_delta": lambda w: TextDeltaEvent(timestamp=w["timestamp"], chunk=w["chunk"]),
-    "usage_update": lambda w: UsageUpdateEvent(timestamp=w["timestamp"], cost_usd=w["costUsd"]),
-    "cap": lambda w: CapEvent(timestamp=w["timestamp"], cap=w["cap"]),
-    "launch": _launch_from_wire,
-}
-
-
 def event_from_wire(obj: object) -> SessionEvent | None:
     """Reconstruct a session event from its camelCase wire object.
 
     The inverse of :func:`to_json_line`'s rendering: given a decoded JSON object,
-    return the matching event dataclass. Returns ``None`` when ``obj`` is not a
+    return the matching event model. Returns ``None`` when ``obj`` is not a
     dict, carries no recognized ``type``, or is missing a required field or has
     one with the wrong type.
     """
     if not isinstance(obj, dict):
         return None
-    wire = cast("dict[str, Any]", obj)
-    type_name = wire.get("type")
-    builder = _WIRE_BUILDERS.get(type_name) if isinstance(type_name, str) else None
-    if builder is None:
+    if not isinstance(obj.get("type"), str):
         return None
     try:
-        return builder(wire)
-    except (KeyError, TypeError):
+        return _SessionEventAdapter.validate_python(obj)
+    except ValidationError:
         return None
 
 
@@ -368,7 +268,7 @@ def summarize_input(value: object, max_chars: int = SUMMARY_MAX_CHARS) -> str:
     ``summarize(str(value))``.
     """
     try:
-        encoded = json.dumps(value, separators=(",", ":"))
+        encoded = json.dumps(value, separators=_COMPACT_JSON_SEPARATORS)
     except (TypeError, ValueError):
         return summarize(str(value), max_chars)
     return summarize(encoded, max_chars)
