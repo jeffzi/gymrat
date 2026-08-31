@@ -5,12 +5,11 @@ import os
 import stat
 from pathlib import Path
 
-from gymrat.config.schema import invalid_value_message, validate_and_convert
+from gymrat.config.schema import invalid_value_message
 from gymrat.config.types import (
     FILTER_PLACEHOLDER,
     GEOMEAN_PRIMARY,
     BenchlessConfig,
-    CliFlags,
 )
 from gymrat.errors import GymratError
 
@@ -66,24 +65,6 @@ def validate_loop_keys(config: BenchlessConfig) -> None:
     problems = loop_key_problems(config)
     if problems:
         raise GymratError(problems[0])
-
-
-def validate_config_dict(config: dict[str, object]) -> None:
-    """Validate an in-memory config dict the same way a loaded ``gymrat.toml`` is.
-
-    Runs the strict schema (``extra="forbid"``) and the cross-field loop-key
-    checks over ``config``, raising a :class:`GymratError` on the first problem.
-    Lets a writer (the init scaffold) reject a config before touching disk without
-    a temp-file round-trip.
-    """
-    from gymrat.config.resolve import merge_config  # noqa: PLC0415 -- break validate↔resolve cycle
-
-    config_file, problems = validate_and_convert(config)
-    if problems:
-        raise GymratError(problems[0])
-    if config_file is None:
-        return
-    validate_loop_keys(merge_config(CliFlags(), config_file))
 
 
 def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:

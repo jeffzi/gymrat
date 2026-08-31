@@ -9,7 +9,22 @@ also failed.
 
 import json
 
+from pydantic import ConfigDict
 from pydantic_core import ErrorDetails
+
+STRICT_FORBID = ConfigDict(strict=True, extra="forbid")
+"""Shared ``model_config`` for all internal pydantic models."""
+
+
+def coerce_integer(value: object) -> object:
+    """Fold an integral float into ``int`` so it satisfies strict integer validation.
+
+    Folding ``5.0`` to ``5`` lets it pass; every other value is passed through for
+    the model to accept or reject.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 def _needs_quoting(part: str) -> bool:

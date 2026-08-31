@@ -14,7 +14,7 @@ from gymrat.session.schema import (
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
 
-SampleRound = dict[str, float | int]
+type SampleRound = dict[str, float | int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +185,7 @@ class FinalizeRecord:
     message: str
 
 
-SessionLogRecord = (
+type SessionLogRecord = (
     SessionRecord
     | BaselineRecord
     | IterationRecord

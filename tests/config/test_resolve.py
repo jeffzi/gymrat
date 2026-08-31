@@ -79,16 +79,12 @@ class EnvCase:
     config: dict[str, object] | None = None
 
 
-def _settle_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase) -> object:
-    """Apply a case's config file and env var, settle, and return the field value."""
+def _arrange_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase) -> None:
+    """Write a config file (if any) and inject the env var under test."""
     if case.config is not None:
         write_config(tmp_path, case.config)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(case.env_var, case.env_value)
-
-    result = resolve_config(case.flags)
-
-    return getattr(result, case.field)
 
 
 @pytest.mark.parametrize(
@@ -119,7 +115,11 @@ def _settle_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvC
 def test_resolve_config_when_env_var_set_and_flag_absent_does_use_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase
 ):
-    assert _settle_env_case(tmp_path, monkeypatch, case) == case.expected
+    _arrange_env_case(tmp_path, monkeypatch, case)
+
+    result = resolve_config(case.flags)
+
+    assert getattr(result, case.field) == case.expected
 
 
 @pytest.mark.parametrize(
@@ -168,7 +168,11 @@ def test_resolve_config_when_env_var_set_and_flag_absent_does_use_env(
 def test_resolve_config_when_env_var_set_and_config_provides_field_does_use_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase
 ):
-    assert _settle_env_case(tmp_path, monkeypatch, case) == case.expected
+    _arrange_env_case(tmp_path, monkeypatch, case)
+
+    result = resolve_config(case.flags)
+
+    assert getattr(result, case.field) == case.expected
 
 
 @pytest.mark.parametrize(
@@ -193,7 +197,11 @@ def test_resolve_config_when_env_var_set_and_config_provides_field_does_use_env(
 def test_resolve_config_when_flag_present_does_ignore_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase
 ):
-    assert _settle_env_case(tmp_path, monkeypatch, case) == case.expected
+    _arrange_env_case(tmp_path, monkeypatch, case)
+
+    result = resolve_config(case.flags)
+
+    assert getattr(result, case.field) == case.expected
 
 
 @pytest.mark.parametrize(
@@ -212,7 +220,11 @@ def test_resolve_config_when_flag_present_does_ignore_env(
 def test_resolve_config_when_flag_present_does_not_validate_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase
 ):
-    assert _settle_env_case(tmp_path, monkeypatch, case) == case.expected
+    _arrange_env_case(tmp_path, monkeypatch, case)
+
+    result = resolve_config(case.flags)
+
+    assert getattr(result, case.field) == case.expected
 
 
 @pytest.mark.parametrize(

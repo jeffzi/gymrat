@@ -20,7 +20,7 @@ must not already be finalized.
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import assert_never
 
@@ -213,9 +213,9 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     except FileNotFoundError:
         return []
 
-    # Split on newline bytes. The final element is whatever follows the last
-    # newline — either empty (when the file ends on \n) or the torn tail of a
-    # write that never finished.
+    # The final element is whatever follows the last newline — either empty
+    # (when the file ends on \n) or the torn tail of a write that never
+    # finished.
     raw_lines = raw.split(b"\n")
     # A file whose last byte is not b"\n" ends on a line the writer never
     # finished — a torn append or a crash mid-flush. Each record is written as
@@ -350,19 +350,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
             case _ as unreachable:
                 assert_never(unreachable)
 
-    return SessionState(
-        session=state.session,
-        iteration_count=state.iteration_count,
-        last_iteration=state.last_iteration,
-        unsettled=state.unsettled,
-        keep_count=state.keep_count,
-        discard_count=state.discard_count,
-        target_reached_and_kept=state.target_reached_and_kept,
-        last_seq=state.last_seq,
-        last_kept_commit=state.last_kept_commit,
-        ends_on_gating_block=state.ends_on_gating_block,
-        finalized=state.finalized,
-    )
+    return SessionState(**{f.name: getattr(state, f.name) for f in fields(SessionState)})
 
 
 def require_session(root: str, verb: str) -> RequiredSession:

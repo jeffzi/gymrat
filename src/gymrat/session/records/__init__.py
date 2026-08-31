@@ -37,10 +37,7 @@ from gymrat.session.records.types import (
     SessionRecord,
 )
 from gymrat.session.records.wire import record_to_wire
-from gymrat.session.schema import (
-    SCHEMA_VERSION,
-    KeepReason,
-)
+from gymrat.session.schema import SCHEMA_VERSION
 from gymrat.session.workspace import BaselineRef, Worktrees
 
 __all__ = [
@@ -57,6 +54,7 @@ __all__ = [
     "KeepRecord",
     "MetricVerdict",
     "PairedSamples",
+    "SampleRound",
     "SessionConfig",
     "SessionHooks",
     "SessionLogRecord",

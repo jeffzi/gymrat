@@ -12,7 +12,6 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     BeforeValidator,
-    ConfigDict,
     Field,
     ValidationError,
     model_validator,
@@ -28,7 +27,7 @@ from gymrat.config.types import (
     StopConfig,
 )
 from gymrat.model import NOISE_FLOOR_PCT, Direction
-from gymrat.pydantic_errors import describe_key, drop_prefix_errors
+from gymrat.pydantic_errors import STRICT_FORBID, coerce_integer, describe_key, drop_prefix_errors
 
 _LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029")
 
@@ -40,17 +39,6 @@ _NON_EMPTY_STRING_FIELDS = frozenset(
 # ---------------------------------------------------------------------------
 # Value coercion / rejection for the internal pydantic models
 # ---------------------------------------------------------------------------
-
-
-def _coerce_integer(value: object) -> object:
-    """Fold an integral float into ``int`` so it satisfies strict integer validation.
-
-    Folding ``5.0`` to ``5`` lets it pass; every other value is passed through for
-    the model to accept or reject.
-    """
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
 
 
 def _coerce_number(value: object) -> object:
@@ -95,15 +83,13 @@ def _reject_bad_dict(value: object) -> object:
 # Internal pydantic models (never exposed)
 # ---------------------------------------------------------------------------
 
-_STRICT = ConfigDict(strict=True, extra="forbid")
-
 _NonEmptyStr = Annotated[str | None, Field(default=None, min_length=1, pattern=r"\S")]
 _AnyStr = Annotated[str | None, Field(default=None)]
 _Bool = Annotated[bool | None, Field(default=None)]
 
 
 class _MetricModel(BaseModel):
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     direction: Annotated[Direction | None, Field(default=None)]
     gating: _Bool
@@ -111,13 +97,13 @@ class _MetricModel(BaseModel):
 
 
 class _KindModel(BaseModel):
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     gating: _Bool
 
 
 class _StopModel(BaseModel):
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     target_value: Annotated[
         float | None,
@@ -127,20 +113,20 @@ class _StopModel(BaseModel):
     ]
     max_iterations: Annotated[
         int | None,
-        BeforeValidator(_coerce_integer),
+        BeforeValidator(coerce_integer),
         Field(default=None, ge=1),
     ]
 
 
 class _HooksModel(BaseModel):
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     before: _NonEmptyStr
     after: _NonEmptyStr
 
 
 class _ConfigModel(BaseModel):
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     @model_validator(mode="before")
     @classmethod
@@ -153,12 +139,12 @@ class _ConfigModel(BaseModel):
     adapter: _NonEmptyStr
     samples: Annotated[
         int | None,
-        BeforeValidator(_coerce_integer),
+        BeforeValidator(coerce_integer),
         Field(default=None, ge=1, le=MAX_SAFE_INTEGER),
     ]
     timeout_seconds: Annotated[
         int | None,
-        BeforeValidator(_coerce_integer),
+        BeforeValidator(coerce_integer),
         Field(default=None, ge=1, le=MAX_TIMEOUT_SECONDS),
     ]
     unstable_noise_pct: Annotated[
@@ -257,7 +243,7 @@ def _to_metric_entry(model: _MetricModel) -> MetricEntry:
     return MetricEntry(direction=model.direction, gating=model.gating, exact=model.exact)
 
 
-def to_config_file(model: _ConfigModel) -> ConfigFile:
+def _to_config_file(model: _ConfigModel) -> ConfigFile:
     """Convert a validated pydantic model to its frozen dataclass equivalent."""
     metrics = (
         {name: _to_metric_entry(entry) for name, entry in model.metrics.items()}
@@ -303,13 +289,4 @@ def validate_and_convert(data: dict[str, object]) -> tuple[ConfigFile | None, li
         model = _ConfigModel.model_validate(data)
     except ValidationError as exc:
         return None, [_message_for_error(error) for error in drop_prefix_errors(exc.errors())]
-    return to_config_file(model), []
-
-
-def validate_strict(config: dict[str, object]) -> list[str]:
-    """Validate a dict through the strict schema, returning problems."""
-    try:
-        _ConfigModel.model_validate(config)
-    except ValidationError as exc:
-        return [_message_for_error(error) for error in drop_prefix_errors(exc.errors())]
-    return []
+    return _to_config_file(model), []

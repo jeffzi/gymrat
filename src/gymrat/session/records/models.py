@@ -2,8 +2,9 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
+from gymrat.pydantic_errors import STRICT_FORBID, coerce_integer
 from gymrat.session.schema import (
     HookStage,
     KeepReason,
@@ -30,19 +31,14 @@ def _reject_none(value: object) -> object:
 
 
 def _coerce_integer(value: object) -> object:
-    """Reject ``null`` and fold an integral float into ``int``.
+    """Reject ``null``, then fold an integral float into ``int``.
 
-    Folding ``5.0`` to ``5`` lets it satisfy strict integer validation; every
-    other value is passed through for the model to accept or reject.
+    Composes :func:`_reject_none` with the shared :func:`coerce_integer` so
+    JSON ``null`` is caught before the coercion pass.
     """
-    if value is None:
-        raise ValueError(_NULL_MESSAGE)
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
+    _reject_none(value)
+    return coerce_integer(value)
 
-
-_STRICT = ConfigDict(strict=True, extra="forbid")
 
 _Number = int | float
 
@@ -62,7 +58,7 @@ _NonNegativeInt = Annotated[int, BeforeValidator(_coerce_integer), Field(ge=0)]
 class BaselineRefModel(BaseModel):
     """Wire format for a session's baseline git reference."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     ref: str
     sha: str
@@ -71,7 +67,7 @@ class BaselineRefModel(BaseModel):
 class WorktreesModel(BaseModel):
     """Wire format for the session's worktree directory pair."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     experiment: str
     baseline: str
@@ -80,7 +76,7 @@ class WorktreesModel(BaseModel):
 class SessionHooksModel(BaseModel):
     """Wire format for the session's before/after hook commands."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     before: _OptNonEmptyStr
     after: _OptNonEmptyStr
@@ -89,7 +85,7 @@ class SessionHooksModel(BaseModel):
 class SessionConfigModel(BaseModel):
     """Wire format for the session's resolved configuration snapshot."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     bench: str
     prepare: _OptStr
@@ -106,7 +102,7 @@ class SessionConfigModel(BaseModel):
 class SessionModel(BaseModel):
     """Wire format for the session-open log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["session"]
     schema_version: Annotated[Literal[1], Field(alias="schemaVersion")]
@@ -121,7 +117,7 @@ class SessionModel(BaseModel):
 class BaselineModel(BaseModel):
     """Wire format for the baseline-measurement log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["baseline"]
     at: str
@@ -132,7 +128,7 @@ class BaselineModel(BaseModel):
 class MetricVerdictModel(BaseModel):
     """Wire format for a single metric's verdict within an iteration."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     delta_pct: _DeltaPct
     verdict: Verdict
@@ -148,7 +144,7 @@ class MetricVerdictModel(BaseModel):
 class PairedSamplesModel(BaseModel):
     """Wire format for the experiment/baseline sample pair."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     experiment: list[dict[str, _Number]]
     baseline: list[dict[str, _Number]]
@@ -157,7 +153,7 @@ class PairedSamplesModel(BaseModel):
 class ConfirmModel(BaseModel):
     """Wire format for the confirmation rerun within an iteration."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     ran: bool
     filtered: list[str]
@@ -168,7 +164,7 @@ class ConfirmModel(BaseModel):
 class IterationPrimaryModel(BaseModel):
     """Wire format for the iteration's primary-figure summary."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     kind: PrimaryKind
     name: _OptStr
@@ -178,7 +174,7 @@ class IterationPrimaryModel(BaseModel):
 class IterationModel(BaseModel):
     """Wire format for the iteration log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["iteration"]
     seq: _PositiveInt
@@ -194,7 +190,7 @@ class IterationModel(BaseModel):
 class KeepChecksModel(BaseModel):
     """Wire format for the checks block within a keep record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     configured: bool
     passed: _OptBool
@@ -209,7 +205,7 @@ class KeepChecksModel(BaseModel):
 class KeepModel(BaseModel):
     """Wire format for the keep log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["keep"]
     seq: _NonNegativeInt
@@ -224,7 +220,7 @@ class KeepModel(BaseModel):
 class DiscardModel(BaseModel):
     """Wire format for the discard log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["discard"]
     seq: _NonNegativeInt
@@ -234,16 +230,20 @@ class DiscardModel(BaseModel):
 class HookModel(BaseModel):
     """Wire format for the hook log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["hook"]
     stage: HookStage
     seq: _NonNegativeInt
     exit_code: Annotated[int, BeforeValidator(_coerce_integer), Field(alias="exitCode")]
     duration_ms: Annotated[_Number, Field(alias="durationMs")]
-    stdout_bytes: Annotated[int, BeforeValidator(_coerce_integer), Field(alias="stdoutBytes")]
+    stdout_bytes: Annotated[
+        _NonNegativeInt, BeforeValidator(_coerce_integer), Field(alias="stdoutBytes")
+    ]
     stderr_bytes: Annotated[
-        int | None, BeforeValidator(_coerce_integer), Field(default=None, alias="stderrBytes")
+        _NonNegativeInt | None,
+        BeforeValidator(_coerce_integer),
+        Field(default=None, alias="stderrBytes"),
     ]
     timed_out: Annotated[bool, Field(alias="timedOut")]
 
@@ -251,7 +251,7 @@ class HookModel(BaseModel):
 class FinalizeModel(BaseModel):
     """Wire format for the finalize log record."""
 
-    model_config = _STRICT
+    model_config = STRICT_FORBID
 
     type: Literal["finalize"]
     at: str

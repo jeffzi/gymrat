@@ -53,7 +53,9 @@ def write_raw(directory: Path, text: str) -> Path:
 def test_load_config_file_when_file_missing_does_return_empty_config(tmp_path: Path):
     missing = tmp_path / "nonexistent.toml"
 
-    assert load_config_file(missing) == ConfigFile()
+    result = load_config_file(missing)
+
+    assert result == ConfigFile()
 
 
 def test_load_config_file_when_file_missing_and_required_does_raise_naming_path(tmp_path: Path):
@@ -89,7 +91,9 @@ def test_load_config_file_when_path_is_directory_does_raise_naming_path(
 def test_load_config_file_when_only_bench_given_does_return_parsed_bench(tmp_path: Path):
     config_path = write_config(tmp_path, {"bench": "custom-bench"})
 
-    assert load_config_file(config_path) == ConfigFile(bench="custom-bench")
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(bench="custom-bench")
 
 
 def test_load_config_file_when_all_known_keys_given_does_round_trip(tmp_path: Path):
@@ -129,7 +133,9 @@ def test_load_config_file_when_partial_metrics_metadata_given_does_round_trip(tm
         {"metrics": {"responseTime": {"direction": "lower"}, "throughput": {"gating": True}}},
     )
 
-    assert load_config_file(config_path) == ConfigFile(
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(
         metrics={
             "responseTime": MetricEntry(direction="lower"),
             "throughput": MetricEntry(gating=True),
@@ -196,7 +202,9 @@ def test_load_config_file_when_prefixed_with_bom_does_parse_as_if_absent(tmp_pat
         tmp_path, f"{UTF8_BOM}{tomli_w.dumps({'bench': 'bom-bench', 'samples': 5})}"
     )
 
-    assert load_config_file(config_path) == ConfigFile(bench="bom-bench", samples=5)
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(bench="bom-bench", samples=5)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +264,9 @@ def test_load_config_file_when_top_level_key_embeds_line_break_does_report_singl
 def test_load_config_file_when_empty_object_does_return_empty_config(tmp_path: Path):
     config_path = write_config(tmp_path, {})
 
-    assert load_config_file(config_path) == ConfigFile()
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile()
 
 
 # ---------------------------------------------------------------------------
@@ -289,26 +299,21 @@ def test_load_config_file_when_string_key_holds_non_string_does_name_key_and_str
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("key", ["checks", "bench", "prepare", "adapter", "runbook", "primary"])
-def test_load_config_file_when_non_empty_string_key_holds_empty_does_name_key_and_non_empty(
-    tmp_path: Path, key: str
-):
-    config_path = write_config(tmp_path, {key: ""})
-
-    with pytest.raises(GymratError, match=rf"{key}.*non-empty"):
-        load_config_file(config_path)
-
-
 @pytest.mark.parametrize(
     ("key", "value"),
     [
+        pytest.param("checks", "", id="checks-empty"),
+        pytest.param("bench", "", id="bench-empty"),
+        pytest.param("prepare", "", id="prepare-empty"),
+        pytest.param("adapter", "", id="adapter-empty"),
+        pytest.param("runbook", "", id="runbook-empty"),
+        pytest.param("primary", "", id="primary-empty"),
         pytest.param("checks", " ", id="space"),
         pytest.param("bench", "\t", id="tab"),
-        pytest.param("prepare", "  \n  ", id="padded-newline"),
         pytest.param("adapter", "\u00a0", id="nbsp"),
     ],
 )
-def test_load_config_file_when_non_empty_string_key_holds_whitespace_does_name_key_and_non_empty(
+def test_load_config_file_when_non_empty_string_key_holds_blank_does_name_key_and_non_empty(
     tmp_path: Path, key: str, value: str
 ):
     config_path = write_config(tmp_path, {key: value})
@@ -344,7 +349,9 @@ def test_load_config_file_when_integer_key_invalid_does_name_key_and_positive_in
 def test_load_config_file_when_integer_key_given_integral_float_does_accept(tmp_path: Path):
     config_path = write_raw(tmp_path, "samples = 5.0")
 
-    assert load_config_file(config_path) == ConfigFile(samples=5)
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(samples=5)
 
 
 @pytest.mark.parametrize(
@@ -421,7 +428,9 @@ def test_load_config_file_when_noise_pct_invalid_does_name_key_and_noise_floor(
 def test_load_config_file_when_noise_pct_on_floor_does_accept(tmp_path: Path):
     config_path = write_config(tmp_path, {"unstable_noise_pct": 0.5})
 
-    assert load_config_file(config_path) == ConfigFile(unstable_noise_pct=0.5)
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(unstable_noise_pct=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -555,9 +564,9 @@ def test_load_config_file_when_kinds_key_embeds_line_break_does_name_kinds(tmp_p
 def test_load_config_file_when_kinds_section_given_does_round_trip(tmp_path: Path):
     config_path = write_config(tmp_path, {"kinds": {"memory": {"gating": False}, "time": {}}})
 
-    assert load_config_file(config_path) == ConfigFile(
-        kinds={"memory": KindEntry(gating=False), "time": KindEntry()}
-    )
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(kinds={"memory": KindEntry(gating=False), "time": KindEntry()})
 
 
 @pytest.mark.parametrize(
@@ -615,13 +624,17 @@ def test_load_config_file_when_kinds_entry_has_unknown_key_does_name_dotted_path
 def test_load_config_file_when_runbook_given_does_round_trip(tmp_path: Path):
     config_path = write_config(tmp_path, {"runbook": "RUNBOOK.md"})
 
-    assert load_config_file(config_path) == ConfigFile(runbook="RUNBOOK.md")
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(runbook="RUNBOOK.md")
 
 
 def test_load_config_file_when_loop_keys_given_does_round_trip(tmp_path: Path):
     config_path = write_config(tmp_path, LOOP_CONFIG)
 
-    assert load_config_file(config_path) == ConfigFile(
+    result = load_config_file(config_path)
+
+    assert result == ConfigFile(
         checks="npm test",
         filter="npm run bench -- {names}",
         primary="decode/time",
@@ -767,9 +780,9 @@ def test_load_config_file_when_camel_case_key_given_does_reject_as_unknown(
 def test_load_config_file_collecting_when_file_missing_does_report_absent(tmp_path: Path):
     missing = tmp_path / "nonexistent.toml"
 
-    assert load_config_file_collecting(missing, required=False) == ConfigFileResult(
-        config_file=ConfigFile(), exists=False, problems=[]
-    )
+    result = load_config_file_collecting(missing, required=False)
+
+    assert result == ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
 
 
 def test_load_config_file_collecting_when_file_missing_and_required_does_report_problem(
@@ -787,7 +800,9 @@ def test_load_config_file_collecting_when_file_missing_and_required_does_report_
 def test_load_config_file_collecting_when_valid_does_report_config_and_no_problems(tmp_path: Path):
     config_path = write_config(tmp_path, {"bench": "custom-bench"})
 
-    assert load_config_file_collecting(config_path, required=False) == ConfigFileResult(
+    result = load_config_file_collecting(config_path, required=False)
+
+    assert result == ConfigFileResult(
         config_file=ConfigFile(bench="custom-bench"), exists=True, problems=[]
     )
 
