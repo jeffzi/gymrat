@@ -1,10 +1,15 @@
 """Single-flight repository lock via OS advisory locks (``filelock.FileLock``).
 
-A run takes the lock by acquiring a non-blocking ``flock``/``LockFileEx`` on the
-lock path. Contention is instant: the loser reads the winner's holder record for
-diagnostics without needing liveness probes. Crash recovery is automatic — the
-kernel releases the advisory lock when the holder exits — so a stale lockfile
-never needs manual cleanup.
+A run takes the lock by acquiring a non-blocking ``flock``/``LockFileEx`` on a
+dedicated ``.lock`` file next to the holder metadata path.  The holder record is
+written to the original path as plain JSON, readable on every platform — including
+Windows, where ``LockFileEx`` creates a mandatory byte-range lock that blocks
+reads through a separate handle.
+
+Contention is instant: the loser reads the winner's holder record for diagnostics
+without needing liveness probes.  Crash recovery is automatic — the kernel
+releases the advisory lock when the holder exits — so a stale lockfile never
+needs manual cleanup.
 """
 
 import contextlib
@@ -28,6 +33,11 @@ type ReleaseLock = Callable[[], None]
 _LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish."
 
 
+def _os_lock_file(lock_path: str) -> str:
+    """Derive the OS lock file path from the caller-visible metadata path."""
+    return lock_path + ".lock"
+
+
 def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
     """Take the single-flight lock at ``lock_path`` on behalf of ``command``.
 
@@ -43,21 +53,20 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
     pid = os.getpid()
     record = json.dumps({"pid": pid, "command": command, "at": now_iso()})
 
-    def stamp_holder(fd: int) -> None:
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, record.encode("utf-8"))
-        with contextlib.suppress(OSError, AttributeError):
-            os.fchmod(fd, 0o666)
-
-    lock = FileLock(lock_path, timeout=0, preserve_lock_file=True, on_acquired=stamp_holder)
+    os_lock = _os_lock_file(lock_path)
+    lock = FileLock(os_lock, timeout=0, preserve_lock_file=True)
 
     try:
         lock.acquire()
     except Timeout:
         _raise_contention_error(lock_path)
     except PermissionError as error:
-        _raise_permission_error(lock_path, error)
+        _raise_permission_error(os_lock, error)
+
+    holder = Path(lock_path)
+    holder.write_text(record, encoding="utf-8")
+    with contextlib.suppress(OSError):
+        holder.chmod(0o666)
 
     def release() -> None:
         try:
@@ -91,15 +100,15 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
     raise GymratError(message, hint=_LIVE_HOLDER_HINT)
 
 
-def _raise_permission_error(lock_path: str, error: OSError) -> NoReturn:
+def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:
     """Reframe a permission failure into a ``GymratError`` with platform-gated hints."""
     if sys.platform == "win32":
         hint = (
             f"The file may be locked by another process. "
-            f"Close any program using {lock_path}, then rerun."
+            f"Close any program using {os_lock_path}, then rerun."
         )
     else:
-        hint = f"It belongs to another user. Remove {lock_path} yourself, then rerun."
+        hint = f"It belongs to another user. Remove {os_lock_path} yourself, then rerun."
 
-    message = f"Lock file {lock_path} could not be opened: {error!s}"
+    message = f"Lock file {os_lock_path} could not be opened: {error!s}"
     raise GymratError(message, hint=hint) from error

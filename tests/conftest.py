@@ -47,13 +47,17 @@ def hold_lock(
     """Acquire a real OS lock on ``lock_path`` and stamp it with holder JSON.
 
     Simulates another live process holding the repository lock, so a rival
-    ``acquire_lock`` call sees contention. Returns the acquired ``FileLock`` so
-    the caller can release it during teardown. Pass ``holder`` to stamp an
-    exact record; otherwise one is built from ``command`` and the current
-    process.
+    ``acquire_lock`` call sees contention.  The OS lock lives on
+    ``lock_path + ".lock"`` — the same layout ``acquire_lock`` uses — so the
+    holder JSON at ``lock_path`` stays readable on Windows where ``LockFileEx``
+    blocks reads through a separate handle.
+
+    Returns the acquired ``FileLock`` so the caller can release it during
+    teardown.  Pass ``holder`` to stamp an exact record; otherwise one is
+    built from ``command`` and the current process.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(lock_path, timeout=0)
+    lock = FileLock(lock_path + ".lock", timeout=0)
     lock.acquire()
     if holder is None:
         holder = {"pid": os.getpid(), "command": command, "at": now_iso()}
