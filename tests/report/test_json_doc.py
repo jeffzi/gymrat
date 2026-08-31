@@ -632,12 +632,12 @@ def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
 
 
 def test_render_measure_json_when_grouped_metric_does_carry_contract_derived_group():
-    """The group field derives from the metric name (the dict key), not short_name.
+    """``infer_group`` must derive the group from the metric name key, not ``short_name``.
 
     Metric name ``entity/alive_check#time`` has path ``("entity", "alive_check")``,
     so its contract group is ``"entity"``.  The short_name ``alive_check`` has no
-    dot, so the old dot-based ``infer_group`` would return ``None`` — ensuring this
-    test can only pass when ``infer_group`` operates on the metric name key.
+    dot and would yield ``None`` — so this test can only pass when ``infer_group``
+    operates on the metric name key.
     """
     result = create_measurement_result(
         metrics={

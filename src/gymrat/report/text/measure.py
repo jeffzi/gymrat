@@ -15,9 +15,8 @@ from rich.markup import escape
 
 from gymrat.report.format import format_metric_cell_parts
 from gymrat.report.sections import plan_sections
-from gymrat.report.style import GROUP_LABEL_STYLE, VARIANT_NAME_STYLE
+from gymrat.report.style import VARIANT_NAME_STYLE, markup
 from gymrat.report.table import (
-    METRIC_COLUMN_HEADER,
     METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
     GroupLine,
@@ -25,9 +24,10 @@ from gymrat.report.table import (
     MetricLine,
     aggregate_label_lengths,
     compute_column_width,
+    group_metric_cell,
+    header_metric_cell,
     indented_section_label,
     join_value_cell,
-    markup,
     plan_body,
     render_body,
     section_annotation,
@@ -105,16 +105,11 @@ def render_measure_table(
 
     def to_cells(line: BodyLine[_MeasureRow, object]) -> tuple[str, ...]:
         if isinstance(line, HeaderLine):
-            title = line.title
-            metric_cell = (
-                markup(title, "bold") if title is not None else escape(METRIC_COLUMN_HEADER)
-            )
-            return (metric_cell, markup(label, VARIANT_NAME_STYLE))
+            return (header_metric_cell(line.title), markup(label, VARIANT_NAME_STYLE))
         if isinstance(line, GroupLine):
-            return (markup(line.label, GROUP_LABEL_STYLE), "")
+            return (group_metric_cell(line.label), "")
         if isinstance(line, MetricLine):
             return (escape(name_cell(line.row)), escape(value_cell(line.row)))
-        # A measurement plans no aggregate rows, so no other content line reaches here.
         msg = f"unexpected body line {line!r}"
         raise AssertionError(msg)
 

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from rich.cells import cell_len
 from rich.markup import escape
 
-from gymrat.report.display import shown_class
+from gymrat.report.display import display_class
 from gymrat.report.format import baseline_cell_parts, candidate_cell_parts
 from gymrat.report.geomean_label import GEOMEAN_LABEL, geomean_scope_label
 from gymrat.report.sections import (
@@ -29,13 +29,12 @@ from gymrat.report.sections import (
 )
 from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
-    GROUP_LABEL_STYLE,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
+    markup,
 )
 from gymrat.report.table import (
     CELL_GUTTER,
-    METRIC_COLUMN_HEADER,
     METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
     AggregateColumnCell,
@@ -48,10 +47,11 @@ from gymrat.report.table import (
     aggregate_label_lengths,
     compute_column_width,
     geomean_column_cell,
+    group_metric_cell,
+    header_metric_cell,
     indented_section_label,
     join_value_cell,
     join_verdict_cell,
-    markup,
     plan_body,
     render_body,
     section_annotation,
@@ -61,6 +61,7 @@ from gymrat.report.table import (
     verdict_widths,
     widest_header_label,
 )
+from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -79,12 +80,22 @@ type _AggregateCells = tuple[AggregateColumnCell, ...]
 
 
 @dataclass(frozen=True, slots=True)
+class _CandidateVerdict:
+    """A candidate's verdict parts and display outcome, always present together.
+
+    Bundled so ``_CandidateCell.verdict`` being None means both are absent.
+    """
+
+    parts: VerdictParts
+    outcome: DisplayClass
+
+
+@dataclass(frozen=True, slots=True)
 class _CandidateCell:
-    """One candidate's side of a metric row: its figure, verdict, and outcome."""
+    """One candidate's side of a metric row: its figure and optional verdict."""
 
     value: MetricCellParts
-    verdict: VerdictParts | None
-    outcome: DisplayClass | None
+    verdict: _CandidateVerdict | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +139,7 @@ def _measure_columns(
     ]
     col_verdicts = [
         verdict_widths(
-            [parts for row in ordered if (parts := row.candidates[index].verdict) is not None]
+            [v.parts for row in ordered if (v := row.candidates[index].verdict) is not None]
         )
         for index in range(candidate_count)
     ]
@@ -149,7 +160,7 @@ def _column_widths(
         value = join_value_cell(cell.value, table.fields.values[index])
         if cell.verdict is None:
             return value
-        verdict = join_verdict_cell(cell.verdict, table.fields.verdicts[index])
+        verdict = join_verdict_cell(cell.verdict.parts, table.fields.verdicts[index])
         return f"{value}{CELL_GUTTER}{verdict}"
 
     metric_width = compute_column_width(
@@ -181,15 +192,13 @@ def _to_cells(
 ) -> tuple[str, ...]:
     """The markup cells one content row renders to."""
     if isinstance(line, HeaderLine):
-        title = line.title
-        metric_cell = markup(title, "bold") if title is not None else escape(METRIC_COLUMN_HEADER)
         return (
-            metric_cell,
+            header_metric_cell(line.title),
             markup(table.baseline_header, VARIANT_NAME_STYLE),
             *(markup(candidate.label, VARIANT_NAME_STYLE) for candidate in table.candidates),
         )
     if isinstance(line, GroupLine):
-        return (markup(line.label, GROUP_LABEL_STYLE), "", *("" for _ in table.candidates))
+        return (group_metric_cell(line.label), "", *("" for _ in table.candidates))
     if isinstance(line, MetricLine):
         row = line.row
         return (
@@ -225,7 +234,9 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
 
     layout = plan_sections(
         result.metrics,
-        lambda name, group, metric: _build_row(metric, name, group, candidates, result.samples),
+        lambda name, group, metric: _build_row(
+            metric, name, group, len(candidates), result.samples
+        ),
     )
     fields = _measure_columns(layout.ordered, len(candidates))
 
@@ -256,20 +267,24 @@ def _build_row(
     metric: MetricComparison,
     name: str,
     group: str | None,
-    candidates: Sequence[CandidateComparison],
+    candidate_count: int,
     samples: int,
 ) -> _ComparisonRow:
     """Split one metric into the baseline figure and one cell per candidate column."""
     cells: list[_CandidateCell] = []
-    for index in range(len(candidates)):
-        side = metric.candidates[index] if index < len(metric.candidates) else None
-        verdict = side.verdict if side is not None else None
-        parts = None if verdict is None else verdict_parts(verdict, samples, with_band=False)
+    for index in range(candidate_count):
+        side = candidate_at(metric, index)
+        metric_verdict = side.verdict if side is not None else None
+        cell_verdict: _CandidateVerdict | None = None
+        if metric_verdict is not None:
+            cell_verdict = _CandidateVerdict(
+                parts=verdict_parts(metric_verdict, samples, with_band=False),
+                outcome=display_class(metric_verdict),
+            )
         cells.append(
             _CandidateCell(
                 value=candidate_cell_parts(side, metric.meta.unit),
-                verdict=parts,
-                outcome=shown_class(verdict),
+                verdict=cell_verdict,
             )
         )
     return _ComparisonRow(
@@ -293,7 +308,10 @@ def _aggregate_rows(
         return tuple(
             geomean_column_cell(
                 geomean_of(candidate),
-                [row.candidates[index].outcome for row in rows],
+                [
+                    v.outcome if (v := row.candidates[index].verdict) is not None else None
+                    for row in rows
+                ],
             )
             for index, candidate in enumerate(candidates)
         )
@@ -327,11 +345,11 @@ def _candidate_markup(
     figure itself stays plain whatever the verdict.
     """
     value = join_value_cell(cell.value, values)
-    if cell.verdict is None or cell.outcome is None:
+    if cell.verdict is None:
         return escape(value)
-    style = VERDICT_STYLES[cell.outcome]
+    style = VERDICT_STYLES[cell.verdict.outcome]
     verdict_cell = style_verdict_cell(
-        cell.verdict,
+        cell.verdict.parts,
         verdicts,
         glyph_style=style,
         delta_style=style,

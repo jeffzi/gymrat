@@ -17,7 +17,7 @@ the tests pin; only the grid around the cells is rich's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from rich import box
 from rich.cells import cell_len
@@ -40,6 +40,8 @@ from gymrat.report.table.markup import (
     VerdictWidths,
     band_field,
     geomean_column_cell,
+    group_metric_cell,
+    header_metric_cell,
     indented_section_label,
     join_value_cell,
     join_verdict_cell,
@@ -235,10 +237,10 @@ def _plan_flat_body[Metric, Cell](
             body.append(TitleLine(text=tag))
     body.append(HeaderLine())
     body.append(RuleLine())
-    has_groups = section is not None and any(
+    if section is not None and any(
         isinstance(block, GroupBlock) and len(block.metrics) > 1 for block in section.blocks
-    )
-    if has_groups:
+    ):
+        # Flat layout shows one closing aggregate; suppress per-group aggregates.
         block_lines = _plan_blocks(section, None)
         kind = section.kind
         for i, line in enumerate(block_lines):
@@ -373,6 +375,8 @@ def render_body[Metric, Cell](
                     "\n"
                 )
             )
+        else:
+            assert_never(line)
 
     flush()
     return out
@@ -405,10 +409,11 @@ __all__ = [
     "band_field",
     "compute_column_width",
     "geomean_column_cell",
+    "group_metric_cell",
+    "header_metric_cell",
     "indented_section_label",
     "join_value_cell",
     "join_verdict_cell",
-    "markup",
     "plan_body",
     "render_body",
     "section_annotation",

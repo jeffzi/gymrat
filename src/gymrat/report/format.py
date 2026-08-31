@@ -37,6 +37,8 @@ _BYTE_TIERS: tuple[_Tier, ...] = (
 
 _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYTE_TIERS}
 
+_RELATIVE_SPREAD_CAP_PCT = 100
+
 
 def _non_finite_token(value: float) -> str:
     """The token a non-finite reading prints, matching the differ/JSON contract."""
@@ -83,7 +85,7 @@ def format_value(value: float, unit: MetricUnit | None = None) -> str:
 
 
 def format_delta(effect: Effect) -> str:
-    """A signed percentage, or nothing when the effect is not a number.
+    """A signed percentage, or nothing when the effect is not a finite number.
 
     A delta that rounds to zero prints as an unsigned ``0.0%``: at display
     precision there is no direction to report, so ``-0.0%`` would claim one.
@@ -94,10 +96,11 @@ def format_delta(effect: Effect) -> str:
 
     Returns:
         A signed percentage such as ``"+2.2%"``, an unsigned ``"0.0%"`` for a
-        value that rounds to zero, or ``""`` when the value is ``NaN``.
+        value that rounds to zero, or ``""`` when the value is not finite
+        (``NaN`` or either infinity).
     """
     value = effect.value
-    if math.isnan(value):
+    if not math.isfinite(value):
         return ""
     magnitude = f"{abs(value):.1f}"
     if magnitude == "0.0":
@@ -205,8 +208,6 @@ def format_verdict_delta(verdict: MetricVerdict) -> str:
 # ---------------------------------------------------------------------------
 # Verdict evidence
 # ---------------------------------------------------------------------------
-
-_RELATIVE_SPREAD_CAP_PCT = 100
 
 
 def format_noise_band_value(noise_pct: float) -> str:
