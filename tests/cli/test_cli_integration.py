@@ -6,7 +6,6 @@ signal-driven cleanup all run. ``python -m gymrat.cli.app`` stands in for the
 ``gymrat`` console script.
 """
 
-import json
 import os
 import signal
 import subprocess
@@ -21,21 +20,12 @@ from gymrat.session.paths import lockfile_path, repo_root
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
 from tests._git import git as _git
+from tests.conftest import hold_lock
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
 _EMIT_ONE = "#!/bin/sh\necho 'METRIC x=1'\n"
 _SLOW_BENCH = "#!/bin/sh\nsleep 5\necho 'METRIC x=1'\n"
-
-
-def _write_lockfile(repo: str, pid: int) -> None:
-    """Publish a live-holder lock record for ``pid`` in ``repo``'s lock slot."""
-    path = Path(lockfile_path(repo_root(repo)))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"pid": pid, "command": "measure", "at": "2026-01-01T00:00:00.000Z"}),
-        encoding="utf-8",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -73,21 +63,28 @@ def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
     (Path(repo) / "bench.sh").write_text(_EMIT_ONE, encoding="utf-8")
     _git(repo, "add", "bench.sh")
     _git(repo, "commit", "-m", "add bench")
-    _write_lockfile(repo, os.getpid())
-
-    result = subprocess.run(  # noqa: S603
-        [*_ENTRY, "compare", "main", "main", "--bench", "sh bench.sh", "--samples", "1"],
-        cwd=repo,
-        env=_env(),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+    lock_path = str(lockfile_path(repo_root(repo)))
+    blocker = hold_lock(
+        lock_path,
+        holder={"pid": os.getpid(), "command": "measure", "at": "2026-01-01T00:00:00.000Z"},
     )
 
-    assert result.returncode == 2
-    assert f"PID {os.getpid()}" in result.stderr
-    assert list_worktree_dirs(repo, include_main=False) == []
+    try:
+        result = subprocess.run(  # noqa: S603
+            [*_ENTRY, "compare", "main", "main", "--bench", "sh bench.sh", "--samples", "1"],
+            cwd=repo,
+            env=_env(),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert f"PID {os.getpid()}" in result.stderr
+        assert list_worktree_dirs(repo, include_main=False) == []
+    finally:
+        blocker.release()
 
 
 # ---------------------------------------------------------------------------

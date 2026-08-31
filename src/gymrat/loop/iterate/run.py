@@ -37,8 +37,8 @@ from gymrat.errors import GymratError
 from gymrat.loop.hooks import HookInvocation, run_hook_stage
 from gymrat.loop.iterate.bench import (
     BenchRunOutputs,
-    _IterationContext,
-    _Judged,
+    IterationContext,
+    Judged,
     bench_and_judge,
     build_iteration_comparison,
     resolve_primary,
@@ -76,7 +76,6 @@ if TYPE_CHECKING:
     from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
 
-# Re-export for external importers
 __all__ = [
     "BenchRunOutputs",
     "IterateOptions",
@@ -117,7 +116,7 @@ class IterateResult:
     report: str
 
 
-def _judge(config: ResolvedConfig, judged: _Judged) -> IterationJudgment:
+def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
     """Resolve the primary, derive the outcome, and bundle the judgment."""
     primary = resolve_primary(config.primary, judged.run.verdicts, judged.run.metric_meta)
     return IterationJudgment(
@@ -131,11 +130,10 @@ def _judge(config: ResolvedConfig, judged: _Judged) -> IterationJudgment:
 def _record_iteration(
     jsonl_path: str,
     opts: IterateOptions,
-    judged: _Judged,
+    judged: Judged,
     seq: int,
     judgment: IterationJudgment,
 ) -> IterationRecord:
-    """Build the record, append it to the log, and emit the progress event."""
     record = build_iteration_record(judged, seq, judgment)
     append_record(jsonl_path, record)
     emit_progress(
@@ -190,7 +188,7 @@ async def iterate_session(
     _guard_ready(config, state)
 
     seq = state.last_seq + 1
-    ctx = _IterationContext(session=session, config=config, options=opts, jsonl_path=jsonl_path)
+    ctx = IterationContext(session=session, config=config, options=opts, jsonl_path=jsonl_path)
     before_report = await _hook_stage(
         ctx,
         seq,
@@ -219,16 +217,19 @@ async def iterate_session(
 
 
 async def _hook_stage(
-    ctx: _IterationContext,
+    ctx: IterationContext,
     seq: int,
     *,
     stage: Literal["before", "after"],
     last_iteration: IterationRecord | None,
     iteration_count: int,
 ) -> str:
-    """Build the hook invocation for ``stage`` and run it, returning its report."""
     config, opts = ctx.config, ctx.options
-    command = getattr(config.hooks, stage, None) if config.hooks is not None else None
+    command = (
+        (config.hooks.before if stage == "before" else config.hooks.after)
+        if config.hooks is not None
+        else None
+    )
     invocation = (
         HookInvocation(
             command=command,
@@ -245,12 +246,11 @@ async def _hook_stage(
     return await run_hook_stage(
         ctx.jsonl_path,
         opts.on_progress,
-        stage=stage,
         invocation=invocation,
     )
 
 
-async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
+async def _measure_and_judge(ctx: IterationContext) -> Judged:
     """Bench the pair, confirm any gating regression, and assemble the comparison."""
     first = await bench_and_judge(ctx, ctx.config.bench, announce_judging=True)
 
@@ -278,7 +278,7 @@ async def _measure_and_judge(ctx: _IterationContext) -> _Judged:
         verdicts=verdicts,
         metric_meta=first.metric_meta,
     )
-    return _Judged(
+    return Judged(
         run=run,
         result=build_iteration_comparison(run, ctx.config.adapter, ctx.config.kinds),
         confirmation=confirmation,

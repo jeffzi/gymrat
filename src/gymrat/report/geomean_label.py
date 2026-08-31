@@ -9,6 +9,7 @@ from gymrat.model import Effect
 from gymrat.plural import pluralize
 from gymrat.report.display import QUIET_VERDICTS, DisplayClass
 from gymrat.report.format import format_delta, format_noise_band_value
+from gymrat.report.style import SCOPE_SEPARATOR
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -45,12 +46,9 @@ def geomean_label(n: int) -> str:
     return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({pluralize(n, 'stable metric')})"
 
 
-_SCOPE_SEPARATOR = "·"
-
-
 def geomean_scope_label(scope: str) -> str:
     """The label of an aggregate row covering one scope — a group or a kind."""
-    return f"{GEOMEAN_LABEL} {_SCOPE_SEPARATOR} {scope}"
+    return f"{GEOMEAN_LABEL} {SCOPE_SEPARATOR} {scope}"
 
 
 def _geomean_provenance(geomean: GeomeanResult) -> str:

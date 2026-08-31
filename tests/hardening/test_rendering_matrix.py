@@ -44,7 +44,6 @@ from gymrat.cli.shared import (
 )
 from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat.doctor.render import render_doctor_report
-from gymrat.report.style import shorten_label
 from tests._git import git as _git
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
@@ -289,7 +288,7 @@ def _apply_color_env(
         pytest.param(None, "1", False, id="no-color-suppresses"),
     ],
 )
-def test_color_precedence_is_consistent_across_report_progress_and_error_surfaces(
+def test_color_precedence_when_env_decides_does_agree_across_report_progress_and_error(
     monkeypatch: pytest.MonkeyPatch,
     force_color: str | None,
     no_color: str | None,
@@ -339,7 +338,7 @@ def test_progress_surface_when_force_color_is_truthy_off_a_tty_does_not_animate(
 
 
 # ---------------------------------------------------------------------------
-# a zero-width terminal degrades gracefully
+# explicit color suppression
 # ---------------------------------------------------------------------------
 
 
@@ -351,10 +350,11 @@ def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
     _apply_color_env(monkeypatch, None, None)
 
     set_stderr_color_override(False)
+
     result = format_cli_error(ValueError("boom"))
-    set_stderr_color_override(None)
 
     assert "\x1b[" not in result
+    set_stderr_color_override(None)
 
 
 def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
@@ -369,12 +369,3 @@ def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(
         console.print("probe", style="bold", end="")
 
     assert "\x1b[" not in capture.get()
-
-
-# ---------------------------------------------------------------------------
-# a zero-width terminal degrades gracefully
-# ---------------------------------------------------------------------------
-
-
-def test_shorten_label_when_width_is_zero_does_return_empty_without_garbage():
-    assert shorten_label("abcdefghijklmnop", 0) == ""

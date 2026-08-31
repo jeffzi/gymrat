@@ -24,6 +24,7 @@ from rich.progress import (
     Progress,
     ProgressColumn,
     SpinnerColumn,
+    Task,
     TaskID,
     TaskProgressColumn,
     TextColumn,
@@ -70,8 +71,8 @@ class _ClockColumn(ProgressColumn):
         self._remaining_ms = ms
 
     @override
-    def render(self, task: object) -> Text:
-        elapsed_ms = (getattr(task, "elapsed", None) or 0.0) * MS_PER_SECOND
+    def render(self, task: Task) -> Text:
+        elapsed_ms = (task.elapsed or 0.0) * MS_PER_SECOND
         total = (
             "--:--" if self._remaining_ms is None else format_clock(elapsed_ms + self._remaining_ms)
         )
@@ -85,8 +86,8 @@ class _TargetColumn(ProgressColumn):
     """Renders ``· <label> ·`` between the percentage and elapsed columns."""
 
     @override
-    def render(self, task: object) -> Text:
-        label = getattr(task, "fields", {}).get("target", "")
+    def render(self, task: Task) -> Text:
+        label = task.fields.get("target", "")
         if not label:
             return Text("")
         text = Text()
@@ -111,10 +112,10 @@ class _PhaseColumn(ProgressColumn):
         super().__init__(table_column=Column(no_wrap=True))
 
     @override
-    def render(self, task: object) -> Text:
-        fields = getattr(task, "fields", {})
+    def render(self, task: Task) -> Text:
+        fields = task.fields
         text = Text()
-        text.append(str(getattr(task, "description", "")), style=STYLE_VERB)
+        text.append(task.description, style=STYLE_VERB)
         note = fields.get("note", "")
         if note:
             text.append(f" {note}", style=STYLE_META)

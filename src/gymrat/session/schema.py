@@ -6,9 +6,9 @@ imports these so that bumping the version or widening an enum touches one file.
 
 The values mirror the wire form exactly -- ``"no-signal"``, ``"permutation"``,
 ``"nothing-to-commit"`` -- because they are what the JSONL log carries and what
-a reader validates against. The retired ``"signed-rank"`` method has no arm here:
-no released log ever carried it, so a reader never has to accept it and the
-vocabulary stays free of dead values.
+a reader validates against. Do not add ``"signed-rank"`` to :data:`Method`: no
+released log ever carried it, so no reader needs to accept it — keeping it out
+preserves a vocabulary free of dead values.
 """
 
 from typing import Literal

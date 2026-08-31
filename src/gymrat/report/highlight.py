@@ -10,6 +10,8 @@ from rich.markup import escape
 
 from gymrat.metric_name import format_inline, parse
 from gymrat.report.display import DisplayClass, display_class, shown_class
+from gymrat.report.style import SCOPE_SEPARATOR
+from gymrat.report.types import candidate_at as _candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -49,13 +51,6 @@ def _highlight_weight(verdict: MetricVerdict) -> float:
         return verdict.noise_pct
     magnitude = abs(verdict.delta.value)
     return 0.0 if math.isnan(magnitude) else magnitude
-
-
-def _candidate_at(metric: MetricComparison, index: int) -> CandidateMetric | None:
-    """The candidate slice at ``index``, or ``None`` when the metric has no such entry."""
-    if 0 <= index < len(metric.candidates):
-        return metric.candidates[index]
-    return None
 
 
 def select_highlights(
@@ -116,8 +111,6 @@ def _rank_key(entry: _RankedHighlight) -> tuple[int, float, int]:
 
 UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"
 
-_SCOPE_SEPARATOR = "·"
-
 
 def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     """The name a highlight is reported under, its kind named ahead of it when qualified.
@@ -138,7 +131,7 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     """
     if qualify:
         meta = highlight.metric.meta
-        return f"{escape(meta.kind)} {_SCOPE_SEPARATOR} {escape(meta.short_name)}"
+        return f"{escape(meta.kind)} {SCOPE_SEPARATOR} {escape(meta.short_name)}"
     return format_inline(parse(highlight.name), color=True)
 
 

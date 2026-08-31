@@ -4,7 +4,7 @@ from __future__ import annotations
 
 _SIBILANT_ENDINGS = ("s", "x", "z", "ch", "sh")
 
-_VOWELS = "aeiou"  # cspell:disable-line -- the vowel set, not a word
+_VOWELS = "aeiou"  # cspell:ignore aeiou
 
 
 def _regular_plural(noun: str) -> str:

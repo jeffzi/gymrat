@@ -218,6 +218,8 @@ def test_parse_when_value_empty_does_exclude_sample_rather_than_read_zero(stdout
     result = metric_lines_adapter.parse(stdout, warnings.append)
 
     assert result == {"x": 2.0}
+    assert len(warnings) == 1
+    assert "Failed to parse METRIC line" in warnings[0]
 
 
 def test_parse_when_malformed_line_precedes_valid_does_continue_parsing():

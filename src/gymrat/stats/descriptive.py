@@ -1,10 +1,14 @@
 """Pure descriptive-statistics helpers.
 
 Every helper here is a total function over its inputs: it performs no I/O, no
-formatting, reads no configuration, and imports only the standard library
-(``math`` and ``statistics``). Empty input to a reduction is a programming error
-— callers are expected to have samples — so it raises a plain :class:`ValueError`
-rather than a domain error.
+formatting, and reads no configuration.  Beyond the standard library (``math``
+and ``statistics``), only :data:`~gymrat.model.metrics.Direction` is imported as a
+lightweight type alias.
+
+``compute_median`` and ``compute_half_range`` treat empty input as a programming
+error — callers are expected to have samples — and raise a plain
+:class:`ValueError` rather than a domain error.  ``combine_geomean`` accepts
+empty input and returns all-zero fields.
 """
 
 import math

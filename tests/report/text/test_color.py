@@ -10,7 +10,6 @@ alignment; content is pinned by parsed cell.
 
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -20,6 +19,7 @@ from gymrat.model import Exclusion
 from gymrat.report.text import render_measure_report, render_report
 from gymrat.report.types import MeasurementResult, ReportOptions
 from gymrat.targets import WorktreeRemovalFailure
+from tests._ansi import SGR_RE
 from tests.report._inputs import (
     DIMMED_LINE,
     band_metric,
@@ -49,6 +49,14 @@ if TYPE_CHECKING:
 
     from gymrat.model import ApproximateVerdict
     from gymrat.report.types import ComparisonResult
+
+
+def _sgr_codes(text: str) -> set[str]:
+    """All SGR parameter codes present in ``text``, ignoring resets."""
+    codes: set[str] = set()
+    for m in SGR_RE.finditer(text):
+        codes.update(p for p in m.group(1).split(";") if p not in {"", "0"})
+    return codes
 
 
 def _summary_segment(summary: str, label: str) -> str:
@@ -191,7 +199,8 @@ def test_render_measure_report_when_nothing_to_compare_does_carry_no_verdicts_or
     assert "geomean" not in output
     assert "highlights" not in output
     assert "vs " not in output
-    assert not any(glyph in output for glyph in "✓✗≈~?")
+    for glyph in "✓✗≈~?":
+        assert glyph not in output, f"verdict glyph {glyph!r} should not appear"
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +508,8 @@ def test_render_report_when_colored_does_embolden_the_baseline_after_the_vs_pref
 
     cell = delta_cell(line_containing(render_report(result), "metric  "))
 
-    assert f"vs \x1b[1;4m{baseline}\x1b[0m" in cell
+    assert f"vs {baseline}" in strip_ansi(cell)
+    assert styles_at(cell, baseline, last=True) == ["1", "4"]
 
 
 def test_render_report_when_colored_does_leave_the_rest_of_the_column_header_unstyled(
@@ -509,7 +519,6 @@ def test_render_report_when_colored_does_leave_the_rest_of_the_column_header_uns
 
     header = line_containing(render_report(_colorful_result()), "metric  ")
 
-    assert not re.match(r"^\x1b\[1m", header)
     assert styles_at(header, "metric") == []
 
 
@@ -544,8 +553,8 @@ def test_render_report_when_colored_does_leave_a_dotted_variant_name_out_of_dimm
 
     header = line_containing(render_report(result), "gymrat compare")
 
-    assert "\x1b[1;4mmain·1\x1b[0m" in header  # cspell:disable-line
-    assert "\x1b[1;4mperf·2\x1b[0m" in header  # cspell:disable-line
+    assert styles_at(header, "main·1") == ["1", "4"]  # cspell:disable-line
+    assert styles_at(header, "perf·2") == ["1", "4"]  # cspell:disable-line
 
 
 def test_render_report_when_colored_does_leave_a_dotted_adapter_name_out_of_dimming(
@@ -579,7 +588,7 @@ def test_render_report_when_colored_does_style_the_non_zero_tally_in_the_summary
 
     summary = line_containing(render_report(_colorful_result()), "improved")
 
-    assert f"\x1b[{code}m" in _summary_segment(summary, label)
+    assert code in _sgr_codes(_summary_segment(summary, label))
 
 
 @pytest.mark.parametrize(
@@ -606,7 +615,7 @@ def test_render_report_when_colored_does_paint_the_non_zero_identical_tally_cyan
     )
     summary = line_containing(render_report(result), "identical")
 
-    assert "\x1b[36m" in _summary_segment(summary, "identical")
+    assert "36" in _sgr_codes(_summary_segment(summary, "identical"))
 
 
 def test_render_report_when_colored_does_dim_the_within_noise_segment(
@@ -616,7 +625,7 @@ def test_render_report_when_colored_does_dim_the_within_noise_segment(
 
     summary = line_containing(render_report(_colorful_result()), "within noise")
 
-    assert "\x1b[2m" in _summary_segment(summary, "within noise")
+    assert "2" in _sgr_codes(_summary_segment(summary, "within noise"))
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +643,7 @@ def test_render_report_when_colored_does_embolden_the_highlights_heading(
         if strip_ansi(line) == "highlights"
     )
 
-    assert re.match(r"^\x1b\[1m", heading)
+    assert "1" in styles_at(heading, "highlights")
 
 
 # The glyph and SGR color each highlight verdict class carries in a colored entry.

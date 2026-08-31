@@ -1,4 +1,24 @@
 # serializer version: 1
+# name: test_cost_when_cap_set_and_usage_received_does_show_cost_against_cap
+  '''
+  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  │ time                                                                                 1s / 8h 00m │
+  │ cost $4.12 / $10.00                                                                              │
+  │ loop   no session yet                                                                            │
+  │ starting                                                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---
+# name: test_cost_when_no_cap_and_no_usage_does_show_placeholder
+  '''
+  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  │ time                                                                                 0s / 8h 00m │
+  │ cost $—                                                                                          │
+  │ loop   no session yet                                                                            │
+  │ starting                                                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---
 # name: test_dashboard_when_mid_session_does_render_full_layout
   '''
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
@@ -33,6 +53,17 @@
   │   00:00:03  Edit   src/b.ts  ✔ 1s                                                                │
   │   00:00:04  Bash   npm test  ✔ 2s                                                                │
   │   00:00:05  Read   src/c.ts  ✔ 3s                                                                │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+  '''
+# ---
+# name: test_loop_when_iterations_present_does_show_counts_and_last
+  '''
+  ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
+  │ time                                                                                 0s / 8h 00m │
+  │ cost $—                                                                                          │
+  │ loop   iter 3/20 · 2 kept · 1 discarded · last -3.2% improved                                    │
+  │ Bash 0s ago                                                                                      │
+  │   00:00:03  Bash   ...  ✔ 1s                                                                     │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   '''
 # ---

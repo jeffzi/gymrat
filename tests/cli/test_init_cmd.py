@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from tests._ansi import strip_ansi
+from tests.cli._help import help_output
 
 runner = CliRunner()
 
@@ -54,17 +55,11 @@ def existing_config_cwd(non_repo_cwd: Path) -> Path:
 
 
 def test_init_when_root_help_does_list_init():
-    result = runner.invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    assert "init" in result.stdout
+    assert "init" in help_output()
 
 
 def test_init_when_help_does_describe_scaffolding_a_toml_config():
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert "gymrat.toml" in result.stdout
+    assert "gymrat.toml" in help_output("init")
 
 
 @pytest.mark.parametrize(
@@ -78,18 +73,12 @@ def test_init_when_help_does_describe_scaffolding_a_toml_config():
     ],
 )
 def test_init_when_help_does_list_new_flags(flag: str):
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert flag in result.stdout
+    assert flag in help_output("init")
 
 
 @pytest.mark.parametrize("flag", OLD_WIZARD_FLAGS)
 def test_init_when_help_does_not_list_old_wizard_flags(flag: str):
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert flag not in result.stdout
+    assert flag not in help_output("init")
 
 
 @pytest.mark.parametrize(
@@ -97,10 +86,7 @@ def test_init_when_help_does_not_list_old_wizard_flags(flag: str):
 )
 def test_init_when_help_does_not_list_standalone_flag(flag: str):
     """``--no-<flag>`` is legitimate; a standalone ``--<flag>`` option is not."""
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert not re.search(rf"(?<!no-)--{flag}\b", result.stdout)
+    assert not re.search(rf"(?<!no-)--{flag}\b", help_output("init"))
 
 
 @pytest.mark.parametrize(
@@ -263,6 +249,23 @@ def test_init_when_no_color_flag_does_suppress_ansi_in_summary():
 
 
 # ---------------------------------------------------------------------------
+# broken pipe on stdout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_stdout_broken_pipe_does_exit_zero(monkeypatch: pytest.MonkeyPatch):
+    def broken_write(_stream: object, _data: str) -> None:
+        raise BrokenPipeError
+
+    monkeypatch.setattr("gymrat.cli.init_cmd.write_and_flush", broken_write)
+
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
 # init summary prints cwd-relative paths
 # ---------------------------------------------------------------------------
 
@@ -331,15 +334,3 @@ def test_init_when_run_outside_a_git_repo_does_scaffold_in_cwd(non_repo_cwd: Pat
 
     assert result.exit_code == 0
     assert (non_repo_cwd / "gymrat.toml").exists()
-
-
-# ---------------------------------------------------------------------------
-# shared.py — stop-target helpers are not exported
-# ---------------------------------------------------------------------------
-
-
-def test_shared_when_stop_target_removed_does_not_export_helpers():
-    from gymrat.cli import shared
-
-    assert not hasattr(shared, "parse_stop_target_value")
-    assert not hasattr(shared, "_STOP_TARGET_RE")

@@ -1,8 +1,8 @@
-"""Seam 7: name-based metric defaults plus the fallback kind and gating default.
+"""Name-based metric defaults plus the fallback kind and gating default.
 
 Holds the suffix-to-metadata table and the fallback kind and gating default that
-v0.6 config resolution reads here instead of re-declaring, keeping the
-name-based metric defaults and the resolver's fallbacks from drifting apart.
+config resolution reads here instead of re-declaring, keeping the name-based
+metric defaults and the resolver's fallbacks from drifting apart.
 """
 
 from typing import Final
@@ -19,14 +19,14 @@ _METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
 DEFAULT_METRIC_KIND: Final[str] = "other"
 """The kind a metric falls under when its adapter reports none.
 
-Consumed by v0.6 config resolution as the fallback kind for a metric whose
+Consumed by config resolution as the fallback kind for a metric whose
 adapter defaults carry no kind.
 """
 
 DEFAULT_GATING: Final[bool] = True
 """Whether a metric gates when nothing names it.
 
-Consumed by v0.6 config resolution: the gating value applied when neither a
+Consumed by config resolution: the gating value applied when neither a
 ``metrics`` entry nor a ``kinds`` entry names the metric.
 """
 

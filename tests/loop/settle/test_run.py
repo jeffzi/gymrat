@@ -280,9 +280,8 @@ async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
     assert result.record.checks == failed_checks(CHECKS_STDOUT, CHECKS_STDERR)
 
 
-@pytest.mark.parametrize("prefix", ["out", "err"])
-async def test_keep_session_when_output_over_relay_budget_does_cut_to_last_whole_line(
-    repo: str, monkeypatch: pytest.MonkeyPatch, prefix: str
+async def test_keep_session_when_output_over_relay_budget_does_cut_report_but_record_true_counts(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (iteration(1),))
     edit_experiment(repo)
@@ -301,31 +300,10 @@ async def test_keep_session_when_output_over_relay_budget_does_cut_to_last_whole
 
     # 81 of the 100-byte lines fit the byte budget the hook relay uses, an 82nd
     # overruns it, so the cut lands between the two.
-    assert f"{prefix}-000" in result.report
-    assert f"{prefix}-080" in result.report
-    assert f"{prefix}-081" not in result.report
-
-
-async def test_keep_session_when_output_over_relay_budget_does_record_true_byte_counts(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (iteration(1),))
-    edit_experiment(repo)
-    install_exec(
-        monkeypatch,
-        ExecResult(
-            stdout=LONG_STDOUT,
-            stderr=LONG_STDERR,
-            exit_code=1,
-            stdout_bytes=len(LONG_STDOUT.encode()),
-            stderr_bytes=len(LONG_STDERR.encode()),
-        ),
-    )
-
-    result = await keep_session(repo, checks_config())
-
-    # The counts are what the command printed rather than what the report
-    # relayed, so a reader of the log can tell the relay was cut.
+    for prefix in ("out", "err"):
+        assert f"{prefix}-000" in result.report
+        assert f"{prefix}-080" in result.report
+        assert f"{prefix}-081" not in result.report
     assert result.record.checks == failed_checks(LONG_STDOUT, LONG_STDERR)
     assert last_record_of(repo) == result.record
 

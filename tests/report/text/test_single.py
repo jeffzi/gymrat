@@ -7,8 +7,13 @@ rows by the group indent, and uses case names rather than full metric names.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from gymrat.report.text import render_report
 from gymrat.verdict import GroupAggregate, KindAggregate
+
+if TYPE_CHECKING:
+    from gymrat.report.types import ComparisonResult
 from tests.report._inputs import (
     cells_of,
     create_candidate,
@@ -20,7 +25,7 @@ from tests.report._inputs import (
 )
 
 
-def _grouped_flat_result():
+def _grouped_flat_result() -> ComparisonResult:
     """Single ``time`` kind: ``entity`` group (2 members) + ungrouped ``warmup``."""
     geomean = geomean_of(-3.2, 3)
     return create_comparison_result(

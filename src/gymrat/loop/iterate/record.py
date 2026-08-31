@@ -5,11 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gymrat.loop.iterate.bench import _Judged, recorded_delta
+from gymrat.loop.iterate.bench import Judged, recorded_delta
 from gymrat.model import ExactVerdict, MetricVerdict, PermutationVerdict, ResolvedMetricMeta
-
-if TYPE_CHECKING:
-    from gymrat.loop.iterate.confirm import Confirmation
 from gymrat.report.loop import LoopOutcome, LoopPrimary, MetricPrimary
 from gymrat.session import (
     Confirm,
@@ -18,6 +15,9 @@ from gymrat.session import (
 )
 from gymrat.session import MetricVerdict as RecordMetricVerdict
 from gymrat.session.clock import now_iso
+
+if TYPE_CHECKING:
+    from gymrat.loop.iterate.confirm import Confirmation
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,18 +57,18 @@ def recorded_verdicts(
 
 
 def build_iteration_record(
-    judged: _Judged,
+    judged: Judged,
     seq: int,
     judgment: IterationJudgment,
 ) -> IterationRecord:
-    """Assemble the iteration record from the judged run."""
+    """An empty ``absent`` tuple collapses to ``None`` so the log never carries ``[]``."""
     confirmation = judgment.confirmation
     confirm: Confirm | None = None
     if confirmation is not None:
         absent = tuple(name for name in confirmation.filtered if name in confirmation.absent)
         confirm = Confirm(
             ran=True,
-            filtered=tuple(confirmation.filtered),
+            filtered=confirmation.filtered,
             samples=confirmation.samples,
             absent=absent or None,
         )

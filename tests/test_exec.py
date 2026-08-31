@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import dataclasses
 import errno
+import json
 import os
 import signal
 import subprocess
@@ -30,6 +31,7 @@ from gymrat.exec import (
     OutputBuffer,
 )
 from gymrat.exec import exec as run_exec
+from gymrat.signals import TERMINATION_SIGNALS
 from tests._process_helpers import capture_spawns, is_alive, wait_until_dead
 
 # exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
@@ -758,10 +760,6 @@ def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
 async def test_exec_when_spawned_does_unblock_termination_signals_in_child(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
-    # The child reports its own blocked-signal mask as a JSON list; none of the
-    # termination signals should appear (they must be unblocked after fork).
-    from gymrat.signals import TERMINATION_SIGNALS
-
     result = await run_exec(
         'python3 -c "import signal, json; '
         'print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"',
@@ -770,7 +768,7 @@ async def test_exec_when_spawned_does_unblock_termination_signals_in_child(
 
     assert isinstance(result, ExecResult)
     assert result.exit_code == 0
-    blocked: list[int] = __import__("json").loads(result.stdout.strip())
+    blocked: list[int] = json.loads(result.stdout.strip())
     for sig in TERMINATION_SIGNALS:
         assert sig not in blocked, f"signal {sig} should be unblocked in child"
 
@@ -804,7 +802,7 @@ async def test_exec_when_cancelled_does_kill_child_before_dropping_from_registry
 # ---------------------------------------------------------------------------
 
 
-def test_output_buffer_when_many_small_appends_does_use_list_join_internally() -> None:
+def test_output_buffer_when_many_small_appends_does_accumulate_all_chunks() -> None:
     buf = OutputBuffer()
 
     for i in range(1000):

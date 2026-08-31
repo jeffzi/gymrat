@@ -31,8 +31,8 @@ class PairResult:
             shared and is not counted.
     """
 
-    left: list[float]
-    right: list[float]
+    left: tuple[float, ...]
+    right: tuple[float, ...]
     dropped: int
 
 
@@ -40,7 +40,7 @@ class PairResult:
 class Observations:
     """A frozen wrapper over an ordered mapping from pairing-axis key to a tuple of repeats."""
 
-    by_key: Mapping[PairingKey, tuple[Repeat, ...]]
+    by_key: dict[PairingKey, tuple[Repeat, ...]]
 
     @classmethod
     def from_rounds(cls, samples: Sequence[Repeat]) -> Self:
@@ -100,4 +100,4 @@ def pair_metric(
             right_values.append(right_repeat[metric])
         elif in_left != in_right:
             dropped += 1
-    return PairResult(left=left_values, right=right_values, dropped=dropped)
+    return PairResult(left=tuple(left_values), right=tuple(right_values), dropped=dropped)

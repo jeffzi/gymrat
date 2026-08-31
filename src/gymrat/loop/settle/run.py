@@ -23,7 +23,6 @@ from gymrat.loop.settle.checks import (
     has_standing_gating_regression,
     run_checks,
 )
-from gymrat.loop.settle.discard import DiscardResult, discard_session
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
 from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
@@ -31,9 +30,9 @@ from gymrat.session.clock import now_iso
 from gymrat.session.records import (
     IterationRecord,
     KeepChecks,
-    KeepReason,
     KeepRecord,
 )
+from gymrat.session.schema import KeepReason
 from gymrat.session.store import append_record, last_kept_position, require_open_session
 from gymrat.session.workspace import (
     advance_baseline,
@@ -43,11 +42,8 @@ from gymrat.session.workspace import (
 )
 
 __all__ = [
-    "ChecksRun",
-    "DiscardResult",
     "KeepOptions",
     "KeepResult",
-    "discard_session",
     "keep_session",
 ]
 
@@ -240,7 +236,6 @@ def _checks_failed_keep(jsonl_path: str, seq: int, checks: ChecksRun) -> KeepRes
 
 
 def _passed_checks_field(checks: ChecksRun | None) -> KeepChecks:
-    """The ``checks`` a keep records once the gate let it through, gate off included."""
     if checks is None:
         return KeepChecks(configured=False)
     return KeepChecks(configured=True, passed=True)
@@ -249,7 +244,6 @@ def _passed_checks_field(checks: ChecksRun | None) -> KeepChecks:
 def _commit_keep(
     context: _KeepContext, *, commit: str, message: str, checks: KeepChecks
 ) -> KeepResult:
-    """Record a keep that committed, advance the baseline to it, and phrase the report."""
     record = KeepRecord(
         type="keep",
         seq=context.iteration.seq,
@@ -297,7 +291,6 @@ def _blocked_keep(
 
 
 def _generated_message(iteration: IterationRecord) -> str:
-    """The commit message a keep writes when the agent supplied none."""
     primary = iteration.primary
     moved = (
         "delta undefined"

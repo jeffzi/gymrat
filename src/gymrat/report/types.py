@@ -195,6 +195,13 @@ class GeomeanFailOn:
     kind: Literal["geomean"] = "geomean"
 
 
+def candidate_at(metric: MetricComparison, index: int) -> CandidateMetric | None:
+    """The candidate slice at ``index``, or ``None`` when the metric has no such entry."""
+    if 0 <= index < len(metric.candidates):
+        return metric.candidates[index]
+    return None
+
+
 type FailOnCondition = RegressedFailOn | GeomeanFailOn
 """A parsed ``--fail-on`` condition: a regression check or a geomean threshold.
 

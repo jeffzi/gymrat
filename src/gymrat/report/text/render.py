@@ -76,7 +76,6 @@ _HIGHLIGHT_NAME_GUTTER = 2
 # Width the highlights block right-aligns its deltas in — the length of a `±NN.N%`.
 _HIGHLIGHT_DELTA_WIDTH = 6
 
-# The heading a non-empty highlights block opens with.
 _HIGHLIGHTS_HEADING = "highlights"
 
 # The glyph flagging a gate the run's own `--fail-on` conditions would trip.

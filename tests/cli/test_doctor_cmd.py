@@ -16,9 +16,12 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
+from gymrat.cli.doctor_cmd import GitEnvironment
 from gymrat.config import BenchlessConfig
 from gymrat.config.inspect import ConfigInspection
 from gymrat.doctor.checks import Check, CheckSection
+from gymrat.init.scaffold import SKILL_RELATIVE_PATH
+from tests.cli._help import help_output
 
 runner = CliRunner()
 
@@ -117,17 +120,12 @@ def _preserve_color_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_doctor_when_root_help_does_list_doctor():
-    result = runner.invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    assert "doctor" in result.stdout
+    assert "doctor" in help_output()
 
 
 def test_doctor_when_help_does_document_no_color_and_format():
-    result = runner.invoke(app, ["doctor", "--help"])
+    out = help_output("doctor")
 
-    assert result.exit_code == 0
-    out = result.stdout
     assert "--no-color" in out
     assert "--format" in out
 
@@ -257,26 +255,22 @@ def test_doctor_when_command_crashes_does_exit_two_with_message_on_stderr(
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_when_config_problems_does_forward_config_problems_true_to_bench_section(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("config_failure", "expected"),
+    [
+        pytest.param(True, True, id="config-problems"),
+        pytest.param(False, False, id="config-ok"),
+    ],
+)
+def test_doctor_when_run_does_forward_config_problems_to_bench_section(
+    monkeypatch: pytest.MonkeyPatch, config_failure: bool, expected: bool
 ):
-    handles = _patch_doctor(monkeypatch, config_failure=True)
+    handles = _patch_doctor(monkeypatch, config_failure=config_failure)
 
     runner.invoke(app, ["doctor"])
 
     assert len(handles.bench_calls) == 1
-    assert handles.bench_calls[0]["config_problems"] is True
-
-
-def test_doctor_when_config_ok_does_forward_config_problems_false_to_bench_section(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    handles = _patch_doctor(monkeypatch, config_failure=False)
-
-    runner.invoke(app, ["doctor"])
-
-    assert len(handles.bench_calls) == 1
-    assert handles.bench_calls[0]["config_problems"] is False
+    assert handles.bench_calls[0]["config_problems"] is expected
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +283,6 @@ def test_doctor_when_skill_path_is_directory_does_not_report_installed(
     tmp_path: Path,
 ):
     """A directory at the skill path must not count as 'installed'."""
-    from gymrat.cli.doctor_cmd import GitEnvironment
-    from gymrat.init.scaffold import SKILL_RELATIVE_PATH
-
     skill_dir = tmp_path / SKILL_RELATIVE_PATH
     skill_dir.mkdir(parents=True, exist_ok=True)
 

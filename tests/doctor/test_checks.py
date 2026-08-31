@@ -228,13 +228,13 @@ def test_build_config_section_when_problems_present_does_produce_one_fail_per_pr
 
 
 def test_build_workflow_section_has_title_workflow():
-    section = build_workflow_section(_config(), problems=[], skill_file_exists=True)
+    section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
     assert section.title == "Workflow"
 
 
 def test_build_workflow_section_when_problems_present_does_return_single_ok_skip_check():
-    section = build_workflow_section(_config(), problems=["bad value"], skill_file_exists=True)
+    section = build_workflow_section(_config(), config_has_problems=True, skill_file_exists=True)
 
     assert len(section.checks) == 1
     check = section.checks[0]
@@ -244,20 +244,20 @@ def test_build_workflow_section_when_problems_present_does_return_single_ok_skip
 
 
 def test_build_workflow_section_when_problems_present_does_omit_individual_workflow_checks():
-    section = build_workflow_section(_config(), problems=["bad value"], skill_file_exists=False)
+    section = build_workflow_section(_config(), config_has_problems=True, skill_file_exists=False)
 
     names = {check.name for check in section.checks}
     assert names.isdisjoint({"skill file", "checks", "stop", "runbook"})
 
 
 def test_build_workflow_section_when_skill_file_present_does_produce_ok_skill_check():
-    section = build_workflow_section(_config(), problems=[], skill_file_exists=True)
+    section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
     assert _find(section, "skill file").status == "ok"
 
 
 def test_build_workflow_section_when_skill_file_missing_does_warn_with_init_only_hint():
-    section = build_workflow_section(_config(), problems=[], skill_file_exists=False)
+    section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=False)
 
     skill = _find(section, "skill file")
     assert skill.status == "warn"
@@ -268,7 +268,7 @@ def test_build_workflow_section_when_skill_file_missing_does_warn_with_init_only
 
 def test_build_workflow_section_when_checks_set_does_produce_ok_echoing_value():
     section = build_workflow_section(
-        _config(checks="npm test"), problems=[], skill_file_exists=True
+        _config(checks="npm test"), config_has_problems=False, skill_file_exists=True
     )
 
     checks = _find(section, "checks")
@@ -277,7 +277,7 @@ def test_build_workflow_section_when_checks_set_does_produce_ok_echoing_value():
 
 
 def test_build_workflow_section_when_checks_unset_does_warn_about_keep_gating():
-    section = build_workflow_section(_config(), problems=[], skill_file_exists=True)
+    section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
     checks = _find(section, "checks")
     assert checks.status == "warn"
@@ -286,7 +286,9 @@ def test_build_workflow_section_when_checks_unset_does_warn_about_keep_gating():
 
 def test_build_workflow_section_when_stop_has_max_iterations_does_produce_ok_echoing_it():
     section = build_workflow_section(
-        _config(stop=StopConfig(max_iterations=20)), problems=[], skill_file_exists=True
+        _config(stop=StopConfig(max_iterations=20)),
+        config_has_problems=False,
+        skill_file_exists=True,
     )
 
     stop = _find(section, "stop")
@@ -297,7 +299,7 @@ def test_build_workflow_section_when_stop_has_max_iterations_does_produce_ok_ech
 def test_build_workflow_section_when_stop_has_both_keys_does_render_both_in_detail():
     section = build_workflow_section(
         _config(stop=StopConfig(target_value=1.5, max_iterations=20)),
-        problems=[],
+        config_has_problems=False,
         skill_file_exists=True,
     )
 
@@ -315,7 +317,9 @@ def test_build_workflow_section_when_stop_has_both_keys_does_render_both_in_deta
     ],
 )
 def test_build_workflow_section_when_stop_absent_or_empty_does_warn(stop: StopConfig | None):
-    section = build_workflow_section(_config(stop=stop), problems=[], skill_file_exists=True)
+    section = build_workflow_section(
+        _config(stop=stop), config_has_problems=False, skill_file_exists=True
+    )
 
     check = _find(section, "stop")
     assert check.status == "warn"
@@ -324,7 +328,7 @@ def test_build_workflow_section_when_stop_absent_or_empty_does_warn(stop: StopCo
 
 def test_build_workflow_section_when_runbook_set_does_produce_ok_echoing_path():
     section = build_workflow_section(
-        _config(runbook="./RUNBOOK.md"), problems=[], skill_file_exists=True
+        _config(runbook="./RUNBOOK.md"), config_has_problems=False, skill_file_exists=True
     )
 
     runbook = _find(section, "runbook")
@@ -333,7 +337,7 @@ def test_build_workflow_section_when_runbook_set_does_produce_ok_echoing_path():
 
 
 def test_build_workflow_section_when_runbook_unset_does_warn_about_supervise():
-    section = build_workflow_section(_config(), problems=[], skill_file_exists=True)
+    section = build_workflow_section(_config(), config_has_problems=False, skill_file_exists=True)
 
     runbook = _find(section, "runbook")
     assert runbook.status == "warn"

@@ -45,32 +45,34 @@ def test_read_bundled_skill_when_file_unreadable_does_raise_gymrat_error(
     assert str(missing) in str(caught.value)
 
 
-def test_read_bundled_skill_when_file_has_bad_encoding_does_raise_gymrat_error(
+@pytest.mark.parametrize(
+    ("side_effect", "cause_type"),
+    [
+        pytest.param(
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+            UnicodeDecodeError,
+            id="bad-encoding",
+        ),
+        pytest.param(
+            zipfile.BadZipFile("Bad magic number"),
+            zipfile.BadZipFile,
+            id="corrupt-archive",
+        ),
+    ],
+)
+def test_read_bundled_skill_when_read_text_fails_does_raise_gymrat_error(
+    side_effect: Exception,
+    cause_type: type[BaseException],
     monkeypatch: pytest.MonkeyPatch,
 ):
     mock_resource = create_autospec(Traversable, instance=True)
-    mock_resource.read_text.side_effect = UnicodeDecodeError(
-        "utf-8", b"\xff", 0, 1, "invalid start byte"
-    )
+    mock_resource.read_text.side_effect = side_effect
     monkeypatch.setattr("gymrat.bundled_skill._skill_resource", lambda: mock_resource)
 
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()
 
-    _assert_reinstall_error(caught.value, UnicodeDecodeError)
-
-
-def test_read_bundled_skill_when_archive_corrupt_does_raise_gymrat_error(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    mock_resource = create_autospec(Traversable, instance=True)
-    mock_resource.read_text.side_effect = zipfile.BadZipFile("Bad magic number")
-    monkeypatch.setattr("gymrat.bundled_skill._skill_resource", lambda: mock_resource)
-
-    with pytest.raises(GymratError) as caught:
-        read_bundled_skill()
-
-    _assert_reinstall_error(caught.value, zipfile.BadZipFile)
+    _assert_reinstall_error(caught.value, cause_type)
 
 
 def test_read_bundled_skill_when_resource_lookup_fails_does_raise_gymrat_error(

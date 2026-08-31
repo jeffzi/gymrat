@@ -12,7 +12,7 @@ import math
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Annotated, Any, Literal, NoReturn, Protocol
@@ -37,7 +37,8 @@ from gymrat.report.style import (
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn, ReportOptions
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, repo_root
+from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
+from gymrat.session.store import recover_torn_tail
 from gymrat.signals import install_termination_cleanup
 
 # ---------------------------------------------------------------------------
@@ -210,6 +211,20 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
     raise typer.Exit(code)
 
 
+@contextlib.contextmanager
+def broken_pipe_guard() -> Iterator[None]:
+    """Catch BrokenPipeError from a stdout write and exit cleanly.
+
+    Sync counterpart of the same mapping in ``run_cli``: a broken pipe from the
+    reading end closing is not an error for a CLI that already produced its
+    output.
+    """
+    try:
+        yield
+    except BrokenPipeError:
+        raise typer.Exit(0) from None
+
+
 def run_cli(run: Callable[[], Coroutine[Any, Any, None]]) -> None:
     """Run an async CLI body, routing any failure through the shared error formatter."""
     try:
@@ -255,10 +270,13 @@ def parse_positive_integer_up_to(max_value: int) -> Callable[[str], int]:
     """Build a coercer accepting only a positive integer at or below ``max_value``."""
 
     def parse(value: str) -> int:
-        if _POSITIVE_INTEGER_RE.fullmatch(value) is None or int(value) <= 0:
+        if _POSITIVE_INTEGER_RE.fullmatch(value) is None:
             message = "must be a positive integer."
             raise typer.BadParameter(message)
         parsed = int(value)
+        if parsed <= 0:
+            message = "must be a positive integer."
+            raise typer.BadParameter(message)
         if parsed > max_value:
             message = f"must be a positive integer no greater than {max_value}."
             raise typer.BadParameter(message)
@@ -333,6 +351,10 @@ async def with_repo_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T
     renders its report. Outside every git repository the answer is to run
     ``body`` with no lock at all; any other git failure exits without
     benchmarking rather than running unlocked.
+
+    Holding the lock is what makes repairing the session log safe: a torn final
+    line can only belong to a writer the previous run left dead, so the tail is
+    dropped here — once per command, before ``body`` reads or appends anything.
     """
     try:
         root = repo_root()
@@ -343,6 +365,7 @@ async def with_repo_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T
 
     release = acquire_lock(lockfile_path(root), command)
     try:
+        recover_torn_tail(session_jsonl_path(root))
         return await body()
     finally:
         release()

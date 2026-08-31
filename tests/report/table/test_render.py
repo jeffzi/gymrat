@@ -13,6 +13,10 @@ carries a non-zero width from sibling rows.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import pytest
+
 from gymrat.report.style import render_lines
 from gymrat.report.table import (
     VerdictParts,
@@ -22,6 +26,9 @@ from gymrat.report.table import (
 )
 from gymrat.report.text import render_report
 from gymrat.verdict import GroupAggregate, KindAggregate
+
+if TYPE_CHECKING:
+    from gymrat.report.types import ComparisonResult
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
@@ -31,7 +38,7 @@ from tests.report._inputs import (
 )
 
 
-def _grouped_flat_result():
+def _grouped_flat_result() -> ComparisonResult:
     """Single ``time`` kind: ``entity`` group (2 members) + ungrouped ``warmup``."""
     geomean = geomean_of(-3.2, 3)
     return create_comparison_result(
@@ -81,14 +88,6 @@ def _grouped_flat_result():
 
 
 def test_table_region_when_flat_body_with_groups_does_emit_group_headers_and_case_names():
-    """The flat body emits a group header line and uses case names for members.
-
-    Currently ``_plan_flat_body`` iterates ``layout.ordered`` as flat
-    ``MetricLine`` entries using the full metric name (e.g.
-    ``entity/alive_check#time``).  With grouping, a ``GroupLine`` header for
-    ``entity`` must appear and member rows must show their case name
-    (``alive_check``, ``spawn``), not the full metric name.
-    """
     region = table_region(render_report(_grouped_flat_result()))
 
     assert "alive_check" in region
@@ -222,6 +221,8 @@ def test_table_region_when_flat_body_with_deeper_path_does_use_full_prefix_as_gr
 
     region = table_region(render_report(result))
 
+    group_headers = [e for e in region if e.startswith("node/access")]
+    assert group_headers, "expected a group header starting with 'node/access'"
     assert "get_1field" in region
     assert "get_2field" in region
     assert "node/access/get_1field#time" not in region
@@ -238,44 +239,45 @@ def _plain_of_styled(markup: str) -> str:
     return render_lines(markup, color=False, width=200)
 
 
-def test_verdict_cell_when_delta_empty_and_band_present_does_match_plain_and_styled_width():
-    """NaN delta with a band column must pad equally in plain and styled paths.
-
-    The plain path pads delta to ``widths.delta`` spaces; the styled path
-    must not drop the padding.
-    """
-    parts = VerdictParts(glyph="~", delta="", word="", band="±2.5%", pairs="")
-    widths = VerdictWidths(delta=7, band=5)
-
+@pytest.mark.parametrize(
+    ("parts", "widths", "glyph_style", "delta_style", "band_style"),
+    [
+        pytest.param(
+            VerdictParts(glyph="~", delta="", word="", band="±2.5%", pairs=""),
+            VerdictWidths(delta=7, band=5),
+            "dim",
+            None,
+            "dim",
+            id="delta-empty-band-present",
+        ),
+        pytest.param(
+            VerdictParts(glyph="✓", delta="-10.0%", word="", band="±2.5%", pairs=""),
+            VerdictWidths(delta=7, band=5),
+            "green",
+            "green",
+            "dim",
+            id="all-fields-present",
+        ),
+        pytest.param(
+            VerdictParts(glyph="~", delta="+4.0%", word="", band="", pairs=""),
+            VerdictWidths(delta=6, band=0),
+            "dim",
+            "dim",
+            None,
+            id="word-empty-delta-present",
+        ),
+    ],
+)
+def test_verdict_cell_when_styled_does_match_plain_visible_width(
+    parts: VerdictParts,
+    widths: VerdictWidths,
+    glyph_style: str,
+    delta_style: str | None,
+    band_style: str | None,
+):
     plain = join_verdict_cell(parts, widths)
     styled = style_verdict_cell(
-        parts, widths, glyph_style="dim", delta_style=None, band_style="dim"
-    )
-
-    assert len(plain) == len(_plain_of_styled(styled))
-
-
-def test_verdict_cell_when_all_fields_present_does_match_plain_and_styled_width():
-    """A fully populated verdict cell must render to the same visible width in both paths."""
-    parts = VerdictParts(glyph="✓", delta="-10.0%", word="", band="±2.5%", pairs="")
-    widths = VerdictWidths(delta=7, band=5)
-
-    plain = join_verdict_cell(parts, widths)
-    styled = style_verdict_cell(
-        parts, widths, glyph_style="green", delta_style="green", band_style="dim"
-    )
-
-    assert len(plain) == len(_plain_of_styled(styled))
-
-
-def test_verdict_cell_when_word_empty_and_delta_present_does_match_plain_and_styled_width():
-    """An empty word with a present delta must produce matching widths."""
-    parts = VerdictParts(glyph="~", delta="+4.0%", word="", band="", pairs="")
-    widths = VerdictWidths(delta=6, band=0)
-
-    plain = join_verdict_cell(parts, widths)
-    styled = style_verdict_cell(
-        parts, widths, glyph_style="dim", delta_style="dim", band_style=None
+        parts, widths, glyph_style=glyph_style, delta_style=delta_style, band_style=band_style
     )
 
     assert len(plain) == len(_plain_of_styled(styled))

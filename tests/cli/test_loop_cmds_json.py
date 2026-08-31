@@ -15,7 +15,7 @@ from gymrat.session import (
     append_record,
     session_jsonl_path,
 )
-from tests.cli._loop_cmds import never_tty, runner, write_config
+from tests.cli._loop_cmds import make_discard_repo, never_tty, runner, write_config
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     AT,
@@ -168,9 +168,7 @@ def _wire_discard(monkeypatch: pytest.MonkeyPatch, discard_result: DiscardResult
 @pytest.fixture
 def discard_repo(repo: str) -> str:
     """A repository with an open session and one unsettled iteration to discard."""
-    start_session(repo, "main", resolved_config())
-    append_record(session_jsonl_path(repo), iteration_record(seq=1))
-    return repo
+    return make_discard_repo(repo)
 
 
 def test_discard_command_when_format_json_does_emit_structured_json(

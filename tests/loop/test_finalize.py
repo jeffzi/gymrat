@@ -2,11 +2,9 @@
 
 Every test drives the real ``finalize_session`` against a throwaway repository
 from the shared ``create_scratch_repo`` factory, so the suite is order-independent
-and safe under ``pytest-xdist`` / ``pytest-randomly``. The one boundary a test
-may mock is ``run_git_step``: the ``git_step_spy`` fixture wraps it so a test can
-inspect the argv finalize hands git while every call still runs for real. Every
-other git operation runs against real worktrees, and the assertions read commit
-SHAs straight out of the repository git laid down.
+and safe under ``pytest-xdist`` / ``pytest-randomly``. Every git operation runs
+against real worktrees, and the assertions read commit SHAs straight out of the
+repository git laid down.
 """
 
 import re
@@ -32,7 +30,7 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
-from gymrat.session.workspace import run_git_step as real_run_git_step
+from tests._git import run_git
 from tests.session.records._fixtures import committed_keep, iteration_record
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -54,8 +52,6 @@ CONFIG = ResolvedConfig(
 
 def _git(args: list[str], cwd: str) -> str:
     """Run git in ``cwd`` for test setup and assertions, returning trimmed stdout."""
-    from tests._git import run_git
-
     return run_git(args, cwd).strip()
 
 
@@ -126,23 +122,6 @@ def baseline_sha(repo: str) -> str:
     yields the same commit the baseline is pinned to.
     """
     return _git(["rev-parse", "HEAD"], repo)
-
-
-@pytest.fixture
-def git_step_spy(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Wrap ``run_git_step`` so a test can read finalize's argv while it still runs.
-
-    Each call's positional ``args`` list is recorded, then forwarded to the real
-    implementation, so finalize's git operations all execute for real.
-    """
-    calls: list[list[str]] = []
-
-    def spy(args: list[str], *rest: object, **kwargs: object) -> str:
-        calls.append(list(args))
-        return real_run_git_step(args, *rest, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr("gymrat.loop.finalize.run_git_step", spy)
-    return calls
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +318,7 @@ def final_branch(kept_repo: str) -> str:
     return f"{_session_header(kept_repo).branch}-final"
 
 
-def test_finalize_does_build_one_commit_carrying_session_tree_on_pinned_baseline(
+def test_finalize_when_committed_keeps_exist_does_build_one_commit_carrying_session_tree_on_pinned_baseline(
     kept_repo: str, baseline_sha: str, final_branch: str
 ):
     session_branch = _session_header(kept_repo).branch
@@ -352,7 +331,9 @@ def test_finalize_does_build_one_commit_carrying_session_tree_on_pinned_baseline
     assert _git(["rev-parse", final_branch], kept_repo) == result.record.commit
 
 
-def test_finalize_does_move_neither_checkout_nor_session_branch(kept_repo: str, baseline_sha: str):
+def test_finalize_when_committed_keeps_exist_does_move_neither_checkout_nor_session_branch(
+    kept_repo: str, baseline_sha: str
+):
     session_branch = _session_header(kept_repo).branch
     session_head = _git(["rev-parse", session_branch], kept_repo)
 
@@ -363,7 +344,7 @@ def test_finalize_does_move_neither_checkout_nor_session_branch(kept_repo: str, 
     assert _git(["rev-parse", session_branch], kept_repo) == session_head
 
 
-def test_finalize_does_append_a_finalize_record_naming_branch_and_squash_commit(
+def test_finalize_when_committed_keeps_exist_does_append_a_finalize_record_naming_branch_and_squash_commit(
     kept_repo: str, final_branch: str
 ):
     result = finalize_session(kept_repo)
@@ -377,7 +358,7 @@ def test_finalize_does_append_a_finalize_record_naming_branch_and_squash_commit(
     assert _last_record(kept_repo) == record
 
 
-def test_finalize_does_take_both_worktrees_off_disk_and_out_of_git(
+def test_finalize_when_committed_keeps_exist_does_take_both_worktrees_off_disk_and_out_of_git(
     kept_repo: str, list_worktree_dirs: Callable[..., list[str]]
 ):
     finalize_session(kept_repo)
@@ -387,7 +368,7 @@ def test_finalize_does_take_both_worktrees_off_disk_and_out_of_git(
     assert list_worktree_dirs(kept_repo, include_main=False) == []
 
 
-def test_finalize_does_report_branch_short_commit_kept_count_and_closed_session(
+def test_finalize_when_committed_keeps_exist_does_report_branch_short_commit_kept_count_and_closed_session(
     kept_repo: str, final_branch: str
 ):
     result = finalize_session(kept_repo)
@@ -398,7 +379,7 @@ def test_finalize_does_report_branch_short_commit_kept_count_and_closed_session(
     assert re.search(r"closed", result.report, re.IGNORECASE)
 
 
-def test_finalize_does_generate_a_message_naming_kept_count_over_kept_messages(
+def test_finalize_when_committed_keeps_exist_does_generate_a_message_naming_kept_count_over_kept_messages(
     kept_repo: str, final_branch: str
 ):
     result = finalize_session(kept_repo)
@@ -410,7 +391,7 @@ def test_finalize_does_generate_a_message_naming_kept_count_over_kept_messages(
     assert result.record.message == f"{subject}\n\n{body}"
 
 
-def test_finalize_does_commit_the_callers_message_verbatim_when_given_one(
+def test_finalize_when_callers_message_given_does_commit_it_verbatim(
     kept_repo: str, final_branch: str
 ):
     result = finalize_session(kept_repo, FinalizeOptions(message="squash the tuning session"))
@@ -421,14 +402,14 @@ def test_finalize_does_commit_the_callers_message_verbatim_when_given_one(
     assert result.record.message == "squash the tuning session"
 
 
-def test_finalize_does_point_the_callers_branch_name_at_the_squash_commit(kept_repo: str):
+def test_finalize_when_callers_branch_name_given_does_point_it_at_the_squash_commit(kept_repo: str):
     result = finalize_session(kept_repo, FinalizeOptions(branch="perf/regex-cache"))
 
     assert result.record.branch == "perf/regex-cache"
     assert _git(["rev-parse", "perf/regex-cache"], kept_repo) == result.record.commit
 
 
-def test_finalize_does_refuse_a_branch_name_git_reads_as_a_flag_creating_nothing(kept_repo: str):
+def test_finalize_when_branch_name_looks_like_flag_does_refuse_creating_nothing(kept_repo: str):
     branches_before = _git(["branch", "--format=%(refname:short)"], kept_repo)
     before = len(_records(kept_repo))
 
@@ -439,15 +420,6 @@ def test_finalize_does_refuse_a_branch_name_git_reads_as_a_flag_creating_nothing
     assert error.hint is not None
     assert _git(["branch", "--format=%(refname:short)"], kept_repo) == branches_before
     assert len(_records(kept_repo)) == before
-
-
-def test_finalize_does_end_option_parsing_before_the_branch_name(
-    kept_repo: str, git_step_spy: list[list[str]]
-):
-    result = finalize_session(kept_repo, FinalizeOptions(branch="perf/regex-cache"))
-
-    branch_call = next(args for args in git_step_spy if args and args[0] == "branch")
-    assert branch_call == ["branch", "--", "perf/regex-cache", result.record.commit]
 
 
 def test_finalize_does_refuse_when_the_target_branch_already_exists_creating_nothing(

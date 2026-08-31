@@ -24,7 +24,6 @@ from gymrat.sampling import (
     MetricStats,
     SamplingOptions,
     TargetContext,
-    TargetSamples,
     collect_samples,
     compute_metric_stats,
     own_values,
@@ -242,9 +241,12 @@ async def test_collect_samples_when_progress_given_does_stamp_at_ms_from_clock(
 
     await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
-    assert all(e.at_ms > 0 for e in events)
     timestamps = [e.at_ms for e in events]
     assert timestamps == sorted(timestamps)
+    assert all(t % 10.0 == 0.0 for t in timestamps), (
+        "timestamps should come from the injected clock"
+    )
+    assert events[0].at_ms == 10.0
 
 
 async def test_collect_samples_when_progress_given_does_emit_pass_started_with_correct_fields(
@@ -365,7 +367,7 @@ async def test_collect_samples_when_bench_fails_does_stop_mid_schedule(
     assert [command for command, _, _ in calls] == ["run"]
 
 
-async def test_collect_samples_when_abort_settles_run_as_exit_one_does_raise_command_error(
+async def test_collect_samples_when_bench_fails_with_empty_stderr_does_raise_command_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
     patch_exec(monkeypatch, make_failure(stderr=""))
@@ -603,15 +605,6 @@ def test_paired_or_own_values_when_paired_empty_does_fall_back_to_own_values():
     assert paired_or_own_values([], samples, "x") == [1.0, 3.0]
 
 
-def test_target_samples_when_constructed_does_pair_context_with_samples():
-    ctx = TargetContext(target=InPlaceTarget(dir="/a"), dir="/a", label="old")
-
-    bundle = TargetSamples(ctx=ctx, samples=[{"x": 1.0}])
-
-    assert bundle.ctx is ctx
-    assert bundle.samples == [{"x": 1.0}]
-
-
 # ---------------------------------------------------------------------------
 # worktree run orchestration
 # ---------------------------------------------------------------------------
@@ -678,7 +671,9 @@ def _dirty_result() -> CleanupResult:
     )
 
 
+# ---------------------------------------------------------------------------
 # resolve_dir
+# ---------------------------------------------------------------------------
 
 
 def test_resolve_dir_when_in_place_target_does_return_dir_and_leave_worktrees_untouched():
@@ -718,7 +713,9 @@ def test_resolve_dir_when_ref_target_does_register_worktree_before_materialize(
     assert materialize_args == [(stub, "/repo")]
 
 
+# ---------------------------------------------------------------------------
 # resolve_label
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -737,7 +734,9 @@ def test_resolve_label_when_given_inputs_does_return_expected(
     assert resolve_label(explicit, target) == expected
 
 
+# ---------------------------------------------------------------------------
 # run_with_worktrees
+# ---------------------------------------------------------------------------
 
 
 async def test_run_with_worktrees_when_phase_succeeds_does_run_phase_then_sweep_once_and_build_result(

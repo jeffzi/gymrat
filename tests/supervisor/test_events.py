@@ -1,18 +1,17 @@
 """Behavioral tests for the supervisor event vocabulary and helpers.
 
-The upstream suite pins most of these behaviors at the type level; those checks
-do not survive the port, so they are re-expressed as construction, immutability,
-and JSON-serialization assertions on the dataclasses. ``summarize`` and
-``summarize_input`` are pinned against the Python JSON style (no spaces, ``null``
-for ``None``); ``combine_observers`` is pinned on ordering, identity, and
-error propagation.
+Events are frozen pydantic models, so behavior is pinned via construction,
+immutability, and JSON-serialization assertions rather than type-level checks.
+``summarize`` and ``summarize_input`` are pinned against the Python JSON style
+(no spaces, ``null`` for ``None``); ``combine_observers`` is pinned on
+ordering, identity, and error propagation.
 """
 
-import dataclasses
 import json
 import typing
 
 import pytest
+from pydantic import ValidationError
 
 from gymrat.supervisor.events import (
     SUMMARY_MAX_CHARS,
@@ -78,10 +77,7 @@ def test_event_when_constructed_does_expose_its_type_literal(event: object, expe
 
 def test_session_event_union_when_enumerated_does_expose_exactly_eight_type_literals():
     event_classes = typing.get_args(SessionEvent)
-    types = {
-        next(field.default for field in dataclasses.fields(cls) if field.name == "type")
-        for cls in event_classes
-    }
+    types = {cls.model_fields["type"].default for cls in event_classes}
 
     assert types == {
         "thinking_update",
@@ -95,10 +91,10 @@ def test_session_event_union_when_enumerated_does_expose_exactly_eight_type_lite
     }
 
 
-def test_event_when_field_reassigned_does_raise_frozen_instance_error():
+def test_event_when_field_reassigned_does_raise():
     event = UsageUpdateEvent(timestamp=6, cost_usd=0.01)
 
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(ValidationError, match="frozen"):
         event.cost_usd = 0.02  # type: ignore[misc]
 
 
@@ -215,6 +211,47 @@ def test_to_json_line_when_launch_has_optionals_does_emit_them():
 
 
 # ---------------------------------------------------------------------------
+# LaunchEvent.model_dump — None-optional omission
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("by_alias", "usd_key", "model_key"),
+    [
+        pytest.param(False, "max_usd", "model", id="python-names"),
+        pytest.param(True, "maxUsd", "model", id="aliased-names"),
+    ],
+)
+def test_launch_event_model_dump_when_optionals_are_none_does_omit_them(
+    by_alias: bool, usd_key: str, model_key: str
+):
+    event = make_launch(max_usd=None, model=None)
+
+    dumped = event.model_dump(by_alias=by_alias)
+
+    assert usd_key not in dumped
+    assert model_key not in dumped
+
+
+@pytest.mark.parametrize(
+    ("by_alias", "usd_key", "model_key"),
+    [
+        pytest.param(False, "max_usd", "model", id="python-names"),
+        pytest.param(True, "maxUsd", "model", id="aliased-names"),
+    ],
+)
+def test_launch_event_model_dump_when_optionals_are_set_does_include_them(
+    by_alias: bool, usd_key: str, model_key: str
+):
+    event = make_launch(max_usd=1.5, model="opus")
+
+    dumped = event.model_dump(by_alias=by_alias)
+
+    assert dumped[usd_key] == 1.5
+    assert dumped[model_key] == "opus"
+
+
+# ---------------------------------------------------------------------------
 # event_from_wire
 # ---------------------------------------------------------------------------
 
@@ -278,9 +315,12 @@ def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expe
 
 
 def test_summarize_when_over_budget_does_report_remaining_chars_and_line_count():
-    result = summarize("a" * 300, 50)
+    overflow = 250
+    max_chars = 50
 
-    assert result == "a" * 50 + "… (250 more chars, 1 lines)"
+    result = summarize("a" * (max_chars + overflow), max_chars)
+
+    assert result == "a" * max_chars + f"… ({overflow} more chars, 1 lines)"
 
 
 def test_summarize_when_over_budget_does_count_original_lines_before_collapsing():
@@ -307,11 +347,11 @@ def test_summarize_when_truncating_does_split_on_code_point_boundaries(
 # ---------------------------------------------------------------------------
 
 
-class _Weird:
+class _NotJsonEncodable:
     """A value ``json.dumps`` cannot encode, with a deterministic string form."""
 
     def __str__(self) -> str:
-        return "weird-value"
+        return "not-json-encodable"
 
 
 @pytest.mark.parametrize(
@@ -319,7 +359,7 @@ class _Weird:
     [
         pytest.param({"key": "value"}, '{"key":"value"}', id="dict-no-spaces"),
         pytest.param(None, "null", id="none-to-json-null"),
-        pytest.param(_Weird(), "weird-value", id="non-serializable-str-fallback"),
+        pytest.param(_NotJsonEncodable(), "not-json-encodable", id="non-serializable-str-fallback"),
     ],
 )
 def test_summarize_input_when_given_value_does_summarize_its_json_form(
@@ -352,22 +392,7 @@ def test_combine_observers_when_given_no_observers_does_not_raise():
     combined(event)
 
 
-def test_combine_observers_when_an_observer_raises_does_still_call_later_observers():
-    boom_message = "observer failure"
-
-    def boom(_: object) -> None:
-        raise RuntimeError(boom_message)
-
-    later = collecting_observer()
-    combined = combine_observers(boom, later.observer)
-    event = UsageUpdateEvent(timestamp=1, cost_usd=0.01)
-
-    combined(event)
-
-    assert later.events == [event]
-
-
-def test_combine_observers_when_an_observer_raises_does_warn_about_the_failure():
+def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining():
     boom_message = "observer failure"
 
     def boom(_: object) -> None:
@@ -379,6 +404,8 @@ def test_combine_observers_when_an_observer_raises_does_warn_about_the_failure()
 
     with pytest.warns(RuntimeWarning, match=boom_message):
         combined(event)
+
+    assert later.events == [event]
 
 
 # ---------------------------------------------------------------------------
@@ -414,20 +441,15 @@ def test_to_json_line_when_field_not_json_encodable_does_stringify_instead_of_ra
     ``to_json_line`` should fall back to ``str()`` for values that
     ``json.dumps`` cannot encode, so the line is always written.
     """
-
-    class NotSerializable:
-        def __str__(self) -> str:
-            return "fallback-repr"
-
     event = ToolStartEvent(
         timestamp=1,
         tool_use_id="t1",
         tool_name="Test",
-        input={"key": NotSerializable()},
+        input={"key": _NotJsonEncodable()},
         input_summary="test",
     )
 
     line = to_json_line(event)
 
     parsed = json.loads(line)
-    assert parsed["input"]["key"] == "fallback-repr"
+    assert parsed["input"]["key"] == "not-json-encodable"

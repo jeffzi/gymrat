@@ -9,8 +9,10 @@ The module is name-prefixed with ``_`` so pytest never collects it: it is a
 helper imported as ``tests.session.records._fixtures``.
 """
 
-from dataclasses import replace
+from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 from gymrat.session import (
     BaselineRef,
@@ -43,6 +45,19 @@ SQUASH_COMMIT = "c" * 40
 #: The session id every fixture record belongs to.
 SESSION_ID = "20260808-141530-a3f2"
 
+#: The unterminated JSON prefix a writer killed mid-append leaves as the log's tail.
+TORN_PREFIX: bytes = b'{"type":"iter'
+
+
+def _overridden[T: BaseModel](default: T, overrides: dict[str, Any]) -> T:
+    return default.model_copy(update=overrides) if overrides else default
+
+
+def tear_final_line(path: str | Path) -> None:
+    """Append ``TORN_PREFIX`` so the log ends on an unterminated final line."""
+    with Path(path).open("ab") as handle:
+        handle.write(TORN_PREFIX)
+
 
 def session_record(**overrides: Any) -> SessionRecord:
     """The session header a started session writes, with every field overridable.
@@ -71,7 +86,7 @@ def session_record(**overrides: Any) -> SessionRecord:
             primary="geomean",
         ),
     )
-    return replace(default, **overrides) if overrides else default
+    return _overridden(default, overrides)
 
 
 def iteration_record(**overrides: Any) -> IterationRecord:
@@ -99,7 +114,7 @@ def iteration_record(**overrides: Any) -> IterationRecord:
         outcome="improved",
         target_reached=False,
     )
-    return replace(default, **overrides) if overrides else default
+    return _overridden(default, overrides)
 
 
 def committed_keep(seq: int, **overrides: Any) -> KeepRecord:
@@ -113,7 +128,7 @@ def committed_keep(seq: int, **overrides: Any) -> KeepRecord:
         commit=COMMIT,
         message="cache the regex",
     )
-    return replace(default, **overrides) if overrides else default
+    return _overridden(default, overrides)
 
 
 def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
@@ -130,7 +145,7 @@ def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
         checks=KeepChecks(configured=True, passed=False),
         reason="checks-failed",
     )
-    return replace(default, **overrides) if overrides else default
+    return _overridden(default, overrides)
 
 
 def discard_record(seq: int) -> DiscardRecord:
@@ -149,7 +164,7 @@ def hook_record(**overrides: Any) -> HookRecord:
         stdout_bytes=80,
         timed_out=False,
     )
-    return replace(default, **overrides) if overrides else default
+    return _overridden(default, overrides)
 
 
 def finalize_record(**overrides: Any) -> FinalizeRecord:
@@ -161,7 +176,7 @@ def finalize_record(**overrides: Any) -> FinalizeRecord:
         commit=SQUASH_COMMIT,
         message="squash 1 kept iteration",
     )
-    return replace(default, **overrides) if overrides else default
+    return _overridden(default, overrides)
 
 
 def write_session_log(

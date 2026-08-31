@@ -87,7 +87,9 @@ async def _compare_body(
     )
     try:
         config_resolved = resolve_config(flags)
-        from gymrat import compare as engine  # noqa: PLC0415
+        from gymrat import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the heavy comparison stack
+            compare as engine,
+        )
 
         run_opts = run_options_of(config_resolved, progress)
         options = engine.CompareOptions(

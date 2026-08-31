@@ -10,7 +10,6 @@ real subprocess can be made to overflow exec's own accumulation cap quickly.
 """
 
 import asyncio
-import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -143,7 +142,7 @@ async def test_run_hook_when_command_runs_does_record_bytes_the_hook_printed(
 
     run = await run_hook(hooks.invocation_of(command))
 
-    assert dataclasses.replace(run.record, duration_ms=0) == expected_hook_record(
+    assert run.record.model_copy(update={"duration_ms": 0}) == expected_hook_record(
         stage="before", seq=2, exit_code=0, stdout_bytes=6
     )
 
@@ -238,7 +237,7 @@ async def test_run_hook_when_hook_exits_nonzero_does_report_and_record(hooks: Ho
         "hook exited 3",
         "no warm copy",
     ]
-    assert dataclasses.replace(run.record, duration_ms=0) == expected_hook_record(
+    assert run.record.model_copy(update={"duration_ms": 0}) == expected_hook_record(
         stage="before", seq=2, exit_code=3, stdout_bytes=18, stderr_bytes=13
     )
 

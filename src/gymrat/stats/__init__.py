@@ -1,4 +1,4 @@
-"""Pure descriptive-statistics helpers, free of I/O, config, and model types."""
+"""Pure descriptive-statistics helpers, free of I/O and config."""
 
 from gymrat.model.metrics import Direction
 from gymrat.stats.descriptive import (

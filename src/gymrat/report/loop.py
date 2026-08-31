@@ -20,7 +20,7 @@ text inside a styled span is escaped so a metric named ``[i]`` renders literally
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
@@ -465,13 +465,17 @@ def format_status_settle(settle: SettleState) -> str:
     A settling record that settled no iteration — a keep refused for want of a
     measurement — stands on a line of its own, and this is all that line says.
     """
-    if isinstance(settle, SettleKept):
-        return "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
-    if isinstance(settle, SettleDiscarded):
-        return "discarded"
-    if isinstance(settle, SettleUnsettled):
-        return "unsettled"
-    return "keep-blocked" if settle.reason is None else f"keep-blocked ({settle.reason})"
+    match settle:
+        case SettleKept():
+            return "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
+        case SettleDiscarded():
+            return "discarded"
+        case SettleUnsettled():
+            return "unsettled"
+        case SettleKeepBlocked():
+            return "keep-blocked" if settle.reason is None else f"keep-blocked ({settle.reason})"
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def format_status_iteration(iteration: StatusIteration) -> str:

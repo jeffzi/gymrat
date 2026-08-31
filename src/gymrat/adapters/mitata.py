@@ -64,10 +64,14 @@ def _extract_json(stdout: str) -> dict[str, object]:
     Candidates from :func:`find_json_candidates` are already valid JSON (parsed
     via ``raw_decode``). A candidate carrying a ``benchmarks`` list wins over any
     earlier record that does not — a decoy object printed before mitata's own
-    output must not shadow the real payload. When no candidate has a
-    ``benchmarks`` list, the first dict-shaped record is returned anyway, so the
-    caller's "missing benchmarks array" error still names the right cause instead
-    of a generic parse failure.
+    output must not shadow the real payload.
+
+    When no candidate has a ``benchmarks`` list but a decode failure exists
+    alongside a non-benchmarks record, the failure diagnostic takes priority
+    over returning the record — the real payload was likely truncated or
+    malformed, and the parse error is more actionable than a generic "missing
+    benchmarks array" from the caller. Only when no decode failure exists is
+    the first dict-shaped record returned as a fallback.
 
     When :func:`find_json_candidates` returns nothing, every ``{`` in ``stdout``
     failed to start a valid JSON object. The diagnostic names the failure of the
@@ -89,9 +93,6 @@ def _extract_json(stdout: str) -> dict[str, object]:
     longest_failure = _longest_decode_failure(stdout)
 
     if first_record is not None:
-        # A decode failure spanning more text than first_record means the real
-        # payload was truncated or malformed — that diagnostic is more useful
-        # than the generic "JSON missing benchmarks array" the caller raises.
         if longest_failure is not None:
             msg = f"Failed to parse JSON: {longest_failure}"
             raise AdapterError(msg)
@@ -292,7 +293,7 @@ def _extract_run_metrics(
         warn(f"Skipping non-object run entry for benchmark: {alias}")
         return
 
-    if "error" in run and run["error"] is not None:
+    if run.get("error") is not None:
         warn(f"Skipping run with an error: {alias} ({_describe_run_error(run['error'])})")
         return
 

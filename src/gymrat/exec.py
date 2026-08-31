@@ -32,7 +32,7 @@ FAILURE_EXIT_CODE = 1
 OUTPUT_CAP = 64 * 1024 * 1024
 """Per-stream cap, in bytes, on retained text. Byte counts keep counting past it."""
 
-_READ_CHUNK = 65536
+READ_CHUNK = 65536
 """Bytes requested per pipe read."""
 
 _live_process_groups: set[int] = set()
@@ -209,7 +209,7 @@ async def _read_stream(reader: asyncio.StreamReader, buffer: OutputBuffer) -> No
     """
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while True:
-        chunk = await reader.read(_READ_CHUNK)
+        chunk = await reader.read(READ_CHUNK)
         if not chunk:
             tail = decoder.decode(b"", final=True)
             if tail:

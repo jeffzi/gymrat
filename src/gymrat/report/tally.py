@@ -14,12 +14,13 @@ from gymrat.report.display import (
     get_glyph,
 )
 from gymrat.report.style import VERDICT_STYLES, markup
+from gymrat.report.types import candidate_at as _candidate_at
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Iterator
 
     from gymrat.model import MetricVerdict
-    from gymrat.report.types import CandidateMetric, MetricComparison, MetricComparisons
+    from gymrat.report.types import MetricComparisons
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,19 +33,11 @@ class VerdictCounts:
     no_signal: int
 
 
-def _candidate_at(metric: MetricComparison, index: int) -> CandidateMetric | None:
-    """The candidate slice at ``index``, or ``None`` when the metric has no such entry."""
-    if 0 <= index < len(metric.candidates):
-        return metric.candidates[index]
-    return None
-
-
 def _each_verdict(
     metrics: MetricComparisons,
     candidate_index: int,
-    fn: Callable[[MetricVerdict], None],
-) -> None:
-    """Run ``fn`` on one candidate's verdict for every metric that reported one.
+) -> Iterator[MetricVerdict]:
+    """Yield one candidate's verdict for every metric that reported one.
 
     Verdicts belong to a candidate, never to the run, so callers read one
     candidate at a time. Metrics that candidate never reported are skipped.
@@ -52,7 +45,7 @@ def _each_verdict(
     for metric in metrics.values():
         candidate = _candidate_at(metric, candidate_index)
         if candidate is not None and candidate.verdict is not None:
-            fn(candidate.verdict)
+            yield candidate.verdict
 
 
 def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictCounts:
@@ -71,10 +64,9 @@ def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictC
     """
     tally = {"improved": 0, "regressed": 0, "unstable": 0, "no-signal": 0}
 
-    def bump(verdict: MetricVerdict) -> None:
+    for verdict in _each_verdict(metrics, candidate_index):
         tally[verdict.verdict] += 1
 
-    _each_verdict(metrics, candidate_index, bump)
     return VerdictCounts(
         improved=tally["improved"],
         regressed=tally["regressed"],
@@ -100,10 +92,9 @@ def _display_counts(
     """How many metrics one candidate landed in each display class."""
     counts: dict[DisplayClass, int] = dict.fromkeys(_DISPLAY_CLASS_ORDER, 0)
 
-    def bump(verdict: MetricVerdict) -> None:
+    for verdict in _each_verdict(metrics, candidate_index):
         counts[display_class(verdict)] += 1
 
-    _each_verdict(metrics, candidate_index, bump)
     return counts
 
 

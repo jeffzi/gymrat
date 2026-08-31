@@ -21,6 +21,7 @@ from gymrat.config.resolve import (
     merge_config,
     resolve_benchless_config,
     resolve_config,
+    validate_config_dict,
 )
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
@@ -41,7 +42,6 @@ from gymrat.config.validate import (
     flag_problem,
     loop_key_problems,
     runbook_problem,
-    validate_config_dict,
 )
 
 __all__ = [

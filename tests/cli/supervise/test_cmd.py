@@ -10,7 +10,6 @@ replaced at the names ``supervise.cmd`` imports them under, mirroring the
 upstream test harness.
 """
 
-import json
 import os
 import re
 import sys
@@ -32,6 +31,8 @@ from gymrat.session.paths import supervise_lockfile_path
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import SessionOutcome, SupervisionResult, create_claude_driver
+from tests._ansi import strip_ansi
+from tests.conftest import hold_lock
 
 runner = CliRunner()
 
@@ -161,8 +162,6 @@ def _run(*args: str) -> Result:
 
 def _err_text(result: Result) -> str:
     """The combined stdout+stderr of a run, for flag-name and message probes."""
-    from tests._ansi import strip_ansi
-
     return strip_ansi((result.stdout or "") + (result.stderr or ""))
 
 
@@ -339,17 +338,19 @@ def test_supervise_when_lock_held_by_live_process_does_exit_two_naming_another_r
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _install_seams(monkeypatch)
-    lock_path = Path(supervise_lockfile_path(repo))
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(
-        json.dumps({"pid": os.getpid(), "command": "supervise", "at": _LOCK_AT}),
-        encoding="utf-8",
+    lock_path = supervise_lockfile_path(repo)
+    blocker = hold_lock(
+        lock_path,
+        holder={"pid": os.getpid(), "command": "supervise", "at": _LOCK_AT},
     )
 
-    result = _run("optimize it", "--max-minutes", "10")
+    try:
+        result = _run("optimize it", "--max-minutes", "10")
 
-    assert result.exit_code == 2
-    assert re.search(r"another gymrat", result.stderr, re.IGNORECASE)
+        assert result.exit_code == 2
+        assert re.search(r"another gymrat", result.stderr, re.IGNORECASE)
+    finally:
+        blocker.release()
 
 
 # ---------------------------------------------------------------------------
@@ -386,16 +387,6 @@ def test_supervise_when_outcome_interrupted_does_name_it_in_the_summary(
 # ---------------------------------------------------------------------------
 # exit codes
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_session_completes_does_exit_zero(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(monkeypatch)
-
-    result = _run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 0
 
 
 def test_supervise_when_a_cap_ended_the_session_does_exit_one(

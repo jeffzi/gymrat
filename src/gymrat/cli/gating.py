@@ -5,6 +5,7 @@ exit-code gate. Conditions are OR-ed: any one that trips fails the run.
 """
 
 import sys
+from typing import assert_never
 
 from gymrat.cli.shared import write_and_flush
 from gymrat.model import GeomeanResult
@@ -37,16 +38,22 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
     gating = _gating_metrics(result.metrics)
 
     for condition in conditions:
-        if isinstance(condition, RegressedFailOn) and any(
-            count_verdicts(gating, index).regressed > 0 for index in range(len(result.candidates))
-        ):
-            return True
-        if isinstance(condition, GeomeanFailOn) and any(
-            geomean.n > 0 and geomean.value >= condition.pct
-            for candidate in result.candidates
-            for geomean in _gated_geomeans_of(candidate)
-        ):
-            return True
+        match condition:
+            case RegressedFailOn():
+                if any(
+                    count_verdicts(gating, index).regressed > 0
+                    for index in range(len(result.candidates))
+                ):
+                    return True
+            case GeomeanFailOn(pct=pct):
+                if any(
+                    geomean.n > 0 and geomean.value >= pct
+                    for candidate in result.candidates
+                    for geomean in _gated_geomeans_of(candidate)
+                ):
+                    return True
+            case _ as unreachable:
+                assert_never(unreachable)
 
     return False
 

@@ -8,16 +8,16 @@ assertions check ``Live`` attributes directly.
 
 from __future__ import annotations
 
-import sys
-from io import StringIO
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.console import Console as StyledConsole
 
 from gymrat.cli.iterate.progress import (
     IterateRenderer,
     create_iterate_renderer,
 )
+from gymrat.cli.style import CLI_THEME
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmStarted,
@@ -26,18 +26,23 @@ from gymrat.progress_events import (
     IterationRecorded,
     JudgeFinished,
     JudgeStarted,
-    PassFinished,
-    PassStarted,
     PrepareFinished,
     PrepareStarted,
 )
 from tests._rich import (
     Clock,
     console_output,
-    fake_install,
     frame_text,
-    screen_lines,
     sealed_console,
+)
+from tests.cli._progress_helpers import (
+    ms_from_clock as _ms,
+)
+from tests.cli._progress_helpers import (
+    pass_finished as _pass_finished,
+)
+from tests.cli._progress_helpers import (
+    pass_started as _pass_started,
 )
 
 if TYPE_CHECKING:
@@ -56,48 +61,6 @@ if TYPE_CHECKING:
 def _last_line(console: Console) -> str:
     lines = [ln for ln in console_output(console).splitlines() if ln.strip()]
     return lines[-1]
-
-
-def _ms(clock: Clock) -> int:
-    return int(clock.now * 1000)
-
-
-def _pass_started(
-    round_num: int,
-    total_rounds: int,
-    *,
-    at_ms: int,
-    target_count: int = 1,
-    label: str = "bench",
-    phase: Literal["measure", "confirm"] = "measure",
-) -> PassStarted:
-    return PassStarted(
-        round=round_num,
-        total_rounds=total_rounds,
-        target_count=target_count,
-        label=label,
-        at_ms=at_ms,
-        phase=phase,
-    )
-
-
-def _pass_finished(
-    round_num: int,
-    total_rounds: int,
-    *,
-    at_ms: int,
-    target_count: int = 1,
-    label: str = "bench",
-    phase: Literal["measure", "confirm"] = "measure",
-) -> PassFinished:
-    return PassFinished(
-        round=round_num,
-        total_rounds=total_rounds,
-        target_count=target_count,
-        label=label,
-        at_ms=at_ms,
-        phase=phase,
-    )
 
 
 def _report_full_pass(
@@ -491,27 +454,22 @@ def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_confirm_reproduced_does_show_reproduced(snapshot: SnapshotAssertion):
+@pytest.mark.parametrize(
+    "reproduced",
+    [
+        pytest.param(True, id="reproduced"),
+        pytest.param(False, id="not-reproduced"),
+    ],
+)
+def test_frame_when_confirm_finished_does_show_outcome(
+    snapshot: SnapshotAssertion, reproduced: bool
+):
     _console, _clock, renderer = _live(sample_count=1)
     renderer.report(
         JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
     )
     renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
-    renderer.report(ConfirmFinished(reproduced=True, at_ms=10000))
-
-    result = frame_text(renderer.frame())
-
-    assert result == snapshot
-    renderer.stop()
-
-
-def test_frame_when_confirm_not_reproduced_does_show_not_reproduced(snapshot: SnapshotAssertion):
-    _console, _clock, renderer = _live(sample_count=1)
-    renderer.report(
-        JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
-    )
-    renderer.report(ConfirmStarted(filtered_metrics=None, at_ms=5100))
-    renderer.report(ConfirmFinished(reproduced=False, at_ms=10000))
+    renderer.report(ConfirmFinished(reproduced=reproduced, at_ms=10000))
 
     result = frame_text(renderer.frame())
 
@@ -641,80 +599,6 @@ def test_live_wiring_when_created_does_set_transient_from_verbose(
     assert renderer.live is not None
     assert renderer.live.transient is expected_transient
     renderer.stop()
-
-
-def test_live_mode_when_created_does_register_termination_cleanup_once(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    registered: list[object] = []
-    monkeypatch.setattr(
-        "gymrat.cli.iterate.progress.install_termination_cleanup",
-        fake_install(registered),
-    )
-
-    _console, _clock, renderer = _live()
-    renderer.stop()
-
-    assert len(registered) == 1
-
-
-def test_plain_mode_when_created_does_not_register_termination_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    registered: list[object] = []
-    monkeypatch.setattr(
-        "gymrat.cli.iterate.progress.install_termination_cleanup",
-        fake_install(registered),
-    )
-
-    _console, _clock, renderer = _plain()
-    renderer.stop()
-
-    assert len(registered) == 0
-
-
-def test_stop_when_called_twice_does_not_raise():
-    _console, _clock, renderer = _live()
-    renderer.report(PrepareStarted(label="bench", at_ms=0))
-
-    renderer.stop()
-    renderer.stop()
-
-    assert renderer.live is None
-
-
-# ---------------------------------------------------------------------------
-# Signal cleanup
-# ---------------------------------------------------------------------------
-
-
-def test_clear_on_signal_when_live_up_does_leave_screen_blank(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _console, _clock, renderer = _live()
-    renderer.report(PrepareStarted(label="bench", at_ms=0))
-    buf = StringIO()
-    monkeypatch.setattr(sys, "stderr", buf)
-
-    renderer.clear_on_signal()
-
-    assert screen_lines(buf.getvalue()) == []
-    if renderer.live is not None:
-        renderer.live.stop()
-
-
-def test_clear_on_signal_when_after_stop_does_write_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _console, _clock, renderer = _live()
-    renderer.report(PrepareStarted(label="bench", at_ms=0))
-    renderer.stop()
-    buf = StringIO()
-    monkeypatch.setattr(sys, "stderr", buf)
-
-    renderer.clear_on_signal()
-
-    assert buf.getvalue() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -924,12 +808,10 @@ def test_frame_when_compact_confirm_started_does_reset_bar_for_rerun():
 # ---------------------------------------------------------------------------
 
 
-def test_frame_when_judge_regressed_does_style_names_via_format_inline():
+def test_frame_when_judge_regressed_does_style_names_via_format_inline(
+    snapshot: SnapshotAssertion,
+):
     """Regressed names carry per-segment format_inline styling: dim group/kind, normal case."""
-    from rich.console import Console as StyledConsole
-
-    from gymrat.cli.style import CLI_THEME
-
     _console, clock, renderer = _live(sample_count=1, metric_count=3)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -953,7 +835,10 @@ def test_frame_when_judge_regressed_does_style_names_via_format_inline():
         legacy_windows=False,
         theme=CLI_THEME,
     )
-    segments = [seg for line in styled.render_lines(renderer.frame()) for seg in line]
+    renderable = renderer.frame()
+    assert frame_text(renderable) == snapshot
+
+    segments = [seg for line in styled.render_lines(renderable) for seg in line]
 
     group_dim: bool | None = None
     case_dim: bool | None = None

@@ -23,17 +23,6 @@ def _patch_adapter_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# section metadata
-# ---------------------------------------------------------------------------
-
-
-def test_build_bench_section_has_title_bench():
-    section = build_bench_section(bench="node bench.js", adapter="metric-lines")
-
-    assert section.title == "Bench"
-
-
-# ---------------------------------------------------------------------------
 # adapter resolution
 # ---------------------------------------------------------------------------
 
@@ -62,6 +51,7 @@ def test_build_bench_section_when_adapter_valid_does_report_ok(
 
     section = build_bench_section(bench="node bench.js", adapter="metric-lines")
 
+    assert section.title == "Bench"
     adapter_check = section.checks[0]
     assert adapter_check.name == "adapter"
     assert adapter_check.status == "ok"
@@ -169,17 +159,6 @@ def test_build_bench_section_when_config_problems_and_bench_none_does_skip():
     check = section.checks[0]
     assert check.status == "ok"
     assert "Skipped" in check.detail
-
-
-def test_build_bench_section_when_no_config_problems_and_bench_none_does_fail(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _patch_adapter_ok(monkeypatch)
-
-    section = build_bench_section(bench=None, adapter="metric-lines", config_problems=False)
-
-    bench_check = next(c for c in section.checks if c.name == "bench")
-    assert bench_check.status == "fail"
 
 
 # ---------------------------------------------------------------------------

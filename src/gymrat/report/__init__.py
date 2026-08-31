@@ -5,7 +5,6 @@ callers can import them from :mod:`gymrat.report` without reaching into
 submodules.
 """
 
-from gymrat.plural import pluralize
 from gymrat.report.display import (
     MIN_PERMUTATION_N,
     QUIET_VERDICTS,
@@ -219,7 +218,6 @@ __all__ = [
     "make_capture_console",
     "paired_samples",
     "plan_sections",
-    "pluralize",
     "render_json",
     "render_lines",
     "render_measure_json",

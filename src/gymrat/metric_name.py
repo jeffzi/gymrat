@@ -62,7 +62,8 @@ def parse(name: str) -> MetricName:
         A frozen :class:`MetricName` with path segments and optional kind.
 
     Raises:
-        GymratError: When the name contains more than one ``#``.
+        GymratError: When the name contains more than one ``#``, has an empty
+            path segment, or has an empty kind after ``#``.
     """
     path_part, *kind_parts = name.split("#")
     if len(kind_parts) > 1:
@@ -70,7 +71,15 @@ def parse(name: str) -> MetricName:
         raise GymratError(msg)
 
     kind = kind_parts[0] if kind_parts else None
+    if kind == "":
+        msg = f"metric name has an empty kind after '#': {name}"
+        raise GymratError(msg)
+
     path = tuple(path_part.split("/"))
+    if not all(path):
+        msg = f"metric name has an empty path segment: {name}"
+        raise GymratError(msg)
+
     return MetricName(path=path, kind=kind)
 
 

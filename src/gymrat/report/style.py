@@ -187,6 +187,9 @@ GROUP_LABEL_STYLE = "blue"
 #: The style an aggregate label (a geomean row, a total) wears.
 AGGREGATE_LABEL_STYLE = "bold"
 
+#: The middle-dot separator between a scope and its sub-label.
+SCOPE_SEPARATOR = "·"
+
 # A backtick-wrapped inline code span; the capture group is its content.
 _INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
 
@@ -358,7 +361,7 @@ def color_from_env() -> bool | None:
 def render_lines(
     *renderables: RenderableType,
     color: bool | None = None,
-    width: int = 80,
+    width: int = RENDER_WIDTH,
 ) -> str:
     """Render ``renderables`` through a capture console and return the text.
 

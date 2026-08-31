@@ -34,7 +34,7 @@ def _child_env() -> dict[str, str]:
     return env
 
 
-def test_importing_package_does_not_import_scipy_or_numpy():
+def test_importing_package_when_loaded_does_not_import_scipy_or_numpy():
     probe = """
 import sys
 import gymrat
@@ -68,7 +68,7 @@ if heavy:
     assert result.returncode == 0, result.stderr
 
 
-def test_importing_cli_app_and_rendering_help_does_not_import_scipy_or_numpy():
+def test_importing_cli_app_when_rendering_help_does_not_import_scipy_or_numpy():
     probe = """
 import sys
 from typer.testing import CliRunner

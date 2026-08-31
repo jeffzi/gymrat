@@ -23,7 +23,7 @@
 # name: test_frame_when_compact_layout_does_show_single_row
   '⠋ sampling                                            0% · A · 00:00/--:--'
 # ---
-# name: test_frame_when_confirm_not_reproduced_does_show_not_reproduced
+# name: test_frame_when_confirm_finished_does_show_outcome[not-reproduced]
   '''
   iterate #1 · session test-session · 0s elapsed
   ○ prepare
@@ -33,7 +33,7 @@
   ○ record
   '''
 # ---
-# name: test_frame_when_confirm_reproduced_does_show_reproduced
+# name: test_frame_when_confirm_finished_does_show_outcome[reproduced]
   '''
   iterate #1 · session test-session · 0s elapsed
   ○ prepare
@@ -109,6 +109,16 @@
   ✓ prepared
   ○ passes
   ✓ judged -2.0% on geomean · no gating regression
+  ○ record
+  '''
+# ---
+# name: test_frame_when_judge_regressed_does_style_names_via_format_inline
+  '''
+  iterate #1 · session test-session · 00:06/00:11
+  ✓ prepared
+  ○ passes
+  ✓ judged -3.2% on geomean · 1 regressed: node/access#time
+  ○ confirm (only if a gating metric regresses)
   ○ record
   '''
 # ---

@@ -219,7 +219,9 @@ async def test_compare_when_progress_and_warn_given_does_forward_to_sampling(
     assert forwarded.timeout_seconds == 1.0
 
 
-# --- End-to-end tests (real subprocesses, POSIX only) ---
+# ---------------------------------------------------------------------------
+# End-to-end tests (real subprocesses, POSIX only)
+# ---------------------------------------------------------------------------
 
 _posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
 

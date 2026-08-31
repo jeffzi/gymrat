@@ -1,4 +1,4 @@
-"""Core model value types: pure, immutable data with no logic."""
+"""Core model value types and pairing logic for benchmark observations."""
 
 from gymrat.model.aggregate import (
     Exclusion,
@@ -6,15 +6,6 @@ from gymrat.model.aggregate import (
     GeomeanResult,
 )
 from gymrat.model.effect import Effect, EffectUnit
-from gymrat.model.methods import (
-    BAND_DESCRIPTOR,
-    DEFAULT_UNSTABLE_NOISE_PCT,
-    NOISE_FLOOR_PCT,
-    NOISE_K,
-    PERMUTATION_DESCRIPTOR,
-    Method,
-    MethodDescriptor,
-)
 from gymrat.model.metrics import (
     Direction,
     MetricMeta,
@@ -28,6 +19,15 @@ from gymrat.model.observations import (
     Repeat,
     pair_metric,
 )
+from gymrat.model.verdict_method import (
+    BAND_FLOORS,
+    DEFAULT_UNSTABLE_NOISE_PCT,
+    NOISE_FLOOR_PCT,
+    NOISE_K,
+    PERMUTATION_FLOORS,
+    MethodFloors,
+    VerdictMethod,
+)
 from gymrat.model.verdicts import (
     ApproximateVerdict,
     BandVerdict,
@@ -38,11 +38,11 @@ from gymrat.model.verdicts import (
 )
 
 __all__ = [
-    "BAND_DESCRIPTOR",
+    "BAND_FLOORS",
     "DEFAULT_UNSTABLE_NOISE_PCT",
     "NOISE_FLOOR_PCT",
     "NOISE_K",
-    "PERMUTATION_DESCRIPTOR",
+    "PERMUTATION_FLOORS",
     "ApproximateVerdict",
     "BandVerdict",
     "Direction",
@@ -52,8 +52,7 @@ __all__ = [
     "Exclusion",
     "ExclusionReason",
     "GeomeanResult",
-    "Method",
-    "MethodDescriptor",
+    "MethodFloors",
     "MetricMeta",
     "MetricUnit",
     "MetricVerdict",
@@ -64,5 +63,6 @@ __all__ = [
     "Repeat",
     "ResolvedMetricMeta",
     "Verdict",
+    "VerdictMethod",
     "pair_metric",
 ]

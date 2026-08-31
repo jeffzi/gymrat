@@ -10,8 +10,14 @@ import json
 
 from rich.markup import escape
 
-from gymrat.doctor.checks import Check, CheckStatus, DoctorReport
-from gymrat.report import pluralize
+from gymrat.doctor.checks import (
+    WORKFLOW_SECTION_TITLE,
+    WORKFLOW_SKIP_CHECK_NAME,
+    Check,
+    CheckStatus,
+    DoctorReport,
+)
+from gymrat.plural import pluralize
 from gymrat.report.style import (
     RENDER_WIDTH,
     format_hint,
@@ -21,12 +27,6 @@ from gymrat.report.style import (
 
 _STATUS_GLYPHS: dict[CheckStatus, str] = {"ok": "✓", "warn": "⚠", "fail": "✗"}
 _STATUS_STYLES: dict[CheckStatus, str] = {"ok": "green", "warn": "yellow", "fail": "red"}
-
-_WORKFLOW_SECTION_TITLE = "Workflow"
-
-# The synthetic check name build_workflow_section emits in place of its real checks;
-# the real ones are named after what they inspect ("skill file", "checks", …).
-_WORKFLOW_SKIP_CHECK_NAME = "workflow"
 
 # Continuation lines and hints align under the status glyph, two spaces past its
 # two-space indent.
@@ -49,12 +49,12 @@ def _workflow_was_skipped(report: DoctorReport) -> bool:
     drops the skill-file claim.
     """
     workflow = next(
-        (section for section in report.sections if section.title == _WORKFLOW_SECTION_TITLE),
+        (section for section in report.sections if section.title == WORKFLOW_SECTION_TITLE),
         None,
     )
     if workflow is None or not workflow.checks:
         return False
-    return all(check.name == _WORKFLOW_SKIP_CHECK_NAME for check in workflow.checks)
+    return all(check.name == WORKFLOW_SKIP_CHECK_NAME for check in workflow.checks)
 
 
 def _header_line(report: DoctorReport) -> str:

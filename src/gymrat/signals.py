@@ -92,7 +92,7 @@ def _run_cleanups() -> None:
         try:
             cleanup()
         except Exception as exc:  # noqa: BLE001 - a failing cleanup must not stop the rest
-            warnings.warn(f"termination cleanup failed: {exc}", stacklevel=2)
+            warnings.warn(f"termination cleanup failed: {exc}", RuntimeWarning, stacklevel=2)
 
 
 def _handler(signal_number: int, _frame: FrameType | None) -> None:

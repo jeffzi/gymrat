@@ -16,6 +16,12 @@ from gymrat.config.inspect import ConfigInspection
 CheckStatus = Literal["ok", "warn", "fail"]
 """The outcome severity of a single diagnostic check."""
 
+WORKFLOW_SECTION_TITLE = "Workflow"
+"""The title shared between the workflow section builder and the renderer's skip detector."""
+
+WORKFLOW_SKIP_CHECK_NAME = "workflow"
+"""The synthetic check name emitted when config errors collapse the workflow section."""
+
 
 @dataclass(frozen=True, slots=True)
 class Check:
@@ -46,18 +52,18 @@ class EnvironmentInfo:
 
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
-    """The assembled report: sections, environment, and derived counts.
-
-    ``has_failures`` is ``fail_count > 0`` — the CLI reads it to choose exit code
-    0 versus 1.
-    """
+    """The assembled report: sections, environment, and derived counts."""
 
     environment: EnvironmentInfo
     sections: list[CheckSection]
     ok_count: int
     warn_count: int
     fail_count: int
-    has_failures: bool
+
+    @property
+    def has_failures(self) -> bool:
+        """Whether any check failed — the CLI reads this to choose exit code 0 versus 1."""
+        return self.fail_count > 0
 
 
 def _ok(name: str, detail: str) -> Check:
@@ -83,13 +89,7 @@ def create_doctor_report(
         ok_count=counts["ok"],
         warn_count=counts["warn"],
         fail_count=counts["fail"],
-        has_failures=counts["fail"] > 0,
     )
-
-
-# ---------------------------------------------------------------------------
-# Environment section
-# ---------------------------------------------------------------------------
 
 
 def build_environment_section(
@@ -133,11 +133,6 @@ def build_environment_section(
     return CheckSection(title="Environment", checks=checks)
 
 
-# ---------------------------------------------------------------------------
-# Config section
-# ---------------------------------------------------------------------------
-
-
 def build_config_section(inspection: ConfigInspection) -> CheckSection:
     """One FAIL per collected config problem; a single OK when clean or absent."""
     if inspection.problems:
@@ -152,10 +147,6 @@ def build_config_section(inspection: ConfigInspection) -> CheckSection:
     return CheckSection(title="Configuration", checks=checks)
 
 
-# ---------------------------------------------------------------------------
-# Workflow section
-# ---------------------------------------------------------------------------
-
 _SKILL_MISSING_HINT = "Run `gymrat init` to scaffold the project."
 _CHECKS_MISSING_HINT = "Without checks, keep cannot gate commits"
 _STOP_MISSING_HINT = "Without stop, a session has no finish line"
@@ -166,17 +157,17 @@ _RUNBOOK_MISSING_HINT = (
 
 
 def build_workflow_section(
-    config: BenchlessConfig, *, problems: list[str], skill_file_exists: bool
+    config: BenchlessConfig, *, config_has_problems: bool, skill_file_exists: bool
 ) -> CheckSection:
     """WARN for each missing workflow piece (skill file, checks, stop, runbook) with a fix hint.
 
-    When ``problems`` is non-empty the individual checks are meaningless — the
+    When ``config_has_problems`` is true the individual checks are meaningless — the
     config never settled — so the section collapses to a single skip placeholder.
     """
-    if problems:
+    if config_has_problems:
         return CheckSection(
-            title="Workflow",
-            checks=[_ok("workflow", "Skipped — fix config errors first")],
+            title=WORKFLOW_SECTION_TITLE,
+            checks=[_ok(WORKFLOW_SKIP_CHECK_NAME, "Skipped — fix config errors first")],
         )
 
     checks: list[Check] = []
@@ -206,7 +197,7 @@ def build_workflow_section(
         else _issue("runbook", "warn", "runbook is not configured", _RUNBOOK_MISSING_HINT)
     )
 
-    return CheckSection(title="Workflow", checks=checks)
+    return CheckSection(title=WORKFLOW_SECTION_TITLE, checks=checks)
 
 
 def _build_stop_check(stop: StopConfig | None) -> Check:

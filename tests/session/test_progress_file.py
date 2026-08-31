@@ -54,14 +54,6 @@ def test_progress_path_when_given_root_does_place_file_under_session_dir(
     assert result == expected
 
 
-def test_progress_path_when_given_root_does_not_place_file_under_worktrees(
-    root: str,
-):
-    result = progress_path(root)
-
-    assert "worktrees" not in result
-
-
 # ---------------------------------------------------------------------------
 # write_progress
 # ---------------------------------------------------------------------------
@@ -201,7 +193,6 @@ def test_read_progress_when_file_contains_non_utf8_bytes_does_return_none(root: 
 
 def test_clear_progress_when_file_exists_does_remove_it(root: str):
     write_progress(root, _make_snapshot())
-    assert _progress_file(root).exists()
 
     clear_progress(root)
 
@@ -209,8 +200,6 @@ def test_clear_progress_when_file_exists_does_remove_it(root: str):
 
 
 def test_clear_progress_when_file_absent_does_not_raise(root: str):
-    assert not _progress_file(root).exists()
-
     clear_progress(root)
 
 

@@ -85,7 +85,9 @@ async def _measure_body(
         recording = (
             require_open_session(repo_root(), "recording a measurement") if flags.record else None
         )
-        from gymrat import measure as engine  # noqa: PLC0415
+        from gymrat import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the heavy measurement stack
+            measure as engine,
+        )
 
         run_opts = run_options_of(config_resolved, progress)
         options = engine.MeasureOptions(
@@ -134,7 +136,8 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
+    color_override = color_override_of(not no_color)
+    set_stderr_color_override(color_override)
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,
@@ -147,7 +150,6 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         format=output_format.value,
         record=record,
     )
-    color_override = color_override_of(flags.color)
 
     async def run() -> None:
         outcome = await with_repo_lock("measure", lambda: _measure_body(flags, resolved_target))

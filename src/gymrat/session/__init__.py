@@ -37,6 +37,7 @@ from gymrat.session.store import (
     fold_session,
     last_kept_position,
     read_records,
+    recover_torn_tail,
     require_open_session,
     require_session,
 )
@@ -92,6 +93,7 @@ __all__ = [
     "parse_record",
     "read_records",
     "record_to_wire",
+    "recover_torn_tail",
     "recreate_workspace",
     "remove_worktrees",
     "repo_root",

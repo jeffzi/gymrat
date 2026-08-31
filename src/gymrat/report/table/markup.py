@@ -16,13 +16,14 @@ from gymrat.report.format import (
     format_pair_count,
 )
 from gymrat.report.geomean_label import (
+    NO_GEOMEAN_CELL,
     NO_GEOMEAN_FIGURE,
     NO_STABLE_METRICS,
     geomean_parts,
     geomean_value_style,
 )
 from gymrat.report.sections import section_label
-from gymrat.report.style import markup
+from gymrat.report.style import GROUP_LABEL_STYLE, markup
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -40,6 +41,16 @@ METRIC_COLUMN_HEADER = "metric"
 METRIC_COLUMN_MIN = 16
 VALUE_COLUMN_MIN = 12
 VERDICT_COLUMN_MIN = 12
+
+
+def header_metric_cell(title: str | None) -> str:
+    """The metric-column cell for a section header row."""
+    return markup(title, "bold") if title is not None else escape(METRIC_COLUMN_HEADER)
+
+
+def group_metric_cell(label: str) -> str:
+    """The metric-column cell for a group separator row."""
+    return markup(label, GROUP_LABEL_STYLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +281,7 @@ def geomean_column_cell(
     parts = geomean_parts(geomean)
     if parts is None:
         return AggregateColumnCell(
-            text=f"{NO_GEOMEAN_FIGURE}  {NO_STABLE_METRICS}",
+            text=NO_GEOMEAN_CELL,
             spans=(
                 StyledSpan(text=NO_GEOMEAN_FIGURE, style="bold"),
                 StyledSpan(text=NO_STABLE_METRICS, style="dim"),

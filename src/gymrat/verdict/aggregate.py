@@ -7,7 +7,7 @@ from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import GeomeanResult, MetricVerdict, ResolvedMetricMeta
 from gymrat.verdict.geomean import compute_geomean
 
-MetricEntry = tuple[str, ResolvedMetricMeta]
+type MetricEntry = tuple[str, ResolvedMetricMeta]
 """A metric name paired with the metadata resolved for it."""
 
 

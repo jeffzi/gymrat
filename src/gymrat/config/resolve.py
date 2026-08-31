@@ -1,11 +1,13 @@
 """Precedence pipeline: merge flags, env vars, config file, and defaults."""
 
+import dataclasses
 import os
 from dataclasses import replace
 from pathlib import Path
 
 from gymrat.config.env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
 from gymrat.config.load import load_config_file
+from gymrat.config.schema import validate_and_convert
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
@@ -81,12 +83,24 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
     ``bench`` is settled separately: benchmarking commands spread it into the
     result, and the rest never ask for it.
     """
+    samples = (
+        flags.samples
+        if flags.samples is not None
+        else config_file.samples
+        if config_file.samples is not None
+        else CONFIG_DEFAULTS.samples
+    )
+    timeout_seconds = (
+        flags.timeout
+        if flags.timeout is not None
+        else config_file.timeout_seconds
+        if config_file.timeout_seconds is not None
+        else CONFIG_DEFAULTS.timeout_seconds
+    )
     return BenchlessConfig(
         adapter=flags.adapter or config_file.adapter or CONFIG_DEFAULTS.adapter,
-        samples=flags.samples or config_file.samples or CONFIG_DEFAULTS.samples,
-        timeout_seconds=(
-            flags.timeout or config_file.timeout_seconds or CONFIG_DEFAULTS.timeout_seconds
-        ),
+        samples=samples,
+        timeout_seconds=timeout_seconds,
         unstable_noise_pct=(
             config_file.unstable_noise_pct
             if config_file.unstable_noise_pct is not None
@@ -102,6 +116,22 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         stop=config_file.stop,
         hooks=config_file.hooks,
     )
+
+
+def validate_config_dict(config: dict[str, object]) -> None:
+    """Validate an in-memory config dict the same way a loaded ``gymrat.toml`` is.
+
+    Runs the strict schema (``extra="forbid"``) and the cross-field loop-key
+    checks over ``config``, raising a :class:`GymratError` on the first problem.
+    Lets a writer (the init scaffold) reject a config before touching disk without
+    a temp-file round-trip.
+    """
+    config_file, problems = validate_and_convert(config)
+    if problems:
+        raise GymratError(problems[0])
+    if config_file is None:
+        return
+    validate_loop_keys(merge_config(CliFlags(), config_file))
 
 
 def _settle_config(
@@ -158,19 +188,5 @@ def resolve_config(flags: CliFlags, base_dir: str | Path | None = None) -> Resol
     if bench is None:
         message = "bench is required. Provide it via --bench flag or in config file."
         raise GymratError(message)
-    return ResolvedConfig(
-        bench=bench,
-        adapter=config.adapter,
-        samples=config.samples,
-        timeout_seconds=config.timeout_seconds,
-        unstable_noise_pct=config.unstable_noise_pct,
-        primary=config.primary,
-        prepare=config.prepare,
-        metrics=config.metrics,
-        kinds=config.kinds,
-        checks=config.checks,
-        runbook=config.runbook,
-        filter=config.filter,
-        stop=config.stop,
-        hooks=config.hooks,
-    )
+    parent_fields = {f.name: getattr(config, f.name) for f in dataclasses.fields(config)}
+    return ResolvedConfig(bench=bench, **parent_fields)

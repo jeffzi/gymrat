@@ -17,7 +17,6 @@ from gymrat.progress_events import (
     PassStarted,
     PrepareFinished,
     PrepareStarted,
-    ProgressCallback,
     ProgressEvent,
     create_fan_out,
     default_clock,
@@ -132,23 +131,14 @@ def test_hook_event_when_constructed_does_carry_stage(
     assert event.stage == stage
 
 
-def test_judge_finished_when_constructed_does_carry_delta_and_regressed() -> None:
+def test_judge_finished_when_constructed_does_carry_all_fields() -> None:
     event = JudgeFinished(primary_delta_pct=2.5, regressed=("x", "y"), metric_count=4, at_ms=0)
+    none_delta = JudgeFinished(primary_delta_pct=None, regressed=(), metric_count=0, at_ms=0)
 
     assert event.primary_delta_pct == 2.5
     assert event.regressed == ("x", "y")
-
-
-def test_judge_finished_when_delta_none_does_carry_none() -> None:
-    event = JudgeFinished(primary_delta_pct=None, regressed=(), metric_count=0, at_ms=0)
-
-    assert event.primary_delta_pct is None
-
-
-def test_judge_finished_when_constructed_does_carry_metric_count() -> None:
-    event = JudgeFinished(primary_delta_pct=-1.0, regressed=("x",), metric_count=5, at_ms=0)
-
-    assert event.metric_count == 5
+    assert event.metric_count == 4
+    assert none_delta.primary_delta_pct is None
 
 
 def test_confirm_started_when_filtered_none_does_carry_none() -> None:
@@ -174,20 +164,6 @@ def test_iteration_recorded_when_constructed_does_carry_seq_and_outcome() -> Non
 
     assert event.seq == 3
     assert event.outcome == "improved"
-
-
-# ---------------------------------------------------------------------------
-# type aliases
-# ---------------------------------------------------------------------------
-
-
-def test_progress_callback_type_alias_accepts_callable() -> None:
-    calls: list[ProgressEvent] = []
-    cb: ProgressCallback = calls.append
-
-    cb(PrepareStarted(label="A", at_ms=0))
-
-    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

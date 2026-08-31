@@ -28,7 +28,7 @@ def test_should_fail_gate_when_no_conditions_does_not_trip():
     assert should_fail_gate((), result) is False
 
 
-def test_should_fail_gate_when_regressed_gating_metric_present_trips():
+def test_should_fail_gate_when_regressed_gating_metric_present_does_trip():
     result = create_comparison_result(
         metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)},
         candidates=[create_candidate()],
@@ -54,7 +54,9 @@ def test_should_fail_gate_when_regression_is_non_gating_does_not_trip():
         pytest.param(1.0, False, id="below-threshold-no-trip"),
     ],
 )
-def test_should_fail_gate_geomean_trips_at_or_above_threshold(geomean_value: float, expected: bool):
+def test_should_fail_gate_when_geomean_at_or_above_threshold_does_trip(
+    geomean_value: float, expected: bool
+):
     result = create_comparison_result(
         candidates=[create_candidate(kinds=[other_kind(geomean_value, 3)])],
     )
@@ -70,7 +72,7 @@ def test_should_fail_gate_when_gated_geomean_has_no_samples_does_not_trip():
     assert should_fail_gate((GeomeanFailOn(pct=2.0),), result) is False
 
 
-def test_should_fail_gate_when_kind_is_non_gating_never_trips_on_geomean():
+def test_should_fail_gate_when_kind_is_non_gating_does_not_trip_on_geomean():
     result = create_comparison_result(
         candidates=[create_candidate(kinds=[without_gated_geomean(other_kind(5.0, 3))])],
     )
@@ -78,7 +80,7 @@ def test_should_fail_gate_when_kind_is_non_gating_never_trips_on_geomean():
     assert should_fail_gate((GeomeanFailOn(pct=2.0),), result) is False
 
 
-def test_should_fail_gate_conditions_or_together():
+def test_should_fail_gate_when_multiple_conditions_does_trip_if_any_matches():
     result = create_comparison_result(
         metrics={"m/time": permutation_metric(verdict="regressed", delta=4, gating=True)},
         candidates=[create_candidate(kinds=[other_kind(1.0, 3)])],
@@ -92,7 +94,7 @@ def test_should_fail_gate_conditions_or_together():
 # ---------------------------------------------------------------------------
 
 
-def test_warn_empty_geomean_gates_warns_once_per_empty_candidate(
+def test_warn_empty_geomean_gates_when_candidate_has_no_samples_does_warn(
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured = io.StringIO()
@@ -112,7 +114,7 @@ def test_warn_empty_geomean_gates_warns_once_per_empty_candidate(
     )
 
 
-def test_warn_empty_geomean_gates_stays_silent_without_a_geomean_condition(
+def test_warn_empty_geomean_gates_when_no_geomean_condition_does_stay_silent(
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured = io.StringIO()

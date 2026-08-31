@@ -33,9 +33,9 @@ from gymrat.report.sections import (
 )
 from gymrat.report.style import (
     AGGREGATE_LABEL_STYLE,
-    GROUP_LABEL_STYLE,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
+    markup,
 )
 from gymrat.report.table import (
     METRIC_COLUMN_MIN,
@@ -50,10 +50,11 @@ from gymrat.report.table import (
     VerdictParts,
     aggregate_label_lengths,
     compute_column_width,
+    group_metric_cell,
+    header_metric_cell,
     indented_section_label,
     join_value_cell,
     join_verdict_cell,
-    markup,
     plan_body,
     render_body,
     section_annotation,
@@ -63,6 +64,7 @@ from gymrat.report.table import (
     verdict_widths,
     widest_header_label,
 )
+from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -79,6 +81,18 @@ _GEOMEAN_GLYPH_SLOT = " "
 
 
 @dataclass(frozen=True, slots=True)
+class _MeasuredVerdict:
+    """A metric's verdict and the pre-split parts that render it.
+
+    Bundled so the two are always present together — a None
+    ``_MeasuredRow.verdict`` means both are absent, never one without the other.
+    """
+
+    metric_verdict: MetricVerdict
+    parts: VerdictParts
+
+
+@dataclass(frozen=True, slots=True)
 class _MeasuredRow:
     """One metric row's figures and the verdict between them, pre-split for padding."""
 
@@ -86,8 +100,7 @@ class _MeasuredRow:
     label: str
     baseline: MetricCellParts
     candidate: MetricCellParts
-    verdict: MetricVerdict | None
-    parts: VerdictParts | None
+    verdict: _MeasuredVerdict | None
     gating: bool
 
 
@@ -128,7 +141,9 @@ def _geomean_cell(
 
 def _measured_outcomes(rows: Sequence[_MeasuredRow]) -> list[DisplayClass | None]:
     """The display class of each row's verdict, for vetoing a geomean's color."""
-    return [shown_class(row.verdict) for row in rows]
+    return [
+        shown_class(row.verdict.metric_verdict) if row.verdict is not None else None for row in rows
+    ]
 
 
 def render_table(
@@ -171,7 +186,7 @@ def render_table(
 
     aggregate_parts = [line.cell.parts for line in body if isinstance(line, AggregateLine)]
     verdict_fields = verdict_widths(
-        [row.parts for row in layout.ordered if row.parts is not None] + aggregate_parts
+        [row.verdict.parts for row in layout.ordered if row.verdict is not None] + aggregate_parts
     )
 
     def metric_cells(row: _MeasuredRow) -> tuple[str, str, str, str]:
@@ -179,7 +194,7 @@ def render_table(
             row.label if grouped else row.name,
             join_value_cell(row.baseline, baseline_fields),
             join_value_cell(row.candidate, candidate_fields),
-            "" if row.parts is None else join_verdict_cell(row.parts, verdict_fields),
+            "" if row.verdict is None else join_verdict_cell(row.verdict.parts, verdict_fields),
         )
 
     cells_by_name = {row.name: metric_cells(row) for row in layout.ordered}
@@ -200,15 +215,20 @@ def _build_row(
     samples: int,
 ) -> _MeasuredRow:
     """Split one metric into the fields a comparison row pads."""
-    side = metric.candidates[candidate_index] if candidate_index < len(metric.candidates) else None
-    verdict = side.verdict if side is not None else None
+    side = candidate_at(metric, candidate_index)
+    metric_verdict = side.verdict if side is not None else None
+    verdict: _MeasuredVerdict | None = None
+    if metric_verdict is not None:
+        verdict = _MeasuredVerdict(
+            metric_verdict=metric_verdict,
+            parts=verdict_parts(metric_verdict, samples, with_band=True),
+        )
     return _MeasuredRow(
         name=name,
         label=indented_section_label(metric.meta.short_name, group),
         baseline=baseline_cell_parts(metric),
         candidate=candidate_cell_parts(side, metric.meta.unit),
         verdict=verdict,
-        parts=None if verdict is None else verdict_parts(verdict, samples, with_band=True),
         gating=metric.meta.gating,
     )
 
@@ -285,16 +305,14 @@ def _to_cells(
 ) -> tuple[str, ...]:
     """The markup cells one content row renders to."""
     if isinstance(line, HeaderLine):
-        title = line.title
-        metric_cell = markup(title, "bold") if title is not None else escape(headers[0])
         return (
-            metric_cell,
+            header_metric_cell(line.title),
             markup(headers[1], VARIANT_NAME_STYLE),
             markup(headers[2], VARIANT_NAME_STYLE),
             f"vs {markup(headers[1], VARIANT_NAME_STYLE)}",
         )
     if isinstance(line, GroupLine):
-        return (markup(line.label, GROUP_LABEL_STYLE), "", "", "")
+        return (group_metric_cell(line.label), "", "", "")
     if isinstance(line, MetricLine):
         return _metric_cells(line.row, cells_by_name, verdict_fields)
     if isinstance(line, AggregateLine):
@@ -322,14 +340,13 @@ def _metric_cells(
 ) -> tuple[str, ...]:
     """One metric row's markup cells: plain figures, and the styled verdict cell."""
     cells = cells_by_name[row.name]
-    verdict = row.verdict
-    if verdict is None or row.parts is None:
+    if row.verdict is None:
         verdict_cell = ""
     else:
-        outcome = display_class(verdict)
+        outcome = display_class(row.verdict.metric_verdict)
         quiet = outcome in QUIET_VERDICTS
         verdict_cell = style_verdict_cell(
-            row.parts,
+            row.verdict.parts,
             verdict_fields,
             glyph_style=VERDICT_STYLES[outcome],
             delta_style=VERDICT_STYLES[outcome] if quiet else None,

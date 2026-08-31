@@ -23,16 +23,13 @@ from gymrat.model import (
 )
 from gymrat.verdict import compute_geomean, compute_verdicts
 from tests.verdict._inputs import (
+    METRIC_BYTES_LOWER,
     MetricSpec,
-    _noop_warn,
     build_inputs,
     create_samples,
+    noop_warn,
     unstable_band_verdict,
 )
-
-METRIC_BYTES_LOWER = {
-    "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
-}
 
 
 def gating_verdicts_with_noise(
@@ -320,7 +317,7 @@ def test_compute_geomean_when_metrics_carry_noise_does_propagate_band(
 def test_compute_geomean_when_byte_metric_does_carry_quantization_noise():
     left = Observations.from_rounds(create_samples(2, 4.0))
     right = Observations.from_rounds(create_samples(2, 3.0))
-    verdicts = compute_verdicts(left, right, METRIC_BYTES_LOWER, warn=_noop_warn)
+    verdicts = compute_verdicts(left, right, METRIC_BYTES_LOWER, warn=noop_warn)
 
     result = compute_geomean(verdicts, METRIC_BYTES_LOWER)
 

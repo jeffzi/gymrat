@@ -9,7 +9,6 @@ from hypothesis import strategies as st
 from gymrat.stats import (
     Direction,
     GeomeanCombination,
-    RatioOutcome,
     combine_geomean,
     compute_half_range,
     compute_median,
@@ -152,14 +151,14 @@ _bounded_floats = st.floats(
 
 
 @given(values=st.lists(_bounded_floats, min_size=1))
-def test_compute_median_property_lies_within_min_and_max(values: list[float]):
+def test_compute_median_when_any_samples_does_lie_within_min_and_max(values: list[float]):
     median = compute_median(values)
 
     assert min(values) <= median <= max(values)
 
 
 @given(values=st.lists(_bounded_floats, min_size=1), data=st.data())
-def test_compute_median_property_is_permutation_invariant(
+def test_compute_median_when_shuffled_does_return_same_value(
     values: list[float],
     data: st.DataObject,
 ):
@@ -169,12 +168,12 @@ def test_compute_median_property_is_permutation_invariant(
 
 
 @given(values=st.lists(_bounded_floats, min_size=1))
-def test_compute_half_range_property_is_non_negative_for_finite_samples(values: list[float]):
+def test_compute_half_range_when_finite_samples_does_return_non_negative(values: list[float]):
     assert compute_half_range(values) >= 0.0
 
 
 @given(values=st.lists(_bounded_floats, min_size=1), shift=_bounded_floats)
-def test_compute_half_range_property_is_shift_invariant(values: list[float], shift: float):
+def test_compute_half_range_when_shifted_does_return_same_value(values: list[float], shift: float):
     shifted = [value + shift for value in values]
 
     assert math.isclose(
@@ -191,7 +190,7 @@ def test_compute_half_range_property_is_shift_invariant(values: list[float], shi
         min_size=1,
     ),
 )
-def test_compute_half_range_property_is_nan_exactly_when_non_finite_present(values: list[float]):
+def test_compute_half_range_when_non_finite_present_does_return_nan(values: list[float]):
     has_non_finite = any(not math.isfinite(value) for value in values)
 
     assert math.isnan(compute_half_range(values)) == has_non_finite
@@ -205,7 +204,7 @@ def test_compute_half_range_property_is_nan_exactly_when_non_finite_present(valu
         allow_infinity=False,
     ),
 )
-def test_normalize_ratio_property_higher_is_reciprocal_of_lower(delta: float):
+def test_normalize_ratio_when_higher_does_reciprocate_lower(delta: float):
     lower_rho = normalize_ratio(delta, "lower").rho
     higher_rho = normalize_ratio(delta, "higher").rho
 
@@ -224,7 +223,7 @@ def test_normalize_ratio_property_higher_is_reciprocal_of_lower(delta: float):
     ),
     direction=st.sampled_from(["lower", "higher"]),
 )
-def test_normalize_ratio_property_round_trips_through_percent_delta(
+def test_normalize_ratio_when_round_tripped_does_preserve_percent_delta(
     delta: float,
     direction: Direction,
 ):
@@ -255,14 +254,14 @@ _entries = st.lists(st.tuples(_positive_rho, _noise), min_size=1, max_size=50)
 
 
 @given(entries=_entries)
-def test_combine_geomean_property_value_stays_above_negative_100(
+def test_combine_geomean_when_any_inputs_does_stay_above_negative_100(
     entries: list[tuple[float, float]],
 ):
     assert combine_geomean(entries).value > -100.0
 
 
 @given(entries=_entries, data=st.data())
-def test_combine_geomean_property_is_permutation_invariant(
+def test_combine_geomean_when_shuffled_does_return_same_value(
     entries: list[tuple[float, float]],
     data: st.DataObject,
 ):
@@ -293,7 +292,3 @@ def test_geomean_combination_when_field_assigned_does_raise_frozen():
 
     with pytest.raises((AttributeError, TypeError)):
         result.value = 0.0  # type: ignore[misc]
-
-
-def test_ratio_outcome_type_when_normalize_ratio_called_does_return_ratio_outcome_instance():
-    assert isinstance(normalize_ratio(50.0, "lower"), RatioOutcome)

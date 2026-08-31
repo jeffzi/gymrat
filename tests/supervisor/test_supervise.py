@@ -25,7 +25,7 @@ from gymrat.supervisor import (
     supervise,
 )
 from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
-from gymrat.supervisor.events import SessionEvent, SessionObserver
+from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver
 from tests.supervisor._fixtures import (
     collecting_observer,
     make_launch,
@@ -161,8 +161,8 @@ class _RejectingDriver:
         return _FutureSession(settled)
 
 
-def _cap_events(events: list[SessionEvent]) -> list[SessionEvent]:
-    return [event for event in events if event.type == "cap"]
+def _cap_events(events: list[SessionEvent]) -> list[CapEvent]:
+    return [event for event in events if isinstance(event, CapEvent)]
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ def _cap_events(events: list[SessionEvent]) -> list[SessionEvent]:
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_session_completes_does_report_session_outcome_and_cost(
+async def test_supervise_when_session_completes_does_report_outcome(
     tmp_path: Path,
 ):
     driver = create_mock_driver([CostStep(cost_usd=0.05), CostStep(cost_usd=0.12)])
@@ -202,7 +202,7 @@ async def test_supervise_when_session_runs_does_log_launch_first_then_events_in_
     assert [line["type"] for line in lines[:3]] == ["launch", "text_delta", "usage_update"]
 
 
-async def test_supervise_when_observer_given_does_forward_launch_first_and_session_events(
+async def test_supervise_when_observer_given_does_forward_events_in_order(
     tmp_path: Path,
 ):
     probe = collecting_observer()
@@ -227,7 +227,7 @@ async def test_supervise_when_observer_given_does_forward_launch_first_and_sessi
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_wall_clock_elapses_does_interrupt_and_report_wall_clock(
+async def test_supervise_when_wall_clock_elapses_does_report_wall_clock(
     tmp_path: Path,
 ):
     driver = create_mock_driver([CostStep(cost_usd=0.05, delay_ms=60_000)])
@@ -261,7 +261,7 @@ async def test_supervise_when_wall_clock_elapses_does_emit_single_wall_clock_cap
 
     caps = _cap_events(probe.events)
     assert len(caps) == 1
-    assert caps[0].cap == "wall-clock"  # type: ignore[attr-defined]
+    assert caps[0].cap == "wall-clock"
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +315,7 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_cost_reaches_max_usd_does_interrupt_and_report_spend_cap(
+async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
     tmp_path: Path,
 ):
     steps = [CostStep(cost_usd=0.05), CostStep(cost_usd=0.12), ActionStep(action=_guard_action)]
@@ -352,7 +352,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_ev
 
     caps = _cap_events(probe.events)
     assert len(caps) == 1
-    assert caps[0].cap == "spend-cap"  # type: ignore[attr-defined]
+    assert caps[0].cap == "spend-cap"
 
 
 async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path):
@@ -400,7 +400,7 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_both_caps_could_fire_does_report_first_and_interrupt_once(
+async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     tmp_path: Path,
 ):
     probe = collecting_observer()
@@ -426,7 +426,7 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_and_interru
     assert len(_cap_events(probe.events)) == 1
 
 
-async def test_supervise_when_spend_cap_trips_inside_start_does_defer_cap_and_report_spend_cap(
+async def test_supervise_when_spend_cap_trips_inside_start_does_report_spend_cap(
     tmp_path: Path,
 ):
     probe = collecting_observer()
@@ -444,7 +444,7 @@ async def test_supervise_when_spend_cap_trips_inside_start_does_defer_cap_and_re
     caps = _cap_events(probe.events)
     assert result.ended_by == "spend-cap"
     assert len(caps) == 1
-    assert caps[0].cap == "spend-cap"  # type: ignore[attr-defined]
+    assert caps[0].cap == "spend-cap"
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +465,7 @@ def _error_steps() -> list[object]:
     ]
 
 
-async def test_supervise_when_driver_errors_does_surface_message_and_end_by_session(
+async def test_supervise_when_driver_errors_does_report_error_outcome(
     tmp_path: Path,
 ):
     driver = create_mock_driver(_error_steps())  # type: ignore[arg-type]
@@ -483,7 +483,7 @@ async def test_supervise_when_driver_errors_does_surface_message_and_end_by_sess
     assert result.ended_by == "session"
 
 
-async def test_supervise_when_driver_errors_does_log_launch_and_events_up_to_failure(
+async def test_supervise_when_driver_errors_does_log_events_up_to_failure(
     tmp_path: Path,
 ):
     driver = create_mock_driver(_error_steps())  # type: ignore[arg-type]
@@ -540,7 +540,7 @@ async def test_supervise_when_interrupt_throws_does_recover_via_grace(tmp_path: 
     assert result.ended_by == "wall-clock"
 
 
-async def test_supervise_when_outcome_rejects_does_propagate_and_not_cap(tmp_path: Path):
+async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path: Path):
     probe = collecting_observer()
 
     with pytest.raises(RuntimeError, match="session crashed"):

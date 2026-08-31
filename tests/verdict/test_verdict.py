@@ -20,7 +20,7 @@ from gymrat.model import (
 )
 from gymrat.verdict import compute_verdicts
 from gymrat.warn import WarnSink
-from tests.verdict._inputs import _noop_warn, create_samples
+from tests.verdict._inputs import METRIC_BYTES_LOWER, create_samples, noop_warn
 
 # ---------------------------------------------------------------------------
 # Metric-meta fixtures shared across the verdict-engine cases
@@ -31,9 +31,6 @@ METRIC_EXACT_HIGHER = {"metric": MetricMeta(direction="higher", gating=True, exa
 METRIC_APPROX_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=False, unit=None)}
 METRIC_APPROX_HIGHER = {
     "metric": MetricMeta(direction="higher", gating=True, exact=False, unit=None)
-}
-METRIC_BYTES_LOWER = {
-    "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
 }
 METRIC_BYTES_HIGHER = {
     "metric": MetricMeta(direction="higher", gating=True, exact=False, unit="bytes")
@@ -49,25 +46,29 @@ def run(
     unstable_noise_pct: float | None = None,
     warn: WarnSink | None = None,
 ) -> dict[str, MetricVerdict]:
+    """Pair two round lists and compute verdicts, defaulting warn and noise to test-friendly values."""
     left = Observations.from_rounds(samples_a)
     right = Observations.from_rounds(samples_b)
-    sink = _noop_warn if warn is None else warn
+    sink = noop_warn if warn is None else warn
     if unstable_noise_pct is None:
         return compute_verdicts(left, right, meta, warn=sink)
     return compute_verdicts(left, right, meta, unstable_noise_pct=unstable_noise_pct, warn=sink)
 
 
 def samples(*values: float) -> list[dict[str, float]]:
+    """Build round dicts keying each value under the default ``"metric"`` name."""
     return [{"metric": value} for value in values]
 
 
 def get_permutation(result: dict[str, MetricVerdict], key: str = "metric") -> PermutationVerdict:
+    """Narrow the verdict at *key* to ``PermutationVerdict``, failing if the method differs."""
     verdict = result[key]
     assert isinstance(verdict, PermutationVerdict), f"expected permutation, got {verdict.method}"
     return verdict
 
 
 def get_band(result: dict[str, MetricVerdict], key: str = "metric") -> BandVerdict:
+    """Narrow the verdict at *key* to ``BandVerdict``, failing if the method differs."""
     verdict = result[key]
     assert isinstance(verdict, BandVerdict), f"expected band, got {verdict.method}"
     return verdict
@@ -138,16 +139,16 @@ def test_compute_verdicts_when_no_signal_does_still_report_delta():
 def test_compute_verdicts_when_exact_and_tiny_difference_does_signal():
     result = run(samples(100.0), samples(100.01), METRIC_EXACT_LOWER)
 
-    assert result["metric"].verdict != "no-signal"
+    assert result["metric"].verdict == "regressed"
 
 
 @pytest.mark.parametrize(
     ("meta", "samples_b", "expected_delta", "expected_verdict"),
     [
-        (METRIC_EXACT_LOWER, samples(95.0), -5.0, "improved"),
-        (METRIC_EXACT_HIGHER, samples(105.0), 5.0, "improved"),
-        (METRIC_EXACT_LOWER, samples(105.0), 5.0, "regressed"),
-        (METRIC_EXACT_HIGHER, samples(95.0), -5.0, "regressed"),
+        pytest.param(METRIC_EXACT_LOWER, samples(95.0), -5.0, "improved", id="lower-improved"),
+        pytest.param(METRIC_EXACT_HIGHER, samples(105.0), 5.0, "improved", id="higher-improved"),
+        pytest.param(METRIC_EXACT_LOWER, samples(105.0), 5.0, "regressed", id="lower-regressed"),
+        pytest.param(METRIC_EXACT_HIGHER, samples(95.0), -5.0, "regressed", id="higher-regressed"),
     ],
 )
 def test_compute_verdicts_when_exact_does_classify_by_direction(
@@ -210,7 +211,9 @@ def test_compute_verdicts_when_metric_one_sided_across_all_windows_does_skip():
 def test_compute_verdicts_when_one_paired_window_survives_does_keep_metric():
     result = run(samples(100.0, 90.0), samples(95.0, 85.0), METRIC_EXACT_LOWER)
 
-    assert "metric" in result
+    verdict = result["metric"]
+    assert verdict.n == 2
+    assert verdict.verdict == "improved"
 
 
 def test_compute_verdicts_when_metric_named_like_a_dunder_does_keep_verdict():
@@ -249,8 +252,8 @@ def test_compute_verdicts_when_multiple_paired_metrics_does_return_all():
         },
     )
 
-    assert "a" in result
-    assert "b" in result
+    assert result["a"].verdict == "improved"
+    assert result["b"].verdict == "improved"
 
 
 def test_compute_verdicts_when_metrics_differ_in_exactness_does_respect_per_metric_flag():
@@ -263,9 +266,12 @@ def test_compute_verdicts_when_metrics_differ_in_exactness_does_respect_per_metr
         },
     )
 
-    verdict = result["exactMetric"]
-    assert verdict.verdict != "no-signal"
-    assert verdict.method == "exact"
+    exact = result["exactMetric"]
+    assert exact.verdict != "no-signal"
+    assert exact.method == "exact"
+
+    other = result["otherMetric"]
+    assert other.method == "band"
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +371,7 @@ def test_compute_verdicts_when_permutation_delta_zero_does_no_signal(meta: dict[
 def test_compute_verdicts_when_permutation_delta_below_band_does_no_signal():
     # The permutation statistic *is* the delta functional, so a delta smaller
     # than the noise band never separates the two groups enough for the
-    # sign-flip null to call it significant — unlike the retired signed-rank
-    # test, which modelled scatter through a separate rank p-value and could
-    # still signal here. This verdict flip is the deliberate divergence.
+    # sign-flip null to call it significant.
     samples_a = samples(80.0, 90.0, 100.0, 100.0, 110.0, 120.0)
     samples_b = samples(76.0, 85.5, 95.0, 95.0, 104.5, 114.0)
 
@@ -495,10 +499,22 @@ _SEPARATED_LOW = samples(90.0, 95.0, 100.0, 100.0, 105.0, 110.0)
 @pytest.mark.parametrize(
     ("meta", "samples_a", "samples_b", "expected_verdict"),
     [
-        (METRIC_APPROX_LOWER, _SEPARATED_HIGH, _SEPARATED_LOW, "improved"),
-        (METRIC_APPROX_LOWER, _SEPARATED_LOW, _SEPARATED_HIGH, "regressed"),
-        (METRIC_APPROX_HIGHER, _SEPARATED_LOW, _SEPARATED_HIGH, "improved"),
-        (METRIC_APPROX_HIGHER, _SEPARATED_HIGH, _SEPARATED_LOW, "regressed"),
+        pytest.param(
+            METRIC_APPROX_LOWER, _SEPARATED_HIGH, _SEPARATED_LOW, "improved", id="lower-improved"
+        ),
+        pytest.param(
+            METRIC_APPROX_LOWER, _SEPARATED_LOW, _SEPARATED_HIGH, "regressed", id="lower-regressed"
+        ),
+        pytest.param(
+            METRIC_APPROX_HIGHER, _SEPARATED_LOW, _SEPARATED_HIGH, "improved", id="higher-improved"
+        ),
+        pytest.param(
+            METRIC_APPROX_HIGHER,
+            _SEPARATED_HIGH,
+            _SEPARATED_LOW,
+            "regressed",
+            id="higher-regressed",
+        ),
     ],
 )
 def test_compute_verdicts_when_permutation_direction_varies_does_classify(
@@ -517,8 +533,8 @@ def test_compute_verdicts_when_permutation_direction_varies_does_classify(
 @pytest.mark.parametrize(
     ("samples_a_value", "samples_b_value", "expected_verdict"),
     [
-        (50.0, 100.0, "improved"),
-        (100.0, 50.0, "regressed"),
+        pytest.param(50.0, 100.0, "improved", id="lower-to-higher-improved"),
+        pytest.param(100.0, 50.0, "regressed", id="higher-to-lower-regressed"),
     ],
 )
 def test_compute_verdicts_when_band_direction_higher_does_classify(
@@ -747,10 +763,10 @@ def test_compute_verdicts_when_unit_not_bytes_does_keep_floor_for_small_move(
 @pytest.mark.parametrize(
     ("method", "unstable_noise_pct", "expected"),
     [
-        ("permutation", 20.0, "unstable"),
-        ("permutation", 30.0, "improved"),
-        ("band", 20.0, "unstable"),
-        ("band", 30.0, "improved"),
+        pytest.param("permutation", 20.0, "unstable", id="permutation-unstable"),
+        pytest.param("permutation", 30.0, "improved", id="permutation-improved"),
+        pytest.param("band", 20.0, "unstable", id="band-unstable"),
+        pytest.param("band", 30.0, "improved", id="band-improved"),
     ],
 )
 def test_compute_verdicts_when_noise_exceeds_threshold_does_mark_unstable(

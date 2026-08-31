@@ -35,7 +35,8 @@ if TYPE_CHECKING:
 _MS_PER_MINUTE = 60 * MS_PER_SECOND
 
 
-def _format_cost(usd: float) -> str:
+def format_cost(usd: float) -> str:
+    """Format a USD amount as a two-decimal dollar string."""
     return f"${usd:.2f}"
 
 
@@ -80,13 +81,14 @@ def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
 
 
 def _build_cost_text(cost_usd: float | None, max_usd: float | None) -> str:
-    cost_str = "$—" if cost_usd is None else _format_cost(cost_usd)
+    cost_str = "$—" if cost_usd is None else format_cost(cost_usd)
     if max_usd is not None:
-        return f"cost {cost_str} / {_format_cost(max_usd)}"
+        return f"cost {cost_str} / {format_cost(max_usd)}"
     return f"cost {cost_str}"
 
 
-def _build_loop_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> str:
+def build_loop_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> str:
+    """Build the iteration-progress summary shown in the supervise frame."""
     if session_result is None:
         return "no session yet"
 
@@ -195,7 +197,7 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
     summary.add_row(_build_time_bar(elapsed, ctx.max_minutes))
     summary.add_row(Text(_build_cost_text(ctx.cost_usd, ctx.max_usd)))
 
-    loop_text = _build_loop_text(ctx.session_result, ctx.max_iterations)
+    loop_text = build_loop_text(ctx.session_result, ctx.max_iterations)
     summary.add_row(Text(f"loop   {loop_text}"))
 
     best_text = _build_best_text(ctx.session_result)
@@ -228,5 +230,5 @@ def format_caps(max_minutes: float, max_usd: float | None) -> str:
     """Format the cap summary line for the launch event."""
     caps_parts = [f"{_format_minutes(max_minutes)}m"]
     if max_usd is not None:
-        caps_parts.append(_format_cost(max_usd))
+        caps_parts.append(format_cost(max_usd))
     return f"caps {', '.join(caps_parts)}"

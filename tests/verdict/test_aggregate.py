@@ -17,7 +17,6 @@ from gymrat.model import (
     MetricVerdict,
 )
 from gymrat.verdict import (
-    GroupAggregate,
     KindAggregate,
     compute_kind_aggregates,
     infer_group,
@@ -279,6 +278,5 @@ def test_compute_kind_aggregates_when_gating_differs_across_kinds_does_decide_ga
 def test_compute_kind_aggregates_when_group_mixes_gating_does_geomean_over_all_group_metrics():
     groups = only_kind(kinds_of(mixed_gating_kind())).groups
 
-    assert isinstance(groups[0], GroupAggregate)
     assert groups[0].geomean.n == 2
     assert groups[0].geomean.value == pytest.approx(-7.54, abs=5e-2)

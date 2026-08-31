@@ -14,6 +14,7 @@ later artifact write fails, a config this run created is removed so no partial
 scaffold is left — one that was already there is never touched.
 """
 
+import contextlib
 import json
 import os
 import tempfile
@@ -89,15 +90,15 @@ def _serialize_config(config: dict[str, object]) -> str:
     """
     lines = [f"bench = {json.dumps(config['bench'])}"]
     if "runbook" in config:
-        lines.append(f'runbook = "{config["runbook"]}"')
+        lines.append(f"runbook = {json.dumps(config['runbook'])}")
     return "\n".join(lines) + "\n"
 
 
-def _write_runbook(base_dir: str, *, runbook: bool) -> ScaffoldArtifact:
+def _write_runbook(base_dir: Path, *, runbook: bool) -> ScaffoldArtifact:
     if not runbook:
         return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="declined")
 
-    full_path = Path(base_dir) / DEFAULT_RUNBOOK_PATH
+    full_path = base_dir / DEFAULT_RUNBOOK_PATH
     if full_path.exists():
         if not full_path.is_file():
             return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="is a directory")
@@ -111,8 +112,8 @@ def _write_runbook(base_dir: str, *, runbook: bool) -> ScaffoldArtifact:
     return ScaffoldArtifact(path=DEFAULT_RUNBOOK_PATH, status="created")
 
 
-def _write_skill(base_dir: str, content: str) -> ScaffoldArtifact:
-    full_path = Path(base_dir) / SKILL_RELATIVE_PATH
+def _write_skill(base_dir: Path, content: str) -> ScaffoldArtifact:
+    full_path = base_dir / SKILL_RELATIVE_PATH
     if full_path.exists():
         if not full_path.is_file():
             return ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="is a directory")
@@ -136,13 +137,13 @@ def _prepare_config(request: ScaffoldRequest) -> str:
     return _serialize_config(config_dict)
 
 
-def _write_config(base_dir: str, content: str) -> ScaffoldArtifact:
+def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     """Write the config via a temp file + ``os.replace`` for atomicity.
 
     A crash or permission error mid-write never leaves a truncated
     ``gymrat.toml`` — the temp file is cleaned up on failure.
     """
-    full_path = Path(base_dir) / CONFIG_FILENAME
+    full_path = base_dir / CONFIG_FILENAME
     fd = -1
     tmp_path: str | None = None
     try:
@@ -163,20 +164,20 @@ def _write_config(base_dir: str, content: str) -> ScaffoldArtifact:
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
-def _path_blocked(base_dir: str, relative: str) -> bool:
+def _path_blocked(base_dir: Path, relative: str) -> bool:
     """True when a non-regular file occupies ``relative``.
 
     Symlinks (including dangling ones) are always blocked — writing through a
     symlink would place the content at a location the user did not choose.
     Directories are blocked because they cannot be opened as regular files.
     """
-    full = Path(base_dir) / relative
+    full = base_dir / relative
     if full.is_symlink():
         return True
     return full.exists() and not full.is_file()
 
 
-def _blocked_paths(base_dir: str, request: ScaffoldRequest) -> list[str]:
+def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
     """Collect artifact paths that are blocked by a non-regular file."""
     blocked: list[str] = []
     if _path_blocked(base_dir, CONFIG_FILENAME):
@@ -188,7 +189,7 @@ def _blocked_paths(base_dir: str, request: ScaffoldRequest) -> list[str]:
     return blocked
 
 
-def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
+def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
     """Write the config, runbook stub, and skill file for ``base_dir``.
 
     Returns a :class:`ScaffoldResult` describing each artifact. An existing
@@ -204,7 +205,8 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
 
     In every failure case no partial scaffold is left behind.
     """
-    config_path = Path(base_dir) / CONFIG_FILENAME
+    base_dir = Path(base_dir)
+    config_path = base_dir / CONFIG_FILENAME
     try:
         config_exists = config_path.exists()
     except OSError as error:
@@ -235,7 +237,8 @@ def scaffold(base_dir: str, request: ScaffoldRequest) -> ScaffoldResult:
     except BaseException:
         # Only roll back a config this run created; a pre-existing one is the user's.
         if config_content is not None:
-            config_path.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                config_path.unlink(missing_ok=True)
         raise
 
     return ScaffoldResult(config=config_artifact, runbook=runbook_artifact, skill=skill_artifact)

@@ -8,6 +8,7 @@ reporting, and the re-run behavior over an existing ``gymrat.toml`` (left
 byte-identical, remaining artifacts still filled in).
 """
 
+import ast
 import sys
 import tomllib
 from pathlib import Path
@@ -16,7 +17,7 @@ import pytest
 
 import gymrat.init.scaffold as scaffold_module
 from gymrat.config import load_config_file
-from gymrat.errors import GymratError
+from gymrat.errors import GymratError, hint_of
 from gymrat.init.scaffold import (
     SKILL_RELATIVE_PATH,
     ScaffoldArtifact,
@@ -61,10 +62,6 @@ def test_scaffold_when_defaults_does_reload_through_config_loader(tmp_path: Path
     config = load_config_file(tmp_path / "gymrat.toml")
     assert config.bench == "npm run bench"
     assert config.runbook == "gymrat-runbook.md"
-    assert config.adapter is None
-    assert config.checks is None
-    assert config.primary is None
-    assert config.stop is None
 
 
 def test_scaffold_when_defaults_does_produce_one_key_per_line_with_trailing_newline(
@@ -81,22 +78,12 @@ def test_scaffold_when_defaults_does_produce_one_key_per_line_with_trailing_newl
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_runbook_false_does_omit_runbook_key(tmp_path: Path):
-    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", runbook=False))
+def test_scaffold_when_runbook_false_does_omit_runbook_and_report_declined(tmp_path: Path):
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", runbook=False))
 
     config = _read_config(tmp_path)
     assert config == {"bench": "npm run bench"}
-
-
-def test_scaffold_when_runbook_false_does_not_create_runbook_file(tmp_path: Path):
-    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", runbook=False))
-
     assert not (tmp_path / "gymrat-runbook.md").exists()
-
-
-def test_scaffold_when_runbook_false_does_report_declined(tmp_path: Path):
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", runbook=False))
-
     assert result.runbook.status == "declined"
 
 
@@ -168,36 +155,24 @@ def test_scaffold_when_skill_requested_and_absent_does_copy_bundled_skill(
     assert "# Driving a gymrat optimization session" in skill_path.read_text(encoding="utf-8")
 
 
-def test_scaffold_when_skill_already_exists_does_leave_it_untouched(tmp_path: Path):
+def test_scaffold_when_skill_already_exists_does_leave_it_untouched_and_report_exists(
+    tmp_path: Path,
+):
     skill_dir = tmp_path / ".claude" / "skills" / "gymrat"
     skill_dir.mkdir(parents=True)
     existing = "# Custom Skill\n"
     (skill_dir / "SKILL.md").write_text(existing, encoding="utf-8")
 
-    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == existing
-
-
-def test_scaffold_when_skill_already_exists_does_report_exists(tmp_path: Path):
-    skill_dir = tmp_path / ".claude" / "skills" / "gymrat"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# Custom\n", encoding="utf-8")
-
     result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
+    assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == existing
     assert result.skill == ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="exists")
 
 
-def test_scaffold_when_skill_declined_does_not_create_skill_file(tmp_path: Path):
-    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=False))
-
-    assert not (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").exists()
-
-
-def test_scaffold_when_skill_declined_does_report_declined(tmp_path: Path):
+def test_scaffold_when_skill_declined_does_not_create_skill_and_report_declined(tmp_path: Path):
     result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=False))
 
+    assert not (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").exists()
     assert result.skill.status == "declined"
 
 
@@ -223,7 +198,7 @@ def _break_bundled_skill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("gymrat.init.scaffold.read_bundled_skill", raise_missing)
 
 
-def test_scaffold_when_skill_read_fails_does_not_leave_config_behind(
+def test_scaffold_when_skill_read_fails_does_not_leave_config_or_runbook_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _break_bundled_skill(monkeypatch)
@@ -232,16 +207,6 @@ def test_scaffold_when_skill_read_fails_does_not_leave_config_behind(
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
     assert not (tmp_path / "gymrat.toml").exists()
-
-
-def test_scaffold_when_skill_read_fails_does_not_leave_runbook_behind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    _break_bundled_skill(monkeypatch)
-
-    with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
     assert not (tmp_path / "gymrat-runbook.md").exists()
 
 
@@ -303,7 +268,7 @@ def test_scaffold_when_every_artifact_already_exists_does_report_all_of_them_exi
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_runbook_path_is_a_directory_does_raise_gymrat_error(
+def test_scaffold_when_runbook_path_is_a_directory_does_raise_and_not_write_config(
     tmp_path: Path,
 ):
     (tmp_path / "gymrat-runbook.md").mkdir()
@@ -311,29 +276,15 @@ def test_scaffold_when_runbook_path_is_a_directory_does_raise_gymrat_error(
     with pytest.raises(GymratError, match="gymrat-runbook.md"):
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
+    assert not (tmp_path / "gymrat.toml").exists()
 
-def test_scaffold_when_skill_path_is_a_directory_does_raise_gymrat_error(
+
+def test_scaffold_when_skill_path_is_a_directory_does_raise_and_not_write_config(
     tmp_path: Path,
 ):
     (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
 
     with pytest.raises(GymratError, match="SKILL.md"):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-
-def test_scaffold_when_runbook_path_blocked_does_not_write_config(tmp_path: Path):
-    (tmp_path / "gymrat-runbook.md").mkdir()
-
-    with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
-
-    assert not (tmp_path / "gymrat.toml").exists()
-
-
-def test_scaffold_when_skill_path_blocked_does_not_write_config(tmp_path: Path):
-    (tmp_path / ".claude" / "skills" / "gymrat" / "SKILL.md").mkdir(parents=True)
-
-    with pytest.raises(GymratError):
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
     assert not (tmp_path / "gymrat.toml").exists()
@@ -355,7 +306,7 @@ def test_scaffold_when_blocked_and_config_exists_does_not_touch_existing_config(
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_runbook_path_is_a_symlink_does_raise_gymrat_error(
+def test_scaffold_when_runbook_path_is_a_symlink_does_raise_and_not_write_config(
     tmp_path: Path,
 ):
     target = tmp_path / "some-file.md"
@@ -364,6 +315,8 @@ def test_scaffold_when_runbook_path_is_a_symlink_does_raise_gymrat_error(
 
     with pytest.raises(GymratError, match="gymrat-runbook.md"):
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert not (tmp_path / "gymrat.toml").exists()
 
 
 def test_scaffold_when_skill_path_is_a_symlink_does_raise_gymrat_error(
@@ -386,17 +339,6 @@ def test_scaffold_when_runbook_path_is_a_dangling_symlink_does_raise_gymrat_erro
 
     with pytest.raises(GymratError, match="gymrat-runbook.md"):
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
-
-
-def test_scaffold_when_symlink_blocked_does_not_write_config(tmp_path: Path):
-    target = tmp_path / "some-file.md"
-    target.write_text("# target\n", encoding="utf-8")
-    (tmp_path / "gymrat-runbook.md").symlink_to(target)
-
-    with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
-
-    assert not (tmp_path / "gymrat.toml").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +392,6 @@ def test_scaffold_when_filesystem_error_does_include_hint(
 
     The report-a-bug footer must never appear.
     """
-    from gymrat.errors import hint_of
 
     def exploding_replace(src: object, dst: object) -> None:
         msg = "Read-only file system"
@@ -471,7 +412,48 @@ def test_scaffold_when_filesystem_error_does_include_hint(
 
 def test_scaffold_module_does_not_import_tomli_w():
     source = Path(scaffold_module.__file__).read_text(encoding="utf-8")
-    assert "tomli_w" not in source
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("tomli_w"), "scaffold must not depend on tomli_w"
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith("tomli_w"), "scaffold must not depend on tomli_w"
+
+
+# ---------------------------------------------------------------------------
+# rollback must not mask the original error
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_when_rollback_unlink_fails_does_propagate_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A failing cleanup unlink must never replace the original scaffold error.
+
+    The runbook write failure happens after the config is written, so the
+    except-block tries to unlink the just-created config; that unlink is made
+    to raise OSError too, and the original error must still propagate.
+    """
+
+    def exploding_write_runbook(*args: object, **kwargs: object) -> None:
+        msg = "runbook write failed"
+        raise GymratError(msg)
+
+    monkeypatch.setattr(scaffold_module, "_write_runbook", exploding_write_runbook)
+
+    original_unlink = Path.unlink
+
+    def unlink_that_fails_on_config(self: Path, *, missing_ok: bool = False) -> None:
+        if self.name == "gymrat.toml":
+            msg = "device removed"
+            raise OSError(msg)
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_that_fails_on_config)
+
+    with pytest.raises(GymratError, match="runbook write failed"):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
 
 # ---------------------------------------------------------------------------

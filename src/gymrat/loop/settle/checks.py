@@ -127,7 +127,6 @@ def has_standing_gating_regression(iteration: IterationRecord) -> bool:
 
 
 def _unmeasured_gating_regressions(iteration: IterationRecord) -> list[str]:
-    """The gating metrics that regressed and the confirmation rerun never reported on."""
     confirm = iteration.confirm
     absent = set(confirm.absent) if confirm is not None and confirm.absent is not None else set()
     return [
@@ -138,7 +137,6 @@ def _unmeasured_gating_regressions(iteration: IterationRecord) -> list[str]:
 
 
 def _is_gating_regression(metric: MetricVerdict) -> bool:
-    """Whether a metric is a gating metric that the checks called a regression."""
     return metric.gating and metric.verdict == "regressed"
 
 

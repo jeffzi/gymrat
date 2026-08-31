@@ -10,8 +10,10 @@ pin what happens at the awkward edges of that directory:
   under its resolved real path, so a later sweep removes exactly what git
   registered with no leftover and no double-path confusion;
 - a directory stranded under the base by a previously killed run is left alone
-  by a subsequent normal run — no production sweep deletes it (see
-  ``.planning/hardening-decisions.md`` for why a sweep is deliberately absent).
+  by a subsequent normal run — a sweep is deliberately absent because matching
+  by name pattern under a shared temp directory cannot tell a stale leftover
+  from a concurrent run's live worktree, and deleting the wrong one destroys
+  another process's checkout.
 
 The read-only and symlink tests are POSIX-only: they rely on ``chmod`` mode
 bits and real symlinks. ``chmod`` fixtures always restore ``0o700`` in a

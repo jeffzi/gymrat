@@ -13,7 +13,7 @@ from gymrat.model import ResolvedMetricMeta
 from gymrat.report.sections import GroupBlock, plan_sections
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Row:
     """Minimal row the measure callback produces, carrying enough to assert on."""
 
@@ -21,7 +21,7 @@ class _Row:
     group: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _FakeMetric:
     """Satisfies the ``SectionedMetric`` protocol: one ``.meta`` attribute."""
 
@@ -51,12 +51,11 @@ def _metric(*, kind: str = "time", short_name: str = "x") -> _FakeMetric:
 
 
 def test_plan_sections_when_multi_segment_name_does_group_by_metric_name_path():
-    """The group derives from the metric name (dict key), not from short_name.
+    """``infer_group`` must derive the group from the metric name key, not short_name.
 
     Metric name ``entity/alive_check#time`` has path ``("entity", "alive_check")``,
-    so its group is ``"entity"``.  The short_name ``alive_check`` has no dot, so
-    the old dot-based ``infer_group`` would return ``None`` — a different result.
-    This test can only pass when ``infer_group`` parses the metric name key.
+    so its group is ``"entity"``.  ``short_name="alive_check"`` has no dot and
+    would yield ``None`` — confirming the group comes from the key, not the label.
     """
     layout = plan_sections(
         {
@@ -105,11 +104,11 @@ def test_plan_sections_when_single_segment_name_does_produce_no_group():
 
 
 def test_plan_sections_when_measure_callback_does_receive_contract_derived_group():
-    """The group passed to the measure callback is the contract-derived group.
+    """The measure callback receives the group derived from the metric name key.
 
     ``"entity/alive_check#time"`` has group ``"entity"`` (path prefix), while
-    ``short_name="alive_check"`` has no dot.  If ``infer_group`` still operated
-    on short_name, the callback would receive ``None`` instead of ``"entity"``.
+    ``short_name="alive_check"`` has no dot.  Deriving from the key yields
+    ``"entity"``; deriving from short_name would yield ``None``.
     """
     layout = plan_sections(
         {

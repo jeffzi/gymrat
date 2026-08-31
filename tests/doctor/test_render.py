@@ -12,6 +12,7 @@ import pytest
 from gymrat.doctor.checks import (
     Check,
     CheckSection,
+    DoctorReport,
     EnvironmentInfo,
     create_doctor_report,
 )
@@ -33,7 +34,7 @@ def _env(**overrides: object) -> EnvironmentInfo:
     return EnvironmentInfo(**base)  # pyrefly: ignore
 
 
-def _report(sections: list[CheckSection], **env_overrides: object):
+def _report(sections: list[CheckSection], **env_overrides: object) -> DoctorReport:
     return create_doctor_report(_env(**env_overrides), sections)
 
 
@@ -49,7 +50,7 @@ def _neutral_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_report_header_carries_version_python_and_platform():
+def test_render_doctor_report_when_rendered_does_carry_version_python_and_platform_in_header():
     report = _report([], gymrat_version="1.2.3", python_version="3.13.1", platform="linux")
 
     header = lines(render_doctor_report(report))[0]
@@ -64,13 +65,13 @@ def test_render_doctor_report_header_carries_version_python_and_platform():
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_report_shows_section_title():
+def test_render_doctor_report_when_section_present_does_show_title():
     report = _report([CheckSection(title="Environment", checks=[Check("git", "ok", "found")])])
 
     assert "Environment" in strip_ansi(render_doctor_report(report))
 
 
-def test_render_doctor_report_marks_each_status_with_its_glyph():
+def test_render_doctor_report_when_mixed_statuses_does_mark_each_with_its_glyph():
     report = _report(
         [
             CheckSection(
@@ -91,7 +92,7 @@ def test_render_doctor_report_marks_each_status_with_its_glyph():
     assert "✗" in next(line for line in rendered if "missing" in line)
 
 
-def test_render_doctor_report_renders_hint_indented_four_with_backticks_stripped():
+def test_render_doctor_report_when_hint_present_does_indent_four_with_backticks_stripped():
     report = _report(
         [
             CheckSection(
@@ -107,7 +108,7 @@ def test_render_doctor_report_renders_hint_indented_four_with_backticks_stripped
     assert "`" not in hint_line
 
 
-def test_render_doctor_report_indents_multiline_detail_continuations_under_the_glyph():
+def test_render_doctor_report_when_multiline_detail_does_indent_continuations_under_glyph():
     report = _report(
         [
             CheckSection(
@@ -141,7 +142,7 @@ def _note(report_output: str) -> str:
     return next(line for line in lines(report_output) if "Note:" in line)
 
 
-def test_render_doctor_report_note_mentions_skill_file_location_by_default():
+def test_render_doctor_report_when_default_does_mention_skill_file_location_in_note():
     report = _report([CheckSection(title="Env", checks=[Check("git", "ok", "found")])])
 
     note = _note(render_doctor_report(report))
@@ -150,7 +151,7 @@ def test_render_doctor_report_note_mentions_skill_file_location_by_default():
     assert "presence ≠ loaded" in note
 
 
-def test_render_doctor_report_note_switches_when_workflow_section_was_skipped():
+def test_render_doctor_report_when_workflow_skipped_does_switch_note():
     report = _report(
         [
             CheckSection(
@@ -166,7 +167,7 @@ def test_render_doctor_report_note_switches_when_workflow_section_was_skipped():
     assert "skill file location" not in note
 
 
-def test_render_doctor_report_note_stays_default_when_workflow_ran_its_own_checks():
+def test_render_doctor_report_when_workflow_ran_own_checks_does_keep_default_note():
     report = _report(
         [
             CheckSection(
@@ -184,7 +185,7 @@ def test_render_doctor_report_note_stays_default_when_workflow_ran_its_own_check
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_report_summary_reports_all_three_counts():
+def test_render_doctor_report_when_mixed_statuses_does_report_all_three_counts():
     report = _report(
         [
             CheckSection(
@@ -206,7 +207,7 @@ def test_render_doctor_report_summary_reports_all_three_counts():
     assert "1 failure" in output
 
 
-def test_render_doctor_report_summary_pluralizes_singular_and_plural_counts():
+def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
     report = _report(
         [
             CheckSection(
@@ -235,7 +236,7 @@ def test_render_doctor_report_summary_pluralizes_singular_and_plural_counts():
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_report_when_no_color_suppresses_ansi(monkeypatch: pytest.MonkeyPatch):
+def test_render_doctor_report_when_no_color_does_suppress_ansi(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NO_COLOR", "1")
     report = _report(
         [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
@@ -244,7 +245,7 @@ def test_render_doctor_report_when_no_color_suppresses_ansi(monkeypatch: pytest.
     assert "\x1b[" not in render_doctor_report(report)
 
 
-def test_render_doctor_report_when_force_color_emits_ansi(monkeypatch: pytest.MonkeyPatch):
+def test_render_doctor_report_when_force_color_does_emit_ansi(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
     report = _report(
         [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
@@ -287,7 +288,7 @@ def test_render_doctor_json_when_force_color_env_does_carry_no_ansi(
     assert "\x1b[" not in output
 
 
-def test_render_doctor_json_carries_environment_sections_and_counts():
+def test_render_doctor_json_when_rendered_does_carry_environment_sections_and_counts():
     report = _report(
         [
             CheckSection(
@@ -310,7 +311,7 @@ def test_render_doctor_json_carries_environment_sections_and_counts():
     assert parsed["failCount"] == 0
 
 
-def test_render_doctor_json_carries_check_status_and_hint():
+def test_render_doctor_json_when_check_has_hint_does_carry_status_and_hint():
     report = _report(
         [
             CheckSection(

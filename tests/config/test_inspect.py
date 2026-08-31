@@ -95,31 +95,38 @@ def test_resolve_metric_meta_when_adapter_reports_kind_and_short_name_does_carry
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_metric_meta_when_config_sets_direction_does_override_adapter():
+@pytest.mark.parametrize(
+    ("metric_name", "entry", "expected"),
+    [
+        pytest.param(
+            "throughput",
+            MetricEntry(direction="higher"),
+            metric_meta("throughput", direction="higher"),
+            id="direction",
+        ),
+        pytest.param(
+            "response-time",
+            MetricEntry(gating=False),
+            metric_meta("response-time", gating=False),
+            id="gating",
+        ),
+        pytest.param(
+            "response-time",
+            MetricEntry(exact=True),
+            metric_meta("response-time", exact=True),
+            id="exact",
+        ),
+    ],
+)
+def test_resolve_metric_meta_when_config_sets_single_field_does_override(
+    metric_name: str, entry: MetricEntry, expected: ResolvedMetricMeta
+):
     adapter = make_adapter()
-    config_metrics = {"throughput": MetricEntry(direction="higher")}
+    config_metrics = {metric_name: entry}
 
-    result = resolve_metric_meta(["throughput"], config_metrics, adapter)
+    result = resolve_metric_meta([metric_name], config_metrics, adapter)
 
-    assert result == {"throughput": metric_meta("throughput", direction="higher")}
-
-
-def test_resolve_metric_meta_when_config_sets_gating_does_override_default():
-    adapter = make_adapter()
-    config_metrics = {"response-time": MetricEntry(gating=False)}
-
-    result = resolve_metric_meta(["response-time"], config_metrics, adapter)
-
-    assert result == {"response-time": metric_meta("response-time", gating=False)}
-
-
-def test_resolve_metric_meta_when_config_sets_exact_does_override_default():
-    adapter = make_adapter()
-    config_metrics = {"response-time": MetricEntry(exact=True)}
-
-    result = resolve_metric_meta(["response-time"], config_metrics, adapter)
-
-    assert result == {"response-time": metric_meta("response-time", exact=True)}
+    assert result == {metric_name: expected}
 
 
 def test_resolve_metric_meta_when_config_sets_only_gating_does_keep_direction_and_default_exact():

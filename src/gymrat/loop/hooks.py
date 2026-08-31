@@ -22,7 +22,6 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from typing import Literal
 
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
@@ -229,13 +228,12 @@ async def run_hook_stage(
     jsonl_path: str,
     on_progress: ProgressCallback | None,
     *,
-    stage: Literal["before", "after"],
     invocation: HookInvocation | None,
 ) -> str:
     """Run one lifecycle hook stage, bracketed by progress events when a command is configured."""
     if invocation is not None:
-        emit_progress(on_progress, HookStarted(stage=stage, at_ms=default_clock()))
+        emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=default_clock()))
     report = await fire_hook(jsonl_path, invocation)
     if invocation is not None:
-        emit_progress(on_progress, HookFinished(stage=stage, at_ms=default_clock()))
+        emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=default_clock()))
     return report
