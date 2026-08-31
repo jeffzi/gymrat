@@ -53,6 +53,17 @@ def existing_config_cwd(non_repo_cwd: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _init_help_output() -> str:
+    """``gymrat init --help`` rendered wide and ANSI-stripped.
+
+    Ambient color splits a flag token across escape sequences and a narrow
+    terminal wraps it across lines; both break a plain substring match.
+    """
+    result = runner.invoke(app, ["init", "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    return strip_ansi(result.stdout)
+
+
 def test_init_when_root_help_does_list_init():
     result = runner.invoke(app, ["--help"])
 
@@ -61,10 +72,7 @@ def test_init_when_root_help_does_list_init():
 
 
 def test_init_when_help_does_describe_scaffolding_a_toml_config():
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert "gymrat.toml" in result.stdout
+    assert "gymrat.toml" in _init_help_output()
 
 
 @pytest.mark.parametrize(
@@ -78,18 +86,12 @@ def test_init_when_help_does_describe_scaffolding_a_toml_config():
     ],
 )
 def test_init_when_help_does_list_new_flags(flag: str):
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert flag in result.stdout
+    assert flag in _init_help_output()
 
 
 @pytest.mark.parametrize("flag", OLD_WIZARD_FLAGS)
 def test_init_when_help_does_not_list_old_wizard_flags(flag: str):
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert flag not in result.stdout
+    assert flag not in _init_help_output()
 
 
 @pytest.mark.parametrize(
@@ -97,10 +99,7 @@ def test_init_when_help_does_not_list_old_wizard_flags(flag: str):
 )
 def test_init_when_help_does_not_list_standalone_flag(flag: str):
     """``--no-<flag>`` is legitimate; a standalone ``--<flag>`` option is not."""
-    result = runner.invoke(app, ["init", "--help"])
-
-    assert result.exit_code == 0
-    assert not re.search(rf"(?<!no-)--{flag}\b", result.stdout)
+    assert not re.search(rf"(?<!no-)--{flag}\b", _init_help_output())
 
 
 @pytest.mark.parametrize(
