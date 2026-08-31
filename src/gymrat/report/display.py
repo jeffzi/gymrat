@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, assert_never
 
-from gymrat.model import PERMUTATION_DESCRIPTOR
+from gymrat.model import PERMUTATION_FLOORS
 
 if TYPE_CHECKING:
     from gymrat.model import MetricVerdict
 
-MIN_PERMUTATION_N = PERMUTATION_DESCRIPTOR.min_n
+MIN_PERMUTATION_N = PERMUTATION_FLOORS.min_n
 
 type DisplayClass = Literal[
     "improved",
@@ -65,7 +65,7 @@ def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
             return "identical" if verdict.usable_n == 0 else "within-noise"
         case "permutation" | "exact":
             return "within-noise"
-        case _ as unreachable:  # pragma: no cover — exhaustive match over Method
+        case _ as unreachable:  # pragma: no cover — exhaustive match over VerdictMethod
             assert_never(unreachable)
 
 

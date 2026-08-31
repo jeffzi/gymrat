@@ -8,7 +8,7 @@ from gymrat.model.effect import Effect
 Verdict = Literal["improved", "regressed", "no-signal"]
 """Outcome of a comparison that cannot be flagged unstable."""
 
-ApproximateVerdict = Literal["improved", "regressed", "no-signal", "unstable"]
+ApproximateVerdict = Verdict | Literal["unstable"]
 """Outcome of an approximate comparison, which may additionally be ``"unstable"``."""
 
 

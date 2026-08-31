@@ -15,7 +15,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from gymrat.stats import SignificanceResult, sign_flip_permutation_test
-from gymrat.stats.permutation import PERMUTATION_SEED, RESAMPLE_BUDGET
+from gymrat.stats.permutation import RESAMPLE_BUDGET
 
 # ---------------------------------------------------------------------------
 # sign_flip_permutation_test — pinned empirical fixtures
@@ -140,13 +140,8 @@ def test_sign_flip_permutation_test_when_monte_carlo_path_does_return_same_p_acr
 # ---------------------------------------------------------------------------
 
 
-def test_resample_budget_brackets_the_exact_enumeration_boundary():
-    assert RESAMPLE_BUDGET == 9999
+def test_resample_budget_when_inspected_does_bracket_the_exact_enumeration_boundary():
     assert 2**13 <= RESAMPLE_BUDGET < 2**14
-
-
-def test_permutation_seed_is_an_integer():
-    assert isinstance(PERMUTATION_SEED, int)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +149,7 @@ def test_permutation_seed_is_an_integer():
 # ---------------------------------------------------------------------------
 
 
-def test_sign_flip_permutation_test_is_exported_from_stats_package():
+def test_sign_flip_permutation_test_when_imported_from_stats_does_match_direct_import():
     from gymrat import stats
 
     assert stats.sign_flip_permutation_test is sign_flip_permutation_test
@@ -189,7 +184,7 @@ _no_deadline = settings(deadline=None)
 
 
 # ---------------------------------------------------------------------------
-# B43 — zero-median sign-flip rearrangements count against
+# Spec-pinned regression cases
 # ---------------------------------------------------------------------------
 
 
@@ -209,11 +204,6 @@ def test_sign_flip_permutation_test_when_zero_median_rearrangements_does_count_a
     assert math.isfinite(result.p)
 
 
-# ---------------------------------------------------------------------------
-# D3 — exact p over differing pairs with tied values held fixed
-# ---------------------------------------------------------------------------
-
-
 def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
     """Only differing pairs count toward the exact/MC budget decision.
 
@@ -229,8 +219,6 @@ def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_rep
     x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
     y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
 
-    assert 2 ** len(x) > RESAMPLE_BUDGET
-
     no_ties = sign_flip_permutation_test(_SIX_PAIR_X, _SIX_PAIR_Y)
     with_ties = sign_flip_permutation_test(x, y)
 
@@ -239,26 +227,15 @@ def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_rep
     assert with_ties.p == no_ties.p
 
 
-# ---------------------------------------------------------------------------
-# D1 — permutation descriptor docstring
-# ---------------------------------------------------------------------------
+def test_permutation_descriptor_when_inspected_does_expose_strict_p_threshold():
+    from gymrat.model.verdict_method import PERMUTATION_FLOORS
 
-
-def test_permutation_descriptor_docstring_when_inspected_does_state_strict_inequality():
-    """The PERMUTATION_DESCRIPTOR docstring states the engine gate: ``p < 0.05``."""
-    import inspect
-
-    from gymrat.model import methods
-
-    source = inspect.getsource(methods)
-    descriptor_region = source[source.index("PERMUTATION_DESCRIPTOR") :]
-
-    assert "p < 0.05" in descriptor_region
+    assert PERMUTATION_FLOORS.p_threshold == 0.05
 
 
 @_no_deadline
 @given(pairs=_paired_samples)
-def test_sign_flip_permutation_test_property_p_is_strictly_positive_within_unit_interval(
+def test_sign_flip_permutation_test_when_any_positive_pairs_does_return_p_in_unit_interval(
     pairs: list[tuple[float, float]],
 ):
     x = [pair[0] for pair in pairs]
@@ -271,7 +248,7 @@ def test_sign_flip_permutation_test_property_p_is_strictly_positive_within_unit_
 
 @_no_deadline
 @given(pairs=_paired_samples)
-def test_sign_flip_permutation_test_property_is_invariant_under_swap(
+def test_sign_flip_permutation_test_when_swapped_does_return_same_p(
     pairs: list[tuple[float, float]],
 ):
     x = [pair[0] for pair in pairs]

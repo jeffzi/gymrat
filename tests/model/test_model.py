@@ -4,23 +4,23 @@ from typing import assert_never
 import pytest
 
 from gymrat.model import (
-    BAND_DESCRIPTOR,
+    BAND_FLOORS,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
     NOISE_K,
-    PERMUTATION_DESCRIPTOR,
+    PERMUTATION_FLOORS,
     BandVerdict,
     Effect,
     ExactVerdict,
     Exclusion,
     GeomeanResult,
-    Method,
-    MethodDescriptor,
+    MethodFloors,
     MetricMeta,
     MetricVerdict,
     PermutationVerdict,
     ResolvedMetricMeta,
     Verdict,
+    VerdictMethod,
 )
 
 # ---------------------------------------------------------------------------
@@ -35,13 +35,34 @@ def test_effect_when_constructed_does_store_value_and_unit():
     assert effect.unit == "percent"
 
 
-def test_effect_when_field_assigned_does_raise_frozen_instance_error():
-    effect = Effect(value=1.0, unit="percent")
-
+@pytest.mark.parametrize(
+    ("instance", "field"),
+    [
+        pytest.param(Effect(value=1.0, unit="percent"), "value", id="effect"),
+        pytest.param(
+            MetricMeta(direction="higher", gating=False, exact=True, unit=None),
+            "gating",
+            id="metric-meta",
+        ),
+        pytest.param(
+            ResolvedMetricMeta(
+                direction="lower",
+                gating=True,
+                exact=False,
+                unit="ns",
+                kind="time",
+                short_name="decode",
+            ),
+            "kind",
+            id="resolved-metric-meta",
+        ),
+    ],
+)
+def test_frozen_model_when_field_assigned_does_raise_frozen_instance_error(
+    instance: object, field: str
+):
     with pytest.raises(dataclasses.FrozenInstanceError):
-        # The write is rejected at runtime; the type checker flags it statically, so the
-        # suppression documents the intentional frozen-field violation under test.
-        effect.value = 2.0  # pyrefly: ignore
+        setattr(instance, field, None)
 
 
 def test_effect_when_values_equal_does_compare_equal():
@@ -70,15 +91,6 @@ def test_metric_meta_when_inspected_does_have_exactly_four_named_fields():
     names = [field.name for field in dataclasses.fields(MetricMeta)]
 
     assert names == ["direction", "gating", "exact", "unit"]
-
-
-def test_metric_meta_when_field_assigned_does_raise_frozen_instance_error():
-    meta = MetricMeta(direction="higher", gating=False, exact=True, unit=None)
-
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        # The write is rejected at runtime; the type checker flags it statically, so the
-        # suppression documents the intentional frozen-field violation under test.
-        meta.gating = True  # pyrefly: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -121,36 +133,27 @@ def test_resolved_metric_meta_when_inspected_does_have_exactly_six_named_fields(
     assert names == ["direction", "gating", "exact", "unit", "kind", "short_name"]
 
 
-def test_resolved_metric_meta_when_field_assigned_does_raise_frozen_instance_error(
-    resolved_meta: ResolvedMetricMeta,
-):
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        # The write is rejected at runtime; the type checker flags it statically, so the
-        # suppression documents the intentional frozen-field violation under test.
-        resolved_meta.kind = "mem"  # pyrefly: ignore
-
-
 # ---------------------------------------------------------------------------
-# Method descriptors and noise constants
+# Method floors and noise constants
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("descriptor", "method", "min_n", "p_threshold"),
+    ("floors", "method", "min_n", "p_threshold"),
     [
-        (PERMUTATION_DESCRIPTOR, "permutation", 6, 0.05),
-        (BAND_DESCRIPTOR, "band", 2, None),
+        (PERMUTATION_FLOORS, "permutation", 6, 0.05),
+        (BAND_FLOORS, "band", 2, None),
     ],
 )
-def test_method_descriptor_when_defined_does_expose_statistical_floors(
-    descriptor: MethodDescriptor,
-    method: Method,
+def test_method_floors_when_defined_does_expose_statistical_floors(
+    floors: MethodFloors,
+    method: VerdictMethod,
     min_n: int,
     p_threshold: float | None,
 ):
-    assert descriptor.method == method
-    assert descriptor.min_n == min_n
-    assert descriptor.p_threshold == p_threshold
+    assert floors.method == method
+    assert floors.min_n == min_n
+    assert floors.p_threshold == p_threshold
 
 
 def test_noise_constants_when_referenced_does_match_model_defaults():

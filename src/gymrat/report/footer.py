@@ -38,7 +38,7 @@ _DROPPED_ROUNDS_HINT = (
 _BAND_METHOD = "noise band ±(half-range × K)"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _FooterData:
     """The pair counts the footer sorts by the cause that forced each fallback.
 
@@ -69,7 +69,7 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
                 data.ties.append(verdict.usable_n)
         case "exact":
             return
-        case _ as unreachable:  # pragma: no cover — exhaustive match over Method
+        case _ as unreachable:  # pragma: no cover — exhaustive match over VerdictMethod
             assert_never(unreachable)
 
 

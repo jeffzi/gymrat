@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.model import (
-    PERMUTATION_DESCRIPTOR,
+    PERMUTATION_FLOORS,
     Effect,
     Exclusion,
     GeomeanResult,
@@ -55,7 +55,7 @@ from tests.report._inputs import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-MIN_PERMUTATION_N = PERMUTATION_DESCRIPTOR.min_n
+MIN_PERMUTATION_N = PERMUTATION_FLOORS.min_n
 
 
 def _percent(value: float) -> Effect:
@@ -211,8 +211,16 @@ def test_format_delta_when_finite_does_sign_and_round(delta: float, expected: st
     assert format_delta(_percent(delta)) == expected
 
 
-def test_format_delta_when_undefined_arithmetic_does_render_nothing():
-    assert format_delta(_percent(float("nan"))) == ""
+@pytest.mark.parametrize(
+    "delta",
+    [
+        pytest.param(float("nan"), id="undefined-arithmetic"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_format_delta_when_non_finite_does_render_nothing(delta: float):
+    assert format_delta(_percent(delta)) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +253,9 @@ def test_format_delta_when_undefined_arithmetic_does_render_nothing():
         pytest.param(exact_verdict(), "within-noise", id="counted-metric-unchanged"),
     ],
 )
-def test_display_class_maps_verdict_to_shown_class(verdict: MetricVerdict, expected: str):
+def test_display_class_when_verdict_given_does_map_to_shown_class(
+    verdict: MetricVerdict, expected: str
+):
     assert display_class(verdict) == expected
 
 
@@ -326,7 +336,9 @@ def test_display_class_when_at_minimum_n_does_keep_real_class(
         pytest.param("inconclusive", "?", id="inconclusive"),
     ],
 )
-def test_get_glyph_marks_display_class(shown: DisplayClass, expected: str):
+def test_get_glyph_when_display_class_given_does_return_expected_mark(
+    shown: DisplayClass, expected: str
+):
     assert get_glyph(shown) == expected
 
 
@@ -363,7 +375,7 @@ def test_count_verdicts_when_no_metrics_does_report_zeros():
         pytest.param(1, VerdictCounts(improved=0, regressed=1, unstable=0, no_signal=0), id="c1"),
     ],
 )
-def test_count_verdicts_counts_only_the_named_candidate(
+def test_count_verdicts_when_candidate_named_does_count_only_that_candidate(
     candidate_index: int, expected: VerdictCounts
 ):
     metrics: Metrics = {
@@ -383,7 +395,7 @@ def test_count_verdicts_counts_only_the_named_candidate(
 # ---------------------------------------------------------------------------
 
 
-def test_select_highlights_orders_regressions_then_improvements_then_unstable():
+def test_select_highlights_when_mixed_verdicts_does_order_regressions_then_improvements_then_unstable():
     metrics: Metrics = {
         "small-improvement/time": approximate_metric(verdict="improved", delta=-4),
         "quiet-unstable/time": approximate_metric(verdict="unstable", delta=6, noise_pct=210),
@@ -431,7 +443,7 @@ def test_select_highlights_when_single_pair_does_leave_out():
     assert [highlight.name for highlight in highlights] == ["faster/time"]
 
 
-def test_select_highlights_keeps_declaration_order_for_equal_magnitude():
+def test_select_highlights_when_equal_magnitude_does_keep_declaration_order():
     metrics: Metrics = {
         "second-listed/ops": approximate_metric(verdict="regressed", delta=-5, direction="higher"),
         "third-listed/time": approximate_metric(verdict="regressed", delta=5),
@@ -447,7 +459,7 @@ def test_select_highlights_keeps_declaration_order_for_equal_magnitude():
     ]
 
 
-def test_select_highlights_carries_metric_and_candidate_slice():
+def test_select_highlights_when_selected_does_carry_metric_and_candidate_slice():
     metrics: Metrics = {
         "slower/time": metric_for(
             [
@@ -472,7 +484,7 @@ def test_select_highlights_carries_metric_and_candidate_slice():
         pytest.param(1, ["a/time"], id="c1"),
     ],
 )
-def test_select_highlights_ranks_each_candidate_by_its_own_verdicts(
+def test_select_highlights_when_multiple_candidates_does_rank_each_by_its_own_verdicts(
     candidate_index: int, expected: list[str]
 ):
     metrics: Metrics = {
@@ -535,7 +547,9 @@ def test_select_highlights_when_sub_minimum_band_does_exclude():
         ),
     ],
 )
-def test_scoped_geomean_label_counts_the_subset(scope: str, geomean: GeomeanResult, expected: str):
+def test_scoped_geomean_label_when_subset_given_does_count_the_subset(
+    scope: str, geomean: GeomeanResult, expected: str
+):
     assert scoped_geomean_label(scope, geomean) == expected
 
 
@@ -556,7 +570,9 @@ def test_scoped_geomean_label_counts_the_subset(scope: str, geomean: GeomeanResu
         pytest.param(geomean_of(value=float("nan"), n=0), "bold", id="no-stable-metrics"),
     ],
 )
-def test_geomean_value_style_styles_by_value_against_band(geomean: GeomeanResult, expected: str):
+def test_geomean_value_style_when_value_given_does_style_against_band(
+    geomean: GeomeanResult, expected: str
+):
     assert geomean_value_style(geomean, []) == expected
 
 
@@ -580,7 +596,7 @@ def test_verdict_summary_parts_when_plain_does_carry_no_ansi():
     assert "\x1b[" not in "".join(_plain(part) for part in parts)
 
 
-def test_verdict_summary_parts_tallies_identical_and_single_pair_apart_from_noise():
+def test_verdict_summary_parts_when_mixed_does_tally_identical_and_single_pair_apart_from_noise():
     parts = verdict_summary_parts(_MIXED, 0)
 
     assert _plain(_find_plain(parts, "identical")) == "= 1 identical"
@@ -597,7 +613,7 @@ def test_verdict_summary_parts_tallies_identical_and_single_pair_apart_from_nois
         pytest.param("identical", "36", id="identical-cyan"),
     ],
 )
-def test_verdict_summary_parts_colors_nonzero_part(label: str, code: str):
+def test_verdict_summary_parts_when_nonzero_does_color_the_part(label: str, code: str):
     parts = verdict_summary_parts(_MIXED, 0)
     part = _find_plain(parts, label)
 
@@ -605,7 +621,7 @@ def test_verdict_summary_parts_colors_nonzero_part(label: str, code: str):
 
 
 @pytest.mark.parametrize("label", ["regressed", "identical"])
-def test_verdict_summary_parts_dims_zero_count_part(label: str):
+def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
     only_improved: Metrics = {"faster/time": approximate_metric(verdict="improved", delta=-10)}
 
     parts = verdict_summary_parts(only_improved, 0)
@@ -614,14 +630,14 @@ def test_verdict_summary_parts_dims_zero_count_part(label: str):
     assert "2" in _sgr_codes(_colored(part))
 
 
-def test_verdict_summary_parts_dims_within_noise_regardless_of_count():
+def test_verdict_summary_parts_when_within_noise_does_dim_regardless_of_count():
     parts = verdict_summary_parts(_MIXED, 0)
     part = _find_plain(parts, "within noise")
 
     assert "2" in _sgr_codes(_colored(part))
 
 
-def test_verdict_summary_parts_pads_counts_to_widest_digit_width():
+def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():
     metrics: Metrics = {
         f"improved-{i}/time": approximate_metric(verdict="improved", delta=-(i + 1))
         for i in range(10)
@@ -688,7 +704,7 @@ def test_footer_lines_when_plain_does_carry_no_ansi():
     assert all("\x1b[" not in _plain(line) for line in lines)
 
 
-def test_footer_lines_dims_the_descriptive_verdict_line():
+def test_footer_lines_when_colored_does_dim_the_descriptive_verdict_line():
     metrics: Metrics = {"a/time": approximate_metric(verdict="improved", delta=-10)}
 
     verdict_line = next(line for line in _verbose_lines(metrics) if "permutation" in _plain(line))
@@ -730,11 +746,13 @@ def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
         ),
     ],
 )
-def test_footer_lines_phrases_band_line_by_cause(metrics: Metrics, expected: list[str]):
+def test_footer_lines_when_cause_varies_does_phrase_band_line_accordingly(
+    metrics: Metrics, expected: list[str]
+):
     assert _band_lines_for(metrics) == expected
 
 
-def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
+def test_footer_lines_when_formatter_injected_does_hand_hint_line_to_it():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
     assert footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare") == [
@@ -779,7 +797,9 @@ def test_footer_lines_hands_the_hint_line_to_the_injected_formatter():
         ),
     ],
 )
-def test_footer_lines_hints_by_cause(metrics: Metrics, expected: list[str]):
+def test_footer_lines_when_cause_varies_does_hint_accordingly(
+    metrics: Metrics, expected: list[str]
+):
     lines = footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare")
 
     assert [_plain(line) for line in lines] == expected
@@ -908,7 +928,7 @@ def test_pluralize_when_plural_given_does_override_the_suffix_rules(count: int, 
         pytest.param(ReportOptions(color=False), False, id="forced-off"),
     ],
 )
-def test_report_options_carries_an_optional_color_override(
+def test_report_options_when_color_override_given_does_carry_it(
     options: ReportOptions, expected: bool | None
 ):
     assert options.color is expected

@@ -16,10 +16,15 @@ from gymrat.model import (
     Direction,
     Effect,
     ExactVerdict,
+    MetricMeta,
     MetricVerdict,
     ResolvedMetricMeta,
     Verdict,
 )
+
+METRIC_BYTES_LOWER: dict[str, MetricMeta] = {
+    "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
+}
 
 
 def exact_verdict(delta: float) -> ExactVerdict:
@@ -105,11 +110,12 @@ def build_inputs(
     return verdicts, metric_meta
 
 
-def _noop_warn(_message: str) -> None:
+def noop_warn(_message: str) -> None:
     """Swallow divergence warnings so these cases stay silent on stderr."""
 
 
 def create_samples(n: int, value: float) -> list[dict[str, float]]:
+    """Build *n* single-metric sample rounds, each recording *value* under ``"metric"``."""
     return [{"metric": value} for _ in range(n)]
 
 
@@ -128,10 +134,11 @@ def unstable_band_verdict() -> BandVerdict:
 
 # Re-exported for callers building explicit band/permutation verdicts.
 __all__ = [
+    "METRIC_BYTES_LOWER",
     "MetricSpec",
-    "_noop_warn",
     "build_inputs",
     "create_samples",
     "exact_verdict",
+    "noop_warn",
     "unstable_band_verdict",
 ]

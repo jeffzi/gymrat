@@ -16,15 +16,15 @@ three methods:
 
 import dataclasses
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from gymrat.model import (
-    BAND_DESCRIPTOR,
+    BAND_FLOORS,
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
     NOISE_K,
-    PERMUTATION_DESCRIPTOR,
+    PERMUTATION_FLOORS,
     BandVerdict,
     Direction,
     Effect,
@@ -44,6 +44,21 @@ from gymrat.warn import WarnSink, warn_to_stderr
 ONE_BYTE_PCT = 100.0
 """One byte expressed as a percentage of a one-byte median: what a whole-byte metric
 cannot measure below."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PairedSamples:
+    """A metric's round-paired samples with the per-side medians already computed.
+
+    Bundles what every downstream step needs — the engine computes the medians
+    once for the delta, and the noise and verdict paths reuse them instead of
+    recomputing.
+    """
+
+    left: Sequence[float]
+    right: Sequence[float]
+    median_left: float
+    median_right: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,11 +129,7 @@ def _fraction_of_median(numerator: float, median: float) -> float:
     return 0.0 if median == 0 else numerator / abs(median)
 
 
-def _compute_noise(
-    paired_left: list[float],
-    paired_right: list[float],
-    unit: MetricUnit | None,
-) -> _Noise:
+def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
     """Compute the measurement noise of a metric.
 
     Percentage form:
@@ -132,19 +143,17 @@ def _compute_noise(
     rather than a measured 25% win, however tight its spread. Averaged units such
     as ``ns`` carry no such bound and keep the plain floor.
     """
-    median_a = compute_median(paired_left)
-    median_b = compute_median(paired_right)
-    half_range_a = compute_half_range(paired_left)
-    half_range_b = compute_half_range(paired_right)
+    half_range_a = compute_half_range(samples.left)
+    half_range_b = compute_half_range(samples.right)
 
-    spread_a = _fraction_of_median(half_range_a, median_a)
-    spread_b = _fraction_of_median(half_range_b, median_b)
+    spread_a = _fraction_of_median(half_range_a, samples.median_left)
+    spread_b = _fraction_of_median(half_range_b, samples.median_right)
     max_spread = max(spread_a, spread_b)
 
     byte_floor_pct = (
         max(
-            _fraction_of_median(ONE_BYTE_PCT, median_a),
-            _fraction_of_median(ONE_BYTE_PCT, median_b),
+            _fraction_of_median(ONE_BYTE_PCT, samples.median_left),
+            _fraction_of_median(ONE_BYTE_PCT, samples.median_right),
         )
         if unit == "bytes"
         else 0.0
@@ -153,7 +162,9 @@ def _compute_noise(
     # A side with median 0 and non-zero half-range makes the noise fraction
     # undefined (division by zero). Force the unstable flag so the engine
     # never serializes an infinite noise_pct into session records.
-    force_unstable = (median_a == 0 and half_range_a != 0) or (median_b == 0 and half_range_b != 0)
+    force_unstable = (samples.median_left == 0 and half_range_a != 0) or (
+        samples.median_right == 0 and half_range_b != 0
+    )
 
     return _Noise(
         pct=max(NOISE_K * 100 * max_spread, NOISE_FLOOR_PCT, byte_floor_pct),
@@ -164,8 +175,7 @@ def _compute_noise(
 
 
 def _compute_approximate_verdict(
-    paired_left: list[float],
-    paired_right: list[float],
+    samples: _PairedSamples,
     delta: float,
     meta: MetricMeta,
     unstable_noise_pct: float,
@@ -173,7 +183,7 @@ def _compute_approximate_verdict(
     """Decide a non-exact verdict, applying the unstable override.
 
     Uses the sign-flip permutation test when at least
-    :attr:`PERMUTATION_DESCRIPTOR.min_n` pairs differ by a non-zero amount; the
+    :attr:`PERMUTATION_FLOORS.min_n` pairs differ by a non-zero amount; the
     noise band otherwise. Tied pairs contribute no sign to flip, so a long but
     mostly identical run falls back to the band just as a short one does.
 
@@ -181,14 +191,14 @@ def _compute_approximate_verdict(
     must also clear the metric's measurement resolution, or a one-byte
     quantization step reads as signal however many rounds agree on it.
     """
-    _, nonzero_n = count_nonzero_pairs(paired_left, paired_right)
-    noise = _compute_noise(paired_left, paired_right, meta.unit)
-    n = len(paired_left)
+    _, nonzero_n = count_nonzero_pairs(samples.left, samples.right)
+    noise = _compute_noise(samples, meta.unit)
+    n = len(samples.left)
     effect = Effect(value=delta, unit="percent")
 
     record: PermutationVerdict | BandVerdict
-    if nonzero_n < PERMUTATION_DESCRIPTOR.min_n:
-        has_signal = nonzero_n >= BAND_DESCRIPTOR.min_n and abs(delta) > noise.pct
+    if nonzero_n < PERMUTATION_FLOORS.min_n:
+        has_signal = nonzero_n >= BAND_FLOORS.min_n and abs(delta) > noise.pct
         verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
@@ -200,13 +210,13 @@ def _compute_approximate_verdict(
             n=n,
         )
     else:
-        result = sign_flip_permutation_test(paired_left, paired_right)
+        result = sign_flip_permutation_test(samples.left, samples.right)
         # The permutation descriptor always carries a threshold; the union type
         # admits None only for the exact and band descriptors. Surface a
         # misconfiguration rather than compare against None.
-        threshold = PERMUTATION_DESCRIPTOR.p_threshold
+        threshold = PERMUTATION_FLOORS.p_threshold
         if threshold is None:
-            message = "PERMUTATION_DESCRIPTOR must define a p-value threshold"
+            message = "PERMUTATION_FLOORS must define a p-value threshold"
             raise ValueError(message)
         has_signal = result.p < threshold and abs(delta) > noise.resolution_pct
         verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
@@ -270,9 +280,13 @@ def compute_verdicts(
         if not paired.left:
             continue
 
-        median_a = compute_median(paired.left)
-        median_b = compute_median(paired.right)
-        delta = _compute_delta(median_a, median_b)
+        samples = _PairedSamples(
+            left=paired.left,
+            right=paired.right,
+            median_left=compute_median(paired.left),
+            median_right=compute_median(paired.right),
+        )
+        delta = _compute_delta(samples.median_left, samples.median_right)
 
         if meta.exact:
             result[metric] = ExactVerdict(
@@ -282,13 +296,7 @@ def compute_verdicts(
                 n=len(paired.left),
             )
         else:
-            result[metric] = _compute_approximate_verdict(
-                paired.left,
-                paired.right,
-                delta,
-                meta,
-                unstable_noise_pct,
-            )
+            result[metric] = _compute_approximate_verdict(samples, delta, meta, unstable_noise_pct)
 
         if paired.dropped > 0:
             warn(
