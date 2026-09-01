@@ -9,7 +9,7 @@ the system-prompt append and settles the opening kickoff message.
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.bundled_skill import read_bundled_skill
+from gymrat.bundled_skill import read_bundled_skill, strip_frontmatter
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 
@@ -31,8 +31,10 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
     """Build the supervised session's system-prompt append and kickoff message.
 
     The bundled skill is read first: a broken installation is surfaced before
-    any runbook validation. The runbook is then required and read, and its body
-    is appended under a heading naming its path.
+    any runbook validation. Its frontmatter is activation metadata, not
+    instructions, so only the body reaches the prompt. The runbook is then
+    required and read, and its body is appended under a heading naming its
+    path.
 
     Args:
         config: The settled benchless configuration; its ``runbook`` must name a
@@ -43,7 +45,7 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         GymratError: When the bundled skill cannot be read, when no runbook is
             configured, or when the configured runbook file cannot be read.
     """
-    skill_content = read_bundled_skill()
+    skill_content = strip_frontmatter(read_bundled_skill())
 
     if config.runbook is None:
         message = "No runbook configured — set `runbook` in gymrat.toml."

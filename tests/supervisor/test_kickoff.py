@@ -12,6 +12,7 @@ import pytest
 from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 from gymrat.supervisor import compose_kickoff
+from gymrat.supervisor.kickoff import KickoffResult
 
 # The heading the packaged SKILL.md opens its body with; proves the real
 # bundled skill text made it into the append.
@@ -42,6 +43,15 @@ def _write_runbook(directory: Path, content: str = RUNBOOK_CONTENT) -> str:
     runbook_path = directory / "runbook.md"
     runbook_path.write_text(content, encoding="utf-8")
     return str(runbook_path)
+
+
+def _compose_with_skill_text(
+    skill_text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> KickoffResult:
+    """Run ``compose_kickoff`` with the bundled skill patched to return ``skill_text``."""
+    monkeypatch.setattr("gymrat.supervisor.kickoff.read_bundled_skill", lambda: skill_text)
+    config = _make_config(runbook=_write_runbook(tmp_path))
+    return compose_kickoff(config)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +121,58 @@ def test_compose_kickoff_when_skill_and_runbook_present_does_order_skill_before_
     assert RUNBOOK_CONTENT in append
     assert f"## Runbook: {config.runbook}" in append
     assert append.index(SKILL_MARKER) < append.index("## Runbook:")
+
+
+def test_compose_kickoff_when_bundled_skill_has_frontmatter_does_omit_it_from_append(
+    tmp_path: Path,
+):
+    config = _make_config(runbook=_write_runbook(tmp_path))
+
+    result = compose_kickoff(config)
+
+    prelude = result.system_prompt_append.partition(SKILL_MARKER)[0]
+    assert SKILL_MARKER in result.system_prompt_append
+    assert "---" not in prelude
+    assert "name: gymrat" not in prelude
+    assert "description:" not in prelude
+    assert "when_to_use:" not in prelude
+
+
+def test_compose_kickoff_when_skill_has_no_frontmatter_does_keep_text_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    skill_text = "# Plain skill\n\nGuidance.\n\n---\n\nMore after a horizontal rule.\n"
+
+    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+
+    assert skill_text in result.system_prompt_append
+
+
+def test_compose_kickoff_when_frontmatter_values_span_lines_does_drop_whole_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    body = "# Folded skill\n\nBody survives.\n"
+    skill_text = (
+        "---\n"
+        "name: folded\n"
+        "description: >-\n"
+        "  first folded line\n"
+        "  second folded line\n"
+        "when_to_use: >-\n"
+        "  another folded line\n"
+        "---\n"
+        "\n" + body
+    )
+
+    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+
+    prelude = result.system_prompt_append.partition("# Folded skill")[0]
+    assert body in result.system_prompt_append
+    assert "---" not in prelude
+    assert "name: folded" not in prelude
+    assert "folded line" not in prelude
 
 
 # ---------------------------------------------------------------------------
