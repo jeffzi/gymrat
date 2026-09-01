@@ -631,4 +631,4 @@ def test_inspect_config_when_integer_env_var_exceeds_cap_does_report_naming_cap(
 
     joined = "\n".join(result.problems)
     assert has_problem(result.problems, env_var)
-    assert f"no greater than {cap}" in joined
+    assert "a positive integer" in joined

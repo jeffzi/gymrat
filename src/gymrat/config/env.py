@@ -58,8 +58,7 @@ def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResu
     r"""Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
 
     The ``isascii() and isdigit()`` check rejects sign, decimal point,
-    exponent, and hex notation, so only a bare run of ASCII digits parses. When
-    ``maximum`` is supplied the cap is named in the error phrase.
+    exponent, and hex notation, so only a bare run of ASCII digits parses.
     """
     raw = os.environ.get(env_var)
     if raw is None:
@@ -75,11 +74,7 @@ def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResu
         valid = False
     if valid:
         return EnvResult(value=int(raw))
-    phrase = (
-        f"a positive integer no greater than {maximum}"
-        if maximum is not None
-        else "a positive integer"
-    )
+    phrase = "a positive integer"
     got = json.dumps(raw)
     return EnvResult(problem=f"Invalid value for {env_var}: expected {phrase}, got {got}")
 
