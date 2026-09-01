@@ -11,7 +11,6 @@ from gymrat.config.types import (
     GEOMEAN_PRIMARY,
     BenchlessConfig,
 )
-from gymrat.errors import GymratError
 
 
 def flag_problem(field_name: str, value: str | None) -> str | None:
@@ -24,13 +23,6 @@ def flag_problem(field_name: str, value: str | None) -> str | None:
     if value is not None and not value.strip():
         return invalid_value_message(f"--{field_name}", "a non-empty string", value)
     return None
-
-
-def assert_flag_not_empty(field_name: str, value: str | None) -> None:
-    """Raise on a blank flag value."""
-    problem = flag_problem(field_name, value)
-    if problem is not None:
-        raise GymratError(problem)
 
 
 def loop_key_problems(config: BenchlessConfig) -> list[str]:
@@ -60,13 +52,6 @@ def loop_key_problems(config: BenchlessConfig) -> list[str]:
     return problems
 
 
-def validate_loop_keys(config: BenchlessConfig) -> None:
-    """Raise on the first cross-field violation."""
-    problems = loop_key_problems(config)
-    if problems:
-        raise GymratError(problems[0])
-
-
 def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
     """Return a problem string when ``runbook`` does not name an existing file.
 
@@ -86,10 +71,3 @@ def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
     if info is None or not stat.S_ISREG(info.st_mode):
         return invalid_value_message("runbook", "a path to an existing file", runbook)
     return None
-
-
-def assert_runbook_exists(runbook: str, base_dir: str | Path | None) -> None:
-    """Raise when the runbook does not name an existing file."""
-    problem = runbook_problem(runbook, base_dir)
-    if problem is not None:
-        raise GymratError(problem)
