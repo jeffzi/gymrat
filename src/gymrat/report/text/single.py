@@ -198,7 +198,7 @@ def render_table(
         )
 
     cells_by_name = {row.name: metric_cells(row) for row in layout.ordered}
-    rows = [cells_by_name[row.name] for row in layout.ordered]
+    rows = list(cells_by_name.values())
     widths = _column_widths(headers, rows, body, aggregate_parts, verdict_fields)
 
     def to_cells(line: BodyLine[_MeasuredRow, _AggregateCell]) -> tuple[str, ...]:

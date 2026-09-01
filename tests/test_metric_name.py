@@ -100,29 +100,16 @@ def test_parse_when_varying_depth_does_expose_correct_group_and_case(
 
 
 # ---------------------------------------------------------------------------
-# format_inline — color on
+# format_inline — always colored
 # ---------------------------------------------------------------------------
 
 
-def test_format_inline_when_color_on_does_return_rich_markup():
+def test_format_inline_when_called_does_return_rich_markup():
     name = parse("node/access.get_1field#time")
 
-    result = format_inline(name, color=True)
+    result = format_inline(name)
 
     assert result == "[dim]node/[/dim]access.get_1field[dim]#time[/dim]"
-
-
-# ---------------------------------------------------------------------------
-# format_inline — color off
-# ---------------------------------------------------------------------------
-
-
-def test_format_inline_when_color_off_does_return_plain_name():
-    name = parse("node/access.get_1field#time")
-
-    result = format_inline(name, color=False)
-
-    assert result == "node/access.get_1field#time"
 
 
 # ---------------------------------------------------------------------------
@@ -174,15 +161,7 @@ def test_format_inline_when_color_on_and_brackets_in_segments_does_render_litera
     """Metric names with rich-markup-shaped brackets must survive color rendering."""
     name = parse(raw_name)
 
-    markup = format_inline(name, color=True)
+    markup = format_inline(name)
     rendered = render_lines(markup, color=False, width=200)
 
     assert rendered == expected_plain
-
-
-def test_format_inline_when_color_off_and_brackets_in_segments_does_render_literally():
-    name = parse("parse[js]#time")
-
-    result = format_inline(name, color=False)
-
-    assert result == "parse[js]#time"

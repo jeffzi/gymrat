@@ -9,10 +9,10 @@ from gymrat.report.display import MIN_PERMUTATION_N
 from gymrat.report.format import (
     format_pair_count,
 )
-from gymrat.report.style import markup
+from gymrat.report.style import format_hint, markup
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from gymrat.model import MetricVerdict
     from gymrat.report.types import MetricComparisons
@@ -132,20 +132,17 @@ def footer_lines(
     metrics: MetricComparisons,
     *,
     verbose: bool,
-    format_hint: Callable[[str], str],
     command: str,
     samples: int | None = None,
 ) -> list[str]:
     """The footer: how each verdict was decided when verbose, and the samples hint.
 
     When ``samples`` is provided the hint distinguishes insufficient samples from
-    dropped rounds. Renderers differ only in how they format the hint line, which
-    ``format_hint`` owns.
+    dropped rounds.
 
     Args:
         metrics: Every metric of the run, keyed by name.
         verbose: Whether to include the method lines naming each verdict's basis.
-        format_hint: Turns a bare hint into the renderer's own hint line.
         command: The subcommand the report was produced by, so a hint suggesting
             a re-run names the whole invocation.
         samples: The run's sample count, to distinguish shortage from dropped

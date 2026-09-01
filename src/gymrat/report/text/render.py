@@ -40,7 +40,6 @@ from gymrat.report.style import (
     RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
-    format_hint,
     markup,
     render_lines,
     truncate_labels,
@@ -312,7 +311,6 @@ def _render_method_footer(result: ComparisonResult, *, verbose: bool, command: s
     return footer_lines(
         result.metrics,
         verbose=verbose,
-        format_hint=format_hint,
         command=command,
         samples=result.samples,
     )

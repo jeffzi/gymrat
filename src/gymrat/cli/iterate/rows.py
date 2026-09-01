@@ -161,17 +161,16 @@ def build_judge_detail(
 
     detail = Text()
     detail.append(primary, style=STYLE_META)
+    detail.append(" · ", style=STYLE_META)
     if regressed:
-        detail.append(" · ", style=STYLE_META)
         detail.append(f"{len(regressed)} regressed: ", style=STYLE_META)
         for i, name in enumerate(regressed[:_REGRESSED_NAME_CAP]):
             if i > 0:
                 detail.append(", ", style=STYLE_META)
-            detail.append_text(Text.from_markup(format_inline(parse(name), color=True)))
+            detail.append_text(Text.from_markup(format_inline(parse(name))))
         if len(regressed) > _REGRESSED_NAME_CAP:
             detail.append(", …", style=STYLE_META)
-    if not regressed:
-        detail.append(" · ", style=STYLE_META)
+    else:
         detail.append("no gating regression", style=STYLE_META)
     return detail
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -62,10 +63,9 @@ def count_verdicts(metrics: MetricComparisons, candidate_index: int) -> VerdictC
     Returns:
         The per-class tally.
     """
-    tally = {"improved": 0, "regressed": 0, "unstable": 0, "no-signal": 0}
-
-    for verdict in _each_verdict(metrics, candidate_index):
-        tally[verdict.verdict] += 1
+    tally: Counter[str] = Counter(
+        verdict.verdict for verdict in _each_verdict(metrics, candidate_index)
+    )
 
     return VerdictCounts(
         improved=tally["improved"],
@@ -88,14 +88,9 @@ _DISPLAY_CLASS_ORDER: tuple[DisplayClass, ...] = (
 def _display_counts(
     metrics: MetricComparisons,
     candidate_index: int,
-) -> dict[DisplayClass, int]:
+) -> Counter[DisplayClass]:
     """How many metrics one candidate landed in each display class."""
-    counts: dict[DisplayClass, int] = dict.fromkeys(_DISPLAY_CLASS_ORDER, 0)
-
-    for verdict in _each_verdict(metrics, candidate_index):
-        counts[display_class(verdict)] += 1
-
-    return counts
+    return Counter(display_class(verdict) for verdict in _each_verdict(metrics, candidate_index))
 
 
 def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> list[str]:
@@ -115,7 +110,7 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
         One markup string per display class.
     """
     counts = _display_counts(metrics, candidate_index)
-    max_width = max(len(str(count)) for count in counts.values())
+    max_width = max(len(str(counts[shown])) for shown in _DISPLAY_CLASS_ORDER)
 
     parts: list[str] = []
     for shown in _DISPLAY_CLASS_ORDER:

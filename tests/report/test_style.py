@@ -506,31 +506,3 @@ def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
 
     assert "\x1b[" in result
     assert "hi" in result
-
-
-# ---------------------------------------------------------------------------
-# report package re-exports
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "shorten_label",
-        "truncate_labels",
-        "render_lines",
-        "make_capture_console",
-        "format_hint",
-        "highlight_inline_code",
-        "VERDICT_STYLES",
-        "VARIANT_NAME_STYLE",
-        "GROUP_LABEL_STYLE",
-        "AGGREGATE_LABEL_STYLE",
-        "LABEL_DISPLAY_WIDTH",
-    ],
-)
-def test_report_package_when_queried_does_reexport_public_style_name(name: str):
-    from gymrat import report
-    from gymrat.report import style
-
-    assert getattr(report, name) is getattr(style, name)

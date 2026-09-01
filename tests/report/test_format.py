@@ -683,7 +683,7 @@ def _verbose_lines(metrics: Metrics) -> list[str]:
     """The verbose method lines, with no hint contribution."""
     return [
         line
-        for line in footer_lines(metrics, verbose=True, format_hint=format_hint, command="compare")
+        for line in footer_lines(metrics, verbose=True, command="compare")
         if SAMPLE_SHORTAGE_HINT_PLAIN not in _plain(line)
     ]
 
@@ -715,7 +715,7 @@ def test_footer_lines_when_colored_does_dim_the_descriptive_verdict_line():
 def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    lines = footer_lines(metrics, verbose=True, format_hint=format_hint, command="compare")
+    lines = footer_lines(metrics, verbose=True, command="compare")
 
     assert lines[-1] == format_hint(SAMPLE_SHORTAGE_HINT)
 
@@ -752,10 +752,10 @@ def test_footer_lines_when_cause_varies_does_phrase_band_line_accordingly(
     assert _band_lines_for(metrics) == expected
 
 
-def test_footer_lines_when_formatter_injected_does_hand_hint_line_to_it():
+def test_footer_lines_when_hint_present_does_format_it():
     metrics: Metrics = {"a/time": band_metric(n=4)}
 
-    assert footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare") == [
+    assert footer_lines(metrics, verbose=False, command="compare") == [
         format_hint(SAMPLE_SHORTAGE_HINT)
     ]
 
@@ -800,7 +800,7 @@ def test_footer_lines_when_formatter_injected_does_hand_hint_line_to_it():
 def test_footer_lines_when_cause_varies_does_hint_accordingly(
     metrics: Metrics, expected: list[str]
 ):
-    lines = footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare")
+    lines = footer_lines(metrics, verbose=False, command="compare")
 
     assert [_plain(line) for line in lines] == expected
 
@@ -819,9 +819,7 @@ def test_footer_lines_when_cause_varies_does_hint_accordingly(
 def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     metrics: Metrics, samples: int
 ):
-    lines = footer_lines(
-        metrics, verbose=False, format_hint=format_hint, command="compare", samples=samples
-    )
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=samples)
 
     assert any("gymrat compare --samples" in line for line in lines)
 
@@ -845,9 +843,7 @@ def test_footer_lines_when_samples_below_floor_does_suggest_more_samples(
     ],
 )
 def test_footer_lines_when_samples_enough_does_name_dropped_rounds(metrics: Metrics, samples: int):
-    lines = footer_lines(
-        metrics, verbose=False, format_hint=format_hint, command="compare", samples=samples
-    )
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=samples)
 
     assert not any("gymrat compare --samples" in line for line in lines)
     assert any("dropped" in line for line in lines)
@@ -856,10 +852,7 @@ def test_footer_lines_when_samples_enough_does_name_dropped_rounds(metrics: Metr
 def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint():
     metrics: Metrics = {"a/time": approximate_metric(verdict="improved", delta=-10)}
 
-    assert (
-        footer_lines(metrics, verbose=False, format_hint=format_hint, command="compare", samples=10)
-        == []
-    )
+    assert footer_lines(metrics, verbose=False, command="compare", samples=10) == []
 
 
 # ---------------------------------------------------------------------------
