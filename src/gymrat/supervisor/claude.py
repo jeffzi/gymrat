@@ -19,7 +19,7 @@ import json
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from math import ceil
-from typing import Protocol
+from typing import Literal, Protocol
 
 from gymrat.session.clock import now_ms
 from gymrat.supervisor.driver import (
@@ -30,6 +30,7 @@ from gymrat.supervisor.driver import (
     SessionPrompt,
 )
 from gymrat.supervisor.events import (
+    ModelPhaseEvent,
     TextDeltaEvent,
     ThinkingUpdateEvent,
     ToolEndEvent,
@@ -90,6 +91,7 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
     options: dict[str, object] = {
         "cwd": prompt.cwd,
         "permission_mode": "bypassPermissions",
+        "include_partial_messages": True,
     }
     if prompt.system_prompt_append is not None:
         options["system_prompt"] = {
@@ -105,6 +107,24 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
 #: Rough chars-per-token ratio used to estimate thinking-block token counts,
 #: since the SDK reports thinking as text, not a token count.
 _CHARS_PER_TOKEN_ESTIMATE = 4
+
+#: A ThinkingUpdateEvent is emitted only after this many characters accumulate
+#: since the last emit, keeping the event rate bounded during long thinking blocks.
+_THINKING_EMIT_CHARS = 200
+
+#: Mirrors :class:`~gymrat.supervisor.events.ModelPhaseEvent`'s ``phase`` literal.
+_ModelPhase = Literal["thinking", "responding", "tool_input", "turn_end"]
+
+
+class _ThinkingStream:
+    """Per-parent running state for streamed thinking deltas."""
+
+    __slots__ = ("chars_since_emit", "estimated_tokens", "text_len")
+
+    def __init__(self) -> None:
+        self.estimated_tokens: int = 0
+        self.chars_since_emit: int = 0
+        self.text_len: int = 0
 
 
 async def _disconnect_quietly(client: ClaudeClient) -> None:
@@ -152,7 +172,7 @@ class _ClaudeSession:
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._cost_usd = 0.0
-        self._estimated_tokens = 0
+        self._thinking_streams: dict[str | None, _ThinkingStream] = {}
         self._tool_starts: dict[str, int] = {}
         self._tool_names: dict[str, str] = {}
         self._stopped: SessionOutcome | None = None
@@ -245,6 +265,13 @@ class _ClaudeSession:
             await _disconnect_quietly(self._client)
 
     def _map_message(self, message: object) -> None:
+        # Stream events carry an ``event`` dict and no ``content``.
+        event = getattr(message, "event", None)
+        if isinstance(event, dict) and not hasattr(message, "content"):
+            parent = getattr(message, "parent_tool_use_id", None)
+            self._map_stream_event(event, parent)
+            return
+
         cost = getattr(message, "total_cost_usd", None)
         if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
             # Commit the cost before the observer fires so a callback reading it
@@ -253,28 +280,93 @@ class _ClaudeSession:
             self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd))
             return
 
+        parent = getattr(message, "parent_tool_use_id", None)
         content = getattr(message, "content", None)
         if isinstance(content, list):
             for block in content:
-                self._map_block(block)
+                self._map_block(block, parent)
 
-    def _map_block(self, block: object) -> None:
+    def _emit_phase(
+        self, phase: _ModelPhase, parent: str | None, tool_name: str | None = None
+    ) -> None:
+        self._observer(
+            ModelPhaseEvent(
+                timestamp=now_ms(), phase=phase, tool_name=tool_name, parent_tool_use_id=parent
+            )
+        )
+
+    def _map_stream_event(self, event: dict[str, object], parent: str | None) -> None:
+        event_type = event.get("type")
+        if event_type == "content_block_start":
+            content_block = event.get("content_block")
+            if isinstance(content_block, dict):
+                self._handle_block_start(content_block, parent)
+        elif event_type == "content_block_delta":
+            delta_obj = event.get("delta")
+            if isinstance(delta_obj, dict) and delta_obj.get("type") == "thinking_delta":
+                text = delta_obj.get("thinking", "")
+                if isinstance(text, str):
+                    self._handle_thinking_delta(text, parent)
+        elif event_type == "content_block_stop":
+            self._flush_thinking_remainder(parent)
+        elif event_type == "message_stop":
+            self._emit_phase("turn_end", parent)
+
+    def _handle_block_start(self, content_block: dict[str, object], parent: str | None) -> None:
+        block_type = content_block.get("type")
+        if block_type == "thinking":
+            self._emit_phase("thinking", parent)
+            stream = self._thinking_streams.setdefault(parent, _ThinkingStream())
+            self._observer(
+                ThinkingUpdateEvent(
+                    timestamp=now_ms(),
+                    estimated_tokens=stream.estimated_tokens,
+                    delta=0,
+                    parent_tool_use_id=parent,
+                )
+            )
+        elif block_type == "text":
+            self._emit_phase("responding", parent)
+        elif block_type == "tool_use":
+            name = content_block.get("name")
+            self._emit_phase(
+                "tool_input", parent, tool_name=name if isinstance(name, str) else None
+            )
+
+    def _emit_thinking_update(self, stream: _ThinkingStream, parent: str | None) -> None:
+        new_estimate = ceil(stream.text_len / _CHARS_PER_TOKEN_ESTIMATE)
+        delta = new_estimate - stream.estimated_tokens
+        stream.estimated_tokens = new_estimate
+        stream.chars_since_emit = 0
+        self._observer(
+            ThinkingUpdateEvent(
+                timestamp=now_ms(),
+                estimated_tokens=stream.estimated_tokens,
+                delta=delta,
+                parent_tool_use_id=parent,
+            )
+        )
+
+    def _handle_thinking_delta(self, text: str, parent: str | None) -> None:
+        stream = self._thinking_streams.setdefault(parent, _ThinkingStream())
+        stream.text_len += len(text)
+        stream.chars_since_emit += len(text)
+        if stream.chars_since_emit >= _THINKING_EMIT_CHARS:
+            self._emit_thinking_update(stream, parent)
+
+    def _flush_thinking_remainder(self, parent: str | None) -> None:
+        stream = self._thinking_streams.get(parent)
+        if stream is not None and stream.chars_since_emit != 0:
+            self._emit_thinking_update(stream, parent)
+
+    def _map_block(self, block: object, parent: str | None = None) -> None:
         text = getattr(block, "text", None)
         if isinstance(text, str):
             self._observer(TextDeltaEvent(timestamp=now_ms(), chunk=text))
             return
 
-        thinking = getattr(block, "thinking", None)
-        if isinstance(thinking, str):
-            delta = ceil(len(thinking) / _CHARS_PER_TOKEN_ESTIMATE)
-            self._estimated_tokens += delta
-            self._observer(
-                ThinkingUpdateEvent(
-                    timestamp=now_ms(),
-                    estimated_tokens=self._estimated_tokens,
-                    delta=delta,
-                )
-            )
+        # Complete ThinkingBlocks are skipped — streamed deltas already counted them.
+        if hasattr(block, "thinking"):
             return
 
         block_id = getattr(block, "id", None)
@@ -294,6 +386,7 @@ class _ClaudeSession:
                         tool_name=name,
                         supervised_root=self._prompt.cwd,
                     ),
+                    parent_tool_use_id=parent,
                 )
             )
             return
@@ -311,6 +404,7 @@ class _ClaudeSession:
                     duration_ms=duration_ms,
                     result=result,
                     result_summary=summarize(result),
+                    parent_tool_use_id=parent,
                 )
             )
 
