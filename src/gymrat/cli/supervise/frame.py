@@ -27,14 +27,16 @@ from gymrat.cli.style import (
 from gymrat.cli.supervise.state import (
     IDLE_WARN_MS,
     Capped,
-    Ended,
+    Composing,
     FinishedTool,
     InFlight,
     ReadSessionResult,
     ReporterCtx,
+    Responding,
     Starting,
     Thinking,
     TrackedTool,
+    Waiting,
 )
 from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
@@ -197,6 +199,25 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
     return text
 
 
+def _build_waiting_text(
+    ago: int, last_tool_name: str | None, last_tool_at: int, result: str | None, tz: tzinfo | None
+) -> Text:
+    if ago < IDLE_WARN_MS:
+        return Text(f"  waiting  {format_duration(ago)}", style=STYLE_PENDING)
+    if last_tool_name is None:
+        return Text(f"idle {format_duration(ago)}", style=STYLE_ALERT)
+    clock = _format_wall_clock(last_tool_at, tz)
+    last_ref = (
+        f"(last: {last_tool_name} {GLYPH_ERROR})"
+        if result == "error"
+        else f"(last: {last_tool_name})"
+    )
+    return Text(
+        f"idle {format_duration(ago)} — last tool at {clock} {last_ref}",
+        style=STYLE_ALERT,
+    )
+
+
 def _build_liveness_text(
     liveness: Liveness, now: int, tz: tzinfo | None, *, tool_col: int
 ) -> Text | None:
@@ -214,19 +235,16 @@ def _build_liveness_text(
             text = Text(no_wrap=True, overflow="ellipsis")
             text.append(f"  thinking  ~{tokens:,} tokens  {elapsed}", style=STYLE_PENDING)
             return text
-        case Ended(tool_name=name, since=since, result=result):
-            ago = now - since
-            if ago >= IDLE_WARN_MS:
-                last_ref = (
-                    f"(last: {name} {GLYPH_ERROR})" if result == "error" else f"(last: {name})"
-                )
-                return Text(
-                    f"idle {format_duration(ago)}"
-                    f" — last tool at {_format_wall_clock(since, tz)}"
-                    f" {last_ref}",
-                    style=STYLE_ALERT,
-                )
-            return Text(f"  waiting  {format_duration(ago)}", style=STYLE_PENDING)
+        case Responding(since=since) | Composing(since=since):
+            elapsed = format_duration(now - since)
+            if isinstance(liveness, Composing):
+                label = f"composing {liveness.tool_name}"
+            else:
+                label = "responding"
+            return Text(f"  {label}  {elapsed}", style=STYLE_PENDING)
+        case Waiting(since=since, tool_name=name, tool_ended_at=ended_at, result=result):
+            last_tool_at = ended_at if ended_at is not None else since
+            return _build_waiting_text(now - since, name, last_tool_at, result, tz)
         case Capped(cap_type=cap_type):
             return Text(f"interrupting ({cap_type})", style=STYLE_ALERT)
         case _:  # pragma: no cover - exhaustive over the liveness union
@@ -263,15 +281,11 @@ def _build_iterate_nest(
     return text
 
 
-def build_frame(ctx: ReporterCtx) -> RenderableType:
-    """Assemble the supervise dashboard panel from the current reporter context."""
-    now = ctx.now()
-    elapsed = now - ctx.launch_timestamp if ctx.launch_timestamp is not None else 0
-
+def _build_summary_table(ctx: ReporterCtx, elapsed_ms: int) -> Table:
     summary = Table.grid(padding=(0, 1))
     summary.add_column()
 
-    summary.add_row(_build_time_bar(elapsed, ctx.max_minutes))
+    summary.add_row(_build_time_bar(elapsed_ms, ctx.max_minutes))
     summary.add_row(_build_cost_text(ctx.cost_usd, ctx.max_usd))
 
     loop_row = Text("loop   ", style=STYLE_META)
@@ -284,12 +298,19 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
         best_row.append_text(best_text)
         summary.add_row(best_row)
 
+    return summary
+
+
+def _tool_name_column_width(ctx: ReporterCtx) -> int:
+    """Widest tool name among finished tools and the in-flight one, clamped to bounds."""
     tool_names = [t.tool_name for t in ctx.finished_tools]
     if isinstance(ctx.liveness, InFlight):
         tool_names.append(ctx.liveness.tool_name)
     raw = max((len(n) for n in tool_names), default=_MIN_TOOL_NAME_WIDTH)
-    tool_col = max(_MIN_TOOL_NAME_WIDTH, min(raw, _MAX_TOOL_NAME_WIDTH))
+    return max(_MIN_TOOL_NAME_WIDTH, min(raw, _MAX_TOOL_NAME_WIDTH))
 
+
+def _build_liveness_table(ctx: ReporterCtx, now: int, *, tool_col: int) -> Table:
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
     liveness_text = _build_liveness_text(ctx.liveness, now, ctx.tz, tool_col=tool_col)
@@ -305,24 +326,39 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
     for tool in reversed(ctx.finished_tools):
         liveness_table.add_row(_build_finished_tool_line(tool, ctx.tz, tool_col=tool_col))
 
-    body = Table.grid(padding=(0, 0))
-    body.add_column()
-    body.add_row(summary)
-    body.add_row(liveness_table)
+    return liveness_table
 
+
+def _append_meta_field(text: Text, label: str, value: str) -> None:
+    text.append(" · ", style=STYLE_META)
+    text.append(label, style=STYLE_META)
+    text.append(f" {value}")
+
+
+def _build_title(ctx: ReporterCtx) -> Text:
     title = Text()
     title.append("supervise", style=STYLE_LABEL)
     if ctx.label:
         title.append(f" {ctx.label}", style=STYLE_LABEL)
     if ctx.session_id:
-        title.append(" · ", style=STYLE_META)
-        title.append("session", style=STYLE_META)
-        title.append(f" {ctx.session_id}")
+        _append_meta_field(title, "session", ctx.session_id)
     if ctx.branch:
-        title.append(" · ", style=STYLE_META)
-        title.append("branch", style=STYLE_META)
-        title.append(f" {ctx.branch}")
-    return Panel(body, title=title, title_align="left", border_style=STYLE_META)
+        _append_meta_field(title, "branch", ctx.branch)
+    return title
+
+
+def build_frame(ctx: ReporterCtx) -> RenderableType:
+    """Assemble the supervise dashboard panel from the current reporter context."""
+    now = ctx.now()
+    elapsed = now - ctx.launch_timestamp if ctx.launch_timestamp is not None else 0
+    tool_col = _tool_name_column_width(ctx)
+
+    body = Table.grid(padding=(0, 0))
+    body.add_column()
+    body.add_row(_build_summary_table(ctx, elapsed))
+    body.add_row(_build_liveness_table(ctx, now, tool_col=tool_col))
+
+    return Panel(body, title=_build_title(ctx), title_align="left", border_style=STYLE_META)
 
 
 # The label column of the summary rows, wide enough for "best" and "loop"; the

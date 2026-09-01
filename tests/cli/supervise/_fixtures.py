@@ -28,7 +28,9 @@ from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapEvent,
     LaunchEvent,
+    ModelPhaseEvent,
     SessionObserver,
+    ThinkingUpdateEvent,
     ToolEndEvent,
     ToolStartEvent,
     UsageUpdateEvent,
@@ -47,6 +49,9 @@ __all__ = [
     "fire_cap",
     "fire_launch",
     "fire_launch_and_bash_cycle",
+    "fire_launch_and_bash_start",
+    "fire_model_phase",
+    "fire_thinking_update",
     "fire_tool_end",
     "fire_tool_start",
     "fire_usage_update",
@@ -104,7 +109,7 @@ def session_state(**changes: Any) -> SessionState:
 
 
 def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
-    """Convert epoch milliseconds to local-time ``HH:MM:SS`` for test assertions.
+    """Epoch milliseconds to local ``HH:MM:SS``.
 
     Uses the same epoch-to-local conversion the implementation should use, so
     tests are timezone-independent — they compute the expected string rather
@@ -215,8 +220,8 @@ def fire_tool_start(
     timestamp: int = 2000,
     *,
     input_summary: str = "...",
+    parent_tool_use_id: str | None = None,
 ) -> None:
-    """Publish a ``ToolStartEvent`` for *tool_name* at *timestamp*."""
     observer(
         ToolStartEvent(
             timestamp=timestamp,
@@ -224,6 +229,7 @@ def fire_tool_start(
             tool_name=tool_name,
             input={},
             input_summary=input_summary,
+            parent_tool_use_id=parent_tool_use_id,
         )
     )
 
@@ -236,8 +242,8 @@ def fire_tool_end(
     *,
     result: str = "ok",
     result_summary: str = "ok",
+    parent_tool_use_id: str | None = None,
 ) -> None:
-    """Publish a ``ToolEndEvent`` for *tool_name* at *timestamp*."""
     observer(
         ToolEndEvent(
             timestamp=timestamp,
@@ -246,30 +252,75 @@ def fire_tool_end(
             duration_ms=timestamp - 2000,
             result=result,
             result_summary=result_summary,
+            parent_tool_use_id=parent_tool_use_id,
         )
     )
 
 
 def fire_usage_update(observer: SessionObserver, cost_usd: float, timestamp: int = 4000) -> None:
-    """Publish a ``UsageUpdateEvent`` carrying *cost_usd* at *timestamp*."""
     observer(UsageUpdateEvent(timestamp=timestamp, cost_usd=cost_usd))
 
 
 def fire_cap(observer: SessionObserver, cap: CapType, timestamp: int = 5000) -> None:
-    """Publish a ``CapEvent`` of type *cap* at *timestamp*."""
     observer(CapEvent(timestamp=timestamp, cap=cap))
 
 
-def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
-    """Launch, then run a Bash tool start/end cycle at the default timestamps.
+def fire_model_phase(
+    observer: SessionObserver,
+    timestamp: int,
+    phase: str,
+    *,
+    tool_name: str | None = None,
+    parent_tool_use_id: str | None = None,
+) -> None:
+    observer(
+        ModelPhaseEvent(
+            timestamp=timestamp,
+            phase=phase,  # type: ignore[arg-type]
+            tool_name=tool_name,
+            parent_tool_use_id=parent_tool_use_id,
+        )
+    )
 
-    The Bash end is what triggers the reporter's session re-read (see the
-    "session re-read" tests below), so this is the minimum event sequence
-    that gets session state into the loop/best rows.
+
+def fire_thinking_update(
+    observer: SessionObserver,
+    timestamp: int,
+    *,
+    estimated_tokens: int = 100,
+    delta: int = 10,
+    parent_tool_use_id: str | None = None,
+) -> None:
+    observer(
+        ThinkingUpdateEvent(
+            timestamp=timestamp,
+            estimated_tokens=estimated_tokens,
+            delta=delta,
+            parent_tool_use_id=parent_tool_use_id,
+        )
+    )
+
+
+def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
+    """Launch, then run a Bash start/end cycle.
+
+    The Bash end triggers the reporter's session re-read, so this is the
+    minimum event sequence that gets session state into the loop/best rows.
     """
     fire_launch(observer, 1000)
     fire_tool_start(observer, "Bash", "bash-1", 2000)
     fire_tool_end(observer, "Bash", "bash-1", 3000)
+
+
+def fire_launch_and_bash_start(observer: SessionObserver) -> None:
+    """Launch, then start a Bash tool without ending it.
+
+    Used by the in-flight-guard and nested-event tests, which fire a second
+    event on top of the still-running Bash call and assert whether it takes
+    effect or is ignored.
+    """
+    fire_launch(observer, 1000)
+    fire_tool_start(observer, "Bash", "bash-1", 1500)
 
 
 # ---------------------------------------------------------------------------

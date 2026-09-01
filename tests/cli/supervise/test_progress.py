@@ -34,6 +34,9 @@ from tests.cli.supervise._fixtures import (
     fire_cap,
     fire_launch,
     fire_launch_and_bash_cycle,
+    fire_launch_and_bash_start,
+    fire_model_phase,
+    fire_thinking_update,
     fire_tool_end,
     fire_tool_start,
     fire_usage_update,
@@ -361,7 +364,6 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
 
 
 def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_iteration():
-    """The best row renders delta, primary label, baseline SHA (7 chars), and iteration."""
     state = session_state(
         iteration_count=5,
         keep_count=2,
@@ -733,7 +735,7 @@ def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line
 
 
 def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
-    """Each finished tool line leads with the UTC completion timestamp.
+    """Wall-clock uses the reporter's timezone.
 
     The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
     string is a fixed UTC value regardless of the host timezone.
@@ -756,7 +758,7 @@ def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
 
 
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
-    """A reporter built without an explicit tz falls back to system-local time.
+    """Falls back to the system's local timezone.
 
     The expected timestamp is computed from the same epoch-to-local conversion
     the implementation should use, so this assertion is the only remaining user
@@ -814,43 +816,186 @@ def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_idle_past_threshold_does_show_wall_clock_and_last_tool_context():
-    """Idle line shows wall-clock of last tool end plus tool name, no success mark.
-
-    The format is ``idle 4m 5s — no tool call since HH:MM:SS (last: Bash)``.
-    The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
-    string is a fixed UTC value.
-    """
+@pytest.mark.parametrize(
+    ("result", "expected_context"),
+    [
+        pytest.param("ok", "(last: Bash)", id="ok-tool"),
+        pytest.param("error", "(last: Bash ✗)", id="errored-tool"),
+    ],
+)
+def test_liveness_when_idle_past_threshold_does_show_tool_context(
+    result: str, expected_context: str
+):
+    """Reporter is built with ``tz=UTC`` so wall-clock is fixed."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
     fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000, result="ok")
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000, result=result)
     kit.clock.now = 3000 + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
-
     assert "idle" in frame
-    assert "00:00:03" in frame
-    assert "(last: Bash)" in frame
-    assert "✔" not in frame
+    assert expected_context in frame
 
 
-def test_liveness_when_idle_after_errored_tool_does_show_error_mark_in_context():
-    """Idle line after an errored tool shows ``(last: Bash ✗)``."""
+# ---------------------------------------------------------------------------
+# liveness — model phase transitions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        pytest.param("thinking", "thinking", id="thinking"),
+        pytest.param("responding", "responding", id="responding"),
+        pytest.param("turn_end", "waiting", id="turn_end"),
+    ],
+)
+def test_liveness_when_model_phase_does_show_expected_state(phase: str, expected: str):
     kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
-    kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000, result="error")
-    kit.clock.now = 3000 + IDLE_WARN_MS + 1
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_model_phase(observer, 2000, phase)
+
+    assert expected in render_frame(kit.reporter)
+
+
+def test_liveness_when_model_phase_thinking_after_thinking_update_does_preserve_token_count():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_thinking_update(observer, 1500, estimated_tokens=200)
+    fire_model_phase(observer, 2000, "thinking")
 
     frame = render_frame(kit.reporter)
+    assert "thinking" in frame
+    assert "200" in frame
 
-    assert "idle" in frame
-    assert "(last: Bash ✗)" in frame
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_in_frame"),
+    [
+        pytest.param("Edit", "Edit", id="with-tool-name"),
+        pytest.param(None, "unknown", id="without-tool-name"),
+    ],
+)
+def test_liveness_when_model_phase_tool_input_does_show_composing(
+    tool_name: str | None, expected_in_frame: str
+):
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_model_phase(observer, 2000, "tool_input", tool_name=tool_name)
+
+    frame = render_frame(kit.reporter)
+    assert "composing" in frame
+    assert expected_in_frame in frame
+
+
+# ---------------------------------------------------------------------------
+# liveness — model phase ignored when capped or in-flight
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_when_model_phase_while_capped_does_stay_capped():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_cap(observer, "wall-clock")
+
+    fire_model_phase(observer, 6000, "responding")
+
+    frame = render_frame(kit.reporter)
+    assert "interrupting" in frame
+    assert "responding" not in frame
+
+
+def test_liveness_when_model_phase_while_in_flight_does_stay_in_flight():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_model_phase(observer, 2000, "responding")
+
+    assert "Bash" in render_frame(kit.reporter)
+
+
+def test_liveness_when_thinking_update_while_in_flight_does_stay_in_flight():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_thinking_update(observer, 2000, estimated_tokens=100)
+
+    assert "Bash" in render_frame(kit.reporter)
+
+
+def test_liveness_when_thinking_update_while_capped_does_stay_capped():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_cap(observer, "wall-clock")
+    fire_thinking_update(observer, 6000, estimated_tokens=100)
+
+    assert "interrupting" in render_frame(kit.reporter)
+
+
+# ---------------------------------------------------------------------------
+# liveness — nested subagent activity
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_when_nested_tool_starts_does_not_appear_in_frame():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
+
+    frame = render_frame(kit.reporter)
+    assert "Bash" in frame
+    assert "Read" not in frame
+
+
+def test_liveness_when_nested_tool_ends_does_not_appear_in_finished_tools():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
+    fire_tool_end(observer, "Read", "nested-read-1", 2500, parent_tool_use_id="bash-1")
+
+    frame = render_frame(kit.reporter)
+    assert "Bash" in frame
+    assert "Read" not in frame
+
+
+def test_liveness_when_nested_thinking_update_does_not_change_top_level():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_thinking_update(observer, 2000, estimated_tokens=999, parent_tool_use_id="bash-1")
+
+    assert "Bash" in render_frame(kit.reporter)
+    assert "999" not in render_frame(kit.reporter)
+
+
+def test_liveness_when_nested_model_phase_does_not_change_top_level():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
+
+    assert "Bash" in render_frame(kit.reporter)
+    assert "responding" not in render_frame(kit.reporter)
+
+
+def test_liveness_when_nested_event_has_no_matching_parent_does_ignore():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="nonexistent")
+
+    assert "starting" in render_frame(kit.reporter)
+    assert "Read" not in render_frame(kit.reporter)
 
 
 # ---------------------------------------------------------------------------

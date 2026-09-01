@@ -27,15 +27,19 @@ from gymrat.cli.supervise.state import (
     IDLE_WARN_MS,
     Capped,
     CapType,
-    Ended,
+    Composing,
     FinishedTool,
     InFlight,
+    NestedPhase,
+    NestedTool,
     ReadSessionResult,
     ReporterCtx,
+    Responding,
     Starting,
     SuperviseReporter,
     Thinking,
     TrackedTool,
+    Waiting,
 )
 from gymrat.session.clock import now_ms
 from gymrat.session.paths import session_jsonl_path
@@ -117,15 +121,24 @@ def _refresh_session(ctx: ReporterCtx) -> None:
 
 def _next_liveness_after_tool_end(
     ctx: ReporterCtx, event: ToolEndEvent
-) -> Capped | InFlight | Ended:
+) -> Capped | InFlight | Waiting:
     if isinstance(ctx.liveness, Capped):
         return ctx.liveness
-    last = next(reversed(ctx.in_flight_tools.values()), None)
-    if last is not None:
+    last_entry = next(reversed(ctx.in_flight_tools.items()), None)
+    if last_entry is not None:
+        tool_id, tracked = last_entry
         return InFlight(
-            tool_name=last.tool_name, since=last.started_at, input_summary=last.input_summary
+            tool_use_id=tool_id,
+            tool_name=tracked.tool_name,
+            since=tracked.started_at,
+            input_summary=tracked.input_summary,
         )
-    return Ended(tool_name=event.tool_name, since=event.timestamp, result=event.result)
+    return Waiting(
+        since=event.timestamp,
+        tool_name=event.tool_name,
+        tool_ended_at=event.timestamp,
+        result=event.result,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -150,23 +163,45 @@ def _handle_usage_update(ctx: ReporterCtx, event: UsageUpdateEvent) -> None:
 
 
 def _handle_tool_start(ctx: ReporterCtx, event: ToolStartEvent) -> None:
+    if event.parent_tool_use_id is not None:
+        if event.parent_tool_use_id not in ctx.in_flight_tools:
+            return
+        ctx.nested[event.parent_tool_use_id] = NestedTool(
+            tool_name=event.tool_name,
+            input_summary=event.input_summary,
+            since=event.timestamp,
+        )
+        ctx.nested_tool_ids[event.tool_use_id] = event.parent_tool_use_id
+        return
+
     ctx.in_flight_tools[event.tool_use_id] = TrackedTool(
         tool_name=event.tool_name, started_at=event.timestamp, input_summary=event.input_summary
     )
     if not isinstance(ctx.liveness, Capped):
         ctx.liveness = InFlight(
-            tool_name=event.tool_name, since=event.timestamp, input_summary=event.input_summary
+            tool_use_id=event.tool_use_id,
+            tool_name=event.tool_name,
+            since=event.timestamp,
+            input_summary=event.input_summary,
         )
     _emit_live(ctx)
 
 
 def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
+    if event.parent_tool_use_id is not None:
+        parent_id = ctx.nested_tool_ids.pop(event.tool_use_id, None)
+        if parent_id is not None and isinstance(ctx.nested.get(parent_id), NestedTool):
+            del ctx.nested[parent_id]
+        return
+
     tracked = ctx.in_flight_tools.get(event.tool_use_id)
     tool_name = tracked.tool_name if tracked is not None else event.tool_name
     input_summary = tracked.input_summary if tracked is not None else ""
     should_refresh_session = tracked is None or tool_name == "Bash"
 
     ctx.in_flight_tools.pop(event.tool_use_id, None)
+    ctx.nested.pop(event.tool_use_id, None)
+    ctx.nested_tool_ids = {k: v for k, v in ctx.nested_tool_ids.items() if v != event.tool_use_id}
 
     ctx.finished_tools.append(
         FinishedTool(
@@ -188,12 +223,51 @@ def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
 
 
 def _handle_thinking_update(ctx: ReporterCtx, event: ThinkingUpdateEvent) -> None:
+    if event.parent_tool_use_id is not None:
+        return
     if isinstance(ctx.liveness, (Capped, InFlight)):
         return
     if isinstance(ctx.liveness, Thinking):
         ctx.liveness = Thinking(since=ctx.liveness.since, estimated_tokens=event.estimated_tokens)
     else:
         ctx.liveness = Thinking(since=event.timestamp, estimated_tokens=event.estimated_tokens)
+    _emit_live(ctx)
+
+
+def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
+    if event.parent_tool_use_id is not None:
+        parent_id = event.parent_tool_use_id
+        if parent_id not in ctx.in_flight_tools:
+            return
+        if event.phase == "turn_end":
+            ctx.nested.pop(parent_id, None)
+        elif not isinstance(ctx.nested.get(parent_id), NestedTool):
+            tool_name = event.tool_name if event.phase == "tool_input" else None
+            ctx.nested[parent_id] = NestedPhase(
+                phase=event.phase, since=event.timestamp, tool_name=tool_name
+            )
+        return
+
+    if isinstance(ctx.liveness, (Capped, InFlight)):
+        return
+
+    match event.phase:
+        case "thinking":
+            tokens = ctx.liveness.estimated_tokens if isinstance(ctx.liveness, Thinking) else 0
+            ctx.liveness = Thinking(since=event.timestamp, estimated_tokens=tokens)
+        case "responding":
+            ctx.liveness = Responding(since=event.timestamp)
+        case "tool_input":
+            tool_name = event.tool_name if event.tool_name is not None else "unknown"
+            ctx.liveness = Composing(tool_name=tool_name, since=event.timestamp)
+        case "turn_end":
+            last = ctx.finished_tools[-1] if ctx.finished_tools else None
+            ctx.liveness = Waiting(
+                since=event.timestamp,
+                tool_name=last.tool_name if last is not None else None,
+                tool_ended_at=last.ended_at if last is not None else None,
+                result=last.result if last is not None else None,
+            )
     _emit_live(ctx)
 
 
@@ -213,7 +287,9 @@ def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
             _emit_live(ctx)
         case ThinkingUpdateEvent():
             _handle_thinking_update(ctx, event)
-        case TextDeltaEvent() | ModelPhaseEvent():
+        case ModelPhaseEvent():
+            _handle_model_phase(ctx, event)
+        case TextDeltaEvent():
             pass
         case _:  # pragma: no cover - exhaustive over the event union
             assert_never(event)
@@ -267,6 +343,8 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         plain_write_fn=plain_write,
         warn_fn=plain_write,
         live=None,
+        nested={},
+        nested_tool_ids={},
     )
 
 
