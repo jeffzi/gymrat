@@ -630,11 +630,11 @@ def test_verdict_summary_parts_when_zero_count_does_dim_the_part(label: str):
     assert "2" in _sgr_codes(_colored(part))
 
 
-def test_verdict_summary_parts_when_within_noise_does_dim_regardless_of_count():
+def test_verdict_summary_parts_when_within_noise_nonzero_does_not_dim():
     parts = verdict_summary_parts(_MIXED, 0)
     part = _find_plain(parts, "within noise")
 
-    assert "2" in _sgr_codes(_colored(part))
+    assert "2" not in _sgr_codes(_colored(part))
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():

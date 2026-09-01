@@ -618,14 +618,14 @@ def test_render_report_when_colored_does_paint_the_non_zero_identical_tally_cyan
     assert "36" in _sgr_codes(_summary_segment(summary, "identical"))
 
 
-def test_render_report_when_colored_does_dim_the_within_noise_segment(
+def test_render_report_when_colored_does_not_dim_nonzero_within_noise_segment(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     summary = line_containing(render_report(_colorful_result()), "within noise")
 
-    assert "2" in _sgr_codes(_summary_segment(summary, "within noise"))
+    assert "2" not in _sgr_codes(_summary_segment(summary, "within noise"))
 
 
 # ---------------------------------------------------------------------------

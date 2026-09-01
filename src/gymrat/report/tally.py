@@ -121,6 +121,7 @@ def verdict_summary_parts(metrics: MetricComparisons, candidate_index: int) -> l
         if count == 0:
             parts.append(markup(f"{glyph} {padded} {gloss}", "dim"))
         else:
-            colored = markup(padded, VERDICT_STYLES[shown])
+            style = VERDICT_STYLES[shown]
+            colored = escape(padded) if style == "dim" else markup(padded, style)
             parts.append(f"{escape(glyph)} {colored} {escape(gloss)}")
     return parts
