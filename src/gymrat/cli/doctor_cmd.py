@@ -19,20 +19,19 @@ from gymrat.cli.shared import (
     GATE_EXIT_CODE,
     AdapterOption,
     BenchOption,
+    ColorOption,
     ConfigOption,
     DebugOption,
     FormatOption,
-    NoColorOption,
     OutputFormat,
     PrepareOption,
     SamplesOption,
     SharedFlags,
     TimeoutOption,
+    apply_color_override,
     apply_debug,
-    color_override_of,
     resolve_stream_color,
     run_cli,
-    set_stderr_color_override,
     wants_json,
     write_and_flush,
 )
@@ -152,12 +151,12 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     output_format: FormatOption = OutputFormat.text,
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Check the project setup and report any problems."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
+    color_override = apply_color_override(color)
     flags = SharedFlags(
         bench=bench,
         prepare=prepare,
@@ -165,10 +164,9 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
         samples=samples,
         timeout=timeout,
         config=config,
-        color=not no_color,
+        color=color,
         format=output_format.value,
     )
-    color_override = color_override_of(flags.color)
 
     async def run() -> None:
         report = _build_doctor_report(flags)

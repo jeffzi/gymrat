@@ -21,15 +21,14 @@ import typer
 from gymrat.cli.shared import (
     GATE_EXIT_CODE,
     TOOL_FAILURE_EXIT_CODE,
+    ColorOption,
     DebugOption,
-    NoColorOption,
+    apply_color_override,
     apply_debug,
-    color_override_of,
     exit_with_error,
     parse_max_minutes,
     parse_positive_number,
     resolve_render_mode,
-    set_stderr_color_override,
     write_and_flush,
 )
 from gymrat.cli.supervise.progress import create_supervise_reporter
@@ -132,7 +131,7 @@ class _SessionContext:
     max_usd: float | None
     max_iterations: int | None
     model: str | None
-    color: bool
+    color: bool | None
 
 
 def _report_result(result: SupervisionResult, log_path: str) -> None:
@@ -212,7 +211,7 @@ class _Options:
     log: str | None
     model: str | None
     allow_dirty: bool
-    color: bool
+    color: bool | None
 
 
 def _execute(options: _Options) -> None:
@@ -264,12 +263,12 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     log: _LogOption = None,
     model: _ModelOption = None,
     allow_dirty: _AllowDirtyOption = False,
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
+    apply_color_override(color)
     options = _Options(
         prompt=prompt,
         max_minutes=max_minutes,
@@ -277,7 +276,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
         log=log,
         model=model,
         allow_dirty=allow_dirty,
-        color=not no_color,
+        color=color,
     )
     try:
         _execute(options)

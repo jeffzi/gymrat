@@ -35,27 +35,26 @@ from gymrat.cli.shared import (
     AdapterOption,
     BenchOption,
     BranchOption,
+    ColorOption,
     ConfigOption,
     DebugOption,
     ForceOption,
     FormatOption,
     MessageOption,
-    NoColorOption,
     OutputFormat,
     PrepareOption,
     SamplesOption,
     TimeoutOption,
     VerboseOption,
+    apply_color_override,
     apply_debug,
     broken_pipe_guard,
-    color_override_of,
     exit_with_error,
     is_tty,
     resolve_render_mode,
     resolve_stream_color,
     run_cli,
     run_with_signal_abort,
-    set_stderr_color_override,
     with_repo_lock,
     write_and_flush,
 )
@@ -187,7 +186,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
 async def _iterate_body(
     flags: CliFlags,
     *,
-    no_color: bool,
+    color: bool | None,
     verbose: bool,
     resolved_color: bool,
 ) -> IterateResult:
@@ -200,7 +199,7 @@ async def _iterate_body(
     )
 
     mode = resolve_render_mode()
-    console = stderr_console(color_flag=not no_color)
+    console = stderr_console(color_flag=color)
     seq = required.state.last_seq + 1
     metric_count = len(resolved.metrics) if resolved.metrics is not None else 0
     renderer = IterateRenderer(
@@ -243,15 +242,14 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     samples: SamplesOption = None,
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     verbose: VerboseOption = False,
     format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
     apply_debug(debug)
-    color_override = color_override_of(not no_color)
-    set_stderr_color_override(color_override)
+    color_override = apply_color_override(color)
 
     use_json = format == OutputFormat.json
     resolved_color = resolve_stream_color(color_override, sys.stdout)
@@ -269,7 +267,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             result = await with_repo_lock(
                 "iterate",
                 lambda: _iterate_body(
-                    flags, no_color=no_color, verbose=verbose, resolved_color=resolved_color
+                    flags, color=color, verbose=verbose, resolved_color=resolved_color
                 ),
             )
         except LoopStopError as error:
@@ -392,13 +390,12 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Show this repository's session history, read from its log."""
     apply_debug(debug)
-    color_override = color_override_of(not no_color)
-    set_stderr_color_override(color_override)
+    color_override = apply_color_override(color)
 
     use_json = format == OutputFormat.json
     resolved_color = resolve_stream_color(color_override, sys.stdout)

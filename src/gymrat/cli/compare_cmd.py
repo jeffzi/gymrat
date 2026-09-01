@@ -18,25 +18,24 @@ from gymrat.cli.shared import (
     GATE_EXIT_CODE,
     AdapterOption,
     BenchOption,
+    ColorOption,
     CompareFlags,
     ConfigOption,
     DebugOption,
     FormatOption,
-    NoColorOption,
     OutputFormat,
     PrepareOption,
     ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    apply_color_override,
     apply_debug,
     begin_run,
-    color_override_of,
     emit_report,
     parse_fail_on,
     parse_positional,
     run_cli,
     run_options_of,
-    set_stderr_color_override,
     with_repo_lock,
 )
 from gymrat.config import resolve_config
@@ -123,12 +122,12 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     output_format: FormatOption = OutputFormat.text,
     fail_on: _FailOnOption = None,
     verbose: _VerboseOption = False,
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Run each candidate against the baseline and exit non-zero when --fail-on fires."""
     apply_debug(debug)
-    set_stderr_color_override(color_override_of(not no_color))
+    color_override = apply_color_override(color)
     flags = CompareFlags(
         bench=bench,
         prepare=prepare,
@@ -136,12 +135,11 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         samples=samples,
         timeout=timeout,
         config=config,
-        color=not no_color,
+        color=color,
         format=output_format.value,
         verbose=verbose,
         fail_on=tuple(fail_on) if fail_on is not None else (),
     )
-    color_override = color_override_of(flags.color)
 
     async def run() -> None:
         result = await with_repo_lock("compare", lambda: _compare_body(flags, baseline, candidates))

@@ -27,7 +27,6 @@ from gymrat.cli.shared import (
     MeasureFlags,
     SharedFlags,
     begin_run,
-    color_override_of,
     exit_with_error,
     format_cli_error,
     is_tty,
@@ -44,6 +43,7 @@ from gymrat.cli.shared import (
     with_repo_lock,
     write_and_flush,
 )
+from gymrat.config import MAX_TIMEOUT_SECONDS
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
@@ -52,6 +52,7 @@ from gymrat.session import append_record, read_records, session_jsonl_path
 from gymrat.session.lock import _os_lock_file
 from gymrat.session.paths import lockfile_path, repo_root
 from tests._streams import FakeStream as _FakeStream
+from tests.cli._help import help_output
 from tests.session.records._fixtures import (
     iteration_record,
     session_record,
@@ -104,6 +105,18 @@ def _clear_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Delete FORCE_COLOR/NO_COLOR so a stray value doesn't leak into color resolution."""
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("NO_COLOR", raising=False)
+
+
+def _force_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set FORCE_COLOR and clear NO_COLOR so color resolution is forced on."""
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+
+def _force_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set NO_COLOR and clear FORCE_COLOR so color resolution is forced off."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -182,16 +195,23 @@ def test_run_cli_when_broken_pipe_does_exit_cleanly(
 
 
 @pytest.mark.parametrize(
-    ("color", "expected"),
+    "command",
     [
-        pytest.param(True, None, id="color-on-defers"),
-        pytest.param(False, False, id="color-off-vetoes"),
+        pytest.param(("compare",), id="compare"),
+        pytest.param(("measure",), id="measure"),
+        pytest.param(("doctor",), id="doctor"),
+        pytest.param(("init",), id="init"),
+        pytest.param(("iterate",), id="iterate"),
+        pytest.param(("status",), id="status"),
+        pytest.param(("supervise",), id="supervise"),
     ],
 )
-def test_color_override_of_when_called_does_map_flag_to_renderer_override(
-    color: bool, expected: object
-):
-    assert color_override_of(color) is expected
+def test_color_flag_when_help_does_show_color_no_color_pair(command: tuple[str, ...]):
+    out = help_output(*command)
+
+    tokens = out.split()
+    assert "--color" in tokens
+    assert "--no-color" in tokens
 
 
 def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
@@ -255,7 +275,7 @@ def test_parse_positional_when_target_empty_raises_dedicated_message(positional:
 
 @pytest.mark.parametrize("value", ["1", "5", "100"])
 def test_parse_positive_integer_when_positive_does_accept(value: str):
-    parse = parse_positive_integer_up_to(2_147_483)
+    parse = parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS)
 
     assert parse(value) == int(value)
 
@@ -265,7 +285,7 @@ def test_parse_positive_integer_when_positive_does_accept(value: str):
     ["0", "-1", "1.5", "abc", "", " 5", "5 "],
 )
 def test_parse_positive_integer_when_non_positive_does_reject(value: str):
-    parse = parse_positive_integer_up_to(2_147_483)
+    parse = parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS)
 
     with pytest.raises(typer.BadParameter) as exc:
         parse(value)
@@ -566,7 +586,7 @@ def test_shared_flags_when_built_does_carry_config_set_plus_defaults():
 
     assert flags.bench == "my-bench"
     assert flags.samples == 5
-    assert flags.color is True
+    assert flags.color is None
     assert flags.format == "text"
 
 
@@ -575,7 +595,7 @@ def test_compare_flags_when_built_does_add_verbose_and_fail_on():
 
     assert flags.verbose is True
     assert flags.fail_on == (RegressedFailOn(),)
-    assert flags.color is True
+    assert flags.color is None
 
 
 def test_measure_flags_when_built_does_subclass_shared_flags():
@@ -660,8 +680,7 @@ def test_parse_fail_on_rejects_everything_else(value: str):
 def test_format_cli_error_when_colored_paints_the_error_label_red(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
+    _force_color(monkeypatch)
 
     output = format_cli_error(ValueError("boom"))
 
@@ -672,8 +691,7 @@ def test_format_cli_error_when_colored_paints_the_error_label_red(
 def test_format_cli_error_when_no_color_renders_plain_label_and_message(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.setenv("NO_COLOR", "1")
+    _force_no_color(monkeypatch)
 
     output = format_cli_error(ValueError("boom"))
 
@@ -684,8 +702,7 @@ def test_format_cli_error_when_no_color_renders_plain_label_and_message(
 def test_format_cli_error_when_adapter_error_keeps_its_class_name_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    _force_no_color(monkeypatch)
 
     output = format_cli_error(AdapterError("parse failed"))
 
@@ -707,8 +724,7 @@ def test_format_cli_error_includes_stack_only_under_debug():
 def test_format_cli_error_when_gymrat_error_carries_hint_appends_unlabeled_line_without_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    _force_no_color(monkeypatch)
 
     output = format_cli_error(GymratError("boom", hint="run gymrat doctor"))
 
@@ -720,8 +736,7 @@ def test_format_cli_error_when_gymrat_error_carries_hint_appends_unlabeled_line_
 def test_format_cli_error_when_hint_colored_does_dim_the_line_and_paint_inline_code_blue(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
+    _force_color(monkeypatch)
 
     output = format_cli_error(GymratError("boom", hint="run `gymrat doctor` first"))
 
@@ -739,8 +754,7 @@ def test_format_cli_error_when_not_gymrat_error_appends_bug_footer():
 def test_format_cli_error_when_value_is_not_an_exception_still_renders(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    _force_no_color(monkeypatch)
 
     output = format_cli_error("plain failure")
 
@@ -804,7 +818,7 @@ def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.Mon
 
 
 # ---------------------------------------------------------------------------
-# stop-target helpers — removed from the public surface
+# stop-target helpers — not part of the public surface
 # ---------------------------------------------------------------------------
 
 

@@ -18,25 +18,24 @@ import typer
 from gymrat.cli.shared import (
     AdapterOption,
     BenchOption,
+    ColorOption,
     ConfigOption,
     DebugOption,
     FormatOption,
     MeasureFlags,
-    NoColorOption,
     OutputFormat,
     PrepareOption,
     RecordOption,
     ReportRenderers,
     SamplesOption,
     TimeoutOption,
+    apply_color_override,
     apply_debug,
     begin_run,
-    color_override_of,
     emit_report,
     parse_positional,
     run_cli,
     run_options_of,
-    set_stderr_color_override,
     wants_json,
     with_repo_lock,
     write_and_flush,
@@ -130,14 +129,13 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     output_format: FormatOption = OutputFormat.text,
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     record: RecordOption = False,
     debug: DebugOption = False,
 ) -> None:
     """Measure one revision or directory on its own, with nothing to compare it to."""
     apply_debug(debug)
-    color_override = color_override_of(not no_color)
-    set_stderr_color_override(color_override)
+    color_override = apply_color_override(color)
     resolved_target = target if target is not None else TargetSpec(label=None, target=".")
     flags = MeasureFlags(
         bench=bench,
@@ -146,7 +144,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         samples=samples,
         timeout=timeout,
         config=config,
-        color=not no_color,
+        color=color,
         format=output_format.value,
         record=record,
     )

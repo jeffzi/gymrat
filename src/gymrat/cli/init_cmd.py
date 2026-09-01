@@ -19,14 +19,13 @@ import typer
 from rich.markup import escape
 
 from gymrat.cli.shared import (
+    ColorOption,
     DebugOption,
-    NoColorOption,
+    apply_color_override,
     apply_debug,
     broken_pipe_guard,
-    color_override_of,
     exit_with_error,
     resolve_stream_color,
-    set_stderr_color_override,
     write_and_flush,
 )
 from gymrat.config import CONFIG_FILENAME, find_implicit_base
@@ -76,13 +75,12 @@ def init_command(
     bench: _BenchOption = None,
     no_runbook: _NoRunbookOption = False,
     no_skill: _NoSkillOption = False,
-    no_color: NoColorOption = False,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Scaffold a gymrat.toml, skill file, and runbook."""
     apply_debug(debug)
-    color_override = color_override_of(not no_color)
-    set_stderr_color_override(color_override)
+    color_override = apply_color_override(color)
 
     resolved_color = resolve_stream_color(color_override, sys.stdout)
 

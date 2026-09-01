@@ -130,14 +130,6 @@ def write_and_flush(stream: _WritableStream, data: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def color_override_of(color: bool) -> Literal[False] | None:  # noqa: FBT001 -- 1:1 map of the --color flag
-    """Translate the ``--color`` flag into the renderer's color override.
-
-    ``False`` vetoes color; ``None`` defers to auto-detection.
-    """
-    return None if color else False
-
-
 def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
     """Resolve whether output to ``stream`` should carry color.
 
@@ -158,6 +150,12 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
 def _resolve_stderr_color() -> bool:
     """Whether stderr error output should carry color, per the shared precedence."""
     return resolve_stream_color(_StderrColorState.override, sys.stderr)
+
+
+def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
+    """Install the color override for stderr and return it for report rendering."""
+    set_stderr_color_override(color)
+    return color
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +408,7 @@ async def run_with_signal_abort[T](
 class SharedFlags(CliFlags):
     """The flags every command carries: the config set plus how the report prints."""
 
-    color: bool = True
+    color: bool | None = None
     format: Literal["text", "json"] = "text"
 
 
@@ -470,8 +468,8 @@ TimeoutOption = Annotated[
     ),
 ]
 ConfigOption = Annotated[str | None, typer.Option("--config", "-c", help="configuration file path")]
-NoColorOption = Annotated[
-    bool, typer.Option("--no-color", help="print the report without ANSI styles")
+ColorOption = Annotated[
+    bool | None, typer.Option("--color/--no-color", help="force or suppress ANSI styles")
 ]
 FormatOption = Annotated[OutputFormat, typer.Option("--format", help="output format")]
 DebugOption = Annotated[bool, typer.Option("--debug", "-d", help="show stack traces on errors")]
