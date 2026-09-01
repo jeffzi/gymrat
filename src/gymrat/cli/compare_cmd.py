@@ -82,7 +82,6 @@ async def _compare_body(
     progress = begin_run(
         flags,
         1 + len(candidates),
-        command="compare",
         target_labels=labels,
     )
     try:

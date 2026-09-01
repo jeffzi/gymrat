@@ -78,7 +78,7 @@ async def _measure_body(
     resolved_target: TargetSpec,
 ) -> _MeasureOutcome:
     label = resolved_target.label or resolved_target.target
-    progress = begin_run(flags, 1, command="measure", target_labels=[label])
+    progress = begin_run(flags, 1, target_labels=[label])
     try:
         config_resolved = resolve_config(flags)
         # Session check before bench: failing after a long run would lose samples.
