@@ -26,6 +26,8 @@ import json
 import os
 import signal
 import sys
+import threading
+import time
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +35,8 @@ from typing import Any
 
 import pytest
 
+from gymrat import exec as exec_mod
+from gymrat import signals
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
 from gymrat.supervisor import create_claude_driver, create_stdio_driver
@@ -432,12 +436,6 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import threading
-    import time
-
-    from gymrat import exec as exec_mod
-    from gymrat import signals
-
     # Widen the spawn-to-register gap so SIGTERM lands inside it.
     real_spawn = asyncio.create_subprocess_shell
     spawned: list[asyncio.subprocess.Process] = []
@@ -457,7 +455,7 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
     monkeypatch.setattr(signals, "_exit_process", lambda code: exit_record.update(code=code))  # pyrefly: ignore
 
     # Keep the live-groups registry clean for this test.
-    saved = exec_mod.reset_live_process_groups()
+    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
 
     uninstall = signals.install_termination_cleanup(exec_mod.kill_live_process_groups)
 
@@ -484,11 +482,11 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         sender.join(timeout=6.0)
         assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
         uninstall()
-        exec_mod.reset_live_process_groups(saved)
         for proc in spawned:
-            if proc.returncode is None and proc.pid:
-                with contextlib.suppress(OSError):
-                    os.killpg(proc.pid, signal.SIGKILL)
+            if proc.returncode is not None or not proc.pid:
+                continue
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
 
     # With the fix (signal mask around spawn+register), the deferred handler
     # finds the child in the registry and kills it — exec settles quickly as
