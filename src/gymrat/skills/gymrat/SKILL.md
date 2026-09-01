@@ -102,6 +102,34 @@ Launches an agent to drive the session loop autonomously. Requires `runbook` in 
 `--max-minutes`. `--allow-dirty` permits uncommitted changes. Holds its own lock, separate from the
 session lock.
 
+## Keeping iterations cheap
+
+Every iteration benches **both worktrees** — baseline and experiment are re-measured fresh, at
+`samples` runs each, so one `iterate` costs 2 × `samples` bench invocations — and a REGRESSED
+verdict on an inexact metric adds a confirmation rerun on top. Budget wall-clock accordingly.
+
+**Default loop: probe cheap, verify full.** Explore with scoped, low-cost runs — `iterate --bench`
+on the benchmarks the edit targets, `--samples 6` — and save the full bench at the full configured
+sample count (default 10) for one final `iterate` when the change looks done, immediately before
+`keep`. Never `keep` off a scoped or reduced-sample run. Levers, in order of leverage:
+
+- **`iterate --samples N`** (`-s`) overrides the sample count for that run only. **Probe at 6,
+  never below.** The significance test needs at least 6 differing pairs to run, and 6 is the
+  smallest count that can reach significance at all — and only for a clean, consistent effect,
+  which is exactly what a probe is for. Below 6 the verdict falls back to a coarse noise band:
+  IMPROVED and REGRESSED still fire, but only when the delta is wider than the measured spread, so
+  a NO-SIGNAL at 3 samples is nearly meaningless. Prefer the flag over editing `samples` in
+  `gymrat.toml` mid-session.
+- **`filter` in `gymrat.toml`** is a bench command template carrying a `{names}` placeholder. It
+  scopes **confirmation reruns only**: the rerun benches just the regressed metric names substituted
+  into `{names}`. Without it, the whole bench re-runs to confirm. It never narrows the first
+  measurement pass.
+- **`iterate --bench <cmd>`** (`-b`) swaps in a scoped bench command for one run, useful for probing
+  a single benchmark. Metrics the scoped command does not emit go unmeasured — the reason a scoped
+  run can never back a `keep`.
+- **Batch related edits** into one iteration. A bench run per micro-edit burns the session budget on
+  measurement, not optimization.
+
 ## Machine-readable output
 
 `iterate`, `keep`, `discard`, and `status` accept `--format json`. When driving the loop
@@ -140,6 +168,11 @@ experiment worktree has conflicting uncommitted changes.
 
 - Forgetting `checks` in `gymrat.toml` — `keep` commits with the gate off and only warns.
 - Treating NO-SIGNAL as success — it means the change had no measurable effect.
+- Running the full bench for exploratory edits — probe scoped (`--bench`) at `--samples 6`; the
+  full run comes once, right before `keep`.
+- `keep` off a scoped or reduced-sample `iterate` — `keep` will not refuse it, but unmeasured
+  gating metrics slip through and the kept record is underpowered. The last `iterate` before
+  `keep` is full-bench at full samples.
 
 ## Exit codes
 
