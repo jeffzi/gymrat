@@ -29,14 +29,16 @@ from gymrat.cli.shared import (
     parse_max_minutes,
     parse_positive_number,
     resolve_render_mode,
+    resolve_stream_color,
     write_and_flush,
 )
-from gymrat.cli.supervise.progress import create_supervise_reporter
+from gymrat.cli.supervise.frame import _abbreviate_home, build_summary
+from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
 from gymrat.config import CliFlags, resolve_benchless_config
 from gymrat.errors import GymratError
-from gymrat.eta import format_duration
 from gymrat.git import run_git
 from gymrat.plural import pluralize
+from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.session.clock import now_ms
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import repo_root, session_dir, supervise_lockfile_path
@@ -59,11 +61,18 @@ _PromptArgument = Annotated[
 ]
 _MaxMinutesOption = Annotated[
     float,
-    typer.Option("--max-minutes", parser=parse_max_minutes, help="wall-clock cap in minutes"),
+    typer.Option(
+        "--max-minutes",
+        parser=parse_max_minutes,
+        metavar="<float>",
+        help="wall-clock cap in minutes",
+    ),
 ]
 _MaxUsdOption = Annotated[
     float | None,
-    typer.Option("--max-usd", parser=parse_positive_number, help="spend cap in USD"),
+    typer.Option(
+        "--max-usd", parser=parse_positive_number, metavar="<float>", help="spend cap in USD"
+    ),
 ]
 _LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
 _ModelOption = Annotated[
@@ -134,21 +143,23 @@ class _SessionContext:
     color: bool | None
 
 
-def _report_result(result: SupervisionResult, log_path: str) -> None:
+def _report_result(
+    result: SupervisionResult,
+    *,
+    log_path: str,
+    session_result: ReadSessionResult | None,
+    color: bool | None,
+) -> None:
     """Print the closing summary to stdout, then exit per how the run ended.
 
     A session that ended on its own returns normally (exit 0). A cap trip exits
     on the gate code. An error outcome exits on the tool-failure code, surfacing
     its message to stderr only when one is present.
     """
-    summary = "\n".join(
-        [
-            f"outcome: {result.outcome.reason}",
-            f"ended by: {result.ended_by}",
-            f"duration: {format_duration(result.duration_ms)}",
-            f"cost: ${result.cost_usd:.2f}",
-            f"log: {log_path}",
-        ]
+    summary = render_lines(
+        build_summary(result, log_path=log_path, session_result=session_result),
+        color=resolve_stream_color(color, sys.stdout),
+        width=RENDER_WIDTH,
     )
     write_and_flush(sys.stdout, f"{summary}\n")
 
@@ -175,7 +186,7 @@ def _run_session(ctx: _SessionContext) -> None:
     )
     uninstall_cleanup = install_termination_cleanup(reporter.stop)
 
-    write_and_flush(sys.stderr, f"log: {ctx.log_path}\n")
+    write_and_flush(sys.stderr, f"log: {_abbreviate_home(ctx.log_path)}\n")
 
     prompt = SessionPrompt(
         kickoff=ctx.kickoff.kickoff,
@@ -198,7 +209,12 @@ def _run_session(ctx: _SessionContext) -> None:
     finally:
         reporter.stop()
         uninstall_cleanup()
-    _report_result(result, ctx.log_path)
+    _report_result(
+        result,
+        log_path=ctx.log_path,
+        session_result=reporter.session_result(),
+        color=ctx.color,
+    )
 
 
 @dataclass(frozen=True, slots=True)

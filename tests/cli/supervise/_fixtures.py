@@ -24,6 +24,7 @@ from gymrat.cli.supervise.progress import (
 )
 from gymrat.session import IterationPrimary, IterationRecord
 from gymrat.session.store import SessionState
+from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapEvent,
     LaunchEvent,
@@ -53,8 +54,10 @@ __all__ = [
     "make_plain_reporter",
     "make_read_session",
     "make_reporter",
+    "make_supervision_result",
     "render_frame",
     "session_state",
+    "session_state_three_iterations",
 ]
 
 
@@ -119,6 +122,20 @@ def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> Itera
     )
 
 
+def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
+    """Three iterations (2 kept, 1 discarded) ending with the given last iteration.
+
+    The shared "loop row has content" arrangement used by summary, frame, and
+    reporter tests that only vary the last iteration's delta and outcome.
+    """
+    return session_state(
+        iteration_count=3,
+        keep_count=2,
+        discard_count=1,
+        last_iteration=make_iteration(delta_pct, outcome, seq=seq),
+    )
+
+
 def make_read_session(
     state: SessionState,
     *,
@@ -130,21 +147,33 @@ def make_read_session(
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    Only forward a ``best_*`` / ``baseline_sha`` kwarg when the caller supplies
-    a value, so callers that omit best-tracking still get a valid two-field
-    result.
+    ``best_*`` / ``baseline_sha`` default to ``None`` on ``ReadSessionResult``
+    itself, so callers that omit best-tracking still get a valid result.
     """
-    best_kwargs: dict[str, Any] = {}
-    if best_delta_pct is not None:
-        best_kwargs["best_delta_pct"] = best_delta_pct
-    if best_seq is not None:
-        best_kwargs["best_seq"] = best_seq
-    if primary_label is not None:
-        best_kwargs["primary_label"] = primary_label
-    if baseline_sha is not None:
-        best_kwargs["baseline_sha"] = baseline_sha
-    result = ReadSessionResult(state=state, has_baseline=has_baseline, **best_kwargs)
+    result = ReadSessionResult(
+        state=state,
+        has_baseline=has_baseline,
+        best_delta_pct=best_delta_pct,
+        best_seq=best_seq,
+        primary_label=primary_label,
+        baseline_sha=baseline_sha,
+    )
     return lambda: result
+
+
+def make_supervision_result(
+    *,
+    reason: Literal["completed", "error", "interrupted"] = "completed",
+    ended_by: Literal["session", "spend-cap", "wall-clock"] = "session",
+    duration_ms: int = 60_000,
+    cost_usd: float = 0.05,
+    message: str | None = None,
+) -> SupervisionResult:
+    """The ``SupervisionResult`` a finished supervised run hands back."""
+    outcome = SessionOutcome(reason=reason, cost_usd=cost_usd, message=message)
+    return SupervisionResult(
+        outcome=outcome, ended_by=ended_by, duration_ms=duration_ms, cost_usd=cost_usd
+    )
 
 
 def _throwing_read() -> ReadSessionResult:
@@ -284,17 +313,6 @@ def make_reporter(
     clock = Clock(clock_start)
     if read_session is None:
         read_session = make_read_session(empty_session_state(), has_baseline=False)
-    kwargs: dict[str, Any] = {}
-    if max_iterations is not None:
-        kwargs["max_iterations"] = max_iterations
-    if max_usd is not None:
-        kwargs["max_usd"] = max_usd
-    if read_progress is not None:
-        kwargs["read_progress"] = read_progress
-    if plain_write is not None:
-        kwargs["plain_write"] = plain_write
-    if color is not None:
-        kwargs["color"] = color
     reporter = create_supervise_reporter(
         root=root,
         max_minutes=max_minutes,
@@ -305,7 +323,11 @@ def make_reporter(
         session_id=session_id,
         branch=branch,
         tz=tz,
-        **kwargs,
+        max_iterations=max_iterations,
+        max_usd=max_usd,
+        read_progress=read_progress,
+        plain_write=plain_write,
+        color=color,
     )
     return ReporterKit(reporter, clock)
 

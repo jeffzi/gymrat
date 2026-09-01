@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import operator
 import sys
 from collections import deque
 from typing import TYPE_CHECKING, Literal, assert_never
@@ -33,6 +34,7 @@ from gymrat.cli.supervise.state import (
     ReporterCtx,
     Starting,
     SuperviseReporter,
+    Thinking,
     TrackedTool,
 )
 from gymrat.session.clock import now_ms
@@ -43,6 +45,7 @@ from gymrat.session.store import fold_session, read_records
 from gymrat.supervisor.events import (
     CapEvent,
     LaunchEvent,
+    ModelPhaseEvent,
     SessionEvent,
     TextDeltaEvent,
     ThinkingUpdateEvent,
@@ -184,6 +187,16 @@ def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
         _emit_live(ctx)
 
 
+def _handle_thinking_update(ctx: ReporterCtx, event: ThinkingUpdateEvent) -> None:
+    if isinstance(ctx.liveness, (Capped, InFlight)):
+        return
+    if isinstance(ctx.liveness, Thinking):
+        ctx.liveness = Thinking(since=ctx.liveness.since, estimated_tokens=event.estimated_tokens)
+    else:
+        ctx.liveness = Thinking(since=event.timestamp, estimated_tokens=event.estimated_tokens)
+    _emit_live(ctx)
+
+
 def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
     match event:
         case CapEvent():
@@ -198,7 +211,9 @@ def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
             _handle_tool_end(ctx, event)
         case ToolProgressEvent():
             _emit_live(ctx)
-        case TextDeltaEvent() | ThinkingUpdateEvent():
+        case ThinkingUpdateEvent():
+            _handle_thinking_update(ctx, event)
+        case TextDeltaEvent() | ModelPhaseEvent():
             pass
         case _:  # pragma: no cover - exhaustive over the event union
             assert_never(event)
@@ -319,6 +334,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         stop=stop,
         frame=lambda: build_frame(ctx),
         warn=warn,
+        session_result=lambda: ctx.session_result,
     )
 
 
@@ -341,10 +357,7 @@ def _find_best_kept_iteration(
     if not candidates:
         return None, None, None
 
-    def _delta(pair: tuple[IterationRecord, float]) -> float:
-        return pair[1]
-
-    best, best_delta = min(candidates, key=_delta)
+    best, best_delta = min(candidates, key=operator.itemgetter(1))
     label = best.primary.kind if best.primary.kind != "single" else best.primary.name
     return best_delta, best.seq, label
 

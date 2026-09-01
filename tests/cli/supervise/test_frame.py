@@ -1,21 +1,26 @@
-"""Tests for Rich styling in the supervise dashboard frame.
+"""Tests for the Rich renderables the supervise command builds.
 
-Verify that the TUI renders with appropriate colors and styles instead of
-plain white text.  Tests render ``reporter.frame()`` through a color-enabled
-console and check for ANSI escape codes on specific content lines.
+The dashboard-styling tests verify that the TUI renders with appropriate colors
+and styles instead of plain white text: they render ``reporter.frame()`` through
+a color-enabled console and check for ANSI escape codes on specific content
+lines.  The closing-summary tests pin the text and styling of the four-line
+block ``gymrat supervise`` prints when a run ends.
 """
 
 from __future__ import annotations
 
-import re
 from io import StringIO
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.panel import Panel
 
 from gymrat.cli.style import CLI_THEME
+from gymrat.cli.supervise.frame import build_summary
+from tests._ansi import SGR_RE, strip_sgr
+from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     IDLE_WARN_MS,
@@ -28,18 +33,19 @@ from tests.cli.supervise._fixtures import (
     make_iteration,
     make_read_session,
     make_reporter,
+    make_supervision_result,
+    render_frame,
     session_state,
+    session_state_three_iterations,
 )
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.progress import SuperviseReporter
+    from gymrat.cli.supervise.progress import ReadSessionResult, SuperviseReporter
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-_ANSI_ESCAPE = re.compile(r"\x1b\[([0-9;]*)m")
 
 # Standard ANSI SGR parameter codes
 _SGR_BOLD = 1
@@ -47,16 +53,12 @@ _SGR_DIM = 2
 _SGR_RED = 31
 _SGR_GREEN = 32
 _SGR_YELLOW = 33
+_SGR_BLUE = 34
+_SGR_CYAN = 36
 
 
-def _render_content_colored(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
-    """Render the panel's inner content with standard color.
-
-    Extracts ``panel.renderable`` so Panel border styling does not leak
-    into content-styling assertions.
-    """
-    panel = reporter.frame()
-    assert isinstance(panel, Panel)
+def _render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
+    """Render *renderable* through a sealed console with standard color."""
     buf = StringIO()
     console = Console(
         file=buf,
@@ -68,19 +70,30 @@ def _render_content_colored(reporter: SuperviseReporter, *, width: int = FRAME_W
         _environ={},
         theme=CLI_THEME,
     )
-    console.print(panel.renderable)
+    console.print(renderable)
     return buf.getvalue()
+
+
+def _render_content_colored(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
+    """Render the panel's inner content with standard color.
+
+    Extracts ``panel.renderable`` so Panel border styling does not leak
+    into content-styling assertions.
+    """
+    panel = reporter.frame()
+    assert isinstance(panel, Panel)
+    return _render_colored(panel.renderable, width=width)
 
 
 def _lines_containing(output: str, needle: str) -> list[str]:
     """Return raw (styled) lines whose plain-text content contains *needle*."""
-    return [line for line in output.splitlines() if needle in _ANSI_ESCAPE.sub("", line)]
+    return [line for line in output.splitlines() if needle in strip_sgr(line)]
 
 
 def _has_sgr(text: str, code: int) -> bool:
     """True when *text* contains an ANSI SGR sequence with parameter *code*."""
     target = str(code)
-    return any(target in match.group(1).split(";") for match in _ANSI_ESCAPE.finditer(text))
+    return any(target in match.group(1).split(";") for match in SGR_RE.finditer(text))
 
 
 def _assert_has_sgr(lines: list[str], code: int) -> None:
@@ -102,6 +115,42 @@ def test_build_frame_panel_when_launched_does_have_nondefault_border_style():
 
     assert isinstance(panel, Panel)
     assert panel.border_style != "none"
+
+
+# ---------------------------------------------------------------------------
+# panel title styling
+# ---------------------------------------------------------------------------
+
+
+def test_panel_title_when_label_present_does_style_supervise_and_label_with_label_style():
+    """STYLE_LABEL is ``bold blue`` — the title line must carry bold SGR."""
+    kit = make_reporter(label="ecstatic-ts", session_id="", branch="")
+    fire_launch(kit.reporter.observer, 1000)
+
+    panel = kit.reporter.frame()
+    assert isinstance(panel, Panel)
+    colored = _render_colored(panel)
+    title_line = colored.splitlines()[0]
+
+    _assert_has_sgr([title_line], _SGR_BOLD)
+    _assert_has_sgr([title_line], _SGR_BLUE)
+
+
+def test_panel_title_when_connector_present_does_dim_the_connector_word():
+    """Connector words (``session``, ``branch``) render dim in the title."""
+    kit = make_reporter(
+        label="",
+        session_id="20260813-125044-34ec",
+        branch="gymrat/20260813-125044-34ec",
+    )
+    fire_launch(kit.reporter.observer, 1000)
+
+    panel = kit.reporter.frame()
+    assert isinstance(panel, Panel)
+    colored = _render_colored(panel)
+    title_line = colored.splitlines()[0]
+
+    _assert_has_sgr([title_line], _SGR_DIM)
 
 
 # ---------------------------------------------------------------------------
@@ -128,12 +177,7 @@ def test_cost_when_rendered_with_color_does_emit_styling():
 
 
 def test_loop_iter_count_when_rendered_with_color_does_emit_bold_styling():
-    state = session_state(
-        iteration_count=3,
-        keep_count=2,
-        discard_count=1,
-        last_iteration=make_iteration(-3.2, "improved"),
-    )
+    state = session_state_three_iterations(-3.2, "improved")
     kit = make_reporter(
         max_iterations=20,
         read_session=make_read_session(state, has_baseline=True),
@@ -224,7 +268,7 @@ def test_liveness_starting_when_rendered_with_color_does_emit_dim_styling():
     _assert_has_sgr(starting_lines, _SGR_DIM)
 
 
-def test_liveness_inflight_when_rendered_with_color_does_emit_yellow_styling():
+def test_liveness_inflight_when_rendered_with_color_does_not_emit_special_styling():
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -234,7 +278,34 @@ def test_liveness_inflight_when_rendered_with_color_does_emit_yellow_styling():
     colored = _render_content_colored(kit.reporter)
     bash_lines = _lines_containing(colored, "Bash")
 
-    _assert_has_sgr(bash_lines, _SGR_YELLOW)
+    assert bash_lines
+    assert not any(_has_sgr(line, _SGR_BOLD) for line in bash_lines)
+    assert not any(_has_sgr(line, _SGR_DIM) for line in bash_lines)
+    assert not any(_has_sgr(line, _SGR_CYAN) for line in bash_lines)
+
+
+def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout():
+    """An in-flight tool row should contain wall-clock, tool name, summary, and elapsed.
+
+    The layout must match the column alignment of a finished tool line.
+    """
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.clock.now = 7000
+
+    plain = render_frame(kit.reporter)
+    bash_lines = [line for line in plain.splitlines() if "Bash" in line]
+
+    assert bash_lines, "expected at least one line containing 'Bash'"
+    inflight_line = bash_lines[0]
+    expected_wall = "00:00:02"
+    assert expected_wall in inflight_line, f"wall-clock {expected_wall!r} not in {inflight_line!r}"
+    assert "Bash" in inflight_line
+    assert "gymrat iterate" in inflight_line
+    assert "5s" in inflight_line
 
 
 def test_liveness_idle_when_rendered_with_color_does_emit_yellow_styling():
@@ -264,11 +335,50 @@ def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
 
 
 # ---------------------------------------------------------------------------
+# finished tool lines ordering
+# ---------------------------------------------------------------------------
+
+
+def test_finished_tools_when_three_completed_does_render_newest_first():
+    """Finished tool history lines appear newest-first (closest to the in-flight row)."""
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Read", "read-1", 2000, input_summary="oldest.ts")
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Read", "read-1", 3000)
+
+    kit.clock.now = 4000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 4000, input_summary="middle.ts")
+    kit.clock.now = 5000
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 5000)
+
+    kit.clock.now = 6000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 6000, input_summary="newest.ts")
+    kit.clock.now = 7000
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 7000)
+
+    plain = render_frame(kit.reporter)
+    tool_lines = [
+        line
+        for line in plain.splitlines()
+        if any(name in line for name in ("oldest.ts", "middle.ts", "newest.ts"))
+    ]
+
+    assert len(tool_lines) == 3, (
+        f"expected 3 tool history lines, got {len(tool_lines)}: {tool_lines}"
+    )
+    assert "newest.ts" in tool_lines[0], f"first line should be newest: {tool_lines[0]}"
+    assert "oldest.ts" in tool_lines[-1], f"last line should be oldest: {tool_lines[-1]}"
+
+
+# ---------------------------------------------------------------------------
 # finished tool lines styling
 # ---------------------------------------------------------------------------
 
 
-def test_finished_tool_line_when_rendered_with_color_does_emit_dim_styling():
+def test_finished_tool_line_does_emit_dim_styling():
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -277,6 +387,154 @@ def test_finished_tool_line_when_rendered_with_color_does_emit_dim_styling():
     fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000)
 
     colored = _render_content_colored(kit.reporter)
+    finished_lines = _lines_containing(colored, "archetype")
+
+    _assert_has_sgr(finished_lines, _SGR_DIM)
+
+
+def test_finished_tool_line_when_failed_does_emit_dim_red_styling():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000, result="error")
+
+    colored = _render_content_colored(kit.reporter)
     edit_lines = _lines_containing(colored, "Edit")
 
+    _assert_has_sgr(edit_lines, _SGR_RED)
     _assert_has_sgr(edit_lines, _SGR_DIM)
+
+
+# ---------------------------------------------------------------------------
+# closing summary
+# ---------------------------------------------------------------------------
+
+_LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
+_LOG_ROW = f"  log   {_LOG_PATH}"
+
+
+def _session_result(*, with_best: bool) -> ReadSessionResult:
+    """A three-iteration session, with or without a best-iteration record."""
+    state = session_state_three_iterations(-4.2, "improved", seq=3)
+    if not with_best:
+        return make_read_session(state, has_baseline=True)()
+    return make_read_session(
+        state,
+        has_baseline=True,
+        best_delta_pct=-4.2,
+        best_seq=3,
+        primary_label="wall_time",
+        baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    )()
+
+
+def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_and_log():
+    summary = build_summary(
+        make_supervision_result(reason="interrupted", ended_by="wall-clock", cost_usd=0.16),
+        log_path=_LOG_PATH,
+        session_result=_session_result(with_best=True),
+    )
+
+    assert frame_text(summary, width=FRAME_WIDTH) == (
+        "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
+        "  best  -4.2% wall_time vs baseline a1b2c3d (iter 3)\n"
+        "  loop  iter 3 · 2 kept · 1 discarded · last -4.2% improved\n"
+        f"{_LOG_ROW}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "ended_by", "expected"),
+    [
+        pytest.param("completed", "session", "✓ completed · 1m 0s · $0.05", id="session-end"),
+        pytest.param(
+            "interrupted",
+            "wall-clock",
+            "! interrupted by wall-clock cap · 1m 0s · $0.05",
+            id="wall-clock-cap",
+        ),
+        pytest.param(
+            "interrupted",
+            "spend-cap",
+            "! interrupted by spend cap · 1m 0s · $0.05",
+            id="spend-cap",
+        ),
+        pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
+    ],
+)
+def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
+    reason: str, ended_by: str, expected: str
+) -> None:
+    summary = build_summary(
+        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
+        log_path=_LOG_PATH,
+        session_result=None,
+    )
+
+    assert frame_text(summary, width=FRAME_WIDTH).splitlines()[0] == expected
+
+
+@pytest.mark.parametrize(
+    ("session_result", "expected_loop"),
+    [
+        pytest.param(None, "  loop  no session yet", id="no-session"),
+        pytest.param(
+            _session_result(with_best=False),
+            "  loop  iter 3 · 2 kept · 1 discarded · last -4.2% improved",
+            id="no-best-iteration",
+        ),
+    ],
+)
+def test_summary_when_no_best_delta_does_omit_the_best_row(
+    session_result: ReadSessionResult | None, expected_loop: str
+) -> None:
+    summary = build_summary(
+        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
+    )
+
+    assert frame_text(summary, width=FRAME_WIDTH) == (
+        f"✓ completed · 1m 0s · $0.05\n{expected_loop}\n{_LOG_ROW}"
+    )
+
+
+def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():
+    log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
+
+    summary = build_summary(make_supervision_result(), log_path=log_path, session_result=None)
+
+    assert (
+        frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
+        == "  log   ~/.gymrat/supervisor-1.jsonl"
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "ended_by", "expected_sgr"),
+    [
+        pytest.param("completed", "session", _SGR_GREEN, id="completed-green"),
+        pytest.param("interrupted", "wall-clock", _SGR_YELLOW, id="capped-yellow"),
+        pytest.param("error", "session", _SGR_RED, id="error-red"),
+    ],
+)
+def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
+    reason: str, ended_by: str, expected_sgr: int
+) -> None:
+    summary = build_summary(
+        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
+        log_path=_LOG_PATH,
+        session_result=None,
+    )
+
+    colored = _render_colored(summary)
+
+    _assert_has_sgr(colored.splitlines()[:1], expected_sgr)
+
+
+def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled():
+    summary = build_summary(make_supervision_result(), log_path=_LOG_PATH, session_result=None)
+
+    colored = _render_colored(summary)
+
+    assert "\x1b[" not in colored.splitlines()[-1]

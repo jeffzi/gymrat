@@ -16,7 +16,7 @@ from typing import override
 import pytest
 
 from gymrat.supervisor import create_claude_driver
-from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
+from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     SessionEvent,
     SessionObserver,
@@ -26,7 +26,6 @@ from gymrat.supervisor.events import (
     ToolStartEvent,
     UsageUpdateEvent,
     summarize,
-    summarize_input,
 )
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
@@ -118,6 +117,20 @@ async def run_session(
     """Start a session and await its settled outcome."""
     session = driver.start(prompt or make_prompt(), observer, abort)
     return await session.outcome
+
+
+async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
+    """Drive a session over scripted ``messages`` and return the events it emitted."""
+    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
+    probe = collecting_observer()
+    await run_session(driver, probe.observer)
+    return probe.events
+
+
+async def run_outcome(messages: Sequence[object]) -> SessionOutcome:
+    """Drive a session over scripted ``messages`` and return its settled outcome."""
+    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
+    return await run_session(driver, collecting_observer().observer)
 
 
 # ---------------------------------------------------------------------------
@@ -226,31 +239,37 @@ async def test_start_when_model_absent_does_omit_model():
 
 
 async def test_mapping_when_text_block_does_emit_text_delta():
-    driver = create_claude_driver(
-        client_factory=FactoryProbe(FakeClient([assistant(SimpleNamespace(text="hello world"))]))
-    )
-    probe = collecting_observer()
+    events = await run_with_messages([assistant(SimpleNamespace(text="hello world"))])
 
-    await run_session(driver, probe.observer)
-
-    text_events = [e for e in probe.events if isinstance(e, TextDeltaEvent)]
+    text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
     assert len(text_events) == 1
     assert text_events[0].chunk == "hello world"
 
 
 async def test_mapping_when_tool_use_block_does_emit_tool_start():
     tool_use = SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/foo.ts"})
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([assistant(tool_use)])))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages([assistant(tool_use)])
 
-    starts = [e for e in probe.events if isinstance(e, ToolStartEvent)]
+    starts = [e for e in events if isinstance(e, ToolStartEvent)]
     assert len(starts) == 1
     assert starts[0].tool_use_id == "tu_1"
     assert starts[0].tool_name == "Read"
     assert starts[0].input == {"file_path": "/foo.ts"}
-    assert starts[0].input_summary == summarize_input({"file_path": "/foo.ts"})
+    assert starts[0].input_summary == "/foo.ts"
+
+
+async def test_mapping_when_read_path_under_cwd_does_summarize_relative_to_cwd():
+    tool_use = SimpleNamespace(
+        id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"}
+    )
+    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([assistant(tool_use)])))
+    probe = collecting_observer()
+
+    await run_session(driver, probe.observer, make_prompt(cwd="/my/project"))
+
+    starts = [e for e in probe.events if isinstance(e, ToolStartEvent)]
+    assert starts[0].input_summary == "src/main.py"
 
 
 async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name():
@@ -258,12 +277,10 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
         assistant(SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/foo.ts"})),
         assistant(SimpleNamespace(tool_use_id="tu_1", content="file contents here")),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].tool_use_id == "tu_1"
     assert ends[0].tool_name == "Read"
@@ -274,12 +291,10 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
 
 async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_fields():
     orphan = assistant(SimpleNamespace(tool_use_id="tu_orphan", content="result"))
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([orphan])))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages([orphan])
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].tool_name == "unknown"
     assert ends[0].tool_use_id == "tu_orphan"
@@ -292,12 +307,10 @@ async def test_mapping_when_tool_result_content_not_string_does_json_encode():
         assistant(SimpleNamespace(id="tu_3", name="Bash", input={"command": "echo hi"})),
         assistant(SimpleNamespace(tool_use_id="tu_3", content=payload)),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].result == json.dumps(payload)
 
@@ -308,24 +321,20 @@ async def test_mapping_when_tool_result_content_not_json_encodable_does_fall_bac
         assistant(SimpleNamespace(id="tu_c", name="Test", input={})),
         assistant(SimpleNamespace(tool_use_id="tu_c", content=payload)),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].result == "UNSERIALIZABLE"
 
 
 async def test_mapping_when_single_thinking_block_does_report_delta_equal_to_estimated_tokens():
     thinking = assistant(SimpleNamespace(thinking="abcd"))
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([thinking])))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages([thinking])
 
-    updates = [e for e in probe.events if isinstance(e, ThinkingUpdateEvent)]
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
     assert len(updates) == 1
     assert updates[0].delta == 1
     assert updates[0].estimated_tokens == 1
@@ -336,12 +345,10 @@ async def test_mapping_when_multiple_thinking_blocks_does_accumulate_estimated_t
         assistant(SimpleNamespace(thinking="abcd")),
         assistant(SimpleNamespace(thinking="abcdefgh")),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    updates = [e for e in probe.events if isinstance(e, ThinkingUpdateEvent)]
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
     assert len(updates) == 2
     assert (updates[0].delta, updates[0].estimated_tokens) == (1, 1)
     assert (updates[1].delta, updates[1].estimated_tokens) == (2, 3)
@@ -372,12 +379,7 @@ async def test_mapping_when_multiple_thinking_blocks_does_accumulate_estimated_t
     ],
 )
 async def test_mapping_when_message_malformed_does_emit_nothing(message: object):
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([message])))
-    probe = collecting_observer()
-
-    await run_session(driver, probe.observer)
-
-    assert probe.events == []
+    assert await run_with_messages([message]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -392,24 +394,17 @@ async def test_cost_when_results_have_cost_does_emit_usage_update_per_result():
         assistant(SimpleNamespace(text="done")),
         SimpleNamespace(total_cost_usd=0.07),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    usage = [e for e in probe.events if isinstance(e, UsageUpdateEvent)]
+    usage = [e for e in events if isinstance(e, UsageUpdateEvent)]
     assert [e.cost_usd for e in usage] == [0.03, 0.07]
 
 
 async def test_cost_when_no_result_messages_does_not_emit_usage_update():
-    driver = create_claude_driver(
-        client_factory=FactoryProbe(FakeClient([assistant(SimpleNamespace(text="hello"))]))
-    )
-    probe = collecting_observer()
+    events = await run_with_messages([assistant(SimpleNamespace(text="hello"))])
 
-    await run_session(driver, probe.observer)
-
-    assert [e for e in probe.events if isinstance(e, UsageUpdateEvent)] == []
+    assert [e for e in events if isinstance(e, UsageUpdateEvent)] == []
 
 
 # ---------------------------------------------------------------------------
@@ -607,18 +602,15 @@ async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
 
 async def test_outcome_when_stream_ends_normally_does_report_completed_with_last_cost():
     messages = [SimpleNamespace(total_cost_usd=0.02), SimpleNamespace(total_cost_usd=0.05)]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
 
-    outcome = await run_session(driver, collecting_observer().observer)
+    outcome = await run_outcome(messages)
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.05
 
 
 async def test_outcome_when_no_results_does_report_completed_with_zero_cost():
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([])))
-
-    outcome = await run_session(driver, collecting_observer().observer)
+    outcome = await run_outcome([])
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.0

@@ -26,6 +26,8 @@ from gymrat.report.style import (
     truncate_labels,
 )
 
+_WIDTH = 80
+
 
 def _sgr_params(text: str) -> str:
     """The SGR parameter list of the last ANSI escape in ``text`` (e.g. ``"4;33"``).
@@ -36,6 +38,16 @@ def _sgr_params(text: str) -> str:
     start = text.rindex("\x1b[")
     end = text.index("m", start)
     return text[start + 2 : end]
+
+
+def _plain(renderable: str) -> str:
+    """Render *renderable* at the standard test width with color suppressed."""
+    return render_lines(renderable, color=False, width=_WIDTH)
+
+
+def _colored(renderable: str) -> str:
+    """Render *renderable* at the standard test width with color forced on."""
+    return render_lines(renderable, color=True, width=_WIDTH)
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +180,8 @@ def test_variant_name_style_when_referenced_does_equal_bold_underline():
     assert VARIANT_NAME_STYLE == "bold underline"
 
 
-def test_group_label_style_when_referenced_does_equal_blue():
-    assert GROUP_LABEL_STYLE == "blue"
+def test_group_label_style_when_referenced_does_equal_bold_blue():
+    assert GROUP_LABEL_STYLE == "bold blue"
 
 
 def test_aggregate_label_style_when_referenced_does_equal_bold():
@@ -189,32 +201,20 @@ def test_highlight_inline_code_when_span_present_does_strip_backticks_and_keep_c
 
 
 def test_highlight_inline_code_when_colored_does_paint_the_span_blue():
-    styled = render_lines(
-        highlight_inline_code("Run `gymrat doctor` to verify."),
-        color=True,
-        width=80,
-    )
+    styled = _colored(highlight_inline_code("Run `gymrat doctor` to verify."))
 
     assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
     assert "`" not in styled
 
 
 def test_highlight_inline_code_when_suppressed_does_render_bare_content():
-    plain = render_lines(
-        highlight_inline_code("Run `gymrat doctor` to verify."),
-        color=False,
-        width=80,
-    )
+    plain = _plain(highlight_inline_code("Run `gymrat doctor` to verify."))
 
     assert plain == "Run gymrat doctor to verify."
 
 
 def test_highlight_inline_code_when_multiple_spans_does_render_each_bare():
-    plain = render_lines(
-        highlight_inline_code("Use `gymrat compare` or `gymrat measure`."),
-        color=False,
-        width=80,
-    )
+    plain = _plain(highlight_inline_code("Use `gymrat compare` or `gymrat measure`."))
 
     assert plain == "Use gymrat compare or gymrat measure."
 
@@ -233,15 +233,11 @@ def test_highlight_inline_code_when_no_backticks_does_return_unchanged():
     ],
 )
 def test_highlight_inline_code_when_rendered_plain_does_yield_content(text: str, expected: str):
-    assert render_lines(highlight_inline_code(text), color=False, width=80) == expected
+    assert _plain(highlight_inline_code(text)) == expected
 
 
 def test_highlight_inline_code_when_content_has_markup_metacharacters_does_render_literally():
-    plain = render_lines(
-        highlight_inline_code("Metric `[i]` counts."),
-        color=False,
-        width=80,
-    )
+    plain = _plain(highlight_inline_code("Metric `[i]` counts."))
 
     assert plain == "Metric [i] counts."
 
@@ -254,18 +250,18 @@ _HINT = "run `gymrat doctor` first"
 
 
 def test_format_hint_when_rendered_plain_does_yield_the_bare_sentence():
-    assert render_lines(format_hint(_HINT), color=False, width=80) == "run gymrat doctor first"
+    assert _plain(format_hint(_HINT)) == "run gymrat doctor first"
 
 
 def test_format_hint_when_colored_does_dim_the_whole_line():
-    styled = render_lines(format_hint(_HINT), color=True, width=80)
+    styled = _colored(format_hint(_HINT))
 
     assert styled.startswith("\x1b[2m")
     assert styled.endswith("\x1b[0m")
 
 
 def test_format_hint_when_colored_does_paint_the_inline_code_blue():
-    styled = render_lines(format_hint(_HINT), color=True, width=80)
+    styled = _colored(format_hint(_HINT))
 
     assert "34" in _sgr_params(styled[: styled.index("gymrat doctor")])
 
@@ -280,7 +276,7 @@ def test_format_hint_when_colored_does_paint_the_inline_code_blue():
 def test_format_hint_when_text_has_markup_metacharacters_does_render_them_literally(
     text: str, expected: str
 ):
-    assert render_lines(format_hint(text), color=False, width=80) == expected
+    assert _plain(format_hint(text)) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +289,7 @@ def test_render_lines_when_color_true_does_emit_ansi_despite_no_color_env(
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=True, width=80)
+    result = render_lines("[red]hi[/red]", color=True, width=_WIDTH)
 
     assert "\x1b[" in result
     assert "hi" in result
@@ -304,7 +300,7 @@ def test_render_lines_when_color_false_does_suppress_ansi_despite_force_color_en
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=False, width=80)
+    result = render_lines("[red]hi[/red]", color=False, width=_WIDTH)
 
     assert "\x1b[" not in result
     assert result == "hi"
@@ -316,7 +312,7 @@ def test_render_lines_when_color_none_and_no_color_env_does_render_plain(
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=None, width=80)
+    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
 
     assert "\x1b[" not in result
 
@@ -327,7 +323,7 @@ def test_render_lines_when_color_none_and_force_color_env_does_emit_ansi(
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=None, width=80)
+    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
 
     assert "\x1b[" in result
 
@@ -339,7 +335,7 @@ def test_render_lines_when_color_none_and_both_env_set_does_let_force_color_win(
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setenv("NO_COLOR", "1")
 
-    result = render_lines("[red]hi[/red]", color=None, width=80)
+    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
 
     assert "\x1b[" in result
 
@@ -350,7 +346,7 @@ def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain(
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("NO_COLOR", raising=False)
 
-    result = render_lines("[red]hi[/red]", color=None, width=80)
+    result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
 
     assert "\x1b[" not in result
 
@@ -359,7 +355,7 @@ def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytes
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
 
-    render_lines("[red]hi[/red]", color=True, width=80)
+    render_lines("[red]hi[/red]", color=True, width=_WIDTH)
 
     assert os.environ.get("NO_COLOR") == "1"
     assert "FORCE_COLOR" not in os.environ
@@ -379,19 +375,19 @@ def test_render_lines_when_content_exceeds_width_does_not_soft_wrap():
 
 
 def test_render_lines_when_given_multiple_renderables_does_join_with_newlines():
-    result = render_lines("line1", "line2", color=False, width=80)
+    result = render_lines("line1", "line2", color=False, width=_WIDTH)
 
     assert result == "line1\nline2"
 
 
 def test_render_lines_when_content_shorter_than_width_does_not_emit_trailing_whitespace():
-    result = render_lines("hi", color=False, width=80)
+    result = render_lines("hi", color=False, width=_WIDTH)
 
     assert result == "hi"
 
 
 def test_render_lines_when_text_escaped_does_render_markup_metacharacters_literally():
-    result = render_lines(escape("[i]"), color=False, width=80)
+    result = render_lines(escape("[i]"), color=False, width=_WIDTH)
 
     assert result == "[i]"
 
@@ -411,7 +407,7 @@ def test_render_lines_when_text_escaped_does_render_markup_metacharacters_litera
 def test_make_capture_console_when_color_set_does_honor_color_and_capture_output(
     color: bool, has_ansi: bool
 ):
-    console = make_capture_console(color=color, width=80)
+    console = make_capture_console(color=color, width=_WIDTH)
 
     console.print("[red]hi[/red]")
 
@@ -427,7 +423,7 @@ def test_make_capture_console_when_color_none_and_force_color_zero_does_render_p
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "0")
 
-    console = make_capture_console(color=None, width=80)
+    console = make_capture_console(color=None, width=_WIDTH)
     console.print("[red]hi[/red]")
 
     assert isinstance(console.file, io.StringIO)
@@ -442,7 +438,7 @@ def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "")
 
-    console = make_capture_console(color=None, width=80)
+    console = make_capture_console(color=None, width=_WIDTH)
     console.print("[bold]hi[/bold]")
 
     assert isinstance(console.file, io.StringIO)
@@ -458,7 +454,7 @@ def test_make_capture_console_when_color_true_and_term_dumb_does_still_emit_ansi
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
 
-    console = make_capture_console(color=True, width=80)
+    console = make_capture_console(color=True, width=_WIDTH)
     console.print("[red]hi[/red]")
 
     assert isinstance(console.file, io.StringIO)
@@ -474,7 +470,7 @@ def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
-    console = make_capture_console(color=None, width=80)
+    console = make_capture_console(color=None, width=_WIDTH)
     console.print("[red]hi[/red]")
 
     assert isinstance(console.file, io.StringIO)
@@ -502,7 +498,7 @@ def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
 
-    result = render_lines("[red]hi[/red]", color=True, width=80)
+    result = render_lines("[red]hi[/red]", color=True, width=_WIDTH)
 
     assert "\x1b[" in result
     assert "hi" in result

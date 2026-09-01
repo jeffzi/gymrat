@@ -14,6 +14,8 @@ This module owns three concerns the text renderers share:
   writing to an in-memory buffer, resolving the choice against the environment
   without ever mutating :data:`os.environ`.
 
+The CLI-side style vocabulary lives in :mod:`gymrat.cli.style`.
+
 Display widths are measured in terminal cells (:func:`rich.cells.cell_len`), so
 a wide CJK character counts as two columns. Slicing is on code points: Python
 has no standard-library grapheme segmentation, so a cut may land between the
@@ -182,7 +184,7 @@ VERDICT_STYLES: dict[DisplayClass, str] = {
 VARIANT_NAME_STYLE = "bold underline"
 
 #: The style a group label wears where the report heads a group of metrics.
-GROUP_LABEL_STYLE = "blue"
+GROUP_LABEL_STYLE = "bold blue"
 
 #: The style an aggregate label (a geomean row, a total) wears.
 AGGREGATE_LABEL_STYLE = "bold"

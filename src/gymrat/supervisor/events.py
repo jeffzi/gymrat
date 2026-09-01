@@ -1,6 +1,6 @@
 """Session event vocabulary and the helpers that render and fan them out.
 
-A session emits a fixed set of eight events to any number of
+A session emits a fixed set of nine events to any number of
 :data:`SessionObserver` callbacks. Each event is a frozen pydantic model tagged
 by a ``type`` literal and stamped with an epoch-millisecond ``timestamp``;
 together they form the :data:`SessionEvent` union.
@@ -13,9 +13,11 @@ event out to several observers in order.
 """
 
 import json
+import os
 import re
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -65,6 +67,7 @@ class ThinkingUpdateEvent(_EventModel):
     timestamp: int
     estimated_tokens: int
     delta: int
+    parent_tool_use_id: str | None = None
 
 
 class ToolStartEvent(_EventModel):
@@ -76,6 +79,7 @@ class ToolStartEvent(_EventModel):
     tool_name: str
     input: object
     input_summary: str
+    parent_tool_use_id: str | None = None
 
 
 class ToolProgressEvent(_EventModel):
@@ -97,6 +101,7 @@ class ToolEndEvent(_EventModel):
     duration_ms: int
     result: str
     result_summary: str
+    parent_tool_use_id: str | None = None
 
 
 class TextDeltaEvent(_EventModel):
@@ -121,6 +126,16 @@ class CapEvent(_EventModel):
     type: Literal["cap"] = "cap"
     timestamp: int
     cap: Literal["wall-clock", "spend-cap"]
+
+
+class ModelPhaseEvent(_EventModel):
+    """Emitted when the model transitions between processing phases within a turn."""
+
+    type: Literal["model_phase"] = "model_phase"
+    timestamp: int
+    phase: Literal["thinking", "responding", "tool_input", "turn_end"]
+    tool_name: str | None = None
+    parent_tool_use_id: str | None = None
 
 
 class LaunchEvent(_EventModel):
@@ -148,7 +163,9 @@ class LaunchEvent(_EventModel):
     ) -> dict[str, object]:
         data: dict[str, object] = handler(self)
         if self.max_usd is None:
-            data.pop("maxUsd", None)
+            # Pop both spellings: the handler's own by_alias setting decides which
+            # one is present in `data`, and callers dump both ways (see tests).
+            data.pop(to_camel("max_usd"), None)
             data.pop("max_usd", None)
         if self.model is None:
             data.pop("model", None)
@@ -163,6 +180,7 @@ SessionEvent = (
     | TextDeltaEvent
     | UsageUpdateEvent
     | CapEvent
+    | ModelPhaseEvent
     | LaunchEvent
 )
 """The union of every event a session can emit to a :data:`SessionObserver`."""
@@ -176,7 +194,7 @@ _SessionEventAdapter: TypeAdapter[SessionEvent] = TypeAdapter(
 
 
 # ---------------------------------------------------------------------------
-# to_json_line
+# Wire serialization and dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -184,11 +202,6 @@ def to_json_line(event: SessionEvent) -> str:
     """Serialize an event to a single compact JSON line with camelCase keys."""
     wire = event.model_dump(mode="python", by_alias=True)
     return json.dumps(null_non_finite(wire), separators=_COMPACT_JSON_SEPARATORS, default=str)
-
-
-# ---------------------------------------------------------------------------
-# event_from_wire
-# ---------------------------------------------------------------------------
 
 
 def event_from_wire(obj: object) -> SessionEvent | None:
@@ -205,11 +218,6 @@ def event_from_wire(obj: object) -> SessionEvent | None:
         return _SessionEventAdapter.validate_python(obj)
     except ValidationError:
         return None
-
-
-# ---------------------------------------------------------------------------
-# combine_observers
-# ---------------------------------------------------------------------------
 
 
 def combine_observers(*observers: SessionObserver) -> SessionObserver:
@@ -241,17 +249,14 @@ def summarize(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
 
     Whitespace runs collapse to single spaces and the ends are trimmed. When the
     collapsed text fits within ``max_chars`` code points it is returned as-is;
-    otherwise it is cut on a code-point boundary and a suffix reports the number
-    of dropped code points and the line count of the *original* text.
+    otherwise it is cut on a code-point boundary and suffixed with a bare ``…``.
     """
     collapsed = _WHITESPACE_RUN.sub(" ", text).strip()
 
     if len(collapsed) <= max_chars:
         return collapsed
 
-    remaining = len(collapsed) - max_chars
-    line_count = text.count("\n") + 1
-    return f"{collapsed[:max_chars]}… ({remaining} more chars, {line_count} lines)"
+    return f"{collapsed[:max_chars]}…"
 
 
 # ---------------------------------------------------------------------------
@@ -259,15 +264,94 @@ def summarize(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
 # ---------------------------------------------------------------------------
 
 
-def summarize_input(value: object, max_chars: int = SUMMARY_MAX_CHARS) -> str:
-    """Summarize a value by JSON-encoding it, then passing it through :func:`summarize`.
+# Tool names whose input carries a file path as the primary summary value.
+_FILE_PATH_TOOLS: dict[str, str] = {
+    "Read": "file_path",
+    "Edit": "file_path",
+    "Write": "file_path",
+    "NotebookEdit": "notebook_path",
+}
 
-    The JSON uses no separators padding so ``{"key": "value"}`` renders as
-    ``{"key":"value"}``. A value ``json.dumps`` cannot encode falls back to
-    ``summarize(str(value))``.
+_HOME = str(Path.home())
+
+
+def _render_path(path: str, supervised_root: str | None) -> str:
+    """Render a file path for display.
+
+    Paths under the supervised root render relative to it; paths under the
+    user's home directory render ``~``-prefixed; anything else renders verbatim.
+    The supervised root takes priority when a path falls under both.
     """
+    if supervised_root is not None:
+        try:
+            rel = os.path.relpath(path, supervised_root)
+        except ValueError:
+            pass
+        else:
+            if not rel.startswith(".."):
+                return rel
+
+    if path.startswith(_HOME + "/"):
+        return "~/" + path[len(_HOME) + 1 :]
+
+    return path
+
+
+def summarize_input(
+    value: object,
+    max_chars: int = SUMMARY_MAX_CHARS,
+    *,
+    tool_name: str | None = None,
+    supervised_root: str | None = None,
+) -> str:
+    """Summarize a tool-call input for display.
+
+    When ``tool_name`` identifies a known tool, the summary extracts the
+    human-relevant field (file path, command, or subagent type + description)
+    rather than dumping the entire input as JSON.
+
+    Falls back to compact JSON when the tool is unknown or the expected field is
+    absent. A value ``json.dumps`` cannot encode falls back to ``str(value)``.
+    """
+    if isinstance(value, dict) and tool_name is not None:
+        extracted = _extract_tool_summary(value, tool_name, supervised_root)
+        if extracted is not None:
+            return summarize(extracted, max_chars)
+
     try:
         encoded = json.dumps(value, separators=_COMPACT_JSON_SEPARATORS)
     except (TypeError, ValueError):
         return summarize(str(value), max_chars)
     return summarize(encoded, max_chars)
+
+
+def _extract_tool_summary(
+    input_dict: dict[str, object],
+    tool_name: str,
+    supervised_root: str | None,
+) -> str | None:
+    """Extract a human-readable summary from a tool input dict, or ``None``."""
+    path_key = _FILE_PATH_TOOLS.get(tool_name)
+    if path_key is not None:
+        path = input_dict.get(path_key)
+        return _render_path(path, supervised_root) if isinstance(path, str) else None
+
+    if tool_name == "Bash":
+        command = input_dict.get("command")
+        return command if isinstance(command, str) else None
+
+    if tool_name in ("Agent", "Task"):
+        description = input_dict.get("description")
+        if not isinstance(description, str):
+            return None
+        agent_type = input_dict.get("subagent_type") or input_dict.get("type")
+        prefix = f"{agent_type}: " if isinstance(agent_type, str) else ""
+        return f"{prefix}{description}"
+
+    if tool_name == "Skill":
+        skill = input_dict.get("skill")
+        if isinstance(skill, str):
+            args = input_dict.get("args")
+            return f"{skill} {args}" if isinstance(args, str) else skill
+
+    return None

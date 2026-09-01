@@ -256,7 +256,7 @@ def test_render_report_when_colored_does_paint_the_group_sub_header_blue(
 
     row = line_containing(render_report(make_result()), "entity")
 
-    assert styles_at(row, "entity") == ["34"]
+    assert styles_at(row, "entity") == ["1", "34"]
 
 
 @pytest.mark.parametrize(

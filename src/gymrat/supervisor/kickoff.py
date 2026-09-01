@@ -70,7 +70,11 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         hint = "Check file permissions and ensure the path is a regular file."
         raise GymratError(message, hint=hint) from err
 
-    system_prompt_append = f"{skill_content}\n## Runbook: {config.runbook}\n\n{runbook_content}"
+    system_prompt_append = (
+        f"{skill_content}\n\n"
+        "**The gymrat skill is already loaded above. Do not call `Skill(gymrat)`.**\n\n"
+        f"## Runbook: {config.runbook}\n\n{runbook_content}"
+    )
 
     return KickoffResult(
         system_prompt_append=system_prompt_append,

@@ -16,7 +16,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any
 from unittest.mock import Mock, create_autospec
 
 import pytest
@@ -24,14 +24,18 @@ from typer.testing import CliRunner, Result
 
 from gymrat.cli.app import app
 from gymrat.cli.shared import write_and_flush
-from gymrat.cli.supervise.progress import create_supervise_reporter
+from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
 from gymrat.config import BenchlessConfig, StopConfig
 from gymrat.errors import GymratError
 from gymrat.session.paths import supervise_lockfile_path
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import SessionOutcome, SupervisionResult, create_claude_driver
+from gymrat.supervisor import SupervisionResult, create_claude_driver
 from tests._ansi import strip_ansi
+from tests.cli.supervise._fixtures import (
+    make_supervision_result,
+    session_state_three_iterations,
+)
 from tests.conftest import hold_lock
 
 runner = CliRunner()
@@ -70,6 +74,7 @@ class _Seams:
     def __init__(self) -> None:
         self.driver = object()
         self.observer: Callable[[object], None] = lambda _event: None
+        self.session_result: ReadSessionResult | None = None
         self.reporter_stop = create_autospec(_real_reporter_stop(), name="reporter.stop")
         self.ensure_git_exclude = create_autospec(ensure_git_exclude, name="ensure_git_exclude")
         self.create_driver = create_autospec(
@@ -98,32 +103,19 @@ def _config(
     )
 
 
-def _result(
-    *,
-    reason: Literal["completed", "error", "interrupted"] = "completed",
-    ended_by: Literal["session", "spend-cap", "wall-clock"] = "session",
-    duration_ms: int = 60_000,
-    cost_usd: float = 0.05,
-    message: str | None = None,
-) -> SupervisionResult:
-    """A ``SupervisionResult`` the mocked ``supervise`` hands back."""
-    outcome = SessionOutcome(reason=reason, cost_usd=cost_usd, message=message)
-    return SupervisionResult(
-        outcome=outcome, ended_by=ended_by, duration_ms=duration_ms, cost_usd=cost_usd
-    )
-
-
 def _install_seams(
     monkeypatch: pytest.MonkeyPatch,
     *,
     config: BenchlessConfig | None = None,
     result: SupervisionResult | None = None,
+    session_result: ReadSessionResult | None = None,
     raises: Exception | None = None,
 ) -> _Seams:
     """Replace every seam ``supervise.cmd`` composes over, returning the recorders."""
     seams = _Seams()
+    seams.session_result = session_result
     resolved = config if config is not None else _config()
-    handed_back = result if result is not None else _result()
+    handed_back = result if result is not None else make_supervision_result()
 
     def fake_resolve(_flags: object, _base_dir: object = None) -> BenchlessConfig:
         return resolved
@@ -141,7 +133,11 @@ def _install_seams(
 
     def fake_reporter(**kwargs: object) -> SimpleNamespace:
         seams.reporter_calls.append(kwargs)
-        return SimpleNamespace(observer=seams.observer, stop=seams.reporter_stop)
+        return SimpleNamespace(
+            observer=seams.observer,
+            stop=seams.reporter_stop,
+            session_result=lambda: seams.session_result,
+        )
 
     monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_benchless_config", fake_resolve)
     monkeypatch.setattr("gymrat.cli.supervise.cmd.compose_kickoff", fake_compose)
@@ -275,6 +271,23 @@ def test_supervise_when_log_given_does_use_it_verbatim_and_skip_git_exclude(
 
 
 # ---------------------------------------------------------------------------
+# launch line — log path abbreviation
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_log_under_home_does_abbreviate_path_in_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
+
+    result = _run("optimize it", "--max-minutes", "10", "--log", log_path)
+
+    assert result.exit_code == 0
+    assert "~/.gymrat/supervisor-1.jsonl" in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # dirty-tree guard
 # ---------------------------------------------------------------------------
 
@@ -366,22 +379,47 @@ def test_supervise_when_run_completes_does_print_summary_on_stdout_and_log_on_st
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert re.search(r"session", result.stdout, re.IGNORECASE)
-    assert re.search(r"duration|time", result.stdout, re.IGNORECASE)
-    assert re.search(r"\$?\d+\.\d+|cost", result.stdout, re.IGNORECASE)
-    assert ".jsonl" in result.stdout
+    assert result.stdout.splitlines()[0] == "✓ completed · 1m 0s · $0.05"
+    assert result.stdout.count(".jsonl") == 1
     assert ".jsonl" in result.stderr
 
 
-def test_supervise_when_outcome_interrupted_does_name_it_in_the_summary(
+def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loop_row(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_seams(monkeypatch, result=_result(reason="interrupted", cost_usd=0.02))
+    state = session_state_three_iterations(-4.2, "improved", seq=3)
+    _install_seams(monkeypatch, session_result=ReadSessionResult(state=state, has_baseline=True))
 
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert re.search(r"interrupted", _err_text(result), re.IGNORECASE)
+    assert "  loop  iter 3 · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
+
+
+def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
+    repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A wrapped path breaks copy-paste, so the log row is never re-flowed."""
+    _install_seams(monkeypatch)
+    nested = tmp_path / ("supervise-log-directory-" * 3)
+    nested.mkdir()
+    custom = str(nested / "supervisor-1.jsonl")
+
+    result = _run("optimize it", "--max-minutes", "10", "--log", custom)
+
+    assert result.exit_code == 0
+    assert f"  log   {custom}" in result.stdout
+
+
+def test_supervise_when_stdout_is_not_a_tty_does_print_the_summary_without_ansi_codes(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert "\x1b[" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -389,17 +427,20 @@ def test_supervise_when_outcome_interrupted_does_name_it_in_the_summary(
 # ---------------------------------------------------------------------------
 
 
-def test_supervise_when_a_cap_ended_the_session_does_exit_one(
+def test_supervise_when_a_cap_ended_the_session_does_exit_one_naming_the_cap(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _install_seams(
         monkeypatch,
-        result=_result(ended_by="wall-clock", duration_ms=600_000, cost_usd=1.0),
+        result=make_supervision_result(
+            reason="interrupted", ended_by="wall-clock", duration_ms=600_000, cost_usd=1.0
+        ),
     )
 
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 1
+    assert result.stdout.splitlines()[0] == "! interrupted by wall-clock cap · 10m 0s · $1.00"
 
 
 def test_supervise_when_supervise_raises_does_exit_two_with_message_on_stderr(
@@ -418,7 +459,7 @@ def test_supervise_when_outcome_error_with_message_does_exit_two_and_surface_it(
 ):
     _install_seams(
         monkeypatch,
-        result=_result(
+        result=make_supervision_result(
             reason="error", duration_ms=5_000, cost_usd=0.03, message="SDK connection lost"
         ),
     )
@@ -426,6 +467,7 @@ def test_supervise_when_outcome_error_with_message_does_exit_two_and_surface_it(
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
+    assert result.stdout.splitlines()[0] == "✗ error · 5s · $0.03"
     assert "SDK connection lost" in result.stderr
 
 
@@ -438,7 +480,9 @@ def test_supervise_when_outcome_error_without_message_does_exit_two_quietly(
 ):
     _install_seams(
         monkeypatch,
-        result=_result(reason="error", duration_ms=5_000, cost_usd=0.01, message=message),
+        result=make_supervision_result(
+            reason="error", duration_ms=5_000, cost_usd=0.01, message=message
+        ),
     )
 
     result = _run("optimize it", "--max-minutes", "10")

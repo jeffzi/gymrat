@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import SessionObserver
 
-IDLE_WARN_MS = 180_000
-"""After 3 minutes of no tool activity, the liveness segment turns to "idle"."""
+IDLE_WARN_MS = 30_000
+"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
 
 type CapType = Literal["wall-clock", "spend-cap"]
 
@@ -42,12 +42,17 @@ class ReadSessionResult:
 
 @dataclass(frozen=True, slots=True)
 class SuperviseReporter:
-    """The observer/stop/frame/warn surface that drives the supervise progress display."""
+    """The observer/stop/frame/warn surface that drives the supervise progress display.
+
+    ``session_result`` hands back the session state as of the last re-read, which
+    is what the closing summary reports once the display has stopped.
+    """
 
     observer: SessionObserver
     stop: Callable[[], None]
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
+    session_result: Callable[[], ReadSessionResult | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,13 +79,21 @@ class Ended:
 
 
 @dataclass(frozen=True, slots=True)
+class Thinking:
+    """The model is in extended thinking, started at ``since``."""
+
+    since: int
+    estimated_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
 class Capped:
     """A cap fired; the run is interrupting and liveness is frozen."""
 
     cap_type: CapType
 
 
-type Liveness = Starting | InFlight | Ended | Capped
+type Liveness = Starting | InFlight | Ended | Thinking | Capped
 
 
 @dataclass(frozen=True, slots=True)

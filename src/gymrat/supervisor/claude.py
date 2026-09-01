@@ -87,7 +87,10 @@ def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the pa
 
 def _build_options(prompt: SessionPrompt) -> dict[str, object]:
     """Assemble the SDK options mapping; the kickoff is sent via ``query`` instead."""
-    options: dict[str, object] = {"cwd": prompt.cwd, "permission_mode": "bypassPermissions"}
+    options: dict[str, object] = {
+        "cwd": prompt.cwd,
+        "permission_mode": "bypassPermissions",
+    }
     if prompt.system_prompt_append is not None:
         options["system_prompt"] = {
             "type": "preset",
@@ -286,7 +289,11 @@ class _ClaudeSession:
                     tool_use_id=block_id,
                     tool_name=name,
                     input=tool_input,
-                    input_summary=summarize_input(tool_input),
+                    input_summary=summarize_input(
+                        tool_input,
+                        tool_name=name,
+                        supervised_root=self._prompt.cwd,
+                    ),
                 )
             )
             return

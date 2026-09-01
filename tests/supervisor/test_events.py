@@ -9,6 +9,7 @@ ordering, identity, and error propagation.
 
 import json
 import typing
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -17,6 +18,7 @@ from gymrat.supervisor.events import (
     SUMMARY_MAX_CHARS,
     CapEvent,
     DirtyInfo,
+    ModelPhaseEvent,
     SessionEvent,
     TextDeltaEvent,
     ThinkingUpdateEvent,
@@ -36,33 +38,43 @@ from tests.supervisor._fixtures import collecting_observer, make_launch
 # Event vocabulary
 # ---------------------------------------------------------------------------
 
+# One instance per event type, shared between the type-literal, JSON-serialization,
+# and wire-round-trip tests below so each event's fields are declared exactly once.
+_THINKING_UPDATE = ThinkingUpdateEvent(timestamp=1, estimated_tokens=100, delta=10)
+_TOOL_START = ToolStartEvent(
+    timestamp=2, tool_use_id="t1", tool_name="Read", input={"path": "/x"}, input_summary="/x"
+)
+_TOOL_PROGRESS = ToolProgressEvent(timestamp=3, tool_use_id="t1", elapsed_ms=500)
+_TOOL_END = ToolEndEvent(
+    timestamp=4,
+    tool_use_id="t1",
+    tool_name="Read",
+    duration_ms=750,
+    result="ok",
+    result_summary="ok",
+)
+_TEXT_DELTA = TextDeltaEvent(timestamp=5, chunk="hello")
+_USAGE_UPDATE = UsageUpdateEvent(timestamp=6, cost_usd=0.01)
+_CAP = CapEvent(timestamp=7, cap="wall-clock")
+_MODEL_PHASE_THINKING = ModelPhaseEvent(timestamp=8, phase="thinking")
+_MODEL_PHASE_RESPONDING = ModelPhaseEvent(timestamp=9, phase="responding")
+_MODEL_PHASE_TOOL_INPUT = ModelPhaseEvent(
+    timestamp=10, phase="tool_input", tool_name="Read", parent_tool_use_id="p1"
+)
+_MODEL_PHASE_TURN_END = ModelPhaseEvent(timestamp=11, phase="turn_end")
+
 EVENT_SAMPLES: list[tuple[object, str]] = [
-    (ThinkingUpdateEvent(timestamp=1, estimated_tokens=100, delta=10), "thinking_update"),
-    (
-        ToolStartEvent(
-            timestamp=2,
-            tool_use_id="t1",
-            tool_name="Read",
-            input={"path": "/x"},
-            input_summary="/x",
-        ),
-        "tool_start",
-    ),
-    (ToolProgressEvent(timestamp=3, tool_use_id="t1", elapsed_ms=500), "tool_progress"),
-    (
-        ToolEndEvent(
-            timestamp=4,
-            tool_use_id="t1",
-            tool_name="Read",
-            duration_ms=750,
-            result="ok",
-            result_summary="ok",
-        ),
-        "tool_end",
-    ),
-    (TextDeltaEvent(timestamp=5, chunk="hello"), "text_delta"),
-    (UsageUpdateEvent(timestamp=6, cost_usd=0.01), "usage_update"),
-    (CapEvent(timestamp=7, cap="wall-clock"), "cap"),
+    (_THINKING_UPDATE, "thinking_update"),
+    (_TOOL_START, "tool_start"),
+    (_TOOL_PROGRESS, "tool_progress"),
+    (_TOOL_END, "tool_end"),
+    (_TEXT_DELTA, "text_delta"),
+    (_USAGE_UPDATE, "usage_update"),
+    (_CAP, "cap"),
+    (_MODEL_PHASE_THINKING, "model_phase"),
+    (_MODEL_PHASE_RESPONDING, "model_phase"),
+    (_MODEL_PHASE_TOOL_INPUT, "model_phase"),
+    (_MODEL_PHASE_TURN_END, "model_phase"),
     (make_launch(), "launch"),
 ]
 
@@ -75,7 +87,7 @@ def test_event_when_constructed_does_expose_its_type_literal(event: object, expe
     assert event.type == expected_type  # type: ignore[attr-defined]
 
 
-def test_session_event_union_when_enumerated_does_expose_exactly_eight_type_literals():
+def test_session_event_union_when_enumerated_does_expose_exactly_nine_type_literals():
     event_classes = typing.get_args(SessionEvent)
     types = {cls.model_fields["type"].default for cls in event_classes}
 
@@ -87,6 +99,7 @@ def test_session_event_union_when_enumerated_does_expose_exactly_eight_type_lite
         "text_delta",
         "usage_update",
         "cap",
+        "model_phase",
         "launch",
     }
 
@@ -110,18 +123,18 @@ def test_dirty_info_when_constructed_does_carry_file_count():
 
 JSON_CASES = [
     pytest.param(
-        ThinkingUpdateEvent(timestamp=1, estimated_tokens=100, delta=10),
-        {"type": "thinking_update", "timestamp": 1, "estimatedTokens": 100, "delta": 10},
+        _THINKING_UPDATE,
+        {
+            "type": "thinking_update",
+            "timestamp": 1,
+            "estimatedTokens": 100,
+            "delta": 10,
+            "parentToolUseId": None,
+        },
         id="thinking_update",
     ),
     pytest.param(
-        ToolStartEvent(
-            timestamp=2,
-            tool_use_id="t1",
-            tool_name="Read",
-            input={"path": "/x"},
-            input_summary="/x",
-        ),
+        _TOOL_START,
         {
             "type": "tool_start",
             "timestamp": 2,
@@ -129,23 +142,17 @@ JSON_CASES = [
             "toolName": "Read",
             "input": {"path": "/x"},
             "inputSummary": "/x",
+            "parentToolUseId": None,
         },
         id="tool_start",
     ),
     pytest.param(
-        ToolProgressEvent(timestamp=3, tool_use_id="t1", elapsed_ms=500),
+        _TOOL_PROGRESS,
         {"type": "tool_progress", "timestamp": 3, "toolUseId": "t1", "elapsedMs": 500},
         id="tool_progress",
     ),
     pytest.param(
-        ToolEndEvent(
-            timestamp=4,
-            tool_use_id="t1",
-            tool_name="Read",
-            duration_ms=750,
-            result="ok",
-            result_summary="ok",
-        ),
+        _TOOL_END,
         {
             "type": "tool_end",
             "timestamp": 4,
@@ -154,23 +161,46 @@ JSON_CASES = [
             "durationMs": 750,
             "result": "ok",
             "resultSummary": "ok",
+            "parentToolUseId": None,
         },
         id="tool_end",
     ),
     pytest.param(
-        TextDeltaEvent(timestamp=5, chunk="hello"),
+        _TEXT_DELTA,
         {"type": "text_delta", "timestamp": 5, "chunk": "hello"},
         id="text_delta",
     ),
     pytest.param(
-        UsageUpdateEvent(timestamp=6, cost_usd=0.01),
+        _USAGE_UPDATE,
         {"type": "usage_update", "timestamp": 6, "costUsd": 0.01},
         id="usage_update",
     ),
     pytest.param(
-        CapEvent(timestamp=7, cap="spend-cap"),
-        {"type": "cap", "timestamp": 7, "cap": "spend-cap"},
+        _CAP,
+        {"type": "cap", "timestamp": 7, "cap": "wall-clock"},
         id="cap",
+    ),
+    pytest.param(
+        _MODEL_PHASE_THINKING,
+        {
+            "type": "model_phase",
+            "timestamp": 8,
+            "phase": "thinking",
+            "toolName": None,
+            "parentToolUseId": None,
+        },
+        id="model_phase-thinking",
+    ),
+    pytest.param(
+        _MODEL_PHASE_TOOL_INPUT,
+        {
+            "type": "model_phase",
+            "timestamp": 10,
+            "phase": "tool_input",
+            "toolName": "Read",
+            "parentToolUseId": "p1",
+        },
+        id="model_phase-tool_input",
     ),
 ]
 
@@ -214,14 +244,13 @@ def test_to_json_line_when_launch_has_optionals_does_emit_them():
 # LaunchEvent.model_dump — None-optional omission
 # ---------------------------------------------------------------------------
 
+BY_ALIAS_CASES = [
+    pytest.param(False, "max_usd", "model", id="python-names"),
+    pytest.param(True, "maxUsd", "model", id="aliased-names"),
+]
 
-@pytest.mark.parametrize(
-    ("by_alias", "usd_key", "model_key"),
-    [
-        pytest.param(False, "max_usd", "model", id="python-names"),
-        pytest.param(True, "maxUsd", "model", id="aliased-names"),
-    ],
-)
+
+@pytest.mark.parametrize(("by_alias", "usd_key", "model_key"), BY_ALIAS_CASES)
 def test_launch_event_model_dump_when_optionals_are_none_does_omit_them(
     by_alias: bool, usd_key: str, model_key: str
 ):
@@ -233,13 +262,7 @@ def test_launch_event_model_dump_when_optionals_are_none_does_omit_them(
     assert model_key not in dumped
 
 
-@pytest.mark.parametrize(
-    ("by_alias", "usd_key", "model_key"),
-    [
-        pytest.param(False, "max_usd", "model", id="python-names"),
-        pytest.param(True, "maxUsd", "model", id="aliased-names"),
-    ],
-)
+@pytest.mark.parametrize(("by_alias", "usd_key", "model_key"), BY_ALIAS_CASES)
 def test_launch_event_model_dump_when_optionals_are_set_does_include_them(
     by_alias: bool, usd_key: str, model_key: str
 ):
@@ -282,6 +305,105 @@ def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):
     assert event_from_wire(obj) is None
 
 
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param(
+            {"type": "model_phase", "timestamp": 1, "phase": "unknown"},
+            id="unknown-phase",
+        ),
+        pytest.param(
+            {"type": "model_phase", "phase": "thinking"},
+            id="missing-timestamp",
+        ),
+    ],
+)
+def test_event_from_wire_when_model_phase_invalid_does_return_none(obj: object):
+    assert event_from_wire(obj) is None
+
+
+# ---------------------------------------------------------------------------
+# parent_tool_use_id on existing events
+# ---------------------------------------------------------------------------
+
+
+# Each entry is (event without parent_tool_use_id, event with it set, expected id).
+# The no-parent events reuse the shared samples above so each event's fields are
+# still declared exactly once.
+_PARENT_ID_CASES = [
+    (
+        _THINKING_UPDATE,
+        ThinkingUpdateEvent(timestamp=1, estimated_tokens=100, delta=10, parent_tool_use_id="p1"),
+        "p1",
+        "thinking_update",
+    ),
+    (
+        _TOOL_START,
+        ToolStartEvent(
+            timestamp=2,
+            tool_use_id="t1",
+            tool_name="Read",
+            input={"path": "/x"},
+            input_summary="/x",
+            parent_tool_use_id="p2",
+        ),
+        "p2",
+        "tool_start",
+    ),
+    (
+        _TOOL_END,
+        ToolEndEvent(
+            timestamp=4,
+            tool_use_id="t1",
+            tool_name="Read",
+            duration_ms=750,
+            result="ok",
+            result_summary="ok",
+            parent_tool_use_id="p3",
+        ),
+        "p3",
+        "tool_end",
+    ),
+]
+
+_WITHOUT_PARENT_ID_PARAMS = [
+    pytest.param(no_parent, id=case_id) for no_parent, _, _, case_id in _PARENT_ID_CASES
+]
+_WITH_PARENT_ID_PARAMS = [
+    pytest.param(with_parent, expected_id, id=case_id)
+    for _, with_parent, expected_id, case_id in _PARENT_ID_CASES
+]
+
+
+@pytest.mark.parametrize("event", _WITHOUT_PARENT_ID_PARAMS)
+def test_event_when_constructed_without_parent_tool_use_id_does_default_to_none(event: object):
+    assert event.parent_tool_use_id is None  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(("event", "expected_id"), _WITH_PARENT_ID_PARAMS)
+def test_event_when_constructed_with_parent_tool_use_id_does_carry_it(
+    event: object, expected_id: str
+):
+    assert event.parent_tool_use_id == expected_id  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(("event", "expected_id"), _WITH_PARENT_ID_PARAMS)
+def test_to_json_line_when_parent_tool_use_id_set_does_render_camel_case(
+    event: object, expected_id: str
+):
+    parsed = json.loads(to_json_line(event))  # type: ignore[arg-type]
+
+    assert parsed["parentToolUseId"] == expected_id
+
+
+@pytest.mark.parametrize(
+    "event",
+    [pytest.param(with_parent, id=case_id) for _, with_parent, _, case_id in _PARENT_ID_CASES],
+)
+def test_event_from_wire_when_parent_tool_use_id_set_does_round_trip(event: object):
+    assert event_from_wire(json.loads(to_json_line(event))) == event  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # SUMMARY_MAX_CHARS
 # ---------------------------------------------------------------------------
@@ -293,7 +415,7 @@ def test_summarize_when_called_without_max_chars_does_truncate_to_summary_max_ch
 
     result = summarize(text)
 
-    assert result == "a" * SUMMARY_MAX_CHARS + f"… ({overflow} more chars, 1 lines)"
+    assert result == "a" * SUMMARY_MAX_CHARS + "…"
 
 
 # ---------------------------------------------------------------------------
@@ -314,26 +436,26 @@ def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expe
     assert summarize(text, 100) == expected
 
 
-def test_summarize_when_over_budget_does_report_remaining_chars_and_line_count():
+def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis():
     overflow = 250
     max_chars = 50
 
     result = summarize("a" * (max_chars + overflow), max_chars)
 
-    assert result == "a" * max_chars + f"… ({overflow} more chars, 1 lines)"
+    assert result == "a" * max_chars + "…"
 
 
-def test_summarize_when_over_budget_does_count_original_lines_before_collapsing():
+def test_summarize_when_multiline_over_budget_does_truncate_with_bare_ellipsis():
     result = summarize("line1\nline2\nline3\nline4", 20)
 
-    assert "4 lines" in result
+    assert result == "line1 line2 line3 li…"
 
 
 @pytest.mark.parametrize(
     ("text", "max_chars", "expected"),
     [
-        pytest.param("🎯" * 8, 5, "🎯🎯🎯🎯🎯… (3 more chars, 1 lines)", id="all-emoji"),
-        pytest.param("ab🎯🎯cd🎯", 3, "ab🎯… (4 more chars, 1 lines)", id="mixed-width"),
+        pytest.param("🎯" * 8, 5, "🎯🎯🎯🎯🎯…", id="all-emoji"),
+        pytest.param("ab🎯🎯cd🎯", 3, "ab🎯…", id="mixed-width"),
     ],
 )
 def test_summarize_when_truncating_does_split_on_code_point_boundaries(
@@ -366,6 +488,170 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
     value: object, expected: str
 ):
     assert summarize_input(value, 200) == expected
+
+
+# ---------------------------------------------------------------------------
+# summarize_input — tool-specific extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input", "expected"),
+    [
+        pytest.param("Read", {"file_path": "/a/b.py"}, "/a/b.py", id="read"),
+        pytest.param(
+            "Edit",
+            {"file_path": "/a/b.py", "old_string": "x", "new_string": "y"},
+            "/a/b.py",
+            id="edit",
+        ),
+        pytest.param("Write", {"file_path": "/a/b.py", "content": "..."}, "/a/b.py", id="write"),
+        pytest.param(
+            "NotebookEdit",
+            {"notebook_path": "/a/nb.ipynb"},
+            "/a/nb.ipynb",
+            id="notebook-edit",
+        ),
+    ],
+)
+def test_summarize_input_when_file_tool_does_extract_path_only(
+    tool_name: str, tool_input: dict[str, object], expected: str
+):
+    assert summarize_input(tool_input, tool_name=tool_name) == expected
+
+
+def test_summarize_input_when_path_under_root_does_render_relative():
+    result = summarize_input(
+        {"file_path": "/project/src/main.py"},
+        tool_name="Read",
+        supervised_root="/project",
+    )
+
+    assert result == "src/main.py"
+
+
+def test_summarize_input_when_path_under_home_does_render_tilde_prefixed():
+    home = str(Path.home())
+
+    result = summarize_input(
+        {"file_path": f"{home}/Documents/notes.md"},
+        tool_name="Read",
+        supervised_root="/other/project",
+    )
+
+    assert result == "~/Documents/notes.md"
+
+
+def test_summarize_input_when_path_under_root_and_home_does_prefer_root_relative():
+    home = str(Path.home())
+    root = f"{home}/project"
+
+    result = summarize_input(
+        {"file_path": f"{root}/src/main.py"},
+        tool_name="Read",
+        supervised_root=root,
+    )
+
+    assert result == "src/main.py"
+
+
+def test_summarize_input_when_path_outside_root_and_home_does_render_verbatim():
+    result = summarize_input(
+        {"file_path": "/etc/config.ini"},
+        tool_name="Read",
+        supervised_root="/project",
+    )
+
+    assert result == "/etc/config.ini"
+
+
+def test_summarize_input_when_bash_does_extract_command():
+    result = summarize_input({"command": "echo hello"}, tool_name="Bash")
+
+    assert result == "echo hello"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        pytest.param(
+            "Agent",
+            {
+                "subagent_type": "Explore",
+                "description": "Explore ECS source architecture",
+                "prompt": "long prompt body that should never appear",
+            },
+            id="agent-subagent-type",
+        ),
+        pytest.param(
+            "Task",
+            {
+                "type": "Explore",
+                "description": "Explore ECS source architecture",
+                "prompt": "long prompt body that should never appear",
+            },
+            id="task-type",
+        ),
+    ],
+)
+def test_summarize_input_when_agent_or_task_does_extract_type_and_description(
+    tool_name: str, tool_input: dict[str, object]
+):
+    result = summarize_input(tool_input, tool_name=tool_name)
+
+    assert result == "Explore: Explore ECS source architecture"
+
+
+def test_summarize_input_when_agent_has_no_subagent_type_does_show_description_only():
+    result = summarize_input(
+        {"description": "Explore ECS source architecture", "prompt": "..."},
+        tool_name="Agent",
+    )
+
+    assert result == "Explore ECS source architecture"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input", "expected"),
+    [
+        pytest.param("Skill", {"skill": "gymrat"}, "gymrat", id="skill-name-only"),
+        pytest.param(
+            "Skill",
+            {"skill": "gymrat", "args": "some args"},
+            "gymrat some args",
+            id="skill-name-with-args",
+        ),
+    ],
+)
+def test_summarize_input_when_skill_tool_does_extract_skill_and_args(
+    tool_name: str, tool_input: dict[str, object], expected: str
+):
+    assert summarize_input(tool_input, tool_name=tool_name) == expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        pytest.param("Read", {"not_file_path": "/a.py"}, id="read-missing-file-path"),
+        pytest.param("Bash", {"not_command": "echo"}, id="bash-missing-command"),
+        pytest.param("Agent", {"prompt": "..."}, id="agent-missing-type"),
+        pytest.param("Skill", {"not_skill": "foo"}, id="skill-missing-skill"),
+    ],
+)
+def test_summarize_input_when_expected_field_missing_does_fall_back_to_json(
+    tool_name: str, tool_input: dict[str, object]
+):
+    result = summarize_input(tool_input, tool_name=tool_name)
+
+    assert result == json.dumps(tool_input, separators=(",", ":"))
+
+
+def test_summarize_input_when_unknown_tool_does_fall_back_to_json():
+    tool_input = {"some_key": "some_value"}
+
+    result = summarize_input(tool_input, tool_name="UnknownTool")
+
+    assert result == '{"some_key":"some_value"}'
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +695,7 @@ def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining(
 
 
 # ---------------------------------------------------------------------------
-# B34 — non-finite float serialization
+# non-finite float serialization
 # ---------------------------------------------------------------------------
 
 
@@ -431,7 +717,7 @@ def test_to_json_line_when_cost_is_non_finite_does_serialize_as_null(cost: float
 
 
 # ---------------------------------------------------------------------------
-# B?? — non-JSON-encodable field fallback
+# non-JSON-encodable field fallback
 # ---------------------------------------------------------------------------
 
 
