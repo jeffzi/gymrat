@@ -20,7 +20,7 @@ must not already be finalized.
 
 import json
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
@@ -133,19 +133,10 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     line = _serialize_record(record)
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     payload = f"{line}\n".encode()
-    # O_BINARY prevents \n → \r\n translation on Windows.
-    fd = os.open(
-        jsonl_path,
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0),
-        0o644,
-    )
-    try:
-        view = memoryview(payload)
-        while view:
-            view = view[os.write(fd, view) :]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    with Path(jsonl_path).open("ab") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _serialize_record(record: SessionLogRecord) -> str:
@@ -271,63 +262,64 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
 
 @dataclass(slots=True)
 class _FoldState:
-    """Mutable accumulator for :func:`fold_session`.
+    """The mutable accumulator :func:`fold_session` folds records into.
 
-    Mirrors :class:`SessionState`, plus a scratch map of which iteration numbers
-    reached the target — needed so a committed keep can settle whether the edit
-    it commits was on target. The scratch never leaves the fold.
+    Mirrors :class:`SessionState` field-for-field but stays unfrozen while the
+    fold is in progress; the finished fold copies it into the frozen
+    ``SessionState`` the rest of the codebase consumes.
     """
 
-    session: SessionRecord | None = None
-    iteration_count: int = 0
-    last_iteration: IterationRecord | None = None
-    unsettled: bool = False
-    keep_count: int = 0
-    discard_count: int = 0
-    target_reached_and_kept: bool = False
-    last_seq: int = 0
-    last_kept_commit: str | None = None
-    ends_on_gating_block: bool = False
-    finalized: FinalizeRecord | None = None
-    target_reached_by_seq: dict[int, bool] = field(default_factory=dict)
+    session: SessionRecord | None
+    iteration_count: int
+    last_iteration: IterationRecord | None
+    unsettled: bool
+    keep_count: int
+    discard_count: int
+    target_reached_and_kept: bool
+    last_seq: int
+    last_kept_commit: str | None
+    ends_on_gating_block: bool
+    finalized: FinalizeRecord | None
 
 
-def _fold_iteration(state: _FoldState, record: IterationRecord) -> None:
-    state.iteration_count += 1
-    state.last_seq = max(state.last_seq, record.seq)
-    state.last_iteration = record
-    state.unsettled = True
-    state.ends_on_gating_block = False
-    state.target_reached_by_seq[record.seq] = record.target_reached
+def _fold_iteration(
+    acc: _FoldState, target_reached: dict[int, bool], record: IterationRecord
+) -> None:
+    acc.iteration_count += 1
+    acc.last_seq = max(acc.last_seq, record.seq)
+    acc.last_iteration = record
+    acc.unsettled = True
+    acc.ends_on_gating_block = False
+    target_reached[record.seq] = record.target_reached
 
 
-def _fold_keep(state: _FoldState, record: KeepRecord) -> None:
-    state.last_seq = max(state.last_seq, record.seq)
+def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRecord) -> None:
+    acc.last_seq = max(acc.last_seq, record.seq)
     if record.status == "committed":
-        state.unsettled = False
-        state.keep_count += 1
+        acc.unsettled = False
+        acc.keep_count += 1
         # Assignment, not accumulation: a committed keep of a non-target seq
         # resets the flag the way a target one sets it.
-        state.target_reached_and_kept = state.target_reached_by_seq.get(record.seq, False)
+        acc.target_reached_and_kept = target_reached.get(record.seq, False)
         if record.commit is not None:
-            state.last_kept_commit = record.commit
+            acc.last_kept_commit = record.commit
     elif record.reason is not None and record.reason not in ("checks-failed", "nothing-measured"):
         # A blocked keep settles the iteration — except "checks-failed" (fix and
         # retry) and an absent reason (nothing says the edit is beyond recovery).
-        state.unsettled = False
+        acc.unsettled = False
     # A "nothing-measured" refusal commits and settles nothing, so it leaves the
     # standing edit — and the gating-block window — as it found them.
     if record.reason != "nothing-measured":
-        state.ends_on_gating_block = (
+        acc.ends_on_gating_block = (
             record.status == "blocked" and record.reason == "gating-regression"
         )
 
 
-def _fold_discard(state: _FoldState, record: DiscardRecord) -> None:
-    state.last_seq = max(state.last_seq, record.seq)
-    state.unsettled = False
-    state.discard_count += 1
-    state.ends_on_gating_block = False
+def _fold_discard(acc: _FoldState, record: DiscardRecord) -> None:
+    acc.last_seq = max(acc.last_seq, record.seq)
+    acc.unsettled = False
+    acc.discard_count += 1
+    acc.ends_on_gating_block = False
 
 
 def fold_session(records: list[SessionLogRecord]) -> SessionState:
@@ -336,26 +328,52 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
     Folds whatever it is given: validating the log — that it parses and opens
     with a session header — belongs to :func:`read_records`.
     """
-    state = _FoldState()
+    acc = _FoldState(
+        session=None,
+        iteration_count=0,
+        last_iteration=None,
+        unsettled=False,
+        keep_count=0,
+        discard_count=0,
+        target_reached_and_kept=False,
+        last_seq=0,
+        last_kept_commit=None,
+        ends_on_gating_block=False,
+        finalized=None,
+    )
+    target_reached: dict[int, bool] = {}
+
     for record in records:
         match record:
             case SessionRecord():
-                if state.session is None:
-                    state.session = record
+                if acc.session is None:
+                    acc.session = record
             case IterationRecord():
-                _fold_iteration(state, record)
+                _fold_iteration(acc, target_reached, record)
             case KeepRecord():
-                _fold_keep(state, record)
+                _fold_keep(acc, target_reached, record)
             case DiscardRecord():
-                _fold_discard(state, record)
+                _fold_discard(acc, record)
             case FinalizeRecord():
-                state.finalized = record
+                acc.finalized = record
             case BaselineRecord() | HookRecord():
                 pass
             case _ as unreachable:
                 assert_never(unreachable)
 
-    return SessionState(**{f.name: getattr(state, f.name) for f in fields(SessionState)})
+    return SessionState(
+        session=acc.session,
+        iteration_count=acc.iteration_count,
+        last_iteration=acc.last_iteration,
+        unsettled=acc.unsettled,
+        keep_count=acc.keep_count,
+        discard_count=acc.discard_count,
+        target_reached_and_kept=acc.target_reached_and_kept,
+        last_seq=acc.last_seq,
+        last_kept_commit=acc.last_kept_commit,
+        ends_on_gating_block=acc.ends_on_gating_block,
+        finalized=acc.finalized,
+    )
 
 
 def require_session(root: str, verb: str) -> RequiredSession:

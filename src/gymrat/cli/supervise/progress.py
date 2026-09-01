@@ -90,13 +90,9 @@ def _emit_live(ctx: ReporterCtx) -> None:
     ctx.live.update(build_frame(ctx))
 
 
-def _plain_emit(ctx: ReporterCtx, text: str) -> None:
-    ctx.plain_write_fn(text)
-
-
 def _emit(ctx: ReporterCtx, plain_text: str) -> None:
     if ctx.is_plain:
-        _plain_emit(ctx, plain_text)
+        ctx.plain_write_fn(plain_text)
     else:
         _emit_live(ctx)
 
@@ -107,7 +103,7 @@ def _plain_loop_update(ctx: ReporterCtx) -> None:
     loop_text = build_loop_text(ctx.session_result, ctx.max_iterations)
     if loop_text not in {ctx.last_loop_text, "no session yet"}:
         ctx.last_loop_text = loop_text
-        _plain_emit(ctx, loop_text)
+        ctx.plain_write_fn(loop_text)
 
 
 def _refresh_session(ctx: ReporterCtx) -> None:
@@ -217,7 +213,7 @@ def _stderr_write(text: str) -> None:
     sys.stderr.write(f"{text}\n")
 
 
-def _build_ctx(  # noqa: PLR0913 - mirrors create_supervise_reporter parameters
+def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     *,
     root: str,
     max_minutes: float,
@@ -231,7 +227,7 @@ def _build_ctx(  # noqa: PLR0913 - mirrors create_supervise_reporter parameters
     label: str,
     session_id: str,
     branch: str,
-    tz: tzinfo | None = None,
+    tz: tzinfo | None,
 ) -> ReporterCtx:
     return ReporterCtx(
         now=now,
@@ -278,7 +274,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard."""
     is_plain = mode == "plain"
-    ctx = _build_ctx(
+    ctx = _new_ctx(
         root=root,
         max_minutes=max_minutes,
         max_usd=max_usd,
@@ -312,7 +308,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
 
     def warn(message: str) -> None:
         if ctx.is_plain:
-            _plain_emit(ctx, message)
+            ctx.plain_write_fn(message)
         elif ctx.live is not None:
             ctx.live.console.print(message)
 
@@ -335,22 +331,22 @@ def _find_best_kept_iteration(
     records: list[SessionLogRecord], committed_seqs: set[int]
 ) -> tuple[float | None, int | None, str | None]:
     """Return ``(delta_pct, seq, primary_label)`` for the best committed keep."""
-    best_delta_pct: float | None = None
-    best_seq: int | None = None
-    primary_label: str | None = None
+    candidates = [
+        (r, delta)
+        for r in records
+        if isinstance(r, IterationRecord)
+        and r.seq in committed_seqs
+        and (delta := r.primary.delta_pct) is not None
+    ]
+    if not candidates:
+        return None, None, None
 
-    for r in records:
-        if (
-            isinstance(r, IterationRecord)
-            and r.seq in committed_seqs
-            and r.primary.delta_pct is not None
-            and (best_delta_pct is None or r.primary.delta_pct < best_delta_pct)
-        ):
-            best_delta_pct = float(r.primary.delta_pct)
-            best_seq = r.seq
-            primary_label = r.primary.kind if r.primary.kind != "single" else r.primary.name
+    def _delta(pair: tuple[IterationRecord, float]) -> float:
+        return pair[1]
 
-    return best_delta_pct, best_seq, primary_label
+    best, best_delta = min(candidates, key=_delta)
+    label = best.primary.kind if best.primary.kind != "single" else best.primary.name
+    return best_delta, best.seq, label
 
 
 def _find_baseline_sha(records: list[SessionLogRecord]) -> str | None:

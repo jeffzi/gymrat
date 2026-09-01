@@ -127,7 +127,7 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
         type="session",
         schema_version=SCHEMA_VERSION,
         session_id=session_id,
-        created_at=_iso(now),
+        created_at=format_iso(now),
         baseline=workspace.baseline,
         branch=workspace.branch,
         worktrees=workspace.worktrees,
@@ -171,15 +171,6 @@ def _new_session_id(now: datetime) -> str:
     """
     suffix = secrets.token_hex(SESSION_ID_ENTROPY_BYTES)
     return f"{now.strftime('%Y%m%d-%H%M%S')}-{suffix}"
-
-
-def _iso(now: datetime) -> str:
-    """``now`` as ISO-8601 with millisecond precision and a ``Z`` suffix.
-
-    The header's ``created_at`` shares the instant the session id is minted from,
-    so both read back as the same moment.
-    """
-    return format_iso(now)
 
 
 def _snapshot_config(config: ResolvedConfig) -> SessionConfig:

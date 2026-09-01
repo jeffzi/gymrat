@@ -17,7 +17,7 @@ _SKILL_RELATIVE_PATH = "skills/gymrat/SKILL.md"
 
 def _skill_resource() -> Traversable:
     """Resolve the packaged skill file as an :mod:`importlib.resources` traversable."""
-    return resources.files(_PACKAGE).joinpath(*_SKILL_RELATIVE_PATH.split("/"))
+    return resources.files(_PACKAGE).joinpath(_SKILL_RELATIVE_PATH)
 
 
 def read_bundled_skill() -> str:

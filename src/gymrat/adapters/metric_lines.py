@@ -9,8 +9,9 @@ import math
 import re
 
 from gymrat.adapters.defaults import defaults_from_suffixes
-from gymrat.adapters.types import AdapterError, MetricDefaults, WarnSink, warn_to_stderr
+from gymrat.adapters.types import AdapterError, MetricDefaults
 from gymrat.stats.descriptive import compute_median
+from gymrat.warn import WarnSink, warn_to_stderr
 
 _PREFIX = "METRIC"
 _PREFIX_WITH_SPACE = "METRIC "

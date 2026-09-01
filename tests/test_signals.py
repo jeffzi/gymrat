@@ -178,6 +178,47 @@ def test_install_termination_cleanup_when_cycled_repeatedly_does_keep_exactly_on
     assert callable(handler)
 
 
+@pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
+def test_install_termination_cleanup_when_called_does_install_handler_for_every_termination_signal(
+    signal_number: int,
+):
+    install_termination_cleanup(lambda: None)
+
+    handler = signal.getsignal(signal_number)
+
+    assert callable(handler)
+    assert handler is not signal.SIG_DFL
+    assert handler is not signal.SIG_IGN
+
+
+@pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
+def test_install_termination_cleanup_when_called_again_does_keep_same_handler_per_signal(
+    signal_number: int,
+):
+    install_termination_cleanup(lambda: None)
+    first_handler = signal.getsignal(signal_number)
+
+    install_termination_cleanup(lambda: None)
+
+    assert signal.getsignal(signal_number) is first_handler
+
+
+@pytest.mark.parametrize(
+    "signal_number",
+    [signal.SIGINT, signal.SIGTERM],
+    ids=_signal_id,
+)
+def test_termination_signals_when_on_any_platform_does_contain_required_signal(
+    signal_number: int,
+):
+    assert signal_number in signals.TERMINATION_SIGNALS
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="SIGHUP is POSIX-only")
+def test_termination_signals_when_on_posix_does_contain_sighup():
+    assert signal.SIGHUP in signals.TERMINATION_SIGNALS
+
+
 def test_install_termination_cleanup_when_sighup_undefined_does_register_only_available_signals(
     monkeypatch: pytest.MonkeyPatch, raise_signal: RaiseSignal
 ):

@@ -7,6 +7,7 @@ the config inspection, and the resolved workflow config — so the bench smoke r
 (which touches the filesystem) lives in its own module.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
@@ -78,10 +79,9 @@ def create_doctor_report(
     environment: EnvironmentInfo, sections: list[CheckSection]
 ) -> DoctorReport:
     """Assemble ``sections`` into a report, deriving ok/warn/fail counts from every check."""
-    counts: dict[CheckStatus, int] = {"ok": 0, "warn": 0, "fail": 0}
-    for section in sections:
-        for check in section.checks:
-            counts[check.status] += 1
+    counts: Counter[CheckStatus] = Counter(
+        check.status for section in sections for check in section.checks
+    )
 
     return DoctorReport(
         environment=environment,

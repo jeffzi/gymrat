@@ -386,13 +386,7 @@ def test_read_records_when_final_line_unterminated_does_skip_it(fresh_root: str)
 
 
 def test_read_records_when_final_line_torn_mid_utf8_does_skip_it(fresh_root: str):
-    jsonl_path = session_jsonl_path(fresh_root)
-    valid_line = _line(SESSION).encode("utf-8") + b"\n"
-    # \xc3 is the leading byte of a 2-byte UTF-8 code point; alone at the end
-    # it forms a truncated character the reader must silently discard.
-    raw = valid_line + TORN_PREFIX + b"\xc3"
-    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(jsonl_path).write_bytes(raw)
+    jsonl_path = _jsonl_holding_bytes(fresh_root, TORN_MID_UTF8)
 
     assert read_records(jsonl_path) == [SESSION]
 
@@ -400,13 +394,9 @@ def test_read_records_when_final_line_torn_mid_utf8_does_skip_it(fresh_root: str
 def test_read_records_when_complete_line_fails_to_decode_does_raise_naming_path_and_line(
     fresh_root: str,
 ):
-    jsonl_path = session_jsonl_path(fresh_root)
-    valid_line = _line(SESSION).encode("utf-8") + b"\n"
     # A newline-terminated line whose bytes are not valid UTF-8.
     corrupt_line = b"\xff\xff\n"
-    raw = valid_line + corrupt_line
-    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(jsonl_path).write_bytes(raw)
+    jsonl_path = _jsonl_holding_bytes(fresh_root, SESSION_LINE + corrupt_line)
 
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)

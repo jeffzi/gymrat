@@ -17,10 +17,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from gymrat.adapters import get_adapter
-from gymrat.adapters.types import WarnSink, warn_to_stderr
 from gymrat.config import KindEntry
 from gymrat.model import (
-    DEFAULT_UNSTABLE_NOISE_PCT,
     MetricVerdict,
     Observations,
     ResolvedMetricMeta,
@@ -48,6 +46,7 @@ from gymrat.sampling import (
 )
 from gymrat.targets import CleanupResult, Target, WorktreeInfo, resolve_target
 from gymrat.verdict import KindAggregate, compute_kind_aggregates, compute_verdicts
+from gymrat.warn import WarnSink, warn_to_stderr
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -61,14 +60,12 @@ class CompareOptions(RunOptions):
         baseline: The revision every candidate is judged against.
         candidates: The revisions judged against ``baseline``, reported in order.
         unstable_noise_pct: Noise band width, in percent, above which a metric is
-            reported unstable. ``None`` defers to the verdict engine's own default
-            — the CLI always supplies the resolved config value, so only direct
-            callers see the fallback.
+            reported unstable.
     """
 
     baseline: TargetSpec
     candidates: list[TargetSpec]
-    unstable_noise_pct: float | None = None
+    unstable_noise_pct: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,13 +122,10 @@ def _measure_candidates(
     baseline_samples: list[dict[str, float]],
     candidates: list[TargetSamples],
     metric_meta: dict[str, ResolvedMetricMeta],
-    unstable_noise_pct: float | None,
+    unstable_noise_pct: float,
     warn: WarnSink | None,
 ) -> list[CandidateMeasurement]:
     """Judge every candidate against the same baseline samples, one comparison each."""
-    resolved_noise_pct = (
-        unstable_noise_pct if unstable_noise_pct is not None else DEFAULT_UNSTABLE_NOISE_PCT
-    )
     resolved_warn = warn if warn is not None else warn_to_stderr
 
     baseline_obs = Observations.from_rounds(baseline_samples)
@@ -141,7 +135,7 @@ def _measure_candidates(
             baseline_obs,
             Observations.from_rounds(candidate.samples),
             metric_meta,
-            unstable_noise_pct=resolved_noise_pct,
+            unstable_noise_pct=unstable_noise_pct,
             warn=resolved_warn,
         )
         measured.append(

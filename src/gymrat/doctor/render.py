@@ -103,9 +103,9 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
     for count, noun, plural, status in segments:
         if count == 0:
             continue
-        label = escape(pluralize(count, noun, plural))
+        word = pluralize(count, noun, plural).split(" ", 1)[1]
         colored_count = markup(str(count), _STATUS_STYLES[status])
-        parts.append(colored_count + label.removeprefix(str(count)))
+        parts.append(f"{colored_count} {escape(word)}")
     lines.append(" · ".join(parts))
 
     return render_lines(*lines, color=color, width=RENDER_WIDTH)

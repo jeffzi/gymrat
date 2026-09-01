@@ -1,7 +1,5 @@
 """Cap loop output to a fixed byte budget without splitting characters."""
 
-import codecs
-
 # The budget is measured in bytes, not characters: downstream consumers size
 # their buffers in bytes, so a multi-byte-heavy string that "looks short" can
 # still blow past the limit. Keep this module-private: the byte budget is an
@@ -17,8 +15,8 @@ def limit_output(text: str) -> str:
     ``_OUTPUT_LIMIT_BYTES`` bytes, with its trailing newline dropped.
 
     When no usable newline exists (a single long line, or the only newline at
-    byte 0), the cut falls back to the last whole character. An incremental
-    UTF-8 decoder with ``final=False`` holds back the bytes of a character the
+    byte 0), the cut falls back to the last whole character. Decoding with
+    ``errors="ignore"`` silently drops the trailing bytes of a character the
     cut split, so a multi-byte character is never severed and no U+FFFD
     replacement character is emitted.
     """
@@ -33,5 +31,4 @@ def limit_output(text: str) -> str:
     if last_newline > 0:
         return head[:last_newline].decode("utf-8")
 
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    return decoder.decode(head, final=False)
+    return head.decode("utf-8", errors="ignore")

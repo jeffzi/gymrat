@@ -34,6 +34,36 @@ escapes so the source stays plain ASCII.
 _JSON_DECODER = json.JSONDecoder()
 
 
+def _scan_json_objects(text: str) -> tuple[list[str], str | None]:
+    """Scan ``text`` for JSON objects, returning candidates and the longest failure.
+
+    Each ``{`` in ``text`` is tried via ``raw_decode``.  Successes become
+    candidates; the failure spanning the most remaining text is captured so
+    ``_extract_json`` can surface an actionable diagnostic without a second scan.
+    """
+    candidates: list[str] = []
+    longest: tuple[int, str] | None = None
+    length = len(text)
+    pos = text.find("{")
+    while pos != -1 and pos < length:
+        try:
+            _, end = _JSON_DECODER.raw_decode(text, pos)
+        except (json.JSONDecodeError, RecursionError) as exc:
+            remaining = length - pos
+            reason = (
+                str(exc)
+                if isinstance(exc, json.JSONDecodeError)
+                else f"Exceeded maximum recursion depth while parsing at position {pos}"
+            )
+            if longest is None or remaining > longest[0]:
+                longest = (remaining, reason)
+            pos = text.find("{", pos + 1)
+            continue
+        candidates.append(text[pos:end])
+        pos = text.find("{", end)
+    return candidates, longest[1] if longest is not None else None
+
+
 def find_json_candidates(text: str) -> list[str]:
     """Scan ``text`` for valid JSON objects using :meth:`json.JSONDecoder.raw_decode`.
 
@@ -44,24 +74,14 @@ def find_json_candidates(text: str) -> list[str]:
     decoder rejects them rather than requiring a hand-rolled brace-balancing
     scanner.
     """
-    candidates: list[str] = []
-    length = len(text)
-    pos = text.find("{")
-    while pos != -1 and pos < length:
-        try:
-            _, end = _JSON_DECODER.raw_decode(text, pos)
-        except (json.JSONDecodeError, RecursionError):
-            pos = text.find("{", pos + 1)
-            continue
-        candidates.append(text[pos:end])
-        pos = text.find("{", end)
+    candidates, _ = _scan_json_objects(text)
     return candidates
 
 
 def _extract_json(stdout: str) -> dict[str, object]:
-    """Find mitata's JSON object using :func:`find_json_candidates`.
+    """Find mitata's JSON object using :func:`_scan_json_objects`.
 
-    Candidates from :func:`find_json_candidates` are already valid JSON (parsed
+    Candidates from :func:`_scan_json_objects` are already valid JSON (parsed
     via ``raw_decode``). A candidate carrying a ``benchmarks`` list wins over any
     earlier record that does not — a decoy object printed before mitata's own
     output must not shadow the real payload.
@@ -73,12 +93,12 @@ def _extract_json(stdout: str) -> dict[str, object]:
     benchmarks array" from the caller. Only when no decode failure exists is
     the first dict-shaped record returned as a fallback.
 
-    When :func:`find_json_candidates` returns nothing, every ``{`` in ``stdout``
-    failed to start a valid JSON object. The diagnostic names the failure of the
-    longest attempt — the ``{`` closest to the start of text spans the most
-    content and is most likely to be the real payload.
+    When :func:`_scan_json_objects` returns no candidates, every ``{`` in
+    ``stdout`` failed to start a valid JSON object. The diagnostic names the
+    failure of the longest attempt — the ``{`` spanning the most remaining text
+    is most likely to be the real payload.
     """
-    candidates = find_json_candidates(stdout)
+    candidates, longest_failure = _scan_json_objects(stdout)
 
     first_record: dict[str, object] | None = None
     for candidate in candidates:
@@ -90,8 +110,6 @@ def _extract_json(stdout: str) -> dict[str, object]:
         if first_record is None:
             first_record = parsed
 
-    longest_failure = _longest_decode_failure(stdout)
-
     if first_record is not None:
         if longest_failure is not None:
             msg = f"Failed to parse JSON: {longest_failure}"
@@ -102,33 +120,6 @@ def _extract_json(stdout: str) -> dict[str, object]:
         raise AdapterError(msg)
     msg = "No JSON object found in stdout"
     raise AdapterError(msg)
-
-
-def _longest_decode_failure(text: str) -> str | None:
-    """Return the error message from the longest failing ``raw_decode`` attempt.
-
-    Scans every ``{`` in ``text`` and tries ``raw_decode``; positions that succeed
-    are ignored (they were already collected by :func:`find_json_candidates`).
-    Among failures, the one starting at the earliest ``{`` — which spans the most
-    remaining text — is the most likely payload attempt, so its error is returned.
-    """
-    longest: tuple[int, str] | None = None
-    length = len(text)
-    pos = text.find("{")
-    while pos != -1 and pos < length:
-        try:
-            _JSON_DECODER.raw_decode(text, pos)
-        except json.JSONDecodeError as exc:
-            remaining = length - pos
-            if longest is None or remaining > longest[0]:
-                longest = (remaining, str(exc))
-        except RecursionError:
-            remaining = length - pos
-            reason = f"Exceeded maximum recursion depth while parsing at position {pos}"
-            if longest is None or remaining > longest[0]:
-                longest = (remaining, reason)
-        pos = text.find("{", pos + 1)
-    return longest[1] if longest is not None else None
 
 
 def _parse_benchmarks(json_obj: dict[str, object]) -> list[object]:
@@ -196,33 +187,25 @@ def _serialize_arg_value(value: object) -> str:
 
 
 def _build_metric_name_prefix(alias: str, args: dict[str, object]) -> str:
-    """Substitute each ``$key`` in ``alias`` with ``key=value``, scanning the alias once.
+    r"""Substitute each ``$key`` in ``alias`` with ``key=value`` via a single regex pass.
 
-    Both the single scan and the literal splice are deliberate. A regex-style
-    replace would read ``$&``, ``$```, ``$'`` and ``$<n>`` in an argument value —
-    which is user data — as patterns. Repeated passes would be just as wrong the
-    other way: an earlier value containing ``$b`` would be eaten by the pass for
-    key ``b``. Substituted text is written straight to the output, never scanned again.
-
-    Keys are matched longest-first, so an alias of ``$ab`` picks the argument
-    ``ab`` over the argument ``a``.
+    Keys are matched longest-first to prevent a shorter key from consuming a
+    prefix of a longer one (``$ab`` matches key ``ab`` before ``a``).  The
+    callable replacement returns a literal string, so ``re.sub`` never interprets
+    regex replacement syntax (``$&``, ``$\\```, ``$'``) in argument values.
+    Unmatched ``$`` tokens stay as-is because the alternation only covers keys
+    present in ``args``.
     """
-    keys = sorted(args, key=len, reverse=True)
+    if not args:
+        return alias
+    pattern = re.compile(
+        r"\$(" + "|".join(re.escape(k) for k in sorted(args, key=len, reverse=True)) + ")"
+    )
 
-    result: list[str] = []
-    cursor = 0
-    dollar = alias.find("$")
-    while dollar != -1:
-        key = next((k for k in keys if alias.startswith(k, dollar + 1)), None)
-        if key is None:
-            result.append(alias[cursor : dollar + 1])
-            cursor = dollar + 1
-        else:
-            result.append(alias[cursor:dollar] + f"{key}={_serialize_arg_value(args[key])}")
-            cursor = dollar + 1 + len(key)
-        dollar = alias.find("$", cursor)
-    result.append(alias[cursor:])
-    return "".join(result)
+    def _repl(m: re.Match[str]) -> str:
+        return f"{m.group(1)}={_serialize_arg_value(args[m.group(1)])}"
+
+    return pattern.sub(_repl, alias)
 
 
 def _is_number(value: object) -> TypeGuard[float]:

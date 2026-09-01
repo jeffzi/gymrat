@@ -194,7 +194,6 @@ def test_sync_to_experiment_when_file_renamed_does_remove_old_path_from_experime
 def test_sync_to_experiment_when_path_contains_arrow_literal_does_not_misparse_as_rename(  # cspell:disable-line
     session: str,
 ):
-    """A filename containing ' -> ' is not wrongly parsed as a rename entry."""
     arrow_name = "a -> b.txt"
     (Path(session) / arrow_name).write_text("literal arrow\n", encoding="utf-8")
 
@@ -251,7 +250,6 @@ def test_sync_to_experiment_when_file_is_symlink_does_sync_as_symlink(
 def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_error_with_hint(
     session: str,
 ):
-    """A deleted experiment worktree surfaces as GymratError with a hint."""
     experiment = experiment_worktree_dir(session)
     shutil.rmtree(experiment)
     (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")
@@ -266,7 +264,6 @@ def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
     session: str,
 ):
     """A git failure surfaces as GymratError, not CalledProcessError."""
-    # Break the git index to trigger a git failure
     index = Path(session) / ".git" / "index"
     index.write_bytes(b"corrupt")
     (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")
@@ -275,16 +272,56 @@ def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
         sync_to_experiment(session)
 
 
-def test_sync_to_experiment_when_dirty_entry_is_directory_does_raise_gymrat_error_with_hint(
+# ---------------------------------------------------------------------------
+# file-vs-directory error
+# ---------------------------------------------------------------------------
+
+
+def test_sync_to_experiment_when_source_is_directory_does_report_expected_file_and_submodule_hint(
     session: str,
 ):
-    """A directory where a file is expected surfaces as GymratError with a hint."""
     readme = Path(session) / "README.md"
     readme.unlink()
     readme.mkdir()
     (readme / "nested.txt").write_text("inside\n", encoding="utf-8")
 
-    with pytest.raises(GymratError) as excinfo:
+    with pytest.raises(GymratError, match="expected a file but found a directory") as excinfo:
         sync_to_experiment(session)
 
-    assert hint_of(excinfo.value) is not None
+    assert "README.md" in str(excinfo.value)
+    hint = hint_of(excinfo.value) or ""
+    assert "submodule" in hint
+
+
+# ---------------------------------------------------------------------------
+# git status -z parsing: various output shapes
+# ---------------------------------------------------------------------------
+
+
+def test_sync_to_experiment_when_file_deleted_does_remove_from_experiment(
+    session: str,
+):
+    run_git(session, "rm", "README.md")
+
+    sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    assert not (Path(experiment) / "README.md").exists()
+
+
+def test_sync_to_experiment_when_mixed_status_types_does_sync_all(
+    session: str,
+):
+    (Path(session) / "README.md").write_text("# Changed\n", encoding="utf-8")
+    (Path(session) / "added.py").write_text("x = 1\n", encoding="utf-8")
+    run_git(session, "add", ".")
+    run_git(session, "mv", "README.md", "GUIDE.md")
+
+    result = sync_to_experiment(session)
+
+    experiment = experiment_worktree_dir(session)
+    assert (Path(experiment) / "GUIDE.md").read_text(encoding="utf-8") == "# Changed\n"
+    assert (Path(experiment) / "added.py").read_text(encoding="utf-8") == "x = 1\n"
+    assert not (Path(experiment) / "README.md").exists()
+    assert "GUIDE.md" in result.files
+    assert "added.py" in result.files

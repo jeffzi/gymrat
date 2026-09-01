@@ -31,6 +31,10 @@ from tests.session.records._fixtures import SESSION_ID, iteration_record, sessio
 #: gymrat's own output.
 RELAY_LIMIT_BYTES = 8192
 
+#: A generous upper bound proving a kill happened quickly rather than the
+#: hook's full sleep running to completion.
+KILL_SANITY_BOUND_MS = 4000
+
 
 @pytest.fixture
 def hooks(tmp_path: Path) -> HookScripts:
@@ -169,12 +173,13 @@ async def test_run_hook_when_stdout_over_budget_does_cut_at_last_whole_line(
     hooks: HookScripts,
 ) -> None:
     line = "a" * 100
+    whole_lines = RELAY_LIMIT_BYTES // len(f"{line}\n".encode())
     text = f"{line}\n" * 200
     command = hooks.printing_content_of("many-lines.txt", text)
 
     run = await run_hook(hooks.invocation_of(command))
 
-    assert labeled_lines(run.report, "before") == [line] * 81
+    assert labeled_lines(run.report, "before") == [line] * whole_lines
     assert run.record.stdout_bytes == len(text.encode("utf-8"))
 
 
@@ -198,13 +203,14 @@ async def test_run_hook_when_stdout_single_long_line_does_not_split_multi_byte_c
 async def test_run_hook_when_failing_over_budget_does_cap_each_channel(hooks: HookScripts) -> None:
     out_line = "a" * 100
     err_line = "b" * 100
+    whole_lines = RELAY_LIMIT_BYTES // len(f"{out_line}\n".encode())
     stdout = f"{out_line}\n" * 200
     command = hooks.failing_content_of("both-channels", stdout, f"{err_line}\n" * 200)
 
     run = await run_hook(hooks.invocation_of(command))
 
     assert labeled_lines(run.report, "before") == (
-        [out_line] * 81 + ["hook exited 3"] + [err_line] * 81
+        [out_line] * whole_lines + ["hook exited 3"] + [err_line] * whole_lines
     )
     assert run.record.stdout_bytes == len(stdout.encode("utf-8"))
 
@@ -250,7 +256,7 @@ async def test_run_hook_when_hook_outruns_timeout_does_kill_and_report(hooks: Ho
     assert labeled_lines(run.report, "before") == ["hook timed out after 200ms"]
     assert run.record.timed_out is True
     assert run.record.exit_code == FAILURE_EXIT_CODE
-    assert run.record.duration_ms < 4000
+    assert run.record.duration_ms < KILL_SANITY_BOUND_MS
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shells return 127 for a missing command")
@@ -299,7 +305,7 @@ async def test_run_hook_when_abort_signal_set_does_kill_and_record(hooks: HookSc
 
     assert run.record.exit_code == FAILURE_EXIT_CODE
     assert run.record.timed_out is False
-    assert run.record.duration_ms < 4000
+    assert run.record.duration_ms < KILL_SANITY_BOUND_MS
 
 
 # ---------------------------------------------------------------------------

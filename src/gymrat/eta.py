@@ -19,9 +19,8 @@ MS_PER_SECOND = 1000
 
 def _hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
     """Split a whole-second count into an hours/minutes/seconds tier."""
-    hours = total_seconds // SECONDS_PER_HOUR
-    minutes = (total_seconds % SECONDS_PER_HOUR) // SECONDS_PER_MINUTE
-    seconds = total_seconds % SECONDS_PER_MINUTE
+    minutes, seconds = divmod(total_seconds, SECONDS_PER_MINUTE)
+    hours, minutes = divmod(minutes, SECONDS_PER_MINUTE)
     return hours, minutes, seconds
 
 
