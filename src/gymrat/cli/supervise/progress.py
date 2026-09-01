@@ -100,10 +100,10 @@ def _emit(ctx: ReporterCtx, plain_text: str) -> None:
 def _plain_loop_update(ctx: ReporterCtx) -> None:
     if not ctx.is_plain:
         return
-    loop_text = build_loop_text(ctx.session_result, ctx.max_iterations)
-    if loop_text not in {ctx.last_loop_text, "no session yet"}:
-        ctx.last_loop_text = loop_text
-        ctx.plain_write_fn(loop_text)
+    plain = build_loop_text(ctx.session_result, ctx.max_iterations).plain
+    if plain not in {ctx.last_loop_text, "no session yet"}:
+        ctx.last_loop_text = plain
+        ctx.plain_write_fn(plain)
 
 
 def _refresh_session(ctx: ReporterCtx) -> None:
@@ -269,7 +269,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     branch: str = "",
     plain_write: Callable[[str], None] | None = None,
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
-    color: bool = True,
+    color: bool | None = None,
     tz: tzinfo | None = None,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard."""

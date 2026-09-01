@@ -51,6 +51,7 @@ STYLE_COUNT = "bold"
 STYLE_LABEL = "bold blue"
 STYLE_META = "dim"
 STYLE_BAR = "dim"
+STYLE_REGRESSED = "red"
 
 STYLE_TIMER_RUNNING = "yellow"
 STYLE_TIMER_DONE = "dim green"
