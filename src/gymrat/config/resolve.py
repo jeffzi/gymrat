@@ -17,9 +17,9 @@ from gymrat.config.types import (
     ResolvedConfig,
 )
 from gymrat.config.validate import (
-    assert_flag_not_empty,
-    assert_runbook_exists,
-    validate_loop_keys,
+    flag_problem,
+    loop_key_problems,
+    runbook_problem,
 )
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root
@@ -131,16 +131,23 @@ def validate_config_dict(config: dict[str, object]) -> None:
         raise GymratError(problems[0])
     if config_file is None:
         return
-    validate_loop_keys(merge_config(CliFlags(), config_file))
+    problems = loop_key_problems(merge_config(CliFlags(), config_file))
+    if problems:
+        raise GymratError(problems[0])
 
 
 def _settle_config(
     flags: CliFlags, base_dir: str | Path | None
 ) -> tuple[BenchlessConfig, str | None]:
-    assert_flag_not_empty("bench", flags.bench)
-    assert_flag_not_empty("prepare", flags.prepare)
-    assert_flag_not_empty("adapter", flags.adapter)
-    assert_flag_not_empty("config", flags.config)
+    for name, value in [
+        ("bench", flags.bench),
+        ("prepare", flags.prepare),
+        ("adapter", flags.adapter),
+        ("config", flags.config),
+    ]:
+        problem = flag_problem(name, value)
+        if problem is not None:
+            raise GymratError(problem)
 
     effective = _read_env_flags(flags)
 
@@ -154,11 +161,15 @@ def _settle_config(
     config_file = load_config_file(config_path, required=explicit_config is not None)
 
     config = merge_config(effective, config_file)
-    validate_loop_keys(config)
+    problems = loop_key_problems(config)
+    if problems:
+        raise GymratError(problems[0])
 
     if config.runbook is not None:
         config_dir = config_path.parent
-        assert_runbook_exists(config.runbook, config_dir)
+        problem = runbook_problem(config.runbook, config_dir)
+        if problem is not None:
+            raise GymratError(problem)
         resolved_runbook = os.path.normpath(config_dir / config.runbook)
         config = replace(config, runbook=resolved_runbook)
 

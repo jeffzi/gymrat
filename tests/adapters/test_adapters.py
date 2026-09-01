@@ -21,7 +21,6 @@ def test_adapters_package_when_imported_does_export_public_surface():
         "AdapterError",
         "Adapter",
         "MetricDefaults",
-        "WarnSink",
         "get_adapter",
         "ADAPTER_NAMES",
         "metric_lines_adapter",

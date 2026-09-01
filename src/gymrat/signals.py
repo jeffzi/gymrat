@@ -113,10 +113,7 @@ def _handler(signal_number: int, _frame: FrameType | None) -> None:
 
 
 def _ensure_handlers_installed() -> None:
-    for name in _TERMINATION_SIGNAL_NAMES:
-        signal_number = getattr(signal, name, None)
-        if signal_number is None or signal_number in _installed_signals:
-            continue
+    for signal_number in TERMINATION_SIGNALS - _installed_signals:
         signal.signal(signal_number, _handler)
         _installed_signals.add(signal_number)
 

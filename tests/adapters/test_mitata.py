@@ -75,6 +75,14 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     assert mitata_adapter.parse(stdout) == {metric_name: p50}
 
 
+def test_parse_when_alias_has_placeholders_and_args_empty_does_keep_placeholders_literal():
+    stdout = build_stdout(
+        [{"alias": "test/$x", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}]
+    )
+
+    assert mitata_adapter.parse(stdout) == {"test/$x#time": 42}
+
+
 @pytest.mark.parametrize(
     ("value", "serialized"),
     [

@@ -18,12 +18,13 @@ outcome, an interrupt, and an abort each settle a :class:`SessionOutcome`.
 import asyncio
 import contextlib
 import json
+import sys
 import warnings
 from collections.abc import Sequence
 from typing import Any, cast, get_args
 
 from gymrat.exec import READ_CHUNK
-from gymrat.process_group import current_platform, kill_process_group
+from gymrat.process_group import kill_process_group
 from gymrat.supervisor.driver import (
     Driver,
     DriverSession,
@@ -136,7 +137,7 @@ class _StdioSession:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=current_platform() != "win32",
+            start_new_session=sys.platform != "win32",
             limit=_STREAM_LIMIT,
         )
 

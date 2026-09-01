@@ -64,9 +64,7 @@ def paired_or_own_values(
     Returns:
         ``paired`` when it holds any values, otherwise ``own_values(samples, name)``.
     """
-    if paired:
-        return list(paired)
-    return own_values(samples, name)
+    return list(paired) or own_values(samples, name)
 
 
 def resolve_metric_meta_from_samples(

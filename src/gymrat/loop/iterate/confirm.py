@@ -7,7 +7,7 @@ their whole signal, so a rerun could only add noise to a decision that has none.
 
 from __future__ import annotations
 
-import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -28,8 +28,6 @@ from gymrat.progress_events import (
 if TYPE_CHECKING:
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.session import PairedSamples
-
-_SHELL_SAFE_WORD = re.compile(r"[\w@%+=:,./-]+", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +65,11 @@ def with_confirm_phase(ctx: IterationContext) -> IterationContext:
     return replace(ctx, options=replace(ctx.options, on_progress=wrapper))
 
 
+def _needs_confirmation(meta: ResolvedMetricMeta, verdict: MetricVerdict | None) -> bool:
+    """Whether ``meta``'s metric is a gating, non-exact regression the first run found."""
+    return meta.gating and not meta.exact and verdict is not None and verdict.verdict == "regressed"
+
+
 async def confirm_regressions(
     ctx: IterationContext,
     verdicts: dict[str, MetricVerdict],
@@ -86,12 +89,7 @@ async def confirm_regressions(
             could confirm is not recorded.
     """
     filtered = [
-        name
-        for name, meta in metric_meta.items()
-        if meta.gating
-        and not meta.exact
-        and (verdict := verdicts.get(name)) is not None
-        and verdict.verdict == "regressed"
+        name for name, meta in metric_meta.items() if _needs_confirmation(meta, verdicts.get(name))
     ]
     if not filtered:
         return None
@@ -166,13 +164,10 @@ def _shell_quote(value: str) -> str:
     syntax error — and a rerun that cannot run demotes a real regression to no
     signal.
 
-    On POSIX, single quotes suspend every expansion; each embedded single quote
-    is closed, escaped, and reopened. On win32, ``cmd.exe`` uses double quotes,
-    and ``subprocess.list2cmdline`` produces the correct escaping.
+    On POSIX, ``shlex.quote`` handles safe-word detection and single-quote
+    escaping. On win32, ``cmd.exe`` uses double quotes, and
+    ``subprocess.list2cmdline`` produces the correct escaping.
     """
-    if _SHELL_SAFE_WORD.fullmatch(value):
-        return value
     if sys.platform == "win32":
         return subprocess.list2cmdline([value])
-    escaped = value.replace("'", "'\\''")
-    return f"'{escaped}'"
+    return shlex.quote(value)

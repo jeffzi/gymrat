@@ -51,7 +51,10 @@ def test_stderr_console_does_write_to_stderr(monkeypatch: pytest.MonkeyPatch):
     ("color_flag", "tty", "env", "expected_no_color"),
     [
         pytest.param(False, True, {}, True, id="no-color-flag-vetoes"),
-        pytest.param(True, True, {}, False, id="color-flag-defers-tty-detects-color"),
+        pytest.param(True, True, {}, False, id="color-flag-forces-color"),
+        pytest.param(True, True, {"FORCE_COLOR": "0"}, False, id="color-flag-overrides-force-zero"),
+        pytest.param(True, True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
+        pytest.param(True, False, {}, False, id="color-flag-forces-color-even-without-tty"),
         pytest.param(None, True, {}, False, id="none-flag-tty-detects-color"),
         pytest.param(None, False, {}, True, id="none-flag-no-tty-detects-no-color"),
         pytest.param(None, True, {"NO_COLOR": "1"}, True, id="no-color-env-overrides-tty"),

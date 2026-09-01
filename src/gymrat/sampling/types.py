@@ -4,10 +4,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from gymrat.adapters.types import WarnSink
 from gymrat.config.types import KindEntry, MetricEntry
 from gymrat.progress_events import ProgressCallback, default_clock
 from gymrat.targets import Target
+from gymrat.warn import WarnSink
 
 
 @dataclass(frozen=True, slots=True)

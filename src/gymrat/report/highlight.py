@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -72,7 +73,7 @@ def select_highlights(
     Returns:
         The highlights in report order.
     """
-    ranked: list[_RankedHighlight] = []
+    ranked: list[tuple[int, float, int, MetricHighlight]] = []
     for order, (name, metric) in enumerate(metrics.items()):
         candidate = _candidate_at(metric, candidate_index)
         if candidate is None or candidate.verdict is None:
@@ -81,32 +82,10 @@ def select_highlights(
         if rank is None:
             continue
         highlight = MetricHighlight(name=name, metric=metric, candidate=candidate)
-        ranked.append(
-            _RankedHighlight(
-                rank=rank,
-                weight=-_highlight_weight(candidate.verdict),
-                order=order,
-                highlight=highlight,
-            )
-        )
+        ranked.append((rank, -_highlight_weight(candidate.verdict), order, highlight))
 
-    ranked.sort(key=_rank_key)
-    return [entry.highlight for entry in ranked]
-
-
-@dataclass(frozen=True, slots=True)
-class _RankedHighlight:
-    """A highlight with the keys it is ordered by: class rank, negated loudness, appearance."""
-
-    rank: int
-    weight: float
-    order: int
-    highlight: MetricHighlight
-
-
-def _rank_key(entry: _RankedHighlight) -> tuple[int, float, int]:
-    """The sort key ranking by class, then descending loudness, then appearance order."""
-    return entry.rank, entry.weight, entry.order
+    ranked.sort(key=operator.itemgetter(0, 1, 2))
+    return [entry[3] for entry in ranked]
 
 
 UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"
@@ -132,7 +111,7 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     if qualify:
         meta = highlight.metric.meta
         return f"{escape(meta.kind)} {SCOPE_SEPARATOR} {escape(meta.short_name)}"
-    return format_inline(parse(highlight.name), color=True)
+    return format_inline(parse(highlight.name))
 
 
 def has_unstable_highlight(highlights: Sequence[MetricHighlight]) -> bool:

@@ -20,10 +20,10 @@ import asyncio
 import codecs
 import contextlib
 import signal as _signal_module
-from collections.abc import Iterable
+import sys
 from dataclasses import dataclass, field
 
-from gymrat.process_group import current_platform, kill_process_group
+from gymrat.process_group import kill_process_group
 from gymrat.signals import TERMINATION_SIGNALS, deferring_termination_signals, pthread_sigmask
 
 FAILURE_EXIT_CODE = 1
@@ -63,18 +63,6 @@ def kill_live_process_groups() -> None:
     for pid in list(_live_process_groups):
         with contextlib.suppress(Exception):
             kill_process_group(pid)
-
-
-def reset_live_process_groups(groups: Iterable[int] = ()) -> set[int]:
-    """Replace the live-group registry, returning what it held before.
-
-    Test-only escape hatch for isolating and seeding :data:`_live_process_groups`
-    across test runs without reaching into module-private state directly.
-    """
-    previous = set(_live_process_groups)
-    _live_process_groups.clear()
-    _live_process_groups.update(groups)
-    return previous
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,8 +271,8 @@ async def _spawn(command: str, options: ExecOptions) -> asyncio.subprocess.Proce
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                start_new_session=current_platform() != "win32",
-                preexec_fn=_child_reset_signal_mask if current_platform() != "win32" else None,
+                start_new_session=sys.platform != "win32",
+                preexec_fn=_child_reset_signal_mask if sys.platform != "win32" else None,
             )
             _live_process_groups.add(proc.pid)
     except OSError as error:

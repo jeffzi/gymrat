@@ -11,9 +11,47 @@ way the reported p-value is deterministic for a given input.
 
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from gymrat.stats.descriptive import compute_median
-from gymrat.stats.results import SignificanceResult, count_nonzero_pairs
+
+
+@dataclass(frozen=True, slots=True)
+class SignificanceResult:
+    """The outcome of a paired significance test.
+
+    Attributes:
+        p: The two-sided p-value, always within ``[0.0, 1.0]``.
+        n: The number of paired entries whose difference is non-zero.  Tied
+            pairs (zero difference) are held fixed on both sides — they
+            contribute to medians under every rearrangement but are not
+            sign-flipped.
+    """
+
+    p: float
+    n: int
+
+
+def count_nonzero_pairs(x: Sequence[float], y: Sequence[float]) -> tuple[int, int]:
+    """Pair ``x`` and ``y`` positionally over the shorter input and count non-zero diffs.
+
+    Shared by every paired significance test: each pairs ``x[i]`` with ``y[i]``
+    for ``i`` below the shorter input's length.  The caller holds zero-difference
+    (tied) pairs fixed on both sides of the test rather than dropping them.
+
+    Args:
+        x: The first sample.
+        y: The second sample, paired positionally with ``x``.
+
+    Returns:
+        A ``(m, n)`` pair: ``m`` is the number of positions paired (the shorter
+        input's length), and ``n`` is how many of those pairs have a non-zero
+        difference.
+    """
+    pairs = list(zip(x, y, strict=False))
+    n = sum(1 for xi, yi in pairs if xi - yi != 0)
+    return len(pairs), n
+
 
 # The permutation needs at least two paired observations; a single pair admits
 # only the trivial sign flip and carries no null spread to test against.
@@ -72,13 +110,13 @@ def _partition_pairs(
     tied_y: list[float] = []
     diff_x: list[float] = []
     diff_y: list[float] = []
-    for i in range(m):
-        if x[i] == y[i]:
-            tied_x.append(x[i])
-            tied_y.append(y[i])
+    for xi, yi in zip(x[:m], y[:m], strict=True):
+        if xi == yi:
+            tied_x.append(xi)
+            tied_y.append(yi)
         else:
-            diff_x.append(x[i])
-            diff_y.append(y[i])
+            diff_x.append(xi)
+            diff_y.append(yi)
     return tied_x, tied_y, diff_x, diff_y
 
 

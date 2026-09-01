@@ -96,18 +96,6 @@ def _bucket_by_kind(
     return buckets
 
 
-def _geomean_over(
-    entries: list[MetricEntry],
-    verdicts: Mapping[str, MetricVerdict],
-) -> GeomeanResult:
-    """The geomean over ``entries`` alone, whatever else ``verdicts`` carries.
-
-    ``compute_geomean`` averages the metrics its metadata names, so handing it a
-    restricted metadata record is how a subset is selected.
-    """
-    return compute_geomean(verdicts, dict(entries))
-
-
 def compute_kind_aggregates(
     verdicts: Mapping[str, MetricVerdict],
     metric_meta: Mapping[str, ResolvedMetricMeta],
@@ -143,12 +131,12 @@ def compute_kind_aggregates(
         aggregates.append(
             KindAggregate(
                 kind=kind,
-                geomean=_geomean_over(bucket.metrics, verdicts),
+                geomean=compute_geomean(verdicts, dict(bucket.metrics)),
                 groups=tuple(
-                    GroupAggregate(group=group, geomean=_geomean_over(members, verdicts))
+                    GroupAggregate(group=group, geomean=compute_geomean(verdicts, dict(members)))
                     for group, members in bucket.groups.items()
                 ),
-                gated_geomean=_geomean_over(gating, verdicts) if gating else None,
+                gated_geomean=compute_geomean(verdicts, dict(gating)) if gating else None,
             ),
         )
 

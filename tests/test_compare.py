@@ -19,7 +19,7 @@ from gymrat import compare as compare_mod
 from gymrat.adapters import get_adapter
 from gymrat.compare import CompareOptions, compare
 from gymrat.errors import GymratError
-from gymrat.model import Observations
+from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, Observations
 from gymrat.sampling import (
     TargetSpec,
     resolve_metric_meta_from_samples,
@@ -32,8 +32,8 @@ from tests._pipeline import install_pipeline
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.adapters.types import WarnSink
     from gymrat.progress_events import ProgressEvent
+    from gymrat.warn import WarnSink
 
 
 def _options(
@@ -60,7 +60,7 @@ def _options(
         config_kinds=None,
         baseline=resolved_baseline,
         candidates=resolved_candidates,
-        unstable_noise_pct=None,
+        unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
         on_progress=on_progress,
         warn=warn,
     )
@@ -243,7 +243,7 @@ def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
         config_kinds=None,
         baseline=TargetSpec(label=None, target=baseline),
         candidates=[TargetSpec(label=None, target=candidate)],
-        unstable_noise_pct=None,
+        unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
     )
 
 

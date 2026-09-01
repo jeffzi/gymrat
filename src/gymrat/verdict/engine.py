@@ -38,7 +38,7 @@ from gymrat.model import (
     pair_metric,
 )
 from gymrat.stats import compute_half_range, compute_median, sign_flip_permutation_test
-from gymrat.stats.results import count_nonzero_pairs
+from gymrat.stats.permutation import count_nonzero_pairs
 from gymrat.warn import WarnSink, warn_to_stderr
 
 ONE_BYTE_PCT = 100.0
@@ -92,17 +92,6 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
 
     improved = delta < 0 if direction == "lower" else delta > 0
     return "improved" if improved else "regressed"
-
-
-def _verdict_if_signal(delta: float, direction: Direction, *, has_signal: bool) -> Verdict:
-    """Classify the delta when a signal was found, else ``no-signal``.
-
-    ``has_signal`` already encodes the method's own significance test (the
-    permutation p-value comparison or the band comparison); this helper exists only
-    to keep ``no-signal`` the single fallback path shared by both approximate
-    methods.
-    """
-    return _determine_verdict(delta, direction) if has_signal else "no-signal"
 
 
 def _compute_delta(median_a: float, median_b: float) -> float:
@@ -199,7 +188,7 @@ def _compute_approximate_verdict(
     record: PermutationVerdict | BandVerdict
     if nonzero_n < PERMUTATION_FLOORS.min_n:
         has_signal = nonzero_n >= BAND_FLOORS.min_n and abs(delta) > noise.pct
-        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
+        verdict = _determine_verdict(delta, meta.direction) if has_signal else "no-signal"
         record = BandVerdict(
             method="band",
             verdict=verdict,
@@ -211,15 +200,11 @@ def _compute_approximate_verdict(
         )
     else:
         result = sign_flip_permutation_test(samples.left, samples.right)
-        # The permutation descriptor always carries a threshold; the union type
-        # admits None only for the exact and band descriptors. Surface a
-        # misconfiguration rather than compare against None.
-        threshold = PERMUTATION_FLOORS.p_threshold
-        if threshold is None:
-            message = "PERMUTATION_FLOORS must define a p-value threshold"
-            raise ValueError(message)
-        has_signal = result.p < threshold and abs(delta) > noise.resolution_pct
-        verdict = _verdict_if_signal(delta, meta.direction, has_signal=has_signal)
+        if PERMUTATION_FLOORS.p_threshold is None:
+            msg = "PERMUTATION_FLOORS.p_threshold must be set"
+            raise ValueError(msg)
+        has_signal = result.p < PERMUTATION_FLOORS.p_threshold and abs(delta) > noise.resolution_pct
+        verdict = _determine_verdict(delta, meta.direction) if has_signal else "no-signal"
         record = PermutationVerdict(
             method="permutation",
             verdict=verdict,

@@ -210,8 +210,13 @@ def _split_lines(text: str) -> list[str]:
     return [] if trimmed == "" else trimmed.split("\n")
 
 
-async def fire_hook(jsonl_path: str, invocation: HookInvocation | None) -> str:
-    """Run the consumer's hook, logging what it did.
+async def run_hook_stage(
+    jsonl_path: str,
+    on_progress: ProgressCallback | None,
+    *,
+    invocation: HookInvocation | None,
+) -> str:
+    """Run one lifecycle hook stage, bracketed by progress events when a command is configured.
 
     A stage the config leaves out passes ``None`` and runs nothing at all: no
     process, no record, no line in the report. Returns what to print for the hook
@@ -219,21 +224,8 @@ async def fire_hook(jsonl_path: str, invocation: HookInvocation | None) -> str:
     """
     if invocation is None:
         return ""
+    emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=default_clock()))
     run = await run_hook(invocation)
     append_record(jsonl_path, run.record)
+    emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=default_clock()))
     return run.report
-
-
-async def run_hook_stage(
-    jsonl_path: str,
-    on_progress: ProgressCallback | None,
-    *,
-    invocation: HookInvocation | None,
-) -> str:
-    """Run one lifecycle hook stage, bracketed by progress events when a command is configured."""
-    if invocation is not None:
-        emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=default_clock()))
-    report = await fire_hook(jsonl_path, invocation)
-    if invocation is not None:
-        emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=default_clock()))
-    return report

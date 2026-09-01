@@ -291,7 +291,7 @@ def test_resolve_config_when_integer_env_var_exceeds_cap_does_raise_naming_cap(
 
     message = str(exc.value)
     assert env_var in message
-    assert f"no greater than {cap}" in message
+    assert "a positive integer" in message
 
 
 def test_resolve_config_when_config_env_var_names_file_and_config_flag_absent_does_load_it(

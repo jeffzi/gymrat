@@ -20,13 +20,9 @@ _TASKKILL_GONE = 128
 """``taskkill`` exit status meaning the process was already gone."""
 
 
-def current_platform() -> str:
-    """Report the platform lazily instead of caching it at spawn.
-
-    A caller (and its tests) can then redirect the kill strategy to the
-    Windows path after a POSIX spawn.
-    """
-    return sys.platform
+def _warn(message: str) -> None:
+    """Raise a :class:`RuntimeWarning` attributed to :func:`kill_process_group`'s caller."""
+    warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
 def kill_process_group(pid: int) -> None:
@@ -37,31 +33,19 @@ def kill_process_group(pid: int) -> None:
     delegates to ``taskkill /T /F``, staying silent when the process is already
     gone and warning on any other failure.
     """
-    if current_platform() == "win32":
+    if sys.platform == "win32":
         try:
             argv = ["taskkill", "/F", "/T", "/PID", str(pid)]
             subprocess.run(argv, capture_output=True, check=True)  # noqa: S603 -- argv is a fixed list, not shell-injected
         except subprocess.CalledProcessError as error:
             if error.returncode != _TASKKILL_GONE:
-                warnings.warn(
-                    f"taskkill failed for pid {pid}: {error}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                _warn(f"taskkill failed for pid {pid}: {error}")
         except OSError as os_error:
-            warnings.warn(
-                f"taskkill unavailable while killing pid {pid}: {os_error}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            _warn(f"taskkill unavailable while killing pid {pid}: {os_error}")
         return
     try:
         os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
     except OSError as error:
-        warnings.warn(
-            f"killpg failed for pid {pid}: {error}",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        _warn(f"killpg failed for pid {pid}: {error}")

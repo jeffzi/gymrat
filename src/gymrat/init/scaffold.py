@@ -144,21 +144,17 @@ def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     ``gymrat.toml`` — the temp file is cleaned up on failure.
     """
     full_path = base_dir / CONFIG_FILENAME
-    fd = -1
     tmp_path: str | None = None
     try:
         fd, tmp_path = tempfile.mkstemp(prefix="gymrat.toml.", dir=base_dir, suffix=".tmp")
-        os.write(fd, content.encode("utf-8"))
-        os.close(fd)
-        fd = -1
+        with os.fdopen(fd, "wb") as f:
+            f.write(content.encode("utf-8"))
         Path(tmp_path).replace(full_path)
         tmp_path = None
     except OSError as exc:
         msg = f"Cannot write {CONFIG_FILENAME} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
     finally:
-        if fd >= 0:
-            os.close(fd)
         if tmp_path is not None:
             Path(tmp_path).unlink(missing_ok=True)
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")

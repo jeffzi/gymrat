@@ -215,7 +215,7 @@ def format_loop_header(seq: int, samples: int) -> str:
 def _format_rerun_line(rerun: RerunConfirmation) -> str:
     """What the rerun settled about one metric, painted the way the table paints that answer."""
     text, style = _RERUN_PHRASES[rerun.answer]
-    name = format_inline(parse(rerun.metric), color=True)
+    name = format_inline(parse(rerun.metric))
     return f"{name}: {markup(text, style)}"
 
 

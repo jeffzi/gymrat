@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat import process_group as pg_mod
 from gymrat.exec import (
     ExecOptions,
     ExecResult,
@@ -166,17 +165,16 @@ def spawned_processes(
 
     # Safety net: reap any group a test deliberately stopped exec from killing.
     for proc in processes:
-        if proc.returncode is None and proc.pid:
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
+        if proc.returncode is not None or not proc.pid:
+            continue
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_live_groups() -> Iterator[None]:
+def _isolate_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the module-level live-group registry from bleeding across tests."""
-    exec_mod.reset_live_process_groups()
-    yield
-    exec_mod.reset_live_process_groups()
+    monkeypatch.setattr(exec_mod, "_live_process_groups", set())
 
 
 @pytest.mark.parametrize(
@@ -546,8 +544,7 @@ async def test_exec_when_win32_taskkill_reports_gone_does_stay_silent(
     await wait_for_spawned(spawned_processes)
 
     # Redirect only the kill-time platform read, after the POSIX spawn.
-    monkeypatch.setattr(pg_mod, "current_platform", lambda: "win32")
-    monkeypatch.setattr(exec_mod, "current_platform", lambda: "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         abort.set()
@@ -567,8 +564,7 @@ async def test_exec_when_win32_taskkill_fails_otherwise_does_warn(
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
     await wait_for_spawned(spawned_processes)
 
-    monkeypatch.setattr(pg_mod, "current_platform", lambda: "win32")
-    monkeypatch.setattr(exec_mod, "current_platform", lambda: "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     # exec runs as a separate task, so it cannot process the abort until the
     # awaited wait_for yields control inside the warns block.
     abort.set()
@@ -595,8 +591,7 @@ async def test_exec_when_win32_taskkill_launch_raises_oserror_does_warn_not_rais
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
     await wait_for_spawned(spawned_processes)
 
-    monkeypatch.setattr(pg_mod, "current_platform", lambda: "win32")
-    monkeypatch.setattr(exec_mod, "current_platform", lambda: "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     abort.set()
     with pytest.warns(RuntimeWarning):
         await asyncio.wait_for(task, 5)
@@ -734,7 +729,7 @@ def test_kill_live_process_groups_when_kill_raises_does_not_propagate(
     monkeypatch: pytest.MonkeyPatch,
     exc: Exception,
 ) -> None:
-    exec_mod.reset_live_process_groups({4242})
+    monkeypatch.setattr(exec_mod, "_live_process_groups", {4242})
     attempted: list[int] = []
 
     def boom(pid: int, *_a: object, **_k: object) -> None:

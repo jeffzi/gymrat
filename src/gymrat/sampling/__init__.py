@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.adapters.types import Adapter, WarnSink
+from gymrat.adapters.types import Adapter
 from gymrat.errors import GymratError, hint_of
 from gymrat.exec import ExecOptions, ExecTimeoutError, kill_live_process_groups
 from gymrat.exec import (
@@ -55,6 +55,7 @@ from gymrat.targets import (
     materialize_worktree,
     plan_worktree,
 )
+from gymrat.warn import WarnSink
 
 __all__ = [
     "MetricStats",
@@ -167,8 +168,7 @@ async def collect_samples(
     )
     collected: list[list[dict[str, float]]] = [[] for _ in targets]
 
-    if options.prepare is not None:
-        await _run_prepare(schedule)
+    await _run_prepare(schedule)
 
     for round_index in range(options.samples):
         await _run_one_pass(round_index, schedule, collected, adapter)

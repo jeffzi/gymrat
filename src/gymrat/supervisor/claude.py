@@ -19,7 +19,7 @@ import json
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from math import ceil
-from typing import Protocol, cast
+from typing import Protocol
 
 from gymrat.session.clock import now_ms
 from gymrat.supervisor.driver import (
@@ -72,28 +72,15 @@ ClientFactory = Callable[[Mapping[str, object]], ClaudeClient]
 """Builds a :class:`ClaudeClient` from an SDK-native options mapping."""
 
 
-class _ClaudeAgentSdkModule(Protocol):
-    """The two SDK constructors the default factory needs.
-
-    Narrower than ``Any``: the SDK's ``ClaudeAgentOptions`` takes many typed
-    keyword-only fields the driver forwards as a validated mapping rather than
-    threading through individually, so only the two entry points are typed
-    here — but a typo or signature change on either still fails type-check.
-    """
-
-    ClaudeAgentOptions: Callable[..., object]
-    ClaudeSDKClient: Callable[[object], ClaudeClient]
-
-
 def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the package + live CLI
     # Imported lazily, not at module top: keeps claude-agent-sdk an optional
     # dependency and off the import-latency path the guard test protects.
     import claude_agent_sdk  # noqa: PLC0415
 
-    sdk = cast("_ClaudeAgentSdkModule", claude_agent_sdk)
-
     def factory(options: Mapping[str, object]) -> ClaudeClient:
-        return sdk.ClaudeSDKClient(sdk.ClaudeAgentOptions(**options))
+        # options is a validated dict from _build_options; checker can't verify
+        # the **spread into ClaudeAgentOptions's typed kwargs.
+        return claude_agent_sdk.ClaudeSDKClient(claude_agent_sdk.ClaudeAgentOptions(**options))  # pyrefly: ignore[bad-argument-type]
 
     return factory
 
@@ -110,6 +97,23 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
     if prompt.model is not None:
         options["model"] = prompt.model
     return options
+
+
+#: Rough chars-per-token ratio used to estimate thinking-block token counts,
+#: since the SDK reports thinking as text, not a token count.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+async def _disconnect_quietly(client: ClaudeClient) -> None:
+    """Disconnect ``client``, warning instead of raising.
+
+    The caller's outcome is already settled by the time this runs; a
+    disconnect failure must not replace it.
+    """
+    try:
+        await client.disconnect()
+    except Exception as err:  # noqa: BLE001 - must not replace the already-settled outcome
+        warnings.warn(f"claude client disconnect failed: {err!s}", RuntimeWarning, stacklevel=2)
 
 
 def _stringify_result(content: object) -> str:
@@ -155,26 +159,23 @@ class _ClaudeSession:
     def outcome(self) -> asyncio.Task[SessionOutcome]:
         return self._task
 
+    def _claim_interrupted(self) -> bool:
+        """Mark the session interrupted if unset; report whether this call did the marking."""
+        if self._stopped is not None:
+            return False
+        self._stopped = SessionOutcome(reason="interrupted", cost_usd=self._cost_usd)
+        return True
+
     async def interrupt(self) -> None:
-        if self._stopped is None:
-            self._stopped = SessionOutcome(reason="interrupted", cost_usd=self._cost_usd)
-            if self._client is not None:
-                await self._client.interrupt()
+        if self._claim_interrupted() and self._client is not None:
+            await self._client.interrupt()
 
     async def _watch_abort(self, abort: asyncio.Event, client: ClaudeClient) -> None:
         await abort.wait()
-        if self._stopped is None:
-            self._stopped = SessionOutcome(reason="interrupted", cost_usd=self._cost_usd)
+        self._claim_interrupted()
         # Disconnect so the streaming loop unblocks; the first stop already
         # captured the cost, so a later abort leaves it untouched.
-        try:
-            await client.disconnect()
-        except Exception as err:  # noqa: BLE001 - must not replace the settled outcome
-            warnings.warn(
-                f"claude client disconnect failed: {err!s}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+        await _disconnect_quietly(client)
 
     def _settled_or(self, default: SessionOutcome) -> SessionOutcome:
         return self._stopped if self._stopped is not None else default
@@ -238,14 +239,7 @@ class _ClaudeSession:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._abort_task
         if self._client is not None:
-            try:
-                await self._client.disconnect()
-            except Exception as err:  # noqa: BLE001 - teardown must not mask the already-settled outcome
-                warnings.warn(
-                    f"claude client disconnect failed: {err!s}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            await _disconnect_quietly(self._client)
 
     def _map_message(self, message: object) -> None:
         cost = getattr(message, "total_cost_usd", None)
@@ -269,7 +263,7 @@ class _ClaudeSession:
 
         thinking = getattr(block, "thinking", None)
         if isinstance(thinking, str):
-            delta = ceil(len(thinking) / 4)
+            delta = ceil(len(thinking) / _CHARS_PER_TOKEN_ESTIMATE)
             self._estimated_tokens += delta
             self._observer(
                 ThinkingUpdateEvent(

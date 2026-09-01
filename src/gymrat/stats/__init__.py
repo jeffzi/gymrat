@@ -13,9 +13,9 @@ from gymrat.stats.descriptive import (
 from gymrat.stats.permutation import (
     PERMUTATION_SEED,
     RESAMPLE_BUDGET,
+    SignificanceResult,
     sign_flip_permutation_test,
 )
-from gymrat.stats.results import SignificanceResult
 
 __all__ = [
     "PERMUTATION_SEED",

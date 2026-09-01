@@ -14,7 +14,7 @@ callers import from ``gymrat.adapters`` rather than reaching into submodules.
 
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.adapters.mitata import mitata_adapter
-from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults, WarnSink
+from gymrat.adapters.types import Adapter, AdapterError, MetricDefaults
 from gymrat.errors import GymratError
 
 __all__ = [
@@ -22,7 +22,6 @@ __all__ = [
     "Adapter",
     "AdapterError",
     "MetricDefaults",
-    "WarnSink",
     "get_adapter",
     "metric_lines_adapter",
     "mitata_adapter",

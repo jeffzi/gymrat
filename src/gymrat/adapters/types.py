@@ -16,8 +16,6 @@ __all__ = [
     "Adapter",
     "AdapterError",
     "MetricDefaults",
-    "WarnSink",
-    "warn_to_stderr",
 ]
 
 

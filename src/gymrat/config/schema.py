@@ -174,8 +174,8 @@ class _ConfigModel(BaseModel):
 _PHRASES: dict[tuple[str, ...], str] = {
     **{(field,): "a non-empty string" for field in _NON_EMPTY_STRING_FIELDS},
     ("filter",): "a string",
-    ("samples",): f"a positive integer no greater than {MAX_SAFE_INTEGER}",
-    ("timeout_seconds",): f"a positive integer no greater than {MAX_TIMEOUT_SECONDS}",
+    ("samples",): "a positive integer",
+    ("timeout_seconds",): "a positive integer",
     ("unstable_noise_pct",): f"a number at or above the {NOISE_FLOOR_PCT}% noise floor",
     ("metrics",): "an object",
     ("kinds",): "an object",

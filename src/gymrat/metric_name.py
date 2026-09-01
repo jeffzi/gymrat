@@ -43,14 +43,6 @@ class MetricName:
         """Last segment of the path — the leaf benchmark name."""
         return self.path[-1]
 
-    @property
-    def full(self) -> str:
-        """Plain full name suitable for identity, logging, and session records."""
-        base = "/".join(self.path)
-        if self.kind is not None:
-            return f"{base}#{self.kind}"
-        return base
-
 
 def parse(name: str) -> MetricName:
     """Parse a metric name string into a :class:`MetricName`.
@@ -83,23 +75,18 @@ def parse(name: str) -> MetricName:
     return MetricName(path=path, kind=kind)
 
 
-def format_inline(metric: MetricName, *, color: bool) -> str:
+def format_inline(metric: MetricName) -> str:
     """Format a parsed metric name for inline display.
 
-    With *color* on, the group prefix and kind suffix are wrapped in rich
-    ``[dim]`` markup so the case segment stands out. With *color* off, the
-    plain full name is returned.
+    The group prefix and kind suffix are wrapped in rich ``[dim]`` markup so
+    the case segment stands out.
 
     Args:
         metric: A parsed :class:`MetricName`.
-        color: Whether to emit rich markup.
 
     Returns:
-        The formatted string.
+        The formatted string with rich markup.
     """
-    if not color:
-        return metric.full
-
     group = metric.group
     prefix = f"[dim]{escape(group)}/[/dim]" if group is not None else ""
     suffix = f"[dim]#{escape(metric.kind)}[/dim]" if metric.kind is not None else ""

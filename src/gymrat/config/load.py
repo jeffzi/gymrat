@@ -1,7 +1,6 @@
 """Config file I/O and the two public loader entry points."""
 
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 
 from gymrat.config.schema import validate_and_convert
@@ -13,43 +12,22 @@ from gymrat.errors import GymratError
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _ReadOk:
-    """The config file was read; ``text`` is its content with any BOM stripped."""
+def _read_source(path: Path) -> tuple[str | None, str | None]:
+    """Read the config file, returning ``(text, problem)`` rather than raising.
 
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ReadAbsent:
-    """The config file does not exist."""
-
-
-@dataclass(frozen=True, slots=True)
-class _ReadError:
-    """The config file could not be read; ``message`` describes why."""
-
-    message: str
-
-
-_ReadResult = _ReadOk | _ReadAbsent | _ReadError
-
-
-def _read_source(path: Path) -> _ReadResult:
-    """Read the config file, returning the outcome as data rather than raising.
-
-    Strips a leading UTF-8 BOM. Returns :class:`_ReadAbsent` when the file does
-    not exist and :class:`_ReadError` for any other read failure (e.g. the path
-    is a directory), leaving each caller free to raise or collect the problem.
+    On success the first element is the file content (BOM-stripped) and the
+    second is ``None``.  When the file does not exist both elements are
+    ``None``.  On any other read failure the first element is ``None`` and
+    the second describes the error.
     """
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return _ReadAbsent()
+        return None, None
     except (OSError, ValueError) as exc:
         reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
-        return _ReadError(f"Cannot read config file at {path}: {reason}")
-    return _ReadOk(text.removeprefix("﻿"))
+        return None, f"Cannot read config file at {path}: {reason}"
+    return text.removeprefix("﻿"), None
 
 
 # ---------------------------------------------------------------------------
@@ -58,20 +36,17 @@ def _read_source(path: Path) -> _ReadResult:
 
 
 def _validate_read(
-    source: _ReadOk | _ReadError,
+    text: str,
     config_path: Path,
 ) -> tuple[ConfigFile | None, list[str]]:
-    """Turn a successful read (or read error) into a config or a problem list.
+    """Turn file content into a config or a problem list.
 
     Shared by the collecting loader and the throwing loader: it never raises, so
     each caller decides whether a non-empty problem list becomes an exception or
     a returned result.
     """
-    if isinstance(source, _ReadError):
-        return None, [source.message]
-
     try:
-        data = tomllib.loads(source.text)
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         return None, [f"Failed to parse config file at {config_path}: {exc}"]
 
@@ -95,8 +70,10 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
         whether the file existed, and every validation problem found.
     """
     config_path = Path(path)
-    source = _read_source(config_path)
-    if isinstance(source, _ReadAbsent):
+    text, read_problem = _read_source(config_path)
+    if read_problem is not None:
+        return ConfigFileResult(config_file=None, exists=True, problems=[read_problem])
+    if text is None:
         if required:
             return ConfigFileResult(
                 config_file=None,
@@ -105,7 +82,7 @@ def load_config_file_collecting(path: str | Path, *, required: bool) -> ConfigFi
             )
         return ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
 
-    config_file, problems = _validate_read(source, config_path)
+    config_file, problems = _validate_read(text, config_path)
     return ConfigFileResult(config_file=config_file, exists=True, problems=problems)
 
 
