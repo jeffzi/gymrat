@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 import typer
 
-from gymrat.cli.iterate import create_iterate_renderer
+from gymrat.cli.iterate import IterateRenderer
 from gymrat.cli.shared import (
     GATE_EXIT_CODE,
     AdapterOption,
@@ -203,7 +203,7 @@ async def _iterate_body(
     console = stderr_console(color_flag=not no_color)
     seq = required.state.last_seq + 1
     metric_count = len(resolved.metrics) if resolved.metrics is not None else 0
-    renderer = create_iterate_renderer(
+    renderer = IterateRenderer(
         mode,
         console,
         seq,

@@ -67,12 +67,12 @@ class _StubReporter:
     def stop(self) -> None: ...
 
 
-def _capturing_create_progress_reporter(
+def _capturing_progress_reporter(
     captured: dict[str, object],
 ) -> Callable[..., _StubReporter]:
-    """A ``create_progress_reporter`` stub that records the call's mode and counts."""
+    """A ``ProgressReporter`` stub that records the constructor's mode and counts."""
 
-    def fake_create(
+    def fake_init(
         mode: str,
         console: object,
         target_count: int,
@@ -87,7 +87,7 @@ def _capturing_create_progress_reporter(
         captured["sample_count"] = sample_count
         return _StubReporter()
 
-    return fake_create
+    return fake_init
 
 
 def _path_exists(path: Path) -> bool:
@@ -371,8 +371,8 @@ def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "gymrat.cli.shared.create_progress_reporter",
-        _capturing_create_progress_reporter(captured),
+        "gymrat.cli.shared.ProgressReporter",
+        _capturing_progress_reporter(captured),
     )
 
     flags = SharedFlags(bench="b", samples=7)
@@ -392,8 +392,8 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "gymrat.cli.shared.create_progress_reporter",
-        _capturing_create_progress_reporter(captured),
+        "gymrat.cli.shared.ProgressReporter",
+        _capturing_progress_reporter(captured),
     )
 
     flags = SharedFlags(bench="b", samples=5)

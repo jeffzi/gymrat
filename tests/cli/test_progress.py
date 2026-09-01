@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.cli.progress import ProgressReporter, create_progress_reporter
+from gymrat.cli.progress import ProgressReporter
 from gymrat.cli.style import LIVE_REFRESH_PER_SECOND
 from gymrat.progress_events import (
     HookStarted,
@@ -84,7 +84,7 @@ def _reporter(
         kwargs["command"] = command
     if target_labels is not None:
         kwargs["target_labels"] = target_labels
-    reporter = create_progress_reporter(
+    reporter = ProgressReporter(
         mode=mode,
         console=console,
         target_count=target_count,

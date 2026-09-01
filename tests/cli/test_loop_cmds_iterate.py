@@ -84,7 +84,7 @@ def test_iterate_command_when_no_session_does_exit_two_with_a_start_hint(repo: s
 
 @dataclass
 class _RendererRecord:
-    """Captures the arguments ``create_iterate_renderer`` was called with."""
+    """Captures the arguments ``IterateRenderer`` was called with."""
 
     mode: object
     console: object
@@ -115,13 +115,13 @@ class _FakeRenderer:
 
 
 class _RendererFactory:
-    """A stand-in for ``create_iterate_renderer`` recording what it was handed."""
+    """A stand-in for ``IterateRenderer`` recording what it was handed."""
 
     def __init__(self) -> None:
         self.renderer = _FakeRenderer()
         self.calls: list[_RendererRecord] = []
 
-    def __call__(  # noqa: PLR0917 -- mirrors create_iterate_renderer signature
+    def __call__(  # noqa: PLR0917 -- mirrors IterateRenderer signature
         self,
         mode: object,
         console: object,
@@ -195,9 +195,9 @@ class _IterateSessionRaiser:
 
 
 def _install_renderer_factory(monkeypatch: pytest.MonkeyPatch) -> _RendererFactory:
-    """Replace ``create_iterate_renderer`` in the loop_cmds module with a recorder."""
+    """Replace ``IterateRenderer`` in the loop_cmds module with a recorder."""
     factory = _RendererFactory()
-    monkeypatch.setattr("gymrat.cli.loop_cmds.create_iterate_renderer", factory)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.IterateRenderer", factory)
     return factory
 
 

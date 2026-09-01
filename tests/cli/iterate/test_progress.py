@@ -13,10 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.console import Console as StyledConsole
 
-from gymrat.cli.iterate.progress import (
-    IterateRenderer,
-    create_iterate_renderer,
-)
+from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.style import CLI_THEME
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -130,7 +127,7 @@ def _renderer(
 ) -> tuple[Console, Clock, IterateRenderer]:
     clock = Clock()
     console = sealed_console(width=width, height=height, get_time=clock)
-    renderer = create_iterate_renderer(
+    renderer = IterateRenderer(
         mode=mode,
         console=console,
         seq=seq,

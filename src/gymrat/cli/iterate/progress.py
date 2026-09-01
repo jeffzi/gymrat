@@ -437,35 +437,3 @@ class IterateRenderer(LiveDisplayMixin):
         if self._live is not None:
             self._live.stop()
             self._live = None
-
-
-def create_iterate_renderer(  # noqa: PLR0913, PLR0917 -- mirrors the renderer constructor
-    mode: Literal["live", "plain"],
-    console: Console,
-    seq: int,
-    session_id: str,
-    sample_count: int,
-    metric_count: int,
-    primary_metric: str,
-    *,
-    verbose: bool = False,
-    clock: Callable[[], float] | None = None,
-    checks_cmd: str | None = None,
-    has_before_hook: bool = False,
-    has_after_hook: bool = False,
-) -> IterateRenderer:
-    """Thin monkeypatch wrapper — parameters mirror the constructor."""
-    return IterateRenderer(
-        mode=mode,
-        console=console,
-        seq=seq,
-        session_id=session_id,
-        sample_count=sample_count,
-        metric_count=metric_count,
-        primary_metric=primary_metric,
-        verbose=verbose,
-        clock=clock,
-        checks_cmd=checks_cmd,
-        has_before_hook=has_before_hook,
-        has_after_hook=has_after_hook,
-    )

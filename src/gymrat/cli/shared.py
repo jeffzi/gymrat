@@ -21,7 +21,7 @@ import typer
 from rich.markup import escape
 
 from gymrat.adapters.types import AdapterError
-from gymrat.cli.progress import ProgressReporter, create_progress_reporter
+from gymrat.cli.progress import ProgressReporter
 from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.exec import kill_live_process_groups
@@ -511,7 +511,7 @@ def begin_run(
 
     mode = resolve_render_mode()
     console = stderr_console(color_flag=flags.color)
-    return create_progress_reporter(
+    return ProgressReporter(
         mode,
         console,
         target_count,
