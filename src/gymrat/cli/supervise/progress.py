@@ -304,6 +304,12 @@ def _stderr_write(text: str) -> None:
     sys.stderr.write(f"{text}\n")
 
 
+def _stop_live(live: Live | None) -> None:
+    if live is not None:
+        with contextlib.suppress(Exception):
+            live.stop()
+
+
 def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     *,
     root: str,
@@ -320,6 +326,7 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     branch: str,
     tz: tzinfo | None,
     no_color: bool,
+    log_path: str,
 ) -> ReporterCtx:
     return ReporterCtx(
         now=now,
@@ -347,6 +354,7 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         nested={},
         nested_tool_ids={},
         no_color=no_color,
+        log_path=log_path,
     )
 
 
@@ -357,6 +365,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     max_usd: float | None = None,
     max_iterations: int | None = None,
     mode: Literal["live", "plain"],
+    log_path: str = "",
     now: Callable[[], int] | None = None,
     read_session: Callable[[], ReadSessionResult] | None = None,
     label: str = "",
@@ -368,13 +377,12 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     tz: tzinfo | None = None,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard."""
-    is_plain = mode == "plain"
     ctx = _new_ctx(
         root=root,
         max_minutes=max_minutes,
         max_usd=max_usd,
         max_iterations=max_iterations,
-        is_plain=is_plain,
+        is_plain=mode == "plain",
         now=now if now is not None else now_ms,
         read_session=read_session if read_session is not None else make_default_read(root),
         read_progress=read_progress if read_progress is not None else _default_read_progress,
@@ -384,11 +392,12 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         branch=branch,
         tz=tz,
         no_color=color is False,
+        log_path=log_path,
     )
 
     # Live is created after ctx — Rich's Live.__init__ eagerly calls
     # get_renderable() to size the initial layout, so ctx must be populated.
-    if not is_plain:
+    if not ctx.is_plain:
         ctx.live = Live(
             console=stderr_console(color_flag=color),
             refresh_per_second=1,
@@ -397,11 +406,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         )
         ctx.live.start()
 
-    def stop() -> None:
-        if ctx.live is not None:
-            with contextlib.suppress(Exception):
-                ctx.live.stop()
-
     def warn(message: str) -> None:
         if ctx.is_plain:
             ctx.plain_write_fn(message)
@@ -409,10 +413,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
             ctx.live.console.print(message)
 
     ctx.warn_fn = warn
-
     return SuperviseReporter(
         observer=lambda event: _handle_event(ctx, event),
-        stop=stop,
+        stop=lambda: _stop_live(ctx.live),
         frame=lambda: build_frame(ctx),
         warn=warn,
         session_result=lambda: ctx.session_result,

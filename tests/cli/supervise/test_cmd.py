@@ -393,7 +393,7 @@ def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loo
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert "  loop  iter 3 · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
+    assert "  loop  3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
 
 
 def test_supervise_when_log_path_is_long_does_print_it_unwrapped(

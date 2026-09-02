@@ -182,11 +182,13 @@ def _run_session(ctx: _SessionContext) -> None:
         max_usd=ctx.max_usd,
         max_iterations=ctx.max_iterations,
         mode=mode,
+        log_path=ctx.log_path,
         color=ctx.color,
     )
     uninstall_cleanup = install_termination_cleanup(reporter.stop)
 
-    write_and_flush(sys.stderr, f"log: {_abbreviate_home(ctx.log_path)}\n")
+    if mode == "plain":
+        write_and_flush(sys.stderr, f"log: {_abbreviate_home(ctx.log_path)}\n")
 
     prompt = SessionPrompt(
         kickoff=ctx.kickoff.kickoff,

@@ -719,8 +719,8 @@ def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_an
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
-        "  best  -4.2% wall_time vs baseline a1b2c3d (iter 3)\n"
-        "  loop  iter 3 · 2 kept · 1 discarded · last -4.2% improved\n"
+        "  best  -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
+        "  loop  3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
         f"{_LOG_ROW}"
     )
 
@@ -762,7 +762,7 @@ def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
         pytest.param(None, "  loop  no session yet", id="no-session"),
         pytest.param(
             _session_result(with_best=False),
-            "  loop  iter 3 · 2 kept · 1 discarded · last -4.2% improved",
+            "  loop  3 iterations · 2 kept · 1 discarded · last -4.2% improved",
             id="no-best-iteration",
         ),
     ],
@@ -777,6 +777,39 @@ def test_summary_when_no_best_delta_does_omit_the_best_row(
     assert frame_text(summary, width=FRAME_WIDTH) == (
         f"✓ completed · 1m 0s · $0.05\n{expected_loop}\n{_LOG_ROW}"
     )
+
+
+@pytest.mark.parametrize(
+    ("session_result", "expected_loop"),
+    [
+        pytest.param(
+            make_read_session(session_state(), has_baseline=True)(),
+            "  loop  baseline recorded · no iterations yet",
+            id="zero-iterations",
+        ),
+        pytest.param(
+            make_read_session(
+                session_state(
+                    iteration_count=1,
+                    keep_count=1,
+                    discard_count=0,
+                    last_iteration=make_iteration(-4.2, "improved"),
+                ),
+                has_baseline=True,
+            )(),
+            "  loop  1 iteration · 1 kept · 0 discarded · last -4.2% improved",
+            id="one-iteration",
+        ),
+    ],
+)
+def test_summary_loop_row_when_iteration_count_varies_does_name_the_count_as_a_noun(
+    session_result: ReadSessionResult, expected_loop: str
+) -> None:
+    summary = build_summary(
+        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
+    )
+
+    assert frame_text(summary, width=FRAME_WIDTH).splitlines()[1] == expected_loop
 
 
 def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():

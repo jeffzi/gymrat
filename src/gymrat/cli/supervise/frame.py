@@ -6,6 +6,7 @@ from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
@@ -70,7 +71,10 @@ def _format_minutes(minutes: float) -> str:
 
 
 def _format_iter_label(count: int, max_iterations: int | None) -> str:
-    return f"iter {count}/{max_iterations}" if max_iterations is not None else f"iter {count}"
+    if max_iterations is not None:
+        # The noun agrees with the cap, so the capped form stays plural at any count.
+        return f"{count}/{max_iterations} iterations"
+    return f"{count} iteration" if count == 1 else f"{count} iterations"
 
 
 def _minutes_to_ms(minutes: float) -> float:
@@ -149,9 +153,7 @@ def build_loop_text(session_result: ReadSessionResult | None, max_iterations: in
         return text
 
     if session_result.has_baseline and state.iteration_count == 0:
-        text = _iter_label_text(0, max_iterations)
-        text.append(" · baseline recorded")
-        return text
+        return Text("baseline recorded · no iterations yet")
 
     if state.iteration_count == 0:
         return Text("no session yet", style=STYLE_PENDING)
@@ -197,7 +199,7 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
         text.append(
             f" vs baseline {session_result.baseline_sha[:SHORT_SHA_LENGTH]}", style=STYLE_META
         )
-    text.append(f" (iter {session_result.best_seq})", style=STYLE_META)
+    text.append(f" (iteration {session_result.best_seq})", style=STYLE_META)
     return text
 
 
@@ -386,7 +388,12 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
     body.add_row(_build_summary_table(ctx, elapsed))
     body.add_row(_build_liveness_table(ctx, now, tool_col=tool_col))
 
-    return Panel(body, title=_build_title(ctx), title_align="left", border_style=STYLE_META)
+    panel = Panel(body, title=_build_title(ctx), title_align="left", border_style=STYLE_META)
+    if not ctx.log_path:
+        return panel
+    log_line = Text("log: ")
+    log_line.append_text(_log_path_text(ctx.log_path))
+    return Group(log_line, panel)
 
 
 # The label column of the summary rows, wide enough for "best" and "loop"; the
@@ -428,6 +435,13 @@ def _abbreviate_home(path: str) -> str:
         return path
 
 
+def _log_path_text(log_path: str) -> Text:
+    """Build a ``Text`` for a log path with an OSC 8 file hyperlink."""
+    display = _abbreviate_home(log_path)
+    uri = Path(log_path).resolve().as_uri()
+    return Text(display, style=f"link {uri}")
+
+
 def build_summary(
     result: SupervisionResult,
     *,
@@ -445,7 +459,7 @@ def build_summary(
     if best_text is not None:
         rows.append(_summary_row("best", best_text))
     rows.append(_summary_row("loop", build_loop_text(session_result, None)))
-    rows.append(_summary_row("log", Text(_abbreviate_home(log_path))))
+    rows.append(_summary_row("log", _log_path_text(log_path)))
     return Text("\n").join(rows)
 
 

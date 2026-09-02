@@ -24,8 +24,8 @@
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
   │ time ━━━━━━━━━━━━━━━━━━━━━━━                                               2h 42m  cap in 5h 17m │
   │ cost $4.12 / $10.00                                                                              │
-  │ loop   iter 3/5 · 1 kept · 1 discarded · last -6.8% improved                                     │
-  │ best -6.8% geomean vs baseline abc1234 (iter 3)                                                  │
+  │ loop   3/5 iterations · 1 kept · 1 discarded · last -6.8% improved                               │
+  │ best -6.8% geomean vs baseline abc1234 (iteration 3)                                             │
   │   02:41:03  Bash   gymrat iterate  1m 0s                                                         │
   │   02:41:03  Edit   src/archetype.ts  2h 41m                                                      │
   │   02:41:02  Read   src/archetype.ts  2h 41m                                                      │
@@ -61,7 +61,7 @@
   ╭─ supervise ecstatic-ts · session 20260813-125044-34ec · branch gymrat/20260813-125044-34ec ──────╮
   │ time                                                                           0s  cap in 8h 00m │
   │ cost $0.00                                                                                       │
-  │ loop   iter 3/20 · 2 kept · 1 discarded · last -3.2% improved                                    │
+  │ loop   3/20 iterations · 2 kept · 1 discarded · last -3.2% improved                              │
   │   waiting  0s                                                                                    │
   │   00:00:03  Bash   ...  1s                                                                       │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

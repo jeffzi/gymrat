@@ -14,6 +14,7 @@ cap, and non-rendering event tests also live here.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -224,7 +225,7 @@ def test_loop_when_read_session_throws_does_show_no_session_yet():
     assert "no session yet" in frame
 
 
-def test_loop_when_baseline_recorded_does_show_baseline_recorded():
+def test_loop_when_baseline_recorded_does_name_the_missing_iterations():
     kit = make_reporter(
         max_iterations=20,
         read_session=make_read_session(empty_session_state(), has_baseline=True),
@@ -233,7 +234,7 @@ def test_loop_when_baseline_recorded_does_show_baseline_recorded():
 
     frame = render_frame(kit.reporter)
 
-    assert "baseline recorded" in frame
+    assert "baseline recorded · no iterations yet" in frame
 
 
 def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: SnapshotAssertion):
@@ -246,7 +247,7 @@ def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: Snapsh
 
     frame = render_frame(kit.reporter)
 
-    assert "iter 3/20" in frame
+    assert "3/20 iterations" in frame
     assert "2 kept" in frame
     assert "1 discarded" in frame
     assert "-3.2%" in frame
@@ -268,8 +269,8 @@ def test_loop_when_max_iterations_absent_does_omit_the_denominator():
 
     frame = render_frame(kit.reporter)
 
-    assert "iter 2" in frame
-    assert "iter 2/" not in frame
+    assert "2 iterations" in frame
+    assert re.search(r"\d+/\d+ iterations", frame) is None
 
 
 def test_loop_when_last_delta_is_none_does_render_em_dash():
@@ -388,7 +389,7 @@ def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_iterati
     assert "-6.8%" in frame
     assert "geomean" in frame
     assert "2ec6e05" in frame
-    assert "(iter 3)" in frame
+    assert "(iteration 3)" in frame
 
 
 def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
@@ -412,8 +413,8 @@ def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
 
     frame = render_frame(kit.reporter)
 
-    assert "(iter 3)" in frame
-    assert "(iter 5)" not in frame
+    assert "(iteration 3)" in frame
+    assert "(iteration 5)" not in frame
 
 
 # ---------------------------------------------------------------------------
@@ -1200,7 +1201,7 @@ def test_plain_when_loop_changes_does_print_loop_segment():
     fire_tool_start(plain.observer, "Bash", "bash-1", 2000)
     fire_tool_end(plain.observer, "Bash", "bash-1", 3000)
 
-    loop_writes = [w for w in plain.writes if "iter 2/20" in w]
+    loop_writes = [w for w in plain.writes if "2/20 iterations" in w]
     assert loop_writes
     assert "+3.2%" in loop_writes[0]
     assert "regressed" in loop_writes[0]

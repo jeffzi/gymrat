@@ -187,3 +187,4 @@ class ReporterCtx:
     nested: dict[str, NestedActivity]
     nested_tool_ids: dict[str, str]
     no_color: bool
+    log_path: str
