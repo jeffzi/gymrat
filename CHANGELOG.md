@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-02
+
 ### Added
 
 - Windows support for the optimization session: `start`, `iterate`, `keep`, `discard`,
@@ -14,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gymrat sync` copies uncommitted main-tree changes into the experiment worktree, for edits that
   must land in the main working tree first (for example a dependency update); it refuses when the
   experiment worktree has conflicting uncommitted changes.
-- `iterate`, `keep`, `discard`, and `status` accept `--format json` for machine-readable output
-  under the same additive-only contract as `compare` and `measure`.
+- `iterate`, `keep`, `discard`, and `status` accept `--format json`, with the same stable,
+  backward-compatible schema as `compare` and `measure`.
+- A `--color` flag complements `--no-color`: it forces color output on, overriding `NO_COLOR` and
+  non-TTY detection.
 
 ### Changed
 
@@ -26,30 +30,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   former `gymrat.json`. Keys that were camelCase are now snake_case: `timeout_seconds`,
   `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the
   new file, and existing configs must be converted to TOML and re-keyed.
-- `gymrat init` is now non-interactive: it takes `--bench` (required), `--no-runbook`, and
-  `--no-skill` flags and writes only the `bench` and `runbook` config keys. It is also
-  re-runnable: an existing `gymrat.toml` is left untouched and any missing runbook or skill file
-  is restored, so `--bench` is only required when no config exists yet.
-- `measure` and `compare` replace the single progress line with per-target progress bars carrying
-  running clock timers and a metric count; `iterate` replaces its line with a step checklist
-  showing live elapsed time and per-pass detail. When the output is not a terminal, plain text is
-  printed instead.
-- `gymrat supervise` replaces its one-line progress with a live dashboard: elapsed time and
-  spend against the caps, the best result so far with wall-clock timestamps, loop tallies, and
-  live progress of the measurement currently running.
+- `gymrat init` is now non-interactive, driven by `--bench`, `--no-runbook`, and `--no-skill`,
+  and re-running it over an existing `gymrat.toml` restores any missing runbook or skill file
+  without touching the config.
+- `measure`, `compare`, and `iterate` replace the single progress line with per-target progress
+  bars showing elapsed time, with plain text when the output is not a terminal.
+- `gymrat supervise` replaces its one-line progress with a live dashboard: elapsed time and spend
+  against the caps, the best result so far, loop tallies, and the model and tool activity
+  currently running.
 - `gymrat doctor` no longer executes the bench command: the bench section now validates that the
   adapter resolves, a bench command is configured, and its executable is on `PATH`, instead of
-  running a smoke benchmark. Its summary counts render in their status colors and zero counts
-  are omitted.
-- Report hints render dim without the former `Hint:` label.
-- Significance verdicts now come from an exact sign-flip permutation test instead of the Wilcoxon
-  signed-rank test. The permutation test's statistic is the delta each verdict already reports — the
-  percent change in the median — so a significant result can no longer point in a different direction
-  than the number shown beside it. It also computes exact results for small sample sizes instead of
-  relying on approximations that can distort the outcome. Verdicts are labeled `permutation` in the
-  text reports and in the JSON output. Near the significance boundary a metric can now land on the
-  opposite verdict from earlier releases; in particular, a run whose samples barely move is less
-  likely to be judged significant than before.
+  running a smoke benchmark.
+- Significance verdicts now come from an exact sign-flip permutation test (labeled `permutation`
+  in reports and JSON) instead of the Wilcoxon signed-rank test, so a metric near the significance
+  boundary can land on the opposite verdict from earlier releases.
+- The bundled skill now has the agent probe an edit with `gymrat measure` on the experiment
+  worktree, scoped to the benchmarks the edit targets, and reserve `gymrat iterate` for the one
+  full measurement right before `keep`.
+- Metric names now use `#` as the suffix separator instead of `/`: a name like `bench/time` is now
+  `bench#time`. The `metric-lines` and `mitata` adapters follow the new grammar; a metric name
+  containing more than one `#` is rejected.
+- Report tables group metrics by their `/`-separated path prefix instead of by the first dot in the
+  short name.
+- Verdicts with too few paired samples for the permutation test now display as inconclusive.
 
 ### Fixed
 
@@ -63,8 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   substituted into a `filter` template.
 - `--debug` takes effect whether written before or after the subcommand, and a closed output pipe
   ends the run quietly instead of printing a bug-report footer.
-- `gymrat status` renders metric names and paths containing square brackets literally instead of
-  interpreting them as styling.
 - The mitata adapter no longer fails to read its report when the bench command prints extra
   output around the JSON, and warns about entries it cannot use instead of skipping them
   silently.
@@ -73,19 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `gymrat.toml` that is not valid UTF-8 is reported as unreadable instead of crashing, and an
   oversized integer in a `GYMRAT_*` environment variable is reported as invalid instead of
   crashing.
-- Interrupting a run on a terminal now clears the progress line before exiting, so no stray status
-  text is left on the current line.
 - A lock file left behind by another user in a shared temporary directory now reports a clear remedy
   instead of failing with a raw permission error.
-- `compare` and `measure` reports now render in color when written to a terminal and drop color when
-  redirected to a file or pipe, instead of always rendering plain.
-- Color detection now follows one rule across reports, the progress line, and error messages, so
-  `FORCE_COLOR` and `NO_COLOR` take effect consistently; a `FORCE_COLOR` of `0`, `false`, or empty no
-  longer forces color on.
-- `--no-color` no longer sets `NO_COLOR` in the environment of the benchmark commands it runs.
-- The progress line no longer spills a garbled row on a terminal that reports zero or unknown width
-  (for example `COLUMNS=0`); such a width now collapses the line instead of being treated as 80
-  columns.
+- `--no-color` no longer leaks into the environment of the benchmark commands.
 - A supervised agent session whose benchmark process emits an oversized, unterminated output line
   now ends with a clear error instead of crashing.
 - Tearing down a supervised agent session no longer hangs indefinitely when the supervised process
@@ -102,26 +93,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `gymrat supervise [prompt]` runs an agent that drives the optimization loop on its own, bounded by
-  a required wall-clock cap (`--max-minutes`) and an optional spend cap (`--max-usd`). When a cap is
-  reached the agent is interrupted and given a grace period to stop; the run then reports how it
-  ended, its duration, and its cost. Around that core:
-  - It requires a `runbook` in `gymrat.json` and refuses to start on a dirty tree unless
-    `--allow-dirty` is passed.
-  - It holds a lock separate from the session lock.
-  - It records every step of the session to a JSONL event log (`--log`, defaulting under `.gymrat/`).
+  a wall-clock cap (`--max-minutes`) and an optional spend cap (`--max-usd`).
 - A live progress line for supervised sessions showing the elapsed time and spend against the caps,
   loop progress (iterations, keeps, discards, and the last verdict), and the current tool activity,
   with a plain-text fallback when the output is not a terminal.
-- `gymrat init` scaffolds a project: an interactive wizard (or flag-driven, with `--yes` for
-  non-interactive use) settles the bench command and optional adapter, checks, stop condition,
-  primary metric, runbook, and skill choices, then writes `gymrat.json`, a runbook stub, and the
-  gymrat skill file — validating the configuration before writing so a bad setup leaves nothing
-  behind.
-- `gymrat doctor` checks the project setup and reports problems across the environment (git and
-  repository), configuration, workflow (skill file, checks, stop condition, runbook), and an
-  optional bench smoke run that parses the bench output and cross-checks it against the configured
-  primary, metrics, and kinds. It renders as grouped text or `--format json` and exits non-zero when
-  any check fails; `--no-bench` skips the smoke run.
+- `gymrat init` scaffolds a project: an interactive wizard (or `--yes` for non-interactive use)
+  settles the configuration, then writes `gymrat.json`, a runbook stub, and the gymrat skill file.
+- `gymrat doctor` checks the project setup — environment, configuration, workflow, and an optional
+  bench smoke run — as grouped text or `--format json`, exiting non-zero when any check fails.
 - The gymrat skill file now ships inside the package, so a supervised session and `gymrat init` both
   use it without a separate install step.
 
@@ -129,22 +108,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- An optimization-loop workflow driven by six new commands over a per-repository session that pins a
-  baseline and measures an experiment worktree against it, one edit at a time:
-  - `gymrat start [ref]` opens or resumes the session, pinning the baseline at a ref (default `HEAD`)
-    and checking out an experiment and a baseline worktree; a finalized session's log is archived and
-    a fresh session takes its place.
-  - `gymrat iterate` measures the experiment worktree against the baseline and reports the verdict,
-    honoring configurable stop conditions — a maximum iteration count, or a target value for a named
-    metric.
-  - `gymrat keep` commits the measured edit once a configured checks command passes, advancing the
-    baseline onto the kept commit; it refuses a standing gating regression or failing checks and
-    records the block.
-  - `gymrat discard` reverts the experiment worktree to its last commit, with a confirmation prompt
-    on a terminal (skip it with `-f`/`--force`).
-  - `gymrat finalize` collapses the session's kept commits into a single squash commit on the pinned
-    baseline and closes the session, leaving the per-iteration history in place.
-  - `gymrat status` prints the whole session history, rebuilt from its log alone.
+- `gymrat start [ref]` opens or resumes a per-repository optimization session, pinning the baseline
+  at a ref (default `HEAD`) and checking out an experiment and a baseline worktree.
+- `gymrat iterate` measures the experiment worktree against the baseline and reports the verdict,
+  honoring a configurable stop condition: a maximum iteration count or a target value for a named
+  metric.
+- `gymrat keep` commits the measured edit once the configured checks command passes, advancing the
+  baseline onto it, and refuses a standing gating regression or failing checks.
+- `gymrat discard` reverts the experiment worktree to its last commit, with a confirmation prompt
+  on a terminal (skip it with `-f`/`--force`).
+- `gymrat finalize` collapses the session's kept commits into a single squash commit on the pinned
+  baseline and closes the session.
+- `gymrat status` prints the whole session history, rebuilt from its log alone.
 - A confirmation rerun that re-measures a noisy gating regression once and lets it stand only when
   the rerun agrees; a deterministic (exact) metric is judged on the first run alone.
 - Lifecycle hooks: `before` and `after` commands run around each measurement, receive a JSON
@@ -155,19 +130,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A `--record` (`-r`) flag for `gymrat measure` that appends the run to a per-repository session log
-  as a labeled baseline, capturing each round's raw samples. Recording requires an open session; a
-  missing or already-finalized session, or a run outside a git repository, stops the command before
-  it benchmarks so a long run is never discarded with nowhere to record it.
+- A `--record` (`-r`) flag for `gymrat measure` that appends the run to the open session log as a
+  labeled baseline, refusing before it benchmarks when no open session exists.
 
 ## [0.8.0] - 2026-08-24
 
 ### Added
 
-- The `gymrat compare` command: compare a baseline revision against one or more candidates and report
-  each candidate against the shared baseline, as text or JSON. A target is an existing directory
-  benched where it sits or a git ref — branch, tag, or commit — checked out into a throwaway
-  worktree pinned to its commit; an existing directory wins over an equally named ref.
+- The `gymrat compare` command: compare a baseline revision against one or more candidates — each
+  an existing directory or a git ref checked out into a throwaway worktree — and report as text or
+  JSON.
 - The `gymrat measure` command: measure a single revision or directory on its own, defaulting to the
   current directory, with nothing to compare against.
 - A repeatable `--fail-on` gate for `compare` that exits non-zero when a gating metric regresses
@@ -184,23 +156,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Comparison report tables: a metric-by-metric table pitting a baseline against one
-  candidate — or a column per candidate against a shared baseline — showing each side's value with
-  its spread, the verdict with its noise band, and a geometric-mean row summarizing the run. A run
-  spanning several metric kinds splits into a titled section per kind, each closed by its own
-  geometric mean, and a kind that only informs (never gates) is labeled as such with the config line
-  that
-  made it so.
+- Comparison report tables: a metric-by-metric table pitting a baseline against one or more
+  candidates, showing each side's value with its spread, the verdict with its noise band, and a
+  geometric-mean row per metric kind.
 - Measurement report table: a single-target table listing each metric's median and spread,
   sectioned by kind the same way, for a run with nothing to compare against.
 - Verdict summary and highlights: a one-line tally of how many metrics improved, regressed, stayed
   within noise, or could not be judged, followed by a highlights block calling out the metrics that
   moved most — with a note that unstable metrics will not settle with more samples.
-- Gate-trip and cleanup reporting: when a `--fail-on` geomean threshold is crossed the report names
-  the kind, its gated geometric mean, and the threshold it exceeded; leftover worktrees and prune
-  failures
-  are reported in a closing footer. A verbose run also spells out the statistical method behind the
-  verdicts and hints at when more samples would help.
+- Gate-trip and cleanup reporting: a crossed `--fail-on` geomean threshold names the kind, its gated
+  geometric mean, and the threshold, and leftover worktrees and prune failures are reported in a
+  closing footer.
 - Machine-readable JSON output: comparison and measurement runs render as a stable, versioned JSON
   document with per-metric metadata, per-candidate verdicts and aggregates, and worktree-cleanup
   state — parseable by other tools and unaffected by display options.
@@ -289,7 +255,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured error reporting for every gymrat failure: the command prints a clear message and, where
   one applies, an actionable hint for what to do next.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/jeffzi/gymrat/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/jeffzi/gymrat/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jeffzi/gymrat/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jeffzi/gymrat/compare/v0.8.0...v0.9.0
