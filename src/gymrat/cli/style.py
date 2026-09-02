@@ -5,7 +5,7 @@ form, and timer color — so a row can be read at a glance:
 
 | State   | Glyph   | Verb form             | Timer     |
 | ------- | ------- | --------------------- | --------- |
-| running | spinner | gerund (``sampling``) | yellow    |
+| running | spinner | gerund (``sampling``) | cyan      |
 | done    | ``✓``   | past (``sampled``)    | dim green |
 | pending | ``○``   | noun (``judge``)      | none      |
 | error   | ``✗``   | —                    | none      |
@@ -14,7 +14,10 @@ A step that turns out not to apply (a skipped confirm, a hook that was not
 configured) is dropped from the checklist rather than shown with a skip marker.
 
 Counts (``1/4``) are bold in the default foreground; command and target labels
-are bold blue; metadata, separators, and hints are dim.
+are bold blue; metadata, separators, and hints are dim. Yellow is reserved for
+alert/warning surfaces (idle warnings, caps, alert glyphs).
+
+The report-side style vocabulary lives in :mod:`gymrat.report.style`.
 
 :data:`CLI_THEME` re-points the rich style names the progress columns hard-code
 (``progress.spinner``, ``progress.elapsed``, ``progress.download``, ``bar.*``)
@@ -35,13 +38,14 @@ if TYPE_CHECKING:
 
 GLYPH_DONE = "✓"
 GLYPH_PENDING = "○"
+GLYPH_ERROR = "✗"
 
 # The one spinner animation every renderer uses, for ``SpinnerColumn`` in
 # progress bars and ``Spinner`` in checklist rows alike.
 SPINNER_NAME = "dots"
 GLYPH_ALERT = "!"
 
-STYLE_RUNNING = "yellow"
+STYLE_RUNNING = "cyan"
 STYLE_DONE = "green"
 STYLE_PENDING = "dim"
 STYLE_ALERT = "yellow"
@@ -53,7 +57,7 @@ STYLE_META = "dim"
 STYLE_BAR = "dim"
 STYLE_REGRESSED = "red"
 
-STYLE_TIMER_RUNNING = "yellow"
+STYLE_TIMER_RUNNING = "cyan"
 STYLE_TIMER_DONE = "dim green"
 
 # Spinner frames are 80ms apart; refreshing any slower makes them look frozen.

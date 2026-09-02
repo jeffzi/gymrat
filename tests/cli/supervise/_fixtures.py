@@ -24,10 +24,13 @@ from gymrat.cli.supervise.progress import (
 )
 from gymrat.session import IterationPrimary, IterationRecord
 from gymrat.session.store import SessionState
+from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapEvent,
     LaunchEvent,
+    ModelPhaseEvent,
     SessionObserver,
+    ThinkingUpdateEvent,
     ToolEndEvent,
     ToolStartEvent,
     UsageUpdateEvent,
@@ -46,6 +49,9 @@ __all__ = [
     "fire_cap",
     "fire_launch",
     "fire_launch_and_bash_cycle",
+    "fire_launch_and_bash_start",
+    "fire_model_phase",
+    "fire_thinking_update",
     "fire_tool_end",
     "fire_tool_start",
     "fire_usage_update",
@@ -53,8 +59,10 @@ __all__ = [
     "make_plain_reporter",
     "make_read_session",
     "make_reporter",
+    "make_supervision_result",
     "render_frame",
     "session_state",
+    "session_state_three_iterations",
 ]
 
 
@@ -101,7 +109,7 @@ def session_state(**changes: Any) -> SessionState:
 
 
 def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
-    """Convert epoch milliseconds to local-time ``HH:MM:SS`` for test assertions.
+    """Epoch milliseconds to local ``HH:MM:SS``.
 
     Uses the same epoch-to-local conversion the implementation should use, so
     tests are timezone-independent — they compute the expected string rather
@@ -119,6 +127,20 @@ def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> Itera
     )
 
 
+def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
+    """Three iterations (2 kept, 1 discarded) ending with the given last iteration.
+
+    The shared "loop row has content" arrangement used by summary, frame, and
+    reporter tests that only vary the last iteration's delta and outcome.
+    """
+    return session_state(
+        iteration_count=3,
+        keep_count=2,
+        discard_count=1,
+        last_iteration=make_iteration(delta_pct, outcome, seq=seq),
+    )
+
+
 def make_read_session(
     state: SessionState,
     *,
@@ -130,21 +152,33 @@ def make_read_session(
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    Only forward a ``best_*`` / ``baseline_sha`` kwarg when the caller supplies
-    a value, so callers that omit best-tracking still get a valid two-field
-    result.
+    ``best_*`` / ``baseline_sha`` default to ``None`` on ``ReadSessionResult``
+    itself, so callers that omit best-tracking still get a valid result.
     """
-    best_kwargs: dict[str, Any] = {}
-    if best_delta_pct is not None:
-        best_kwargs["best_delta_pct"] = best_delta_pct
-    if best_seq is not None:
-        best_kwargs["best_seq"] = best_seq
-    if primary_label is not None:
-        best_kwargs["primary_label"] = primary_label
-    if baseline_sha is not None:
-        best_kwargs["baseline_sha"] = baseline_sha
-    result = ReadSessionResult(state=state, has_baseline=has_baseline, **best_kwargs)
+    result = ReadSessionResult(
+        state=state,
+        has_baseline=has_baseline,
+        best_delta_pct=best_delta_pct,
+        best_seq=best_seq,
+        primary_label=primary_label,
+        baseline_sha=baseline_sha,
+    )
     return lambda: result
+
+
+def make_supervision_result(
+    *,
+    reason: Literal["completed", "error", "interrupted"] = "completed",
+    ended_by: Literal["session", "spend-cap", "wall-clock"] = "session",
+    duration_ms: int = 60_000,
+    cost_usd: float = 0.05,
+    message: str | None = None,
+) -> SupervisionResult:
+    """The ``SupervisionResult`` a finished supervised run hands back."""
+    outcome = SessionOutcome(reason=reason, cost_usd=cost_usd, message=message)
+    return SupervisionResult(
+        outcome=outcome, ended_by=ended_by, duration_ms=duration_ms, cost_usd=cost_usd
+    )
 
 
 def _throwing_read() -> ReadSessionResult:
@@ -186,8 +220,8 @@ def fire_tool_start(
     timestamp: int = 2000,
     *,
     input_summary: str = "...",
+    parent_tool_use_id: str | None = None,
 ) -> None:
-    """Publish a ``ToolStartEvent`` for *tool_name* at *timestamp*."""
     observer(
         ToolStartEvent(
             timestamp=timestamp,
@@ -195,6 +229,7 @@ def fire_tool_start(
             tool_name=tool_name,
             input={},
             input_summary=input_summary,
+            parent_tool_use_id=parent_tool_use_id,
         )
     )
 
@@ -207,8 +242,8 @@ def fire_tool_end(
     *,
     result: str = "ok",
     result_summary: str = "ok",
+    parent_tool_use_id: str | None = None,
 ) -> None:
-    """Publish a ``ToolEndEvent`` for *tool_name* at *timestamp*."""
     observer(
         ToolEndEvent(
             timestamp=timestamp,
@@ -217,30 +252,75 @@ def fire_tool_end(
             duration_ms=timestamp - 2000,
             result=result,
             result_summary=result_summary,
+            parent_tool_use_id=parent_tool_use_id,
         )
     )
 
 
 def fire_usage_update(observer: SessionObserver, cost_usd: float, timestamp: int = 4000) -> None:
-    """Publish a ``UsageUpdateEvent`` carrying *cost_usd* at *timestamp*."""
     observer(UsageUpdateEvent(timestamp=timestamp, cost_usd=cost_usd))
 
 
 def fire_cap(observer: SessionObserver, cap: CapType, timestamp: int = 5000) -> None:
-    """Publish a ``CapEvent`` of type *cap* at *timestamp*."""
     observer(CapEvent(timestamp=timestamp, cap=cap))
 
 
-def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
-    """Launch, then run a Bash tool start/end cycle at the default timestamps.
+def fire_model_phase(
+    observer: SessionObserver,
+    timestamp: int,
+    phase: str,
+    *,
+    tool_name: str | None = None,
+    parent_tool_use_id: str | None = None,
+) -> None:
+    observer(
+        ModelPhaseEvent(
+            timestamp=timestamp,
+            phase=phase,  # type: ignore[arg-type]
+            tool_name=tool_name,
+            parent_tool_use_id=parent_tool_use_id,
+        )
+    )
 
-    The Bash end is what triggers the reporter's session re-read (see the
-    "session re-read" tests below), so this is the minimum event sequence
-    that gets session state into the loop/best rows.
+
+def fire_thinking_update(
+    observer: SessionObserver,
+    timestamp: int,
+    *,
+    estimated_tokens: int = 100,
+    delta: int = 10,
+    parent_tool_use_id: str | None = None,
+) -> None:
+    observer(
+        ThinkingUpdateEvent(
+            timestamp=timestamp,
+            estimated_tokens=estimated_tokens,
+            delta=delta,
+            parent_tool_use_id=parent_tool_use_id,
+        )
+    )
+
+
+def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
+    """Launch, then run a Bash start/end cycle.
+
+    The Bash end triggers the reporter's session re-read, so this is the
+    minimum event sequence that gets session state into the loop/best rows.
     """
     fire_launch(observer, 1000)
     fire_tool_start(observer, "Bash", "bash-1", 2000)
     fire_tool_end(observer, "Bash", "bash-1", 3000)
+
+
+def fire_launch_and_bash_start(observer: SessionObserver) -> None:
+    """Launch, then start a Bash tool without ending it.
+
+    Used by the in-flight-guard and nested-event tests, which fire a second
+    event on top of the still-running Bash call and assert whether it takes
+    effect or is ignored.
+    """
+    fire_launch(observer, 1000)
+    fire_tool_start(observer, "Bash", "bash-1", 1500)
 
 
 # ---------------------------------------------------------------------------
@@ -284,17 +364,6 @@ def make_reporter(
     clock = Clock(clock_start)
     if read_session is None:
         read_session = make_read_session(empty_session_state(), has_baseline=False)
-    kwargs: dict[str, Any] = {}
-    if max_iterations is not None:
-        kwargs["max_iterations"] = max_iterations
-    if max_usd is not None:
-        kwargs["max_usd"] = max_usd
-    if read_progress is not None:
-        kwargs["read_progress"] = read_progress
-    if plain_write is not None:
-        kwargs["plain_write"] = plain_write
-    if color is not None:
-        kwargs["color"] = color
     reporter = create_supervise_reporter(
         root=root,
         max_minutes=max_minutes,
@@ -305,7 +374,11 @@ def make_reporter(
         session_id=session_id,
         branch=branch,
         tz=tz,
-        **kwargs,
+        max_iterations=max_iterations,
+        max_usd=max_usd,
+        read_progress=read_progress,
+        plain_write=plain_write,
+        color=color,
     )
     return ReporterKit(reporter, clock)
 

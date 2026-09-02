@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import SessionObserver
 
-IDLE_WARN_MS = 180_000
-"""After 3 minutes of no tool activity, the liveness segment turns to "idle"."""
+IDLE_WARN_MS = 30_000
+"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
 
 type CapType = Literal["wall-clock", "spend-cap"]
 
@@ -42,12 +42,17 @@ class ReadSessionResult:
 
 @dataclass(frozen=True, slots=True)
 class SuperviseReporter:
-    """The observer/stop/frame/warn surface that drives the supervise progress display."""
+    """The observer/stop/frame/warn surface that drives the supervise progress display.
+
+    ``session_result`` hands back the session state as of the last re-read, which
+    is what the closing summary reports once the display has stopped.
+    """
 
     observer: SessionObserver
     stop: Callable[[], None]
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
+    session_result: Callable[[], ReadSessionResult | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,18 +64,47 @@ class Starting:
 class InFlight:
     """A tool is currently running, started at ``since``."""
 
+    tool_use_id: str
     tool_name: str
     since: int
     input_summary: str = ""
 
 
 @dataclass(frozen=True, slots=True)
-class Ended:
-    """The last tool finished at ``since`` and nothing is running."""
+class Thinking:
+    """The model is in extended thinking, started at ``since``."""
+
+    since: int
+    estimated_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class Responding:
+    """The model is emitting a response, started at ``since``."""
+
+    since: int
+
+
+@dataclass(frozen=True, slots=True)
+class Composing:
+    """The model is composing a tool call for ``tool_name``, started at ``since``."""
 
     tool_name: str
     since: int
-    result: str
+
+
+@dataclass(frozen=True, slots=True)
+class Waiting:
+    """No tool is running; ``since`` is the timestamp of the last observed activity.
+
+    The ``tool_*`` and ``result`` fields describe the last finished top-level tool.
+    All three are ``None`` when no tool has finished yet.
+    """
+
+    since: int
+    tool_name: str | None = None
+    tool_ended_at: int | None = None
+    result: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +114,7 @@ class Capped:
     cap_type: CapType
 
 
-type Liveness = Starting | InFlight | Ended | Capped
+type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waiting | Capped
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +135,27 @@ class FinishedTool:
     duration_ms: int
     result: str
     ended_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class NestedTool:
+    """A nested subagent tool that is currently running."""
+
+    tool_name: str
+    input_summary: str
+    since: int
+
+
+@dataclass(frozen=True, slots=True)
+class NestedPhase:
+    """A nested subagent model phase (thinking, responding, or tool_input)."""
+
+    phase: str
+    since: int
+    tool_name: str | None = None
+
+
+type NestedActivity = NestedTool | NestedPhase
 
 
 @dataclass(slots=True)
@@ -129,3 +184,7 @@ class ReporterCtx:
     tz: tzinfo | None
     warn_fn: Callable[[str], None]
     live: Live | None
+    nested: dict[str, NestedActivity]
+    nested_tool_ids: dict[str, str]
+    no_color: bool
+    log_path: str

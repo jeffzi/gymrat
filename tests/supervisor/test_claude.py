@@ -10,14 +10,16 @@ attribute-only message objects shaped like the SDK's dataclasses.
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
+from math import ceil
 from types import SimpleNamespace
 from typing import override
 
 import pytest
 
 from gymrat.supervisor import create_claude_driver
-from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
+from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
+    ModelPhaseEvent,
     SessionEvent,
     SessionObserver,
     TextDeltaEvent,
@@ -26,7 +28,6 @@ from gymrat.supervisor.events import (
     ToolStartEvent,
     UsageUpdateEvent,
     summarize,
-    summarize_input,
 )
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
@@ -104,9 +105,24 @@ class Unserializable:
         return "UNSERIALIZABLE"
 
 
-def assistant(*blocks: object) -> SimpleNamespace:
+def assistant(*blocks: object, parent_tool_use_id: str | None = None) -> SimpleNamespace:
     """Build an assistant-style message carrying the given content blocks."""
-    return SimpleNamespace(content=list(blocks))
+    ns = SimpleNamespace(content=list(blocks))
+    if parent_tool_use_id is not None:
+        ns.parent_tool_use_id = parent_tool_use_id
+    return ns
+
+
+def stream_event(
+    event: dict[str, object],
+    *,
+    parent_tool_use_id: str | None = None,
+) -> SimpleNamespace:
+    """Build a stream-event message (has ``event`` dict, no ``content`` or ``total_cost_usd``)."""
+    ns = SimpleNamespace(event=event)
+    if parent_tool_use_id is not None:
+        ns.parent_tool_use_id = parent_tool_use_id
+    return ns
 
 
 async def run_session(
@@ -118,6 +134,20 @@ async def run_session(
     """Start a session and await its settled outcome."""
     session = driver.start(prompt or make_prompt(), observer, abort)
     return await session.outcome
+
+
+async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
+    """Drive a session over scripted ``messages`` and return the events it emitted."""
+    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
+    probe = collecting_observer()
+    await run_session(driver, probe.observer)
+    return probe.events
+
+
+async def run_outcome(messages: Sequence[object]) -> SessionOutcome:
+    """Drive a session over scripted ``messages`` and return its settled outcome."""
+    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
+    return await run_session(driver, collecting_observer().observer)
 
 
 # ---------------------------------------------------------------------------
@@ -154,29 +184,27 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: 
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_launched_does_forward_options_to_client():
+async def _start_with_prompt(prompt: SessionPrompt) -> FakeClient:
+    """Start a session with ``prompt`` and return the client it drove."""
     client = FakeClient([])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
+    await run_session(driver, collecting_observer().observer, prompt)
+    return client
 
-    await run_session(
-        driver,
-        collecting_observer().observer,
-        make_prompt(kickoff="hello agent", cwd="/my/project"),
-    )
 
-    assert client.options == {"cwd": "/my/project", "permission_mode": "bypassPermissions"}
+async def test_start_when_launched_does_forward_options_to_client():
+    client = await _start_with_prompt(make_prompt(kickoff="hello agent", cwd="/my/project"))
+
+    assert client.options == {
+        "cwd": "/my/project",
+        "permission_mode": "bypassPermissions",
+        "include_partial_messages": True,
+    }
     assert client.query_prompt == "hello agent"
 
 
 async def test_start_when_system_prompt_append_present_does_include_preset_append():
-    client = FakeClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    await run_session(
-        driver,
-        collecting_observer().observer,
-        make_prompt(system_prompt_append="extra instructions"),
-    )
+    client = await _start_with_prompt(make_prompt(system_prompt_append="extra instructions"))
 
     assert client.options is not None
     assert client.options["system_prompt"] == {
@@ -187,34 +215,21 @@ async def test_start_when_system_prompt_append_present_does_include_preset_appen
 
 
 async def test_start_when_system_prompt_append_absent_does_omit_system_prompt():
-    client = FakeClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    await run_session(driver, collecting_observer().observer, make_prompt())
+    client = await _start_with_prompt(make_prompt())
 
     assert client.options is not None
     assert "system_prompt" not in client.options
 
 
 async def test_start_when_model_given_does_include_model():
-    client = FakeClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    await run_session(
-        driver,
-        collecting_observer().observer,
-        make_prompt(model="claude-sonnet-4-20250514"),
-    )
+    client = await _start_with_prompt(make_prompt(model="claude-sonnet-4-20250514"))
 
     assert client.options is not None
     assert client.options["model"] == "claude-sonnet-4-20250514"
 
 
 async def test_start_when_model_absent_does_omit_model():
-    client = FakeClient([])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-
-    await run_session(driver, collecting_observer().observer, make_prompt())
+    client = await _start_with_prompt(make_prompt())
 
     assert client.options is not None
     assert "model" not in client.options
@@ -226,31 +241,37 @@ async def test_start_when_model_absent_does_omit_model():
 
 
 async def test_mapping_when_text_block_does_emit_text_delta():
-    driver = create_claude_driver(
-        client_factory=FactoryProbe(FakeClient([assistant(SimpleNamespace(text="hello world"))]))
-    )
-    probe = collecting_observer()
+    events = await run_with_messages([assistant(SimpleNamespace(text="hello world"))])
 
-    await run_session(driver, probe.observer)
-
-    text_events = [e for e in probe.events if isinstance(e, TextDeltaEvent)]
+    text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
     assert len(text_events) == 1
     assert text_events[0].chunk == "hello world"
 
 
 async def test_mapping_when_tool_use_block_does_emit_tool_start():
     tool_use = SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/foo.ts"})
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([assistant(tool_use)])))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages([assistant(tool_use)])
 
-    starts = [e for e in probe.events if isinstance(e, ToolStartEvent)]
+    starts = [e for e in events if isinstance(e, ToolStartEvent)]
     assert len(starts) == 1
     assert starts[0].tool_use_id == "tu_1"
     assert starts[0].tool_name == "Read"
     assert starts[0].input == {"file_path": "/foo.ts"}
-    assert starts[0].input_summary == summarize_input({"file_path": "/foo.ts"})
+    assert starts[0].input_summary == "/foo.ts"
+
+
+async def test_mapping_when_read_path_under_cwd_does_summarize_relative_to_cwd():
+    tool_use = SimpleNamespace(
+        id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"}
+    )
+    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([assistant(tool_use)])))
+    probe = collecting_observer()
+
+    await run_session(driver, probe.observer, make_prompt(cwd="/my/project"))
+
+    starts = [e for e in probe.events if isinstance(e, ToolStartEvent)]
+    assert starts[0].input_summary == "src/main.py"
 
 
 async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name():
@@ -258,12 +279,10 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
         assistant(SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/foo.ts"})),
         assistant(SimpleNamespace(tool_use_id="tu_1", content="file contents here")),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].tool_use_id == "tu_1"
     assert ends[0].tool_name == "Read"
@@ -274,12 +293,10 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
 
 async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_fields():
     orphan = assistant(SimpleNamespace(tool_use_id="tu_orphan", content="result"))
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([orphan])))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages([orphan])
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].tool_name == "unknown"
     assert ends[0].tool_use_id == "tu_orphan"
@@ -292,12 +309,10 @@ async def test_mapping_when_tool_result_content_not_string_does_json_encode():
         assistant(SimpleNamespace(id="tu_3", name="Bash", input={"command": "echo hi"})),
         assistant(SimpleNamespace(tool_use_id="tu_3", content=payload)),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].result == json.dumps(payload)
 
@@ -308,43 +323,366 @@ async def test_mapping_when_tool_result_content_not_json_encodable_does_fall_bac
         assistant(SimpleNamespace(id="tu_c", name="Test", input={})),
         assistant(SimpleNamespace(tool_use_id="tu_c", content=payload)),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    ends = [e for e in probe.events if isinstance(e, ToolEndEvent)]
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
     assert len(ends) == 1
     assert ends[0].result == "UNSERIALIZABLE"
 
 
-async def test_mapping_when_single_thinking_block_does_report_delta_equal_to_estimated_tokens():
-    thinking = assistant(SimpleNamespace(thinking="abcd"))
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([thinking])))
-    probe = collecting_observer()
-
-    await run_session(driver, probe.observer)
-
-    updates = [e for e in probe.events if isinstance(e, ThinkingUpdateEvent)]
-    assert len(updates) == 1
-    assert updates[0].delta == 1
-    assert updates[0].estimated_tokens == 1
-
-
-async def test_mapping_when_multiple_thinking_blocks_does_accumulate_estimated_tokens():
+async def test_mapping_when_single_thinking_block_streamed_does_report_delta_equal_to_estimated_tokens():
     messages = [
-        assistant(SimpleNamespace(thinking="abcd")),
-        assistant(SimpleNamespace(thinking="abcdefgh")),
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "abcd"},
+            }
+        ),
+        stream_event({"type": "content_block_stop"}),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    updates = [e for e in probe.events if isinstance(e, ThinkingUpdateEvent)]
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
     assert len(updates) == 2
-    assert (updates[0].delta, updates[0].estimated_tokens) == (1, 1)
-    assert (updates[1].delta, updates[1].estimated_tokens) == (2, 3)
+    assert updates[0].delta == 0
+    assert updates[0].estimated_tokens == 0
+    assert updates[-1].delta == 1
+    assert updates[-1].estimated_tokens == 1
+
+
+async def test_mapping_when_multiple_thinking_blocks_streamed_does_accumulate_estimated_tokens():
+    messages = [
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "abcd"},
+            }
+        ),
+        stream_event({"type": "content_block_stop"}),
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "abcdefgh"},
+            }
+        ),
+        stream_event({"type": "content_block_stop"}),
+    ]
+
+    events = await run_with_messages(messages)
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    first_block = [u for u in updates if u.estimated_tokens <= 1]
+    second_block_final = updates[-1]
+    assert first_block[-1].estimated_tokens == 1
+    assert second_block_final.estimated_tokens == 3
+
+
+# ---------------------------------------------------------------------------
+# stream events — thinking deltas with throttling
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_when_thinking_delta_short_does_flush_only_on_block_stop():
+    """A delta under 200 chars emits nothing until content_block_stop flushes."""
+    messages = [
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "a" * 100},
+            }
+        ),
+        stream_event({"type": "content_block_stop"}),
+    ]
+
+    events = await run_with_messages(messages)
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    assert updates[-1].estimated_tokens == 25  # ceil(100 / 4)
+
+
+async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block():
+    """A single delta >= 200 chars emits a ThinkingUpdateEvent immediately."""
+    text = "a" * 250
+    messages = [
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": text},
+            }
+        ),
+        stream_event({"type": "content_block_stop"}),
+    ]
+
+    events = await run_with_messages(messages)
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    # block_start (delta=0), mid-block emit, block_stop flush
+    assert len(updates) >= 2
+    final = updates[-1]
+    assert final.estimated_tokens == 63  # ceil(250 / 4)
+
+
+async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count():
+    """Total ThinkingUpdateEvents for a block never exceed ceil(len / 200) + 2."""
+    chunk = "a" * 50
+    num_chunks = 20  # 1000 chars total
+    messages = [
+        stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+    ]
+    for _ in range(num_chunks):
+        messages.append(
+            stream_event(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": chunk},
+                }
+            )
+        )
+    messages.append(stream_event({"type": "content_block_stop"}))
+
+    events = await run_with_messages(messages)
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    max_allowed = ceil(1000 / 200) + 2
+    assert len(updates) <= max_allowed
+    assert updates[-1].estimated_tokens == ceil(1000 / 4)
+
+
+# ---------------------------------------------------------------------------
+# stream events — phase transitions
+# ---------------------------------------------------------------------------
+
+
+_THINKING_BLOCK_MESSAGES = [
+    stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
+    stream_event({"type": "content_block_stop"}),
+]
+_TEXT_BLOCK_MESSAGES = [
+    stream_event({"type": "content_block_start", "content_block": {"type": "text"}}),
+    stream_event({"type": "content_block_stop"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("messages", "expected_phase"),
+    [
+        pytest.param(_THINKING_BLOCK_MESSAGES, "thinking", id="thinking-block-start"),
+        pytest.param(_TEXT_BLOCK_MESSAGES, "responding", id="text-block-start"),
+        pytest.param([stream_event({"type": "message_stop"})], "turn_end", id="message-stop"),
+    ],
+)
+async def test_stream_when_block_start_does_emit_model_phase(
+    messages: list[SimpleNamespace], expected_phase: str
+):
+    events = await run_with_messages(messages)
+
+    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    assert any(p.phase == expected_phase for p in phases)
+
+
+async def test_stream_when_thinking_block_start_does_emit_initial_thinking_update():
+    events = await run_with_messages(_THINKING_BLOCK_MESSAGES)
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    assert len(updates) >= 1
+    assert updates[0].delta == 0
+    assert updates[0].estimated_tokens == 0
+
+
+async def test_stream_when_tool_use_block_start_does_emit_model_phase_tool_input():
+    messages = [
+        stream_event(
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "name": "Read"},
+            }
+        ),
+        stream_event({"type": "content_block_stop"}),
+    ]
+
+    events = await run_with_messages(messages)
+
+    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    tool_phases = [p for p in phases if p.phase == "tool_input"]
+    assert len(tool_phases) == 1
+    assert tool_phases[0].tool_name == "Read"
+
+
+# ---------------------------------------------------------------------------
+# stream events — silent event types
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        pytest.param("text_delta", id="text-delta"),
+        pytest.param("input_json_delta", id="input-json-delta"),
+        pytest.param("signature_delta", id="signature-delta"),
+        pytest.param("message_start", id="message-start"),
+        pytest.param("message_delta", id="message-delta"),
+        pytest.param("totally_unknown_type", id="unrecognized"),
+    ],
+)
+async def test_stream_when_silent_event_type_does_emit_nothing(event_type: str):
+    messages = [stream_event({"type": event_type})]
+
+    events = await run_with_messages(messages)
+
+    assert events == []
+
+
+# ---------------------------------------------------------------------------
+# stream events — per-parent thinking scoping
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_when_subagent_thinking_does_not_inflate_top_level_total():
+    """Each parent_tool_use_id keeps an independent estimated_tokens counter."""
+    messages = [
+        stream_event(
+            {"type": "content_block_start", "content_block": {"type": "thinking"}},
+            parent_tool_use_id=None,
+        ),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "aaaa"},
+            },
+            parent_tool_use_id=None,
+        ),
+        stream_event({"type": "content_block_stop"}, parent_tool_use_id=None),
+        stream_event(
+            {"type": "content_block_start", "content_block": {"type": "thinking"}},
+            parent_tool_use_id="tu_sub",
+        ),
+        stream_event(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "b" * 400},
+            },
+            parent_tool_use_id="tu_sub",
+        ),
+        stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_sub"),
+    ]
+
+    events = await run_with_messages(messages)
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    top = [u for u in updates if u.parent_tool_use_id is None]
+    sub = [u for u in updates if u.parent_tool_use_id == "tu_sub"]
+    assert top[-1].estimated_tokens == 1  # ceil(4 / 4)
+    assert sub[-1].estimated_tokens == 100  # ceil(400 / 4)
+
+
+# ---------------------------------------------------------------------------
+# stream events — parent_tool_use_id propagation
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_when_thinking_block_start_with_parent_does_carry_parent_tool_use_id():
+    messages = [
+        stream_event(
+            {"type": "content_block_start", "content_block": {"type": "thinking"}},
+            parent_tool_use_id="tu_42",
+        ),
+        stream_event({"type": "content_block_stop"}, parent_tool_use_id="tu_42"),
+    ]
+
+    events = await run_with_messages(messages)
+
+    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    assert phases[0].parent_tool_use_id == "tu_42"
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    assert updates[0].parent_tool_use_id == "tu_42"
+
+
+async def test_stream_when_text_block_start_with_parent_does_carry_parent_tool_use_id():
+    messages = [
+        stream_event(
+            {"type": "content_block_start", "content_block": {"type": "text"}},
+            parent_tool_use_id="tu_99",
+        ),
+    ]
+
+    events = await run_with_messages(messages)
+
+    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    assert phases[0].parent_tool_use_id == "tu_99"
+
+
+async def test_stream_when_message_stop_with_parent_does_carry_parent_tool_use_id():
+    messages = [
+        stream_event({"type": "message_stop"}, parent_tool_use_id="tu_end"),
+    ]
+
+    events = await run_with_messages(messages)
+
+    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    assert phases[0].parent_tool_use_id == "tu_end"
+
+
+# ---------------------------------------------------------------------------
+# complete ThinkingBlock — no emission
+# ---------------------------------------------------------------------------
+
+
+async def test_mapping_when_complete_thinking_block_does_not_emit_thinking_update():
+    """A complete ThinkingBlock (has ``thinking`` attr) is ignored — stream deltas counted it."""
+    thinking = assistant(SimpleNamespace(thinking="abcd"))
+
+    events = await run_with_messages([thinking])
+
+    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    assert updates == []
+
+
+async def test_mapping_when_complete_text_block_does_still_emit_text_delta():
+    events = await run_with_messages([assistant(SimpleNamespace(text="hello"))])
+
+    text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+    assert len(text_events) == 1
+    assert text_events[0].chunk == "hello"
+
+
+# ---------------------------------------------------------------------------
+# tool events carry parent_tool_use_id
+# ---------------------------------------------------------------------------
+
+
+async def test_mapping_when_tool_use_with_parent_does_carry_parent_tool_use_id():
+    tool_use = SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/foo.ts"})
+    msg = assistant(tool_use, parent_tool_use_id="tu_parent")
+
+    events = await run_with_messages([msg])
+
+    starts = [e for e in events if isinstance(e, ToolStartEvent)]
+    assert starts[0].parent_tool_use_id == "tu_parent"
+
+
+async def test_mapping_when_tool_result_with_parent_does_carry_parent_tool_use_id():
+    messages = [
+        assistant(
+            SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/foo.ts"}),
+            parent_tool_use_id="tu_parent",
+        ),
+        assistant(
+            SimpleNamespace(tool_use_id="tu_1", content="file contents"),
+            parent_tool_use_id="tu_parent",
+        ),
+    ]
+
+    events = await run_with_messages(messages)
+
+    ends = [e for e in events if isinstance(e, ToolEndEvent)]
+    assert ends[0].parent_tool_use_id == "tu_parent"
 
 
 # ---------------------------------------------------------------------------
@@ -372,12 +710,7 @@ async def test_mapping_when_multiple_thinking_blocks_does_accumulate_estimated_t
     ],
 )
 async def test_mapping_when_message_malformed_does_emit_nothing(message: object):
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([message])))
-    probe = collecting_observer()
-
-    await run_session(driver, probe.observer)
-
-    assert probe.events == []
+    assert await run_with_messages([message]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -392,24 +725,17 @@ async def test_cost_when_results_have_cost_does_emit_usage_update_per_result():
         assistant(SimpleNamespace(text="done")),
         SimpleNamespace(total_cost_usd=0.07),
     ]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    probe = collecting_observer()
 
-    await run_session(driver, probe.observer)
+    events = await run_with_messages(messages)
 
-    usage = [e for e in probe.events if isinstance(e, UsageUpdateEvent)]
+    usage = [e for e in events if isinstance(e, UsageUpdateEvent)]
     assert [e.cost_usd for e in usage] == [0.03, 0.07]
 
 
 async def test_cost_when_no_result_messages_does_not_emit_usage_update():
-    driver = create_claude_driver(
-        client_factory=FactoryProbe(FakeClient([assistant(SimpleNamespace(text="hello"))]))
-    )
-    probe = collecting_observer()
+    events = await run_with_messages([assistant(SimpleNamespace(text="hello"))])
 
-    await run_session(driver, probe.observer)
-
-    assert [e for e in probe.events if isinstance(e, UsageUpdateEvent)] == []
+    assert [e for e in events if isinstance(e, UsageUpdateEvent)] == []
 
 
 # ---------------------------------------------------------------------------
@@ -434,40 +760,42 @@ def _interrupting_observer(
     return observer
 
 
-async def test_interrupt_when_scheduled_on_usage_update_does_report_crossing_cost():
-    client = FakeClient([SimpleNamespace(total_cost_usd=0.15)])
+async def _run_interrupting_on_first_usage_update(
+    messages: Sequence[object],
+) -> tuple[SessionOutcome, FakeClient]:
+    """Drive a session that schedules ``interrupt`` after the first usage update."""
+    client = FakeClient(messages)
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     events: list[SessionEvent] = []
     holder: dict[str, DriverSession] = {}
 
     holder["session"] = driver.start(make_prompt(), _interrupting_observer(events, holder))
     outcome = await holder["session"].outcome
+    return outcome, client
+
+
+async def test_interrupt_when_scheduled_on_usage_update_does_report_crossing_cost():
+    outcome, _client = await _run_interrupting_on_first_usage_update(
+        [SimpleNamespace(total_cost_usd=0.15)]
+    )
 
     assert outcome.reason == "interrupted"
     assert outcome.cost_usd == 0.15
 
 
 async def test_interrupt_when_first_call_wins_does_ignore_later_higher_cost():
-    client = FakeClient([SimpleNamespace(total_cost_usd=0.1), SimpleNamespace(total_cost_usd=0.25)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    events: list[SessionEvent] = []
-    holder: dict[str, DriverSession] = {}
-
-    holder["session"] = driver.start(make_prompt(), _interrupting_observer(events, holder))
-    outcome = await holder["session"].outcome
+    outcome, _client = await _run_interrupting_on_first_usage_update(
+        [SimpleNamespace(total_cost_usd=0.1), SimpleNamespace(total_cost_usd=0.25)]
+    )
 
     assert outcome.reason == "interrupted"
     assert outcome.cost_usd == 0.1
 
 
 async def test_interrupt_when_called_does_soft_stop_without_disconnecting():
-    client = FakeClient([SimpleNamespace(total_cost_usd=0.15)])
-    driver = create_claude_driver(client_factory=FactoryProbe(client))
-    events: list[SessionEvent] = []
-    holder: dict[str, DriverSession] = {}
-
-    holder["session"] = driver.start(make_prompt(), _interrupting_observer(events, holder))
-    await holder["session"].outcome
+    _outcome, client = await _run_interrupting_on_first_usage_update(
+        [SimpleNamespace(total_cost_usd=0.15)]
+    )
 
     assert client.interrupt_called is True
     assert client.disconnect_count == 1  # only the finally teardown, never interrupt itself
@@ -607,18 +935,15 @@ async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
 
 async def test_outcome_when_stream_ends_normally_does_report_completed_with_last_cost():
     messages = [SimpleNamespace(total_cost_usd=0.02), SimpleNamespace(total_cost_usd=0.05)]
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
 
-    outcome = await run_session(driver, collecting_observer().observer)
+    outcome = await run_outcome(messages)
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.05
 
 
 async def test_outcome_when_no_results_does_report_completed_with_zero_cost():
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([])))
-
-    outcome = await run_session(driver, collecting_observer().observer)
+    outcome = await run_outcome([])
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.0
@@ -694,7 +1019,7 @@ async def test_start_when_disconnect_raises_after_normal_stream_does_still_resol
 
 
 # ---------------------------------------------------------------------------
-# B32 — interrupted before client connects
+# start — interrupted before client connects
 # ---------------------------------------------------------------------------
 
 

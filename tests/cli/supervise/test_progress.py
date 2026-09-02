@@ -8,12 +8,13 @@ disk.
 
 **Live mode** tests render ``reporter.frame()`` through ``frame_text()`` from
 ``tests._rich`` at a fixed width, pinning frame content with syrupy snapshots.
-**Plain mode** tests assert on recorded milestone lines. Liveness, idle, sidecar,
+**Plain mode** tests assert on recorded milestone lines. Liveness, waiting, sidecar,
 cap, and non-rendering event tests also live here.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -34,6 +35,9 @@ from tests.cli.supervise._fixtures import (
     fire_cap,
     fire_launch,
     fire_launch_and_bash_cycle,
+    fire_launch_and_bash_start,
+    fire_model_phase,
+    fire_thinking_update,
     fire_tool_end,
     fire_tool_start,
     fire_usage_update,
@@ -43,6 +47,7 @@ from tests.cli.supervise._fixtures import (
     make_reporter,
     render_frame,
     session_state,
+    session_state_three_iterations,
 )
 
 if TYPE_CHECKING:
@@ -60,6 +65,18 @@ def test_create_reporter_when_built_does_expose_frame():
     frame = kit.reporter.frame()
 
     assert frame is not None
+
+
+def test_create_reporter_when_session_read_does_expose_the_latest_session_result():
+    """The closing summary reads the final session state off the reporter."""
+    state = session_state_three_iterations(-4.2, "improved", seq=3)
+    kit = make_reporter(read_session=make_read_session(state, has_baseline=True))
+
+    fire_launch_and_bash_cycle(kit.reporter.observer)
+
+    session_result = kit.reporter.session_result()
+    assert session_result is not None
+    assert session_result.state == state
 
 
 def test_create_reporter_when_color_false_does_build_colorless_console():
@@ -92,12 +109,36 @@ def test_panel_title_when_launched_does_contain_label_session_and_branch(
     assert frame == snapshot
 
 
+def test_panel_title_when_all_identity_empty_does_show_bare_supervise():
+    kit = make_reporter(label="", session_id="", branch="")
+    fire_launch(kit.reporter.observer, 1000)
+
+    frame = render_frame(kit.reporter)
+    title_line = frame.splitlines()[0]
+
+    assert "supervise" in title_line
+    assert "session" not in title_line
+    assert "branch" not in title_line
+
+
+def test_panel_title_when_only_label_present_does_omit_session_and_branch():
+    kit = make_reporter(label="ecstatic-ts", session_id="", branch="")
+    fire_launch(kit.reporter.observer, 1000)
+
+    frame = render_frame(kit.reporter)
+    title_line = frame.splitlines()[0]
+
+    assert "supervise ecstatic-ts" in title_line
+    assert "session" not in title_line
+    assert "branch" not in title_line
+
+
 # ---------------------------------------------------------------------------
 # time bar
 # ---------------------------------------------------------------------------
 
 
-def test_time_bar_when_launched_does_show_elapsed_over_max_minutes(
+def test_time_bar_when_launched_does_show_elapsed_and_cap_in_remaining(
     snapshot: SnapshotAssertion,
 ):
     kit = make_reporter(max_minutes=480, clock_start=1000)
@@ -106,6 +147,24 @@ def test_time_bar_when_launched_does_show_elapsed_over_max_minutes(
 
     frame = render_frame(kit.reporter)
 
+    assert "2h 41m" in frame
+    assert "cap in 5h 19m" in frame
+    assert "eta" not in frame
+    assert "/ 8h" not in frame
+    assert frame == snapshot
+
+
+def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero(
+    snapshot: SnapshotAssertion,
+):
+    kit = make_reporter(max_minutes=60, clock_start=1000)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 1000 + (2 * 3600) * 1000
+
+    frame = render_frame(kit.reporter)
+
+    assert "2h 00m" in frame
+    assert "cap in 0s" in frame
     assert frame == snapshot
 
 
@@ -114,14 +173,14 @@ def test_time_bar_when_launched_does_show_elapsed_over_max_minutes(
 # ---------------------------------------------------------------------------
 
 
-def test_cost_when_no_cap_and_no_usage_does_show_placeholder(snapshot: SnapshotAssertion):
+def test_cost_when_no_cap_and_no_usage_does_show_zero_cost(snapshot: SnapshotAssertion):
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
 
     frame = render_frame(kit.reporter)
 
     assert "cost" in frame
-    assert "$—" in frame
+    assert "$0.00" in frame
     assert frame == snapshot
 
 
@@ -166,7 +225,7 @@ def test_loop_when_read_session_throws_does_show_no_session_yet():
     assert "no session yet" in frame
 
 
-def test_loop_when_baseline_recorded_does_show_baseline_recorded():
+def test_loop_when_baseline_recorded_does_name_the_missing_iterations():
     kit = make_reporter(
         max_iterations=20,
         read_session=make_read_session(empty_session_state(), has_baseline=True),
@@ -175,16 +234,11 @@ def test_loop_when_baseline_recorded_does_show_baseline_recorded():
 
     frame = render_frame(kit.reporter)
 
-    assert "baseline recorded" in frame
+    assert "baseline recorded · no iterations yet" in frame
 
 
 def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: SnapshotAssertion):
-    state = session_state(
-        iteration_count=3,
-        keep_count=2,
-        discard_count=1,
-        last_iteration=make_iteration(-3.2, "improved"),
-    )
+    state = session_state_three_iterations(-3.2, "improved")
     kit = make_reporter(
         max_iterations=20,
         read_session=make_read_session(state, has_baseline=True),
@@ -193,7 +247,7 @@ def test_loop_when_iterations_present_does_show_counts_and_last(snapshot: Snapsh
 
     frame = render_frame(kit.reporter)
 
-    assert "iter 3/20" in frame
+    assert "3/20 iterations" in frame
     assert "2 kept" in frame
     assert "1 discarded" in frame
     assert "-3.2%" in frame
@@ -215,8 +269,8 @@ def test_loop_when_max_iterations_absent_does_omit_the_denominator():
 
     frame = render_frame(kit.reporter)
 
-    assert "iter 2" in frame
-    assert "iter 2/" not in frame
+    assert "2 iterations" in frame
+    assert re.search(r"\d+/\d+ iterations", frame) is None
 
 
 def test_loop_when_last_delta_is_none_does_render_em_dash():
@@ -283,7 +337,7 @@ def test_best_when_no_kept_iteration_does_omit_best_row():
     assert "best" not in frame
 
 
-def test_best_when_kept_iteration_exists_does_show_best_delta_and_seq():
+def test_best_when_kept_iteration_exists_does_show_the_best_row():
     state = session_state(
         iteration_count=3,
         keep_count=1,
@@ -310,8 +364,7 @@ def test_best_when_kept_iteration_exists_does_show_best_delta_and_seq():
 # ---------------------------------------------------------------------------
 
 
-def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_seq():
-    """The best row renders delta, primary label, baseline SHA (7 chars), and seq."""
+def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_iteration():
     state = session_state(
         iteration_count=5,
         keep_count=2,
@@ -336,7 +389,7 @@ def test_best_when_session_has_best_fields_does_show_delta_label_sha_and_seq():
     assert "-6.8%" in frame
     assert "geomean" in frame
     assert "2ec6e05" in frame
-    assert "(seq 3)" in frame
+    assert "(iteration 3)" in frame
 
 
 def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
@@ -360,8 +413,8 @@ def test_best_when_last_kept_differs_from_best_does_show_best_not_last():
 
     frame = render_frame(kit.reporter)
 
-    assert "(seq 3)" in frame
-    assert "(seq 5)" not in frame
+    assert "(iteration 3)" in frame
+    assert "(iteration 5)" not in frame
 
 
 # ---------------------------------------------------------------------------
@@ -607,12 +660,83 @@ def test_liveness_when_untracked_tool_ends_does_not_change():
 
 
 # ---------------------------------------------------------------------------
+# finished tool marks
+# ---------------------------------------------------------------------------
+
+
+def test_finished_tool_when_succeeded_does_not_show_success_mark():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000)
+
+    frame = render_frame(kit.reporter)
+
+    assert "Edit" in frame
+    assert "✔" not in frame
+
+
+def test_finished_tool_when_failed_does_show_error_mark():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/archetype.ts")
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 3000, result="error")
+
+    frame = render_frame(kit.reporter)
+
+    assert "Edit" in frame
+    assert "✗" in frame
+
+
+# ---------------------------------------------------------------------------
+# sub-second finished tool
+# ---------------------------------------------------------------------------
+
+
+def test_finished_tool_when_under_one_second_does_show_less_than_one_second():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary="src/a.ts")
+    kit.clock.now = 2500
+    fire_tool_end(kit.reporter.observer, "Edit", "edit-1", 2500)
+
+    frame = render_frame(kit.reporter)
+
+    assert "<1s" in frame
+
+
+# ---------------------------------------------------------------------------
+# in-flight tool truncation
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    long_summary = "src/" + "/".join(f"level{i}" for i in range(20)) + "/file.ts"
+    fire_tool_start(kit.reporter.observer, "Edit", "edit-1", 2000, input_summary=long_summary)
+    kit.clock.now = 7000
+
+    frame = render_frame(kit.reporter)
+    liveness_lines = [line for line in frame.splitlines() if "Edit" in line]
+
+    assert len(liveness_lines) == 1, f"expected one liveness line, got {liveness_lines}"
+    assert "…" in liveness_lines[0]
+
+
+# ---------------------------------------------------------------------------
 # wall-clock finished-tool lines
 # ---------------------------------------------------------------------------
 
 
 def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
-    """Each finished tool line leads with the UTC completion timestamp.
+    """Wall-clock uses the reporter's timezone.
 
     The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
     string is a fixed UTC value regardless of the host timezone.
@@ -635,7 +759,7 @@ def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
 
 
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
-    """A reporter built without an explicit tz falls back to system-local time.
+    """Falls back to the system's local timezone.
 
     The expected timestamp is computed from the same epoch-to-local conversion
     the implementation should use, so this assertion is the only remaining user
@@ -657,25 +781,11 @@ def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
 
 
 # ---------------------------------------------------------------------------
-# liveness — idle state
+# liveness — waiting state
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_idle_past_threshold_does_show_idle():
-    kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
-    kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
-    kit.clock.now = 3000 + IDLE_WARN_MS + 1
-
-    frame = render_frame(kit.reporter)
-
-    assert "idle" in frame
-
-
-def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
+def test_liveness_when_tool_ends_below_threshold_does_show_waiting():
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -685,35 +795,214 @@ def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
 
     frame = render_frame(kit.reporter)
 
-    assert "idle" not in frame
+    assert "waiting" in frame
+    assert "no output" not in frame
 
 
 # ---------------------------------------------------------------------------
-# idle context — wall-clock and tool glyph
+# above-threshold waiting — last tool context
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_idle_past_threshold_does_show_wall_clock_and_last_tool_context():
-    """Idle line shows wall-clock of last tool end plus tool name and success glyph.
-
-    The format is ``idle 4m 5s — no tool call since HH:MM:SS (last: Bash ✔)``.
-    The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
-    string is a fixed UTC value.
-    """
+@pytest.mark.parametrize(
+    ("result", "expected_fragment"),
+    [
+        pytest.param("ok", "(last tool: Bash at 00:00:03)", id="ok-tool"),
+        pytest.param("error", "(last tool: Bash ✗ at 00:00:03)", id="errored-tool"),
+    ],
+)
+def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
+    result: str, expected_fragment: str
+):
+    """Reporter is built with ``tz=UTC`` so wall-clock is fixed."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
     fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
     kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000, result="ok")
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000, result=result)
     kit.clock.now = 3000 + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
 
-    assert "idle" in frame
-    assert "00:00:03" in frame
+    assert "no output" in frame
+    assert "idle" not in frame
+    assert expected_fragment in frame
+
+
+def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
+    """When no tool has finished, above-threshold waiting shows bare ``no output for Xs``."""
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    fire_model_phase(kit.reporter.observer, 2000, "turn_end")
+    kit.clock.now = 2000 + IDLE_WARN_MS + 1
+
+    frame = render_frame(kit.reporter)
+
+    assert "no output" in frame
+    assert "(last tool" not in frame
+
+
+# ---------------------------------------------------------------------------
+# liveness — model phase transitions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        pytest.param("thinking", "thinking", id="thinking"),
+        pytest.param("responding", "responding", id="responding"),
+        pytest.param("turn_end", "waiting", id="turn_end"),
+    ],
+)
+def test_liveness_when_model_phase_does_show_expected_state(phase: str, expected: str):
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_model_phase(observer, 2000, phase)
+
+    assert expected in render_frame(kit.reporter)
+
+
+def test_liveness_when_model_phase_thinking_after_thinking_update_does_preserve_token_count():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_thinking_update(observer, 1500, estimated_tokens=200)
+    fire_model_phase(observer, 2000, "thinking")
+
+    frame = render_frame(kit.reporter)
+    assert "thinking" in frame
+    assert "200" in frame
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_in_frame"),
+    [
+        pytest.param("Edit", "Edit", id="with-tool-name"),
+        pytest.param(None, "unknown", id="without-tool-name"),
+    ],
+)
+def test_liveness_when_model_phase_tool_input_does_show_preparing(
+    tool_name: str | None, expected_in_frame: str
+):
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_model_phase(observer, 2000, "tool_input", tool_name=tool_name)
+
+    frame = render_frame(kit.reporter)
+    assert "preparing" in frame
+    assert expected_in_frame in frame
+
+
+# ---------------------------------------------------------------------------
+# liveness — model phase ignored when capped or in-flight
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_when_model_phase_while_capped_does_stay_capped():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_cap(observer, "wall-clock")
+
+    fire_model_phase(observer, 6000, "responding")
+
+    frame = render_frame(kit.reporter)
+    assert "interrupting" in frame
+    assert "responding" not in frame
+
+
+def test_liveness_when_model_phase_while_in_flight_does_stay_in_flight():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_model_phase(observer, 2000, "responding")
+
+    assert "Bash" in render_frame(kit.reporter)
+
+
+def test_liveness_when_thinking_update_while_in_flight_does_stay_in_flight():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_thinking_update(observer, 2000, estimated_tokens=100)
+
+    assert "Bash" in render_frame(kit.reporter)
+
+
+def test_liveness_when_thinking_update_while_capped_does_stay_capped():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_cap(observer, "wall-clock")
+    fire_thinking_update(observer, 6000, estimated_tokens=100)
+
+    assert "interrupting" in render_frame(kit.reporter)
+
+
+# ---------------------------------------------------------------------------
+# liveness — nested subagent activity
+# ---------------------------------------------------------------------------
+
+
+def _liveness_lines(frame: str, needle: str) -> list[str]:
+    """Top-level liveness lines containing *needle*, excluding nested (``↳``) lines."""
+    return [line for line in frame.splitlines() if needle in line and "↳" not in line]
+
+
+def test_liveness_when_nested_tool_starts_does_not_change_top_level_liveness():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
+
+    frame = render_frame(kit.reporter)
+    assert len(_liveness_lines(frame, "Bash")) == 1
+
+
+def test_liveness_when_nested_tool_ends_does_not_appear_in_finished_tools():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
+    fire_tool_end(observer, "Read", "nested-read-1", 2500, parent_tool_use_id="bash-1")
+
+    frame = render_frame(kit.reporter)
     assert "Bash" in frame
-    assert "✔" in frame
+    assert "Read" not in frame
+
+
+def test_liveness_when_nested_thinking_update_does_not_change_top_level():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_thinking_update(observer, 2000, estimated_tokens=999, parent_tool_use_id="bash-1")
+
+    assert "Bash" in render_frame(kit.reporter)
+    assert "999" not in render_frame(kit.reporter)
+
+
+def test_liveness_when_nested_model_phase_does_not_change_top_level():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
+
+    frame = render_frame(kit.reporter)
+    assert len(_liveness_lines(frame, "Bash")) == 1
+
+
+def test_liveness_when_nested_event_has_no_matching_parent_does_ignore():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="nonexistent")
+
+    assert "starting" in render_frame(kit.reporter)
+    assert "Read" not in render_frame(kit.reporter)
 
 
 # ---------------------------------------------------------------------------
@@ -795,17 +1084,29 @@ def test_cap_when_fired_does_freeze_liveness_against_later_tool_events():
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_non_tool_events_fired_does_not_crash():
+def test_liveness_when_text_delta_after_launch_does_stay_starting():
     kit = make_reporter()
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
     observer(TextDeltaEvent(timestamp=2500, chunk="hello"))
-    observer(ThinkingUpdateEvent(timestamp=2500, estimated_tokens=100, delta=10))
 
     frame = render_frame(kit.reporter)
 
     assert "starting" in frame
+
+
+def test_liveness_when_thinking_after_launch_does_show_thinking():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+
+    fire_launch(observer, 1000)
+    observer(ThinkingUpdateEvent(timestamp=2500, estimated_tokens=100, delta=10))
+
+    frame = render_frame(kit.reporter)
+
+    assert "thinking" in frame
+    assert "100" in frame
 
 
 def test_liveness_when_tool_progress_after_launch_does_not_crash():
@@ -900,7 +1201,7 @@ def test_plain_when_loop_changes_does_print_loop_segment():
     fire_tool_start(plain.observer, "Bash", "bash-1", 2000)
     fire_tool_end(plain.observer, "Bash", "bash-1", 3000)
 
-    loop_writes = [w for w in plain.writes if "iter 2/20" in w]
+    loop_writes = [w for w in plain.writes if "2/20 iterations" in w]
     assert loop_writes
     assert "+3.2%" in loop_writes[0]
     assert "regressed" in loop_writes[0]
