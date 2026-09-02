@@ -186,3 +186,4 @@ class ReporterCtx:
     live: Live | None
     nested: dict[str, NestedActivity]
     nested_tool_ids: dict[str, str]
+    no_color: bool

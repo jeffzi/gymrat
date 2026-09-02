@@ -319,6 +319,7 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     session_id: str,
     branch: str,
     tz: tzinfo | None,
+    no_color: bool,
 ) -> ReporterCtx:
     return ReporterCtx(
         now=now,
@@ -345,6 +346,7 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         live=None,
         nested={},
         nested_tool_ids={},
+        no_color=no_color,
     )
 
 
@@ -381,6 +383,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         session_id=session_id,
         branch=branch,
         tz=tz,
+        no_color=color is False,
     )
 
     # Live is created after ctx — Rich's Live.__init__ eagerly calls

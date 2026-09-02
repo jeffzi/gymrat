@@ -8,7 +8,7 @@ disk.
 
 **Live mode** tests render ``reporter.frame()`` through ``frame_text()`` from
 ``tests._rich`` at a fixed width, pinning frame content with syrupy snapshots.
-**Plain mode** tests assert on recorded milestone lines. Liveness, idle, sidecar,
+**Plain mode** tests assert on recorded milestone lines. Liveness, waiting, sidecar,
 cap, and non-rendering event tests also live here.
 """
 
@@ -780,25 +780,11 @@ def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
 
 
 # ---------------------------------------------------------------------------
-# liveness — idle state
+# liveness — waiting state
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_idle_past_threshold_does_show_idle():
-    kit = make_reporter()
-    fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
-    kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
-    kit.clock.now = 3000 + IDLE_WARN_MS + 1
-
-    frame = render_frame(kit.reporter)
-
-    assert "idle" in frame
-
-
-def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
+def test_liveness_when_tool_ends_below_threshold_does_show_waiting():
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -808,23 +794,24 @@ def test_liveness_when_tool_ends_below_idle_threshold_does_not_show_idle():
 
     frame = render_frame(kit.reporter)
 
-    assert "idle" not in frame
+    assert "waiting" in frame
+    assert "no output" not in frame
 
 
 # ---------------------------------------------------------------------------
-# idle context — wall-clock and tool glyph
+# above-threshold waiting — last tool context
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("result", "expected_context"),
+    ("result", "expected_fragment"),
     [
-        pytest.param("ok", "(last: Bash)", id="ok-tool"),
-        pytest.param("error", "(last: Bash ✗)", id="errored-tool"),
+        pytest.param("ok", "(last tool: Bash at 00:00:03)", id="ok-tool"),
+        pytest.param("error", "(last tool: Bash ✗ at 00:00:03)", id="errored-tool"),
     ],
 )
-def test_liveness_when_idle_past_threshold_does_show_tool_context(
-    result: str, expected_context: str
+def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
+    result: str, expected_fragment: str
 ):
     """Reporter is built with ``tz=UTC`` so wall-clock is fixed."""
     kit = make_reporter()
@@ -836,8 +823,23 @@ def test_liveness_when_idle_past_threshold_does_show_tool_context(
     kit.clock.now = 3000 + IDLE_WARN_MS + 1
 
     frame = render_frame(kit.reporter)
-    assert "idle" in frame
-    assert expected_context in frame
+
+    assert "no output" in frame
+    assert "idle" not in frame
+    assert expected_fragment in frame
+
+
+def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
+    """When no tool has finished, above-threshold waiting shows bare ``no output for Xs``."""
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    fire_model_phase(kit.reporter.observer, 2000, "turn_end")
+    kit.clock.now = 2000 + IDLE_WARN_MS + 1
+
+    frame = render_frame(kit.reporter)
+
+    assert "no output" in frame
+    assert "(last tool" not in frame
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +883,7 @@ def test_liveness_when_model_phase_thinking_after_thinking_update_does_preserve_
         pytest.param(None, "unknown", id="without-tool-name"),
     ],
 )
-def test_liveness_when_model_phase_tool_input_does_show_composing(
+def test_liveness_when_model_phase_tool_input_does_show_preparing(
     tool_name: str | None, expected_in_frame: str
 ):
     kit = make_reporter()
@@ -890,7 +892,7 @@ def test_liveness_when_model_phase_tool_input_does_show_composing(
     fire_model_phase(observer, 2000, "tool_input", tool_name=tool_name)
 
     frame = render_frame(kit.reporter)
-    assert "composing" in frame
+    assert "preparing" in frame
     assert expected_in_frame in frame
 
 
@@ -945,15 +947,19 @@ def test_liveness_when_thinking_update_while_capped_does_stay_capped():
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_when_nested_tool_starts_does_not_appear_in_frame():
+def _liveness_lines(frame: str, needle: str) -> list[str]:
+    """Top-level liveness lines containing *needle*, excluding nested (``↳``) lines."""
+    return [line for line in frame.splitlines() if needle in line and "↳" not in line]
+
+
+def test_liveness_when_nested_tool_starts_does_not_change_top_level_liveness():
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch_and_bash_start(observer)
     fire_tool_start(observer, "Read", "nested-read-1", 2000, parent_tool_use_id="bash-1")
 
     frame = render_frame(kit.reporter)
-    assert "Bash" in frame
-    assert "Read" not in frame
+    assert len(_liveness_lines(frame, "Bash")) == 1
 
 
 def test_liveness_when_nested_tool_ends_does_not_appear_in_finished_tools():
@@ -984,8 +990,8 @@ def test_liveness_when_nested_model_phase_does_not_change_top_level():
     fire_launch_and_bash_start(observer)
     fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
 
-    assert "Bash" in render_frame(kit.reporter)
-    assert "responding" not in render_frame(kit.reporter)
+    frame = render_frame(kit.reporter)
+    assert len(_liveness_lines(frame, "Bash")) == 1
 
 
 def test_liveness_when_nested_event_has_no_matching_parent_does_ignore():

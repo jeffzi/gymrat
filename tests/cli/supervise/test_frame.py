@@ -24,9 +24,13 @@ from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     IDLE_WARN_MS,
+    ReporterKit,
     fire_cap,
     fire_launch,
     fire_launch_and_bash_cycle,
+    fire_launch_and_bash_start,
+    fire_model_phase,
+    fire_thinking_update,
     fire_tool_end,
     fire_tool_start,
     fire_usage_update,
@@ -100,6 +104,29 @@ def _assert_has_sgr(lines: list[str], code: int) -> None:
     """Assert *lines* is non-empty and at least one line carries SGR *code*."""
     assert lines
     assert any(_has_sgr(line, code) for line in lines)
+
+
+def _line_after(frame: str, needle: str) -> str:
+    """Return the line immediately following the first line containing *needle*."""
+    lines = frame.splitlines()
+    idx = next(i for i, line in enumerate(lines) if needle in line)
+    return lines[idx + 1]
+
+
+def _assert_is_nested_line(line: str) -> None:
+    """A nested subagent line is marked with an arrow (``↳`` or its ASCII fallback)."""
+    assert "↳" in line or "->" in line
+
+
+def _fire_waiting_bash_cycle(kit: ReporterKit, *, above_threshold: bool = False) -> None:
+    """Launch, then run a Bash start/end cycle, optionally idling past the warn threshold."""
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
+    if above_threshold:
+        kit.clock.now = 3000 + IDLE_WARN_MS + 1
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +324,7 @@ def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout(
     kit.clock.now = 7000
 
     plain = render_frame(kit.reporter)
-    bash_lines = [line for line in plain.splitlines() if "Bash" in line]
+    bash_lines = _lines_containing(plain, "Bash")
 
     assert bash_lines, "expected at least one line containing 'Bash'"
     inflight_line = bash_lines[0]
@@ -308,19 +335,88 @@ def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout(
     assert "5s" in inflight_line
 
 
-def test_liveness_idle_when_rendered_with_color_does_emit_yellow_styling():
+def test_liveness_responding_when_rendered_with_color_does_emit_dim_styling():
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
-    kit.clock.now = 2000
-    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
-    kit.clock.now = 3000
-    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
-    kit.clock.now = 3000 + IDLE_WARN_MS + 1
+    fire_model_phase(kit.reporter.observer, 2000, "responding")
 
     colored = _render_content_colored(kit.reporter)
-    idle_lines = _lines_containing(colored, "idle")
+    responding_lines = _lines_containing(colored, "responding")
 
-    _assert_has_sgr(idle_lines, _SGR_YELLOW)
+    _assert_has_sgr(responding_lines, _SGR_DIM)
+
+
+def test_liveness_composing_when_rendered_with_color_does_emit_dim_styling():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    fire_model_phase(kit.reporter.observer, 2000, "tool_input", tool_name="Edit")
+
+    colored = _render_content_colored(kit.reporter)
+    preparing_lines = _lines_containing(colored, "preparing")
+
+    _assert_has_sgr(preparing_lines, _SGR_DIM)
+
+
+def test_liveness_waiting_when_below_threshold_rendered_with_color_does_emit_dim_styling():
+    kit = make_reporter()
+    _fire_waiting_bash_cycle(kit)
+
+    colored = _render_content_colored(kit.reporter)
+    waiting_lines = _lines_containing(colored, "waiting")
+
+    _assert_has_sgr(waiting_lines, _SGR_DIM)
+
+
+def test_liveness_waiting_when_above_threshold_rendered_with_color_does_emit_yellow_styling():
+    kit = make_reporter()
+    _fire_waiting_bash_cycle(kit, above_threshold=True)
+
+    colored = _render_content_colored(kit.reporter)
+    no_output_lines = _lines_containing(colored, "no output")
+
+    _assert_has_sgr(no_output_lines, _SGR_YELLOW)
+
+
+@pytest.mark.parametrize(
+    ("phase", "needle"),
+    [
+        pytest.param("responding", "responding", id="responding"),
+        pytest.param("tool_input", "preparing", id="composing-as-preparing"),
+    ],
+)
+def test_liveness_phase_when_color_off_does_not_emit_sgr(phase: str, needle: str):
+    kit = make_reporter(color=False)
+    fire_launch(kit.reporter.observer, 1000)
+    tool_name = "Edit" if phase == "tool_input" else None
+    fire_model_phase(kit.reporter.observer, 2000, phase, tool_name=tool_name)
+
+    colored = _render_content_colored(kit.reporter)
+    phase_lines = _lines_containing(colored, needle)
+
+    assert phase_lines
+    assert not any("\x1b[" in line for line in phase_lines)
+
+
+def test_liveness_waiting_when_below_threshold_color_off_does_not_emit_sgr():
+    kit = make_reporter(color=False)
+    _fire_waiting_bash_cycle(kit)
+
+    colored = _render_content_colored(kit.reporter)
+    waiting_lines = _lines_containing(colored, "waiting")
+
+    assert waiting_lines
+    assert not any("\x1b[" in line for line in waiting_lines)
+
+
+def test_liveness_waiting_when_above_threshold_color_off_does_not_emit_sgr():
+    kit = make_reporter(color=False)
+    _fire_waiting_bash_cycle(kit, above_threshold=True)
+
+    colored = _render_content_colored(kit.reporter)
+    no_output_lines = _lines_containing(colored, "no output")
+
+    assert no_output_lines
+    assert not any("\x1b[" in line for line in no_output_lines)
 
 
 def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
@@ -405,6 +501,190 @@ def test_finished_tool_line_when_failed_does_emit_dim_red_styling():
 
     _assert_has_sgr(edit_lines, _SGR_RED)
     _assert_has_sgr(edit_lines, _SGR_DIM)
+
+
+# ---------------------------------------------------------------------------
+# nested subagent line
+# ---------------------------------------------------------------------------
+
+
+def test_nested_tool_when_in_flight_does_render_arrow_line_under_parent():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    fire_tool_start(
+        observer,
+        "Read",
+        "nested-read-1",
+        2000,
+        parent_tool_use_id="bash-1",
+        input_summary="src/config.ts",
+    )
+    kit.clock.now = 5000
+
+    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+
+    _assert_is_nested_line(nested_line)
+    assert "Read" in nested_line
+    assert "src/config.ts" in nested_line
+    assert "3s" in nested_line
+
+
+def test_nested_phase_when_thinking_does_render_arrow_line_with_thinking():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    fire_model_phase(observer, 2000, "thinking", parent_tool_use_id="bash-1")
+    kit.clock.now = 4000
+
+    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+
+    _assert_is_nested_line(nested_line)
+    assert "thinking" in nested_line
+    assert "2s" in nested_line
+
+
+def test_nested_phase_when_responding_does_render_arrow_line_with_responding():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    fire_model_phase(observer, 2000, "responding", parent_tool_use_id="bash-1")
+    kit.clock.now = 3000
+
+    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+
+    _assert_is_nested_line(nested_line)
+    assert "responding" in nested_line
+
+
+def test_nested_phase_when_composing_does_render_arrow_line_with_preparing():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    fire_model_phase(observer, 2000, "tool_input", tool_name="Edit", parent_tool_use_id="bash-1")
+    kit.clock.now = 3000
+
+    nested_line = _line_after(render_frame(kit.reporter), "Bash")
+
+    _assert_is_nested_line(nested_line)
+    assert "preparing" in nested_line
+    assert "Edit" in nested_line
+
+
+def test_nested_when_no_activity_does_not_render_arrow_line():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(observer, "Bash", "bash-1", 2000, input_summary="gymrat iterate")
+    kit.clock.now = 5000
+
+    frame = render_frame(kit.reporter)
+
+    assert "↳" not in frame
+    assert "->" not in frame or "gymrat" in frame
+
+
+def test_nested_tool_when_rendered_with_color_does_emit_dim_styling():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch_and_bash_start(observer)
+    kit.clock.now = 2000
+    fire_tool_start(
+        observer,
+        "Read",
+        "nested-read-1",
+        2000,
+        parent_tool_use_id="bash-1",
+        input_summary="src/config.ts",
+    )
+    kit.clock.now = 5000
+
+    colored = _render_content_colored(kit.reporter)
+    nested_lines = _lines_containing(colored, "config.ts")
+
+    _assert_has_sgr(nested_lines, _SGR_DIM)
+
+
+# ---------------------------------------------------------------------------
+# tool-name column width — nested tools excluded
+# ---------------------------------------------------------------------------
+
+
+def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_width():
+    """Nested tool names do not widen the tool-name column."""
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+
+    kit.clock.now = 2000
+    fire_tool_start(observer, "Bash", "bash-1", 2000, input_summary="run tests")
+    kit.clock.now = 2500
+    fire_tool_start(
+        observer,
+        "LongNestedToolName",
+        "nested-1",
+        2500,
+        parent_tool_use_id="bash-1",
+        input_summary="something",
+    )
+    kit.clock.now = 3000
+
+    frame = render_frame(kit.reporter)
+    bash_lines = _lines_containing(frame, "Bash")
+
+    assert bash_lines
+    assert "LongNestedToolName" not in bash_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# no token count on non-Thinking states
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_responding_when_rendered_does_not_show_token_count():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_thinking_update(observer, 1500, estimated_tokens=500)
+    fire_model_phase(observer, 2000, "responding")
+
+    frame = render_frame(kit.reporter)
+
+    assert "responding" in frame
+    assert "500" not in frame
+
+
+def test_liveness_composing_when_rendered_does_not_show_token_count():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_thinking_update(observer, 1500, estimated_tokens=500)
+    fire_model_phase(observer, 2000, "tool_input", tool_name="Edit")
+
+    frame = render_frame(kit.reporter)
+
+    assert "preparing" in frame
+    assert "500" not in frame
+
+
+# ---------------------------------------------------------------------------
+# no "idle" anywhere in frame
+# ---------------------------------------------------------------------------
+
+
+def test_frame_when_any_state_does_never_contain_idle():
+    """The word 'idle' must not appear in the frame for any liveness state."""
+    kit = make_reporter()
+    _fire_waiting_bash_cycle(kit, above_threshold=True)
+
+    frame = render_frame(kit.reporter)
+
+    assert "idle" not in frame
 
 
 # ---------------------------------------------------------------------------

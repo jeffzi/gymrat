@@ -30,6 +30,8 @@ from gymrat.cli.supervise.state import (
     Composing,
     FinishedTool,
     InFlight,
+    NestedPhase,
+    NestedTool,
     ReadSessionResult,
     ReporterCtx,
     Responding,
@@ -199,27 +201,28 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
     return text
 
 
-def _build_waiting_text(
-    ago: int, last_tool_name: str | None, last_tool_at: int, result: str | None, tz: tzinfo | None
-) -> Text:
+def _style_unless_no_color(style: str, *, no_color: bool) -> str:
+    """Rich style string, or empty when the frame is rendered without color."""
+    return "" if no_color else style
+
+
+def _build_waiting_text(waiting: Waiting, now: int, tz: tzinfo | None, *, no_color: bool) -> Text:
+    ago = now - waiting.since
     if ago < IDLE_WARN_MS:
-        return Text(f"  waiting  {format_duration(ago)}", style=STYLE_PENDING)
-    if last_tool_name is None:
-        return Text(f"idle {format_duration(ago)}", style=STYLE_ALERT)
-    clock = _format_wall_clock(last_tool_at, tz)
-    last_ref = (
-        f"(last: {last_tool_name} {GLYPH_ERROR})"
-        if result == "error"
-        else f"(last: {last_tool_name})"
-    )
-    return Text(
-        f"idle {format_duration(ago)} — last tool at {clock} {last_ref}",
-        style=STYLE_ALERT,
-    )
+        style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
+        return Text(f"  waiting  {format_duration(ago)}", style=style)
+    style = _style_unless_no_color(STYLE_ALERT, no_color=no_color)
+    if waiting.tool_name is None:
+        return Text(f"no output for {format_duration(ago)}", style=style)
+    at = waiting.tool_ended_at if waiting.tool_ended_at is not None else waiting.since
+    clock = _format_wall_clock(at, tz)
+    mark = f" {GLYPH_ERROR}" if waiting.result == "error" else ""
+    label = f"(last tool: {waiting.tool_name}{mark} at {clock})"
+    return Text(f"no output for {format_duration(ago)} {label}", style=style)
 
 
 def _build_liveness_text(
-    liveness: Liveness, now: int, tz: tzinfo | None, *, tool_col: int
+    liveness: Liveness, now: int, tz: tzinfo | None, *, tool_col: int, no_color: bool
 ) -> Text | None:
     match liveness:
         case Starting():
@@ -238,13 +241,13 @@ def _build_liveness_text(
         case Responding(since=since) | Composing(since=since):
             elapsed = format_duration(now - since)
             if isinstance(liveness, Composing):
-                label = f"composing {liveness.tool_name}"
+                label = f"preparing {liveness.tool_name}"
             else:
                 label = "responding"
-            return Text(f"  {label}  {elapsed}", style=STYLE_PENDING)
-        case Waiting(since=since, tool_name=name, tool_ended_at=ended_at, result=result):
-            last_tool_at = ended_at if ended_at is not None else since
-            return _build_waiting_text(now - since, name, last_tool_at, result, tz)
+            style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
+            return Text(f"  {label}  {elapsed}", style=style)
+        case Waiting():
+            return _build_waiting_text(liveness, now, tz, no_color=no_color)
         case Capped(cap_type=cap_type):
             return Text(f"interrupting ({cap_type})", style=STYLE_ALERT)
         case _:  # pragma: no cover - exhaustive over the liveness union
@@ -310,18 +313,43 @@ def _tool_name_column_width(ctx: ReporterCtx) -> int:
     return max(_MIN_TOOL_NAME_WIDTH, min(raw, _MAX_TOOL_NAME_WIDTH))
 
 
+def _build_nested_activity_line(activity: NestedTool | NestedPhase, now: int) -> Text:
+    """Build a dim ``↳`` line for nested subagent activity."""
+    elapsed = format_duration(now - activity.since)
+    if isinstance(activity, NestedTool):
+        content = f"    ↳ {activity.tool_name} {activity.input_summary}  {elapsed}"
+    else:
+        match activity.phase:
+            case "tool_input":
+                tool = activity.tool_name or "unknown"
+                label = f"preparing {tool}"
+            case "responding":
+                label = "responding"
+            case _:
+                label = "thinking"
+        content = f"    ↳ {label}  {elapsed}"
+    return Text(content, style=STYLE_META, no_wrap=True, overflow="ellipsis")
+
+
 def _build_liveness_table(ctx: ReporterCtx, now: int, *, tool_col: int) -> Table:
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
-    liveness_text = _build_liveness_text(ctx.liveness, now, ctx.tz, tool_col=tool_col)
+    liveness_text = _build_liveness_text(
+        ctx.liveness, now, ctx.tz, tool_col=tool_col, no_color=ctx.no_color
+    )
     if liveness_text is not None:
         liveness_table.add_row(liveness_text)
 
-    if isinstance(ctx.liveness, InFlight) and _is_iterate_tool(ctx.liveness):
-        sidecar = ctx.read_progress_fn(ctx.root)
-        nest_text = _build_iterate_nest(sidecar, now, ctx.liveness.since)
-        if nest_text is not None:
-            liveness_table.add_row(Text(f"  {nest_text}", style=STYLE_META))
+    if isinstance(ctx.liveness, InFlight):
+        if _is_iterate_tool(ctx.liveness):
+            sidecar = ctx.read_progress_fn(ctx.root)
+            nest_text = _build_iterate_nest(sidecar, now, ctx.liveness.since)
+            if nest_text is not None:
+                liveness_table.add_row(Text(f"  {nest_text}", style=STYLE_META))
+
+        nested = ctx.nested.get(ctx.liveness.tool_use_id)
+        if nested is not None:
+            liveness_table.add_row(_build_nested_activity_line(nested, now))
 
     for tool in reversed(ctx.finished_tools):
         liveness_table.add_row(_build_finished_tool_line(tool, ctx.tz, tool_col=tool_col))
