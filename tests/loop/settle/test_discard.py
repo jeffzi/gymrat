@@ -271,6 +271,7 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
     start_with(repo, history)
     edit_experiment(repo)
     records_before = len(read_records(session_jsonl_path(repo)))
+    baseline_sha = head_of(baseline_worktree_dir(repo))
 
     result = discard_session(repo)
 
@@ -281,15 +282,6 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
     assert len(read_records(session_jsonl_path(repo))) == records_before
     assert result.record is None
     assert ISO_PATTERN.match(result.at)
-
-
-def test_discard_session_when_nothing_measured_and_dirty_does_report_count_and_sha(repo: str):
-    start_with(repo, ())
-    edit_experiment(repo)
-    baseline_sha = head_of(baseline_worktree_dir(repo))
-
-    result = discard_session(repo)
-
     assert (
         result.report
         == f"Reverted 2 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"
@@ -326,7 +318,7 @@ def test_discard_session_when_nothing_measured_and_clean_does_refuse(
     start_with(repo, history)
     before = len(read_records(session_jsonl_path(repo)))
 
-    with pytest.raises(GymratError):
+    with pytest.raises(GymratError, match="Discard refused"):
         discard_session(repo)
 
     assert len(read_records(session_jsonl_path(repo))) == before

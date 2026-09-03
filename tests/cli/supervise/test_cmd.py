@@ -28,6 +28,7 @@ from gymrat.cli.shared import write_and_flush
 from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
 from gymrat.config import BenchlessConfig, StopConfig
 from gymrat.errors import GymratError
+from gymrat.loop.start import start_session
 from gymrat.session import append_record
 from gymrat.session.paths import (
     experiment_worktree_dir,
@@ -366,8 +367,6 @@ def test_supervise_when_untracked_directory_dirty_does_count_its_files(
 
 def _start_open_session(repo: str) -> None:
     """Start a gymrat session so the experiment worktree and session log exist."""
-    from gymrat.loop.start import start_session
-
     start_session(repo, "main", resolved_config())
 
 

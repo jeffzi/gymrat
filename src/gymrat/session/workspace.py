@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gymrat.errors import GymratError, stderr_text_of
-from gymrat.git import repository_lookup_error, run_git, try_git
+from gymrat.git import SHORT_SHA_LENGTH, repository_lookup_error, run_git, try_git
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
     baseline_worktree_dir,
@@ -24,9 +24,6 @@ BRANCH_PREFIX = "gymrat/"
 # Hint repeated by every git step whose failure leaves the worktree worth
 # inspecting as-is.
 INSPECT_STATUS_HINT = "Inspect what is standing there with: git status"
-
-# Matches SHORT_SHA_LENGTH in report.loop (not imported to avoid a cycle).
-_ERROR_SHA_LENGTH = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,17 +300,7 @@ def is_worktree_dirty(directory: str) -> bool:
     carries no uncommitted work anyone can still act on, and refusing to finalize
     over a directory that cannot be inspected would strand the session.
     """
-    if not _is_directory(directory):
-        return False
-    return (
-        run_git_step(
-            ["status", "--porcelain"],
-            directory,
-            f"Cannot read the status of the worktree at {directory}",
-            INSPECT_STATUS_HINT,
-        ).strip()
-        != ""
-    )
+    return dirty_file_count(directory) > 0
 
 
 def dirty_file_count(directory: str) -> int:
@@ -349,7 +336,7 @@ def changed_file_count(directory: str, target: str) -> int:
     tracked = _git_lines(
         ["diff", "--name-only", target],
         directory,
-        f"Cannot diff the worktree at {directory} against {target[:_ERROR_SHA_LENGTH]}",
+        f"Cannot diff the worktree at {directory} against {target[:SHORT_SHA_LENGTH]}",
         INSPECT_STATUS_HINT,
     )
 

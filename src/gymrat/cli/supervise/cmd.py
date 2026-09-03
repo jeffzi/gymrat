@@ -48,8 +48,8 @@ from gymrat.session.paths import (
     session_jsonl_path,
     supervise_lockfile_path,
 )
-from gymrat.session.store import fold_session, read_records
-from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
+from gymrat.session.store import fold_session, last_kept_position, read_records
+from gymrat.session.workspace import changed_file_count, dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
     KickoffResult,
@@ -110,22 +110,23 @@ def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
 
 
 def _validate_experiment_worktree(root: str) -> None:
-    """Refuse to launch when the experiment worktree has uncommitted changes.
+    """Refuse to launch when the experiment worktree has unmeasured changes.
 
-    An unsettled iteration needs settling first; unmeasured edits need measuring
-    or reverting. The check runs regardless of ``--allow-dirty``, which covers
-    only the main working tree.
+    An unsettled iteration needs settling first; unmeasured edits — committed or
+    still uncommitted — need measuring or reverting. The check runs regardless of
+    ``--allow-dirty``, which covers only the main working tree.
     """
     records = read_records(session_jsonl_path(root))
     if not records:
         return
 
     state = fold_session(records)
-    if state.finalized is not None:
+    if state.finalized is not None or state.session is None:
         return
 
     worktree = experiment_worktree_dir(root)
-    count = dirty_file_count(worktree)
+    target = last_kept_position(state, state.session.baseline.sha)
+    count = changed_file_count(worktree, target)
     if count == 0:
         return
 

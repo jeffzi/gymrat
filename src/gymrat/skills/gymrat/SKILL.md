@@ -167,7 +167,8 @@ and `discard` reverts the edit.
     edit, `discard` resets the experiment worktree to the last kept position and records nothing.
     The revert destroys the edit with no way back, so save anything worth keeping first
     (`git -C .gymrat/worktrees/experiment diff HEAD > <file>`, plus a copy of any untracked files —
-    or `git -C .gymrat/worktrees/experiment stash create` to capture both in one object).
+    or, for a single object covering both, `git -C .gymrat/worktrees/experiment stash push -u -m
+    <label>`, then pop it back manually when ready).
 
 - **Scoped verdict**, only when a probe is too close to call:
 

@@ -10,13 +10,14 @@ Three states accept a discard:
    still in the worktree.  Same as (1), with the discard numbered past the block.
 
 3. **Unmeasured edit** — nothing has been measured since the last settle (or since the
-   session started), but the worktree is dirty.  The worktree is reverted silently:
-   no record is appended, because there is no iteration to settle, and the log
-   should not accumulate bookkeeping entries that carry no measurement.  The result
-   carries ``record=None``.
+   session started), but the worktree differs from the last kept position, whether
+   that difference is committed or still uncommitted.  The worktree is reverted
+   silently: no record is appended, because there is no iteration to settle, and the
+   log should not accumulate bookkeeping entries that carry no measurement.  The
+   result carries ``record=None``.
 
-A clean worktree with nothing measured is refused — there is genuinely nothing to
-throw away.
+A worktree that already matches the last kept position, with nothing measured, is
+refused — there is genuinely nothing to throw away.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ from gymrat.session.store import (
 )
 from gymrat.session.workspace import (
     changed_file_count,
-    dirty_file_count,
     revert_workspace,
     worktree_head,
 )
@@ -65,8 +65,9 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
 
     Raises:
         GymratError: When no session has been started, when neither a measured
-            iteration nor a dirty worktree gives something to throw away, or when
-            git refuses to revert the worktree.
+            iteration nor a worktree that has changed since the last kept
+            position gives something to throw away, or when git refuses to
+            revert the worktree.
     """
     required = require_open_session(root, "settling an edit")
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
@@ -118,9 +119,11 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
 
 
 def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardResult:
-    """Revert a dirty experiment worktree that has no measured iteration to settle."""
+    """Revert an experiment worktree that has no measured iteration to settle."""
     experiment = session.worktrees.experiment
-    if dirty_file_count(experiment) == 0:
+    target = _revert_target(state, session.baseline.sha, experiment)
+    n_changed = changed_file_count(experiment, target)
+    if n_changed == 0:
         nothing_message = (
             "Discard refused: nothing has been measured since the last keep or discard."
         )
@@ -129,8 +132,6 @@ def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardR
             hint="Run gymrat iterate to measure an edit before settling it.",
         )
 
-    target = _revert_target(state, session.baseline.sha, experiment)
-    n_changed = changed_file_count(experiment, target)
     revert_workspace(experiment, target=target)
 
     return DiscardResult(
