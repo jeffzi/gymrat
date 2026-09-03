@@ -114,11 +114,26 @@ class TextDeltaEvent(_EventModel):
 
 
 class UsageUpdateEvent(_EventModel):
-    """Emitted when the driver observes updated cumulative cost."""
+    """Emitted when the driver observes updated cumulative cost.
+
+    ``settled`` marks a usage update carried by a result message that has
+    already settled the session on its own; a spend-cap observer must not
+    treat it as a live crossing of the cap, since the session is ending
+    regardless. Omitted from the wire form when ``False`` (the common case),
+    matching the shipped log format.
+    """
 
     type: Literal["usage_update"] = "usage_update"
     timestamp: int
     cost_usd: float
+    settled: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_unsettled(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        data: dict[str, object] = handler(self)
+        if not self.settled:
+            data.pop("settled", None)
+        return data
 
 
 class CapEvent(_EventModel):

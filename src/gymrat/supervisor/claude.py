@@ -285,26 +285,21 @@ class _ClaudeSession:
 
         # A result message carries both ``subtype`` and ``num_turns``; a
         # system message has ``subtype`` alone and is silently passed through.
-        # Checked ahead of the usage emit below: a result settles the session
-        # on its own, so its cost must never also be routed through the
-        # observer, where a spend-cap callback would treat it as a live
-        # threshold crossing the session has already outrun.
+        # Checked ahead of the usage handling below: a result settles the
+        # session on its own, so ``_result_outcome`` is set here rather than
+        # falling through to the content-block dispatch.
         subtype = getattr(message, "subtype", None)
         num_turns = getattr(message, "num_turns", None)
         if isinstance(subtype, str) and num_turns is not None:
             cost = self._read_cost(message)
             if cost is not None:
-                self._cost_usd = cost
+                self._commit_cost(cost, settled=True)
             self._result_outcome = self._result_outcome_from(message, subtype)
             return
 
         cost = self._read_cost(message)
         if cost is not None:
-            # Commit the cost before notifying observers: a spend-cap
-            # callback reads self._cost_usd synchronously and must see the
-            # value that just crossed the threshold.
-            self._cost_usd = cost
-            self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd))
+            self._commit_cost(cost)
 
         parent = getattr(message, "parent_tool_use_id", None)
         content = getattr(message, "content", None)
@@ -317,6 +312,19 @@ class _ClaudeSession:
         if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
             return float(cost)
         return None
+
+    def _commit_cost(self, cost: float, *, settled: bool = False) -> None:
+        """Set the running cost and notify observers.
+
+        Commits before notifying: a spend-cap callback reads ``self._cost_usd``
+        synchronously and must see the value that just crossed the threshold.
+        ``settled`` marks a result message settling the session on its own, so
+        a spend-cap observer does not mistake it for a live cap crossing.
+        """
+        self._cost_usd = cost
+        self._observer(
+            UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd, settled=settled)
+        )
 
     def _result_outcome_from(self, message: object, subtype: str) -> SessionOutcome:
         """Classify a settled result message as completed or errored."""

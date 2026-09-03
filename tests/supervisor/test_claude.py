@@ -978,15 +978,26 @@ async def test_result_when_is_error_does_settle_error(
     assert outcome.message == expected_message
 
 
+async def test_result_when_message_settles_and_has_cost_does_emit_usage_update():
+    messages = [result_message(total_cost_usd=0.05)]
+    probe = collecting_observer()
+
+    await run_outcome(FakeClient(messages), probe.observer)
+
+    updates = events_of(probe.events, UsageUpdateEvent)
+    assert [update.cost_usd for update in updates] == [0.05]
+
+
 @pytest.mark.parametrize(
     "cost",
     [
-        pytest.param(0.05, id="positive-cost"),
         pytest.param(None, id="none-cost"),
         pytest.param(0.0, id="zero-cost"),
     ],
 )
-async def test_result_when_message_settles_does_not_emit_usage_update(cost: float | None):
+async def test_result_when_message_settles_without_cost_does_not_emit_usage_update(
+    cost: float | None,
+):
     messages = [result_message(total_cost_usd=cost)]
     probe = collecting_observer()
 
