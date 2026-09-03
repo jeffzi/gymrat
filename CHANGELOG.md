@@ -7,24 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-03
+
 ### Changed
 
-- `gymrat discard` reverts unmeasured edits in the experiment worktree instead of refusing;
-  `--format json` gains a `measured` field and reports `seq` as `null` for an unmeasured revert.
+- `gymrat discard --format json` adds a `measured` field and reports `seq` as `null` for an
+  unmeasured revert.
 
 ### Fixed
 
+- `gymrat discard` now reverts unmeasured edits in the experiment worktree instead of refusing.
 - Supervised sessions now end when the agent finishes — or would have stopped to ask a question —
-  instead of streaming idle until the wall-clock cap fires.
-- The closing summary shows the agent's final message when the session ends on its own.
-- `supervise` refuses to launch when the experiment worktree has uncommitted changes.
+  instead of streaming idle until the wall-clock cap fires, and the closing summary shows the
+  agent's final message.
+- `supervise` refuses to launch when the experiment worktree has moved past the last kept commit,
+  whether through an unsettled iteration, a blocked keep, or unmeasured edits, committed or not,
+  regardless of `--allow-dirty`.
+- The spend cap no longer fires on a supervised session that is already ending on its own.
+- A `gymrat` command blocked by the repository lock now reports the holder's process, command, and
+  start time reliably instead of incomplete or stale details.
 
 ## [0.12.0] - 2026-09-02
 
 ### Added
 
-- Windows support for the optimization session: `start`, `iterate`, `keep`, `discard`,
-  `finalize`, and `status` now run on Windows.
+- Windows support.
 - `gymrat sync` copies uncommitted main-tree changes into the experiment worktree, refusing when
   that worktree has conflicting uncommitted changes.
 - `iterate`, `keep`, `discard`, and `status` accept `--format json`, with the same stable,
@@ -198,7 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured error reporting for every gymrat failure: the command prints a clear message and, where
   one applies, an actionable hint for what to do next.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/jeffzi/gymrat/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jeffzi/gymrat/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/jeffzi/gymrat/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jeffzi/gymrat/compare/v0.9.0...v0.10.0
