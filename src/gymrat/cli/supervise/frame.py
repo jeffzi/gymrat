@@ -45,6 +45,7 @@ from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
 from gymrat.report.loop import SHORT_SHA_LENGTH
+from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -467,12 +468,17 @@ def _log_path_text(log_path: str) -> Text:
 
 
 def _build_agent_row(final_text: str) -> Text:
-    """Build the agent summary row with continuation-line indentation.
+    """Build the agent summary row, clipping long messages.
 
-    Each line after the first is indented to align under the content column so
-    paragraph breaks in the agent's final message are preserved visually.
+    When *final_text* exceeds ``SUMMARY_MAX_CHARS`` code points, it is truncated
+    with an ellipsis and a note directing the user to the event log (whose path
+    is printed on the next row).  Short messages render unchanged with
+    continuation-line indentation preserved.
     """
     label = "agent"
+    if len(final_text) > SUMMARY_MAX_CHARS:
+        clipped = f"{final_text[:SUMMARY_MAX_CHARS]}… (full message in log)"
+        return _summary_row(label, Text(clipped))
     indent = " " * len(_row_prefix(label))
     indented = final_text.replace("\n", f"\n{indent}")
     return _summary_row(label, Text(indented))

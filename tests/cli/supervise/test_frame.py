@@ -19,6 +19,7 @@ from rich.panel import Panel
 
 from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.frame import build_summary
+from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from tests._ansi import SGR_RE, strip_sgr
 from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
@@ -939,3 +940,61 @@ def test_summary_when_final_text_multiline_does_indent_continuation_under_conten
     text = frame_text(summary, width=FRAME_WIDTH)
 
     assert text.splitlines() == expected_lines
+
+
+# ---------------------------------------------------------------------------
+# closing summary — agent row clipping
+# ---------------------------------------------------------------------------
+
+
+def test_summary_agent_row_when_text_at_threshold_does_render_unchanged():
+    short_text = "x" * SUMMARY_MAX_CHARS
+
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text=short_text,
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH + 200)
+    agent_line = next(line for line in text.splitlines() if "agent" in line)
+
+    assert agent_line == f"  agent  {short_text}"
+    assert "(full message in log)" not in text
+
+
+def test_summary_agent_row_when_text_exceeds_threshold_does_clip_with_ellipsis_and_log_note():
+    long_text = "a" * (SUMMARY_MAX_CHARS + 50)
+
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text=long_text,
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH + 200)
+    agent_lines = [line for line in text.splitlines() if "agent" in line]
+
+    assert len(agent_lines) == 1
+    agent_line = agent_lines[0]
+    assert "…" in agent_line
+    assert "(full message in log)" in agent_line
+    assert len(agent_line) < len(f"  agent  {long_text}")
+
+
+def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
+    short_text = "Short status message."
+
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text=short_text,
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert "(full message in log)" not in text
+    assert any("Short status message." in line for line in text.splitlines())
