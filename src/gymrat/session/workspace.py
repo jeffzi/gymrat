@@ -25,6 +25,9 @@ BRANCH_PREFIX = "gymrat/"
 # inspecting as-is.
 INSPECT_STATUS_HINT = "Inspect what is standing there with: git status"
 
+# Matches SHORT_SHA_LENGTH in report.loop (not imported to avoid a cycle).
+_ERROR_SHA_LENGTH = 7
+
 
 @dataclass(frozen=True, slots=True)
 class BaselineRef:
@@ -311,6 +314,59 @@ def is_worktree_dirty(directory: str) -> bool:
         ).strip()
         != ""
     )
+
+
+def dirty_file_count(directory: str) -> int:
+    """Count the working-tree entries git reports, expanding untracked directories.
+
+    ``--untracked-files=all`` lists each file inside an untracked directory
+    rather than the directory alone, so a new folder of three files counts as
+    three.  A directory that does not exist returns 0 for the same reason
+    ``is_worktree_dirty`` reads a missing worktree as clean.
+    """
+    if not _is_directory(directory):
+        return 0
+    return len(
+        _git_lines(
+            ["status", "--porcelain", "--untracked-files=all"],
+            directory,
+            f"Cannot read the status of the worktree at {directory}",
+            INSPECT_STATUS_HINT,
+        )
+    )
+
+
+def changed_file_count(directory: str, target: str) -> int:
+    """Count every file in ``directory`` that differs from what ``target`` has.
+
+    This includes tracked files whose content changed between ``target`` and
+    the current working tree (committed or not) and untracked files that exist
+    in the working tree but not in ``target``.  A missing directory returns 0.
+    """
+    if not _is_directory(directory):
+        return 0
+
+    tracked = _git_lines(
+        ["diff", "--name-only", target],
+        directory,
+        f"Cannot diff the worktree at {directory} against {target[:_ERROR_SHA_LENGTH]}",
+        INSPECT_STATUS_HINT,
+    )
+
+    untracked = _git_lines(
+        ["ls-files", "--others", "--exclude-standard"],
+        directory,
+        f"Cannot list untracked files in {directory}",
+        INSPECT_STATUS_HINT,
+    )
+
+    return len(set(tracked) | set(untracked))
+
+
+def _git_lines(args: list[str], cwd: str, message: str, hint: str) -> list[str]:
+    """Run a git step and split its stdout into non-empty lines."""
+    output = run_git_step(args, cwd, message, hint).strip()
+    return output.split("\n") if output else []
 
 
 def advance_baseline(baseline_dir: str, sha: str) -> None:

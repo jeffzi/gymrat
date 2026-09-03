@@ -150,10 +150,20 @@ class _DiscardSessionRecorder:
 
 
 def _make_discard_result() -> DiscardResult:
-    """A ``DiscardResult`` for a discarded iteration 1."""
+    """A ``DiscardResult`` for a measured discard of iteration 1."""
     return DiscardResult(
         record=DiscardRecord(type="discard", seq=1, at=AT),
         report="discarded iteration 1",
+        at=AT,
+    )
+
+
+def _make_unmeasured_discard_result() -> DiscardResult:
+    """A ``DiscardResult`` for an unmeasured revert (no record)."""
+    return DiscardResult(
+        record=None,
+        report="reverted unmeasured changes",
+        at=AT,
     )
 
 
@@ -182,18 +192,21 @@ def test_discard_command_when_format_json_does_emit_structured_json(
     doc = json.loads(result.stdout)
     assert doc["seq"] == 1
     assert doc["at"] == AT
+    assert doc["measured"] is True
 
 
-def test_discard_command_when_format_json_does_include_stable_key_names(
+def test_discard_command_when_format_json_and_unmeasured_does_emit_null_seq_and_measured_false(
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _wire_discard(monkeypatch, _make_discard_result())
+    _wire_discard(monkeypatch, _make_unmeasured_discard_result())
 
     result = runner.invoke(app, ["discard", "--force", "--format", "json"])
 
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
-    assert {"seq", "at"} <= doc.keys()
+    assert doc["seq"] is None
+    assert doc["at"] == AT
+    assert doc["measured"] is False
 
 
 def test_discard_command_when_format_text_does_produce_plain_report(

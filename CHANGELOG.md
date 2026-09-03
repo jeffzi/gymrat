@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A supervised session no longer stalls when the agent would otherwise stop to ask a question.
+- `gymrat discard` reverts unmeasured edits in the experiment worktree instead of refusing, so a
+  dirty worktree no longer needs raw git to clear.
+- `discard --format json` gains a `measured` field; `seq` is `null` when no iteration was measured.
 
 ### Fixed
 
-- Supervised sessions now end when the agent finishes instead of streaming idle until the
-  wall-clock cap fires.
+- Supervised sessions now end when the agent finishes — or would have stopped to ask a question —
+  instead of streaming idle until the wall-clock cap fires.
 - The closing summary shows the agent's final message when the session ends on its own.
 - `supervise` refuses to launch when the experiment worktree has uncommitted changes.
 
@@ -24,8 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Windows support for the optimization session: `start`, `iterate`, `keep`, `discard`,
   `finalize`, and `status` now run on Windows.
-- `gymrat sync` copies uncommitted main-tree changes into the experiment worktree.
-- `gymrat sync` refuses when the experiment worktree has conflicting uncommitted changes.
+- `gymrat sync` copies uncommitted main-tree changes into the experiment worktree, refusing when
+  that worktree has conflicting uncommitted changes.
 - `iterate`, `keep`, `discard`, and `status` accept `--format json`, with the same stable,
   backward-compatible schema as `compare` and `measure`.
 - A `--color` flag complements `--no-color`: it forces color output on, overriding `NO_COLOR` and
@@ -53,9 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Band verdicts now require pairs that actually differ, so a run dominated by tied samples can no
-  longer produce a false signal.
-- A metric whose median is zero while its samples spread is judged `unstable` instead of measured
-  against a percentage band.
+  longer produce a false signal, and a metric whose median is zero while its samples spread is
+  judged `unstable` instead of measured against a percentage band.
 - `discard` after a blocked keep now reports the iteration that was actually reverted.
 - `finalize` refuses when the experiment worktree has moved past the last kept commit, hinting to
   keep or discard first.
@@ -64,12 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--debug` takes effect whether written before or after the subcommand.
 - A closed output pipe ends the run quietly instead of printing a bug-report footer.
 - The mitata adapter no longer fails to read its report when the bench command prints extra
-  output around the JSON.
-- The mitata adapter warns about entries it cannot use instead of skipping them silently.
-- A session log whose final line was torn by a crash mid-write is repaired on the next run.
-- A record reported as written survives a crash immediately after.
-- A `gymrat.toml` that is not valid UTF-8 is reported as unreadable instead of crashing.
-- An oversized integer in a `GYMRAT_*` environment variable is reported as invalid instead of
+  output around the JSON, and warns about entries it cannot use instead of skipping them silently.
+- A session log whose final line was torn by a crash mid-write is repaired on the next run, and a
+  record reported as written survives a crash immediately after.
+- A `gymrat.toml` that is not valid UTF-8 is reported as unreadable instead of crashing, and an
+  oversized integer in a `GYMRAT_*` environment variable is reported as invalid instead of
   crashing.
 - A lock file left behind by another user in a shared temporary directory now reports a clear remedy
   instead of failing with a raw permission error.
@@ -129,7 +129,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   threshold.
 - A live progress line reports each sample step with an estimated time remaining.
 - A repository lock prevents two gymrat runs from colliding.
-- Canceling a run stops the benchmark, removes worktrees the run created, and exits cleanly.
+- Canceling a run stops the benchmark, removes worktrees the run created, and exits with
+  `128 + signal_number`.
 
 ## [0.7.0] - 2026-08-23
 

@@ -24,6 +24,7 @@ from gymrat.session.workspace import (
     advance_baseline,
     commit_workspace,
     create_workspace,
+    dirty_file_count,
     ensure_git_exclude,
     is_worktree_dirty,
     recreate_workspace,
@@ -75,6 +76,12 @@ def _worktrees(root: str) -> Worktrees:
         experiment=experiment_worktree_dir(root),
         baseline=baseline_worktree_dir(root),
     )
+
+
+def _edit_worktree(worktree: str, edit: str | None) -> None:
+    """Write agent-edit content to ``edit`` in ``worktree``, or leave it clean when ``None``."""
+    if edit is not None:
+        (Path(worktree) / edit).write_text("# edited by the agent\n", encoding="utf-8")
 
 
 @pytest.fixture
@@ -346,14 +353,54 @@ def test_is_worktree_dirty_when_worktree_edited_does_report_dirty(
 ):
     create_workspace(repo, SESSION_ID, baseline)
     worktree = experiment_worktree_dir(repo)
-    if edit is not None:
-        (Path(worktree) / edit).write_text("# edited by the agent\n", encoding="utf-8")
+    _edit_worktree(worktree, edit)
 
     assert is_worktree_dirty(worktree) is expected
 
 
 def test_is_worktree_dirty_when_directory_missing_does_report_clean(repo: str):
     assert is_worktree_dirty(experiment_worktree_dir(repo)) is False
+
+
+# ---------------------------------------------------------------------------
+# dirty_file_count
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("edit", "expected"),
+    [
+        pytest.param(None, 0, id="nothing-touched"),
+        pytest.param("README.md", 1, id="tracked-file-edited"),
+        pytest.param("scratch.txt", 1, id="untracked-file-added"),
+    ],
+)
+def test_dirty_file_count_when_worktree_edited_does_return_entry_count(
+    repo: str, baseline: BaselineRef, edit: str | None, expected: int
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    worktree = experiment_worktree_dir(repo)
+    _edit_worktree(worktree, edit)
+
+    assert dirty_file_count(worktree) == expected
+
+
+def test_dirty_file_count_when_untracked_directory_does_expand_to_individual_files(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    worktree = experiment_worktree_dir(repo)
+    subdir = Path(worktree) / "extras"
+    subdir.mkdir()
+    (subdir / "alpha.py").write_text("# alpha\n", encoding="utf-8")
+    (subdir / "beta.py").write_text("# beta\n", encoding="utf-8")
+    (subdir / "gamma.py").write_text("# gamma\n", encoding="utf-8")
+
+    assert dirty_file_count(worktree) == 3
+
+
+def test_dirty_file_count_when_directory_missing_does_return_zero(repo: str):
+    assert dirty_file_count(experiment_worktree_dir(repo)) == 0
 
 
 # ---------------------------------------------------------------------------

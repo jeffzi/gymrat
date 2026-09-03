@@ -49,7 +49,7 @@ from gymrat.session.paths import (
     supervise_lockfile_path,
 )
 from gymrat.session.store import fold_session, read_records
-from gymrat.session.workspace import ensure_git_exclude
+from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
     KickoffResult,
@@ -90,22 +90,9 @@ _AllowDirtyOption = Annotated[
 ]
 
 
-def _dirty_file_count(root: str) -> int:
-    """Count the working-tree entries git reports, expanding untracked directories.
-
-    ``--untracked-files=all`` lists each file inside an untracked directory
-    rather than the directory alone, so a new folder of three files counts as
-    three.
-    """
-    output = run_git(["status", "--porcelain", "--untracked-files=all"], root).strip()
-    if not output:
-        return 0
-    return len(output.split("\n"))
-
-
 def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
     """Refuse a dirty tree unless ``allow_dirty`` was set, warning when it was."""
-    count = _dirty_file_count(root)
+    count = dirty_file_count(root)
     if count == 0:
         return count
 
@@ -138,19 +125,19 @@ def _validate_experiment_worktree(root: str) -> None:
         return
 
     worktree = experiment_worktree_dir(root)
-    if not Path(worktree).is_dir():
-        return
-
-    count = _dirty_file_count(worktree)
+    count = dirty_file_count(worktree)
     if count == 0:
         return
 
     if state.unsettled:
         message = "The experiment worktree has an unsettled iteration with uncommitted changes."
         hint = "Run gymrat keep or gymrat discard first."
+    elif state.ends_on_gating_block:
+        message = "The last keep was refused for a gating regression."
+        hint = "Run gymrat discard to revert it."
     else:
         message = f"The experiment worktree has {pluralize(count, 'unmeasured edit')}."
-        hint = f"Measure them with gymrat iterate or revert them in {worktree} before launching."
+        hint = "Measure them with gymrat iterate or revert them with gymrat discard."
     exit_with_error(GymratError(message, hint=hint))
 
 

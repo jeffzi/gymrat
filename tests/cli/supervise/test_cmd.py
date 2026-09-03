@@ -394,14 +394,21 @@ def _setup_open_session_missing_worktree(repo: str) -> None:
     shutil.rmtree(experiment_worktree_dir(repo))
 
 
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param((), id="default"),
+        pytest.param(("--allow-dirty",), id="allow-dirty"),
+    ],
+)
 def test_supervise_when_experiment_worktree_dirty_with_unsettled_does_exit_two_with_settle_hint(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch, extra_args: tuple[str, ...]
 ):
     _install_seams(monkeypatch)
     make_discard_repo(repo)
     _dirty_experiment_worktree(repo, "scratch.txt")
 
-    result = _run("optimize it", "--max-minutes", "10")
+    result = _run("optimize it", "--max-minutes", "10", *extra_args)
 
     assert result.exit_code == 2
     text = _err_text(result)
@@ -410,34 +417,20 @@ def test_supervise_when_experiment_worktree_dirty_with_unsettled_does_exit_two_w
     assert "gymrat discard" in text
 
 
-def test_supervise_when_experiment_worktree_dirty_without_unsettled_does_exit_two_with_iterate_hint(
+def test_supervise_when_experiment_worktree_dirty_without_unsettled_does_exit_two_with_iterate_and_discard_hint(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _install_seams(monkeypatch)
     _start_open_session(repo)
-    worktree = experiment_worktree_dir(repo)
     _dirty_experiment_worktree(repo, "a.txt", "b.txt")
 
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 2
     text = _err_text(result)
-    assert "2 unmeasured edits" in text
+    assert "2 unmeasured edit" in text
     assert "gymrat iterate" in text
-    assert worktree in text
-
-
-def test_supervise_when_experiment_worktree_dirty_and_allow_dirty_does_still_exit_two(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(monkeypatch)
-    make_discard_repo(repo)
-    _dirty_experiment_worktree(repo, "scratch.txt")
-
-    result = _run("optimize it", "--max-minutes", "10", "--allow-dirty")
-
-    assert result.exit_code == 2
-    assert "unsettled" in result.stderr.lower()
+    assert "gymrat discard" in text
 
 
 @pytest.mark.parametrize(

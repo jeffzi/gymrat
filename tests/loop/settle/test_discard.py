@@ -1,7 +1,8 @@
 """Behavioral tests for ``discard_session``.
 
-Throwing away edits, numbering past blocks, resetting to baseline or kept
-commit, and nothing-measured refusals.
+Throwing away edits (measured or unmeasured), numbering past blocks, resetting
+to baseline or kept commit, clean-worktree refusals, and the result shape on
+each path.
 
 Every test drives the real settle functions against a throwaway repository from
 the shared ``create_scratch_repo`` factory, so the suite is order-independent and
@@ -25,6 +26,7 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests.loop.settle._fixtures import (
+    ISO_PATTERN,
     assert_settling_record,
     checks_config,
     checks_pass,
@@ -82,8 +84,10 @@ def test_discard_session_when_unsettled_edit_does_append_discard_naming_iteratio
 
     result = discard_session(repo)
 
+    assert result.record is not None
     assert_settling_record(result.record, discard_record(1))
     assert last_record_of(repo) == result.record
+    assert result.at == result.record.at
 
 
 def test_discard_session_when_primary_delta_undefined_does_record_discard(repo: str):
@@ -92,6 +96,7 @@ def test_discard_session_when_primary_delta_undefined_does_record_discard(repo: 
 
     result = discard_session(repo)
 
+    assert result.record is not None
     assert result.record.seq == 1
 
 
@@ -123,6 +128,7 @@ def test_discard_session_when_gating_block_stands_does_number_discard_past_it(re
 
     # The block already settled iteration 1, so the discard takes the number no
     # iteration has used yet, leaving the block in history.
+    assert result.record is not None
     assert_settling_record(result.record, discard_record(2))
     tail = read_records(session_jsonl_path(repo))[-2:]
     assert tail == [gating_block(1), result.record]
@@ -137,6 +143,7 @@ def test_discard_session_when_unmeasured_regression_block_stands_does_number_dis
     result = discard_session(repo)
 
     assert status_of(experiment_worktree_dir(repo)) == ""
+    assert result.record is not None
     assert_settling_record(result.record, discard_record(2))
 
 
@@ -244,30 +251,82 @@ def test_discard_session_when_resetting_does_report_the_commit_it_landed_on(
 
 
 # ---------------------------------------------------------------------------
-# discard_session when nothing was measured
+# discard_session unmeasured revert (dirty worktree, nothing to settle)
 # ---------------------------------------------------------------------------
 
+NOTHING_MEASURED_HISTORIES = [
+    pytest.param((), id="no-iteration-ever-recorded"),
+    pytest.param((iteration(1), committed_keep(1)), id="last-iteration-already-kept"),
+    pytest.param(
+        (confirmed_regression(1), gating_block(1), discard_record(2)),
+        id="gating-block-already-discarded",
+    ),
+]
 
-@pytest.mark.parametrize(
-    "history",
-    [
-        pytest.param((), id="no-iteration-ever-recorded"),
-        pytest.param((iteration(1), committed_keep(1)), id="last-iteration-already-kept"),
-        pytest.param(
-            (confirmed_regression(1), gating_block(1), discard_record(2)),
-            id="gating-block-already-discarded",
-        ),
-    ],
-)
-def test_discard_session_when_nothing_measured_does_refuse_settling_again(
+
+@pytest.mark.parametrize("history", NOTHING_MEASURED_HISTORIES)
+def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_unmeasured_result(
     repo: str, history: tuple[SessionLogRecord, ...]
 ):
     start_with(repo, history)
     edit_experiment(repo)
+    records_before = len(read_records(session_jsonl_path(repo)))
+
+    result = discard_session(repo)
+
+    worktree = experiment_worktree_dir(repo)
+    assert (Path(worktree) / "README.md").read_text(encoding="utf-8") == "# Test Repo\n"
+    assert not (Path(worktree) / "scratch.txt").exists()
+    assert status_of(worktree) == ""
+    assert len(read_records(session_jsonl_path(repo))) == records_before
+    assert result.record is None
+    assert ISO_PATTERN.match(result.at)
+
+
+def test_discard_session_when_nothing_measured_and_dirty_does_report_count_and_sha(repo: str):
+    start_with(repo, ())
+    edit_experiment(repo)
+    baseline_sha = head_of(baseline_worktree_dir(repo))
+
+    result = discard_session(repo)
+
+    assert (
+        result.report
+        == f"Reverted 2 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"
+    )
+
+
+def test_discard_session_when_nothing_measured_and_agent_committed_does_report_reverted_edit_count(
+    repo: str,
+):
+    start_with(repo, ())
+    edit_experiment(repo)
+    commit_experiment_directly(repo)
+    worktree = experiment_worktree_dir(repo)
+    (Path(worktree) / "extra.txt").write_text("more\n", encoding="utf-8")
+
+    result = discard_session(repo)
+
+    baseline_sha = head_of(baseline_worktree_dir(repo))
+    assert (
+        result.report
+        == f"Reverted 3 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# discard_session when nothing was measured and worktree is clean (refusal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("history", NOTHING_MEASURED_HISTORIES)
+def test_discard_session_when_nothing_measured_and_clean_does_refuse(
+    repo: str, history: tuple[SessionLogRecord, ...]
+):
+    start_with(repo, history)
     before = len(read_records(session_jsonl_path(repo)))
 
     with pytest.raises(GymratError):
         discard_session(repo)
 
     assert len(read_records(session_jsonl_path(repo))) == before
-    assert status_of(experiment_worktree_dir(repo)) != ""
