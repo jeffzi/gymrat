@@ -45,6 +45,7 @@ from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
 from gymrat.report.loop import SHORT_SHA_LENGTH
+from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -59,6 +60,11 @@ _MS_PER_MINUTE = 60 * MS_PER_SECOND
 # (Read, Edit, Bash); ceiling prevents a long name from pushing the layout.
 _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
+
+
+# ---------------------------------------------------------------------------
+# Time and cost formatting
+# ---------------------------------------------------------------------------
 
 
 def format_cost(usd: float) -> str:
@@ -123,6 +129,11 @@ def _build_cost_text(cost_usd: float | None, max_usd: float | None) -> Text:
     if max_usd is not None:
         text.append(f" / {format_cost(max_usd)}")
     return text
+
+
+# ---------------------------------------------------------------------------
+# Loop and best summary
+# ---------------------------------------------------------------------------
 
 
 def _outcome_style(outcome: str) -> str:
@@ -201,6 +212,11 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
         )
     text.append(f" (iteration {session_result.best_seq})", style=STYLE_META)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Dashboard frame
+# ---------------------------------------------------------------------------
 
 
 def _style_unless_no_color(style: str, *, no_color: bool) -> str:
@@ -396,9 +412,13 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
     return Group(log_line, panel)
 
 
-# The label column of the summary rows, wide enough for "best" and "loop"; the
-# two spaces on either side indent the block and separate label from content.
-_SUMMARY_LABEL_WIDTH = 4
+# ---------------------------------------------------------------------------
+# Closing summary
+# ---------------------------------------------------------------------------
+
+# The label column of the summary rows, wide enough for "agent"; the two
+# spaces on either side indent the block and separate label from content.
+_SUMMARY_LABEL_WIDTH = 5
 
 #: How a cap that stopped the session reads in the closing headline.
 _CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spend cap"}
@@ -407,10 +427,10 @@ _CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spe
 def _build_outcome_text(result: SupervisionResult) -> Text:
     """The glyph-led headline: how the run ended, then its duration and cost."""
     text = Text()
-    if result.outcome.reason == "error":
-        text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
-    elif result.ended_by == "session":
+    if _completed_on_its_own(result):
         text.append(f"{GLYPH_DONE} completed", style=STYLE_DONE)
+    elif result.outcome.reason == "error":
+        text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
     else:
         cap = _CAP_LABELS[result.ended_by]
         text.append(f"{GLYPH_ALERT} interrupted by {cap}", style=STYLE_ALERT)
@@ -421,8 +441,13 @@ def _build_outcome_text(result: SupervisionResult) -> Text:
     return text
 
 
+def _row_prefix(label: str) -> str:
+    """The two-space-indented, padded label lead-in shared by every summary row."""
+    return f"  {label:<{_SUMMARY_LABEL_WIDTH}}  "
+
+
 def _summary_row(label: str, content: Text) -> Text:
-    row = Text(f"  {label:<{_SUMMARY_LABEL_WIDTH}}  ")
+    row = Text(_row_prefix(label))
     row.append_text(content)
     return row
 
@@ -442,19 +467,48 @@ def _log_path_text(log_path: str) -> Text:
     return Text(display, style=f"link {uri}")
 
 
+def _build_agent_row(final_text: str) -> Text:
+    """Build the agent summary row, clipping long messages.
+
+    When *final_text* exceeds ``SUMMARY_MAX_CHARS`` code points, it is truncated
+    with an ellipsis and a note directing the user to the event log (whose path
+    is printed on the next row).  Short messages render unchanged with
+    continuation-line indentation preserved.
+    """
+    label = "agent"
+    if len(final_text) > SUMMARY_MAX_CHARS:
+        clipped = f"{final_text[:SUMMARY_MAX_CHARS]}… (full message in log)"
+        return _summary_row(label, Text(clipped))
+    indent = " " * len(_row_prefix(label))
+    indented = final_text.replace("\n", f"\n{indent}")
+    return _summary_row(label, Text(indented))
+
+
+def _completed_on_its_own(result: SupervisionResult) -> bool:
+    """Whether the session ended by itself, not by a cap trip or an error."""
+    return result.ended_by == "session" and result.outcome.reason != "error"
+
+
 def build_summary(
     result: SupervisionResult,
     *,
     log_path: str,
     session_result: ReadSessionResult | None,
+    final_text: str | None = None,
 ) -> Text:
     """Build the closing summary ``gymrat supervise`` prints when a run ends.
 
     The headline states how the run ended; the rows below it reuse the
     dashboard's best and loop renderables, so the last thing printed reads like
     the frame it replaces, and end with where the event log landed.
+
+    When the session ended on its own (not by a cap or error) and the agent
+    produced text, an ``agent`` row appears after the headline showing the
+    agent's last text block with paragraph breaks preserved.
     """
     rows = [_build_outcome_text(result)]
+    if _completed_on_its_own(result) and final_text is not None:
+        rows.append(_build_agent_row(final_text))
     best_text = _build_best_text(session_result)
     if best_text is not None:
         rows.append(_summary_row("best", best_text))

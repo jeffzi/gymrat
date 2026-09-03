@@ -150,10 +150,20 @@ class _DiscardSessionRecorder:
 
 
 def _make_discard_result() -> DiscardResult:
-    """A ``DiscardResult`` for a discarded iteration 1."""
+    """A ``DiscardResult`` for a measured discard of iteration 1."""
     return DiscardResult(
         record=DiscardRecord(type="discard", seq=1, at=AT),
         report="discarded iteration 1",
+        at=AT,
+    )
+
+
+def _make_unmeasured_discard_result() -> DiscardResult:
+    """A ``DiscardResult`` for an unmeasured revert (no record)."""
+    return DiscardResult(
+        record=None,
+        report="reverted unmeasured changes",
+        at=AT,
     )
 
 
@@ -171,29 +181,29 @@ def discard_repo(repo: str) -> str:
     return make_discard_repo(repo)
 
 
+@pytest.mark.parametrize(
+    ("discard_result", "expected_seq", "expected_measured"),
+    [
+        pytest.param(_make_discard_result(), 1, True, id="measured"),
+        pytest.param(_make_unmeasured_discard_result(), None, False, id="unmeasured"),
+    ],
+)
 def test_discard_command_when_format_json_does_emit_structured_json(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
+    discard_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    discard_result: DiscardResult,
+    expected_seq: int | None,
+    expected_measured: bool,
 ):
-    _wire_discard(monkeypatch, _make_discard_result())
+    _wire_discard(monkeypatch, discard_result)
 
     result = runner.invoke(app, ["discard", "--force", "--format", "json"])
 
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
-    assert doc["seq"] == 1
+    assert doc["seq"] == expected_seq
     assert doc["at"] == AT
-
-
-def test_discard_command_when_format_json_does_include_stable_key_names(
-    discard_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _wire_discard(monkeypatch, _make_discard_result())
-
-    result = runner.invoke(app, ["discard", "--force", "--format", "json"])
-
-    assert result.exit_code == 0
-    doc = json.loads(result.stdout)
-    assert {"seq", "at"} <= doc.keys()
+    assert doc["measured"] is expected_measured
 
 
 def test_discard_command_when_format_text_does_produce_plain_report(

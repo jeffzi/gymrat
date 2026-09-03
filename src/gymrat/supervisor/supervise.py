@@ -112,7 +112,12 @@ class _Supervision:
 
     def _cost_observer(self, event: SessionEvent) -> None:
         max_usd = self._config.max_usd
-        if max_usd is not None and event.type == "usage_update" and event.cost_usd >= max_usd:
+        if (
+            max_usd is not None
+            and event.type == "usage_update"
+            and not event.settled
+            and event.cost_usd >= max_usd
+        ):
             self._trigger_cap("spend-cap")
 
     def _trigger_cap(self, cap: CapType) -> None:

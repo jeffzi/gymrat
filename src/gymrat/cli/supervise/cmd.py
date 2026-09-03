@@ -41,8 +41,15 @@ from gymrat.plural import pluralize
 from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.session.clock import now_ms
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import repo_root, session_dir, supervise_lockfile_path
-from gymrat.session.workspace import ensure_git_exclude
+from gymrat.session.paths import (
+    experiment_worktree_dir,
+    repo_root,
+    session_dir,
+    session_jsonl_path,
+    supervise_lockfile_path,
+)
+from gymrat.session.store import fold_session, last_kept_position, read_records
+from gymrat.session.workspace import changed_file_count, dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
     KickoffResult,
@@ -83,22 +90,9 @@ _AllowDirtyOption = Annotated[
 ]
 
 
-def _dirty_file_count(root: str) -> int:
-    """Count the working-tree entries git reports, expanding untracked directories.
-
-    ``--untracked-files=all`` lists each file inside an untracked directory
-    rather than the directory alone, so a new folder of three files counts as
-    three.
-    """
-    output = run_git(["status", "--porcelain", "--untracked-files=all"], root).strip()
-    if not output:
-        return 0
-    return len(output.split("\n"))
-
-
 def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
     """Refuse a dirty tree unless ``allow_dirty`` was set, warning when it was."""
-    count = _dirty_file_count(root)
+    count = dirty_file_count(root)
     if count == 0:
         return count
 
@@ -113,6 +107,39 @@ def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
         "proceeding because --allow-dirty was set\n",
     )
     return count
+
+
+def _validate_experiment_worktree(root: str) -> None:
+    """Refuse to launch when the experiment worktree has unmeasured changes.
+
+    An unsettled iteration needs settling first; unmeasured edits — committed or
+    still uncommitted — need measuring or reverting. The check runs regardless of
+    ``--allow-dirty``, which covers only the main working tree.
+    """
+    records = read_records(session_jsonl_path(root))
+    if not records:
+        return
+
+    state = fold_session(records)
+    if state.finalized is not None or state.session is None:
+        return
+
+    worktree = experiment_worktree_dir(root)
+    target = last_kept_position(state, state.session.baseline.sha)
+    count = changed_file_count(worktree, target)
+    if count == 0:
+        return
+
+    if state.unsettled:
+        message = "The experiment worktree has an unsettled iteration with uncommitted changes."
+        hint = "Run gymrat keep or gymrat discard first."
+    elif state.ends_on_gating_block:
+        message = "The last keep was refused for a gating regression."
+        hint = "Run gymrat discard to revert it."
+    else:
+        message = f"The experiment worktree has {pluralize(count, 'unmeasured edit')}."
+        hint = "Measure them with gymrat iterate or revert them with gymrat discard."
+    exit_with_error(GymratError(message, hint=hint))
 
 
 def _resolve_log_path(root: str, explicit: str | None) -> str:
@@ -148,6 +175,7 @@ def _report_result(
     *,
     log_path: str,
     session_result: ReadSessionResult | None,
+    final_text: str | None,
     color: bool | None,
 ) -> None:
     """Print the closing summary to stdout, then exit per how the run ended.
@@ -157,7 +185,12 @@ def _report_result(
     its message to stderr only when one is present.
     """
     summary = render_lines(
-        build_summary(result, log_path=log_path, session_result=session_result),
+        build_summary(
+            result,
+            log_path=log_path,
+            session_result=session_result,
+            final_text=final_text,
+        ),
         color=resolve_stream_color(color, sys.stdout),
         width=RENDER_WIDTH,
     )
@@ -215,6 +248,7 @@ def _run_session(ctx: _SessionContext) -> None:
         result,
         log_path=ctx.log_path,
         session_result=reporter.session_result(),
+        final_text=reporter.final_text(),
         color=ctx.color,
     )
 
@@ -236,6 +270,7 @@ def _execute(options: _Options) -> None:
     """Guard the tree, hold the supervise lock, and run one session under it."""
     root = repo_root()
     dirty_count = _validate_working_tree(root, allow_dirty=options.allow_dirty)
+    _validate_experiment_worktree(root)
 
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:

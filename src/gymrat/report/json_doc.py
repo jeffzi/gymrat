@@ -271,8 +271,14 @@ def render_keep_json(result: KeepResult) -> str:
 
 
 def render_discard_json(result: DiscardResult) -> str:
-    """The discarded iteration's sequence number and timestamp."""
-    return _dump({"seq": result.record.seq, "at": result.record.at})
+    """Render the discard's ``seq``, timestamp, and ``measured`` flag.
+
+    ``seq`` is ``null`` when no iteration was measured.
+    """
+    record = result.record
+    measured = record is not None
+    seq = record.seq if record is not None else None
+    return _dump({"seq": seq, "at": result.at, "measured": measured})
 
 
 def render_status_json(data: StatusData) -> str:

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
+from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.metric_name import format_inline, parse
 from gymrat.model import Effect
 from gymrat.plural import pluralize
@@ -128,9 +129,6 @@ class RerunConfirmation:
 
 #: The candidate an iteration measures: the experiment, judged against the baseline.
 EXPERIMENT_INDEX = 0
-
-#: How many leading characters of a commit SHA a report abbreviates it to.
-SHORT_SHA_LENGTH = 7
 
 #: What the loop's header says it compared, fixed for every iteration. The two
 #: targets wear the style the table heads its columns with, so the header names

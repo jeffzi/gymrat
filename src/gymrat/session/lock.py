@@ -6,6 +6,15 @@ written to the original path as plain JSON, readable on every platform — inclu
 Windows, where ``LockFileEx`` creates a mandatory byte-range lock that blocks
 reads through a separate handle.
 
+A sibling publish lock serializes the window between acquiring the main lock and
+writing the holder record.  The ordering — publish lock, then main lock attempt,
+then write or read, then publish release — ensures that no rival observes an
+empty, truncated, or previous-holder record while a fresh holder is mid-write.
+When the publish lock cannot be obtained within ``_PUBLISH_LOCK_TIMEOUT`` seconds
+(a stalled publisher), acquisition proceeds without it: a winner still writes its
+record, a loser still reports best-effort diagnostics from whatever the file
+holds.
+
 Contention is instant: the loser reads the winner's holder record for diagnostics
 without needing liveness probes.  Crash recovery is automatic — the kernel
 releases the advisory lock when the holder exits — so a stale lockfile never
@@ -32,9 +41,48 @@ type ReleaseLock = Callable[[], None]
 
 _LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish."
 
+_PUBLISH_LOCK_TIMEOUT: float = 2.0
+"""Maximum seconds to wait for the publish lock before proceeding without it."""
+
+_WORLD_WRITABLE_MODE = 0o666
+"""Permissions applied to the holder record so any user can overwrite or remove it."""
+
 
 def _os_lock_file(lock_path: str) -> str:
     return lock_path + ".lock"
+
+
+def _publish_lock_file(lock_path: str) -> str:
+    return _os_lock_file(lock_path) + ".publish"
+
+
+def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
+    """Best-effort acquire of the publish lock.
+
+    Returns the lock object and whether acquisition succeeded. A timeout is not
+    an error — the caller proceeds without the publish lock in that case.
+    """
+    pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
+    try:
+        pub_lock.acquire()
+    except Timeout:
+        return pub_lock, False
+    except PermissionError as error:
+        _raise_permission_error(pub_lock_path, error)
+    else:
+        return pub_lock, True
+
+
+def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
+    """Acquire the main non-blocking OS lock, or raise a diagnostic error."""
+    lock = FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
+    try:
+        lock.acquire()
+    except Timeout:
+        _raise_contention_error(lock_path)
+    except PermissionError as error:
+        _raise_permission_error(os_lock_path, error)
+    return lock
 
 
 def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
@@ -45,27 +93,30 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
 
     Raises:
         GymratError: When another process (or the same process) already holds
-            the lock, or when the lock file cannot be opened due to permissions.
+            the lock, or when the lock file or its sibling publish lock file
+            cannot be opened due to permissions.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
-    pid = os.getpid()
-    record = json.dumps({"pid": pid, "command": command, "at": now_iso()})
+    record = json.dumps({"pid": os.getpid(), "command": command, "at": now_iso()})
 
-    os_lock = _os_lock_file(lock_path)
-    lock = FileLock(os_lock, timeout=0, preserve_lock_file=True)
+    os_lock_path = _os_lock_file(lock_path)
+    pub_lock_path = _publish_lock_file(lock_path)
 
+    pub_lock, has_pub_lock = _acquire_publish_lock(pub_lock_path)
     try:
-        lock.acquire()
-    except Timeout:
-        _raise_contention_error(lock_path)
-    except PermissionError as error:
-        _raise_permission_error(os_lock, error)
+        lock = _acquire_os_lock(lock_path, os_lock_path)
 
-    holder = Path(lock_path)
-    holder.write_text(record, encoding="utf-8")
-    with contextlib.suppress(OSError):
-        holder.chmod(0o666)
+        holder = Path(lock_path)
+        holder.write_text(record, encoding="utf-8")
+        # Best-effort: some filesystems (e.g. FAT) ignore chmod entirely, and the
+        # lock directory is typically per-user anyway, so a failed chmod here is not
+        # actionable and must not block lock acquisition.
+        with contextlib.suppress(OSError):
+            holder.chmod(_WORLD_WRITABLE_MODE)
+    finally:
+        if has_pub_lock:
+            pub_lock.release()
 
     def release() -> None:
         try:

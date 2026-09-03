@@ -15,6 +15,9 @@ from collections.abc import Sequence
 from gymrat.errors import GymratError, stderr_text_of
 from gymrat.signals import deferring_termination_signals
 
+# How many leading characters of a commit SHA callers abbreviate it to.
+SHORT_SHA_LENGTH = 7
+
 # Env vars an outer git process exports to point child git at a specific repo.
 # Removing them forces this call to resolve the repository from ``cwd`` alone.
 _REPO_TARGETING_ENV_VARS = (

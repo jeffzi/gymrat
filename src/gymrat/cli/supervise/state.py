@@ -21,6 +21,7 @@ IDLE_WARN_MS = 30_000
 """After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
 
 type CapType = Literal["wall-clock", "spend-cap"]
+"""The cap variety that ended or is ending a supervised run."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ class SuperviseReporter:
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
     session_result: Callable[[], ReadSessionResult | None]
+    final_text: Callable[[], str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +117,7 @@ class Capped:
 
 
 type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waiting | Capped
+"""The reporter's current view of what the model or tool is doing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +159,7 @@ class NestedPhase:
 
 
 type NestedActivity = NestedTool | NestedPhase
+"""What a nested subagent is currently doing, keyed by its parent tool-use id."""
 
 
 @dataclass(slots=True)
@@ -188,3 +192,4 @@ class ReporterCtx:
     nested_tool_ids: dict[str, str]
     no_color: bool
     log_path: str
+    last_top_level_text: str | None

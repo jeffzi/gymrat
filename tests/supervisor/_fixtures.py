@@ -9,6 +9,7 @@ overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal, NamedTuple
 
 from gymrat.supervisor.driver import SessionPrompt
@@ -81,3 +82,30 @@ def noop_observer() -> SessionObserver:
         return None
 
     return _observer
+
+
+def result_message(
+    *,
+    subtype: str = "success",
+    is_error: bool = False,
+    num_turns: int = 1,
+    total_cost_usd: float | None = None,
+    result: str | None = None,
+) -> SimpleNamespace:
+    """Build a result message shaped like the SDK's ``ResultMessage``.
+
+    A result message is identified by having both ``subtype`` and ``num_turns``
+    attributes; a system message has ``subtype`` alone.
+    """
+    return SimpleNamespace(
+        subtype=subtype,
+        is_error=is_error,
+        num_turns=num_turns,
+        total_cost_usd=total_cost_usd,
+        result=result,
+    )
+
+
+def system_message(*, subtype: str = "init") -> SimpleNamespace:
+    """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
+    return SimpleNamespace(subtype=subtype)
