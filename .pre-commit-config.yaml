@@ -42,11 +42,12 @@ repos:
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
-      - id: max-lines
-        name: max lines per file
-        entry: uv run python scripts/check_max_lines.py
-        language: system
-        types_or: [python, pyi]
+
+  # Python max lines
+  - repo: https://github.com/jeffzi/pymaxlines
+    rev: main
+    hooks:
+      - id: check-max-lines
 
   # Python type checking
   - repo: local
