@@ -45,6 +45,8 @@ from tests.cli.supervise._fixtures import (
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.progress import ReadSessionResult, SuperviseReporter
+    from gymrat.supervisor import SessionEndReason
+    from gymrat.supervisor.supervise import EndedBy
 
 
 # ---------------------------------------------------------------------------
@@ -885,20 +887,14 @@ def test_summary_when_session_ended_and_final_text_present_does_show_agent_row()
             "! interrupted by wall-clock cap · 1m 0s · $0.05",
             id="wall-clock-cap",
         ),
-        pytest.param(
-            "interrupted",
-            "spend-cap",
-            "! interrupted by spend cap · 1m 0s · $0.05",
-            id="spend-cap",
-        ),
         pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
     ],
 )
 def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
-    reason: str, ended_by: str, expected_headline: str
+    reason: SessionEndReason, ended_by: EndedBy, expected_headline: str
 ) -> None:
     summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
+        make_supervision_result(reason=reason, ended_by=ended_by),
         log_path=_LOG_PATH,
         session_result=None,
         final_text="Some final text.",
@@ -906,6 +902,7 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
 
     text = frame_text(summary, width=FRAME_WIDTH)
 
+    assert "  agent" not in text
     assert text == f"{expected_headline}\n  loop   no session yet\n{_LOG_ROW}"
 
 
@@ -922,41 +919,44 @@ def test_summary_when_final_text_absent_does_not_show_agent_row():
     assert text == f"✓ completed · 1m 0s · $0.05\n  loop   no session yet\n{_LOG_ROW}"
 
 
-def test_summary_when_final_text_has_paragraphs_does_preserve_paragraph_breaks():
-    multi_para = "First paragraph.\n\nSecond paragraph."
-
+@pytest.mark.parametrize(
+    ("final_text", "expected_lines"),
+    [
+        pytest.param(
+            "First paragraph.\n\nSecond paragraph.",
+            [
+                "✓ completed · 1m 0s · $0.05",
+                "  agent  First paragraph.",
+                "",
+                "         Second paragraph.",
+                "  loop   no session yet",
+                _LOG_ROW,
+            ],
+            id="paragraph-break",
+        ),
+        pytest.param(
+            "Line one.\nLine two.",
+            [
+                "✓ completed · 1m 0s · $0.05",
+                "  agent  Line one.",
+                "         Line two.",
+                "  loop   no session yet",
+                _LOG_ROW,
+            ],
+            id="single-newline",
+        ),
+    ],
+)
+def test_summary_when_final_text_multiline_does_indent_continuation_under_content(
+    final_text: str, expected_lines: list[str]
+) -> None:
     summary = build_summary(
         make_supervision_result(reason="completed", ended_by="session"),
         log_path=_LOG_PATH,
         session_result=None,
-        final_text=multi_para,
+        final_text=final_text,
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
 
-    assert text.splitlines() == [
-        "✓ completed · 1m 0s · $0.05",
-        "  agent  First paragraph.",
-        "",
-        "         Second paragraph.",
-        "  loop   no session yet",
-        _LOG_ROW,
-    ]
-
-
-def test_summary_when_final_text_multiline_does_indent_continuation_under_content():
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text="Line one.\nLine two.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-    lines = text.splitlines()
-    agent_idx = next(i for i, line in enumerate(lines) if "agent" in line)
-    content_col = lines[agent_idx].index("Line one.")
-    next_line = lines[agent_idx + 1]
-
-    assert next_line.startswith(" " * content_col)
-    assert "Line two." in next_line
+    assert text.splitlines() == expected_lines

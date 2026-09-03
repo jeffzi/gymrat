@@ -254,14 +254,13 @@ class _ClaudeSession:
             await asyncio.sleep(0)
             if self._stopped is not None:
                 break
-        if self._stopped is not None:
-            return self._stopped
-        if self._result_outcome is not None:
-            return self._result_outcome
-        return SessionOutcome(
-            reason="error",
-            cost_usd=self._cost_usd,
-            message="Agent stream ended without a result message",
+        return self._settled_or(
+            self._result_outcome
+            or SessionOutcome(
+                reason="error",
+                cost_usd=self._cost_usd,
+                message="Agent stream ended without a result message",
+            )
         )
 
     async def _teardown(self) -> None:
@@ -276,7 +275,7 @@ class _ClaudeSession:
             await _disconnect_quietly(self._client)
 
     def _map_message(self, message: object) -> None:
-        """Map one SDK message to session events."""
+        """Dispatch by message shape, in order: stream event, settled result, content blocks."""
         # Stream events carry an ``event`` dict and no ``content``.
         event = getattr(message, "event", None)
         if isinstance(event, dict) and not hasattr(message, "content"):
@@ -293,18 +292,18 @@ class _ClaudeSession:
         subtype = getattr(message, "subtype", None)
         num_turns = getattr(message, "num_turns", None)
         if isinstance(subtype, str) and num_turns is not None:
-            cost = getattr(message, "total_cost_usd", None)
-            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
-                self._cost_usd = float(cost)
+            cost = self._read_cost(message)
+            if cost is not None:
+                self._cost_usd = cost
             self._result_outcome = self._result_outcome_from(message, subtype)
             return
 
-        cost = getattr(message, "total_cost_usd", None)
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
+        cost = self._read_cost(message)
+        if cost is not None:
             # Commit the cost before notifying observers: a spend-cap
             # callback reads self._cost_usd synchronously and must see the
             # value that just crossed the threshold.
-            self._cost_usd = float(cost)
+            self._cost_usd = cost
             self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd))
 
         parent = getattr(message, "parent_tool_use_id", None)
@@ -312,6 +311,12 @@ class _ClaudeSession:
         if isinstance(content, list):
             for block in content:
                 self._map_block(block, parent)
+
+    def _read_cost(self, message: object) -> float | None:
+        cost = getattr(message, "total_cost_usd", None)
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
+            return float(cost)
+        return None
 
     def _result_outcome_from(self, message: object, subtype: str) -> SessionOutcome:
         """Classify a settled result message as completed or errored."""

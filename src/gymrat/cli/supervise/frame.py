@@ -426,10 +426,10 @@ _CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spe
 def _build_outcome_text(result: SupervisionResult) -> Text:
     """The glyph-led headline: how the run ended, then its duration and cost."""
     text = Text()
-    if result.outcome.reason == "error":
-        text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
-    elif result.ended_by == "session":
+    if _completed_on_its_own(result):
         text.append(f"{GLYPH_DONE} completed", style=STYLE_DONE)
+    elif result.outcome.reason == "error":
+        text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
     else:
         cap = _CAP_LABELS[result.ended_by]
         text.append(f"{GLYPH_ALERT} interrupted by {cap}", style=STYLE_ALERT)
@@ -477,6 +477,11 @@ def _build_agent_row(final_text: str) -> Text:
     return _summary_row("agent", Text(indented))
 
 
+def _completed_on_its_own(result: SupervisionResult) -> bool:
+    """Whether the session ended by itself, not by a cap trip or an error."""
+    return result.ended_by == "session" and result.outcome.reason != "error"
+
+
 def build_summary(
     result: SupervisionResult,
     *,
@@ -491,12 +496,11 @@ def build_summary(
     the frame it replaces, and end with where the event log landed.
 
     When the session ended on its own (not by a cap or error) and the agent
-    produced final text, an ``agent`` row appears after the headline showing the
-    full text with paragraph breaks preserved.
+    produced text, an ``agent`` row appears after the headline showing the
+    agent's last text block with paragraph breaks preserved.
     """
-    ended_on_its_own = result.ended_by == "session" and result.outcome.reason != "error"
     rows = [_build_outcome_text(result)]
-    if ended_on_its_own and final_text is not None:
+    if _completed_on_its_own(result) and final_text is not None:
         rows.append(_build_agent_row(final_text))
     best_text = _build_best_text(session_result)
     if best_text is not None:

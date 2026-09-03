@@ -29,7 +29,13 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     summarize,
 )
-from tests.supervisor._fixtures import collecting_observer, make_prompt, noop_observer
+from tests.supervisor._fixtures import (
+    collecting_observer,
+    make_prompt,
+    noop_observer,
+    result_message,
+    system_message,
+)
 
 # ---------------------------------------------------------------------------
 # fake streaming client
@@ -120,33 +126,6 @@ def stream_event(
     if parent_tool_use_id is not None:
         ns.parent_tool_use_id = parent_tool_use_id
     return ns
-
-
-def result_message(
-    *,
-    subtype: str = "success",
-    is_error: bool = False,
-    num_turns: int = 1,
-    total_cost_usd: float | None = None,
-    result: str | None = None,
-) -> SimpleNamespace:
-    """Build a result message shaped like the SDK's ``ResultMessage``.
-
-    A result message is identified by having both ``subtype`` and ``num_turns``
-    attributes; a system message has ``subtype`` alone.
-    """
-    return SimpleNamespace(
-        subtype=subtype,
-        is_error=is_error,
-        num_turns=num_turns,
-        total_cost_usd=total_cost_usd,
-        result=result,
-    )
-
-
-def system_message(*, subtype: str = "init") -> SimpleNamespace:
-    """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
-    return SimpleNamespace(subtype=subtype)
 
 
 async def run_session(
@@ -1000,24 +979,20 @@ async def test_result_when_is_error_does_settle_error(
 
 
 @pytest.mark.parametrize(
-    ("cost", "expected_costs"),
+    "cost",
     [
-        pytest.param(0.05, [], id="positive-cost"),
-        pytest.param(None, [], id="none-cost"),
-        pytest.param(0.0, [], id="zero-cost"),
+        pytest.param(0.05, id="positive-cost"),
+        pytest.param(None, id="none-cost"),
+        pytest.param(0.0, id="zero-cost"),
     ],
 )
-async def test_result_when_cost_varies_does_emit_usage_update_only_for_positive(
-    cost: float | None,
-    expected_costs: list[float],
-):
+async def test_result_when_message_settles_does_not_emit_usage_update(cost: float | None):
     messages = [result_message(total_cost_usd=cost)]
     probe = collecting_observer()
 
     await run_outcome(FakeClient(messages), probe.observer)
 
-    usage = events_of(probe.events, UsageUpdateEvent)
-    assert [e.cost_usd for e in usage] == expected_costs
+    assert events_of(probe.events, UsageUpdateEvent) == []
 
 
 async def test_result_when_stream_ends_without_result_does_settle_error():

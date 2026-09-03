@@ -44,7 +44,7 @@ from gymrat.supervisor.claude import ClaudeClient, ClientFactory
 from gymrat.supervisor.events import SessionEvent, UsageUpdateEvent
 from tests._cli import try_read_report
 from tests._process_helpers import capture_spawns
-from tests.supervisor._fixtures import collecting_observer, make_prompt
+from tests.supervisor._fixtures import collecting_observer, make_prompt, result_message
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only process groups for tree-kill"
@@ -328,17 +328,7 @@ async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
 
 async def test_claude_driver_when_abort_unused_and_settles_does_not_leak_task_diagnostics() -> None:
     records = install_task_leak_recorder()
-    client = ScriptedClaudeClient(
-        [
-            SimpleNamespace(
-                subtype="success",
-                is_error=False,
-                num_turns=1,
-                total_cost_usd=0.05,
-                result=None,
-            ),
-        ]
-    )
+    client = ScriptedClaudeClient([result_message(total_cost_usd=0.05)])
     driver = create_claude_driver(client_factory=claude_factory(client))
     abort = asyncio.Event()  # provided but never fired: the watch task must be cleaned up
 
