@@ -11,15 +11,17 @@ import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from gymrat.errors import GymratError
-from gymrat.session.lock import _os_lock_file, acquire_lock
+from gymrat.session.lock import _os_lock_file, _publish_lock_file, acquire_lock
 from tests.conftest import hold_lock
 
 # ---------------------------------------------------------------------------
@@ -67,21 +69,37 @@ def assert_holder_record(
     assert AT_PATTERN.match(record["at"])
 
 
-def refuse_open(monkeypatch: pytest.MonkeyPatch, lock_path: str) -> None:
-    """Make every ``os.open`` of the OS lock file raise PermissionError.
+def refuse_open(monkeypatch: pytest.MonkeyPatch, target_path: str) -> None:
+    """Make every ``os.open`` of ``target_path`` raise PermissionError.
 
-    The OS lock lives at ``lock_path + ".lock"``; targeting that path matches
-    the seam where ``filelock`` opens the file on Unix (via ``os.open``).
+    Used for both the OS lock file (``lock_path + ".lock"``) and the publish
+    lock file — the seams where ``filelock`` opens a file on Unix (via
+    ``os.open``).
     """
     real_open = os.open
-    os_lock_path = _os_lock_file(lock_path)
 
     def spy_open(path: str, *args: int) -> int:
-        if path == os_lock_path:
+        if path == target_path:
             raise PermissionError(13, "Permission denied")
         return real_open(path, *args)
 
     monkeypatch.setattr(os, "open", spy_open)
+
+
+def time_out_publish_lock(monkeypatch: pytest.MonkeyPatch, publish_path: str) -> None:
+    """Make ``FileLock.acquire`` raise ``Timeout`` only for the publish lock.
+
+    Every other ``FileLock.acquire`` call (the main lock) behaves normally,
+    simulating a stalled publisher without blocking the winning acquisition.
+    """
+    real_acquire = FileLock.acquire
+
+    def selective_timeout(self: FileLock, *args: Any, **kwargs: Any) -> None:
+        if self.lock_file == publish_path:
+            raise FileLockTimeout(self.lock_file)
+        real_acquire(self, *args, **kwargs)
+
+    monkeypatch.setattr(FileLock, "acquire", selective_timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +206,9 @@ def test_acquire_lock_when_released_then_reacquired_does_succeed():
 
 
 def test_acquire_lock_when_previous_holder_released_does_succeed():
-    """After a FileLock is released, acquire_lock succeeds.
+    """Simulates kernel cleanup after crash.
 
-    Simulates kernel cleanup after crash: stale holder JSON remains on disk
-    but the advisory lock is free.
+    Stale holder JSON remains on disk but the advisory lock is free.
     """
     lock_path = fresh_lock_path()
     holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
@@ -253,20 +270,28 @@ def test_release_when_called_does_not_delete_lock_file():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX hint")
+@pytest.mark.parametrize(
+    "lock_file",
+    [
+        pytest.param(_os_lock_file, id="main-lock"),
+        pytest.param(_publish_lock_file, id="publish-lock"),
+    ],
+)
 def test_acquire_lock_when_permission_error_posix_does_advise_removal(
+    lock_file: Callable[[str], str],
     monkeypatch: pytest.MonkeyPatch,
 ):
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-    refuse_open(monkeypatch, lock_path)
+    target_path = lock_file(lock_path)
+    refuse_open(monkeypatch, target_path)
 
     with pytest.raises(GymratError) as caught:
         acquire_lock(lock_path, "compare")
 
-    os_lock_path = _os_lock_file(lock_path)
     hint = caught.value.hint or ""
     assert "belongs to another user" in hint
-    assert os_lock_path in hint
+    assert target_path in hint
     assert re.search("remove", hint, re.IGNORECASE)
 
 
@@ -304,3 +329,54 @@ def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable():
     mode = Path(lock_path).stat().st_mode & 0o777
     assert mode == 0o666
     release()
+
+
+# ---------------------------------------------------------------------------
+# publish lock — serialized acquisition
+# ---------------------------------------------------------------------------
+
+
+def test_acquire_lock_when_publish_lock_times_out_does_still_acquire(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Simulates a stalled publisher via a publish-lock ``Timeout``.
+
+    The main lock is free, so ``acquire_lock`` should fall through to a
+    successful acquisition and still publish the holder record.
+    """
+    lock_path = fresh_lock_path()
+    publish_path = _publish_lock_file(lock_path)
+    time_out_publish_lock(monkeypatch, publish_path)
+
+    release = acquire_lock(lock_path, "compare")
+
+    assert callable(release)
+    assert_holder_record(read_holder(lock_path))
+    release()
+
+
+def test_acquire_lock_when_publish_lock_times_out_and_contended_does_still_report_holder(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Loser reports diagnostics even when the publish lock is unobtainable.
+
+    A stalled publisher must not prevent the contention error from including
+    best-effort diagnostics from whatever the holder file contains.
+    """
+    lock_path = fresh_lock_path()
+    publish_path = _publish_lock_file(lock_path)
+    holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
+    blocker = hold_lock(lock_path, holder=holder)
+    time_out_publish_lock(monkeypatch, publish_path)
+
+    try:
+        with pytest.raises(GymratError) as caught:
+            acquire_lock(lock_path, "compare")
+
+        message = str(caught.value)
+        assert "PID 99999" in message
+        assert "measure" in message
+        assert FIXED_AT in message
+        assert caught.value.hint == LIVE_HOLDER_HINT
+    finally:
+        blocker.release()

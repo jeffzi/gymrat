@@ -45,6 +45,10 @@ AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 # immaterial, only that a holder record is well-formed.
 WRITTEN_LOCK_AT = "2026-01-01T00:00:00.000Z"
 
+# Ceiling for a race to resolve and for children to exit once released; generous
+# enough to absorb CI scheduling jitter without masking a real deadlock.
+RACE_TIMEOUT_SECONDS = 30
+
 # A child that races for the lock, records its verdict under ``results``, and —
 # when it wins — holds the lock until the parent drops the release flag, so
 # every rival races against a genuinely live holder.
@@ -153,7 +157,7 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
     try:
         os.write(go_fd, b"\x00" * count)
 
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + RACE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             won = sorted(results.glob("won.*"))
             lost = sorted(results.glob("lost.*"))
@@ -167,7 +171,7 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
         snapshot = Path(lock_path).read_text(encoding="utf-8") if Path(lock_path).exists() else None
 
         release_flag.write_text("go", encoding="utf-8")
-        exit_codes = [child.wait(timeout=30) for child in children]
+        exit_codes = [child.wait(timeout=RACE_TIMEOUT_SECONDS) for child in children]
         child_errors = [child.stderr.read() if child.stderr else "" for child in children]
     finally:
         os.close(go_fd)
