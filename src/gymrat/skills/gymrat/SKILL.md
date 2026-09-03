@@ -119,11 +119,19 @@ gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--log <path>] [--mo
 ```
 
 Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.toml` and
-`--max-minutes`. `--allow-dirty` permits uncommitted changes.
+`--max-minutes`. `--allow-dirty` permits uncommitted changes in the main working tree only.
+`supervise` always refuses to launch when the experiment worktree has uncommitted changes: settle
+an unsettled iteration with `keep` or `discard`, and measure or hand-revert any unmeasured edit
+first.
 
 **Never run `gymrat supervise` yourself.** If this text is in your system prompt, you are the
 supervised agent: a nested launch spawns a second agent, a second cap, and a second bill against
 the same repository, and the supervise lock does not stop it.
+
+**No human reads your turns.** The run ends the moment you end your turn — no further messages
+arrive. Never end a turn with a question, a request for a decision, or an offer of alternatives:
+nobody answers, and the session closes with the question hanging. Decide from the runbook and
+continue. The only turn you end is the final report.
 
 ## Keeping iterations cheap
 
@@ -219,8 +227,10 @@ experiment worktree has conflicting uncommitted changes.
    runbook's goal is the criterion. Report and stop when a target proves unreachable after sustained
    NO-SIGNAL.
 
-2. **When a hook fails, report the failure and pause for the user to decide.** Hooks cannot fail
-   the loop, so a silently-ignored failure reaches `keep` unnoticed.
+2. **When a hook fails, report the failure and stop the loop.** Hooks cannot fail the loop, so a
+   silently-ignored failure reaches `keep` unnoticed. Unsupervised: pause for the user to decide.
+   Supervised (no human reads your turns): discard the affected iteration if one is unsettled, then
+   end with a report naming the hook and its output.
 
 3. **Never run concurrent sessions.** Every command that runs the bench — `measure` and `compare`
    included — or mutates the session holds a per-repository lock, and a second gymrat process
@@ -232,16 +242,17 @@ experiment worktree has conflicting uncommitted changes.
 
 ## Rationalizations
 
-| Excuse                                                           | Reality                                                                                                                          |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| "The full suite is a safer probe"                                | It costs a whole measurement side to answer what a scoped `--bench` answers.                                                     |
-| "This probe is close enough; `iterate` is faster than reprobing" | `iterate` costs 2 × a probe, spends a `max_iterations` slot, and leaves the session unsettled. Reprobe with a tighter `--bench`. |
-| "`--samples 3` is enough to see the direction"                   | Below 6 the verdict is a noise band; a NO-SIGNAL at 3 means nothing.                                                             |
-| "The cap is close, but `iterate` might just make it"             | A measurement the cap kills records nothing. Report what the probes measured.                                                    |
-| "Two NO-SIGNALs; the target is unreachable"                      | Report only after sustained NO-SIGNAL, and only when no configured stop condition is still unfired.                              |
-| "NO-SIGNAL, but the code is cleaner, so keep it"                 | NO-SIGNAL means no measurable effect. `keep` needs IMPROVED.                                                                     |
-| "A quick `cd` into the worktree to look around"                  | The cwd sticks; every gymrat command after it reports "No session". Use `git -C`.                                                |
-| "I'll rework the edit on top of the failed one"                  | Discard first; reworking without discarding conflates the changes.                                                               |
+| Excuse                                                           | Reality                                                                                                                                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "The full suite is a safer probe"                                | It costs a whole measurement side to answer what a scoped `--bench` answers.                                                                                        |
+| "This probe is close enough; `iterate` is faster than reprobing" | `iterate` costs 2 × a probe, spends a `max_iterations` slot, and leaves the session unsettled. Reprobe with a tighter `--bench`.                                    |
+| "`--samples 3` is enough to see the direction"                   | Below 6 the verdict is a noise band; a NO-SIGNAL at 3 means nothing.                                                                                                |
+| "The cap is close, but `iterate` might just make it"             | A measurement the cap kills records nothing. Report what the probes measured.                                                                                       |
+| "Two NO-SIGNALs; the target is unreachable"                      | Report only after sustained NO-SIGNAL, and only when no configured stop condition is still unfired.                                                                 |
+| "NO-SIGNAL, but the code is cleaner, so keep it"                 | NO-SIGNAL means no measurable effect. `keep` needs IMPROVED.                                                                                                        |
+| "A quick `cd` into the worktree to look around"                  | The cwd sticks; every gymrat command after it reports "No session". Use `git -C`.                                                                                   |
+| "I'll rework the edit on top of the failed one"                  | Discard first; reworking without discarding conflates the changes.                                                                                                  |
+| "I'll ask before touching work I didn't make"                    | In supervised mode, nobody answers. Measure an unmeasured edit already in the experiment worktree with `iterate`, or revert it by hand; never leave it for a human. |
 
 ## Red flags — stop and re-read the rule
 

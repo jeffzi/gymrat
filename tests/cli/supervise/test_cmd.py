@@ -12,6 +12,7 @@ upstream test harness.
 
 import os
 import re
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -27,16 +28,28 @@ from gymrat.cli.shared import write_and_flush
 from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
 from gymrat.config import BenchlessConfig, StopConfig
 from gymrat.errors import GymratError
-from gymrat.session.paths import supervise_lockfile_path
+from gymrat.session import append_record
+from gymrat.session.paths import (
+    experiment_worktree_dir,
+    session_jsonl_path,
+    supervise_lockfile_path,
+)
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import SupervisionResult, create_claude_driver
 from tests._ansi import strip_ansi
+from tests.cli._loop_cmds import make_discard_repo
 from tests.cli.supervise._fixtures import (
     make_supervision_result,
     session_state_three_iterations,
 )
 from tests.conftest import hold_lock
+from tests.loop.iterate._fixtures import resolved_config
+from tests.session.records._fixtures import (
+    committed_keep,
+    finalize_record,
+    iteration_record,
+)
 
 runner = CliRunner()
 
@@ -75,6 +88,7 @@ class _Seams:
         self.driver = object()
         self.observer: Callable[[object], None] = lambda _event: None
         self.session_result: ReadSessionResult | None = None
+        self.final_text: str | None = None
         self.reporter_stop = create_autospec(_real_reporter_stop(), name="reporter.stop")
         self.ensure_git_exclude = create_autospec(ensure_git_exclude, name="ensure_git_exclude")
         self.create_driver = create_autospec(
@@ -109,11 +123,13 @@ def _install_seams(
     config: BenchlessConfig | None = None,
     result: SupervisionResult | None = None,
     session_result: ReadSessionResult | None = None,
+    final_text: str | None = None,
     raises: Exception | None = None,
 ) -> _Seams:
     """Replace every seam ``supervise.cmd`` composes over, returning the recorders."""
     seams = _Seams()
     seams.session_result = session_result
+    seams.final_text = final_text
     resolved = config if config is not None else _config()
     handed_back = result if result is not None else make_supervision_result()
 
@@ -137,6 +153,7 @@ def _install_seams(
             observer=seams.observer,
             stop=seams.reporter_stop,
             session_result=lambda: seams.session_result,
+            final_text=lambda: seams.final_text,
         )
 
     monkeypatch.setattr("gymrat.cli.supervise.cmd.resolve_benchless_config", fake_resolve)
@@ -343,6 +360,107 @@ def test_supervise_when_untracked_directory_dirty_does_count_its_files(
 
 
 # ---------------------------------------------------------------------------
+# dirty experiment-worktree guard
+# ---------------------------------------------------------------------------
+
+
+def _start_open_session(repo: str) -> None:
+    """Start a gymrat session so the experiment worktree and session log exist."""
+    from gymrat.loop.start import start_session
+
+    start_session(repo, "main", resolved_config())
+
+
+def _dirty_experiment_worktree(repo: str, *names: str) -> None:
+    """Write each of ``names`` as an uncommitted file into the experiment worktree."""
+    worktree = Path(experiment_worktree_dir(repo))
+    for name in names:
+        (worktree / name).write_text("dirty\n", encoding="utf-8")
+
+
+def _setup_finalized_with_dirty_worktree(repo: str) -> None:
+    """A finalized session whose experiment worktree still has uncommitted files."""
+    _start_open_session(repo)
+    log = session_jsonl_path(repo)
+    append_record(log, iteration_record(seq=1))
+    append_record(log, committed_keep(seq=1))
+    append_record(log, finalize_record())
+    _dirty_experiment_worktree(repo, "stale.txt")
+
+
+def _setup_open_session_missing_worktree(repo: str) -> None:
+    """An open session whose experiment worktree directory no longer exists on disk."""
+    _start_open_session(repo)
+    shutil.rmtree(experiment_worktree_dir(repo))
+
+
+def test_supervise_when_experiment_worktree_dirty_with_unsettled_does_exit_two_with_settle_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    make_discard_repo(repo)
+    _dirty_experiment_worktree(repo, "scratch.txt")
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 2
+    text = _err_text(result)
+    assert re.search(r"unsettled", text, re.IGNORECASE)
+    assert "gymrat keep" in text
+    assert "gymrat discard" in text
+
+
+def test_supervise_when_experiment_worktree_dirty_without_unsettled_does_exit_two_with_iterate_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    _start_open_session(repo)
+    worktree = experiment_worktree_dir(repo)
+    _dirty_experiment_worktree(repo, "a.txt", "b.txt")
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 2
+    text = _err_text(result)
+    assert "2 unmeasured edits" in text
+    assert "gymrat iterate" in text
+    assert worktree in text
+
+
+def test_supervise_when_experiment_worktree_dirty_and_allow_dirty_does_still_exit_two(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    make_discard_repo(repo)
+    _dirty_experiment_worktree(repo, "scratch.txt")
+
+    result = _run("optimize it", "--max-minutes", "10", "--allow-dirty")
+
+    assert result.exit_code == 2
+    assert "unsettled" in result.stderr.lower()
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        pytest.param(_setup_finalized_with_dirty_worktree, id="finalized-session"),
+        pytest.param(_setup_open_session_missing_worktree, id="missing-worktree"),
+        # An open session whose experiment worktree has no uncommitted changes.
+        pytest.param(_start_open_session, id="clean-worktree"),
+    ],
+)
+def test_supervise_when_experiment_worktree_guard_finds_no_issue_does_proceed(
+    repo: str, monkeypatch: pytest.MonkeyPatch, setup: Callable[[str], None]
+):
+    _install_seams(monkeypatch)
+    setup(repo)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
 # supervise lock
 # ---------------------------------------------------------------------------
 
@@ -384,6 +502,17 @@ def test_supervise_when_run_completes_does_print_summary_on_stdout_and_log_on_st
     assert ".jsonl" in result.stderr
 
 
+def test_supervise_when_session_ends_with_final_text_does_show_the_agent_row(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch, final_text="all done here")
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert "all done here" in result.stdout
+
+
 def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loop_row(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -393,7 +522,7 @@ def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loo
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert "  loop  3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
+    assert "  loop   3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
 
 
 def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
@@ -408,7 +537,7 @@ def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
     result = _run("optimize it", "--max-minutes", "10", "--log", custom)
 
     assert result.exit_code == 0
-    assert f"  log   {custom}" in result.stdout
+    assert f"  log    {custom}" in result.stdout
 
 
 def test_supervise_when_stdout_is_not_a_tty_does_print_the_summary_without_ansi_codes(

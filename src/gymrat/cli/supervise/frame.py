@@ -61,6 +61,11 @@ _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
 
 
+# ---------------------------------------------------------------------------
+# Time and cost formatting
+# ---------------------------------------------------------------------------
+
+
 def format_cost(usd: float) -> str:
     """Format a USD amount as a two-decimal dollar string."""
     return f"${usd:.2f}"
@@ -123,6 +128,11 @@ def _build_cost_text(cost_usd: float | None, max_usd: float | None) -> Text:
     if max_usd is not None:
         text.append(f" / {format_cost(max_usd)}")
     return text
+
+
+# ---------------------------------------------------------------------------
+# Loop and best summary
+# ---------------------------------------------------------------------------
 
 
 def _outcome_style(outcome: str) -> str:
@@ -201,6 +211,11 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
         )
     text.append(f" (iteration {session_result.best_seq})", style=STYLE_META)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Dashboard frame
+# ---------------------------------------------------------------------------
 
 
 def _style_unless_no_color(style: str, *, no_color: bool) -> str:
@@ -396,9 +411,13 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
     return Group(log_line, panel)
 
 
-# The label column of the summary rows, wide enough for "best" and "loop"; the
-# two spaces on either side indent the block and separate label from content.
-_SUMMARY_LABEL_WIDTH = 4
+# ---------------------------------------------------------------------------
+# Closing summary
+# ---------------------------------------------------------------------------
+
+# The label column of the summary rows, wide enough for "agent"; the two
+# spaces on either side indent the block and separate label from content.
+_SUMMARY_LABEL_WIDTH = 5
 
 #: How a cap that stopped the session reads in the closing headline.
 _CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spend cap"}
@@ -421,8 +440,13 @@ def _build_outcome_text(result: SupervisionResult) -> Text:
     return text
 
 
+def _row_prefix(label: str) -> str:
+    """The two-space-indented, padded label lead-in shared by every summary row."""
+    return f"  {label:<{_SUMMARY_LABEL_WIDTH}}  "
+
+
 def _summary_row(label: str, content: Text) -> Text:
-    row = Text(f"  {label:<{_SUMMARY_LABEL_WIDTH}}  ")
+    row = Text(_row_prefix(label))
     row.append_text(content)
     return row
 
@@ -442,19 +466,38 @@ def _log_path_text(log_path: str) -> Text:
     return Text(display, style=f"link {uri}")
 
 
+def _build_agent_row(final_text: str) -> Text:
+    """Build the agent summary row with continuation-line indentation.
+
+    Each line after the first is indented to align under the content column so
+    paragraph breaks in the agent's final message are preserved visually.
+    """
+    indent = " " * len(_row_prefix("agent"))
+    indented = final_text.replace("\n", f"\n{indent}")
+    return _summary_row("agent", Text(indented))
+
+
 def build_summary(
     result: SupervisionResult,
     *,
     log_path: str,
     session_result: ReadSessionResult | None,
+    final_text: str | None = None,
 ) -> Text:
     """Build the closing summary ``gymrat supervise`` prints when a run ends.
 
     The headline states how the run ended; the rows below it reuse the
     dashboard's best and loop renderables, so the last thing printed reads like
     the frame it replaces, and end with where the event log landed.
+
+    When the session ended on its own (not by a cap or error) and the agent
+    produced final text, an ``agent`` row appears after the headline showing the
+    full text with paragraph breaks preserved.
     """
+    ended_on_its_own = result.ended_by == "session" and result.outcome.reason != "error"
     rows = [_build_outcome_text(result)]
+    if ended_on_its_own and final_text is not None:
+        rows.append(_build_agent_row(final_text))
     best_text = _build_best_text(session_result)
     if best_text is not None:
         rows.append(_summary_row("best", best_text))

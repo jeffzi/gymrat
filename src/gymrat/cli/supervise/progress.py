@@ -271,6 +271,11 @@ def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
     _emit_live(ctx)
 
 
+def _handle_text_delta(ctx: ReporterCtx, event: TextDeltaEvent) -> None:
+    if event.parent_tool_use_id is None:
+        ctx.last_top_level_text = event.chunk
+
+
 def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
     match event:
         case CapEvent():
@@ -290,7 +295,7 @@ def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
         case ModelPhaseEvent():
             _handle_model_phase(ctx, event)
         case TextDeltaEvent():
-            pass
+            _handle_text_delta(ctx, event)
         case _:  # pragma: no cover - exhaustive over the event union
             assert_never(event)
 
@@ -355,6 +360,7 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         nested_tool_ids={},
         no_color=no_color,
         log_path=log_path,
+        last_top_level_text=None,
     )
 
 
@@ -419,6 +425,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         frame=lambda: build_frame(ctx),
         warn=warn,
         session_result=lambda: ctx.session_result,
+        final_text=lambda: ctx.last_top_level_text,
     )
 
 

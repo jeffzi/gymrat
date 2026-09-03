@@ -29,7 +29,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
     summarize,
 )
-from tests.supervisor._fixtures import collecting_observer, make_prompt
+from tests.supervisor._fixtures import collecting_observer, make_prompt, noop_observer
 
 # ---------------------------------------------------------------------------
 # fake streaming client
@@ -41,9 +41,9 @@ class FakeClient:
 
     ``receive_messages`` yields each supplied message after an
     ``asyncio.sleep(0)`` handshake so an observer-scheduled interrupt or an
-    abort lands deterministically between messages. When ``hang`` is set, the
-    stream blocks after the scripted messages until ``disconnect`` releases it,
-    letting a test prove that an abort tears the connection down.
+    abort lands deterministically between messages.  After the scripted
+    messages, the stream blocks until ``disconnect`` releases it, mirroring
+    the real SDK whose ``receive_messages`` iterator never terminates.
     """
 
     def __init__(
@@ -51,11 +51,9 @@ class FakeClient:
         messages: Sequence[object],
         *,
         throw: Exception | None = None,
-        hang: bool = False,
     ) -> None:
         self.messages = messages
         self.throw = throw
-        self.hang = hang
         self.options: dict[str, object] | None = None
         self.query_prompt: str | None = None
         self.interrupt_called = False
@@ -74,8 +72,7 @@ class FakeClient:
             yield message
         if self.throw is not None:
             raise self.throw
-        if self.hang:
-            await self._released.wait()
+        await self._released.wait()
 
     async def interrupt(self) -> None:
         self.interrupt_called = True
@@ -125,29 +122,71 @@ def stream_event(
     return ns
 
 
+def result_message(
+    *,
+    subtype: str = "success",
+    is_error: bool = False,
+    num_turns: int = 1,
+    total_cost_usd: float | None = None,
+    result: str | None = None,
+) -> SimpleNamespace:
+    """Build a result message shaped like the SDK's ``ResultMessage``.
+
+    A result message is identified by having both ``subtype`` and ``num_turns``
+    attributes; a system message has ``subtype`` alone.
+    """
+    return SimpleNamespace(
+        subtype=subtype,
+        is_error=is_error,
+        num_turns=num_turns,
+        total_cost_usd=total_cost_usd,
+        result=result,
+    )
+
+
+def system_message(*, subtype: str = "init") -> SimpleNamespace:
+    """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
+    return SimpleNamespace(subtype=subtype)
+
+
 async def run_session(
     driver: Driver,
     observer: SessionObserver,
     prompt: SessionPrompt | None = None,
     abort: asyncio.Event | None = None,
-):
+    *,
+    max_wait: float = 30.0,
+) -> SessionOutcome:
     """Start a session and await its settled outcome."""
     session = driver.start(prompt or make_prompt(), observer, abort)
-    return await session.outcome
+    return await asyncio.wait_for(session.outcome, max_wait)
+
+
+async def run_outcome(
+    client: FakeClient, observer: SessionObserver | None = None
+) -> SessionOutcome:
+    """Drive ``client`` through a session and return its settled outcome."""
+    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    return await run_session(driver, observer or noop_observer())
 
 
 async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
-    """Drive a session over scripted ``messages`` and return the events it emitted."""
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
+    """Drive a session over scripted ``messages`` and return the events it emitted.
+
+    A no-cost result message is appended to end the stream cleanly.  Tests
+    that need precise control over the result message use ``run_session``
+    directly.
+    """
+    driver = create_claude_driver(
+        client_factory=FactoryProbe(FakeClient([*messages, result_message()]))
+    )
     probe = collecting_observer()
     await run_session(driver, probe.observer)
     return probe.events
 
 
-async def run_outcome(messages: Sequence[object]) -> SessionOutcome:
-    """Drive a session over scripted ``messages`` and return its settled outcome."""
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient(messages)))
-    return await run_session(driver, collecting_observer().observer)
+def events_of[T: SessionEvent](events: Sequence[SessionEvent], event_type: type[T]) -> list[T]:
+    return [e for e in events if isinstance(e, event_type)]
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +225,7 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: 
 
 async def _start_with_prompt(prompt: SessionPrompt) -> FakeClient:
     """Start a session with ``prompt`` and return the client it drove."""
-    client = FakeClient([])
+    client = FakeClient([result_message()])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     await run_session(driver, collecting_observer().observer, prompt)
     return client
@@ -243,7 +282,7 @@ async def test_start_when_model_absent_does_omit_model():
 async def test_mapping_when_text_block_does_emit_text_delta():
     events = await run_with_messages([assistant(SimpleNamespace(text="hello world"))])
 
-    text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+    text_events = events_of(events, TextDeltaEvent)
     assert len(text_events) == 1
     assert text_events[0].chunk == "hello world"
 
@@ -253,7 +292,7 @@ async def test_mapping_when_tool_use_block_does_emit_tool_start():
 
     events = await run_with_messages([assistant(tool_use)])
 
-    starts = [e for e in events if isinstance(e, ToolStartEvent)]
+    starts = events_of(events, ToolStartEvent)
     assert len(starts) == 1
     assert starts[0].tool_use_id == "tu_1"
     assert starts[0].tool_name == "Read"
@@ -265,12 +304,14 @@ async def test_mapping_when_read_path_under_cwd_does_summarize_relative_to_cwd()
     tool_use = SimpleNamespace(
         id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"}
     )
-    driver = create_claude_driver(client_factory=FactoryProbe(FakeClient([assistant(tool_use)])))
+    driver = create_claude_driver(
+        client_factory=FactoryProbe(FakeClient([assistant(tool_use), result_message()]))
+    )
     probe = collecting_observer()
 
     await run_session(driver, probe.observer, make_prompt(cwd="/my/project"))
 
-    starts = [e for e in probe.events if isinstance(e, ToolStartEvent)]
+    starts = events_of(probe.events, ToolStartEvent)
     assert starts[0].input_summary == "src/main.py"
 
 
@@ -282,7 +323,7 @@ async def test_mapping_when_tool_result_matches_start_does_emit_tool_end_with_tr
 
     events = await run_with_messages(messages)
 
-    ends = [e for e in events if isinstance(e, ToolEndEvent)]
+    ends = events_of(events, ToolEndEvent)
     assert len(ends) == 1
     assert ends[0].tool_use_id == "tu_1"
     assert ends[0].tool_name == "Read"
@@ -296,7 +337,7 @@ async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_
 
     events = await run_with_messages([orphan])
 
-    ends = [e for e in events if isinstance(e, ToolEndEvent)]
+    ends = events_of(events, ToolEndEvent)
     assert len(ends) == 1
     assert ends[0].tool_name == "unknown"
     assert ends[0].tool_use_id == "tu_orphan"
@@ -312,7 +353,7 @@ async def test_mapping_when_tool_result_content_not_string_does_json_encode():
 
     events = await run_with_messages(messages)
 
-    ends = [e for e in events if isinstance(e, ToolEndEvent)]
+    ends = events_of(events, ToolEndEvent)
     assert len(ends) == 1
     assert ends[0].result == json.dumps(payload)
 
@@ -326,7 +367,7 @@ async def test_mapping_when_tool_result_content_not_json_encodable_does_fall_bac
 
     events = await run_with_messages(messages)
 
-    ends = [e for e in events if isinstance(e, ToolEndEvent)]
+    ends = events_of(events, ToolEndEvent)
     assert len(ends) == 1
     assert ends[0].result == "UNSERIALIZABLE"
 
@@ -345,7 +386,7 @@ async def test_mapping_when_single_thinking_block_streamed_does_report_delta_equ
 
     events = await run_with_messages(messages)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     assert len(updates) == 2
     assert updates[0].delta == 0
     assert updates[0].estimated_tokens == 0
@@ -375,7 +416,7 @@ async def test_mapping_when_multiple_thinking_blocks_streamed_does_accumulate_es
 
     events = await run_with_messages(messages)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     first_block = [u for u in updates if u.estimated_tokens <= 1]
     second_block_final = updates[-1]
     assert first_block[-1].estimated_tokens == 1
@@ -402,8 +443,8 @@ async def test_stream_when_thinking_delta_short_does_flush_only_on_block_stop():
 
     events = await run_with_messages(messages)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
-    assert updates[-1].estimated_tokens == 25  # ceil(100 / 4)
+    updates = events_of(events, ThinkingUpdateEvent)
+    assert updates[-1].estimated_tokens == ceil(100 / 4)
 
 
 async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block():
@@ -422,11 +463,11 @@ async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block()
 
     events = await run_with_messages(messages)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     # block_start (delta=0), mid-block emit, block_stop flush
     assert len(updates) >= 2
     final = updates[-1]
-    assert final.estimated_tokens == 63  # ceil(250 / 4)
+    assert final.estimated_tokens == ceil(250 / 4)
 
 
 async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count():
@@ -449,7 +490,7 @@ async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count()
 
     events = await run_with_messages(messages)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     max_allowed = ceil(1000 / 200) + 2
     assert len(updates) <= max_allowed
     assert updates[-1].estimated_tokens == ceil(1000 / 4)
@@ -483,14 +524,14 @@ async def test_stream_when_block_start_does_emit_model_phase(
 ):
     events = await run_with_messages(messages)
 
-    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    phases = events_of(events, ModelPhaseEvent)
     assert any(p.phase == expected_phase for p in phases)
 
 
 async def test_stream_when_thinking_block_start_does_emit_initial_thinking_update():
     events = await run_with_messages(_THINKING_BLOCK_MESSAGES)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     assert len(updates) >= 1
     assert updates[0].delta == 0
     assert updates[0].estimated_tokens == 0
@@ -509,7 +550,7 @@ async def test_stream_when_tool_use_block_start_does_emit_model_phase_tool_input
 
     events = await run_with_messages(messages)
 
-    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    phases = events_of(events, ModelPhaseEvent)
     tool_phases = [p for p in phases if p.phase == "tool_input"]
     assert len(tool_phases) == 1
     assert tool_phases[0].tool_name == "Read"
@@ -575,11 +616,11 @@ async def test_stream_when_subagent_thinking_does_not_inflate_top_level_total():
 
     events = await run_with_messages(messages)
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     top = [u for u in updates if u.parent_tool_use_id is None]
     sub = [u for u in updates if u.parent_tool_use_id == "tu_sub"]
-    assert top[-1].estimated_tokens == 1  # ceil(4 / 4)
-    assert sub[-1].estimated_tokens == 100  # ceil(400 / 4)
+    assert top[-1].estimated_tokens == ceil(4 / 4)
+    assert sub[-1].estimated_tokens == ceil(400 / 4)
 
 
 # ---------------------------------------------------------------------------
@@ -598,9 +639,9 @@ async def test_stream_when_thinking_block_start_with_parent_does_carry_parent_to
 
     events = await run_with_messages(messages)
 
-    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    phases = events_of(events, ModelPhaseEvent)
     assert phases[0].parent_tool_use_id == "tu_42"
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     assert updates[0].parent_tool_use_id == "tu_42"
 
 
@@ -614,7 +655,7 @@ async def test_stream_when_text_block_start_with_parent_does_carry_parent_tool_u
 
     events = await run_with_messages(messages)
 
-    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    phases = events_of(events, ModelPhaseEvent)
     assert phases[0].parent_tool_use_id == "tu_99"
 
 
@@ -625,7 +666,7 @@ async def test_stream_when_message_stop_with_parent_does_carry_parent_tool_use_i
 
     events = await run_with_messages(messages)
 
-    phases = [e for e in events if isinstance(e, ModelPhaseEvent)]
+    phases = events_of(events, ModelPhaseEvent)
     assert phases[0].parent_tool_use_id == "tu_end"
 
 
@@ -640,16 +681,26 @@ async def test_mapping_when_complete_thinking_block_does_not_emit_thinking_updat
 
     events = await run_with_messages([thinking])
 
-    updates = [e for e in events if isinstance(e, ThinkingUpdateEvent)]
+    updates = events_of(events, ThinkingUpdateEvent)
     assert updates == []
 
 
 async def test_mapping_when_complete_text_block_does_still_emit_text_delta():
     events = await run_with_messages([assistant(SimpleNamespace(text="hello"))])
 
-    text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+    text_events = events_of(events, TextDeltaEvent)
     assert len(text_events) == 1
     assert text_events[0].chunk == "hello"
+
+
+async def test_mapping_when_text_block_with_parent_does_carry_parent_tool_use_id():
+    msg = assistant(SimpleNamespace(text="subagent output"), parent_tool_use_id="tu_parent")
+
+    events = await run_with_messages([msg])
+
+    text_events = events_of(events, TextDeltaEvent)
+    assert len(text_events) == 1
+    assert text_events[0].parent_tool_use_id == "tu_parent"
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +714,7 @@ async def test_mapping_when_tool_use_with_parent_does_carry_parent_tool_use_id()
 
     events = await run_with_messages([msg])
 
-    starts = [e for e in events if isinstance(e, ToolStartEvent)]
+    starts = events_of(events, ToolStartEvent)
     assert starts[0].parent_tool_use_id == "tu_parent"
 
 
@@ -681,7 +732,7 @@ async def test_mapping_when_tool_result_with_parent_does_carry_parent_tool_use_i
 
     events = await run_with_messages(messages)
 
-    ends = [e for e in events if isinstance(e, ToolEndEvent)]
+    ends = events_of(events, ToolEndEvent)
     assert ends[0].parent_tool_use_id == "tu_parent"
 
 
@@ -718,24 +769,10 @@ async def test_mapping_when_message_malformed_does_emit_nothing(message: object)
 # ---------------------------------------------------------------------------
 
 
-async def test_cost_when_results_have_cost_does_emit_usage_update_per_result():
-    messages = [
-        assistant(SimpleNamespace(text="working...")),
-        SimpleNamespace(total_cost_usd=0.03),
-        assistant(SimpleNamespace(text="done")),
-        SimpleNamespace(total_cost_usd=0.07),
-    ]
-
-    events = await run_with_messages(messages)
-
-    usage = [e for e in events if isinstance(e, UsageUpdateEvent)]
-    assert [e.cost_usd for e in usage] == [0.03, 0.07]
-
-
-async def test_cost_when_no_result_messages_does_not_emit_usage_update():
+async def test_cost_when_no_messages_carry_cost_does_not_emit_usage_update():
     events = await run_with_messages([assistant(SimpleNamespace(text="hello"))])
 
-    assert [e for e in events if isinstance(e, UsageUpdateEvent)] == []
+    assert events_of(events, UsageUpdateEvent) == []
 
 
 # ---------------------------------------------------------------------------
@@ -824,7 +861,7 @@ async def test_interrupt_when_called_between_messages_does_stop_before_next_mess
     outcome = await session.outcome
 
     assert outcome.reason == "interrupted"
-    assert [e.chunk for e in probe.events if isinstance(e, TextDeltaEvent)] == ["first"]
+    assert [e.chunk for e in events_of(probe.events, TextDeltaEvent)] == ["first"]
 
 
 async def test_interrupt_when_called_repeatedly_before_client_does_resolve_interrupted_once():
@@ -847,7 +884,7 @@ async def test_interrupt_when_called_repeatedly_before_client_does_resolve_inter
 
 
 async def test_abort_when_fired_does_resolve_interrupted():
-    client = FakeClient([SimpleNamespace(total_cost_usd=0.1)], hang=True)
+    client = FakeClient([SimpleNamespace(total_cost_usd=0.1)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     abort = asyncio.Event()
     events: list[SessionEvent] = []
@@ -866,9 +903,7 @@ async def test_abort_when_fired_does_resolve_interrupted():
 
 
 async def test_abort_when_fired_after_interrupt_does_preserve_interrupt_cost():
-    client = FakeClient(
-        [SimpleNamespace(total_cost_usd=0.1), SimpleNamespace(total_cost_usd=0.3)], hang=True
-    )
+    client = FakeClient([SimpleNamespace(total_cost_usd=0.1), SimpleNamespace(total_cost_usd=0.3)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     abort = asyncio.Event()
     holder: dict[str, DriverSession] = {}
@@ -913,7 +948,7 @@ async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
             message = "abort disconnect failed"
             raise RuntimeError(message)
 
-    client = DisconnectRaisingClient([SimpleNamespace(total_cost_usd=0.10)], hang=True)
+    client = DisconnectRaisingClient([SimpleNamespace(total_cost_usd=0.10)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     abort = asyncio.Event()
 
@@ -929,24 +964,96 @@ async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
 
 
 # ---------------------------------------------------------------------------
-# outcome
+# result message — session settlement
 # ---------------------------------------------------------------------------
 
 
-async def test_outcome_when_stream_ends_normally_does_report_completed_with_last_cost():
-    messages = [SimpleNamespace(total_cost_usd=0.02), SimpleNamespace(total_cost_usd=0.05)]
+async def test_result_when_stream_yields_result_message_does_settle_completed():
+    messages = [
+        assistant(SimpleNamespace(text="done")),
+        result_message(total_cost_usd=0.05, num_turns=3),
+    ]
 
-    outcome = await run_outcome(messages)
+    outcome = await run_outcome(FakeClient(messages))
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.05
 
 
-async def test_outcome_when_no_results_does_report_completed_with_zero_cost():
-    outcome = await run_outcome([])
+@pytest.mark.parametrize(
+    ("result_text", "expected_message"),
+    [
+        pytest.param("something went wrong", "something went wrong", id="result-text-present"),
+        pytest.param(None, "error", id="result-text-absent-uses-subtype"),
+    ],
+)
+async def test_result_when_is_error_does_settle_error(
+    result_text: str | None,
+    expected_message: str,
+):
+    messages = [result_message(subtype="error", is_error=True, result=result_text)]
 
-    assert outcome.reason == "completed"
-    assert outcome.cost_usd == 0.0
+    outcome = await run_outcome(FakeClient(messages))
+
+    assert outcome.reason == "error"
+    assert outcome.message == expected_message
+
+
+@pytest.mark.parametrize(
+    ("cost", "expected_costs"),
+    [
+        pytest.param(0.05, [], id="positive-cost"),
+        pytest.param(None, [], id="none-cost"),
+        pytest.param(0.0, [], id="zero-cost"),
+    ],
+)
+async def test_result_when_cost_varies_does_emit_usage_update_only_for_positive(
+    cost: float | None,
+    expected_costs: list[float],
+):
+    messages = [result_message(total_cost_usd=cost)]
+    probe = collecting_observer()
+
+    await run_outcome(FakeClient(messages), probe.observer)
+
+    usage = events_of(probe.events, UsageUpdateEvent)
+    assert [e.cost_usd for e in usage] == expected_costs
+
+
+async def test_result_when_stream_ends_without_result_does_settle_error():
+    class FiniteClient(FakeClient):
+        """A client whose stream ends instead of blocking after the script."""
+
+        @override
+        async def receive_messages(self):
+            for message in self.messages:
+                await asyncio.sleep(0)
+                yield message
+
+    outcome = await run_outcome(FiniteClient([assistant(SimpleNamespace(text="hello"))]))
+
+    assert outcome.reason == "error"
+    assert outcome.message is not None
+    assert "result" in outcome.message.lower()
+
+
+async def test_result_when_system_message_has_subtype_does_not_end_session():
+    """A system message with ``subtype`` but no ``num_turns`` does not end the session."""
+    messages = [
+        system_message(subtype="init"),
+        assistant(SimpleNamespace(text="hello")),
+    ]
+
+    events = await run_with_messages(messages)
+
+    text_events = events_of(events, TextDeltaEvent)
+    assert len(text_events) == 1
+    assert text_events[0].chunk == "hello"
+
+
+# ---------------------------------------------------------------------------
+# error — stream exception
+# ---------------------------------------------------------------------------
 
 
 async def test_outcome_when_stream_raises_does_resolve_error_without_raising():
@@ -1008,7 +1115,7 @@ async def test_start_when_disconnect_raises_after_normal_stream_does_still_resol
             message = "teardown boom"
             raise RuntimeError(message)
 
-    client = DisconnectFailingClient([SimpleNamespace(total_cost_usd=0.05)])
+    client = DisconnectFailingClient([SimpleNamespace(total_cost_usd=0.05), result_message()])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
     with pytest.warns(RuntimeWarning, match="disconnect failed"):

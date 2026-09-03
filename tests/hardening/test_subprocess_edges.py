@@ -28,7 +28,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -62,18 +62,31 @@ _LEAK_MARKERS = ("was destroyed but it is pending", "exception was never retriev
 # ---------------------------------------------------------------------------
 
 
-async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, Any]:
-    """Poll until ``report_path`` holds a complete JSON report, then return it."""
+async def _poll_until[T](
+    fetch: Callable[[], T | None], *, timeout_s: float, timeout_message: str
+) -> T:
+    """Poll ``fetch`` every 20ms until it returns non-``None``.
+
+    Raises ``TimeoutError(timeout_message)`` if *timeout_s* elapses first.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     while True:
-        data = try_read_report(report_path)
-        if data is not None:
-            return data
+        value = fetch()
+        if value is not None:
+            return value
         if loop.time() > deadline:
-            message = f"report never appeared at {report_path}"
-            raise TimeoutError(message)
+            raise TimeoutError(timeout_message)
         await asyncio.sleep(0.02)
+
+
+async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, Any]:
+    """Poll until ``report_path`` holds a complete JSON report, then return it."""
+    return await _poll_until(
+        lambda: try_read_report(report_path),
+        timeout_s=timeout_s,
+        timeout_message=f"report never appeared at {report_path}",
+    )
 
 
 def file_exists(path: Path) -> bool:
@@ -83,13 +96,11 @@ def file_exists(path: Path) -> bool:
 
 async def wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
     """Poll until ``path`` exists."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not file_exists(path):
-        if loop.time() > deadline:
-            message = f"file never appeared at {path}"
-            raise TimeoutError(message)
-        await asyncio.sleep(0.02)
+    await _poll_until(
+        lambda: path if file_exists(path) else None,
+        timeout_s=timeout_s,
+        timeout_message=f"file never appeared at {path}",
+    )
 
 
 def make_fifo(path: Path) -> None:
@@ -137,13 +148,12 @@ def task_leak_messages(records: list[dict[str, object]]) -> list[str]:
 class ScriptedClaudeClient:
     """A minimal stand-in for the SDK streaming client the Claude driver drives.
 
-    It replays ``messages`` then, when ``hang`` is set, blocks until ``disconnect``
-    releases it, so an abort has something to tear down mid-stream.
+    After yielding all scripted messages, the stream blocks until ``disconnect``
+    releases it, mirroring the real SDK whose iterator never terminates.
     """
 
-    def __init__(self, messages: list[object], *, hang: bool = False) -> None:
+    def __init__(self, messages: list[object]) -> None:
         self.messages = messages
-        self.hang = hang
         self.disconnect_count = 0
         self._released = asyncio.Event()
 
@@ -157,8 +167,7 @@ class ScriptedClaudeClient:
         for message in self.messages:
             await asyncio.sleep(0)
             yield message
-        if self.hang:
-            await self._released.wait()
+        await self._released.wait()
 
     async def interrupt(self) -> None:
         return None
@@ -319,7 +328,17 @@ async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
 
 async def test_claude_driver_when_abort_unused_and_settles_does_not_leak_task_diagnostics() -> None:
     records = install_task_leak_recorder()
-    client = ScriptedClaudeClient([SimpleNamespace(total_cost_usd=0.05)])
+    client = ScriptedClaudeClient(
+        [
+            SimpleNamespace(
+                subtype="success",
+                is_error=False,
+                num_turns=1,
+                total_cost_usd=0.05,
+                result=None,
+            ),
+        ]
+    )
     driver = create_claude_driver(client_factory=claude_factory(client))
     abort = asyncio.Event()  # provided but never fired: the watch task must be cleaned up
 
@@ -336,7 +355,7 @@ async def test_claude_driver_when_abort_fires_mid_read_does_not_leak_task_diagno
     records = install_task_leak_recorder()
     # The stream hangs after the cost update, so the abort is what unblocks it:
     # the watch task starts, fires, then teardown cancels it on the settle path.
-    client = ScriptedClaudeClient([SimpleNamespace(total_cost_usd=0.1)], hang=True)
+    client = ScriptedClaudeClient([SimpleNamespace(total_cost_usd=0.1)])
     driver = create_claude_driver(client_factory=claude_factory(client))
     abort = asyncio.Event()
 
@@ -488,10 +507,9 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
             with contextlib.suppress(OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
 
-    # With the fix (signal mask around spawn+register), the deferred handler
-    # finds the child in the registry and kills it — exec settles quickly as
-    # a normal result, not a timeout. Without the fix the handler fires before
-    # registration and the child survives until the 8 s timeout.
+    # The signal mask around spawn+register must cover the gap: a SIGTERM
+    # landing before registration still finds the child in the live-groups
+    # registry and kills it, so exec settles as a normal result, not a timeout.
     assert not isinstance(result, ExecTimeoutError), (
         "child was not killed by the signal handler — spawn-register window is unmasked"
     )

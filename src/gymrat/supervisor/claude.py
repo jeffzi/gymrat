@@ -176,6 +176,7 @@ class _ClaudeSession:
         self._tool_starts: dict[str, int] = {}
         self._tool_names: dict[str, str] = {}
         self._stopped: SessionOutcome | None = None
+        self._result_outcome: SessionOutcome | None = None
         self._task: asyncio.Task[SessionOutcome] = asyncio.create_task(self._run())
 
     @property
@@ -246,12 +247,22 @@ class _ClaudeSession:
             if self._stopped is not None:
                 break
             self._map_message(message)
+            if self._result_outcome is not None:
+                break
             # Yield so an observer-scheduled interrupt or a fired abort is
             # applied before the next message is drawn from the stream.
             await asyncio.sleep(0)
             if self._stopped is not None:
                 break
-        return self._settled_or(SessionOutcome(reason="completed", cost_usd=self._cost_usd))
+        if self._stopped is not None:
+            return self._stopped
+        if self._result_outcome is not None:
+            return self._result_outcome
+        return SessionOutcome(
+            reason="error",
+            cost_usd=self._cost_usd,
+            message="Agent stream ended without a result message",
+        )
 
     async def _teardown(self) -> None:
         if self._abort_task is not None:
@@ -265,6 +276,7 @@ class _ClaudeSession:
             await _disconnect_quietly(self._client)
 
     def _map_message(self, message: object) -> None:
+        """Map one SDK message to session events."""
         # Stream events carry an ``event`` dict and no ``content``.
         event = getattr(message, "event", None)
         if isinstance(event, dict) and not hasattr(message, "content"):
@@ -272,19 +284,46 @@ class _ClaudeSession:
             self._map_stream_event(event, parent)
             return
 
+        # A result message carries both ``subtype`` and ``num_turns``; a
+        # system message has ``subtype`` alone and is silently passed through.
+        # Checked ahead of the usage emit below: a result settles the session
+        # on its own, so its cost must never also be routed through the
+        # observer, where a spend-cap callback would treat it as a live
+        # threshold crossing the session has already outrun.
+        subtype = getattr(message, "subtype", None)
+        num_turns = getattr(message, "num_turns", None)
+        if isinstance(subtype, str) and num_turns is not None:
+            cost = getattr(message, "total_cost_usd", None)
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
+                self._cost_usd = float(cost)
+            self._result_outcome = self._result_outcome_from(message, subtype)
+            return
+
         cost = getattr(message, "total_cost_usd", None)
         if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
-            # Commit the cost before the observer fires so a callback reading it
-            # (e.g. to interrupt at a threshold) sees the just-crossed value.
+            # Commit the cost before notifying observers: a spend-cap
+            # callback reads self._cost_usd synchronously and must see the
+            # value that just crossed the threshold.
             self._cost_usd = float(cost)
             self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd))
-            return
 
         parent = getattr(message, "parent_tool_use_id", None)
         content = getattr(message, "content", None)
         if isinstance(content, list):
             for block in content:
                 self._map_block(block, parent)
+
+    def _result_outcome_from(self, message: object, subtype: str) -> SessionOutcome:
+        """Classify a settled result message as completed or errored."""
+        is_error = getattr(message, "is_error", False)
+        if is_error:
+            result_text = getattr(message, "result", None)
+            return SessionOutcome(
+                reason="error",
+                cost_usd=self._cost_usd,
+                message=result_text if isinstance(result_text, str) else subtype,
+            )
+        return SessionOutcome(reason="completed", cost_usd=self._cost_usd)
 
     def _emit_phase(
         self, phase: _ModelPhase, parent: str | None, tool_name: str | None = None
@@ -362,7 +401,9 @@ class _ClaudeSession:
     def _map_block(self, block: object, parent: str | None = None) -> None:
         text = getattr(block, "text", None)
         if isinstance(text, str):
-            self._observer(TextDeltaEvent(timestamp=now_ms(), chunk=text))
+            self._observer(
+                TextDeltaEvent(timestamp=now_ms(), chunk=text, parent_tool_use_id=parent)
+            )
             return
 
         # Complete ThinkingBlocks are skipped — streamed deltas already counted them.

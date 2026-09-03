@@ -110,6 +110,7 @@ class TextDeltaEvent(_EventModel):
     type: Literal["text_delta"] = "text_delta"
     timestamp: int
     chunk: str
+    parent_tool_use_id: str | None = None
 
 
 class UsageUpdateEvent(_EventModel):

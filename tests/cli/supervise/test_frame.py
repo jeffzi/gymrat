@@ -692,7 +692,7 @@ def test_frame_when_any_state_does_never_contain_idle():
 # ---------------------------------------------------------------------------
 
 _LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
-_LOG_ROW = f"  log   {_LOG_PATH}"
+_LOG_ROW = f"  log    {_LOG_PATH}"
 
 
 def _session_result(*, with_best: bool) -> ReadSessionResult:
@@ -719,8 +719,8 @@ def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_an
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
-        "  best  -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
-        "  loop  3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
+        "  best   -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
+        "  loop   3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
         f"{_LOG_ROW}"
     )
 
@@ -759,10 +759,10 @@ def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
 @pytest.mark.parametrize(
     ("session_result", "expected_loop"),
     [
-        pytest.param(None, "  loop  no session yet", id="no-session"),
+        pytest.param(None, "  loop   no session yet", id="no-session"),
         pytest.param(
             _session_result(with_best=False),
-            "  loop  3 iterations · 2 kept · 1 discarded · last -4.2% improved",
+            "  loop   3 iterations · 2 kept · 1 discarded · last -4.2% improved",
             id="no-best-iteration",
         ),
     ],
@@ -784,7 +784,7 @@ def test_summary_when_no_best_delta_does_omit_the_best_row(
     [
         pytest.param(
             make_read_session(session_state(), has_baseline=True)(),
-            "  loop  baseline recorded · no iterations yet",
+            "  loop   baseline recorded · no iterations yet",
             id="zero-iterations",
         ),
         pytest.param(
@@ -797,7 +797,7 @@ def test_summary_when_no_best_delta_does_omit_the_best_row(
                 ),
                 has_baseline=True,
             )(),
-            "  loop  1 iteration · 1 kept · 0 discarded · last -4.2% improved",
+            "  loop   1 iteration · 1 kept · 0 discarded · last -4.2% improved",
             id="one-iteration",
         ),
     ],
@@ -819,7 +819,7 @@ def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_til
 
     assert (
         frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
-        == "  log   ~/.gymrat/supervisor-1.jsonl"
+        == "  log    ~/.gymrat/supervisor-1.jsonl"
     )
 
 
@@ -851,3 +851,112 @@ def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled()
     colored = _render_colored(summary)
 
     assert "\x1b[" not in colored.splitlines()[-1]
+
+
+# ---------------------------------------------------------------------------
+# closing summary — agent row
+# ---------------------------------------------------------------------------
+
+
+def test_summary_when_session_ended_and_final_text_present_does_show_agent_row():
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text="The task is complete.",
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert text == (
+        "✓ completed · 1m 0s · $0.05\n"
+        "  agent  The task is complete.\n"
+        "  loop   no session yet\n"
+        f"{_LOG_ROW}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "ended_by", "expected_headline"),
+    [
+        pytest.param(
+            "interrupted",
+            "wall-clock",
+            "! interrupted by wall-clock cap · 1m 0s · $0.05",
+            id="wall-clock-cap",
+        ),
+        pytest.param(
+            "interrupted",
+            "spend-cap",
+            "! interrupted by spend cap · 1m 0s · $0.05",
+            id="spend-cap",
+        ),
+        pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
+    ],
+)
+def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
+    reason: str, ended_by: str, expected_headline: str
+) -> None:
+    summary = build_summary(
+        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text="Some final text.",
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert text == f"{expected_headline}\n  loop   no session yet\n{_LOG_ROW}"
+
+
+def test_summary_when_final_text_absent_does_not_show_agent_row():
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text=None,
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert text == f"✓ completed · 1m 0s · $0.05\n  loop   no session yet\n{_LOG_ROW}"
+
+
+def test_summary_when_final_text_has_paragraphs_does_preserve_paragraph_breaks():
+    multi_para = "First paragraph.\n\nSecond paragraph."
+
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text=multi_para,
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert text.splitlines() == [
+        "✓ completed · 1m 0s · $0.05",
+        "  agent  First paragraph.",
+        "",
+        "         Second paragraph.",
+        "  loop   no session yet",
+        _LOG_ROW,
+    ]
+
+
+def test_summary_when_final_text_multiline_does_indent_continuation_under_content():
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text="Line one.\nLine two.",
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+    lines = text.splitlines()
+    agent_idx = next(i for i, line in enumerate(lines) if "agent" in line)
+    content_col = lines[agent_idx].index("Line one.")
+    next_line = lines[agent_idx + 1]
+
+    assert next_line.startswith(" " * content_col)
+    assert "Line two." in next_line

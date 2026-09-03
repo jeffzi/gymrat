@@ -167,7 +167,7 @@ JSON_CASES = [
     ),
     pytest.param(
         _TEXT_DELTA,
-        {"type": "text_delta", "timestamp": 5, "chunk": "hello"},
+        {"type": "text_delta", "timestamp": 5, "chunk": "hello", "parentToolUseId": None},
         id="text_delta",
     ),
     pytest.param(
@@ -364,6 +364,12 @@ _PARENT_ID_CASES = [
         "p3",
         "tool_end",
     ),
+    (
+        _TEXT_DELTA,
+        TextDeltaEvent(timestamp=5, chunk="hello", parent_tool_use_id="p4"),
+        "p4",
+        "text_delta",
+    ),
 ]
 
 _WITHOUT_PARENT_ID_PARAMS = [
@@ -402,6 +408,16 @@ def test_to_json_line_when_parent_tool_use_id_set_does_render_camel_case(
 )
 def test_event_from_wire_when_parent_tool_use_id_set_does_round_trip(event: object):
     assert event_from_wire(json.loads(to_json_line(event))) == event  # type: ignore[arg-type]
+
+
+def test_event_from_wire_when_text_delta_lacks_parent_tool_use_id_does_default_to_none():
+    """Old log files written before the field was added lack the key entirely."""
+    wire = {"type": "text_delta", "timestamp": 5, "chunk": "hello"}
+
+    event = event_from_wire(wire)
+
+    assert isinstance(event, TextDeltaEvent)
+    assert event.parent_tool_use_id is None
 
 
 # ---------------------------------------------------------------------------
