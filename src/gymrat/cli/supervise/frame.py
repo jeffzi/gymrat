@@ -472,9 +472,10 @@ def _build_agent_row(final_text: str) -> Text:
     Each line after the first is indented to align under the content column so
     paragraph breaks in the agent's final message are preserved visually.
     """
-    indent = " " * len(_row_prefix("agent"))
+    label = "agent"
+    indent = " " * len(_row_prefix(label))
     indented = final_text.replace("\n", f"\n{indent}")
-    return _summary_row("agent", Text(indented))
+    return _summary_row(label, Text(indented))
 
 
 def _completed_on_its_own(result: SupervisionResult) -> bool:

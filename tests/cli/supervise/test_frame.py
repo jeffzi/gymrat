@@ -860,24 +860,6 @@ def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled()
 # ---------------------------------------------------------------------------
 
 
-def test_summary_when_session_ended_and_final_text_present_does_show_agent_row():
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text="The task is complete.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert text == (
-        "✓ completed · 1m 0s · $0.05\n"
-        "  agent  The task is complete.\n"
-        "  loop   no session yet\n"
-        f"{_LOG_ROW}"
-    )
-
-
 @pytest.mark.parametrize(
     ("reason", "ended_by", "expected_headline"),
     [
@@ -906,22 +888,19 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
     assert text == f"{expected_headline}\n  loop   no session yet\n{_LOG_ROW}"
 
 
-def test_summary_when_final_text_absent_does_not_show_agent_row():
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=None,
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert text == f"✓ completed · 1m 0s · $0.05\n  loop   no session yet\n{_LOG_ROW}"
-
-
 @pytest.mark.parametrize(
     ("final_text", "expected_lines"),
     [
+        pytest.param(
+            "The task is complete.",
+            [
+                "✓ completed · 1m 0s · $0.05",
+                "  agent  The task is complete.",
+                "  loop   no session yet",
+                _LOG_ROW,
+            ],
+            id="single-line",
+        ),
         pytest.param(
             "First paragraph.\n\nSecond paragraph.",
             [

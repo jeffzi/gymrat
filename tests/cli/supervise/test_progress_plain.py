@@ -30,17 +30,10 @@ def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():
     assert caps_line == "caps 60m, $5.00"
 
 
-def test_plain_when_launched_without_spend_cap_does_print_bare_caps():
-    plain = make_plain_reporter(max_minutes=30)
-
-    fire_launch(plain.observer, 1000, max_minutes=30)
-
-    assert plain.writes[-1] == "caps 30m"
-
-
 @pytest.mark.parametrize(
     ("max_minutes", "expected"),
     [
+        pytest.param(30, "caps 30m", id="whole-int"),
         pytest.param(5.5, "caps 5.5m", id="fractional-keeps-decimal"),
         pytest.param(10.0, "caps 10m", id="whole-float-drops-decimal"),
     ],
