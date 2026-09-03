@@ -27,8 +27,7 @@ def test_plain_when_launched_with_spend_cap_does_print_caps_with_dollars():
     fire_launch(plain.observer, 1000, max_usd=5.0)
 
     caps_line = plain.writes[-1]
-    assert "caps" in caps_line
-    assert "$5.00" in caps_line
+    assert caps_line == "caps 60m, $5.00"
 
 
 def test_plain_when_launched_without_spend_cap_does_print_bare_caps():
@@ -36,7 +35,7 @@ def test_plain_when_launched_without_spend_cap_does_print_bare_caps():
 
     fire_launch(plain.observer, 1000, max_minutes=30)
 
-    assert "caps 30m" in plain.writes[-1]
+    assert plain.writes[-1] == "caps 30m"
 
 
 @pytest.mark.parametrize(
@@ -53,7 +52,7 @@ def test_plain_caps_when_max_minutes_given_does_render_the_actual_cap_value(
 
     fire_launch(plain.observer, 1000, max_minutes=max_minutes)
 
-    assert expected in plain.writes[-1]
+    assert plain.writes[-1] == expected
 
 
 def test_plain_when_usage_update_does_print_cost():
@@ -62,7 +61,7 @@ def test_plain_when_usage_update_does_print_cost():
     fire_launch(plain.observer, 1000, max_usd=5.0)
     fire_usage_update(plain.observer, 1.42, 2000)
 
-    assert "cost $1.42" in plain.writes[-1]
+    assert plain.writes[-1] == "cost $1.42"
 
 
 def test_plain_when_loop_changes_does_print_loop_segment():
@@ -81,10 +80,7 @@ def test_plain_when_loop_changes_does_print_loop_segment():
     fire_tool_start(plain.observer, "Bash", "bash-1", 2000)
     fire_tool_end(plain.observer, "Bash", "bash-1", 3000)
 
-    loop_writes = [w for w in plain.writes if "2/20 iterations" in w]
-    assert loop_writes
-    assert "+3.2%" in loop_writes[0]
-    assert "regressed" in loop_writes[0]
+    assert plain.writes[-1] == "2/20 iterations · 1 kept · 1 discarded · last +3.2% regressed"
 
 
 def test_plain_when_no_session_yet_does_not_print_loop_segment():
@@ -92,7 +88,7 @@ def test_plain_when_no_session_yet_does_not_print_loop_segment():
 
     fire_launch(plain.observer, 1000)
 
-    assert "caps" in plain.writes[-1]
+    assert plain.writes[-1] == "caps 60m"
     assert all("no session yet" not in w for w in plain.writes)
 
 
@@ -103,8 +99,7 @@ def test_plain_when_capped_does_print_cap_interrupting():
     fire_cap(plain.observer, "wall-clock")
 
     cap_line = plain.writes[-1]
-    assert "cap wall-clock" in cap_line
-    assert "interrupting" in cap_line
+    assert cap_line == "cap wall-clock — interrupting"
 
 
 def test_plain_when_warn_called_does_record_warning():
@@ -113,7 +108,7 @@ def test_plain_when_warn_called_does_record_warning():
 
     plain.reporter.warn("heads up")
 
-    assert "heads up" in plain.writes[-1]
+    assert plain.writes[-1] == "heads up"
 
 
 def test_plain_stop_when_called_does_not_raise():
