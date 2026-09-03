@@ -288,15 +288,14 @@ _FILE_PATH_TOOLS: dict[str, str] = {
     "NotebookEdit": "notebook_path",
 }
 
-_HOME = str(Path.home())
-
 
 def _render_path(path: str, supervised_root: str | None) -> str:
     """Render a file path for display.
 
     Paths under the supervised root render relative to it; paths under the
     user's home directory render ``~``-prefixed; anything else renders verbatim.
-    The supervised root takes priority when a path falls under both.
+    The supervised root takes priority when a path falls under both.  All
+    returned paths use forward slashes for consistent cross-platform display.
     """
     if supervised_root is not None:
         try:
@@ -305,10 +304,12 @@ def _render_path(path: str, supervised_root: str | None) -> str:
             pass
         else:
             if not rel.startswith(".."):
-                return rel
+                return rel.replace(os.sep, "/")
 
-    if path.startswith(_HOME + "/"):
-        return "~/" + path[len(_HOME) + 1 :]
+    try:
+        return "~/" + Path(path).relative_to(Path.home()).as_posix()
+    except (ValueError, RuntimeError):
+        pass
 
     return path
 

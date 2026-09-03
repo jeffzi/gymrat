@@ -455,7 +455,7 @@ def _summary_row(label: str, content: Text) -> Text:
 def _abbreviate_home(path: str) -> str:
     """Shorten a path under the user's home directory to a ``~`` prefix."""
     try:
-        return str(Path("~") / Path(path).relative_to(Path.home()))
+        return "~/" + Path(path).relative_to(Path.home()).as_posix()
     except (ValueError, RuntimeError):
         return path
 

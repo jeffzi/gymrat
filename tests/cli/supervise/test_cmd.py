@@ -284,7 +284,7 @@ def test_supervise_when_log_given_does_use_it_verbatim_and_skip_git_exclude(
     result = _run("optimize it", "--max-minutes", "10", "--log", custom)
 
     assert result.exit_code == 0
-    assert custom in result.stderr
+    assert Path(custom).name in result.stderr
     seams.ensure_git_exclude.assert_not_called()
 
 
@@ -529,7 +529,12 @@ def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
     result = _run("optimize it", "--max-minutes", "10", "--log", custom)
 
     assert result.exit_code == 0
-    assert f"  log    {custom}" in result.stdout
+    # On Windows CI tmp_path lives under $HOME, so the display path is ~/…
+    # abbreviated.  Check the row is a single unwrapped line.
+    assert any(
+        line.startswith("  log    ") and "supervisor-1.jsonl" in line
+        for line in result.stdout.splitlines()
+    )
 
 
 def test_supervise_when_stdout_is_not_a_tty_does_print_the_summary_without_ansi_codes(
