@@ -9,9 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `gymrat discard` reverts unmeasured edits in the experiment worktree instead of refusing, so a
-  dirty worktree no longer needs raw git to clear.
-- `discard --format json` gains a `measured` field; `seq` is `null` when no iteration was measured.
+- `gymrat discard` reverts unmeasured edits in the experiment worktree instead of refusing;
+  `--format json` gains a `measured` field and reports `seq` as `null` for an unmeasured revert.
 
 ### Fixed
 
@@ -87,9 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `gymrat supervise [prompt]` runs an agent that drives the optimization loop, bounded by
-  `--max-minutes` and `--max-usd`.
-- `gymrat supervise` shows a live progress line during the session.
+- `gymrat supervise [prompt]` runs an agent that drives the optimization loop, bounded by a
+  wall-clock cap (`--max-minutes`) and an optional spend cap (`--max-usd`).
 - `gymrat init` scaffolds a project with `gymrat.json`, a runbook stub, and the skill file.
 - `gymrat doctor` checks the project setup and reports grouped findings, exiting non-zero on
   failure.
@@ -127,10 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gymrat measure` measures a single revision or directory on its own.
 - A `--fail-on` gate for `compare` that exits non-zero on a gating regression or a geometric-mean
   threshold.
-- A live progress line reports each sample step with an estimated time remaining.
 - A repository lock prevents two gymrat runs from colliding.
 - Canceling a run stops the benchmark, removes worktrees the run created, and exits with
-  `128 + signal_number`.
+  `128 + N`.
 
 ## [0.7.0] - 2026-08-23
 
@@ -143,7 +140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--fail-on` reports the kind and threshold when tripped, and leftover worktrees appear in a
   closing footer.
 - `compare` and `measure` support `--format json` for machine-readable output.
-- Reports respect terminal detection and honor `FORCE_COLOR` and `NO_COLOR`.
+- Reports honor `FORCE_COLOR` and `NO_COLOR`.
 - Each loop iteration reports its verdict and outcome.
 
 ## [0.6.0] - 2026-08-23
