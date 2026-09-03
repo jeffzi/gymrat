@@ -133,6 +133,12 @@ the moment you end your turn — no further messages arrive. Never end a turn wi
 request for a decision, or an offer of alternatives: nobody answers, and the session closes with the
 question hanging. Decide from the runbook and continue. The only turn you end is the final report.
 
+**Never run a gymrat command in the background.** No completion notification arrives in a
+supervised session: ending the turn to "wait for it" ends the run and kills the command. Run
+`measure`, `compare`, and `iterate` in the foreground with the Bash tool's maximum timeout
+(600000). If a command times out even so, the suite is too long for this mode: do not relaunch it,
+report that and end.
+
 ## Keeping iterations cheap
 
 `iterate` is a committed step, not a look. Every `iterate` benches **both worktrees** fresh at the
