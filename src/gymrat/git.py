@@ -10,7 +10,7 @@ for stable, locale-independent diagnostics that classification can key on.
 import os
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from gymrat.errors import GymratError, stderr_text_of
 from gymrat.signals import deferring_termination_signals
@@ -39,12 +39,21 @@ _REPO_TARGETING_ENV_VARS = (
 _NOT_A_REPOSITORY_RE = re.compile(r"^fatal: not a git repository", re.MULTILINE)
 
 
-def run_git(args: Sequence[str], cwd: str) -> str:
+def run_git(
+    args: Sequence[str],
+    cwd: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
     """Run git in ``cwd`` and return its untrimmed stdout.
 
     Args:
         args: Git arguments passed as an argv list, never a shell string.
         cwd: Working directory the git call resolves the repository from.
+        env: Extra environment variables merged into the child process after the
+            repository-targeting scrub, so a caller can set keys like
+            ``GIT_INDEX_FILE`` without them being removed. ``None`` (the
+            default) leaves the scrubbed environment unchanged.
 
     Returns:
         The command's stdout, exactly as git wrote it (not trimmed).
@@ -53,10 +62,12 @@ def run_git(args: Sequence[str], cwd: str) -> str:
         subprocess.CalledProcessError: When git exits non-zero. It carries
             ``.stderr`` and ``.returncode`` for callers to mine.
     """
-    env = os.environ.copy()
+    child_env = os.environ.copy()
     for key in _REPO_TARGETING_ENV_VARS:
-        env.pop(key, None)
-    env["LC_ALL"] = "C"
+        child_env.pop(key, None)
+    child_env["LC_ALL"] = "C"
+    if env is not None:
+        child_env.update(env)
 
     with deferring_termination_signals():
         completed = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
@@ -70,7 +81,7 @@ def run_git(args: Sequence[str], cwd: str) -> str:
             # are not valid UTF-8; the classification and parsing that consumes
             # this output needs a string to work with, not a crash.
             errors="replace",
-            env=env,
+            env=child_env,
             # Close stdin so a git command that wants user input (credential
             # fill, interactive rebase) fails immediately with its own
             # diagnostic instead of hanging while the signal mask is held.

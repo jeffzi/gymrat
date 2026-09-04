@@ -89,6 +89,51 @@ def test_run_git_when_repo_env_vars_set_does_scrub_them_and_use_cwd(
     assert result.strip() == ".git"
 
 
+def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(
+    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    captured_kwargs: list[dict[str, object]] = []
+    real_run = subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_kwargs.append(dict(kwargs))
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+
+    run_git(["rev-parse", "HEAD"], scratch_repo, env={"GYMRAT_TEST_MARKER": "hello"})
+
+    assert captured_kwargs
+    child_env = captured_kwargs[0]["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["GYMRAT_TEST_MARKER"] == "hello"
+
+
+def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
+    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    captured_kwargs: list[dict[str, object]] = []
+    real_run = subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_kwargs.append(dict(kwargs))
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
+
+    run_git(
+        ["rev-parse", "HEAD"],
+        scratch_repo,
+        env={"GIT_INDEX_FILE": "/custom/index"},
+    )
+
+    assert captured_kwargs
+    child_env = captured_kwargs[0]["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["GIT_INDEX_FILE"] == "/custom/index"
+
+
 # ---------------------------------------------------------------------------
 # try_git
 # ---------------------------------------------------------------------------
