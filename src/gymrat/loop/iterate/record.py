@@ -60,6 +60,9 @@ def build_iteration_record(
     judged: Judged,
     seq: int,
     judgment: IterationJudgment,
+    *,
+    duration_ms: int | None = None,
+    measured_tree: str | None = None,
 ) -> IterationRecord:
     """An empty ``absent`` tuple collapses to ``None`` so the log never carries ``[]``."""
     confirmation = judgment.confirmation
@@ -87,4 +90,6 @@ def build_iteration_record(
         outcome=judgment.outcome,
         target_reached=judgment.reached_target,
         confirm=confirm,
+        duration_ms=duration_ms,
+        measured_tree=measured_tree,
     )

@@ -31,6 +31,7 @@ table opens on the loop's terms rather than on ``gymrat compare``'s.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.errors import GymratError
@@ -69,15 +70,22 @@ from gymrat.session import (
     append_record,
     require_open_session,
 )
+from gymrat.session import budget as _budget
+from gymrat.session import clock as _clock
+from gymrat.session import workspace as _workspace
+from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Sequence
 
     from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
+    from gymrat.session import SessionLogRecord
 
 __all__ = [
     "BenchRunOutputs",
+    "BudgetExceededError",
     "IterateOptions",
     "IterateResult",
     "LoopStopError",
@@ -127,23 +135,40 @@ def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
     )
 
 
-def _record_iteration(
-    jsonl_path: str,
-    opts: IterateOptions,
-    judged: Judged,
-    seq: int,
-    judgment: IterationJudgment,
-) -> IterationRecord:
-    record = build_iteration_record(judged, seq, judgment)
-    append_record(jsonl_path, record)
+def _append_iteration(ctx: IterationContext, record: IterationRecord, *, seq: int) -> None:
+    append_record(ctx.jsonl_path, record)
     emit_progress(
-        opts.on_progress,
-        IterationRecorded(seq=seq, outcome=judgment.outcome, at_ms=default_clock()),
+        ctx.options.on_progress,
+        IterationRecorded(seq=seq, outcome=record.outcome, at_ms=default_clock()),
     )
-    return record
 
 
-def _guard_ready(config: ResolvedConfig, state: SessionState) -> None:
+def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
+    """Refuse when a live budget cannot afford another iteration."""
+    current_ms = _clock.now_ms()
+    budget = _budget.read_budget(root, now_ms=current_ms)
+    if budget is None:
+        return
+    estimate = _budget.estimate_iterate_duration(records)
+    if estimate is None:
+        return
+    remaining = budget.remaining_ms(current_ms)
+    if estimate.duration_ms > remaining:
+        remaining_minutes = int(remaining / 60_000)
+        estimate_minutes = int(estimate.duration_ms / 60_000)
+        message = (
+            f"{remaining_minutes}m left; the last {estimate.source} took "
+            f"{estimate_minutes}m and the cap would cut this one off."
+        )
+        raise BudgetExceededError(
+            message,
+            hint="Report what the session measured instead of measuring again.",
+        )
+
+
+def _guard_ready(
+    config: ResolvedConfig, state: SessionState, root: str, records: Sequence[SessionLogRecord]
+) -> None:
     """Refuse another iteration when the session is not ready for one."""
     if state.unsettled:
         message = f"Iteration {state.last_seq} has not been settled"
@@ -154,6 +179,7 @@ def _guard_ready(config: ResolvedConfig, state: SessionState) -> None:
     stop = stop_condition(config, state)
     if stop is not None:
         raise stop
+    _guard_budget(root, records)
 
 
 async def iterate_session(
@@ -185,8 +211,9 @@ async def iterate_session(
     opts = options if options is not None else IterateOptions()
     required = require_open_session(root, "measuring an edit")
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
-    _guard_ready(config, state)
+    _guard_ready(config, state, root, required.records)
 
+    start_ms = _clock.now_ms()
     seq = state.last_seq + 1
     ctx = IterationContext(session=session, config=config, options=opts, jsonl_path=jsonl_path)
     before_report = await _hook_stage(
@@ -199,7 +226,16 @@ async def iterate_session(
 
     judged = await _measure_and_judge(ctx)
     judgment = _judge(config, judged)
-    record = _record_iteration(ctx.jsonl_path, opts, judged, seq, judgment)
+
+    duration_ms = _clock.now_ms() - start_ms
+    measured_tree = _workspace.worktree_fingerprint(Path(session.worktrees.experiment))
+    if measured_tree is None:
+        warn_to_stderr("Could not fingerprint the experiment worktree; measured_tree will be null.")
+
+    record = build_iteration_record(
+        judged, seq, judgment, duration_ms=duration_ms, measured_tree=measured_tree
+    )
+    _append_iteration(ctx, record, seq=seq)
 
     after_report = await _hook_stage(
         ctx,
@@ -295,6 +331,15 @@ class LoopStopError(GymratError):
     Separate from a plain :class:`GymratError` because nothing failed: the loop
     ran to the end it was configured for, which the CLI reports as a gate trip
     rather than as a tool failure.
+    """
+
+
+class BudgetExceededError(LoopStopError):
+    """The session's time budget cannot afford another iteration.
+
+    Raised when a live budget's remaining time is shorter than the estimated
+    iterate duration, so the CLI routes it through the same gate-exit path as
+    any other stop condition.
     """
 
 

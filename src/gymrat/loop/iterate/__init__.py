@@ -2,6 +2,7 @@
 
 from gymrat.loop.iterate.run import (
     BenchRunOutputs,
+    BudgetExceededError,
     IterateOptions,
     IterateResult,
     LoopStopError,
@@ -11,6 +12,7 @@ from gymrat.loop.iterate.run import (
 
 __all__ = [
     "BenchRunOutputs",
+    "BudgetExceededError",
     "IterateOptions",
     "IterateResult",
     "LoopStopError",
