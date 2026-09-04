@@ -109,7 +109,27 @@ gymrat finalize            # squash kept iterations into one commit and close
 
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs that loop under an AI
 agent: the runbook scaffolded by `init` describes the goal and constraints, and the session ends
-when the agent finishes or a cap trips.
+when the agent finishes or a cap trips. `iterate`, `keep`, `discard`, `status`, `sync`, `compare`,
+and `measure` print a time-left line so the agent can plan around the wall-clock cap.
+
+### Hooks
+
+The `[hooks]` table in `gymrat.toml` runs shell commands around each `gymrat iterate` measurement.
+No other command runs them.
+
+```toml
+[hooks]
+before = "npm run build" # once per iteration, before measuring
+after = "./scripts/notify.sh" # after the iteration record is written
+```
+
+Hooks run with the experiment worktree as their working directory and receive a JSON object on stdin
+with keys `stage`, `experimentDir`, `seq`, `lastIteration`, and `session`. A hook that exits
+non-zero is reported in the iteration output but does not fail the iteration. Hooks that exceed the
+30-second timeout are killed.
+
+An after hook must not modify the experiment worktree — the iteration record's fingerprint reflects
+the worktree at measurement time, and later edits go unrecorded.
 
 ## Two workflows, one tool
 
@@ -124,7 +144,7 @@ gymrat serves two audiences with the same statistical engine:
   keep/discard decisions backed by statistics. `gymrat supervise` automates the same loop under an
   AI agent.
 
-### Machine-readable output
+## Machine-readable output
 
 Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `status`)
 accepts `--format json` for structured output. The JSON key shapes are a stability contract:
