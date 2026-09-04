@@ -38,7 +38,7 @@ class Budget:
     """
 
     started_at_ms: float
-    max_minutes: int
+    max_minutes: float
     deadline_ms: float
     version: int = _BUDGET_VERSION
 

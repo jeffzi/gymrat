@@ -14,8 +14,9 @@ from gymrat.config import BenchlessConfig
 from gymrat.errors import GymratError
 
 DEFAULT_KICKOFF = (
-    "Drive the optimization session. Follow the skill instructions and the "
-    "runbook to guide your work."
+    "Drive the optimization session. This session has a wall-clock cap; "
+    "every gymrat command prints the time left. Follow the skill instructions "
+    "and the runbook to guide your work."
 )
 
 
@@ -70,9 +71,16 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         hint = "Check file permissions and ensure the path is a regular file."
         raise GymratError(message, hint=hint) from err
 
+    clock_rule = (
+        "This session has a wall-clock cap. Every gymrat command prints the "
+        "time left — plan from that line. Never estimate elapsed time yourself. "
+        "A measurement the cap kills records nothing."
+    )
+
     system_prompt_append = (
         f"{skill_content}\n\n"
         "**The gymrat skill is already loaded above. Do not call `Skill(gymrat)`.**\n\n"
+        f"{clock_rule}\n\n"
         f"## Runbook: {config.runbook}\n\n{runbook_content}"
     )
 

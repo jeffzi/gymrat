@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from gymrat.session.clock import now_ms
+from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.event_log import create_event_log_writer
 from gymrat.supervisor.events import (
@@ -26,8 +27,9 @@ from gymrat.supervisor.events import (
 )
 from gymrat.warn import warn_to_stderr
 
-# Seconds per minute, for converting ``max_minutes`` to an ``asyncio.sleep``.
-_MINUTE_S = 60.0
+WALL_CLOCK_POLL_MS = 1000
+"""Default interval (in milliseconds) for polling wall-clock time against the
+deadline. Tests override this to avoid real waits."""
 
 CapType = Literal["wall-clock", "spend-cap"]
 EndedBy = Literal["session", "wall-clock", "spend-cap"]
@@ -55,12 +57,13 @@ class _SuperviseConfig:
 
     driver: Driver
     prompt: SessionPrompt
-    max_minutes: float
     log_path: str | Path
     launch: LaunchEvent
     max_usd: float | None
     observer: SessionObserver | None
     grace_ms: int
+    deadline_ms: float
+    wall_clock_poll_ms: int
 
 
 def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | None:
@@ -140,7 +143,10 @@ class _Supervision:
         self._abort_event.set()
 
     async def _run_wall_clock(self) -> None:
-        await asyncio.sleep(self._config.max_minutes * _MINUTE_S)
+        deadline = self._config.deadline_ms
+        poll_s = self._config.wall_clock_poll_ms / 1000
+        while now_ms() < deadline:  # noqa: ASYNC110 - wall-clock poll survives machine sleep
+            await asyncio.sleep(poll_s)
         self._trigger_cap("wall-clock")
 
     async def run(self) -> SupervisionResult:
@@ -174,16 +180,15 @@ class _Supervision:
                 self._interrupt_task.cancel()
 
 
-async def supervise(  # noqa: PLR0913 - one parameter per supervision knob, mirroring the driver-seam option surface
+async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
     driver: Driver,
     prompt: SessionPrompt,
     *,
-    max_minutes: float,
-    log_path: str | Path,
+    context: SupervisedSession,
     launch: LaunchEvent,
-    max_usd: float | None = None,
     observer: SessionObserver | None = None,
     grace_ms: int = 30_000,
+    wall_clock_poll_ms: int = WALL_CLOCK_POLL_MS,
 ) -> SupervisionResult:
     """Run a supervised agent session with wall-clock and spend caps.
 
@@ -191,15 +196,20 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob, mirr
     observer, enforces the time and cost limits, and returns the session outcome
     with metadata about how the session ended. A raising ``outcome`` propagates
     after the wall-clock and grace timers are cancelled.
+
+    The wall-clock cap polls ``now_ms()`` against a deadline at
+    ``wall_clock_poll_ms`` intervals so the cap fires on time even when the
+    machine sleeps mid-run.
     """
     config = _SuperviseConfig(
         driver=driver,
         prompt=prompt,
-        max_minutes=max_minutes,
-        log_path=log_path,
+        log_path=context.log_path,
         launch=launch,
-        max_usd=max_usd,
+        max_usd=context.max_usd,
         observer=observer,
         grace_ms=grace_ms,
+        deadline_ms=context.deadline_ms,
+        wall_clock_poll_ms=wall_clock_poll_ms,
     )
     return await _Supervision(config).run()

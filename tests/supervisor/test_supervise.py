@@ -20,6 +20,7 @@ import pytest
 
 from gymrat.supervisor import (
     SessionOutcome,
+    SupervisedSession,
     TextDeltaEvent,
     UsageUpdateEvent,
     supervise,
@@ -28,6 +29,7 @@ from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver
 from tests.supervisor._fixtures import (
     collecting_observer,
+    make_context,
     make_launch,
     make_prompt,
     read_log_lines,
@@ -178,8 +180,7 @@ async def test_supervise_when_session_completes_does_report_outcome(
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(),
     )
 
@@ -196,7 +197,12 @@ async def test_supervise_when_session_runs_does_log_launch_first_then_events_in_
     driver = create_mock_driver(steps)
     log_path = tmp_path / "events.jsonl"
 
-    await supervise(driver, make_prompt(), max_minutes=10, log_path=log_path, launch=make_launch())
+    await supervise(
+        driver,
+        make_prompt(),
+        context=make_context(max_minutes=10, log_path=str(log_path)),
+        launch=make_launch(),
+    )
 
     lines = read_log_lines(log_path)
     assert [line["type"] for line in lines[:3]] == ["launch", "text_delta", "usage_update"]
@@ -212,8 +218,7 @@ async def test_supervise_when_observer_given_does_forward_events_in_order(
     await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
         launch=launch,
         observer=probe.observer,
     )
@@ -235,8 +240,7 @@ async def test_supervise_when_wall_clock_elapses_does_report_wall_clock(
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=0.001,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_minutes=0.001),
     )
 
@@ -253,8 +257,7 @@ async def test_supervise_when_wall_clock_elapses_does_emit_single_wall_clock_cap
     await supervise(
         driver,
         make_prompt(),
-        max_minutes=0.001,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_minutes=0.001),
         observer=probe.observer,
     )
@@ -287,8 +290,7 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
         return await supervise(
             wrapper,
             make_prompt(),
-            max_minutes=0.001,
-            log_path=tmp_path / "events.jsonl",
+            context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
             launch=make_launch(max_minutes=0.001),
             observer=observer,
             grace_ms=grace_ms,
@@ -324,9 +326,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        max_usd=0.1,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_usd=0.1),
     )
 
@@ -343,9 +343,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_ev
     await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        max_usd=0.1,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_usd=0.1),
         observer=probe.observer,
     )
@@ -361,8 +359,7 @@ async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path)
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(),
     )
 
@@ -381,9 +378,7 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
     await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        max_usd=0.1,
-        log_path=log_path,
+        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(log_path)),
         launch=make_launch(max_usd=0.1),
     )
 
@@ -413,9 +408,9 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=0.001,
-        max_usd=0.1,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(
+            max_minutes=0.001, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(max_minutes=0.001, max_usd=0.1),
         observer=probe.observer,
         grace_ms=50,
@@ -434,9 +429,9 @@ async def test_supervise_when_spend_cap_trips_inside_start_does_report_spend_cap
     result = await supervise(
         _SyncSpendDriver(),
         make_prompt(),
-        max_minutes=0.001,
-        max_usd=1.0,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(
+            max_minutes=0.001, max_usd=1.0, log_path=str(tmp_path / "events.jsonl")
+        ),
         launch=make_launch(max_minutes=0.001, max_usd=1.0),
         observer=probe.observer,
     )
@@ -473,8 +468,7 @@ async def test_supervise_when_driver_errors_does_report_error_outcome(
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(),
     )
 
@@ -489,7 +483,12 @@ async def test_supervise_when_driver_errors_does_log_events_up_to_failure(
     driver = create_mock_driver(_error_steps())  # type: ignore[arg-type]
     log_path = tmp_path / "events.jsonl"
 
-    await supervise(driver, make_prompt(), max_minutes=10, log_path=log_path, launch=make_launch())
+    await supervise(
+        driver,
+        make_prompt(),
+        context=make_context(max_minutes=10, log_path=str(log_path)),
+        launch=make_launch(),
+    )
 
     types = [line["type"] for line in read_log_lines(log_path)]
     assert types[0] == "launch"
@@ -514,9 +513,7 @@ async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=10,
-        max_usd=0.1,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_usd=0.1),
         observer=throwing,
     )
@@ -531,8 +528,7 @@ async def test_supervise_when_interrupt_throws_does_recover_via_grace(tmp_path: 
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=0.001,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_minutes=0.001),
         grace_ms=50,
     )
@@ -547,8 +543,7 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
         await supervise(
             _RejectingDriver(),
             make_prompt(),
-            max_minutes=5,
-            log_path=tmp_path / "events.jsonl",
+            context=make_context(max_minutes=5, log_path=str(tmp_path / "events.jsonl")),
             launch=make_launch(),
             observer=probe.observer,
         )
@@ -583,8 +578,7 @@ async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
         return await supervise(
             wrapper,
             make_prompt(),
-            max_minutes=0.001,
-            log_path=tmp_path / "events.jsonl",
+            context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
             launch=make_launch(max_minutes=0.001),
             observer=failing_observer,
             grace_ms=grace_ms,
@@ -637,8 +631,7 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
     result = await supervise(
         driver,
         make_prompt(),
-        max_minutes=0.001,
-        log_path=tmp_path / "events.jsonl",
+        context=make_context(max_minutes=0.001, log_path=str(tmp_path / "events.jsonl")),
         launch=make_launch(max_minutes=0.001),
         grace_ms=50,
     )
@@ -649,3 +642,118 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
     # Give the event loop a tick so the CancelledError propagates.
     await asyncio.sleep(0)
     assert slow_session.interrupt_cancelled.is_set()
+
+
+# ---------------------------------------------------------------------------
+# wall-clock poll
+# ---------------------------------------------------------------------------
+
+
+async def test_supervise_when_wall_clock_poll_ms_given_does_accept_the_parameter(
+    tmp_path: Path,
+):
+    driver = create_mock_driver([CostStep(cost_usd=0.05)])
+
+    result = await supervise(
+        driver,
+        make_prompt(),
+        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(),
+        wall_clock_poll_ms=500,
+    )
+
+    assert result.ended_by == "session"
+
+
+async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The poll loop compares ``now_ms()`` against a wall-clock deadline.
+
+    Advancing the fake clock past the deadline on the first poll makes the cap
+    fire immediately, proving the loop checks ``now_ms()`` rather than relying
+    on a single ``asyncio.sleep`` for the full duration.
+    """
+    import sys
+
+    supervise_mod = sys.modules["gymrat.supervisor.supervise"]
+
+    call_count = 0
+    start_time = 1_000_000
+
+    def fake_now_ms() -> float:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return start_time
+        return start_time + 10 * 60 * 1000 + 1
+
+    monkeypatch.setattr(supervise_mod, "now_ms", fake_now_ms)
+    driver = create_mock_driver([CostStep(cost_usd=0.01, delay_ms=60_000)])
+
+    deadline_ms = start_time + 10 * 60 * 1000
+    result = await supervise(
+        driver,
+        make_prompt(),
+        context=make_context(
+            max_minutes=10,
+            log_path=str(tmp_path / "events.jsonl"),
+            deadline_ms=deadline_ms,
+        ),
+        launch=make_launch(max_minutes=10),
+        wall_clock_poll_ms=10,
+    )
+
+    assert result.ended_by == "wall-clock"
+    assert call_count >= 3
+
+
+async def test_supervise_when_wall_clock_poll_ms_default_does_use_module_constant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from gymrat.supervisor.supervise import WALL_CLOCK_POLL_MS
+
+    assert WALL_CLOCK_POLL_MS == 1000
+
+
+# ---------------------------------------------------------------------------
+# SupervisedSession context
+# ---------------------------------------------------------------------------
+
+
+def test_supervised_session_when_constructed_does_expose_all_fields():
+    from gymrat.config import BenchlessConfig
+
+    config = BenchlessConfig(
+        adapter="mitata",
+        samples=1,
+        timeout_seconds=60,
+        unstable_noise_pct=5.0,
+        primary="geomean",
+        runbook=None,
+        stop=None,
+    )
+    ctx = SupervisedSession(
+        root="/repo",
+        log_path="/repo/.gymrat/events.jsonl",
+        lock_path="/repo/.gymrat/lockfile",
+        config=config,
+        deadline_ms=9_999_999.0,
+        max_minutes=10.0,
+        max_usd=5.0,
+    )
+
+    assert ctx.root == "/repo"
+    assert ctx.log_path == "/repo/.gymrat/events.jsonl"
+    assert ctx.lock_path == "/repo/.gymrat/lockfile"
+    assert ctx.config is config
+    assert ctx.deadline_ms == 9_999_999.0
+    assert ctx.max_minutes == 10.0
+    assert ctx.max_usd == 5.0
+
+
+def test_supervised_session_when_mutated_does_raise_frozen_error():
+    ctx = make_context()
+
+    with pytest.raises(AttributeError):
+        ctx.root = "/other"  # type: ignore[misc]
