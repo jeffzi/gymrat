@@ -14,9 +14,12 @@ import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from gymrat.cli.shared import (
     GATE_EXIT_CODE,
@@ -34,26 +37,30 @@ from gymrat.cli.shared import (
 )
 from gymrat.cli.supervise.frame import _abbreviate_home, build_summary
 from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
-from gymrat.config import CliFlags, resolve_benchless_config
+from gymrat.config import BenchlessConfig, CliFlags, resolve_benchless_config
 from gymrat.errors import GymratError
 from gymrat.git import run_git
 from gymrat.plural import pluralize
 from gymrat.report.style import RENDER_WIDTH, render_lines
+from gymrat.session.budget import Budget, clear_budget, estimate_iterate_duration, write_budget
 from gymrat.session.clock import now_ms
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import (
     experiment_worktree_dir,
+    lockfile_path,
     repo_root,
     session_dir,
     session_jsonl_path,
     supervise_lockfile_path,
 )
+from gymrat.session.records.models import BaselineRecord
 from gymrat.session.store import fold_session, last_kept_position, read_records
 from gymrat.session.workspace import changed_file_count, dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
     KickoffResult,
     SessionPrompt,
+    SupervisedSession,
     SupervisionResult,
     compose_kickoff,
     create_claude_driver,
@@ -88,6 +95,12 @@ _ModelOption = Annotated[
 _AllowDirtyOption = Annotated[
     bool, typer.Option("--allow-dirty", help="allow launching with uncommitted changes")
 ]
+_ForceOption = Annotated[
+    bool,
+    typer.Option("--force", help="launch when cap cannot fit one iterate"),
+]
+
+_MS_PER_MINUTE = 60_000
 
 
 def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
@@ -142,6 +155,41 @@ def _validate_experiment_worktree(root: str) -> None:
     exit_with_error(GymratError(message, hint=hint))
 
 
+def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
+    """Refuse to launch when the cap can't fit one iterate, unless ``force`` is set.
+
+    Without a prior iterate to estimate from, there is nothing to check against,
+    so this only reports what one iterate contains.
+    """
+    records = read_records(session_jsonl_path(root))
+    estimate = estimate_iterate_duration(records)
+    if estimate is None:
+        write_and_flush(
+            sys.stderr,
+            "one iterate runs one baseline pass and one experiment pass\n",
+        )
+        return
+
+    has_baseline = any(isinstance(r, BaselineRecord) for r in records)
+    needed_ms = estimate.duration_ms
+    if not has_baseline:
+        needed_ms += estimate.duration_ms / 2
+    cap_ms = max_minutes * _MS_PER_MINUTE
+    if needed_ms <= cap_ms or force:
+        return
+
+    source_minutes = round(estimate.source_duration_ms / _MS_PER_MINUTE)
+    needed_minutes = round(needed_ms / _MS_PER_MINUTE)
+    cap_minutes = round(cap_ms / _MS_PER_MINUTE)
+    message = (
+        f"the {estimate.source} took {source_minutes}m; "
+        f"one iterate needs about {needed_minutes}m; "
+        f"the {cap_minutes}m cap cannot fit one."
+    )
+    hint = "Raise --max-minutes, or pass --force to launch anyway."
+    exit_with_error(GymratError(message, hint=hint))
+
+
 def _resolve_log_path(root: str, explicit: str | None) -> str:
     """The caller's ``--log`` verbatim, or a timestamped path under the session dir.
 
@@ -163,6 +211,7 @@ class _SessionContext:
     log_path: str
     launch: LaunchEvent
     kickoff: KickoffResult
+    config: BenchlessConfig
     max_minutes: float
     max_usd: float | None
     max_iterations: int | None
@@ -205,6 +254,25 @@ def _report_result(
         raise typer.Exit(GATE_EXIT_CODE)
 
 
+def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], None]]:
+    """Create, persist, and arm cleanup for the session time budget.
+
+    Returns the deadline in epoch milliseconds and a callback that
+    removes the budget file and uninstalls the termination hook.
+    """
+    started_at_ms = now_ms()
+    deadline_ms = started_at_ms + int(max_minutes * _MS_PER_MINUTE)
+    budget = Budget(
+        started_at_ms=started_at_ms,
+        max_minutes=max_minutes,
+        deadline_ms=deadline_ms,
+    )
+    Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
+    write_budget(root, budget)
+    uninstall = install_termination_cleanup(lambda: clear_budget(root))
+    return deadline_ms, uninstall
+
+
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly."""
     driver = create_claude_driver()
@@ -220,6 +288,8 @@ def _run_session(ctx: _SessionContext) -> None:
     )
     uninstall_cleanup = install_termination_cleanup(reporter.stop)
 
+    deadline_ms, uninstall_budget_cleanup = _init_budget(ctx.root, ctx.max_minutes)
+
     if mode == "plain":
         write_and_flush(sys.stderr, f"log: {_abbreviate_home(ctx.log_path)}\n")
 
@@ -229,21 +299,30 @@ def _run_session(ctx: _SessionContext) -> None:
         system_prompt_append=ctx.kickoff.system_prompt_append,
         model=ctx.model,
     )
+    context = SupervisedSession(
+        root=ctx.root,
+        log_path=ctx.log_path,
+        lock_path=lockfile_path(ctx.root),
+        config=ctx.config,
+        deadline_ms=deadline_ms,
+        max_minutes=ctx.max_minutes,
+        max_usd=ctx.max_usd,
+    )
     try:
         result = asyncio.run(
             supervise(
                 driver=driver,
                 prompt=prompt,
-                max_minutes=ctx.max_minutes,
-                max_usd=ctx.max_usd,
-                log_path=ctx.log_path,
+                context=context,
                 launch=ctx.launch,
                 observer=reporter.observer,
             )
         )
     finally:
+        clear_budget(ctx.root)
         reporter.stop()
         uninstall_cleanup()
+        uninstall_budget_cleanup()
     _report_result(
         result,
         log_path=ctx.log_path,
@@ -263,6 +342,7 @@ class _Options:
     log: str | None
     model: str | None
     allow_dirty: bool
+    force: bool
     color: bool | None
 
 
@@ -271,6 +351,8 @@ def _execute(options: _Options) -> None:
     root = repo_root()
     dirty_count = _validate_working_tree(root, allow_dirty=options.allow_dirty)
     _validate_experiment_worktree(root)
+
+    _check_feasibility(root, max_minutes=options.max_minutes, force=options.force)
 
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
@@ -297,6 +379,7 @@ def _execute(options: _Options) -> None:
                 log_path=log_path,
                 launch=launch,
                 kickoff=kickoff,
+                config=config,
                 max_minutes=options.max_minutes,
                 max_usd=options.max_usd,
                 max_iterations=config.stop.max_iterations if config.stop is not None else None,
@@ -316,6 +399,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     log: _LogOption = None,
     model: _ModelOption = None,
     allow_dirty: _AllowDirtyOption = False,
+    force: _ForceOption = False,
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
@@ -329,6 +413,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
         log=log,
         model=model,
         allow_dirty=allow_dirty,
+        force=force,
         color=color,
     )
     try:
