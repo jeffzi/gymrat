@@ -95,6 +95,11 @@ def supervise_lockfile_path(root: str) -> str:
     return _lock_path("gymrat-supervise-lock", root)
 
 
+def budget_path(root: str) -> str:
+    """Path to the budget file under ``root``'s session directory."""
+    return str(Path(root) / SESSION_DIR_NAME / "budget.json")
+
+
 def progress_path(root: str) -> str:
     """Path to the progress sidecar file under ``root``'s session directory."""
     return str(Path(root) / SESSION_DIR_NAME / "progress.json")
