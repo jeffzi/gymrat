@@ -30,6 +30,7 @@ from gymrat.session.workspace import (
     recreate_workspace,
     remove_worktrees,
     revert_workspace,
+    worktree_fingerprint,
     worktree_head,
 )
 from tests._git import run_git as _run_git
@@ -555,3 +556,67 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
     assert _git(["rev-parse", "HEAD"], baseline_dir) == target
     assert _checked_out_ref(baseline_dir) == "HEAD"
     assert _checked_out_ref(experiment) == BRANCH
+
+
+# ---------------------------------------------------------------------------
+# worktree_fingerprint
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_fingerprint_when_content_differs_does_return_different_hashes(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+    baseline_dir = baseline_worktree_dir(repo)
+
+    hash_before = worktree_fingerprint(Path(experiment))
+
+    (Path(experiment) / "README.md").write_text("# changed\n", encoding="utf-8")
+    hash_after = worktree_fingerprint(Path(experiment))
+
+    assert hash_before is not None
+    assert hash_after is not None
+    assert hash_before != hash_after
+    hash_baseline = worktree_fingerprint(Path(baseline_dir))
+    assert hash_baseline == hash_before
+
+
+def test_worktree_fingerprint_when_same_content_does_return_identical_hash(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+
+    first = worktree_fingerprint(Path(experiment))
+    second = worktree_fingerprint(Path(experiment))
+
+    assert first is not None
+    assert first == second
+
+
+def test_worktree_fingerprint_when_called_does_leave_index_untouched(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+
+    (Path(experiment) / "staged.txt").write_text("staged content\n", encoding="utf-8")
+    _git(["add", "staged.txt"], experiment)
+    (Path(experiment) / "unstaged.txt").write_text("unstaged content\n", encoding="utf-8")
+
+    index_path = Path(_git(["rev-parse", "--git-path", "index"], experiment))
+    index_before = index_path.read_bytes()
+
+    worktree_fingerprint(Path(experiment))
+
+    index_after = index_path.read_bytes()
+    assert index_before == index_after
+    staged = _git(["diff", "--cached", "--name-only"], experiment)
+    assert staged.strip() == "staged.txt"
+
+
+def test_worktree_fingerprint_when_git_fails_does_return_none(tmp_path: Path):
+    result = worktree_fingerprint(tmp_path)
+
+    assert result is None

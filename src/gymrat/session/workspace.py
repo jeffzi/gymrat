@@ -6,7 +6,9 @@ session pinned. This module owns the git plumbing that creates, resumes, and
 tears those down; it holds no session records and reads no JSON.
 """
 
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -277,6 +279,39 @@ def revert_workspace(experiment_dir: str, *, target: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 # Worktree queries
 # ---------------------------------------------------------------------------
+
+
+def worktree_fingerprint(directory: Path) -> str | None:
+    """A tree hash identifying the exact content of a worktree.
+
+    Stages everything into a disposable copy of the worktree's index and runs
+    ``git write-tree`` against it, so the real index is never touched: a
+    partially staged worktree has byte-identical staged files before and after.
+
+    Returns:
+        A hex tree-hash string whose value changes when — and only when — the
+        worktree's file content changes, or ``None`` when the underlying git
+        invocation fails (missing repo, bad permissions, …).
+    """
+    cwd = str(directory)
+    tmp_dir: str | None = None
+    try:
+        real_index = run_git(["rev-parse", "--git-path", "index"], cwd).strip()
+        # Resolve relative paths git may print against the worktree root.
+        real_index_path = Path(cwd, real_index)
+
+        tmp_dir = tempfile.mkdtemp(prefix="gymrat-idx-")
+        tmp_index = str(Path(tmp_dir) / "index")
+        shutil.copy2(real_index_path, tmp_index)
+
+        env = {"GIT_INDEX_FILE": tmp_index}
+        run_git(["add", "-A"], cwd, env=env)
+        return run_git(["write-tree"], cwd, env=env).strip()
+    except (subprocess.SubprocessError, OSError):
+        return None
+    finally:
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def worktree_head(directory: str) -> str:
