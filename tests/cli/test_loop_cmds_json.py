@@ -1,4 +1,8 @@
-"""JSON contract tests for keep, discard, and status ``--format json``."""
+"""JSON contract tests for keep, discard, and status ``--format json``.
+
+Budget-key tests verify that a live budget inserts a ``budget`` object into
+every JSON document, and that no budget means no key.
+"""
 
 import json
 
@@ -15,6 +19,7 @@ from gymrat.session import (
     append_record,
     session_jsonl_path,
 )
+from gymrat.session.budget import Budget, write_budget
 from tests.cli._loop_cmds import make_discard_repo, never_tty, runner, write_config
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
@@ -296,3 +301,110 @@ def test_status_command_when_format_text_does_produce_identical_output(status_re
     assert result_text.exit_code == 0
     assert result_default.exit_code == 0
     assert result_text.stdout == result_default.stdout
+
+
+# ---------------------------------------------------------------------------
+# budget key — JSON output
+# ---------------------------------------------------------------------------
+
+#: A 30-minute budget with a far-future deadline so the budget is always live.
+_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
+
+
+def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write a live budget file and patch seams so read_budget succeeds."""
+    write_budget(repo, _BUDGET)
+    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
+
+
+def test_keep_command_when_format_json_and_budget_active_does_include_budget_object(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_keep(repo, monkeypatch, _make_committed_keep_result())
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["keep", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_keep_command_when_format_json_and_blocked_and_budget_active_does_include_budget_object(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_keep(repo, monkeypatch, _make_blocked_keep_result())
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["keep", "--format", "json"])
+
+    assert result.exit_code == 1
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_keep_command_when_format_json_and_no_budget_does_omit_budget_key(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_keep(repo, monkeypatch, _make_committed_keep_result())
+
+    result = runner.invoke(app, ["keep", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+def test_discard_command_when_format_json_and_budget_active_does_include_budget_object(
+    discard_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_discard(monkeypatch, _make_discard_result())
+    _install_budget(discard_repo, monkeypatch)
+
+    result = runner.invoke(app, ["discard", "--force", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_discard_command_when_format_json_and_no_budget_does_omit_budget_key(
+    discard_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_discard(monkeypatch, _make_discard_result())
+
+    result = runner.invoke(app, ["discard", "--force", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+def test_status_command_when_format_json_and_budget_active_does_include_budget_object(
+    status_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_budget(status_repo, monkeypatch)
+
+    result = runner.invoke(app, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_status_command_when_format_json_and_no_budget_does_omit_budget_key(
+    status_repo: str,
+):
+    result = runner.invoke(app, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc

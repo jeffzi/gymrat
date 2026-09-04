@@ -32,11 +32,13 @@ from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
     begin_run,
+    budget_for_report,
     emit_report,
     parse_positional,
     run_cli,
     run_options_of,
     wants_json,
+    warn_duration_over_budget,
     with_repo_lock,
     write_and_flush,
 )
@@ -44,6 +46,7 @@ from gymrat.config import resolve_config
 from gymrat.report import render_measure_json, render_measure_report
 from gymrat.report.types import MeasurementResult, ReportOptions
 from gymrat.sampling import TargetSpec
+from gymrat.session import clock as _clock
 from gymrat.session.clock import now_iso
 from gymrat.session.paths import repo_root
 from gymrat.session.records import BaselineRecord
@@ -101,7 +104,9 @@ async def _measure_body(
             on_progress=run_opts.on_progress,
             warn=run_opts.warn,
         )
+        start = _clock.now_ms()
         result = await engine.measure(options)
+        duration_ms = _clock.now_ms() - start
     finally:
         progress.stop()
 
@@ -114,6 +119,7 @@ async def _measure_body(
                 at=now_iso(),
                 label=result.label,
                 samples=tuple(result.rounds),
+                duration_ms=duration_ms,
             ),
         )
     return _MeasureOutcome(result=result, recording=recording)
@@ -150,12 +156,16 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     )
 
     async def run() -> None:
+        warn_duration_over_budget(halve=True)
         outcome = await with_repo_lock("measure", lambda: _measure_body(flags, resolved_target))
+        budget_trailer, budget_summary = budget_for_report()
         emit_report(
             outcome.result,
             flags,
             ReportRenderers(text=render_measure_report, json=render_measure_json),
             ReportOptions(color=color_override),
+            budget_trailer=budget_trailer,
+            budget_summary=budget_summary,
         )
         if outcome.recording is not None:
             note = (

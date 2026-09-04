@@ -14,6 +14,7 @@ before the dump, and ``allow_nan=False`` guards against any that slip through.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_never
 
 from gymrat.finite_json import null_non_finite
@@ -43,11 +44,23 @@ _COMPARE_SCHEMA_VERSION = 2
 _MEASURE_SCHEMA_VERSION = 1
 
 
-def render_json(result: ComparisonResult) -> str:
+@dataclass(frozen=True, slots=True)
+class BudgetSummary:
+    """Pre-computed budget snapshot for JSON output.
+
+    Computed at report time so the renderer stays clock-free.
+    """
+
+    cap_minutes: int
+    remaining_seconds: int
+
+
+def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None) -> str:
     """Serialize a comparison result to the compare JSON document.
 
     Args:
         result: The comparison to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
 
     Returns:
         The document as a two-space-indented JSON string.
@@ -65,14 +78,15 @@ def render_json(result: ComparisonResult) -> str:
         "perCandidate": _serialize_per_candidate(result),
         "worktrees": _serialize_worktrees(result),
     }
-    return _dump(document)
+    return _dump(_insert_budget(document, budget))
 
 
-def render_measure_json(result: MeasurementResult) -> str:
+def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | None = None) -> str:
     """Serialize a measurement result to the measure JSON document.
 
     Args:
         result: The single-target measurement to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
 
     Returns:
         The document as a two-space-indented JSON string.
@@ -87,7 +101,7 @@ def render_measure_json(result: MeasurementResult) -> str:
         },
         "worktrees": _serialize_worktrees(result),
     }
-    return _dump(document)
+    return _dump(_insert_budget(document, budget))
 
 
 def _serialize_metric(
@@ -241,17 +255,17 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
     }
 
 
-def render_iterate_json(result: IterateResult) -> str:
+def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
     """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
-    return _dump(_serialize_iteration(result.record))
+    return _dump(_insert_budget(_serialize_iteration(result.record), budget))
 
 
-def render_iterate_stop_json(reason: str) -> str:
+def render_iterate_stop_json(reason: str, *, budget: BudgetSummary | None = None) -> str:
     """Emitted instead of the normal iteration document when a stop condition fires."""
-    return _dump({"stopped": True, "reason": reason})
+    return _dump(_insert_budget({"stopped": True, "reason": reason}, budget))
 
 
-def render_keep_json(result: KeepResult) -> str:
+def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None) -> str:
     """Status, reason, nested checks outcome, commit SHA, and message."""
     record = result.record
     checks: dict[str, object] = {
@@ -267,10 +281,10 @@ def render_keep_json(result: KeepResult) -> str:
         "commit": record.commit,
         "message": record.message,
     }
-    return _dump(document)
+    return _dump(_insert_budget(document, budget))
 
 
-def render_discard_json(result: DiscardResult) -> str:
+def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None = None) -> str:
     """Render the discard's ``seq``, timestamp, and ``measured`` flag.
 
     ``seq`` is ``null`` when no iteration was measured.
@@ -278,23 +292,22 @@ def render_discard_json(result: DiscardResult) -> str:
     record = result.record
     measured = record is not None
     seq = record.seq if record is not None else None
-    return _dump({"seq": seq, "at": result.at, "measured": measured})
+    return _dump(_insert_budget({"seq": seq, "at": result.at, "measured": measured}, budget))
 
 
-def render_status_json(data: StatusData) -> str:
+def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None) -> str:
     """Session identity, branch, nested baseline ref/SHA, and record counts."""
-    return _dump(
-        {
-            "sessionId": data.session_id,
-            "branch": data.branch,
-            "baseline": {"ref": data.baseline_ref, "sha": data.baseline_sha},
-            "iterationCount": data.iteration_count,
-            "keepCount": data.keep_count,
-            "discardCount": data.discard_count,
-            "unsettled": data.unsettled,
-            "finalized": data.finalized,
-        }
-    )
+    document: dict[str, object] = {
+        "sessionId": data.session_id,
+        "branch": data.branch,
+        "baseline": {"ref": data.baseline_ref, "sha": data.baseline_sha},
+        "iterationCount": data.iteration_count,
+        "keepCount": data.keep_count,
+        "discardCount": data.discard_count,
+        "unsettled": data.unsettled,
+        "finalized": data.finalized,
+    }
+    return _dump(_insert_budget(document, budget))
 
 
 def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
@@ -335,6 +348,16 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
         "metrics": metrics,
         "confirm": confirm,
     }
+
+
+def _insert_budget(document: dict[str, object], budget: BudgetSummary | None) -> dict[str, object]:
+    """Insert the budget key when a live budget is present, returning the document."""
+    if budget is not None:
+        document["budget"] = {
+            "capMinutes": budget.cap_minutes,
+            "remainingSeconds": budget.remaining_seconds,
+        }
+    return document
 
 
 def _dump(document: dict[str, object]) -> str:

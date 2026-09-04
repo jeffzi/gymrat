@@ -46,12 +46,10 @@ gymrat measure --record .gymrat/worktrees/baseline
 Appends a baseline record with every metric's samples to the session log. Do this once, before
 the first edit. It is the reference every probe (below) reads against until the first `keep`.
 
-Time it: that is the cost of one measurement side. A full-scope probe costs the same; one
-`iterate` costs twice it, plus a confirmation rerun on REGRESSED. Before the first edit, state
-that cost in one line. When a wall-clock cap was given to you — in the kickoff prompt or the
-runbook — also state how many `iterate` runs fit, and never launch one the cap cannot fit: a
-measurement the cap kills records nothing, so report what the probes measured instead. Never
-estimate elapsed time yourself; the timed measurement is the only clock you have.
+Every gymrat command prints a time-left line when a wall-clock cap is active. Read that line after
+every command and plan from it — it is your only clock. Never estimate elapsed time yourself. A
+measurement the cap kills records nothing, so never launch one the remaining time cannot fit;
+report what the probes measured instead.
 
 ### 3. The iteration cycle
 

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `iterate`, `keep`, `discard`, `measure`, `compare`, `status`, and `sync` print a time-left line
+  when a supervised session has a wall-clock cap active.
+- `iterate`, `keep`, `discard`, `status`, `measure`, and `compare` add a top-level `budget` object
+  to their JSON output, with the cap in minutes and the whole seconds remaining.
+- Iteration and baseline records now carry the measurement's elapsed duration.
+- Iteration records carry a fingerprint of the experiment worktree at measurement time.
+
+### Changed
+
+- `supervise` refuses to launch when the wall-clock cap cannot fit one iteration, unless `--force`
+  is passed.
+- `iterate` refuses before any hook or bench when a live budget's remaining time is smaller than the
+  estimated iteration duration.
+
+### Fixed
+
+- The wall-clock cap now polls real time against the deadline instead of relying on a single sleep,
+  so it still fires at the intended clock time when the machine sleeps mid-run.
+
 ## [0.13.0] - 2026-09-03
 
 ### Changed

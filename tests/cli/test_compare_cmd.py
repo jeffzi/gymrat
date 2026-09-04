@@ -3,11 +3,14 @@
 These drive the command through :class:`typer.testing.CliRunner` with the
 ``compare`` and ``resolve_config`` seams replaced, so no real bench runs. They
 cover flag parsing into the config resolver, the text and JSON report going to
-stdout, the missing-bench error routing to exit 2 on stderr, and the fail-on
-gate tripping to exit 1 only after the report is printed.
+stdout, the missing-bench error routing to exit 2 on stderr, the fail-on gate
+tripping to exit 1 only after the report is printed, budget time-left reporting
+in text and JSON output (including on gate-refusal), and duration warnings when
+the budget is tight.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -16,6 +19,7 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.report.types import ComparisonResult
+from gymrat.session.budget import Budget, write_budget
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
@@ -196,5 +200,229 @@ def test_compare_when_fail_on_does_not_trip_does_exit_zero(monkeypatch: pytest.M
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
     )
+
+    assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# budget time-left line (text) and key (JSON) on compare
+# ---------------------------------------------------------------------------
+
+#: A 30-minute budget with a far-future deadline so the budget is always live.
+_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
+
+
+def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write a live budget file and patch seams so read_budget succeeds."""
+    Path(repo, ".gymrat").mkdir(exist_ok=True)
+    write_budget(repo, _BUDGET)
+    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
+
+
+def test_compare_when_budget_active_does_end_text_with_time_left_line(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    lines = [line.strip() for line in result.stdout.split("\n") if line.strip()]
+    assert re.search(r"left of 30m", lines[-1])
+
+
+def test_compare_when_no_budget_does_omit_time_left_line(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert "left of" not in result.stdout
+
+
+def test_compare_when_format_json_and_budget_active_does_include_budget_object(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(
+        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
+    )
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_compare_when_format_json_and_no_budget_does_omit_budget_key(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+
+    result = runner.invoke(
+        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
+    )
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+# ---------------------------------------------------------------------------
+# budget on gate-refusal output
+# ---------------------------------------------------------------------------
+
+
+def test_compare_when_fail_on_trips_and_budget_active_does_include_time_left_line(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, _regressed_result())
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(
+        app,
+        ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"],
+    )
+
+    assert result.exit_code == 1
+    assert re.search(r"left of 30m", result.stdout)
+
+
+def test_compare_when_fail_on_trips_and_format_json_and_budget_active_does_include_budget_key(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, _regressed_result())
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "compare",
+            "main",
+            "cand",
+            "--bench",
+            "sh bench.sh",
+            "--fail-on",
+            "regressed",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+
+
+# ---------------------------------------------------------------------------
+# budget absent on error exits
+# ---------------------------------------------------------------------------
+
+
+def test_compare_when_error_and_budget_active_does_not_include_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand"])
+
+    assert result.exit_code == 2
+    assert "left of" not in result.stdout
+    assert "left of" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# duration warnings
+# ---------------------------------------------------------------------------
+
+
+def _install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write a budget with 5 minutes left and freeze the clock."""
+    tight_budget = Budget(
+        started_at_ms=0.0,
+        max_minutes=30,
+        deadline_ms=300_000.0,
+    )
+    Path(repo, ".gymrat").mkdir(exist_ok=True)
+    write_budget(repo, tight_budget)
+    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
+    monkeypatch.setattr("gymrat.session.clock.now_ms", lambda: 0.0)
+
+
+def _write_session_with_duration(repo: str, duration_ms: float) -> None:
+    """Write a session log with one iteration record carrying a known duration."""
+    from gymrat.session import append_record, session_jsonl_path
+    from tests.session.records._fixtures import (
+        iteration_record,
+        session_record,
+        write_session_log,
+    )
+
+    write_session_log(repo, session_record())
+    append_record(session_jsonl_path(repo), iteration_record(duration_ms=duration_ms))
+
+
+def test_compare_when_budget_tight_and_estimate_known_does_warn_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    """When the full estimated pair duration exceeds budget remaining, compare warns."""
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+    _install_tight_budget(repo, monkeypatch)
+    _write_session_with_duration(repo, 720_000)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert "warning" in result.stderr.lower()
+
+
+def test_compare_when_estimate_unknown_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    """No warning when there's no duration estimate, even with a tight budget."""
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+    _install_tight_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert "warning" not in result.stderr.lower()
+
+
+def test_compare_when_duration_warning_does_not_change_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    """A duration warning is informational — the exit code stays 0."""
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result())
+    _install_tight_budget(repo, monkeypatch)
+    _write_session_with_duration(repo, 720_000)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0

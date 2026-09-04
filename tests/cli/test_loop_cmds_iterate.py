@@ -1,6 +1,11 @@
-"""Iterate command tests: basic execution, progress renderer wiring, and format flags."""
+"""Iterate command tests: basic execution, progress renderer wiring, format flags, and budget.
+
+Budget tests verify that a live budget appends a time-left line to text output
+and inserts a ``budget`` key in JSON output, including on stop-condition exits.
+"""
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +21,7 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
+from gymrat.session.budget import Budget, write_budget
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
 from tests.cli._loop_cmds import plain_lines, runner, write_config
@@ -422,3 +428,117 @@ def test_iterate_command_when_format_text_does_produce_plain_report(
     lines = plain_lines(result.stdout)
     assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
     assert lines[-1] == "gymrat keep"
+
+
+# ---------------------------------------------------------------------------
+# the iterate command — budget line and JSON key
+# ---------------------------------------------------------------------------
+
+#: A 30-minute budget with a far-future deadline so the budget is always live.
+_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
+
+
+def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write a live budget file and patch seams so read_budget succeeds."""
+    write_budget(repo, _BUDGET)
+    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
+
+
+def test_iterate_command_when_budget_active_does_end_text_with_time_left_line(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    lines = plain_lines(result.stdout)
+    assert re.search(r"left of 30m", lines[-1])
+
+
+def test_iterate_command_when_no_budget_does_omit_time_left_line(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert "left of" not in result.stdout
+
+
+def test_iterate_command_when_format_json_and_budget_active_does_include_budget_object(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_iterate_command_when_format_json_and_no_budget_does_omit_budget_key(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+def test_iterate_command_when_stop_condition_and_budget_active_does_include_time_left_in_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    _install_renderer_factory(monkeypatch)
+    raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
+    _install_iterate_session(monkeypatch, raiser)
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 1
+    assert re.search(r"left of 30m", result.stderr)
+
+
+def test_iterate_command_when_stop_and_format_json_and_budget_active_does_include_budget_key(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    _install_renderer_factory(monkeypatch)
+    raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
+    _install_iterate_session(monkeypatch, raiser)
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
+
+    assert result.exit_code == 1
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_iterate_command_when_error_and_budget_active_does_not_include_budget(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    _install_renderer_factory(monkeypatch)
+    raiser = _IterateSessionRaiser(RuntimeError("bench exploded"))
+    _install_iterate_session(monkeypatch, raiser)
+    _install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code != 0
+    assert "left of" not in result.stdout
+    assert "left of" not in result.stderr
