@@ -19,6 +19,7 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import (
     archived_session_path,
     baseline_worktree_dir,
+    budget_path,
     experiment_worktree_dir,
     lockfile_path,
     repo_root,
@@ -97,6 +98,7 @@ def _derive_archived(root: str) -> str:
         (experiment_worktree_dir, (".gymrat", "worktrees", "experiment")),
         (baseline_worktree_dir, (".gymrat", "worktrees", "baseline")),
         (_derive_archived, (".gymrat", f"session-{SESSION_ID}.jsonl")),
+        (budget_path, (".gymrat", "budget.json")),
     ],
 )
 def test_session_layout_when_deriving_path_does_place_under_root(

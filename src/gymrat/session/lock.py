@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
@@ -34,7 +35,7 @@ from filelock import FileLock, Timeout
 from gymrat.errors import GymratError
 from gymrat.session.clock import now_iso
 
-__all__ = ["acquire_lock"]
+__all__ = ["acquire_lock", "is_held"]
 
 type ReleaseLock = Callable[[], None]
 """Gives up an acquired lock. Calling it more than once is harmless."""
@@ -47,6 +48,12 @@ _PUBLISH_LOCK_TIMEOUT: float = 2.0
 _WORLD_WRITABLE_MODE = 0o666
 """Permissions applied to the holder record so any user can overwrite or remove it."""
 
+LOCK_ACQUIRE_POLL_MS: int = 100
+"""Milliseconds between lock-acquisition retries."""
+
+LOCK_ACQUIRE_RETRIES: int = 3
+"""Total attempts before declaring contention."""
+
 
 def _os_lock_file(lock_path: str) -> str:
     return lock_path + ".lock"
@@ -54,6 +61,33 @@ def _os_lock_file(lock_path: str) -> str:
 
 def _publish_lock_file(lock_path: str) -> str:
     return _os_lock_file(lock_path) + ".publish"
+
+
+def _non_blocking_lock(os_lock_path: str) -> FileLock:
+    """A ``FileLock`` that fails immediately on contention instead of blocking."""
+    return FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
+
+
+def is_held(lock_path: Path) -> bool:
+    """Report whether another party holds the advisory lock at ``lock_path``.
+
+    The probe acquires a non-blocking ``FileLock`` on the OS lock file
+    (``<lock_path>.lock``) and releases immediately.  If acquisition fails the
+    lock is held; if it succeeds or the file cannot be opened at all the lock
+    is not held.  The probe never reads or writes the holder record and always
+    preserves the lock file on disk.
+    """
+    os_lock_path = _os_lock_file(str(lock_path))
+    probe = _non_blocking_lock(os_lock_path)
+    try:
+        probe.acquire()
+    except Timeout:
+        return True
+    except OSError:
+        return False
+    else:
+        probe.release()
+        return False
 
 
 def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
@@ -74,15 +108,27 @@ def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
 
 
 def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
-    """Acquire the main non-blocking OS lock, or raise a diagnostic error."""
-    lock = FileLock(os_lock_path, timeout=0, preserve_lock_file=True)
-    try:
-        lock.acquire()
-    except Timeout:
-        _raise_contention_error(lock_path)
-    except PermissionError as error:
-        _raise_permission_error(os_lock_path, error)
-    return lock
+    """Acquire the main non-blocking OS lock, or raise a diagnostic error.
+
+    Retries up to ``LOCK_ACQUIRE_RETRIES`` times with ``LOCK_ACQUIRE_POLL_MS``
+    between attempts so a transient hold (e.g. an ``is_held`` probe) does not
+    cause a spurious contention error.
+    """
+    lock = _non_blocking_lock(os_lock_path)
+    last_attempt = LOCK_ACQUIRE_RETRIES - 1
+    for attempt in range(LOCK_ACQUIRE_RETRIES):
+        try:
+            lock.acquire()
+        except Timeout:
+            if attempt == last_attempt:
+                _raise_contention_error(lock_path)
+            time.sleep(LOCK_ACQUIRE_POLL_MS / 1000)
+        except PermissionError as error:
+            _raise_permission_error(os_lock_path, error)
+        else:
+            return lock
+    _raise_contention_error(lock_path)
+    return lock  # unreachable — _raise_contention_error always raises
 
 
 def acquire_lock(lock_path: str, command: str) -> ReleaseLock:

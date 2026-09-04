@@ -21,7 +21,7 @@ from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
 from gymrat.errors import GymratError
-from gymrat.session.lock import _os_lock_file, _publish_lock_file, acquire_lock
+from gymrat.session.lock import _os_lock_file, _publish_lock_file, acquire_lock, is_held
 from tests.conftest import hold_lock
 
 # ---------------------------------------------------------------------------
@@ -198,6 +198,38 @@ def test_acquire_lock_when_released_then_reacquired_does_succeed():
 
     assert_holder_record(read_holder(lock_path), command="measure")
     release2()
+
+
+def test_acquire_lock_when_transient_contention_does_succeed_after_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A lock held for microseconds releases before the next retry.
+
+    An is_held probe holds the OS lock only while probing, so acquire_lock
+    succeeds instead of raising.
+    """
+    lock_path = fresh_lock_path()
+    monkeypatch.setattr("gymrat.session.lock.LOCK_ACQUIRE_POLL_MS", 1)
+    monkeypatch.setattr("gymrat.session.lock.LOCK_ACQUIRE_RETRIES", 3)
+
+    real_acquire = FileLock.acquire
+    os_lock = _os_lock_file(lock_path)
+    os_lock_calls: list[int] = []
+
+    def transient_timeout(self: FileLock, *args: Any, **kwargs: Any) -> None:
+        if self.lock_file == os_lock:
+            os_lock_calls.append(1)
+            if len(os_lock_calls) == 1:
+                raise FileLockTimeout(self.lock_file)
+        real_acquire(self, *args, **kwargs)
+
+    monkeypatch.setattr(FileLock, "acquire", transient_timeout)
+
+    release = acquire_lock(lock_path, "compare")
+
+    assert callable(release)
+    assert len(os_lock_calls) >= 2
+    release()
 
 
 # ---------------------------------------------------------------------------
@@ -380,3 +412,99 @@ def test_acquire_lock_when_publish_lock_times_out_and_contended_does_still_repor
         assert caught.value.hint == LIVE_HOLDER_HINT
     finally:
         blocker.release()
+
+
+# ---------------------------------------------------------------------------
+# is_held — advisory lock probe
+# ---------------------------------------------------------------------------
+
+
+def test_is_held_when_lock_active_does_return_true():
+    lock_path = fresh_lock_path()
+    blocker = hold_lock(lock_path)
+
+    try:
+        result = is_held(Path(lock_path))
+
+        assert result is True
+    finally:
+        blocker.release()
+
+
+def test_is_held_when_lock_released_does_return_false():
+    lock_path = fresh_lock_path()
+    blocker = hold_lock(lock_path)
+    blocker.release()
+
+    result = is_held(Path(lock_path))
+
+    assert result is False
+
+
+def test_is_held_when_lock_never_existed_does_return_false():
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+
+    result = is_held(Path(lock_path))
+
+    assert result is False
+
+
+def test_is_held_when_called_from_holding_process_does_return_true():
+    """A probe from the same process that holds the lock still reports held."""
+    lock_path = fresh_lock_path()
+    release = acquire_lock(lock_path, "compare")
+
+    try:
+        result = is_held(Path(lock_path))
+
+        assert result is True
+    finally:
+        release()
+
+
+def test_is_held_when_probed_does_preserve_lock_file():
+    """The probe must not unlink the OS lock file, even on Windows backends.
+
+    The ``hold_lock`` helper builds its ``FileLock`` without
+    ``preserve_lock_file``, so this test constructs its own lock to control
+    the file's lifetime.
+    """
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    os_lock_path = _os_lock_file(lock_path)
+    lock = FileLock(os_lock_path, timeout=0)
+    lock.acquire()
+
+    try:
+        is_held(Path(lock_path))
+
+        assert Path(os_lock_path).exists()
+    finally:
+        lock.release()
+
+
+def test_is_held_when_probed_does_not_read_or_write_holder_record():
+    """The probe touches the OS lock file only, never the holder JSON."""
+    lock_path = fresh_lock_path()
+    holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
+    blocker = hold_lock(lock_path, holder=holder)
+
+    try:
+        is_held(Path(lock_path))
+
+        assert read_holder(lock_path) == holder
+    finally:
+        blocker.release()
+
+
+def test_is_held_when_permission_error_does_return_false(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    refuse_open(monkeypatch, _os_lock_file(lock_path))
+
+    result = is_held(Path(lock_path))
+
+    assert result is False
