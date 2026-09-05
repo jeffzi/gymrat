@@ -18,7 +18,7 @@ from rich.console import Console, RenderableType
 from rich.panel import Panel
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.cli.supervise.frame import build_summary
+from gymrat.cli.supervise.frame import SessionLabels, build_summary
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from tests._ansi import SGR_RE, strip_sgr
 from tests._rich import frame_text
@@ -46,6 +46,7 @@ from tests.cli.supervise._fixtures import (
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.progress import ReadSessionResult, SuperviseReporter
+    from gymrat.config import Effort
     from gymrat.supervisor import SessionEndReason
     from gymrat.supervisor.supervise import EndedBy
 
@@ -114,6 +115,11 @@ def _line_after(frame: str, needle: str) -> str:
     lines = frame.splitlines()
     idx = next(i for i, line in enumerate(lines) if needle in line)
     return lines[idx + 1]
+
+
+def _panel_title_text(frame: str) -> str:
+    """The panel's title text, with the top border's box-drawing chars stripped."""
+    return frame.splitlines()[0].strip("╭╮─ ")
 
 
 def _assert_is_nested_line(line: str) -> None:
@@ -695,7 +701,7 @@ def test_frame_when_any_state_does_never_contain_idle():
 # ---------------------------------------------------------------------------
 
 _LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
-_LOG_ROW = f"  log    {_LOG_PATH}"
+_LOG_ROW = f"  log     {_LOG_PATH}"
 
 
 def _session_result(*, with_best: bool) -> ReadSessionResult:
@@ -722,8 +728,8 @@ def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_an
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
-        "  best   -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
-        "  loop   3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
+        "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
+        "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
         f"{_LOG_ROW}"
     )
 
@@ -762,10 +768,10 @@ def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
 @pytest.mark.parametrize(
     ("session_result", "expected_loop"),
     [
-        pytest.param(None, "  loop   no session yet", id="no-session"),
+        pytest.param(None, "  loop    no session yet", id="no-session"),
         pytest.param(
             _session_result(with_best=False),
-            "  loop   3 iterations · 2 kept · 1 discarded · last -4.2% improved",
+            "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved",
             id="no-best-iteration",
         ),
     ],
@@ -787,7 +793,7 @@ def test_summary_when_no_best_delta_does_omit_the_best_row(
     [
         pytest.param(
             make_read_session(session_state(), has_baseline=True)(),
-            "  loop   baseline recorded · no iterations yet",
+            "  loop    baseline recorded · no iterations yet",
             id="zero-iterations",
         ),
         pytest.param(
@@ -800,7 +806,7 @@ def test_summary_when_no_best_delta_does_omit_the_best_row(
                 ),
                 has_baseline=True,
             )(),
-            "  loop   1 iteration · 1 kept · 0 discarded · last -4.2% improved",
+            "  loop    1 iteration · 1 kept · 0 discarded · last -4.2% improved",
             id="one-iteration",
         ),
     ],
@@ -822,7 +828,7 @@ def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_til
 
     assert (
         frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
-        == "  log    ~/.gymrat/supervisor-1.jsonl"
+        == "  log     ~/.gymrat/supervisor-1.jsonl"
     )
 
 
@@ -886,7 +892,7 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
     text = frame_text(summary, width=FRAME_WIDTH)
 
     assert "  agent" not in text
-    assert text == f"{expected_headline}\n  loop   no session yet\n{_LOG_ROW}"
+    assert text == f"{expected_headline}\n  loop    no session yet\n{_LOG_ROW}"
 
 
 @pytest.mark.parametrize(
@@ -896,8 +902,8 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
             "The task is complete.",
             [
                 "✓ completed · 1m 0s · $0.05",
-                "  agent  The task is complete.",
-                "  loop   no session yet",
+                "  agent   The task is complete.",
+                "  loop    no session yet",
                 _LOG_ROW,
             ],
             id="single-line",
@@ -906,10 +912,10 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
             "First paragraph.\n\nSecond paragraph.",
             [
                 "✓ completed · 1m 0s · $0.05",
-                "  agent  First paragraph.",
+                "  agent   First paragraph.",
                 "",
-                "         Second paragraph.",
-                "  loop   no session yet",
+                "          Second paragraph.",
+                "  loop    no session yet",
                 _LOG_ROW,
             ],
             id="paragraph-break",
@@ -918,9 +924,9 @@ def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
             "Line one.\nLine two.",
             [
                 "✓ completed · 1m 0s · $0.05",
-                "  agent  Line one.",
-                "         Line two.",
-                "  loop   no session yet",
+                "  agent   Line one.",
+                "          Line two.",
+                "  loop    no session yet",
                 _LOG_ROW,
             ],
             id="single-newline",
@@ -960,7 +966,7 @@ def test_summary_agent_row_when_text_at_threshold_does_render_unchanged():
     text = frame_text(summary, width=FRAME_WIDTH + 200)
     agent_line = next(line for line in text.splitlines() if "agent" in line)
 
-    assert agent_line == f"  agent  {short_text}"
+    assert agent_line == f"  agent   {short_text}"
     assert "(full message in log)" not in text
 
 
@@ -981,7 +987,7 @@ def test_summary_agent_row_when_text_exceeds_threshold_does_clip_with_ellipsis_a
     agent_line = agent_lines[0]
     assert "…" in agent_line
     assert "(full message in log)" in agent_line
-    assert len(agent_line) < len(f"  agent  {long_text}")
+    assert len(agent_line) < len(f"  agent   {long_text}")
 
 
 def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
@@ -998,3 +1004,68 @@ def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
 
     assert "(full message in log)" not in text
     assert any("Short status message." in line for line in text.splitlines())
+
+
+# ---------------------------------------------------------------------------
+# dashboard title — model and effort display
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "effort", "expected_title"),
+    [
+        pytest.param("opus", None, "supervise ecstatic-ts · model opus", id="model-only"),
+        pytest.param(None, "high", "supervise ecstatic-ts · effort high", id="effort-only"),
+        pytest.param(
+            "opus",
+            "max",
+            "supervise ecstatic-ts · model opus · effort max",
+            id="model-and-effort",
+        ),
+        pytest.param(None, None, "supervise ecstatic-ts", id="neither"),
+    ],
+)
+def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
+    model: str | None, effort: Effort | None, expected_title: str
+) -> None:
+    kit = make_reporter(label="ecstatic-ts", session_id="", branch="", model=model, effort=effort)
+    fire_launch(kit.reporter.observer, 1000)
+
+    frame = render_frame(kit.reporter)
+
+    assert _panel_title_text(frame) == expected_title
+
+
+# ---------------------------------------------------------------------------
+# closing summary — model and effort display
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected_line"),
+    [
+        pytest.param(SessionLabels(model="opus"), "  model   opus", id="model-only"),
+        pytest.param(SessionLabels(effort="high"), "  effort  high", id="effort-only"),
+    ],
+)
+def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
+    labels: SessionLabels, expected_line: str
+) -> None:
+    summary = build_summary(
+        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=labels
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert expected_line in text.splitlines()
+
+
+def test_summary_when_no_labels_does_omit_model_and_effort_rows() -> None:
+    summary = build_summary(
+        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=SessionLabels()
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert "model" not in text.lower()
+    assert "effort" not in text.lower()

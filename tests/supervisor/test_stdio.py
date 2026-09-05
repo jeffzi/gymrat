@@ -99,6 +99,16 @@ async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, An
             },
             id="optionals-present",
         ),
+        pytest.param(
+            {"effort": "high", "command_timeout_ms": 300000},
+            {
+                "kickoff": "do the thing",
+                "cwd": None,
+                "effort": "high",
+                "commandTimeoutMs": 300000,
+            },
+            id="effort-and-timeout-present",
+        ),
     ],
 )
 async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(

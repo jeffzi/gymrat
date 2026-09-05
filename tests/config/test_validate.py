@@ -1,4 +1,4 @@
-"""Tests for ``flag_problem`` — the CLI flag validator."""
+"""Tests for ``flag_problem``."""
 
 import pytest
 

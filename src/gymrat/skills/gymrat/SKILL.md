@@ -46,11 +46,6 @@ gymrat measure --record .gymrat/worktrees/baseline
 Appends a baseline record with every metric's samples to the session log. Do this once, before
 the first edit. It is the reference every probe (below) reads against until the first `keep`.
 
-Every gymrat command prints a time-left line when a wall-clock cap is active. Read that line after
-every command and plan from it — it is your only clock. Never estimate elapsed time yourself. A
-measurement the cap kills records nothing, so never launch one the remaining time cannot fit;
-report what the probes measured instead.
-
 ### 3. The iteration cycle
 
 Edit code **only in the experiment worktree** (the path `start` printed). Then:
@@ -132,10 +127,9 @@ request for a decision, or an offer of alternatives: nobody answers, and the ses
 question hanging. Decide from the runbook and continue. The only turn you end is the final report.
 
 **Never run a gymrat command in the background.** No completion notification arrives in a
-supervised session: ending the turn to "wait for it" ends the run and kills the command. Run
-`measure`, `compare`, and `iterate` in the foreground with the Bash tool's maximum timeout
-(600000). If a command times out even so, the suite is too long for this mode: do not relaunch it,
-report that and end.
+supervised session: ending the turn to "wait for it" ends the run and kills the command. Run it in
+the foreground and pass no timeout — the supervisor raises the command's timeout ceiling to match
+the run's wall-clock cap.
 
 ## Keeping iterations cheap
 
@@ -221,6 +215,16 @@ in the main working tree first (e.g. a dependency update), use `gymrat sync` to 
 main-tree changes into the experiment worktree before running `iterate`. `sync` refuses when the
 experiment worktree has conflicting uncommitted changes.
 
+## Reading the clock
+
+`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, and `measure` print a time-left line when
+a wall-clock cap is active. Read it after every one of them and plan from it — it is your only
+clock. Never estimate elapsed time yourself. `iterate` refuses on its own when the remaining time is
+shorter than the estimated iteration duration; treat that refusal as the answer and report what the
+probes measured. `measure` and `compare` warn on stderr when their estimated duration outlasts the
+remaining time — the command still runs and exits 0, so read its result, then launch no further
+measurement and report what the probes measured.
+
 ## Loop discipline
 
 1. **Never stop before a stop condition fires.** When `stop.max_iterations` or `stop.target_value` is
@@ -262,7 +266,7 @@ experiment worktree has conflicting uncommitted changes.
 - About to run a second `iterate` before `keep` or `discard`.
 - About to launch `gymrat supervise` while this text is in your system prompt.
 - Drafting a stop report while a configured stop condition has not fired.
-- Estimating elapsed time yourself instead of reading it off a timed measurement.
+- Estimating elapsed time yourself instead of reading the time-left line.
 
 ## Exit codes
 

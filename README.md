@@ -91,6 +91,17 @@ direction = "lower" # per-metric overrides: direction, gating, exact
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.
 
+The optional `[supervise]` table pins settings for `gymrat supervise` sessions:
+
+```toml
+[supervise]
+model = "sonnet" # agent model; alias or full model ID
+effort = "high" # low | medium | high | xhigh | max
+```
+
+Both keys are optional. The `--model` and `--effort` flags on `supervise` override the configured
+values.
+
 ## The optimization loop
 
 For iterating on performance work, gymrat manages a session with a pinned baseline and an
@@ -123,13 +134,32 @@ before = "npm run build" # once per iteration, before measuring
 after = "./scripts/notify.sh" # after the iteration record is written
 ```
 
-Hooks run with the experiment worktree as their working directory and receive a JSON object on stdin
-with keys `stage`, `experimentDir`, `seq`, `lastIteration`, and `session`. A hook that exits
-non-zero is reported in the iteration output but does not fail the iteration. Hooks that exceed the
-30-second timeout are killed.
+Hooks run with the experiment worktree as their working directory and receive a JSON object on
+stdin:
 
-An after hook must not modify the experiment worktree — the iteration record's fingerprint reflects
-the worktree at measurement time, and later edits go unrecorded.
+```json
+{
+  "stage": "before",
+  "experimentDir": "/path/to/experiment-worktree",
+  "seq": 1,
+  "lastIteration": null,
+  "session": {
+    "sessionId": "20240115-093000-1a2b",
+    "baseline": { "ref": "main", "sha": "4f2a1c9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a" },
+    "branch": "perf/faster-decode",
+    "iterationCount": 0
+  }
+}
+```
+
+A `before` hook gets the previous iteration's record in `lastIteration`, or `null` on the first
+iteration. An `after` hook gets the record gymrat just appended for this `seq`.
+
+gymrat reports a hook's non-zero exit in the iteration output; the iteration still succeeds.
+gymrat kills a hook that runs longer than 30 seconds.
+
+An after hook must not modify the experiment worktree: gymrat captures the worktree's contents when
+it measures, so anything the hook changes afterwards goes unrecorded.
 
 ## Two workflows, one tool
 

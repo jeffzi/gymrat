@@ -212,29 +212,29 @@ def test_compose_kickoff_when_happy_path_does_include_clock_rule_in_append(
     result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
 
     append = result.system_prompt_append.lower()
-    assert "wall-clock" in append or "wall clock" in append
-    assert "time left" in append or "time remaining" in append
-    assert "never estimate" in append or "do not estimate" in append
+    assert "wall-clock" in append
+    assert "time left" in append
+    assert "never estimate" in append
     assert "records nothing" in append
     records_nothing_pos = append.index("records nothing")
     runbook_pos = append.index("## runbook:")
     assert records_nothing_pos < runbook_pos
 
 
-def test_compose_kickoff_when_happy_path_does_omit_specific_cap_numbers_and_spend(
+@pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
+def test_compose_kickoff_when_happy_path_does_omit_cap_numbers_and_spend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    field: str,
 ):
     skill_text = "# Skill Title\n\nSome guidance.\n"
 
     result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
 
-    append = result.system_prompt_append.lower()
-    kickoff = result.kickoff.lower()
-    for text in (append, kickoff):
-        assert "30 minute" not in text
-        assert "max_minutes" not in text
-        assert "spend" not in text
+    text = getattr(result, field).lower()
+    assert "30 minute" not in text
+    assert "max_minutes" not in text
+    assert "spend" not in text
 
 
 # ---------------------------------------------------------------------------

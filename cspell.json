@@ -83,6 +83,7 @@
     "WRONLY",
     "xdist",
     "xfail",
+    "xhigh",
     "zizmor"
   ],
   "ignorePaths": [

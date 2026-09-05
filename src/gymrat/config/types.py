@@ -1,8 +1,12 @@
 """Public frozen dataclasses and constants for the gymrat config surface."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT, Direction
+
+#: The effort dial the CLI and config file both accept for a supervised session.
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +42,14 @@ class HooksConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SuperviseConfig:
+    """Agent supervision settings declared under the ``supervise`` section."""
+
+    model: str | None = None
+    effort: Effort | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ConfigFile:
     """Parsed ``gymrat.toml`` contents; every key is optional."""
 
@@ -55,6 +67,7 @@ class ConfigFile:
     primary: str | None = None
     stop: StopConfig | None = None
     hooks: HooksConfig | None = None
+    supervise: SuperviseConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +117,7 @@ class BenchlessConfig:
     filter: str | None = None
     stop: StopConfig | None = None
     hooks: HooksConfig | None = None
+    supervise: SuperviseConfig | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
