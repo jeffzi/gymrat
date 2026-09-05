@@ -108,11 +108,17 @@ An alternative to the manual iteration cycle (steps 3-5): an agent drives `itera
 on its own instead of you running them by hand.
 
 ```sh
-gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--log <path>] [--model <name>]
+gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] \
+  [--baseline <ref>] [--force] [--log <path>] [--model <name>]
 ```
 
 Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.toml` and
-`--max-minutes`. `--allow-dirty` permits uncommitted changes in the main working tree only.
+`--max-minutes`. Under supervised mode the session is already open and the baseline already recorded
+when the first turn starts, so steps 1 and 2 are done — begin with the runbook.
+
+`--baseline <ref>` pins the git ref for a freshly opened session (defaults to HEAD; ignored when
+resuming). `--force` launches even when the cap cannot fit one iteration or a stop condition is
+already met. `--allow-dirty` permits uncommitted changes in the main working tree only.
 `supervise` always refuses to launch when the experiment worktree has uncommitted changes: settle
 an unsettled iteration with `keep` or `discard`, and measure or `discard` any unmeasured edit
 first.

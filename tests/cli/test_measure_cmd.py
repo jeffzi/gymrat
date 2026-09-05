@@ -86,6 +86,13 @@ def _capture_measure(
     return captured
 
 
+def _stub_measure(
+    monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
+) -> list[MeasureOptions]:
+    _stub_resolve(monkeypatch)
+    return _capture_measure(monkeypatch, result)
+
+
 # ---------------------------------------------------------------------------
 # target defaulting
 # ---------------------------------------------------------------------------
@@ -95,8 +102,7 @@ def _capture_measure(
 def test_measure_when_no_target_given_does_default_to_current_directory(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _stub_resolve(monkeypatch)
-    captured = _capture_measure(monkeypatch)
+    captured = _stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
 
@@ -111,8 +117,7 @@ def test_measure_when_no_target_given_does_default_to_current_directory(
 
 @pytest.mark.usefixtures("_in_non_repo")
 def test_measure_when_run_does_render_report_to_stdout(monkeypatch: pytest.MonkeyPatch):
-    _stub_resolve(monkeypatch)
-    _capture_measure(monkeypatch)
+    _stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
 
@@ -297,8 +302,7 @@ def test_measure_when_budget_active_does_end_text_with_time_left_line(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _capture_measure(monkeypatch)
+    _stub_measure(monkeypatch)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
@@ -312,8 +316,7 @@ def test_measure_when_no_budget_does_omit_time_left_line(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _capture_measure(monkeypatch)
+    _stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
 
@@ -325,8 +328,7 @@ def test_measure_when_format_json_and_budget_active_does_include_budget_object(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _capture_measure(monkeypatch)
+    _stub_measure(monkeypatch)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh", "--format", "json"])
@@ -342,8 +344,7 @@ def test_measure_when_format_json_and_no_budget_does_omit_budget_key(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _capture_measure(monkeypatch)
+    _stub_measure(monkeypatch)
 
     result = runner.invoke(app, ["measure", "--bench", "sh bench.sh", "--format", "json"])
 
@@ -395,7 +396,6 @@ def test_measure_when_estimate_unknown_does_not_warn(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    """No warning when there's no duration estimate, even with a tight budget."""
     _open_session(record_repo)
     _capture_measure(monkeypatch)
     install_tight_budget(record_repo, monkeypatch)
