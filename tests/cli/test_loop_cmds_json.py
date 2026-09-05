@@ -19,7 +19,7 @@ from gymrat.session import (
     append_record,
     session_jsonl_path,
 )
-from gymrat.session.budget import Budget, write_budget
+from tests.cli._budget import install_budget
 from tests.cli._loop_cmds import make_discard_repo, never_tty, runner, write_config
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
@@ -307,21 +307,12 @@ def test_status_command_when_format_text_does_produce_identical_output(status_re
 # budget key — JSON output
 # ---------------------------------------------------------------------------
 
-#: A 30-minute budget with a far-future deadline so the budget is always live.
-_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
-
-
-def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a live budget file and patch seams so read_budget succeeds."""
-    write_budget(repo, _BUDGET)
-    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
-
 
 def test_keep_command_when_format_json_and_budget_active_does_include_budget_object(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _wire_keep(repo, monkeypatch, _make_committed_keep_result())
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["keep", "--format", "json"])
 
@@ -336,7 +327,7 @@ def test_keep_command_when_format_json_and_blocked_and_budget_active_does_includ
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _wire_keep(repo, monkeypatch, _make_blocked_keep_result())
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["keep", "--format", "json"])
 
@@ -363,7 +354,7 @@ def test_discard_command_when_format_json_and_budget_active_does_include_budget_
     discard_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _wire_discard(monkeypatch, _make_discard_result())
-    _install_budget(discard_repo, monkeypatch)
+    install_budget(discard_repo, monkeypatch)
 
     result = runner.invoke(app, ["discard", "--force", "--format", "json"])
 
@@ -389,7 +380,7 @@ def test_discard_command_when_format_json_and_no_budget_does_omit_budget_key(
 def test_status_command_when_format_json_and_budget_active_does_include_budget_object(
     status_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_budget(status_repo, monkeypatch)
+    install_budget(status_repo, monkeypatch)
 
     result = runner.invoke(app, ["status", "--format", "json"])
 

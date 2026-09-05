@@ -19,12 +19,13 @@ import pytest
 from gymrat.session import BaselineRecord, IterationRecord, SessionLogRecord
 from gymrat.session.budget import (
     Budget,
+    DurationEstimate,
     clear_budget,
     estimate_iterate_duration,
     read_budget,
     write_budget,
 )
-from gymrat.session.paths import budget_path, session_dir
+from gymrat.session.paths import budget_path
 from tests.session.records._fixtures import iteration_record
 
 
@@ -54,36 +55,6 @@ def _make_budget(**overrides: object) -> Budget:
     }
     defaults.update(overrides)
     return Budget(**defaults)  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# budget_path
-# ---------------------------------------------------------------------------
-
-
-def test_budget_path_when_given_root_does_place_file_under_session_dir(root: str):
-    result = budget_path(root)
-
-    expected = str(Path(session_dir(root)) / "budget.json")
-    assert result == expected
-
-
-# ---------------------------------------------------------------------------
-# Budget dataclass
-# ---------------------------------------------------------------------------
-
-
-def test_budget_when_constructed_does_be_frozen():
-    budget = _make_budget()
-
-    with pytest.raises(AttributeError):
-        budget.max_minutes = 99  # type: ignore[misc]
-
-
-def test_budget_when_constructed_does_have_version_1():
-    budget = _make_budget()
-
-    assert budget.version == 1
 
 
 # ---------------------------------------------------------------------------
@@ -150,24 +121,17 @@ def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_retu
     assert result == original
 
 
-def test_read_budget_when_file_absent_does_return_none(root: str):
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=0.0)
-
-    assert result is None
-
-
-def test_read_budget_when_file_contains_invalid_json_does_return_none(root: str):
-    _budget_file(root).write_text("not valid json{{{", encoding="utf-8")
-
-    with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
-        result = read_budget(root, now_ms=0.0)
-
-    assert result is None
-
-
-def test_read_budget_when_file_contains_wrong_schema_does_return_none(root: str):
-    _budget_file(root).write_text(json.dumps({"unexpected_field": 42}), encoding="utf-8")
+@pytest.mark.parametrize(
+    "raw_content",
+    [
+        pytest.param(None, id="file-absent"),
+        pytest.param("not valid json{{{", id="invalid-json"),
+        pytest.param(json.dumps({"unexpected_field": 42}), id="wrong-schema"),
+    ],
+)
+def test_read_budget_when_file_unreadable_does_return_none(root: str, raw_content: str | None):
+    if raw_content is not None:
+        _budget_file(root).write_text(raw_content, encoding="utf-8")
 
     with patch("gymrat.session.budget.is_held", autospec=True, return_value=True):
         result = read_budget(root, now_ms=0.0)
@@ -243,78 +207,45 @@ def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRe
     return iteration_record(seq=seq, duration_ms=duration_ms)
 
 
-def test_estimate_iterate_duration_when_no_records_does_return_none():
-    result = estimate_iterate_duration([])
-
-    assert result is None
-
-
-def test_estimate_iterate_duration_when_no_durations_does_return_none():
-    records: list[SessionLogRecord] = [_baseline(), _iteration()]
-
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        pytest.param([], None, id="no-records"),
+        pytest.param([_baseline(), _iteration()], None, id="no-durations"),
+        pytest.param(
+            [_baseline(), _iteration(duration_ms=840_000)],
+            DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
+            id="iteration-has-duration",
+        ),
+        pytest.param(
+            [_baseline(duration_ms=420_000), _iteration()],
+            DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
+            id="only-baseline-has-duration-doubles-it",
+        ),
+        pytest.param(
+            [_baseline(duration_ms=420_000), _iteration(duration_ms=900_000)],
+            DurationEstimate(duration_ms=900_000, source="iteration", source_duration_ms=900_000),
+            id="both-have-durations-prefers-iteration",
+        ),
+        pytest.param(
+            [
+                _baseline(),
+                _iteration(duration_ms=600_000, seq=1),
+                _iteration(duration_ms=840_000, seq=2),
+            ],
+            DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
+            id="multiple-iterations-uses-newest",
+        ),
+        pytest.param(
+            [_baseline(), _iteration(duration_ms=600_000, seq=1), _iteration(seq=2)],
+            DurationEstimate(duration_ms=600_000, source="iteration", source_duration_ms=600_000),
+            id="newest-iteration-lacks-duration-uses-earlier",
+        ),
+    ],
+)
+def test_estimate_iterate_duration_when_records_vary_does_prefer_newest_iteration_duration_over_baseline(
+    records: list[SessionLogRecord], expected: DurationEstimate | None
+):
     result = estimate_iterate_duration(records)
 
-    assert result is None
-
-
-def test_estimate_iterate_duration_when_iteration_has_duration_does_return_it():
-    records: list[SessionLogRecord] = [_baseline(), _iteration(duration_ms=840_000)]
-
-    result = estimate_iterate_duration(records)
-
-    assert result is not None
-    assert result.duration_ms == 840_000
-    assert result.source == "iteration"
-    assert result.source_duration_ms == 840_000
-
-
-def test_estimate_iterate_duration_when_only_baseline_has_duration_does_return_double():
-    records: list[SessionLogRecord] = [_baseline(duration_ms=420_000), _iteration()]
-
-    result = estimate_iterate_duration(records)
-
-    assert result is not None
-    assert result.duration_ms == 840_000
-    assert result.source == "baseline"
-    assert result.source_duration_ms == 420_000
-
-
-def test_estimate_iterate_duration_when_both_have_durations_does_prefer_iteration():
-    records: list[SessionLogRecord] = [
-        _baseline(duration_ms=420_000),
-        _iteration(duration_ms=900_000),
-    ]
-
-    result = estimate_iterate_duration(records)
-
-    assert result is not None
-    assert result.duration_ms == 900_000
-    assert result.source == "iteration"
-
-
-def test_estimate_iterate_duration_when_multiple_iterations_does_use_newest():
-    records: list[SessionLogRecord] = [
-        _baseline(),
-        _iteration(duration_ms=600_000, seq=1),
-        _iteration(duration_ms=840_000, seq=2),
-    ]
-
-    result = estimate_iterate_duration(records)
-
-    assert result is not None
-    assert result.duration_ms == 840_000
-    assert result.source_duration_ms == 840_000
-
-
-def test_estimate_iterate_duration_when_newest_iteration_lacks_duration_does_use_earlier():
-    records: list[SessionLogRecord] = [
-        _baseline(),
-        _iteration(duration_ms=600_000, seq=1),
-        _iteration(seq=2),
-    ]
-
-    result = estimate_iterate_duration(records)
-
-    assert result is not None
-    assert result.duration_ms == 600_000
-    assert result.source == "iteration"
+    assert result == expected

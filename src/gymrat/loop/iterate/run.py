@@ -154,8 +154,8 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
         return
     remaining = budget.remaining_ms(current_ms)
     if estimate.duration_ms > remaining:
-        remaining_minutes = int(remaining / 60_000)
-        estimate_minutes = int(estimate.duration_ms / 60_000)
+        remaining_minutes = int(_budget.ms_to_minutes(remaining))
+        estimate_minutes = int(_budget.ms_to_minutes(estimate.duration_ms))
         message = (
             f"{remaining_minutes}m left; the last {estimate.source} took "
             f"{estimate_minutes}m and the cap would cut this one off."
@@ -213,7 +213,7 @@ async def iterate_session(
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
     _guard_ready(config, state, root, required.records)
 
-    start_ms = _clock.now_ms()
+    start_ms = _clock.monotonic_ms()
     seq = state.last_seq + 1
     ctx = IterationContext(session=session, config=config, options=opts, jsonl_path=jsonl_path)
     before_report = await _hook_stage(
@@ -227,7 +227,7 @@ async def iterate_session(
     judged = await _measure_and_judge(ctx)
     judgment = _judge(config, judged)
 
-    duration_ms = _clock.now_ms() - start_ms
+    duration_ms = int(_clock.monotonic_ms() - start_ms)
     measured_tree = _workspace.worktree_fingerprint(Path(session.worktrees.experiment))
     if measured_tree is None:
         warn_to_stderr("Could not fingerprint the experiment worktree; measured_tree will be null.")

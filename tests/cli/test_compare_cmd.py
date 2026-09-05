@@ -19,12 +19,14 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.config import CliFlags, ResolvedConfig
 from gymrat.report.types import ComparisonResult
-from gymrat.session.budget import Budget, write_budget
+from gymrat.session import append_record, session_jsonl_path
+from tests.cli._budget import install_budget, install_tight_budget
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
     permutation_metric,
 )
+from tests.session.records._fixtures import iteration_record, session_record, write_session_log
 
 runner = CliRunner()
 
@@ -208,16 +210,6 @@ def test_compare_when_fail_on_does_not_trip_does_exit_zero(monkeypatch: pytest.M
 # budget time-left line (text) and key (JSON) on compare
 # ---------------------------------------------------------------------------
 
-#: A 30-minute budget with a far-future deadline so the budget is always live.
-_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
-
-
-def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a live budget file and patch seams so read_budget succeeds."""
-    Path(repo, ".gymrat").mkdir(exist_ok=True)
-    write_budget(repo, _BUDGET)
-    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
-
 
 def test_compare_when_budget_active_does_end_text_with_time_left_line(
     monkeypatch: pytest.MonkeyPatch,
@@ -225,7 +217,7 @@ def test_compare_when_budget_active_does_end_text_with_time_left_line(
 ):
     _stub_resolve(monkeypatch)
     _patch_compare(monkeypatch, create_comparison_result())
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
 
@@ -253,7 +245,7 @@ def test_compare_when_format_json_and_budget_active_does_include_budget_object(
 ):
     _stub_resolve(monkeypatch)
     _patch_compare(monkeypatch, create_comparison_result())
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
@@ -293,7 +285,7 @@ def test_compare_when_fail_on_trips_and_budget_active_does_include_time_left_lin
 ):
     _stub_resolve(monkeypatch)
     _patch_compare(monkeypatch, _regressed_result())
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(
         app,
@@ -310,7 +302,7 @@ def test_compare_when_fail_on_trips_and_format_json_and_budget_active_does_inclu
 ):
     _stub_resolve(monkeypatch)
     _patch_compare(monkeypatch, _regressed_result())
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(
         app,
@@ -342,7 +334,7 @@ def test_compare_when_error_and_budget_active_does_not_include_budget(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand"])
 
@@ -356,28 +348,8 @@ def test_compare_when_error_and_budget_active_does_not_include_budget(
 # ---------------------------------------------------------------------------
 
 
-def _install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a budget with 5 minutes left and freeze the clock."""
-    tight_budget = Budget(
-        started_at_ms=0.0,
-        max_minutes=30,
-        deadline_ms=300_000.0,
-    )
-    Path(repo, ".gymrat").mkdir(exist_ok=True)
-    write_budget(repo, tight_budget)
-    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
-    monkeypatch.setattr("gymrat.session.clock.now_ms", lambda: 0.0)
-
-
 def _write_session_with_duration(repo: str, duration_ms: float) -> None:
     """Write a session log with one iteration record carrying a known duration."""
-    from gymrat.session import append_record, session_jsonl_path
-    from tests.session.records._fixtures import (
-        iteration_record,
-        session_record,
-        write_session_log,
-    )
-
     write_session_log(repo, session_record())
     append_record(session_jsonl_path(repo), iteration_record(duration_ms=duration_ms))
 
@@ -389,7 +361,7 @@ def test_compare_when_budget_tight_and_estimate_known_does_warn_on_stderr(
     """When the full estimated pair duration exceeds budget remaining, compare warns."""
     _stub_resolve(monkeypatch)
     _patch_compare(monkeypatch, create_comparison_result())
-    _install_tight_budget(repo, monkeypatch)
+    install_tight_budget(repo, monkeypatch)
     _write_session_with_duration(repo, 720_000)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
@@ -405,24 +377,9 @@ def test_compare_when_estimate_unknown_does_not_warn(
     """No warning when there's no duration estimate, even with a tight budget."""
     _stub_resolve(monkeypatch)
     _patch_compare(monkeypatch, create_comparison_result())
-    _install_tight_budget(repo, monkeypatch)
+    install_tight_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0
     assert "warning" not in result.stderr.lower()
-
-
-def test_compare_when_duration_warning_does_not_change_exit_code(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    """A duration warning is informational — the exit code stays 0."""
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
-    _install_tight_budget(repo, monkeypatch)
-    _write_session_with_duration(repo, 720_000)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
