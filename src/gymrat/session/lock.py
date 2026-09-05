@@ -33,6 +33,7 @@ from typing import NoReturn
 from filelock import FileLock, Timeout
 
 from gymrat.errors import GymratError
+from gymrat.eta import MS_PER_SECOND
 from gymrat.session.clock import now_iso
 
 __all__ = ["acquire_lock", "is_held"]
@@ -120,15 +121,14 @@ def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
         try:
             lock.acquire()
         except Timeout:
-            if attempt == last_attempt:
-                _raise_contention_error(lock_path)
-            time.sleep(LOCK_ACQUIRE_POLL_MS / 1000)
+            if attempt < last_attempt:
+                time.sleep(LOCK_ACQUIRE_POLL_MS / MS_PER_SECOND)
         except PermissionError as error:
             _raise_permission_error(os_lock_path, error)
         else:
             return lock
     _raise_contention_error(lock_path)
-    return lock  # unreachable — _raise_contention_error always raises
+    return lock  # unreachable: satisfies ruff RET503 (NoReturn not tracked past for-loop)
 
 
 def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
