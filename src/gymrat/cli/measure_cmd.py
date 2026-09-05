@@ -104,9 +104,9 @@ async def _measure_body(
             on_progress=run_opts.on_progress,
             warn=run_opts.warn,
         )
-        start = _clock.now_ms()
+        start = _clock.monotonic_ms()
         result = await engine.measure(options)
-        duration_ms = _clock.now_ms() - start
+        duration_ms = int(_clock.monotonic_ms() - start)
     finally:
         progress.stop()
 

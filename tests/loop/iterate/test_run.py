@@ -37,6 +37,7 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from gymrat.session import workspace as _workspace
+from gymrat.session.budget import Budget
 from gymrat.targets import InPlaceTarget
 from tests.loop._hooks import HookScripts
 from tests.loop.iterate._fixtures import (
@@ -686,7 +687,24 @@ async def test_iterate_session_when_hooks_and_confirmation_does_order_all_events
 # ---------------------------------------------------------------------------
 
 
-async def test_iterate_session_when_measuring_does_record_duration_ms_excluding_after_hook(
+async def test_iterate_session_when_measuring_does_record_duration_ms(
+    repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+):
+    experiment_dir = session_record(repo).worktrees.experiment
+    _ensure_dir(experiment_dir)
+    hooks = HookScripts(repo, experiment_dir)
+    write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
+    stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
+    ticks = iter([1_000.0, 1_500.0])
+    monkeypatch.setattr("gymrat.session.clock.monotonic_ms", lambda: next(ticks))
+    config = resolved_config(hooks=HooksConfig(after=hooks.printing("bye")))
+
+    result = await iterate_session(repo, config)
+
+    assert result.record.duration_ms == 500
+
+
+async def test_iterate_session_when_after_hook_sleeps_does_not_include_its_duration_in_duration_ms(
     repo: str, samples_mock: CollectSamplesRecorder
 ):
     experiment_dir = session_record(repo).worktrees.experiment
@@ -694,13 +712,17 @@ async def test_iterate_session_when_measuring_does_record_duration_ms_excluding_
     hooks = HookScripts(repo, experiment_dir)
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-    config = resolved_config(hooks=HooksConfig(after=hooks.printing("bye")))
+    after_hook_sleep_ms = 300
+    config = resolved_config(
+        hooks=HooksConfig(
+            after=hooks.hook_command(f"import time\ntime.sleep({after_hook_sleep_ms / 1000})\n")
+        )
+    )
 
     result = await iterate_session(repo, config)
 
     assert result.record.duration_ms is not None
-    assert isinstance(result.record.duration_ms, (int, float))
-    assert result.record.duration_ms >= 0
+    assert result.record.duration_ms < after_hook_sleep_ms
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +743,7 @@ async def test_iterate_session_when_measuring_does_record_measured_tree_fingerpr
 
 
 async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
-    repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+    repo: str, samples_mock: CollectSamplesRecorder
 ):
     """A bench run that writes a file into the experiment worktree changes the fingerprint."""
     experiment_dir = session_record(repo).worktrees.experiment
@@ -783,7 +805,7 @@ async def test_iterate_session_when_after_hook_writes_file_does_not_change_measu
     assert result.record.measured_tree != tree_after
 
 
-async def test_iterate_session_when_fingerprint_fails_does_still_record_with_none_and_warn(
+async def test_iterate_session_when_fingerprint_fails_does_record_none_and_warn(
     settled: str,
     samples_mock: CollectSamplesRecorder,
     capsys: pytest.CaptureFixture[str],
@@ -800,7 +822,7 @@ async def test_iterate_session_when_fingerprint_fails_does_still_record_with_non
     assert result.record.measured_tree is None
     assert result.record.seq == 2
     captured = capsys.readouterr()
-    assert "fingerprint" in captured.err.lower() or "tree" in captured.err.lower()
+    assert "fingerprint" in captured.err.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -819,8 +841,6 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
     # Live budget with 12 min left, but last iteration took 14 min.
-    from gymrat.session.budget import Budget
-
     fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)
     monkeypatch.setattr(
         "gymrat.session.budget.read_budget",
@@ -832,7 +852,7 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_before_any_hook_
         await iterate_session(repo, resolved_config())
 
     message = str(exc.value)
-    assert "12m" in message or "720" in message
+    assert "12m" in message
     hint = hint_of(exc.value) or ""
     assert "report" in hint.lower() or "session" in hint.lower()
     assert samples_mock.call_count == 0
@@ -848,8 +868,6 @@ async def test_iterate_session_when_budget_exceeded_does_name_estimate_source_in
     )
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
-    from gymrat.session.budget import Budget
-
     fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)
     monkeypatch.setattr(
         "gymrat.session.budget.read_budget",
@@ -861,7 +879,7 @@ async def test_iterate_session_when_budget_exceeded_does_name_estimate_source_in
         await iterate_session(repo, resolved_config())
 
     message = str(exc.value)
-    assert "iteration" in message.lower() or "14m" in message
+    assert "iteration" in message.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -875,8 +893,6 @@ async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normall
     """A live budget with no recorded duration to estimate from does not block."""
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-
-    from gymrat.session.budget import Budget
 
     fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=1_800_000.0)
     monkeypatch.setattr(
@@ -905,8 +921,6 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
     """The stop condition fires before the budget check, so a session at its limit reports the stop."""
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-
-    from gymrat.session.budget import Budget
 
     fake_budget = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=720_000.0)
     monkeypatch.setattr(

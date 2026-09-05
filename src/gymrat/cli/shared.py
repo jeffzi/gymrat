@@ -39,7 +39,12 @@ from gymrat.report.style import (
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn, ReportOptions
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session import clock as _clock
-from gymrat.session.budget import Budget, estimate_iterate_duration, read_budget
+from gymrat.session.budget import (
+    SIDES_PER_ITERATE,
+    Budget,
+    estimate_iterate_duration,
+    read_budget,
+)
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.store import read_records, recover_torn_tail
@@ -539,12 +544,24 @@ def run_options_of(config: ResolvedConfig, progress: ProgressReporter) -> RunOpt
     )
 
 
+class JsonRenderer[T](Protocol):
+    """A JSON renderer for a report result type.
+
+    Implementations omit the ``budget`` field from the document entirely when *budget*
+    is ``None``, rather than serializing it as ``null``.
+    """
+
+    def __call__(self, result: T, /, *, budget: BudgetSummary | None = None) -> str:
+        """Render ``result`` as a JSON document."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class ReportRenderers[T]:
     """The text and JSON renderers a command hands ``emit_report`` for its result type."""
 
     text: Callable[[T, ReportOptions], str]
-    json: Callable[..., str]
+    json: JsonRenderer[T]
 
 
 def wants_json(flags: SharedFlags) -> bool:
@@ -561,7 +578,7 @@ def format_budget_trailer(budget: Budget, current_ms: float) -> str:
 def budget_summary_of(budget: Budget, current_ms: float) -> BudgetSummary:
     """The JSON ``budget`` field for an active budget at ``current_ms``."""
     return BudgetSummary(
-        cap_minutes=int(budget.max_minutes),
+        cap_minutes=budget.max_minutes,
         remaining_seconds=int(budget.remaining_ms(current_ms) // 1000),
     )
 
@@ -578,14 +595,21 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
     return "\n" + format_budget_trailer(budget, current), budget_summary_of(budget, current)
 
 
+def _repo_root_or_none() -> str | None:
+    """The current repository root, or ``None`` outside a git repo or on a read failure."""
+    try:
+        return repo_root()
+    except (GymratError, OSError):
+        return None
+
+
 def budget_for_report() -> tuple[str, BudgetSummary | None]:
     """Read the live budget rooted at the current repository.
 
     Returns ``("", None)`` outside a git repository or when no budget is active.
     """
-    try:
-        root = repo_root()
-    except Exception:  # noqa: BLE001 -- outside a repo there is no budget to report
+    root = _repo_root_or_none()
+    if root is None:
         return "", None
     return budget_snapshot(root)
 
@@ -594,13 +618,14 @@ def warn_duration_over_budget(*, halve: bool) -> None:
     """Warn on stderr when the estimated duration would outlast the budget.
 
     ``halve=True`` checks half the last iterate estimate — one side, the shape
-    ``measure`` runs. ``halve=False`` checks the full estimate — both sides, the
-    shape ``compare`` runs. Silently returns when the budget or estimate is
-    unknown.
+    ``measure`` runs — and names that per-side figure on its own. ``halve=False``
+    checks the full estimate — both sides, the shape ``compare`` runs — and leads
+    with the full cost, keeping the per-side figure in parentheses so a per-side
+    number that still fits does not read as if nothing were wrong. Silently
+    returns when the budget or estimate is unknown.
     """
-    try:
-        root = repo_root()
-    except Exception:  # noqa: BLE001 -- no repo means no budget
+    root = _repo_root_or_none()
+    if root is None:
         return
     current = _clock.now_ms()
     budget = read_budget(root, now_ms=current)
@@ -608,19 +633,23 @@ def warn_duration_over_budget(*, halve: bool) -> None:
         return
     try:
         records = read_records(session_jsonl_path(root))
-    except Exception:  # noqa: BLE001 -- no session log means no estimate
+    except (GymratError, OSError):
         return
     estimate = estimate_iterate_duration(records)
     if estimate is None:
         return
-    threshold_ms = estimate.duration_ms / 2 if halve else estimate.duration_ms
+    per_side_ms = estimate.duration_ms / SIDES_PER_ITERATE
+    threshold_ms = per_side_ms if halve else estimate.duration_ms
     remaining = budget.remaining_ms(current)
     if threshold_ms > remaining:
-        per_side = format_duration(estimate.source_duration_ms)
-        left = format_duration(remaining)
-        warn_to_stderr(
-            f"warning: {left} left; the last full measurement took at most {per_side} per side"
+        per_side = format_duration(per_side_ms)
+        cost = (
+            f"{per_side} per side"
+            if halve
+            else f"{format_duration(estimate.duration_ms)} ({per_side} per side)"
         )
+        left = format_duration(remaining)
+        warn_to_stderr(f"warning: {left} left; the last full measurement took at most {cost}")
 
 
 def emit_report[T](  # noqa: PLR0913 -- keyword-only budget params extend a 4-positional surface

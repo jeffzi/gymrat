@@ -51,7 +51,7 @@ class BudgetSummary:
     Computed at report time so the renderer stays clock-free.
     """
 
-    cap_minutes: int
+    cap_minutes: float
     remaining_seconds: int
 
 

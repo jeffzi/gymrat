@@ -26,6 +26,10 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import typer
 
@@ -49,9 +53,8 @@ from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
     broken_pipe_guard,
-    budget_summary_of,
+    budget_snapshot,
     exit_with_error,
-    format_budget_trailer,
     is_tty,
     resolve_render_mode,
     resolve_stream_color,
@@ -85,28 +88,23 @@ from gymrat.report.json_doc import (
     render_status_json,
 )
 from gymrat.report.loop import format_baseline_ref
-from gymrat.session.budget import read_budget
-from gymrat.session.clock import now_ms
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
 from gymrat.signals import install_termination_cleanup
 
 
-def _budget_summary(root: str) -> BudgetSummary | None:
-    """Read the live budget and pre-compute the snapshot the renderers need."""
-    current = now_ms()
-    budget = read_budget(root, now_ms=current)
-    return None if budget is None else budget_summary_of(budget, current)
-
-
-def _budget_text_trailer(root: str) -> str:
-    """The budget line to append after a command's text report, or empty."""
-    current = now_ms()
-    budget = read_budget(root, now_ms=current)
-    if budget is None:
-        return ""
-    return "\n" + format_budget_trailer(budget, current)
+def _write_budget_report(
+    root: str,
+    *,
+    use_json: bool,
+    render_json: Callable[[BudgetSummary | None], str],
+    text_report: str,
+) -> None:
+    """Render the JSON or text report from a single budget read, then write it once."""
+    trailer, summary = budget_snapshot(root)
+    report = render_json(summary) if use_json else text_report + trailer
+    write_and_flush(sys.stdout, report + "\n")
 
 
 _RefArgument = typer.Argument(
@@ -294,23 +292,22 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
                 ),
             )
         except LoopStopError as error:
-            summary = _budget_summary(root)
+            trailer, summary = budget_snapshot(root)
             if use_json:
                 write_and_flush(
                     sys.stdout,
                     render_iterate_stop_json(str(error), budget=summary) + "\n",
                 )
                 raise typer.Exit(GATE_EXIT_CODE) from None
-            trailer = _budget_text_trailer(root)
             if trailer:
                 write_and_flush(sys.stderr, trailer.lstrip("\n") + "\n")
             exit_with_error(error, GATE_EXIT_CODE)
-        summary = _budget_summary(root)
-        if use_json:
-            report = render_iterate_json(result, budget=summary)
-        else:
-            report = result.report + _budget_text_trailer(root)
-        write_and_flush(sys.stdout, report + "\n")
+        _write_budget_report(
+            root,
+            use_json=use_json,
+            render_json=lambda summary: render_iterate_json(result, budget=summary),
+            text_report=result.report,
+        )
 
     run_cli(run)
 
@@ -353,12 +350,12 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
 
         result = await with_repo_lock("keep", body)
         root = repo_root()
-        summary = _budget_summary(root)
-        if use_json:
-            report = render_keep_json(result, budget=summary)
-        else:
-            report = result.report + _budget_text_trailer(root)
-        write_and_flush(sys.stdout, report + "\n")
+        _write_budget_report(
+            root,
+            use_json=use_json,
+            render_json=lambda summary: render_keep_json(result, budget=summary),
+            text_report=result.report,
+        )
         if result.record.status == "blocked":
             raise typer.Exit(GATE_EXIT_CODE)
 
@@ -395,12 +392,12 @@ def discard(
             return discard_session(root, confirmed_session_id)
 
         result = await with_repo_lock("discard", body)
-        summary = _budget_summary(root)
-        if use_json:
-            report = render_discard_json(result, budget=summary)
-        else:
-            report = result.report + _budget_text_trailer(root)
-        write_and_flush(sys.stdout, report + "\n")
+        _write_budget_report(
+            root,
+            use_json=use_json,
+            render_json=lambda summary: render_discard_json(result, budget=summary),
+            text_report=result.report,
+        )
 
     run_cli(run)
 
@@ -453,13 +450,14 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 
     try:
         root = repo_root()
-        summary = _budget_summary(root)
+        trailer, summary = budget_snapshot(root)
         if use_json:
             report = render_status_json(status_data(root), budget=summary)
         else:
-            report = status_session(
-                root, resolve_benchless_config(flags, root), color=resolved_color
-            ) + _budget_text_trailer(root)
+            report = (
+                status_session(root, resolve_benchless_config(flags, root), color=resolved_color)
+                + trailer
+            )
     except typer.Exit:
         raise
     except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
@@ -488,7 +486,8 @@ def sync(*, debug: DebugOption = False) -> None:
 
         result = await with_repo_lock("sync", body)
         root = repo_root()
-        report = _format_sync_summary(result) + _budget_text_trailer(root)
+        trailer, _ = budget_snapshot(root)
+        report = _format_sync_summary(result) + trailer
         write_and_flush(sys.stdout, report + "\n")
 
     run_cli(run)

@@ -14,14 +14,29 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
+from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records.models import BaselineRecord, IterationRecord, SessionLogRecord
 
 _BUDGET_VERSION = 1
 
-_BASELINE_TO_ITERATE_MULTIPLIER = 2
+_MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
+
+
+def minutes_to_ms(minutes: float) -> int:
+    """Convert minutes to milliseconds, truncating toward zero via ``int()``."""
+    return int(minutes * _MS_PER_MINUTE)
+
+
+def ms_to_minutes(ms: float) -> float:
+    """Convert milliseconds to minutes, keeping fractional precision."""
+    return ms / _MS_PER_MINUTE
+
+
+SIDES_PER_ITERATE = 2
 """An iterate cycle measures both baseline and experiment, so it costs roughly
 twice a baseline-only run."""
 
@@ -117,7 +132,7 @@ class DurationEstimate:
     """
 
     duration_ms: float
-    source: str
+    source: Literal["iteration", "baseline"]
     source_duration_ms: float
 
 
@@ -145,7 +160,7 @@ def estimate_iterate_duration(
     for record in reversed(records):
         if isinstance(record, BaselineRecord) and record.duration_ms is not None:
             return DurationEstimate(
-                duration_ms=record.duration_ms * _BASELINE_TO_ITERATE_MULTIPLIER,
+                duration_ms=record.duration_ms * SIDES_PER_ITERATE,
                 source="baseline",
                 source_duration_ms=record.duration_ms,
             )

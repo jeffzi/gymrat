@@ -36,8 +36,8 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
-from gymrat.session.budget import Budget, write_budget
 from tests._ansi import SGR_RE
+from tests.cli._budget import install_budget
 from tests.cli._help import help_output
 from tests.cli._loop_cmds import (
     always_tty,
@@ -622,22 +622,13 @@ def test_settle_command_when_no_session_does_exit_two_with_a_start_hint(repo: st
 # budget time-left line — text output
 # ---------------------------------------------------------------------------
 
-#: A 30-minute budget with a far-future deadline so the budget is always live.
-_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
-
-
-def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a live budget file and patch the supervise lock so read_budget succeeds."""
-    write_budget(repo, _BUDGET)
-    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
-
 
 def test_status_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["status"])
 
@@ -665,7 +656,7 @@ def test_keep_command_when_budget_active_and_committed_does_end_text_with_time_l
     edit_experiment(repo)
     checks_pass(monkeypatch)
     write_config(repo, checks=CHECKS)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["keep", "-m", "cache the regex"])
 
@@ -679,7 +670,7 @@ def test_keep_command_when_budget_active_and_blocked_does_end_text_with_time_lef
 ):
     start_with(repo, (iteration(1),))
     write_config(repo, checks=CHECKS)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["keep"])
 
@@ -694,7 +685,7 @@ def test_discard_command_when_budget_active_does_end_text_with_time_left_line(
     start_with(repo, (iteration(1),))
     edit_experiment(repo)
     write_config(repo)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["discard"])
 
@@ -706,7 +697,7 @@ def test_discard_command_when_budget_active_does_end_text_with_time_left_line(
 def test_sync_command_when_budget_active_does_end_text_with_time_left_line(
     sync_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _install_budget(sync_repo, monkeypatch)
+    install_budget(sync_repo, monkeypatch)
 
     result = runner.invoke(app, ["sync"])
 
@@ -724,19 +715,27 @@ def test_sync_command_when_no_budget_does_omit_time_left_line(
     assert "left of" not in result.stdout
 
 
-@pytest.mark.parametrize("command", ["start", "finalize"])
-def test_start_and_finalize_commands_when_budget_active_does_not_include_time_left_line(
-    repo: str, monkeypatch: pytest.MonkeyPatch, command: str
+def test_start_command_when_budget_active_does_not_include_time_left_line(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    if command == "finalize":
-        _session_with_one_keep(repo)
-    else:
-        _stub_resolve_config(monkeypatch)
-        # start creates the session dir itself, but write_budget needs it
-        Path(repo, ".gymrat").mkdir(exist_ok=True)
-    _install_budget(repo, monkeypatch)
+    _stub_resolve_config(monkeypatch)
+    # start creates the session dir itself, but write_budget needs it
+    Path(repo, ".gymrat").mkdir(exist_ok=True)
+    install_budget(repo, monkeypatch)
 
-    result = runner.invoke(app, [command] + (["main"] if command == "start" else []))
+    result = runner.invoke(app, ["start", "main"])
+
+    assert result.exit_code == 0
+    assert "left of" not in result.stdout
+
+
+def test_finalize_command_when_budget_active_does_not_include_time_left_line(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _session_with_one_keep(repo)
+    install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["finalize"])
 
     assert result.exit_code == 0
     assert "left of" not in result.stdout

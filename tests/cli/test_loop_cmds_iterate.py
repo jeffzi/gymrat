@@ -21,9 +21,9 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
-from gymrat.session.budget import Budget, write_budget
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
+from tests.cli._budget import install_budget
 from tests.cli._loop_cmds import plain_lines, runner, write_config
 from tests.loop.iterate._fixtures import (
     baseline_rounds,
@@ -434,21 +434,12 @@ def test_iterate_command_when_format_text_does_produce_plain_report(
 # the iterate command — budget line and JSON key
 # ---------------------------------------------------------------------------
 
-#: A 30-minute budget with a far-future deadline so the budget is always live.
-_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
-
-
-def _install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a live budget file and patch seams so read_budget succeeds."""
-    write_budget(repo, _BUDGET)
-    monkeypatch.setattr("gymrat.session.budget.is_held", lambda _path: True)  # pyrefly: ignore
-
 
 def test_iterate_command_when_budget_active_does_end_text_with_time_left_line(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -472,7 +463,7 @@ def test_iterate_command_when_format_json_and_budget_active_does_include_budget_
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _factory, _recorder = _wire_successful_iterate(repo, monkeypatch)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
 
@@ -502,7 +493,7 @@ def test_iterate_command_when_stop_condition_and_budget_active_does_include_time
     _install_renderer_factory(monkeypatch)
     raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
     _install_iterate_session(monkeypatch, raiser)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
@@ -517,7 +508,7 @@ def test_iterate_command_when_stop_and_format_json_and_budget_active_does_includ
     _install_renderer_factory(monkeypatch)
     raiser = _IterateSessionRaiser(LoopStopError("max iterations (3) reached"))
     _install_iterate_session(monkeypatch, raiser)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--format", "json"])
 
@@ -535,7 +526,7 @@ def test_iterate_command_when_error_and_budget_active_does_not_include_budget(
     _install_renderer_factory(monkeypatch)
     raiser = _IterateSessionRaiser(RuntimeError("bench exploded"))
     _install_iterate_session(monkeypatch, raiser)
-    _install_budget(repo, monkeypatch)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
