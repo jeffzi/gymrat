@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
@@ -43,18 +44,19 @@ from gymrat.cli.supervise.state import (
 )
 from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
+from gymrat.paths import abbreviate_home
 from gymrat.report.format import format_delta
 from gymrat.report.loop import SHORT_SHA_LENGTH
+from gymrat.session.budget import minutes_to_ms
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
     from gymrat.cli.supervise.state import Liveness
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.supervisor import SupervisionResult
-
-_MS_PER_MINUTE = 60 * MS_PER_SECOND
 
 # Bounds for the tool-name column: floor prevents jitter across short names
 # (Read, Edit, Bash); ceiling prevents a long name from pushing the layout.
@@ -83,12 +85,8 @@ def _format_iter_label(count: int, max_iterations: int | None) -> str:
     return f"{count} iteration" if count == 1 else f"{count} iterations"
 
 
-def _minutes_to_ms(minutes: float) -> float:
-    return minutes * _MS_PER_MINUTE
-
-
 def _format_time_label(elapsed_ms: int, max_minutes: float) -> str:
-    max_ms = _minutes_to_ms(max_minutes)
+    max_ms = minutes_to_ms(max_minutes)
     remaining_ms = max(0, max_ms - elapsed_ms)
     elapsed = format_duration(elapsed_ms)
     remaining = format_duration(remaining_ms)
@@ -108,7 +106,7 @@ def _format_wall_clock(epoch_ms: int, tz: tzinfo | None) -> str:
 
 
 def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
-    max_ms = _minutes_to_ms(max_minutes)
+    max_ms = minutes_to_ms(max_minutes)
     progress = Progress(
         TextColumn("time"),
         BarColumn(bar_width=None),
@@ -137,7 +135,6 @@ def _build_cost_text(cost_usd: float | None, max_usd: float | None) -> Text:
 
 
 def _outcome_style(outcome: str) -> str:
-    """Map an iteration outcome to its display style."""
     if outcome in ("improved", "kept"):
         return STYLE_DONE
     if outcome == "regressed":
@@ -390,6 +387,10 @@ def _build_title(ctx: ReporterCtx) -> Text:
         _append_meta_field(title, "session", ctx.session_id)
     if ctx.branch:
         _append_meta_field(title, "branch", ctx.branch)
+    if ctx.model:
+        _append_meta_field(title, "model", ctx.model)
+    if ctx.effort:
+        _append_meta_field(title, "effort", ctx.effort)
     return title
 
 
@@ -418,7 +419,7 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
 
 # The label column of the summary rows, wide enough for "agent"; the two
 # spaces on either side indent the block and separate label from content.
-_SUMMARY_LABEL_WIDTH = 5
+_SUMMARY_LABEL_WIDTH = 6
 
 #: How a cap that stopped the session reads in the closing headline.
 _CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spend cap"}
@@ -452,17 +453,9 @@ def _summary_row(label: str, content: Text) -> Text:
     return row
 
 
-def _abbreviate_home(path: str) -> str:
-    """Shorten a path under the user's home directory to a ``~`` prefix."""
-    try:
-        return "~/" + Path(path).relative_to(Path.home()).as_posix()
-    except (ValueError, RuntimeError):
-        return path
-
-
 def _log_path_text(log_path: str) -> Text:
     """Build a ``Text`` for a log path with an OSC 8 file hyperlink."""
-    display = _abbreviate_home(log_path)
+    display = abbreviate_home(log_path)
     uri = Path(log_path).resolve().as_uri()
     return Text(display, style=f"link {uri}")
 
@@ -489,12 +482,24 @@ def _completed_on_its_own(result: SupervisionResult) -> bool:
     return result.ended_by == "session" and result.outcome.reason != "error"
 
 
+@dataclass(frozen=True, slots=True)
+class SessionLabels:
+    """Optional model/effort labels shown in the closing summary."""
+
+    model: str | None = None
+    effort: Effort | None = None
+
+
+_NO_LABELS = SessionLabels()
+
+
 def build_summary(
     result: SupervisionResult,
     *,
     log_path: str,
     session_result: ReadSessionResult | None,
     final_text: str | None = None,
+    labels: SessionLabels = _NO_LABELS,
 ) -> Text:
     """Build the closing summary ``gymrat supervise`` prints when a run ends.
 
@@ -505,10 +510,16 @@ def build_summary(
     When the session ended on its own (not by a cap or error) and the agent
     produced text, an ``agent`` row appears after the headline showing the
     agent's last text block with paragraph breaks preserved.
+
+    ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
     """
     rows = [_build_outcome_text(result)]
     if _completed_on_its_own(result) and final_text is not None:
         rows.append(_build_agent_row(final_text))
+    if labels.model is not None:
+        rows.append(_summary_row("model", Text(labels.model)))
+    if labels.effort is not None:
+        rows.append(_summary_row("effort", Text(labels.effort)))
     best_text = _build_best_text(session_result)
     if best_text is not None:
         rows.append(_summary_row("best", best_text))

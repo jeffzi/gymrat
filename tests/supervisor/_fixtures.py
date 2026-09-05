@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NamedTuple
 
-from gymrat.config import BenchlessConfig
+from gymrat.config import BenchlessConfig, Effort
 from gymrat.session.clock import now_ms
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import SessionPrompt
@@ -40,6 +40,7 @@ def make_launch(
     max_minutes: float = 5,
     max_usd: float | None = None,
     model: str | None = None,
+    effort: Effort | None = None,
     runbook_path: str = "/path/to/runbook.md",
     kickoff_summary: str = "test kickoff",
 ) -> LaunchEvent:
@@ -51,6 +52,7 @@ def make_launch(
         max_minutes=max_minutes,
         max_usd=max_usd,
         model=model,
+        effort=effort,
         runbook_path=runbook_path,
         kickoff_summary=kickoff_summary,
     )
@@ -68,6 +70,8 @@ def make_prompt(
     cwd: str = "/tmp/test",
     system_prompt_append: str | None = None,
     model: str | None = None,
+    effort: Effort | None = None,
+    command_timeout_ms: int | None = None,
 ) -> SessionPrompt:
     """Build a ``SessionPrompt`` from shared defaults, overridden per keyword."""
     return SessionPrompt(
@@ -75,6 +79,8 @@ def make_prompt(
         cwd=cwd,
         system_prompt_append=system_prompt_append,
         model=model,
+        effort=effort,
+        command_timeout_ms=command_timeout_ms,
     )
 
 

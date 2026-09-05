@@ -6,7 +6,7 @@ produce the frozen dataclasses from :mod:`gymrat.config.types`.
 
 import json
 import math
-from typing import Annotated
+from typing import Annotated, get_args
 
 from pydantic import (
     AfterValidator,
@@ -21,13 +21,21 @@ from pydantic_core import ErrorDetails
 from gymrat.config.env import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.config.types import (
     ConfigFile,
+    Effort,
     HooksConfig,
     KindEntry,
     MetricEntry,
     StopConfig,
+    SuperviseConfig,
 )
 from gymrat.model import NOISE_FLOOR_PCT, Direction
 from gymrat.pydantic_errors import STRICT_FORBID, coerce_integer, describe_key, drop_prefix_errors
+
+EFFORT_LEVELS: tuple[str, ...] = get_args(Effort)
+#: The comma/or-joined list of valid effort levels, quoted for validation error messages.
+EFFORT_PHRASE: str = (
+    ", ".join(f'"{level}"' for level in EFFORT_LEVELS[:-1]) + f' or "{EFFORT_LEVELS[-1]}"'
+)
 
 _LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029")
 
@@ -125,6 +133,13 @@ class _HooksModel(BaseModel):
     after: _NonEmptyStr
 
 
+class _SuperviseModel(BaseModel):
+    model_config = STRICT_FORBID
+
+    model: _NonEmptyStr
+    effort: Annotated[Effort | None, Field(default=None)]
+
+
 class _ConfigModel(BaseModel):
     model_config = STRICT_FORBID
 
@@ -165,6 +180,7 @@ class _ConfigModel(BaseModel):
     primary: _NonEmptyStr
     stop: Annotated[_StopModel | None, Field(default=None)]
     hooks: Annotated[_HooksModel | None, Field(default=None)]
+    supervise: Annotated[_SuperviseModel | None, Field(default=None)]
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +207,9 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("metrics", "*", "gating"): "a boolean",
     ("metrics", "*", "exact"): "a boolean",
     ("kinds", "*", "gating"): "a boolean",
+    ("supervise",): "an object",
+    ("supervise", "model"): "a non-empty string",
+    ("supervise", "effort"): EFFORT_PHRASE,
 }
 
 _PYDANTIC_VALUE_ERROR_PREFIX = "Value error, "
@@ -265,6 +284,11 @@ def _to_config_file(model: _ConfigModel) -> ConfigFile:
         if model.hooks is not None
         else None
     )
+    supervise = (
+        SuperviseConfig(model=model.supervise.model, effort=model.supervise.effort)
+        if model.supervise is not None
+        else None
+    )
     return ConfigFile(
         bench=model.bench,
         prepare=model.prepare,
@@ -280,6 +304,7 @@ def _to_config_file(model: _ConfigModel) -> ConfigFile:
         primary=model.primary,
         stop=stop,
         hooks=hooks,
+        supervise=supervise,
     )
 
 

@@ -59,6 +59,10 @@ def _start_command(prompt: SessionPrompt) -> dict[str, object]:
         wire["systemPromptAppend"] = prompt.system_prompt_append
     if prompt.model is not None:
         wire["model"] = prompt.model
+    if prompt.effort is not None:
+        wire["effort"] = prompt.effort
+    if prompt.command_timeout_ms is not None:
+        wire["commandTimeoutMs"] = prompt.command_timeout_ms
     return {"type": "start", "prompt": wire}
 
 

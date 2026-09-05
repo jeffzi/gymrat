@@ -12,6 +12,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from gymrat.config.types import Effort
 from gymrat.supervisor.events import SessionObserver
 
 
@@ -23,6 +24,8 @@ class SessionPrompt:
     cwd: str
     system_prompt_append: str | None = None
     model: str | None = None
+    effort: Effort | None = None
+    command_timeout_ms: int | None = None
 
 
 SessionEndReason = Literal["completed", "interrupted", "error"]

@@ -15,8 +15,8 @@ from gymrat.errors import GymratError
 
 DEFAULT_KICKOFF = (
     "Drive the optimization session. This session has a wall-clock cap; "
-    "every gymrat command prints the time left. Follow the skill instructions "
-    "and the runbook to guide your work."
+    "`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, and `measure` print the time left. "
+    "Follow the skill instructions and the runbook to guide your work."
 )
 
 
@@ -72,9 +72,9 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         raise GymratError(message, hint=hint) from err
 
     clock_rule = (
-        "This session has a wall-clock cap. Every gymrat command prints the "
-        "time left — plan from that line. Never estimate elapsed time yourself. "
-        "A measurement the cap kills records nothing."
+        "This session has a wall-clock cap. `iterate`, `keep`, `discard`, `status`, `sync`, "
+        "`compare`, and `measure` print the time left — plan from that line. Never estimate "
+        "elapsed time yourself. A measurement the cap kills records nothing."
     )
 
     system_prompt_append = (

@@ -101,6 +101,20 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
         }
     if prompt.model is not None:
         options["model"] = prompt.model
+    if prompt.effort is not None:
+        options["effort"] = prompt.effort
+    if prompt.command_timeout_ms is not None:
+        # Raising the shell timeout ceiling to the wall-clock cap requires setting
+        # both the default and max tool-use timeout variables. Automatically moving
+        # a command to the background is disabled (empty string) because it would
+        # otherwise detach a long `gymrat` command into the background, where the
+        # agent can no longer observe its output or exit status.
+        timeout_ms = str(prompt.command_timeout_ms)
+        options["env"] = {
+            "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": timeout_ms,
+            "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": timeout_ms,
+            "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
+        }
     return options
 
 

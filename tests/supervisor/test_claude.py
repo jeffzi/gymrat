@@ -253,6 +253,42 @@ async def test_start_when_model_absent_does_omit_model():
     assert "model" not in client.options
 
 
+async def test_start_when_effort_given_does_include_effort():
+    client = await _start_with_prompt(make_prompt(effort="high"))
+
+    assert client.options is not None
+    assert client.options["effort"] == "high"
+
+
+async def test_start_when_effort_absent_does_omit_effort():
+    client = await _start_with_prompt(make_prompt())
+
+    assert client.options is not None
+    assert "effort" not in client.options
+
+
+async def test_start_when_command_timeout_ms_given_does_set_timeout_env_vars():
+    client = await _start_with_prompt(make_prompt(command_timeout_ms=300000))
+
+    assert client.options is not None
+    env = client.options["env"]
+    assert isinstance(env, dict)
+    assert env["CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS"] == "300000"
+    assert env["CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS"] == "300000"
+    assert env["CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS"] == ""
+
+
+async def test_start_when_command_timeout_ms_absent_does_omit_timeout_env_vars():
+    client = await _start_with_prompt(make_prompt())
+
+    assert client.options is not None
+    env = client.options.get("env", {})
+    assert isinstance(env, dict)
+    assert "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS" not in env
+    assert "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS" not in env
+    assert "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS" not in env
+
+
 # ---------------------------------------------------------------------------
 # message mapping — positive cases
 # ---------------------------------------------------------------------------
