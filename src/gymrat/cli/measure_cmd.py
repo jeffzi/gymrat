@@ -2,9 +2,7 @@
 
 The action holds the repository lock for the length of the run, stops the
 progress reporter before any report or error text, and renders the measurement
-to stdout once the lock is released. It never gates the exit code. The
-measurement engine is imported inside the action so assembling the CLI never
-pulls the heavy statistics stack.
+to stdout once the lock is released. It never gates the exit code.
 """
 
 from __future__ import annotations
@@ -43,13 +41,11 @@ from gymrat.cli.shared import (
     write_and_flush,
 )
 from gymrat.config import resolve_config
+from gymrat.loop.baseline import measure_baseline
 from gymrat.report import render_measure_json, render_measure_report
 from gymrat.report.types import MeasurementResult, ReportOptions
 from gymrat.sampling import TargetSpec
-from gymrat.session import clock as _clock
-from gymrat.session.clock import now_iso
 from gymrat.session.paths import repo_root
-from gymrat.session.records import BaselineRecord
 from gymrat.session.store import RequiredSession, append_record, require_open_session
 
 _TargetArgument = Annotated[
@@ -87,41 +83,14 @@ async def _measure_body(
         recording = (
             require_open_session(repo_root(), "recording a measurement") if flags.record else None
         )
-        from gymrat import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the heavy measurement stack
-            measure as engine,
-        )
-
         run_opts = run_options_of(config_resolved, progress)
-        options = engine.MeasureOptions(
-            target=resolved_target,
-            bench=run_opts.bench,
-            prepare=run_opts.prepare,
-            adapter=run_opts.adapter,
-            samples=run_opts.samples,
-            timeout_seconds=run_opts.timeout_seconds,
-            config_metrics=run_opts.config_metrics,
-            config_kinds=run_opts.config_kinds,
-            on_progress=run_opts.on_progress,
-            warn=run_opts.warn,
-        )
-        start = _clock.monotonic_ms()
-        result = await engine.measure(options)
-        duration_ms = int(_clock.monotonic_ms() - start)
+        result, record = await measure_baseline(resolved_target, run_opts)
     finally:
         progress.stop()
 
     # Still under the repo lock: only a completed run reaches here.
     if recording is not None:
-        append_record(
-            recording.jsonl_path,
-            BaselineRecord(
-                type="baseline",
-                at=now_iso(),
-                label=result.label,
-                samples=tuple(result.rounds),
-                duration_ms=duration_ms,
-            ),
-        )
+        append_record(recording.jsonl_path, record)
     return _MeasureOutcome(result=result, recording=recording)
 
 

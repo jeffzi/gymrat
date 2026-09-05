@@ -23,7 +23,14 @@ from gymrat.cli.supervise.progress import (
     SuperviseReporter,
     create_supervise_reporter,
 )
-from gymrat.session import IterationPrimary, IterationRecord
+from gymrat.loop.start import start_session
+from gymrat.session import (
+    BaselineRecord,
+    IterationPrimary,
+    IterationRecord,
+    append_record,
+    session_jsonl_path,
+)
 from gymrat.session.store import SessionState
 from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
@@ -37,6 +44,7 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from tests._rich import frame_text
+from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import finalize_record, iteration_record
 
 __all__ = [
@@ -45,6 +53,7 @@ __all__ = [
     "Clock",
     "PlainCapture",
     "ReporterKit",
+    "baseline_record",
     "empty_session_state",
     "finalize_record",
     "fire_cap",
@@ -62,8 +71,11 @@ __all__ = [
     "make_reporter",
     "make_supervision_result",
     "render_frame",
+    "seed_session_with_baseline",
+    "seed_session_with_iteration",
     "session_state",
     "session_state_three_iterations",
+    "start_open_session",
 ]
 
 
@@ -107,6 +119,48 @@ def empty_session_state() -> SessionState:
 def session_state(**changes: Any) -> SessionState:
     """The empty session state with the named fields overridden."""
     return replace(empty_session_state(), **changes)
+
+
+def baseline_record(
+    *, label: str = ".gymrat/worktrees/baseline", duration_ms: float | None = None
+) -> BaselineRecord:
+    """A baseline record with an optional wall-clock duration."""
+    return BaselineRecord(
+        type="baseline",
+        at="2026-08-08T14:15:30.000Z",
+        label=label,
+        samples=({"total_ms": 15200},),
+        duration_ms=duration_ms,
+    )
+
+
+def start_open_session(repo: str) -> None:
+    """Start a gymrat session so the experiment worktree and session log exist."""
+    start_session(repo, "main", resolved_config())
+
+
+def seed_session_with_baseline(
+    repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
+) -> None:
+    """Open a session and append a baseline record with the given duration."""
+    start_open_session(repo)
+    log = session_jsonl_path(repo)
+    append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
+
+
+def seed_session_with_iteration(
+    repo: str,
+    *,
+    iteration_duration_ms: float,
+    include_baseline: bool = True,
+    label: str = ".gymrat/worktrees/baseline",
+) -> None:
+    """Open a session and append an iteration record, optionally preceded by a baseline."""
+    start_open_session(repo)
+    log = session_jsonl_path(repo)
+    if include_baseline:
+        append_record(log, baseline_record(label=label))
+    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
 
 
 def _epoch_ms_to_local_hms(epoch_ms: int) -> str:
