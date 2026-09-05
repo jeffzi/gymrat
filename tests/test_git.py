@@ -89,6 +89,37 @@ def test_run_git_when_repo_env_vars_set_does_scrub_them_and_use_cwd(
     assert result.strip() == ".git"
 
 
+def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(scratch_repo: str):
+    result = run_git(
+        ["var", "GIT_AUTHOR_IDENT"],
+        scratch_repo,
+        env={"GIT_AUTHOR_NAME": "Banana", "GIT_AUTHOR_EMAIL": "banana@example.com"},
+    )
+
+    assert "Banana" in result
+
+
+def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
+    scratch_repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
+    custom_index = str(tmp_path / "custom-index")
+    (Path(scratch_repo) / "staged.txt").write_text("banana\n")
+
+    run_git(["read-tree", "--empty"], scratch_repo, env={"GIT_INDEX_FILE": custom_index})
+    run_git(
+        ["update-index", "--add", "--", "staged.txt"],
+        scratch_repo,
+        env={"GIT_INDEX_FILE": custom_index},
+    )
+    tree_sha = run_git(["write-tree"], scratch_repo, env={"GIT_INDEX_FILE": custom_index}).strip()
+    listing = run_git(["ls-tree", tree_sha], scratch_repo)
+    real_index_status = run_git(["diff", "--cached", "--name-only"], scratch_repo)
+
+    assert "staged.txt" in listing
+    assert real_index_status == ""
+
+
 # ---------------------------------------------------------------------------
 # try_git
 # ---------------------------------------------------------------------------

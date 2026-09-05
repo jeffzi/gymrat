@@ -115,6 +115,7 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         filter=config_file.filter,
         stop=config_file.stop,
         hooks=config_file.hooks,
+        supervise=config_file.supervise,
     )
 
 

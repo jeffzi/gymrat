@@ -115,6 +115,7 @@ _PHRASES: dict[tuple[str, ...], str] = {
     # baseline
     ("baseline", "at"): _STRING,
     ("baseline", "label"): _STRING,
+    ("baseline", "durationMs"): _NUMBER,
     ("baseline", "samples"): _SAMPLE_ROUNDS,
     ("baseline", "samples", "*"): _OBJECT,
     ("baseline", "samples", "*", "*"): _NUMBER,
@@ -156,6 +157,8 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("iteration", "primary", "deltaPct"): _DELTA,
     ("iteration", "outcome"): _OUTCOME,
     ("iteration", "targetReached"): _BOOL,
+    ("iteration", "durationMs"): _NUMBER,
+    ("iteration", "measuredTree"): _STRING,
     # keep
     ("keep", "seq"): _NON_NEGATIVE_INT,
     ("keep", "at"): _STRING,
@@ -233,7 +236,14 @@ def message_for_error(error: ErrorDetails, record_type: str) -> str:
     display_loc = tuple(str(part) for part in raw_loc)
     if error["type"] == "extra_forbidden":
         return f"Unknown session record key: {describe_key(display_loc)}"
-    phrase = _PHRASES.get((record_type, *_normalize_loc(raw_loc)), "a valid value")
+    normalized = _normalize_loc(raw_loc)
+    phrase = _PHRASES.get((record_type, *normalized))
+    if phrase is None and len(normalized) > 1:
+        # Union-type fields (e.g. int | float) produce error paths with a
+        # variant suffix; fall back to the parent key.
+        phrase = _PHRASES.get((record_type, *normalized[:-1]))
+    if phrase is None:
+        phrase = "a valid value"
     got = "undefined" if error["type"] == "missing" else json.dumps(error["input"])
     key = describe_key(display_loc)
     return f"Invalid session record value for {key}: expected {phrase}, got {got}"

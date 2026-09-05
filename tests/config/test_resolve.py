@@ -16,6 +16,7 @@ from gymrat.config import (
     MetricEntry,
     ResolvedConfig,
     StopConfig,
+    SuperviseConfig,
     resolve_benchless_config,
     resolve_config,
 )
@@ -774,3 +775,25 @@ def test_resolve_config_when_stop_sets_only_max_iterations_under_geomean_does_re
     result = resolve_config(CliFlags())
 
     assert result.stop == StopConfig(max_iterations=5)
+
+
+# ---------------------------------------------------------------------------
+# supervise table resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_config_when_supervise_table_present_does_expose_model_and_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(
+        tmp_path,
+        {
+            "bench": "config-bench",
+            "supervise": {"model": "claude-sonnet", "effort": "high"},
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve_config(CliFlags())
+
+    assert result.supervise == SuperviseConfig(model="claude-sonnet", effort="high")

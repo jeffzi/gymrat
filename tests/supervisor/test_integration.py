@@ -25,6 +25,7 @@ from gymrat.supervisor.supervise import supervise
 from tests.loop._bench import BASELINE_LATENCY, TUNING_FILE, commit_project
 from tests.supervisor._fixtures import (
     collecting_observer,
+    make_context,
     make_launch,
     make_prompt,
     read_log_lines,
@@ -111,8 +112,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     result = await supervise(
         driver=driver,
         prompt=make_prompt(cwd=repo),
-        max_minutes=30,
-        log_path=log_path,
+        context=make_context(max_minutes=30, log_path=str(log_path)),
         launch=make_launch(),
     )
 
@@ -153,8 +153,7 @@ async def test_supervise_when_wall_clock_caps_a_long_session_does_report_wall_cl
     result = await supervise(
         driver=driver,
         prompt=make_prompt(cwd=str(tmp_path)),
-        max_minutes=0.001,
-        log_path=log_path,
+        context=make_context(max_minutes=0.001, log_path=str(log_path)),
         launch=make_launch(max_minutes=0.001),
         observer=probe.observer,
         grace_ms=50,

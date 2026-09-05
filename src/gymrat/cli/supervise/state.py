@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
     from rich.live import Live
 
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import SessionObserver
@@ -193,3 +194,5 @@ class ReporterCtx:
     no_color: bool
     log_path: str
     last_top_level_text: str | None
+    model: str | None
+    effort: Effort | None

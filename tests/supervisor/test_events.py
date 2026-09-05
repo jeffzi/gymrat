@@ -214,8 +214,8 @@ def test_to_json_line_when_serializing_does_use_camel_case_keys(
     assert parsed == expected
 
 
-def test_to_json_line_when_launch_has_no_optionals_does_omit_max_usd_and_model():
-    event = make_launch(max_usd=None, model=None)
+def test_to_json_line_when_launch_has_no_optionals_does_omit_max_usd_model_and_effort():
+    event = make_launch(max_usd=None, model=None, effort=None)
 
     parsed = json.loads(to_json_line(event))
 
@@ -231,12 +231,13 @@ def test_to_json_line_when_launch_has_no_optionals_does_omit_max_usd_and_model()
 
 
 def test_to_json_line_when_launch_has_optionals_does_emit_them():
-    event = make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4))
+    event = make_launch(max_usd=1.5, model="opus", effort="high", dirty=DirtyInfo(file_count=4))
 
     parsed = json.loads(to_json_line(event))
 
     assert parsed["maxUsd"] == 1.5
     assert parsed["model"] == "opus"
+    assert parsed["effort"] == "high"
     assert parsed["dirty"] == {"fileCount": 4}
 
 
@@ -245,33 +246,35 @@ def test_to_json_line_when_launch_has_optionals_does_emit_them():
 # ---------------------------------------------------------------------------
 
 BY_ALIAS_CASES = [
-    pytest.param(False, "max_usd", "model", id="python-names"),
-    pytest.param(True, "maxUsd", "model", id="aliased-names"),
+    pytest.param(False, "max_usd", "model", "effort", id="python-names"),
+    pytest.param(True, "maxUsd", "model", "effort", id="aliased-names"),
 ]
 
 
-@pytest.mark.parametrize(("by_alias", "usd_key", "model_key"), BY_ALIAS_CASES)
+@pytest.mark.parametrize(("by_alias", "usd_key", "model_key", "effort_key"), BY_ALIAS_CASES)
 def test_launch_event_model_dump_when_optionals_are_none_does_omit_them(
-    by_alias: bool, usd_key: str, model_key: str
+    by_alias: bool, usd_key: str, model_key: str, effort_key: str
 ):
-    event = make_launch(max_usd=None, model=None)
+    event = make_launch(max_usd=None, model=None, effort=None)
 
     dumped = event.model_dump(by_alias=by_alias)
 
     assert usd_key not in dumped
     assert model_key not in dumped
+    assert effort_key not in dumped
 
 
-@pytest.mark.parametrize(("by_alias", "usd_key", "model_key"), BY_ALIAS_CASES)
+@pytest.mark.parametrize(("by_alias", "usd_key", "model_key", "effort_key"), BY_ALIAS_CASES)
 def test_launch_event_model_dump_when_optionals_are_set_does_include_them(
-    by_alias: bool, usd_key: str, model_key: str
+    by_alias: bool, usd_key: str, model_key: str, effort_key: str
 ):
-    event = make_launch(max_usd=1.5, model="opus")
+    event = make_launch(max_usd=1.5, model="opus", effort="high")
 
     dumped = event.model_dump(by_alias=by_alias)
 
     assert dumped[usd_key] == 1.5
     assert dumped[model_key] == "opus"
+    assert dumped[effort_key] == "high"
 
 
 # ---------------------------------------------------------------------------

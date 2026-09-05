@@ -5,7 +5,13 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.session import BaselineRef, Worktrees, parse_record, record_to_wire
-from gymrat.session.records import HookRecord, SessionConfig, SessionRecord
+from gymrat.session.records import (
+    BaselineRecord,
+    HookRecord,
+    IterationRecord,
+    SessionConfig,
+    SessionRecord,
+)
 
 AT = "2026-08-08T14:15:30.000Z"
 SHA = "a" * 40
@@ -162,6 +168,10 @@ def _config_with(**overrides: object) -> dict[str, object]:
             id="session-with-hooks",
         ),
         pytest.param(BASELINE_RECORD, id="baseline"),
+        pytest.param(
+            patching(BASELINE_RECORD, {"durationMs": 15192.3}),
+            id="baseline-with-duration",
+        ),
         pytest.param(ITERATION_RECORD, id="iteration"),
         pytest.param(
             patching(
@@ -228,6 +238,18 @@ def _config_with(**overrides: object) -> dict[str, object]:
             ),
             id="iteration-sample-round-key-is-proto",
         ),
+        pytest.param(
+            patching(ITERATION_RECORD, {"durationMs": 4200.5, "measuredTree": "abc123def456"}),
+            id="iteration-with-duration-and-tree",
+        ),
+        pytest.param(
+            patching(ITERATION_RECORD, {"durationMs": 4200}),
+            id="iteration-with-duration-only",
+        ),
+        pytest.param(
+            patching(ITERATION_RECORD, {"measuredTree": "abc123def456"}),
+            id="iteration-with-tree-only",
+        ),
         pytest.param(COMMITTED_KEEP_RECORD, id="committed-keep"),
         pytest.param(
             omitting(COMMITTED_KEEP_RECORD, "message"),
@@ -257,6 +279,65 @@ def _config_with(**overrides: object) -> dict[str, object]:
 )
 def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[str, object]):
     assert record_to_wire(parse_record(record)) == record
+
+
+# ---------------------------------------------------------------------------
+# parse_record — backward compatibility with older logs
+# ---------------------------------------------------------------------------
+
+
+def test_parse_record_when_iteration_lacks_duration_and_tree_does_default_to_none():
+    parsed = parse_record(ITERATION_RECORD)
+
+    assert isinstance(parsed, IterationRecord)
+    assert parsed.duration_ms is None
+    assert parsed.measured_tree is None
+
+
+def test_parse_record_when_baseline_lacks_duration_does_default_to_none():
+    parsed = parse_record(BASELINE_RECORD)
+
+    assert isinstance(parsed, BaselineRecord)
+    assert parsed.duration_ms is None
+
+
+# ---------------------------------------------------------------------------
+# parse_record — duration / measured-tree type rejections
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("record", "field", "phrase"),
+    [
+        pytest.param(
+            patching(ITERATION_RECORD, {"durationMs": "fast"}),
+            "durationMs",
+            "a number",
+            id="iteration-duration-not-number",
+        ),
+        pytest.param(
+            patching(ITERATION_RECORD, {"measuredTree": 42}),
+            "measuredTree",
+            "a string",
+            id="iteration-tree-not-string",
+        ),
+        pytest.param(
+            patching(BASELINE_RECORD, {"durationMs": "slow"}),
+            "durationMs",
+            "a number",
+            id="baseline-duration-not-number",
+        ),
+    ],
+)
+def test_parse_record_when_duration_or_tree_wrong_type_does_reject_with_phrase(
+    record: dict[str, object], field: str, phrase: str
+):
+    with pytest.raises(GymratError) as exc:
+        parse_record(record)
+
+    msg = str(exc.value)
+    assert mentions(field).search(msg)
+    assert phrase in msg
 
 
 # ---------------------------------------------------------------------------

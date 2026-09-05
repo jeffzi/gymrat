@@ -12,6 +12,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NamedTuple
 
+from gymrat.config import BenchlessConfig, Effort
+from gymrat.session.clock import now_ms
+from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, SessionEvent, SessionObserver
 
@@ -37,6 +40,7 @@ def make_launch(
     max_minutes: float = 5,
     max_usd: float | None = None,
     model: str | None = None,
+    effort: Effort | None = None,
     runbook_path: str = "/path/to/runbook.md",
     kickoff_summary: str = "test kickoff",
 ) -> LaunchEvent:
@@ -48,6 +52,7 @@ def make_launch(
         max_minutes=max_minutes,
         max_usd=max_usd,
         model=model,
+        effort=effort,
         runbook_path=runbook_path,
         kickoff_summary=kickoff_summary,
     )
@@ -65,6 +70,8 @@ def make_prompt(
     cwd: str = "/tmp/test",
     system_prompt_append: str | None = None,
     model: str | None = None,
+    effort: Effort | None = None,
+    command_timeout_ms: int | None = None,
 ) -> SessionPrompt:
     """Build a ``SessionPrompt`` from shared defaults, overridden per keyword."""
     return SessionPrompt(
@@ -72,6 +79,8 @@ def make_prompt(
         cwd=cwd,
         system_prompt_append=system_prompt_append,
         model=model,
+        effort=effort,
+        command_timeout_ms=command_timeout_ms,
     )
 
 
@@ -109,3 +118,44 @@ def result_message(
 def system_message(*, subtype: str = "init") -> SimpleNamespace:
     """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
     return SimpleNamespace(subtype=subtype)
+
+
+def _default_benchless_config() -> BenchlessConfig:
+    """A minimal ``BenchlessConfig`` for tests that need a context but not a real config."""
+    return BenchlessConfig(
+        adapter="mitata",
+        samples=1,
+        timeout_seconds=60,
+        unstable_noise_pct=5.0,
+        primary="geomean",
+        runbook=None,
+        stop=None,
+    )
+
+
+def make_context(
+    *,
+    root: str = "/tmp/test-repo",
+    log_path: str = "/tmp/events.jsonl",
+    lock_path: str = "/tmp/test-repo/.gymrat/lockfile",
+    config: BenchlessConfig | None = None,
+    deadline_ms: float | None = None,
+    max_minutes: float = 10,
+    max_usd: float | None = None,
+) -> SupervisedSession:
+    """Build a ``SupervisedSession`` from shared defaults, overridden per keyword.
+
+    ``deadline_ms`` defaults to ``now_ms() + max_minutes * 60_000`` when not
+    supplied, matching the computation ``_run_session`` performs.
+    """
+    if deadline_ms is None:
+        deadline_ms = now_ms() + max_minutes * 60_000
+    return SupervisedSession(
+        root=root,
+        log_path=log_path,
+        lock_path=lock_path,
+        config=config if config is not None else _default_benchless_config(),
+        deadline_ms=deadline_ms,
+        max_minutes=max_minutes,
+        max_usd=max_usd,
+    )

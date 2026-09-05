@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import tzinfo
 
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.records import SessionLogRecord
 
@@ -332,6 +333,8 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     tz: tzinfo | None,
     no_color: bool,
     log_path: str,
+    model: str | None,
+    effort: Effort | None,
 ) -> ReporterCtx:
     return ReporterCtx(
         now=now,
@@ -361,7 +364,19 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         no_color=no_color,
         log_path=log_path,
         last_top_level_text=None,
+        model=model,
+        effort=effort,
     )
+
+
+def _make_warn(ctx: ReporterCtx) -> Callable[[str], None]:
+    def warn(message: str) -> None:
+        if ctx.is_plain:
+            ctx.plain_write_fn(message)
+        elif ctx.live is not None:
+            ctx.live.console.print(message)
+
+    return warn
 
 
 def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter knob
@@ -381,6 +396,8 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     read_progress: Callable[[str], ProgressSnapshot | None] | None = None,
     color: bool | None = None,
     tz: tzinfo | None = None,
+    model: str | None = None,
+    effort: Effort | None = None,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard."""
     ctx = _new_ctx(
@@ -399,6 +416,8 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         tz=tz,
         no_color=color is False,
         log_path=log_path,
+        model=model,
+        effort=effort,
     )
 
     # Live is created after ctx — Rich's Live.__init__ eagerly calls
@@ -412,12 +431,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         )
         ctx.live.start()
 
-    def warn(message: str) -> None:
-        if ctx.is_plain:
-            ctx.plain_write_fn(message)
-        elif ctx.live is not None:
-            ctx.live.console.print(message)
-
+    warn = _make_warn(ctx)
     ctx.warn_fn = warn
     return SuperviseReporter(
         observer=lambda event: _handle_event(ctx, event),

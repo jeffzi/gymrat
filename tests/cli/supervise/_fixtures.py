@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
 
 from gymrat.cli.supervise.progress import (
@@ -354,6 +355,8 @@ def make_reporter(
     branch: str = "gymrat/20260813-125044-34ec",
     color: bool | None = None,
     tz: tzinfo | None = UTC,
+    model: str | None = None,
+    effort: Effort | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
 
@@ -379,6 +382,8 @@ def make_reporter(
         read_progress=read_progress,
         plain_write=plain_write,
         color=color,
+        model=model,
+        effort=effort,
     )
     return ReporterKit(reporter, clock)
 

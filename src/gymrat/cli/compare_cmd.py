@@ -31,11 +31,13 @@ from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
     begin_run,
+    budget_for_report,
     emit_report,
     parse_fail_on,
     parse_positional,
     run_cli,
     run_options_of,
+    warn_duration_over_budget,
     with_repo_lock,
 )
 from gymrat.config import resolve_config
@@ -142,12 +144,16 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     )
 
     async def run() -> None:
+        warn_duration_over_budget(halve=False)
         result = await with_repo_lock("compare", lambda: _compare_body(flags, baseline, candidates))
+        budget_trailer, budget_summary = budget_for_report()
         emit_report(
             result,
             flags,
             ReportRenderers(text=render_report, json=render_json),
             ReportOptions(verbose=flags.verbose, color=color_override, fail_on=flags.fail_on),
+            budget_trailer=budget_trailer,
+            budget_summary=budget_summary,
         )
         warn_empty_geomean_gates(flags.fail_on, result)
         if should_fail_gate(flags.fail_on, result):

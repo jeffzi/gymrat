@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,18 +27,23 @@ from typer.testing import CliRunner, Result
 from gymrat.cli.app import app
 from gymrat.cli.shared import write_and_flush
 from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
-from gymrat.config import BenchlessConfig, StopConfig
+from gymrat.config import BenchlessConfig, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.loop.start import start_session
-from gymrat.session import append_record
+from gymrat.session import BaselineRecord, append_record
+from gymrat.session.budget import Budget, read_budget, write_budget
+from gymrat.session.clock import now_ms
 from gymrat.session.paths import (
+    budget_path,
     experiment_worktree_dir,
+    lockfile_path,
     session_jsonl_path,
     supervise_lockfile_path,
 )
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import SupervisionResult, create_claude_driver
+from gymrat.supervisor import SessionPrompt, SupervisionResult, create_claude_driver
+from gymrat.supervisor.context import SupervisedSession
 from tests._ansi import strip_ansi
 from tests.cli._loop_cmds import make_discard_repo
 from tests.cli.supervise._fixtures import (
@@ -57,6 +63,10 @@ runner = CliRunner()
 # The fixed ISO-8601 stamp a lockfile fixture carries; its exact value is
 # immaterial to the tests, which only care that a live holder is named.
 _LOCK_AT = "2026-01-01T00:00:00.000Z"
+
+# The wall-clock cap the three ``--max-minutes``-driven tests below assert against.
+_CAP_MINUTES = 10
+_CAP_MS = _CAP_MINUTES * 60_000
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +114,10 @@ class _Seams:
 
 
 def _config(
-    *, stop: StopConfig | None = None, runbook: str | None = "runbook.md"
+    *,
+    stop: StopConfig | None = None,
+    runbook: str | None = "runbook.md",
+    supervise: SuperviseConfig | None = None,
 ) -> BenchlessConfig:
     """A benchless config the mocked kickoff and reporter read fields off of."""
     return BenchlessConfig(
@@ -115,6 +128,7 @@ def _config(
         primary="geomean",
         runbook=runbook,
         stop=stop,
+        supervise=supervise,
     )
 
 
@@ -226,26 +240,25 @@ def test_supervise_when_max_usd_invalid_does_exit_two_naming_the_flag(repo: str,
     assert "--max-usd" in _err_text(result)
 
 
-def test_supervise_when_max_minutes_valid_does_pass_it_through_as_a_number(
+def test_supervise_when_run_does_build_context_with_all_fields(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = _install_seams(monkeypatch)
+    before_ms = time.time() * 1000
 
-    result = _run("my prompt", "--max-minutes", "30")
+    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES), "--max-usd", "2.0")
 
+    after_ms = time.time() * 1000
     assert result.exit_code == 0
-    assert seams.supervise_calls[0]["max_minutes"] == 30.0
-
-
-def test_supervise_when_max_usd_valid_does_pass_it_through_as_a_number(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = _install_seams(monkeypatch)
-
-    result = _run("my prompt", "--max-minutes", "30", "--max-usd", "5.50")
-
-    assert result.exit_code == 0
-    assert seams.supervise_calls[0]["max_usd"] == 5.5
+    ctx = seams.supervise_calls[0]["context"]
+    assert isinstance(ctx, SupervisedSession)
+    assert ctx.root == repo
+    assert re.search(r"\.gymrat[/\\]supervisor-\d+\.jsonl", ctx.log_path)
+    assert ctx.lock_path == lockfile_path(repo)
+    assert isinstance(ctx.config, BenchlessConfig)
+    assert before_ms + _CAP_MS <= ctx.deadline_ms <= after_ms + _CAP_MS
+    assert ctx.max_minutes == _CAP_MINUTES
+    assert ctx.max_usd == 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +297,7 @@ def test_supervise_when_log_given_does_use_it_verbatim_and_skip_git_exclude(
     result = _run("optimize it", "--max-minutes", "10", "--log", custom)
 
     assert result.exit_code == 0
-    assert custom in result.stderr
+    assert Path(custom).name in result.stderr
     seams.ensure_git_exclude.assert_not_called()
 
 
@@ -514,7 +527,7 @@ def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loo
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert "  loop   3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
+    assert "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
 
 
 def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
@@ -529,7 +542,12 @@ def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
     result = _run("optimize it", "--max-minutes", "10", "--log", custom)
 
     assert result.exit_code == 0
-    assert f"  log    {custom}" in result.stdout
+    # On Windows CI tmp_path lives under $HOME, so the display path is ~/…
+    # abbreviated.  Check the row is a single unwrapped line.
+    assert any(
+        line.startswith("  log     ") and "supervisor-1.jsonl" in line
+        for line in result.stdout.splitlines()
+    )
 
 
 def test_supervise_when_stdout_is_not_a_tty_does_print_the_summary_without_ansi_codes(
@@ -756,9 +774,310 @@ def test_supervise_when_run_does_register_a_termination_cleanup(
 ):
     seams = _install_seams(monkeypatch)
 
+    _run("optimize it", "--max-minutes", "10")
+
+    (registered,) = seams.install_cleanup.call_args_list[0].args
+    registered()
+
+    assert seams.reporter_stop.called
+
+
+# ---------------------------------------------------------------------------
+# budget lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_run_does_write_budget_before_supervise(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Budget file must exist and be live before the agent's first turn."""
+    seams = _install_seams(monkeypatch)
+    seen_budgets: list[Budget | None] = []
+
+    async def probing_supervise(*args: object, **kwargs: object) -> SupervisionResult:
+        call = {**kwargs, **dict(zip(("driver", "prompt"), args, strict=False))}
+        seams.supervise_calls.append(call)
+        seen_budgets.append(read_budget(repo, now_ms=now_ms()))
+        return make_supervision_result()
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise", probing_supervise)
+
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert seams.install_cleanup.call_count == 1
-    (registered,) = seams.install_cleanup.call_args.args
-    assert callable(registered)
+    assert len(seen_budgets) == 1
+    assert seen_budgets[0] is not None
+
+
+def test_supervise_when_run_does_write_budget_with_correct_deadline(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    captured_budgets: list[Budget] = []
+
+    def capturing_write(root: str, budget: Budget) -> None:
+        captured_budgets.append(budget)
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.write_budget", capturing_write)
+
+    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    assert result.exit_code == 0
+    assert len(captured_budgets) == 1
+    budget = captured_budgets[0]
+    assert budget.max_minutes == _CAP_MINUTES
+    expected_deadline = budget.started_at_ms + _CAP_MS
+    assert budget.deadline_ms == expected_deadline
+
+
+def test_supervise_when_run_completes_does_clear_budget(repo: str, monkeypatch: pytest.MonkeyPatch):
+    _install_seams(monkeypatch)
+    cleared: list[str] = []
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", cleared.append)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert len(cleared) == 1
+
+
+def test_supervise_when_supervise_raises_does_still_clear_budget(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch, raises=GymratError("boom"))
+    cleared: list[str] = []
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.clear_budget", cleared.append)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 2
+    assert len(cleared) >= 1
+
+
+def test_supervise_when_run_does_clear_budget_before_stopping_reporter(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Budget must be cleared before the reporter stops."""
+    seams = _install_seams(monkeypatch)
+    budget_gone_at_stop: list[bool] = []
+
+    def probing_stop() -> None:
+        budget_gone_at_stop.append(not Path(budget_path(repo)).exists())
+
+    seams.reporter_stop.side_effect = probing_stop
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert budget_gone_at_stop == [True]
+
+
+def test_supervise_when_run_does_register_budget_termination_cleanup(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    """A termination signal (SIGTERM, SIGINT) must clear the budget file."""
+    seams = _install_seams(monkeypatch)
+
+    _run("optimize it", "--max-minutes", "10")
+    (registered,) = seams.install_cleanup.call_args_list[1].args
+    write_budget(repo, Budget(started_at_ms=0.0, max_minutes=10, deadline_ms=600_000.0))
+    registered()
+
+    assert not Path(budget_path(repo)).exists()
+
+
+# ---------------------------------------------------------------------------
+# feasibility check
+# ---------------------------------------------------------------------------
+
+
+def _baseline_record(duration_ms: float | None = None) -> BaselineRecord:
+    """A baseline record with an optional wall-clock duration."""
+    return BaselineRecord(
+        type="baseline",
+        at="2026-08-08T14:15:30.000Z",
+        label="main",
+        samples=({"total_ms": 15200},),
+        duration_ms=duration_ms,
+    )
+
+
+def _seed_session_with_baseline(repo: str, *, baseline_duration_ms: float) -> None:
+    """Start a session and write a baseline record with the given duration."""
+    _start_open_session(repo)
+    log = session_jsonl_path(repo)
+    append_record(log, _baseline_record(duration_ms=baseline_duration_ms))
+
+
+def _seed_session_with_iteration(
+    repo: str, *, iteration_duration_ms: float, include_baseline: bool = True
+) -> None:
+    """Start a session and write an iteration record with the given duration.
+
+    When ``include_baseline`` is True (the default), a baseline record without
+    a duration is also appended so the session reflects normal usage.
+    """
+    _start_open_session(repo)
+    log = session_jsonl_path(repo)
+    if include_baseline:
+        append_record(log, _baseline_record())
+    append_record(log, iteration_record(duration_ms=iteration_duration_ms))
+
+
+def test_supervise_when_cap_cannot_fit_one_iterate_does_exit_two_with_arithmetic_and_hint(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    _seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
+
+    result = _run("optimize it", "--max-minutes", "30")
+
+    assert result.exit_code == 2
+    text = _err_text(result)
+    assert "24m" in text
+    assert "48m" in text
+    assert "30m" in text
+    assert "--max-minutes" in text
+    assert "--force" in text
+
+
+def test_supervise_when_session_has_baseline_does_need_one_iterate(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    _seed_session_with_iteration(repo, iteration_duration_ms=2_880_000, include_baseline=True)
+
+    result = _run("optimize it", "--max-minutes", "47")
+
+    assert result.exit_code == 2
+    text = _err_text(result)
+    assert "48m" in text
+
+
+def test_supervise_when_session_lacks_baseline_does_need_one_iterate_plus_one_side(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    _seed_session_with_iteration(repo, iteration_duration_ms=2_880_000, include_baseline=False)
+
+    result = _run("optimize it", "--max-minutes", "60")
+
+    assert result.exit_code == 2
+    text = _err_text(result)
+    assert "72m" in text
+
+
+def test_supervise_when_force_passed_does_bypass_feasibility_check(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    _seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
+
+    result = _run("optimize it", "--max-minutes", "30", "--force")
+
+    assert result.exit_code == 0
+
+
+def test_supervise_when_force_help_does_mention_cap_bypass(repo: str):
+    result = _run("--help")
+
+    text = _err_text(result)
+    assert "--force" in text
+    assert re.search(r"cap.*cannot fit", text, re.IGNORECASE)
+
+
+def test_supervise_when_no_estimate_available_does_print_iterate_cost_on_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    text = _err_text(result)
+    assert re.search(r"one iterate.*pass", text, re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# --effort flag parsing and resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        pytest.param("banana", id="unknown-word"),
+        pytest.param("extreme", id="plausible-but-wrong"),
+        pytest.param("HIGH", id="wrong-case"),
+        pytest.param("", id="empty-string"),
+    ],
+)
+def test_supervise_when_effort_invalid_does_exit_two_with_expected_message(
+    repo: str, bad_value: str
+):
+    result = _run("optimize it", "--max-minutes", "10", "--effort", bad_value)
+
+    assert result.exit_code == 2
+    text = _err_text(result)
+    assert '"low", "medium", "high", "xhigh" or "max"' in text
+
+
+@pytest.mark.parametrize(
+    ("flag_args", "supervise_config", "expected"),
+    [
+        pytest.param(
+            ("--effort", "max"),
+            SuperviseConfig(effort="low"),
+            (None, "max"),
+            id="effort-flag-overrides-config",
+        ),
+        pytest.param(
+            (),
+            SuperviseConfig(effort="high"),
+            (None, "high"),
+            id="no-effort-flag-uses-config",
+        ),
+        pytest.param(
+            (),
+            SuperviseConfig(model="opus"),
+            ("opus", None),
+            id="no-model-flag-uses-config",
+        ),
+    ],
+)
+def test_supervise_when_run_does_resolve_model_and_effort_from_flag_or_config(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    flag_args: tuple[str, ...],
+    supervise_config: SuperviseConfig,
+    expected: tuple[str | None, str | None],
+):
+    seams = _install_seams(monkeypatch, config=_config(supervise=supervise_config))
+
+    result = _run("optimize it", "--max-minutes", "10", *flag_args)
+
+    assert result.exit_code == 0
+    prompt = seams.supervise_calls[0]["prompt"]
+    assert isinstance(prompt, SessionPrompt)
+    expected_model, expected_effort = expected
+    assert prompt.model == expected_model
+    assert prompt.effort == expected_effort
+
+
+# ---------------------------------------------------------------------------
+# shell-command ceiling
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_run_does_set_command_timeout_to_wall_clock_cap(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+
+    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    assert result.exit_code == 0
+    call = seams.supervise_calls[0]
+    prompt = call["prompt"]
+    assert isinstance(prompt, SessionPrompt)
+    assert prompt.command_timeout_ms == _CAP_MS

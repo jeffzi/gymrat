@@ -23,6 +23,7 @@ from gymrat.config.resolve import (
     resolve_config,
     validate_config_dict,
 )
+from gymrat.config.schema import EFFORT_LEVELS, EFFORT_PHRASE
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
     CONFIG_FILENAME,
@@ -32,11 +33,13 @@ from gymrat.config.types import (
     CliFlags,
     ConfigFile,
     ConfigFileResult,
+    Effort,
     HooksConfig,
     KindEntry,
     MetricEntry,
     ResolvedConfig,
     StopConfig,
+    SuperviseConfig,
 )
 from gymrat.config.validate import (
     flag_problem,
@@ -47,6 +50,8 @@ from gymrat.config.validate import (
 __all__ = [
     "CONFIG_DEFAULTS",
     "CONFIG_FILENAME",
+    "EFFORT_LEVELS",
+    "EFFORT_PHRASE",
     "FILTER_PLACEHOLDER",
     "GEOMEAN_PRIMARY",
     "MAX_SAFE_INTEGER",
@@ -55,11 +60,13 @@ __all__ = [
     "CliFlags",
     "ConfigFile",
     "ConfigFileResult",
+    "Effort",
     "HooksConfig",
     "KindEntry",
     "MetricEntry",
     "ResolvedConfig",
     "StopConfig",
+    "SuperviseConfig",
     "find_implicit_base",
     "flag_problem",
     "load_config_file",

@@ -176,6 +176,7 @@ class BaselineRecord(BaseModel):
     at: str
     label: str
     samples: _SampleRounds
+    duration_ms: _OptNumber = None
 
 
 class _DeltaPctSerializer(BaseModel):
@@ -251,7 +252,12 @@ class IterationPrimary(_DeltaPctSerializer):
 
 
 class IterationRecord(BaseModel):
-    """One measured edit: raw samples, per-metric verdicts, and the outcome."""
+    """One measured edit: raw samples, per-metric verdicts, and the outcome.
+
+    ``duration_ms`` is the wall-clock milliseconds from the readiness guard
+    passing to the record being appended -- the before hook, both bench sides,
+    the confirmation rerun, and judging.  It excludes the after hook.
+    """
 
     model_config = _RECORD_CONFIG
 
@@ -264,6 +270,8 @@ class IterationRecord(BaseModel):
     primary: IterationPrimary
     outcome: Outcome
     target_reached: bool
+    duration_ms: _OptNumber = None
+    measured_tree: _OptStr = None
 
 
 class KeepChecks(BaseModel):

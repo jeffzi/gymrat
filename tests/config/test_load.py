@@ -748,6 +748,96 @@ def test_load_config_file_when_stop_has_unknown_key_does_name_dotted_path(tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# supervise table — absent / present / rejection
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_file_when_no_supervise_table_does_return_config_without_supervise(
+    tmp_path: Path,
+):
+    config_path = write_config(tmp_path, {"bench": "my-bench"})
+
+    result = load_config_file(config_path)
+
+    assert result.supervise is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("claude-sonnet", id="string"),
+        pytest.param([], id="array"),
+        pytest.param(True, id="boolean"),
+    ],
+)
+def test_load_config_file_when_supervise_not_object_does_name_supervise_and_object(
+    tmp_path: Path, value: object
+):
+    config_path = write_config(tmp_path, {"supervise": value})
+
+    with pytest.raises(GymratError, match=r"supervise.*object"):
+        load_config_file(config_path)
+
+
+def test_load_config_file_when_supervise_has_unknown_key_does_name_dotted_path(tmp_path: Path):
+    config_path = write_config(
+        tmp_path, {"supervise": {"model": "claude-sonnet", "temperature": 0.7}}
+    )
+
+    with pytest.raises(GymratError, match=r"Unknown config key: supervise\.temperature"):
+        load_config_file(config_path)
+
+
+def test_load_config_file_when_supervise_model_blank_does_name_model_and_non_empty(
+    tmp_path: Path,
+):
+    config_path = write_config(tmp_path, {"supervise": {"model": ""}})
+
+    with pytest.raises(GymratError, match=r"supervise\.model.*non-empty"):
+        load_config_file(config_path)
+
+
+@pytest.mark.parametrize(
+    "effort",
+    [
+        pytest.param("low", id="low"),
+        pytest.param("medium", id="medium"),
+        pytest.param("high", id="high"),
+        pytest.param("xhigh", id="xhigh"),
+        pytest.param("max", id="max"),
+    ],
+)
+def test_load_config_file_when_supervise_effort_valid_does_accept(tmp_path: Path, effort: str):
+    config_path = write_config(tmp_path, {"supervise": {"effort": effort}})
+
+    result = load_config_file(config_path)
+
+    assert result.supervise is not None
+    assert result.supervise.effort == effort
+
+
+@pytest.mark.parametrize(
+    "effort",
+    [
+        pytest.param("turbo", id="unknown"),
+        pytest.param("High", id="wrong-case"),
+        pytest.param("", id="empty"),
+    ],
+)
+def test_load_config_file_when_supervise_effort_invalid_does_name_effort_and_all_five_levels(
+    tmp_path: Path, effort: str
+):
+    config_path = write_config(tmp_path, {"supervise": {"effort": effort}})
+
+    with pytest.raises(GymratError) as exc:
+        load_config_file(config_path)
+
+    text = str(exc.value)
+    assert "supervise.effort" in text
+    assert '"low", "medium", "high", "xhigh" or "max"' in text
+
+
+# ---------------------------------------------------------------------------
 # camelCase keys rejected as unknown
 # ---------------------------------------------------------------------------
 

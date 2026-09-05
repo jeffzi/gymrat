@@ -4,10 +4,13 @@ These drive the command through :class:`typer.testing.CliRunner` with the
 ``measure`` and ``resolve_config`` seams replaced. They cover the optional
 target defaulting to ``.``, the report going to stdout, the missing-bench error
 routing to exit 2, the rejection of ``--verbose``/``--fail-on`` and unknown
-options as usage errors, and the ``--record`` flag that appends the run to an
-open session log as a baseline.
+options as usage errors, the ``--record`` flag that appends the run to an
+open session log as a baseline (including elapsed duration), budget time-left
+reporting in text and JSON output, and duration warnings when the budget is
+tight.
 """
 
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -20,9 +23,15 @@ from gymrat.config import ResolvedConfig
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
-from gymrat.session import BaselineRecord, read_records, session_jsonl_path
+from gymrat.session import BaselineRecord, append_record, read_records, session_jsonl_path
+from tests.cli._budget import install_budget, install_tight_budget
 from tests.report._inputs import create_measurement_result
-from tests.session.records._fixtures import finalize_record, session_record, write_session_log
+from tests.session.records._fixtures import (
+    finalize_record,
+    iteration_record,
+    session_record,
+    write_session_log,
+)
 
 runner = CliRunner()
 
@@ -255,3 +264,143 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     assert result.exit_code == 0
     assert read_records(session_jsonl_path(record_repo)) == [session_record()]
     assert "recorded to session" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# --record duration
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_record_does_write_duration_ms_to_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    record_repo: str,
+):
+    _open_session(record_repo)
+    _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
+    ticks = iter([1_000.0, 1_500.0])
+    monkeypatch.setattr("gymrat.session.clock.monotonic_ms", lambda: next(ticks))
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
+
+    assert result.exit_code == 0
+    recorded = read_records(session_jsonl_path(record_repo))[-1]
+    assert isinstance(recorded, BaselineRecord)
+    assert recorded.duration_ms == 500
+
+
+# ---------------------------------------------------------------------------
+# budget time-left line (text) and key (JSON) on measure
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_budget_active_does_end_text_with_time_left_line(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _capture_measure(monkeypatch)
+    install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    lines = [line.strip() for line in result.stdout.split("\n") if line.strip()]
+    assert re.search(r"left of 30m", lines[-1])
+
+
+def test_measure_when_no_budget_does_omit_time_left_line(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _capture_measure(monkeypatch)
+
+    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert "left of" not in result.stdout
+
+
+def test_measure_when_format_json_and_budget_active_does_include_budget_object(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _capture_measure(monkeypatch)
+    install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_measure_when_format_json_and_no_budget_does_omit_budget_key(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _stub_resolve(monkeypatch)
+    _capture_measure(monkeypatch)
+
+    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+# ---------------------------------------------------------------------------
+# budget absent on error exits
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_error_and_budget_active_does_not_include_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["measure"])
+
+    assert result.exit_code == 2
+    assert "left of" not in result.stdout
+    assert "left of" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# duration warnings
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_budget_tight_and_estimate_known_does_warn_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    record_repo: str,
+):
+    """When half the estimated duration exceeds budget remaining, measure warns."""
+    _open_session(record_repo)
+    _capture_measure(monkeypatch)
+    install_tight_budget(record_repo, monkeypatch)
+    append_record(session_jsonl_path(record_repo), iteration_record(duration_ms=720_000))
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert "warning" in result.stderr.lower()
+
+
+def test_measure_when_estimate_unknown_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+    record_repo: str,
+):
+    """No warning when there's no duration estimate, even with a tight budget."""
+    _open_session(record_repo)
+    _capture_measure(monkeypatch)
+    install_tight_budget(record_repo, monkeypatch)
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    assert "warning" not in result.stderr.lower()

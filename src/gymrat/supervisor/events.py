@@ -17,7 +17,6 @@ import os
 import re
 import warnings
 from collections.abc import Callable
-from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -31,7 +30,9 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from gymrat.config.types import Effort
 from gymrat.finite_json import null_non_finite
+from gymrat.paths import abbreviate_home
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -157,9 +158,9 @@ class ModelPhaseEvent(_EventModel):
 class LaunchEvent(_EventModel):
     """Written by the supervisor as the log's first line: launch provenance.
 
-    ``max_usd`` and ``model`` are omitted from the wire form when ``None``
-    (not serialized as ``null`` — absent from the dict), matching the shipped
-    log format.
+    ``max_usd``, ``model``, and ``effort`` are omitted from the wire form when
+    ``None`` (not serialized as ``null`` — absent from the dict), matching the
+    shipped log format.
     """
 
     type: Literal["launch"] = "launch"
@@ -169,6 +170,7 @@ class LaunchEvent(_EventModel):
     max_minutes: float
     max_usd: float | None = None
     model: str | None = None
+    effort: Effort | None = None
     runbook_path: str
     kickoff_summary: str
 
@@ -185,6 +187,8 @@ class LaunchEvent(_EventModel):
             data.pop("max_usd", None)
         if self.model is None:
             data.pop("model", None)
+        if self.effort is None:
+            data.pop("effort", None)
         return data
 
 
@@ -288,15 +292,14 @@ _FILE_PATH_TOOLS: dict[str, str] = {
     "NotebookEdit": "notebook_path",
 }
 
-_HOME = str(Path.home())
-
 
 def _render_path(path: str, supervised_root: str | None) -> str:
     """Render a file path for display.
 
     Paths under the supervised root render relative to it; paths under the
     user's home directory render ``~``-prefixed; anything else renders verbatim.
-    The supervised root takes priority when a path falls under both.
+    The supervised root takes priority when a path falls under both.  All
+    returned paths use forward slashes for consistent cross-platform display.
     """
     if supervised_root is not None:
         try:
@@ -305,12 +308,9 @@ def _render_path(path: str, supervised_root: str | None) -> str:
             pass
         else:
             if not rel.startswith(".."):
-                return rel
+                return rel.replace(os.sep, "/")
 
-    if path.startswith(_HOME + "/"):
-        return "~/" + path[len(_HOME) + 1 :]
-
-    return path
+    return abbreviate_home(path)
 
 
 def summarize_input(

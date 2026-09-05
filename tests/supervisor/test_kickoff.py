@@ -199,6 +199,45 @@ def test_compose_kickoff_when_prompt_given_does_return_it_verbatim(tmp_path: Pat
 
 
 # ---------------------------------------------------------------------------
+# compose_kickoff — clock rule in system-prompt append
+# ---------------------------------------------------------------------------
+
+
+def test_compose_kickoff_when_happy_path_does_include_clock_rule_in_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    skill_text = "# Skill Title\n\nSome guidance.\n"
+
+    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+
+    append = result.system_prompt_append.lower()
+    assert "wall-clock" in append
+    assert "time left" in append
+    assert "never estimate" in append
+    assert "records nothing" in append
+    records_nothing_pos = append.index("records nothing")
+    runbook_pos = append.index("## runbook:")
+    assert records_nothing_pos < runbook_pos
+
+
+@pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
+def test_compose_kickoff_when_happy_path_does_omit_cap_numbers_and_spend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+):
+    skill_text = "# Skill Title\n\nSome guidance.\n"
+
+    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+
+    text = getattr(result, field).lower()
+    assert "30 minute" not in text
+    assert "max_minutes" not in text
+    assert "spend" not in text
+
+
+# ---------------------------------------------------------------------------
 # B33 — non-UTF-8 runbook
 # ---------------------------------------------------------------------------
 

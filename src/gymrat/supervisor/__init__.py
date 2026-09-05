@@ -1,6 +1,7 @@
 """Supervisor: the session event vocabulary and the observers that consume it."""
 
 from gymrat.supervisor.claude import ClientFactory, create_claude_driver
+from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import (
     Driver,
     DriverSession,
@@ -48,6 +49,7 @@ __all__ = [
     "SessionObserver",
     "SessionOutcome",
     "SessionPrompt",
+    "SupervisedSession",
     "SupervisionResult",
     "TextDeltaEvent",
     "ThinkingUpdateEvent",

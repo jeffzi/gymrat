@@ -91,6 +91,17 @@ direction = "lower" # per-metric overrides: direction, gating, exact
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.
 
+The optional `[supervise]` table pins settings for `gymrat supervise` sessions:
+
+```toml
+[supervise]
+model = "sonnet" # agent model; alias or full model ID
+effort = "high" # low | medium | high | xhigh | max
+```
+
+Both keys are optional. The `--model` and `--effort` flags on `supervise` override the configured
+values.
+
 ## The optimization loop
 
 For iterating on performance work, gymrat manages a session with a pinned baseline and an
@@ -109,7 +120,46 @@ gymrat finalize            # squash kept iterations into one commit and close
 
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs that loop under an AI
 agent: the runbook scaffolded by `init` describes the goal and constraints, and the session ends
-when the agent finishes or a cap trips.
+when the agent finishes or a cap trips. `iterate`, `keep`, `discard`, `status`, `sync`, `compare`,
+and `measure` print a time-left line so the agent can plan around the wall-clock cap.
+
+### Hooks
+
+The `[hooks]` table in `gymrat.toml` runs shell commands around each `gymrat iterate` measurement.
+No other command runs them.
+
+```toml
+[hooks]
+before = "npm run build" # once per iteration, before measuring
+after = "./scripts/notify.sh" # after the iteration record is written
+```
+
+Hooks run with the experiment worktree as their working directory and receive a JSON object on
+stdin:
+
+```json
+{
+  "stage": "before",
+  "experimentDir": "/path/to/experiment-worktree",
+  "seq": 1,
+  "lastIteration": null,
+  "session": {
+    "sessionId": "20240115-093000-1a2b",
+    "baseline": { "ref": "main", "sha": "4f2a1c9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a" },
+    "branch": "perf/faster-decode",
+    "iterationCount": 0
+  }
+}
+```
+
+A `before` hook gets the previous iteration's record in `lastIteration`, or `null` on the first
+iteration. An `after` hook gets the record gymrat just appended for this `seq`.
+
+gymrat reports a hook's non-zero exit in the iteration output; the iteration still succeeds.
+gymrat kills a hook that runs longer than 30 seconds.
+
+An after hook must not modify the experiment worktree: gymrat captures the worktree's contents when
+it measures, so anything the hook changes afterwards goes unrecorded.
 
 ## Two workflows, one tool
 
@@ -124,7 +174,7 @@ gymrat serves two audiences with the same statistical engine:
   keep/discard decisions backed by statistics. `gymrat supervise` automates the same loop under an
   AI agent.
 
-### Machine-readable output
+## Machine-readable output
 
 Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `status`)
 accepts `--format json` for structured output. The JSON key shapes are a stability contract:
