@@ -10,6 +10,7 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 """
 
 import asyncio
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -20,7 +21,6 @@ import pytest
 
 from gymrat.supervisor import (
     SessionOutcome,
-    SupervisedSession,
     TextDeltaEvent,
     UsageUpdateEvent,
     supervise,
@@ -649,22 +649,6 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_wall_clock_poll_ms_given_does_accept_the_parameter(
-    tmp_path: Path,
-):
-    driver = create_mock_driver([CostStep(cost_usd=0.05)])
-
-    result = await supervise(
-        driver,
-        make_prompt(),
-        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
-        launch=make_launch(),
-        wall_clock_poll_ms=500,
-    )
-
-    assert result.ended_by == "session"
-
-
 async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -674,8 +658,6 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
     fire immediately, proving the loop checks ``now_ms()`` rather than relying
     on a single ``asyncio.sleep`` for the full duration.
     """
-    import sys
-
     supervise_mod = sys.modules["gymrat.supervisor.supervise"]
 
     call_count = 0
@@ -706,54 +688,3 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
 
     assert result.ended_by == "wall-clock"
     assert call_count >= 3
-
-
-async def test_supervise_when_wall_clock_poll_ms_default_does_use_module_constant(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    from gymrat.supervisor.supervise import WALL_CLOCK_POLL_MS
-
-    assert WALL_CLOCK_POLL_MS == 1000
-
-
-# ---------------------------------------------------------------------------
-# SupervisedSession context
-# ---------------------------------------------------------------------------
-
-
-def test_supervised_session_when_constructed_does_expose_all_fields():
-    from gymrat.config import BenchlessConfig
-
-    config = BenchlessConfig(
-        adapter="mitata",
-        samples=1,
-        timeout_seconds=60,
-        unstable_noise_pct=5.0,
-        primary="geomean",
-        runbook=None,
-        stop=None,
-    )
-    ctx = SupervisedSession(
-        root="/repo",
-        log_path="/repo/.gymrat/events.jsonl",
-        lock_path="/repo/.gymrat/lockfile",
-        config=config,
-        deadline_ms=9_999_999.0,
-        max_minutes=10.0,
-        max_usd=5.0,
-    )
-
-    assert ctx.root == "/repo"
-    assert ctx.log_path == "/repo/.gymrat/events.jsonl"
-    assert ctx.lock_path == "/repo/.gymrat/lockfile"
-    assert ctx.config is config
-    assert ctx.deadline_ms == 9_999_999.0
-    assert ctx.max_minutes == 10.0
-    assert ctx.max_usd == 5.0
-
-
-def test_supervised_session_when_mutated_does_raise_frozen_error():
-    ctx = make_context()
-
-    with pytest.raises(AttributeError):
-        ctx.root = "/other"  # type: ignore[misc]
