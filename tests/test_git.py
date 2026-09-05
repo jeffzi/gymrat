@@ -89,49 +89,35 @@ def test_run_git_when_repo_env_vars_set_does_scrub_them_and_use_cwd(
     assert result.strip() == ".git"
 
 
-def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    captured_kwargs: list[dict[str, object]] = []
-    real_run = subprocess.run
+def test_run_git_when_extra_env_passed_does_apply_it_to_child_process(scratch_repo: str):
+    result = run_git(
+        ["var", "GIT_AUTHOR_IDENT"],
+        scratch_repo,
+        env={"GIT_AUTHOR_NAME": "Banana", "GIT_AUTHOR_EMAIL": "banana@example.com"},
+    )
 
-    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_kwargs.append(dict(kwargs))
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(subprocess, "run", recording_run)
-
-    run_git(["rev-parse", "HEAD"], scratch_repo, env={"GYMRAT_TEST_MARKER": "hello"})
-
-    assert captured_kwargs
-    child_env = captured_kwargs[0]["env"]
-    assert isinstance(child_env, dict)
-    assert child_env["GYMRAT_TEST_MARKER"] == "hello"
+    assert "Banana" in result
 
 
 def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
-    scratch_repo: str, monkeypatch: pytest.MonkeyPatch
+    scratch_repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    captured_kwargs: list[dict[str, object]] = []
-    real_run = subprocess.run
-
-    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured_kwargs.append(dict(kwargs))
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(subprocess, "run", recording_run)
     monkeypatch.setenv("GIT_INDEX_FILE", "/nonexistent/.git/index")
+    custom_index = str(tmp_path / "custom-index")
+    (Path(scratch_repo) / "staged.txt").write_text("banana\n")
 
+    run_git(["read-tree", "--empty"], scratch_repo, env={"GIT_INDEX_FILE": custom_index})
     run_git(
-        ["rev-parse", "HEAD"],
+        ["update-index", "--add", "--", "staged.txt"],
         scratch_repo,
-        env={"GIT_INDEX_FILE": "/custom/index"},
+        env={"GIT_INDEX_FILE": custom_index},
     )
+    tree_sha = run_git(["write-tree"], scratch_repo, env={"GIT_INDEX_FILE": custom_index}).strip()
+    listing = run_git(["ls-tree", tree_sha], scratch_repo)
+    real_index_status = run_git(["diff", "--cached", "--name-only"], scratch_repo)
 
-    assert captured_kwargs
-    child_env = captured_kwargs[0]["env"]
-    assert isinstance(child_env, dict)
-    assert child_env["GIT_INDEX_FILE"] == "/custom/index"
+    assert "staged.txt" in listing
+    assert real_index_status == ""
 
 
 # ---------------------------------------------------------------------------
