@@ -289,8 +289,10 @@ def worktree_fingerprint(directory: Path) -> str | None:
     partially staged worktree has byte-identical staged files before and after.
 
     Returns:
-        A hex tree-hash string whose value changes when — and only when — the
-        worktree's file content changes, or ``None`` when the underlying git
+        A hex tree-hash string covering the content and mode of every
+        non-ignored file, exactly as ``git write-tree`` sees them: changes
+        to ignored files never move the hash, and a mode-only change moves
+        it without any content change. ``None`` when the underlying git
         invocation fails (missing repo, bad permissions, …).
     """
     cwd = str(directory)

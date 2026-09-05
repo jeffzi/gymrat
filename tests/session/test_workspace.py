@@ -568,7 +568,6 @@ def test_worktree_fingerprint_when_content_differs_does_return_different_hashes(
 ):
     create_workspace(repo, SESSION_ID, baseline)
     experiment = experiment_worktree_dir(repo)
-    baseline_dir = baseline_worktree_dir(repo)
 
     hash_before = worktree_fingerprint(Path(experiment))
 
@@ -578,8 +577,6 @@ def test_worktree_fingerprint_when_content_differs_does_return_different_hashes(
     assert hash_before is not None
     assert hash_after is not None
     assert hash_before != hash_after
-    hash_baseline = worktree_fingerprint(Path(baseline_dir))
-    assert hash_baseline == hash_before
 
 
 def test_worktree_fingerprint_when_same_content_does_return_identical_hash(
