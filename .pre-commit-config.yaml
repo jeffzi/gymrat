@@ -43,9 +43,9 @@ repos:
         language: system
         types_or: [python, pyi]
 
-  # Python max lines
+  # Python code line limits
   - repo: https://github.com/jeffzi/pymaxlines
-    rev: main
+    rev: v0.6.0
     hooks:
       - id: check-max-lines
 
@@ -88,7 +88,7 @@ repos:
 
   # Spell checking
   - repo: https://github.com/streetsidesoftware/cspell-cli
-    rev: v10.1.0
+    rev: v10.2.0
     hooks:
       - id: cspell
 
@@ -100,7 +100,7 @@ repos:
 
   # GitHub Actions security audit
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.29.0
+    rev: v1.30.0
     hooks:
       - id: zizmor
 
