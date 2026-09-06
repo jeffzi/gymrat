@@ -9,6 +9,7 @@ point, with seams patched at the names ``preflight`` imports them under.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from gymrat.doctor.checks import (
 )
 from gymrat.errors import GymratError
 from gymrat.loop.finalize import finalize_session
+from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import StartResult, start_session
 from gymrat.session import (
     BaselineRecord,
@@ -34,6 +36,7 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
+from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path
 from tests._git import run_git
 from tests.cli.supervise._fixtures import (
@@ -44,7 +47,7 @@ from tests.cli.supervise._fixtures import (
 )
 from tests.loop.iterate._fixtures import resolved_config
 from tests.report._measurements import create_measurement_result
-from tests.session.records._fixtures import committed_keep, iteration_record
+from tests.session.records._fixtures import committed_keep, iteration_record, tear_final_line
 
 _MODULE = "gymrat.cli.supervise.preflight"
 
@@ -95,6 +98,28 @@ def _run_preflight(
         max_minutes=max_minutes,
         force=force,
     )
+
+
+def _probe_lock(lock_path: str) -> str | None:
+    """Return the holder ``command`` if the repo lock is held, else ``None``.
+
+    Attempts to acquire the lock; when the current process already holds it,
+    ``acquire_lock`` raises, confirming the lock is active. The holder's
+    ``command`` field is then read from the lock file.
+    """
+    try:
+        release = acquire_lock(lock_path, "probe")
+        release()
+    except GymratError:
+        return json.loads(Path(lock_path).read_text(encoding="utf-8")).get("command")
+    else:
+        return None
+
+
+def _assert_lock_released(repo: str) -> None:
+    """Verify the repo lock is free by acquiring and immediately releasing it."""
+    release = acquire_lock(lockfile_path(repo), "probe")
+    release()
 
 
 # ---------------------------------------------------------------------------
@@ -262,24 +287,80 @@ def test_preflight_when_finalized_session_does_archive_and_open_fresh(
     assert result.state.iteration_count == 0
 
 
-def test_preflight_when_session_step_does_hold_repo_lock_only_during_step(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_baseline_seam(monkeypatch)
-    lock_path = lockfile_path(repo)
-    lock_held_during: list[bool] = []
+# ---------------------------------------------------------------------------
+# lock span
+# ---------------------------------------------------------------------------
 
+
+def test_preflight_when_running_does_hold_lock_from_session_through_feasibility(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path = lockfile_path(repo)
+    holders: dict[str, str | None] = {}
     original_start = start_session
 
     def spying_start(root: str, ref: str | None, config: ResolvedConfig) -> Any:
-        lock_held_during.append(Path(lock_path).exists())
+        holders["start_session"] = _probe_lock(lock_path)
         return original_start(root, ref, config)
 
+    def spying_stop(config: ResolvedConfig, state: Any) -> Any:
+        holders["stop_condition"] = _probe_lock(lock_path)
+        return stop_condition(config, state)
+
+    async def spying_measure(target: object, run_options: object) -> Any:
+        holders["measure_baseline"] = _probe_lock(lock_path)
+        record = baseline_record(duration_ms=5000)
+        result = create_measurement_result(
+            label=record.label,
+            samples=1,
+            rounds=record.samples,
+        )
+        return result, record
+
+    import gymrat.cli.supervise.preflight as _pm
+
+    original_feasibility = _pm._check_feasibility
+
+    def spying_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
+        holders["feasibility"] = _probe_lock(lock_path)
+        original_feasibility(root, max_minutes=max_minutes, force=force)
+
     monkeypatch.setattr(f"{_MODULE}.start_session", spying_start)
+    monkeypatch.setattr(f"{_MODULE}.stop_condition", spying_stop)
+    monkeypatch.setattr(f"{_MODULE}.measure_baseline", spying_measure)
+    monkeypatch.setattr(f"{_MODULE}._check_feasibility", spying_feasibility)
 
     _run_preflight(repo)
 
-    assert any(lock_held_during)
+    assert holders == {
+        "start_session": "supervise",
+        "stop_condition": "supervise",
+        "measure_baseline": "supervise",
+        "feasibility": "supervise",
+    }
+
+
+# ---------------------------------------------------------------------------
+# torn-tail repair
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_when_log_has_torn_tail_does_truncate_before_session_opens(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    start_open_session(repo)
+    log_path = session_jsonl_path(repo)
+    tear_final_line(log_path)
+    _install_baseline_seam(monkeypatch)
+
+    _run_preflight(repo)
+
+    records = read_records(log_path)
+    assert isinstance(records[0], SessionRecord)
+    baseline_records = [r for r in records if isinstance(r, BaselineRecord)]
+    assert len(baseline_records) == 1
 
 
 # ---------------------------------------------------------------------------
