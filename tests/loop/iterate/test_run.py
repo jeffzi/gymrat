@@ -705,24 +705,22 @@ async def test_iterate_session_when_measuring_does_record_duration_ms(
 
 
 async def test_iterate_session_when_after_hook_sleeps_does_not_include_its_duration_in_duration_ms(
-    repo: str, samples_mock: CollectSamplesRecorder
+    repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
-    after_hook_sleep_ms = 300
+    ticks = iter([0.0, 50.0])
+    monkeypatch.setattr("gymrat.session.clock.monotonic_ms", lambda: next(ticks))
     config = resolved_config(
-        hooks=HooksConfig(
-            after=hooks.hook_command(f"import time\ntime.sleep({after_hook_sleep_ms / 1000})\n")
-        )
+        hooks=HooksConfig(after=hooks.hook_command("import time\ntime.sleep(0.3)\n"))
     )
 
     result = await iterate_session(repo, config)
 
-    assert result.record.duration_ms is not None
-    assert result.record.duration_ms < after_hook_sleep_ms
+    assert result.record.duration_ms == 50
 
 
 # ---------------------------------------------------------------------------
