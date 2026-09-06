@@ -107,6 +107,12 @@ FINALIZE_RECORD: dict[str, object] = {
     "message": "squash 3 kept iterations",
 }
 
+STOP_RECORD: dict[str, object] = {
+    "type": "stop",
+    "at": AT,
+    "message": "user requested stop",
+}
+
 
 def omitting(record: dict[str, object], key: str) -> dict[str, object]:
     """Copy of ``record`` without ``key``."""
@@ -275,6 +281,7 @@ def _config_with(**overrides: object) -> dict[str, object]:
         pytest.param(patching(HOOK_RECORD, {"stderrBytes": 42}), id="hook-with-stderr-bytes"),
         pytest.param(patching(HOOK_RECORD, {"exitCode": -9}), id="hook-exit-code-negative-signal"),
         pytest.param(FINALIZE_RECORD, id="finalize"),
+        pytest.param(STOP_RECORD, id="stop"),
     ],
 )
 def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[str, object]):
@@ -440,6 +447,9 @@ def test_parse_record_when_duration_or_tree_wrong_type_does_reject_with_phrase(
         pytest.param(
             patching(FINALIZE_RECORD, {"branch": 42}), "branch", id="finalize-branch-not-string"
         ),
+        pytest.param(omitting(STOP_RECORD, "at"), "at", id="stop-no-at"),
+        pytest.param(omitting(STOP_RECORD, "message"), "message", id="stop-no-message"),
+        pytest.param(patching(STOP_RECORD, {"message": ""}), "message", id="stop-message-empty"),
         # an undeclared key
         pytest.param(patching(DISCARD_RECORD, {"note": "why not"}), "note", id="unknown-top-level"),
         pytest.param(
@@ -495,7 +505,9 @@ def test_parse_record_when_type_unknown_does_name_it_and_list_known_types():
         parse_record({"type": "banana", "seq": 1})
 
     assert mentions("banana").search(str(exc.value))
-    assert "finalize" in (exc.value.hint or "")
+    hint = exc.value.hint or ""
+    assert "finalize" in hint
+    assert "stop" in hint
 
 
 # ---------------------------------------------------------------------------

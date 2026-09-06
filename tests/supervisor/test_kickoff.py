@@ -20,6 +20,12 @@ SKILL_MARKER = "# Driving a gymrat optimization session"
 
 RUNBOOK_CONTENT = "# My Runbook\n\nStep 1: run benchmarks.\n"
 
+_EXPERIMENT_WORKTREE = "/tmp/experiment"
+
+# A minimal skill body used where the clock-rule/cap-omission checks below
+# only need some text, not the bundled skill's actual content.
+_GENERIC_SKILL_TEXT = "# Skill Title\n\nSome guidance.\n"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,19 +45,21 @@ def _make_config(runbook: str | None) -> BenchlessConfig:
 
 
 def _write_runbook(directory: Path, content: str = RUNBOOK_CONTENT) -> str:
-    """Write a runbook file under ``directory`` and return its path string."""
     runbook_path = directory / "runbook.md"
     runbook_path.write_text(content, encoding="utf-8")
     return str(runbook_path)
 
 
 def _compose_with_skill_text(
-    skill_text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    skill_text: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    experiment_worktree: str = _EXPERIMENT_WORKTREE,
 ) -> KickoffResult:
-    """Run ``compose_kickoff`` with the bundled skill patched to return ``skill_text``."""
     monkeypatch.setattr("gymrat.supervisor.kickoff.read_bundled_skill", lambda: skill_text)
     config = _make_config(runbook=_write_runbook(tmp_path))
-    return compose_kickoff(config)
+    return compose_kickoff(config, experiment_worktree=experiment_worktree)
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +78,7 @@ def test_compose_kickoff_when_bundled_skill_missing_does_raise_before_runbook_ch
     config = _make_config(runbook=None)
 
     with pytest.raises(GymratError, match="bundled skill unavailable"):
-        compose_kickoff(config)
+        compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +90,7 @@ def test_compose_kickoff_when_no_runbook_configured_does_raise_naming_gymrat_tom
     config = _make_config(runbook=None)
 
     with pytest.raises(GymratError) as excinfo:
-        compose_kickoff(config)
+        compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     message = str(excinfo.value)
     assert "runbook" in message.lower()
@@ -97,7 +105,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
     config = _make_config(runbook=missing)
 
     with pytest.raises(GymratError) as excinfo:
-        compose_kickoff(config)
+        compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     assert str(excinfo.value) == f"Runbook not found at {missing}."
     assert excinfo.value.hint
@@ -114,7 +122,7 @@ def test_compose_kickoff_when_skill_and_runbook_present_does_order_skill_before_
 ):
     config = _make_config(runbook=_write_runbook(tmp_path))
 
-    result = compose_kickoff(config)
+    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     append = result.system_prompt_append
     assert SKILL_MARKER in append
@@ -128,7 +136,7 @@ def test_compose_kickoff_when_bundled_skill_has_frontmatter_does_omit_it_from_ap
 ):
     config = _make_config(runbook=_write_runbook(tmp_path))
 
-    result = compose_kickoff(config)
+    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     prelude = result.system_prompt_append.partition(SKILL_MARKER)[0]
     assert SKILL_MARKER in result.system_prompt_append
@@ -185,17 +193,19 @@ def test_compose_kickoff_when_no_prompt_given_does_return_default_mentioning_opt
 ):
     config = _make_config(runbook=_write_runbook(tmp_path))
 
-    result = compose_kickoff(config)
+    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     assert "optimization" in result.kickoff
 
 
-def test_compose_kickoff_when_prompt_given_does_return_it_verbatim(tmp_path: Path):
+def test_compose_kickoff_when_prompt_given_does_start_with_it_verbatim(tmp_path: Path):
     config = _make_config(runbook=_write_runbook(tmp_path))
 
-    result = compose_kickoff(config, "optimize the decoder loop")
+    result = compose_kickoff(
+        config, "optimize the decoder loop", experiment_worktree=_EXPERIMENT_WORKTREE
+    )
 
-    assert result.kickoff == "optimize the decoder loop"
+    assert result.kickoff.startswith("optimize the decoder loop")
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +217,7 @@ def test_compose_kickoff_when_happy_path_does_include_clock_rule_in_append(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    skill_text = "# Skill Title\n\nSome guidance.\n"
-
-    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
     append = result.system_prompt_append.lower()
     assert "wall-clock" in append
@@ -227,9 +235,7 @@ def test_compose_kickoff_when_happy_path_does_omit_cap_numbers_and_spend(
     monkeypatch: pytest.MonkeyPatch,
     field: str,
 ):
-    skill_text = "# Skill Title\n\nSome guidance.\n"
-
-    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
     text = getattr(result, field).lower()
     assert "30 minute" not in text
@@ -238,7 +244,7 @@ def test_compose_kickoff_when_happy_path_does_omit_cap_numbers_and_spend(
 
 
 # ---------------------------------------------------------------------------
-# B33 — non-UTF-8 runbook
+# non-UTF-8 runbook
 # ---------------------------------------------------------------------------
 
 
@@ -250,7 +256,36 @@ def test_compose_kickoff_when_runbook_not_utf8_does_raise_gymrat_error_naming_pa
     config = _make_config(runbook=str(runbook_path))
 
     with pytest.raises(GymratError) as excinfo:
-        compose_kickoff(config)
+        compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     assert str(runbook_path) in str(excinfo.value)
     assert excinfo.value.hint
+
+
+# ---------------------------------------------------------------------------
+# compose_kickoff — pre-flight-done paragraph in kickoff message
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        pytest.param(None, id="default-prompt"),
+        pytest.param("optimize the decoder loop", id="prompt-given"),
+    ],
+)
+def test_compose_kickoff_when_prompt_is_default_or_given_does_end_with_preflight_paragraph(
+    tmp_path: Path,
+    prompt: str | None,
+):
+    experiment_path = str(tmp_path / "experiment-worktree")
+    config = _make_config(runbook=_write_runbook(tmp_path))
+
+    result = compose_kickoff(config, prompt, experiment_worktree=experiment_path)
+
+    trailing = result.kickoff.split("\n\n")[-1]
+    assert "session" in trailing.lower()
+    assert "baseline" in trailing.lower()
+    assert experiment_path in trailing
+    assert "step" in trailing.lower()
+    assert "runbook" in trailing.lower()

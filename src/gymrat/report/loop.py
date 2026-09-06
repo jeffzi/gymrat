@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.config import StopConfig
+    from gymrat.loop.start import StartResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.types import MetricComparison, MetricComparisons
     from gymrat.session import (
@@ -344,14 +345,14 @@ class SettleKept:
 
 @dataclass(frozen=True, slots=True)
 class SettleDiscarded:
-    """An iteration thrown away."""
+    """An iteration whose edits were reverted."""
 
     kind: Literal["discarded"] = "discarded"
 
 
 @dataclass(frozen=True, slots=True)
 class SettleUnsettled:
-    """An iteration nobody has settled yet."""
+    """An iteration with no keep or discard yet."""
 
     kind: Literal["unsettled"] = "unsettled"
 
@@ -551,6 +552,24 @@ def format_status_footer(summary: StatusSummary) -> list[str]:
     return [totals] if stop is None else [totals, stop]
 
 
+def first_line(message: str) -> str:
+    """The first line of a stop message, discarding the rest.
+
+    Shared by every renderer of a stop message, so a multi-line message
+    truncates the same way everywhere it is shown.
+    """
+    return message.split("\n", maxsplit=1)[0]
+
+
+def format_status_stop(message: str) -> str:
+    """The line a stopped session renders: the word and the first line of its message.
+
+    Multi-line messages are truncated to the first line, so the status report
+    stays one line per record.
+    """
+    return _separator().join([markup("stopped", "bold"), escape(first_line(message))])
+
+
 def format_status_finalized(finalized: FinalizeRecord) -> str:
     """The line a finalized session's report ends on: where its work ended up.
 
@@ -565,3 +584,50 @@ def format_status_finalized(finalized: FinalizeRecord) -> str:
             f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Start summary
+# ---------------------------------------------------------------------------
+
+
+def format_start_summary(result: StartResult, runbook: str | None) -> str:
+    """The multi-line summary ``start`` prints: a headline, then the session's rows.
+
+    A fresh session opens on ``Started session <id>``; a resumed one leads with
+    its history instead. The rows name the branch, the baseline, and both
+    worktrees, their labels padded to a common width. A configured runbook and an
+    archived predecessor each add a trailing row when present.
+    """
+    session = result.session
+    state = result.state
+    if result.resumed:
+        headline = (
+            f"Resumed session {session.session_id} — "
+            f"{pluralize(state.iteration_count, 'iteration')}, "
+            f"{pluralize(state.keep_count, 'keep')}"
+        )
+    else:
+        headline = f"Started session {session.session_id}"
+
+    rows: list[tuple[str, str]] = [
+        ("branch", session.branch),
+        ("baseline", format_baseline_ref(session.baseline)),
+        ("experiment worktree", session.worktrees.experiment),
+        ("baseline worktree", session.worktrees.baseline),
+    ]
+    label_width = max(len(label) for label, _ in rows) + 1
+
+    lines = [headline]
+    lines.extend(f"  {f'{label}:':<{label_width}} {value}" for label, value in rows)
+    if runbook is not None:
+        lines.append(f"  runbook: {runbook} — read it before your first edit")
+    if result.archived_path is not None:
+        lines.append(
+            f"  archived the finalized session {result.archived} to {result.archived_path}"
+        )
+    lines.append(
+        f"  edit in {session.worktrees.experiment}"
+        " — use `gymrat sync` to bring main-tree changes over"
+    )
+    return "\n".join(lines)

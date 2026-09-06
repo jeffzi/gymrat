@@ -27,6 +27,7 @@ from gymrat.session.records import (
     SessionHooks,
     SessionLogRecord,
     SessionRecord,
+    StopRecord,
     parse_record,
     record_to_wire,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "SessionLogRecord",
     "SessionRecord",
     "SessionState",
+    "StopRecord",
     "WorkspaceResult",
     "Worktrees",
     "advance_baseline",

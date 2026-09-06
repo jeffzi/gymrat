@@ -58,15 +58,16 @@ Select one with `--adapter` or in the config file.
 
 ## Commands
 
-| Command                             | What it does                                                  |
-| ----------------------------------- | ------------------------------------------------------------- |
-| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook  |
-| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline               |
-| `gymrat measure [target]`           | Measure a single revision or directory on its own             |
-| `gymrat doctor`                     | Check the project setup and report problems                   |
-| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                 |
-| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree |
-| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps |
+| Command                             | What it does                                                        |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook        |
+| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline                     |
+| `gymrat measure [target]`           | Measure a single revision or directory on its own                   |
+| `gymrat doctor`                     | Check the project setup and report problems                         |
+| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                       |
+| `gymrat stop -m "<report>"`         | Record a closing report in the session log (the session stays open) |
+| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree       |
+| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps       |
 
 Targets are git refs or directories, optionally labeled: `gymrat compare old=main new=perf/simd`.
 Every command takes `-h` for its full options.
@@ -115,13 +116,21 @@ gymrat keep -m "vectorize decode loop"   # commit it if checks pass
 gymrat discard             # ...or revert the worktree to its last commit
 gymrat status              # session history so far
 gymrat sync                # copy uncommitted main-tree edits into the worktree
+gymrat stop -m "done"      # record a closing report in the session log
 gymrat finalize            # squash kept iterations into one commit and close
 ```
 
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs that loop under an AI
-agent: the runbook scaffolded by `init` describes the goal and constraints, and the session ends
-when the agent finishes or a cap trips. `iterate`, `keep`, `discard`, `status`, `sync`, `compare`,
-and `measure` print a time-left line so the agent can plan around the wall-clock cap.
+agent. The runbook scaffolded by `init` describes the goal and constraints, and the session ends
+when the agent finishes or a cap trips.
+
+`supervise` opens the session and records the baseline itself before handing control to the agent;
+`--baseline <ref>` pins the session to a specific ref (default HEAD; ignored when resuming an open
+session). The wall-clock cap starts once the baseline is recorded, so a run may take the cap plus
+the baseline's duration.
+
+`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, and `measure` print a time-left line so
+the agent can plan around the wall-clock cap.
 
 ### Hooks
 
@@ -176,8 +185,8 @@ gymrat serves two audiences with the same statistical engine:
 
 ## Machine-readable output
 
-Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `status`)
-accepts `--format json` for structured output. The JSON key shapes are a stability contract:
+Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `stop`,
+`status`) accepts `--format json` for structured output. The JSON key shapes are a stability contract:
 additions only, no renames or removals without a breaking change. Text output is for humans and may
 change between releases. `start`, `sync`, and `finalize` are text-only.
 

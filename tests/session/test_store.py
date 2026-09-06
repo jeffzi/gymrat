@@ -51,6 +51,7 @@ from tests.session.records._fixtures import (
     hook_record,
     iteration_record,
     session_record,
+    stop_record,
     tear_final_line,
     write_session_log,
 )
@@ -119,6 +120,7 @@ EMPTY_STATE = SessionState(
     last_seq=0,
     last_kept_commit=None,
     ends_on_gating_block=False,
+    ends_on_stop=False,
     finalized=None,
 )
 
@@ -628,6 +630,105 @@ def test_fold_session_when_records_replayed_does_report_ends_on_gating_block(
     records: list[SessionLogRecord], expected: bool
 ):
     assert fold_session(records).ends_on_gating_block is expected
+
+
+# ---------------------------------------------------------------------------
+# fold_session — ends_on_stop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record()],
+            True,
+            id="a-stop-after-a-kept-iteration",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record(), BASELINE],
+            True,
+            id="a-stop-followed-only-by-a-baseline",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record(), HOOK],
+            True,
+            id="a-stop-followed-only-by-a-hook",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record(), BASELINE, HOOK],
+            True,
+            id="a-stop-followed-only-by-baseline-and-hook",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record(), _nothing_measured_block(2)],
+            True,
+            id="a-stop-followed-by-a-nothing-measured-refusal",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record(), ITERATION_2],
+            False,
+            id="a-stop-followed-by-an-iteration",
+        ),
+        pytest.param(
+            [
+                SESSION,
+                ITERATION_1,
+                committed_keep(1),
+                stop_record(),
+                ITERATION_2,
+                committed_keep(2),
+            ],
+            False,
+            id="a-stop-followed-by-an-iteration-and-keep",
+        ),
+        pytest.param(
+            [
+                SESSION,
+                ITERATION_1,
+                committed_keep(1),
+                stop_record(),
+                ITERATION_2,
+                discard_record(2),
+            ],
+            False,
+            id="a-stop-followed-by-an-iteration-and-discard",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record(), FINALIZE],
+            False,
+            id="a-stop-followed-by-a-finalize",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1],
+            False,
+            id="no-stop-record-in-the-log",
+        ),
+    ],
+)
+def test_fold_session_when_records_replayed_does_report_ends_on_stop(
+    records: list[SessionLogRecord], expected: bool
+):
+    assert fold_session(records).ends_on_stop is expected
+
+
+# ---------------------------------------------------------------------------
+# fold_session — stop record changes nothing else
+# ---------------------------------------------------------------------------
+
+
+def test_fold_session_when_stop_appended_does_not_change_counts_or_seq():
+    stop = stop_record()
+    before = fold_session([SESSION, ITERATION_1, committed_keep(1), ITERATION_2])
+
+    after = fold_session([SESSION, ITERATION_1, committed_keep(1), ITERATION_2, stop])
+
+    assert after.iteration_count == before.iteration_count
+    assert after.keep_count == before.keep_count
+    assert after.discard_count == before.discard_count
+    assert after.unsettled == before.unsettled
+    assert after.last_seq == before.last_seq
+    assert after.ends_on_gating_block == before.ends_on_gating_block
 
 
 # ---------------------------------------------------------------------------

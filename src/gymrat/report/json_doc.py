@@ -56,7 +56,7 @@ class BudgetSummary:
 
 
 def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None) -> str:
-    """Serialize a comparison result to the compare JSON document.
+    """Serialize a comparison result as JSON.
 
     Args:
         result: The comparison to render.
@@ -78,11 +78,11 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         "perCandidate": _serialize_per_candidate(result),
         "worktrees": _serialize_worktrees(result),
     }
-    return _dump(_insert_budget(document, budget))
+    return _render(document, budget)
 
 
 def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | None = None) -> str:
-    """Serialize a measurement result to the measure JSON document.
+    """Serialize a single-target measurement result as JSON.
 
     Args:
         result: The single-target measurement to render.
@@ -101,7 +101,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         },
         "worktrees": _serialize_worktrees(result),
     }
-    return _dump(_insert_budget(document, budget))
+    return _render(document, budget)
 
 
 def _serialize_metric(
@@ -257,12 +257,17 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
 
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
     """Seq, outcome, primary summary, per-metric verdicts, and confirm results."""
-    return _dump(_insert_budget(_serialize_iteration(result.record), budget))
+    return _render(_serialize_iteration(result.record), budget)
+
+
+def render_stop_json(*, at: str, message: str, budget: BudgetSummary | None = None) -> str:
+    """Render a stop result as ``{"at": …, "message": …}`` with an optional budget."""
+    return _render({"at": at, "message": message}, budget)
 
 
 def render_iterate_stop_json(reason: str, *, budget: BudgetSummary | None = None) -> str:
     """Emitted instead of the normal iteration document when a stop condition fires."""
-    return _dump(_insert_budget({"stopped": True, "reason": reason}, budget))
+    return _render({"stopped": True, "reason": reason}, budget)
 
 
 def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None) -> str:
@@ -281,7 +286,7 @@ def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None)
         "commit": record.commit,
         "message": record.message,
     }
-    return _dump(_insert_budget(document, budget))
+    return _render(document, budget)
 
 
 def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None = None) -> str:
@@ -292,7 +297,7 @@ def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None =
     record = result.record
     measured = record is not None
     seq = record.seq if record is not None else None
-    return _dump(_insert_budget({"seq": seq, "at": result.at, "measured": measured}, budget))
+    return _render({"seq": seq, "at": result.at, "measured": measured}, budget)
 
 
 def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None) -> str:
@@ -306,8 +311,9 @@ def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None)
         "discardCount": data.discard_count,
         "unsettled": data.unsettled,
         "finalized": data.finalized,
+        "stopped": data.stopped,
     }
-    return _dump(_insert_budget(document, budget))
+    return _render(document, budget)
 
 
 def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
@@ -350,16 +356,14 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     }
 
 
-def _insert_budget(document: dict[str, object], budget: BudgetSummary | None) -> dict[str, object]:
-    """Insert the budget key when a live budget is present, returning the document."""
+def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
+    """Insert the budget key when present, then serialize with a two-space indent.
+
+    Every non-finite float is nulled before the dump (see module docstring).
+    """
     if budget is not None:
         document["budget"] = {
             "capMinutes": budget.cap_minutes,
             "remainingSeconds": budget.remaining_seconds,
         }
-    return document
-
-
-def _dump(document: dict[str, object]) -> str:
-    """Serialize with a two-space indent after nulling every non-finite float."""
     return json.dumps(null_non_finite(document), indent=2, allow_nan=False)

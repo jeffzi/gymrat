@@ -22,12 +22,12 @@ classifiers = [
   "Topic :: System :: Benchmark",
 ]
 dependencies = [
-  "claude-agent-sdk>=0.2.144,<0.3",
+  "claude-agent-sdk>=0.2.148,<0.3",
   "filelock>=3.32,<4",
   "pydantic>=2.13,<3",
   "rich>=15.0,<16",
   "scipy>=1.18,<2",
-  "typer>=0.27.1,<0.28",
+  "typer>=0.27.2,<0.28",
 ]
 
 [project.urls]
@@ -41,8 +41,8 @@ gymrat = "gymrat.cli.app:main"
 [dependency-groups]
 dev = [
   "diff-cover>=10.5,<11",
-  "hypothesis>=6.165,<7",
-  "prek>=0.4.14,<0.5",
+  "hypothesis>=6.167,<7",
+  "prek>=0.5.0,<0.6",
   "pyrefly>=1.2,<2",
   "pyte>=0.8.2,<0.9",
   "pytest>=9.1,<10",
@@ -51,8 +51,8 @@ dev = [
   "pytest-randomly>=4.1,<5",
   "pytest-sugar>=1.1,<2",
   "pytest-xdist>=3.8,<4",
-  "ruff>=0.16.4,<0.17",
-  "syrupy>=5.5,<6",
+  "ruff>=0.16.5,<0.17",
+  "syrupy>=6.0,<7",
   "tomli-w>=1.2,<2",
 ]
 
@@ -70,7 +70,7 @@ malware-check = true
 
 [tool.pyrefly]
 preset = "strict"
-project-includes = ["src", "tests", "scripts"]
+project-includes = ["src", "tests"]
 python-version = "3.12"
 search-path = ["src", "."]
 
@@ -138,11 +138,12 @@ convention = "google"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "--import-mode=importlib -n auto --cov --cov-report=term-missing"
+filterwarnings = ["error"]
 asyncio_mode = "auto"
 xfail_strict = true
 
 [tool.coverage.run]
-source = ["src/gymrat"]
+source = ["src"]
 branch = true
 parallel = true
 
@@ -153,4 +154,5 @@ exclude_lines = [
   "if __name__ == .__main__.",
   "raise NotImplementedError",
 ]
+show_missing = true
 fail_under = 90

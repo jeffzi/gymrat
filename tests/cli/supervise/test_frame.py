@@ -625,7 +625,6 @@ def test_nested_tool_when_rendered_with_color_does_emit_dim_styling():
 
 
 def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_width():
-    """Nested tool names do not widen the tool-name column."""
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
@@ -687,7 +686,6 @@ def test_liveness_composing_when_rendered_does_not_show_token_count():
 
 
 def test_frame_when_any_state_does_never_contain_idle():
-    """The word 'idle' must not appear in the frame for any liveness state."""
     kit = make_reporter()
     _fire_waiting_bash_cycle(kit, above_threshold=True)
 
@@ -1004,6 +1002,32 @@ def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
 
     assert "(full message in log)" not in text
     assert any("Short status message." in line for line in text.splitlines())
+
+
+# ---------------------------------------------------------------------------
+# closing summary — agent row stop-message preference
+# ---------------------------------------------------------------------------
+
+
+def test_summary_agent_row_when_stop_message_present_does_show_stop_message() -> None:
+    session_result = make_read_session(
+        session_state(),
+        has_baseline=True,
+        stop_message="Target reached, stopping.",
+    )()
+
+    summary = build_summary(
+        make_supervision_result(reason="completed", ended_by="session"),
+        log_path=_LOG_PATH,
+        session_result=session_result,
+        final_text="Some other final text.",
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+    agent_line = next(line for line in text.splitlines() if "agent" in line)
+
+    assert agent_line == "  agent   Target reached, stopping."
+    assert "Some other final text." not in text
 
 
 # ---------------------------------------------------------------------------

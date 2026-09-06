@@ -1,4 +1,4 @@
-"""Command-level tests for start, status, keep, discard, finalize, sync, and subdirectory resolution.
+"""Command-level tests for start, status, keep, discard, finalize, stop, sync, and subdirectory resolution.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
@@ -31,6 +31,7 @@ from gymrat.session import (
     FinalizeRecord,
     KeepRecord,
     SessionRecord,
+    StopRecord,
     append_record,
     experiment_worktree_dir,
     read_records,
@@ -42,6 +43,7 @@ from tests.cli._help import help_output
 from tests.cli._loop_cmds import (
     always_tty,
     make_discard_repo,
+    make_stop_repo,
     never_tty,
     runner,
     strip_ansi,
@@ -96,6 +98,19 @@ class _ResolverRecorder:
         return self.result
 
 
+def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Patch ``with_repo_lock`` to record every command it locks, forwarding through."""
+    lock_names: list[str] = []
+    original_with_repo_lock = loop_cmds.with_repo_lock
+
+    async def recording_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T:
+        lock_names.append(command)
+        return await original_with_repo_lock(command, body)
+
+    monkeypatch.setattr(loop_cmds, "with_repo_lock", recording_lock)
+    return lock_names
+
+
 # ---------------------------------------------------------------------------
 # the start command
 # ---------------------------------------------------------------------------
@@ -112,19 +127,25 @@ def _stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -
     return config
 
 
-def _close_session_with_one_keep(root: str) -> str:
-    """Open a session with one kept commit, finalize it, and return its closed id."""
+def _open_session_with_one_keep(root: str) -> SessionRecord:
+    """Open a session, commit and log one kept iteration, and return the session header."""
     start_session(root, "main", resolved_config())
     worktree = experiment_worktree_dir(root)
-    (Path(worktree) / "README.md").write_text("# cache the regex\n", encoding="utf-8")
-    git(["add", "README.md"], worktree)
+    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
+    git(["add", "-A"], worktree)
     git(["commit", "-m", "cache the regex"], worktree)
     commit = head_of(worktree)
     append_record(session_jsonl_path(root), iteration_record(seq=1))
     append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
-    finalize_session(root)
     header = read_records(session_jsonl_path(root))[0]
     assert isinstance(header, SessionRecord)
+    return header
+
+
+def _close_session_with_one_keep(root: str) -> str:
+    """Open a session with one kept commit, finalize it, and return its closed id."""
+    header = _open_session_with_one_keep(root)
+    finalize_session(root)
     return header.session_id
 
 
@@ -340,18 +361,7 @@ def test_discard_command_when_stdin_not_tty_does_skip_the_prompt(
 
 def _session_with_one_keep(root: str) -> str:
     """Open a session with one kept commit on it, and return its branch."""
-    start_session(root, "main", resolved_config())
-    header = read_records(session_jsonl_path(root))[0]
-    assert isinstance(header, SessionRecord)
-    branch = header.branch
-    worktree = experiment_worktree_dir(root)
-    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
-    git(["add", "-A"], worktree)
-    git(["commit", "-m", "cache the regex"], worktree)
-    commit = head_of(worktree)
-    append_record(session_jsonl_path(root), iteration_record(seq=1))
-    append_record(session_jsonl_path(root), committed_keep(1, commit=commit))
-    return branch
+    return _open_session_with_one_keep(root).branch
 
 
 def test_finalize_command_documents_its_flags_and_default_branch_in_help():
@@ -484,14 +494,7 @@ def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
 def test_sync_command_when_run_does_take_the_repo_lock(
     sync_repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    lock_names: list[str] = []
-    original_with_repo_lock = loop_cmds.with_repo_lock
-
-    async def recording_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T:
-        lock_names.append(command)
-        return await original_with_repo_lock(command, body)
-
-    monkeypatch.setattr(loop_cmds, "with_repo_lock", recording_lock)
+    lock_names = _record_lock_names(monkeypatch)
 
     result = runner.invoke(app, ["sync"])
 
@@ -736,6 +739,102 @@ def test_finalize_command_when_budget_active_does_not_include_time_left_line(
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["finalize"])
+
+    assert result.exit_code == 0
+    assert "left of" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# the stop command
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stop_repo(repo: str) -> str:
+    """A repository with a settled, configured session ready for the stop command."""
+    return make_stop_repo(repo)
+
+
+def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_record(
+    stop_repo: str,
+):
+    result = runner.invoke(app, ["stop", "-m", "switched to a different approach"])
+
+    assert result.exit_code == 0
+    text = strip_ansi(result.stdout)
+    assert "Stopped" in text
+    assert "switched to a different approach" in text
+    records = read_records(session_jsonl_path(stop_repo))
+    last = records[-1]
+    assert isinstance(last, StopRecord)
+    assert last.message == "switched to a different approach"
+
+
+def test_stop_command_when_message_flag_does_accept_both_forms(stop_repo: str):
+    result = runner.invoke(app, ["stop", "--message", "done"])
+
+    assert result.exit_code == 0
+
+
+def test_stop_command_when_no_message_does_exit_two_naming_the_option(
+    stop_repo: str,
+):
+    result = runner.invoke(app, ["stop"])
+
+    assert result.exit_code == 2
+    assert "message" in (result.stderr + result.stdout).lower()
+
+
+def test_stop_command_when_blank_message_does_exit_two_naming_the_option(
+    stop_repo: str,
+):
+    result = runner.invoke(app, ["stop", "-m", "   "])
+
+    assert result.exit_code == 2
+    assert "message" in (result.stderr + result.stdout).lower()
+
+
+def test_stop_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):
+    write_config(repo)
+
+    result = runner.invoke(app, ["stop", "-m", "done"])
+
+    assert result.exit_code == 2
+    assert "gymrat start" in result.stderr
+
+
+def test_stop_command_when_run_does_take_the_repo_lock(
+    stop_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    lock_names = _record_lock_names(monkeypatch)
+
+    result = runner.invoke(app, ["stop", "-m", "done"])
+
+    assert result.exit_code == 0
+    assert "stop" in lock_names
+
+
+# ---------------------------------------------------------------------------
+# budget time-left line — stop text output
+# ---------------------------------------------------------------------------
+
+
+def test_stop_command_when_budget_active_does_end_text_with_time_left_line(
+    stop_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    install_budget(stop_repo, monkeypatch)
+
+    result = runner.invoke(app, ["stop", "-m", "done"])
+
+    assert result.exit_code == 0
+    text = strip_ansi(result.stdout)
+    assert re.search(r"left of 30m", text)
+
+
+def test_stop_command_when_no_budget_does_omit_time_left_line(
+    stop_repo: str,
+):
+    result = runner.invoke(app, ["stop", "-m", "done"])
 
     assert result.exit_code == 0
     assert "left of" not in result.stdout

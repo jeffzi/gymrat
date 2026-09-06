@@ -28,7 +28,12 @@ class KickoffResult:
     kickoff: str
 
 
-def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> KickoffResult:
+def compose_kickoff(
+    config: BenchlessConfig,
+    prompt: str | None = None,
+    *,
+    experiment_worktree: str,
+) -> KickoffResult:
     """Build the supervised session's system-prompt append and kickoff message.
 
     The bundled skill is read first: a broken installation is surfaced before
@@ -41,6 +46,7 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         config: The settled benchless configuration; its ``runbook`` must name a
             readable file.
         prompt: An explicit kickoff message; when omitted, a default is used.
+        experiment_worktree: Absolute path to the experiment worktree directory.
 
     Raises:
         GymratError: When the bundled skill cannot be read, when no runbook is
@@ -84,7 +90,15 @@ def compose_kickoff(config: BenchlessConfig, prompt: str | None = None) -> Kicko
         f"## Runbook: {config.runbook}\n\n{runbook_content}"
     )
 
+    preflight_done = (
+        f"The session is open and the baseline is recorded. "
+        f"The experiment worktree is at {experiment_worktree}. "
+        f"Skip steps 1 and 2 of the skill and begin with the runbook."
+    )
+    base_message = prompt if prompt is not None else DEFAULT_KICKOFF
+    kickoff = f"{base_message}\n\n{preflight_done}"
+
     return KickoffResult(
         system_prompt_append=system_prompt_append,
-        kickoff=prompt if prompt is not None else DEFAULT_KICKOFF,
+        kickoff=kickoff,
     )

@@ -556,6 +556,7 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("default::RuntimeWarning")
 async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
     tmp_path: Path,
 ):

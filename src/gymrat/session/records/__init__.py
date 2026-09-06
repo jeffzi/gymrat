@@ -31,6 +31,7 @@ from gymrat.session.records.models import (
     SessionHooks,
     SessionLogRecord,
     SessionRecord,
+    StopRecord,
     record_to_wire,
 )
 from gymrat.session.records.parse import parse_record
@@ -56,6 +57,7 @@ __all__ = [
     "SessionHooks",
     "SessionLogRecord",
     "SessionRecord",
+    "StopRecord",
     "Worktrees",
     "parse_record",
     "record_to_wire",

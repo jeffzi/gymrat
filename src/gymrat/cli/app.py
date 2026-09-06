@@ -16,7 +16,7 @@ import typer
 from gymrat.cli.compare_cmd import compare
 from gymrat.cli.doctor_cmd import doctor_command
 from gymrat.cli.init_cmd import init_command
-from gymrat.cli.loop_cmds import discard, finalize, iterate, keep, start, status, sync
+from gymrat.cli.loop_cmds import discard, finalize, iterate, keep, start, status, stop, sync
 from gymrat.cli.measure_cmd import measure
 from gymrat.cli.shared import BUGS_URL, DebugOption, set_debug_mode
 from gymrat.cli.supervise import supervise_command
@@ -99,6 +99,7 @@ app.command("iterate")(iterate)
 app.command("keep")(keep)
 app.command("discard")(discard)
 app.command("finalize")(finalize)
+app.command("stop")(stop)
 app.command("status")(status)
 app.command("sync")(sync)
 app.command("supervise")(supervise_command)

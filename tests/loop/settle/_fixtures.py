@@ -12,6 +12,7 @@ helper imported as ``tests.loop.settle._fixtures``.
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from gymrat.config import (
     ResolvedConfig,
     StopConfig,
 )
+from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session
 from gymrat.session import (
@@ -190,6 +192,13 @@ def last_record_of(root: str) -> SessionLogRecord:
         msg = f"expected a record in {session_jsonl_path(root)}"
         raise AssertionError(msg)
     return records[-1]
+
+
+def capture_error(action: Callable[[], object]) -> GymratError:
+    """Run ``action`` expecting a :class:`GymratError`, returning the raised error."""
+    with pytest.raises(GymratError) as excinfo:
+        action()
+    return excinfo.value
 
 
 # ---------------------------------------------------------------------------

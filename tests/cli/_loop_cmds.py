@@ -15,6 +15,7 @@ from tests._ansi import SGR_RE, strip_ansi
 __all__ = [
     "always_tty",
     "make_discard_repo",
+    "make_stop_repo",
     "never_tty",
     "plain_lines",
     "runner",
@@ -49,6 +50,16 @@ def make_discard_repo(repo: str) -> str:
 
     start_session(repo, "main", resolved_config())
     append_record(session_jsonl_path(repo), iteration_record(seq=1))
+    return repo
+
+
+def make_stop_repo(repo: str) -> str:
+    """Set up ``repo`` with a settled, configured session ready for the stop command."""
+    from tests.loop.settle._fixtures import iteration, start_with
+    from tests.session.records._fixtures import committed_keep
+
+    start_with(repo, (iteration(1), committed_keep(1)))
+    write_config(repo)
     return repo
 
 

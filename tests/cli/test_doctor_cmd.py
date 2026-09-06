@@ -3,8 +3,7 @@
 These drive the assembled app through :class:`typer.testing.CliRunner` with the
 section builders, both renderers, and ``inspect_config`` replaced. They cover
 registration and help, the exit-code contract, the JSON path, ``--no-color``,
-a missing ``--config`` surfacing as a config failure rather than a crash, and
-the adapter flag reaching the bench section.
+and a missing ``--config`` surfacing as a config failure rather than a crash.
 """
 
 import json
@@ -16,24 +15,13 @@ import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
-from gymrat.cli.doctor_cmd import GitEnvironment
-from gymrat.config import BenchlessConfig
-from gymrat.config.inspect import ConfigInspection
 from gymrat.doctor.checks import Check, CheckSection
+from gymrat.doctor.report import GitEnvironment
 from gymrat.init.scaffold import SKILL_RELATIVE_PATH
 from tests.cli._help import help_output
+from tests.doctor._fixtures import patch_common_seams
 
 runner = CliRunner()
-
-
-def _config() -> BenchlessConfig:
-    return BenchlessConfig(
-        adapter="metric-lines",
-        samples=10,
-        timeout_seconds=1800,
-        unstable_noise_pct=200,
-        primary="geomean",
-    )
 
 
 def _patch_doctor(
@@ -44,53 +32,19 @@ def _patch_doctor(
     env_error: Exception | None = None,
 ) -> SimpleNamespace:
     """Replace every doctor seam and return the recorded bench calls."""
-    inspection = ConfigInspection(
-        config_path="/missing/gymrat.json" if config_failure else "/project/gymrat.json",
+    handles = patch_common_seams(
+        monkeypatch,
+        config_failure=config_failure,
+        bench_fail=bench_fail,
         problems=["Config file not found at /missing/gymrat.json"] if config_failure else [],
-        config=None if config_failure else _config(),
-        bench="node bench.js",
     )
-
-    def fake_inspect(*_a: object, **_k: object) -> ConfigInspection:
-        return inspection
-
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.inspect_config", fake_inspect)
 
     def env_section(*_a: object, **_k: object) -> CheckSection:
         if env_error is not None:
             raise env_error
         return CheckSection(title="Environment", checks=[Check("git", "ok", "available")])
 
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_environment_section", env_section)
-
-    config_checks = (
-        [Check("config", "fail", "not found", hint="create gymrat.json")]
-        if config_failure
-        else [Check("config", "ok", "/project/gymrat.json")]
-    )
-
-    def config_section(*_a: object, **_k: object) -> CheckSection:
-        return CheckSection(title="Configuration", checks=config_checks)
-
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_config_section", config_section)
-
-    def workflow_section(*_a: object, **_k: object) -> CheckSection:
-        return CheckSection(title="Workflow", checks=[Check("skill file", "ok", "found")])
-
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_workflow_section", workflow_section)
-
-    bench_calls: list[dict[str, object]] = []
-    bench_check = (
-        Check("bench", "fail", "bench crashed")
-        if bench_fail
-        else Check("bench", "ok", "1 metric found")
-    )
-
-    def bench_section(*, bench: object, adapter: object, **kwargs: object) -> CheckSection:
-        bench_calls.append({"bench": bench, "adapter": adapter, **kwargs})
-        return CheckSection(title="Bench", checks=[bench_check])
-
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_bench_section", bench_section)
+    monkeypatch.setattr("gymrat.doctor.report.build_environment_section", env_section)
 
     def fake_text(_report: object, **_kwargs: object) -> str:
         return "doctor text report"
@@ -101,7 +55,7 @@ def _patch_doctor(
     monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_report", fake_text)
     monkeypatch.setattr("gymrat.cli.doctor_cmd.render_doctor_json", fake_json)
 
-    return SimpleNamespace(bench_calls=bench_calls)
+    return handles
 
 
 @pytest.fixture(autouse=True)
@@ -202,23 +156,6 @@ def test_doctor_when_no_color_flag_and_force_color_set_does_preserve_force_color
 
 
 # ---------------------------------------------------------------------------
-# config failure + adapter flag
-# ---------------------------------------------------------------------------
-
-
-def test_doctor_when_config_failed_and_adapter_flag_given_does_forward_flag_adapter_to_bench_section(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    handles = _patch_doctor(monkeypatch, config_failure=True)
-
-    result = runner.invoke(app, ["doctor", "--adapter", "custom-adapter"])
-
-    assert result.exit_code in (0, 1)
-    assert len(handles.bench_calls) == 1
-    assert handles.bench_calls[0]["adapter"] == "custom-adapter"
-
-
-# ---------------------------------------------------------------------------
 # missing --config is a config failure, not a crash
 # ---------------------------------------------------------------------------
 
@@ -251,29 +188,6 @@ def test_doctor_when_command_crashes_does_exit_two_with_message_on_stderr(
 
 
 # ---------------------------------------------------------------------------
-# config_problems forwarded to bench section
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("config_failure", "expected"),
-    [
-        pytest.param(True, True, id="config-problems"),
-        pytest.param(False, False, id="config-ok"),
-    ],
-)
-def test_doctor_when_run_does_forward_config_problems_to_bench_section(
-    monkeypatch: pytest.MonkeyPatch, config_failure: bool, expected: bool
-):
-    handles = _patch_doctor(monkeypatch, config_failure=config_failure)
-
-    runner.invoke(app, ["doctor"])
-
-    assert len(handles.bench_calls) == 1
-    assert handles.bench_calls[0]["config_problems"] is expected
-
-
-# ---------------------------------------------------------------------------
 # skill file: directory at path
 # ---------------------------------------------------------------------------
 
@@ -282,13 +196,12 @@ def test_doctor_when_skill_path_is_directory_does_not_report_installed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    """A directory at the skill path must not count as 'installed'."""
     skill_dir = tmp_path / SKILL_RELATIVE_PATH
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
     monkeypatch.setattr(
-        "gymrat.cli.doctor_cmd.detect_git_environment",
+        "gymrat.doctor.report.detect_git_environment",
         lambda _cwd: git_env,  # pyrefly: ignore
     )
 
@@ -300,7 +213,7 @@ def test_doctor_when_skill_path_is_directory_does_not_report_installed(
         workflow_calls.append(dict(kwargs))
         return CheckSection(title="Workflow", checks=[Check("skill file", "ok", "found")])
 
-    monkeypatch.setattr("gymrat.cli.doctor_cmd.build_workflow_section", workflow_section)
+    monkeypatch.setattr("gymrat.doctor.report.build_workflow_section", workflow_section)
 
     runner.invoke(app, ["doctor"])
 

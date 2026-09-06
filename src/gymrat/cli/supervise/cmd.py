@@ -36,15 +36,16 @@ from gymrat.cli.shared import (
     write_and_flush,
 )
 from gymrat.cli.supervise.frame import SessionLabels, build_summary
+from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
 from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
 from gymrat.config import (
     EFFORT_LEVELS,
     EFFORT_PHRASE,
-    BenchlessConfig,
     CliFlags,
     Effort,
+    ResolvedConfig,
     SuperviseConfig,
-    resolve_benchless_config,
+    resolve_config,
 )
 from gymrat.errors import GymratError
 from gymrat.git import run_git
@@ -52,12 +53,9 @@ from gymrat.paths import abbreviate_home
 from gymrat.plural import pluralize
 from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.session.budget import (
-    SIDES_PER_ITERATE,
     Budget,
     clear_budget,
-    estimate_iterate_duration,
     minutes_to_ms,
-    ms_to_minutes,
     write_budget,
 )
 from gymrat.session.clock import now_ms
@@ -70,7 +68,6 @@ from gymrat.session.paths import (
     session_jsonl_path,
     supervise_lockfile_path,
 )
-from gymrat.session.records.models import BaselineRecord
 from gymrat.session.store import fold_session, last_kept_position, read_records
 from gymrat.session.workspace import changed_file_count, dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
@@ -96,7 +93,7 @@ _MaxMinutesOption = Annotated[
         "--max-minutes",
         parser=parse_max_minutes,
         metavar="<float>",
-        help="wall-clock cap in minutes",
+        help="wall-clock cap in minutes, counted from when the baseline is recorded",
     ),
 ]
 _MaxUsdOption = Annotated[
@@ -114,7 +111,21 @@ _AllowDirtyOption = Annotated[
 ]
 _ForceOption = Annotated[
     bool,
-    typer.Option("--force", help="launch when cap cannot fit one iterate"),
+    typer.Option(
+        "--force",
+        help="launch even when the cap cannot fit one iteration or a stop condition is already met",
+    ),
+]
+_BaselineOption = Annotated[
+    str | None,
+    typer.Option(
+        "--baseline",
+        metavar="<ref>",
+        help=(
+            "git ref that pins a freshly opened session; "
+            "defaults to HEAD and is ignored when a session is resumed"
+        ),
+    ),
 ]
 
 
@@ -182,41 +193,6 @@ def _validate_experiment_worktree(root: str) -> None:
     exit_with_error(GymratError(message, hint=hint))
 
 
-def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
-    """Refuse to launch when the cap can't fit one iterate, unless ``force`` is set.
-
-    Without a prior iterate to estimate from, there is nothing to check against,
-    so this only reports what one iterate contains.
-    """
-    records = read_records(session_jsonl_path(root))
-    estimate = estimate_iterate_duration(records)
-    if estimate is None:
-        write_and_flush(
-            sys.stderr,
-            "one iterate runs one baseline pass and one experiment pass\n",
-        )
-        return
-
-    has_baseline = any(isinstance(r, BaselineRecord) for r in records)
-    needed_ms = estimate.duration_ms
-    if not has_baseline:
-        needed_ms += estimate.duration_ms / SIDES_PER_ITERATE
-    cap_ms = minutes_to_ms(max_minutes)
-    if needed_ms <= cap_ms or force:
-        return
-
-    source_minutes = round(ms_to_minutes(estimate.source_duration_ms))
-    needed_minutes = round(ms_to_minutes(needed_ms))
-    cap_minutes = round(ms_to_minutes(cap_ms))
-    message = (
-        f"the {estimate.source} took {source_minutes}m; "
-        f"one iterate needs about {needed_minutes}m; "
-        f"the {cap_minutes}m cap cannot fit one."
-    )
-    hint = "Raise --max-minutes, or pass --force to launch anyway."
-    exit_with_error(GymratError(message, hint=hint))
-
-
 def _resolve_log_path(root: str, explicit: str | None) -> str:
     """The caller's ``--log`` verbatim, or a timestamped path under the session dir.
 
@@ -238,7 +214,7 @@ class _SessionContext:
     log_path: str
     launch: LaunchEvent
     kickoff: KickoffResult
-    config: BenchlessConfig
+    config: ResolvedConfig
     max_minutes: float
     max_usd: float | None
     max_iterations: int | None
@@ -371,6 +347,7 @@ class _Options:
     max_minutes: float
     max_usd: float | None
     log: str | None
+    baseline: str | None
     model: str | None
     effort: Effort | None
     allow_dirty: bool
@@ -379,22 +356,42 @@ class _Options:
 
 
 def _execute(options: _Options) -> None:
-    """Guard the tree, hold the supervise lock, and run one session under it."""
+    """Run the full supervised-session pipeline.
+
+    Step order: doctor gate, working-tree guard, experiment-worktree guard,
+    supervise lock, pre-flight (session under the repository lock, stop
+    condition, baseline, feasibility), then log-path resolution, kickoff,
+    launch event, and the session run.
+    """
     root = repo_root()
+    doctor_gate(root, color=options.color)
     dirty_count = _validate_working_tree(root, allow_dirty=options.allow_dirty)
     _validate_experiment_worktree(root)
 
-    _check_feasibility(root, max_minutes=options.max_minutes, force=options.force)
-
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
+        resolved = resolve_config(CliFlags(), root)
+        preflight = run_preflight(
+            root=root,
+            config=resolved,
+            baseline_ref=options.baseline,
+            max_minutes=options.max_minutes,
+            force=options.force,
+        )
+        worktrees = preflight.session.worktrees
+
         log_path = _resolve_log_path(root, options.log)
         probe_event_log_path(log_path)
-        config = resolve_benchless_config(CliFlags(), root)
-        kickoff = compose_kickoff(config, options.prompt)
+        kickoff = compose_kickoff(
+            resolved,
+            options.prompt,
+            experiment_worktree=worktrees.experiment,
+        )
         head_sha = run_git(["rev-parse", "HEAD"], root).strip()
 
-        supervise_config = config.supervise if config.supervise is not None else SuperviseConfig()
+        supervise_config = (
+            resolved.supervise if resolved.supervise is not None else SuperviseConfig()
+        )
         model = options.model if options.model is not None else supervise_config.model
         effort = options.effort if options.effort is not None else supervise_config.effort
 
@@ -406,7 +403,7 @@ def _execute(options: _Options) -> None:
             max_usd=options.max_usd,
             model=model,
             effort=effort,
-            runbook_path=config.runbook or "",
+            runbook_path=resolved.runbook or "",
             kickoff_summary=summarize(kickoff.kickoff),
         )
 
@@ -416,10 +413,10 @@ def _execute(options: _Options) -> None:
                 log_path=log_path,
                 launch=launch,
                 kickoff=kickoff,
-                config=config,
+                config=resolved,
                 max_minutes=options.max_minutes,
                 max_usd=options.max_usd,
-                max_iterations=config.stop.max_iterations if config.stop is not None else None,
+                max_iterations=resolved.stop.max_iterations if resolved.stop is not None else None,
                 model=model,
                 effort=effort,
                 color=options.color,
@@ -435,6 +432,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
     max_minutes: _MaxMinutesOption,
     max_usd: _MaxUsdOption = None,
     log: _LogOption = None,
+    baseline: _BaselineOption = None,
     model: _ModelOption = None,
     effort: _EffortOption = None,
     allow_dirty: _AllowDirtyOption = False,
@@ -450,6 +448,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
         max_minutes=max_minutes,
         max_usd=max_usd,
         log=log,
+        baseline=baseline,
         model=model,
         effort=effort,
         allow_dirty=allow_dirty,

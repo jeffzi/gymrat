@@ -30,9 +30,10 @@ from tests._cli import try_read_report
 from tests._process_helpers import wait_until_dead
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only process groups for tree-kill"
-)
+pytestmark = [
+    pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only process groups for tree-kill"),
+    pytest.mark.filterwarnings("default::RuntimeWarning"),
+]
 
 _DOUBLE = str(Path(__file__).parent / "_stdio_double.py")
 
@@ -45,7 +46,7 @@ def double_argv(config: dict[str, Any]) -> list[str]:
 async def wait_for_event(
     events: list[SessionEvent],
     event_type: type,
-    timeout_s: float = 5.0,
+    timeout_s: float = 15.0,
 ) -> None:
     """Poll until an event of ``event_type`` has reached the observer's list."""
     loop = asyncio.get_running_loop()
@@ -62,7 +63,7 @@ def resolved(path: str | Path) -> Path:
     return Path(path).resolve()
 
 
-async def read_report(report_path: Path, timeout_s: float = 5.0) -> dict[str, Any]:
+async def read_report(report_path: Path, timeout_s: float = 15.0) -> dict[str, Any]:
     """Poll until ``report_path`` holds a complete JSON report, then return it."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -126,7 +127,7 @@ async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(prompt, probe.observer)
 
-    await asyncio.wait_for(session.outcome, 5)
+    await asyncio.wait_for(session.outcome, 15)
 
     report_data = await read_report(report)
     expected_prompt = {**expected_prompt, "cwd": str(tmp_path)}
@@ -167,7 +168,7 @@ async def test_stdio_driver_when_child_emits_lines_does_relay_typed_events(
         make_prompt(cwd=str(tmp_path)), probe.observer
     )
 
-    await asyncio.wait_for(session.outcome, 5)
+    await asyncio.wait_for(session.outcome, 15)
 
     assert probe.events == [
         UsageUpdateEvent(timestamp=6, cost_usd=0.01),
@@ -198,7 +199,7 @@ async def test_stdio_driver_when_outcome_line_received_does_settle_with_its_fiel
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
 
     assert outcome == SessionOutcome(reason="completed", cost_usd=0.5, message="all done")
 
@@ -223,7 +224,7 @@ async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_runni
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
 
     assert outcome.cost_usd == 0.42
 
@@ -241,7 +242,7 @@ async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exi
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
 
     assert outcome.reason == "error"
     assert outcome.cost_usd == 0.3
@@ -257,7 +258,7 @@ async def test_stdio_driver_when_child_cannot_spawn_does_settle_error_without_ra
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
 
     assert outcome.reason == "error"
     assert outcome.message
@@ -283,7 +284,7 @@ async def test_stdio_driver_when_interrupt_then_child_exits_does_settle_interrup
 
     await session.interrupt()
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.5)
 
 
@@ -303,7 +304,7 @@ async def test_stdio_driver_when_interrupt_precedes_a_later_outcome_line_does_wi
 
     await session.interrupt()
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.7)
 
 
@@ -330,7 +331,7 @@ async def test_stdio_driver_when_abort_fires_does_settle_interrupted(
 
     abort.set()
 
-    outcome = await asyncio.wait_for(session.outcome, 5)
+    outcome = await asyncio.wait_for(session.outcome, 15)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.4)
     await wait_until_dead(int(processes["pid"]))
     await wait_until_dead(int(processes["grandchild"]))

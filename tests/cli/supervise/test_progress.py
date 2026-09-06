@@ -758,7 +758,7 @@ def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
 
 
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
-    """Falls back to the system's local timezone.
+    """Verify local-time fallback without an explicit timezone.
 
     The expected timestamp is computed from the same epoch-to-local conversion
     the implementation should use, so this assertion is the only remaining user

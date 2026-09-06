@@ -50,7 +50,7 @@ def parse_record(value: object) -> SessionLogRecord:
         _wire_validation.reset(token)
 
 
-_KNOWN_TYPES = ("session", "baseline", "iteration", "keep", "discard", "hook", "finalize")
+_KNOWN_TYPES = ("session", "baseline", "iteration", "keep", "discard", "hook", "finalize", "stop")
 
 
 def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, object]) -> None:
@@ -187,6 +187,9 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("finalize", "branch"): _STRING,
     ("finalize", "commit"): _STRING,
     ("finalize", "message"): _STRING,
+    # stop
+    ("stop", "at"): _STRING,
+    ("stop", "message"): "a non-empty string",
 }
 
 
