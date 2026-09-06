@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-06
+
 ### Added
 
 - `supervise` runs a doctor pre-flight before launching: any failed check renders the report to
@@ -14,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `supervise --baseline <ref>` pins a freshly opened session to the given git ref (defaults to HEAD;
   ignored when resuming an existing session).
 - `supervise` refuses to launch when a stop condition is already met (exit 2 with the condition's
-  message); `--force` downgrades any launch refusal to a warning.
+  message) or when the wall-clock cap cannot fit one iteration; `--force` downgrades these two
+  refusals to a warning.
 - `gymrat stop -m "<report>"` records a closing report in the session log without closing the
   session; `stop` also accepts `--format json`.
 - `gymrat status` reports whether the session is stopped, in both the text report and a new
@@ -24,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `supervise` now opens the session and records the baseline itself, and the wall-clock cap starts
   only once the baseline is recorded.
+
+### Fixed
+
+- `supervise` now holds the repository lock across the full startup sequence, closing a window where
+  another process could interleave between opening the session and measuring the baseline.
 
 ## [0.14.0] - 2026-09-05
 
@@ -251,7 +259,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured error reporting for every gymrat failure: the command prints a clear message and, where
   one applies, an actionable hint for what to do next.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/jeffzi/gymrat/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/jeffzi/gymrat/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/jeffzi/gymrat/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/jeffzi/gymrat/compare/v0.11.0...v0.12.0
