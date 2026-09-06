@@ -90,7 +90,9 @@ class SessionState:
     ends_on_gating_block: bool
     #: Whether the newest record that is neither a hook nor a baseline is a stop.
     #: A stop followed by only baseline or hook records still reads as stopped;
-    #: any iteration, keep, discard, or finalize supersedes it.
+    #: any iteration, keep, discard, or finalize supersedes it. A keep refused
+    #: for ``nothing-measured`` leaves this as it found it: the keep committed
+    #: and settled nothing, so the stopped state is unchanged.
     ends_on_stop: bool
     #: The record that closed the session, absent while it is still open.
     finalized: FinalizeRecord | None
