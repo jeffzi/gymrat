@@ -4,9 +4,10 @@ description: >-
   Use when driving a gymrat optimization session toward a performance target. Not for one-off
   benchmarking of refs or branches with no session open.
 when_to_use: >-
-  Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard, gymrat finalize,
-  gymrat status, gymrat supervise, gymrat sync, gymrat measure, or gymrat compare; when a repo has
-  a gymrat.toml; when asked to optimize a benchmark toward a target or budget, or to probe an edit
+  Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard, gymrat stop,
+  gymrat finalize, gymrat status, gymrat supervise, gymrat sync, gymrat measure, or gymrat compare;
+  when a repo has a gymrat.toml; when asked to optimize a benchmark toward a target or budget,
+  or to probe an edit
   before spending an iteration; or on errors like "has not been settled", "Keep refused", or "Stop
   condition met".
 ---
@@ -92,7 +93,16 @@ a kept `iterate` report — note that when it prints. `--format json` carries co
 runbook path, no per-iteration history. Run it after every settle and after any interrupted
 command.
 
-### 5. Close the session
+### 5. Record a closing report
+
+```sh
+gymrat stop -m "<report>"
+```
+
+Appends a closing report to the session log as a durable record — the session stays open.
+`finalize` is still required to close it.
+
+### 6. Close the session
 
 ```sh
 gymrat finalize [-m "squash message"] [--branch <name>]
@@ -104,7 +114,7 @@ clean experiment worktree. A finalized session refuses all mutating commands.
 
 ### Supervised mode
 
-An alternative to the manual iteration cycle (steps 3-5): an agent drives `iterate`/`keep`/`discard`
+An alternative to the manual iteration cycle (steps 3-6): an agent drives `iterate`/`keep`/`discard`
 on its own instead of you running them by hand.
 
 ```sh
@@ -204,7 +214,8 @@ Levers, in order of leverage:
 
 ## Machine-readable output
 
-`measure`, `compare`, `iterate`, `keep`, `discard`, `status`, and `doctor` accept `--format json`.
+`measure`, `compare`, `iterate`, `keep`, `discard`, `stop`, `status`, and `doctor` accept
+`--format json`.
 When driving the loop programmatically, always pass `--format json`. The JSON contract is
 additive-only (no renames or removals without a breaking change); the text report may change
 between releases. `start`, `finalize`, and `sync` are text-only: their outputs are one-shot
@@ -236,7 +247,10 @@ measurement and report what the probes measured.
 1. **Never stop before a stop condition fires.** When `stop.max_iterations` or `stop.target_value` is
    configured, keep iterating until `iterate` exits 1 naming the condition. Without `stop`, the
    runbook's goal is the criterion. Report and stop when a target proves unreachable after sustained
-   NO-SIGNAL.
+   NO-SIGNAL. Record the closing report with `gymrat stop -m "<report>"` so it survives in the
+   session log; under supervise, `gymrat stop` is the last command before the final turn.
+   `gymrat stop` refuses (exit 2) while an iteration is unsettled, while a gating-regression block
+   stands, or when the log already ends on a stop; settle with `keep` or `discard` first.
 
 2. **When a hook fails, report the failure and stop the loop.** Hooks cannot fail the loop, so a
    silently-ignored failure reaches `keep` unnoticed. Unsupervised: pause for the user to decide.

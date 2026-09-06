@@ -26,7 +26,7 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -76,6 +76,7 @@ from gymrat.loop.settle import (
 )
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.status import status_data, status_session
+from gymrat.loop.stop import StopResult, stop_session
 from gymrat.loop.sync import SyncResult, sync_to_experiment
 from gymrat.plural import pluralize
 from gymrat.progress_events import create_fan_out
@@ -86,8 +87,9 @@ from gymrat.report.json_doc import (
     render_iterate_stop_json,
     render_keep_json,
     render_status_json,
+    render_stop_json,
 )
-from gymrat.report.loop import format_baseline_ref
+from gymrat.report.loop import format_start_summary
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
@@ -107,6 +109,10 @@ def _write_budget_report(
     write_and_flush(sys.stdout, report + "\n")
 
 
+# ---------------------------------------------------------------------------
+# Start
+# ---------------------------------------------------------------------------
+
 _RefArgument = typer.Argument(
     default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
 )
@@ -122,48 +128,6 @@ class _StartOutcome:
 
     result: StartResult
     runbook: str | None
-
-
-def format_start_summary(result: StartResult, runbook: str | None) -> str:
-    """The multi-line summary ``start`` prints: a headline, then the session's rows.
-
-    A fresh session opens on ``Started session <id>``; a resumed one leads with
-    its history instead. The rows name the branch, the baseline, and both
-    worktrees, their labels padded to a common width. A configured runbook and an
-    archived predecessor each add a trailing row when present.
-    """
-    session = result.session
-    state = result.state
-    if result.resumed:
-        headline = (
-            f"Resumed session {session.session_id} — "
-            f"{pluralize(state.iteration_count, 'iteration')}, "
-            f"{pluralize(state.keep_count, 'keep')}"
-        )
-    else:
-        headline = f"Started session {session.session_id}"
-
-    rows: list[tuple[str, str]] = [
-        ("branch", session.branch),
-        ("baseline", format_baseline_ref(session.baseline)),
-        ("experiment worktree", session.worktrees.experiment),
-        ("baseline worktree", session.worktrees.baseline),
-    ]
-    label_width = max(len(label) for label, _ in rows) + 1
-
-    lines = [headline]
-    lines.extend(f"  {f'{label}:':<{label_width}} {value}" for label, value in rows)
-    if runbook is not None:
-        lines.append(f"  runbook: {runbook} — read it before your first edit")
-    if result.archived_path is not None:
-        lines.append(
-            f"  archived the finalized session {result.archived} to {result.archived_path}"
-        )
-    lines.append(
-        f"  edit in {session.worktrees.experiment}"
-        " — use `gymrat sync` to bring main-tree changes over"
-    )
-    return "\n".join(lines)
 
 
 def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
@@ -201,6 +165,11 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
         write_and_flush(sys.stdout, format_start_summary(outcome.result, outcome.runbook) + "\n")
 
     run_cli(run)
+
+
+# ---------------------------------------------------------------------------
+# Iterate
+# ---------------------------------------------------------------------------
 
 
 async def _iterate_body(
@@ -312,6 +281,11 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     run_cli(run)
 
 
+# ---------------------------------------------------------------------------
+# Keep
+# ---------------------------------------------------------------------------
+
+
 def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
     *,
     bench: BenchOption = None,
@@ -362,6 +336,11 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     run_cli(run)
 
 
+# ---------------------------------------------------------------------------
+# Discard
+# ---------------------------------------------------------------------------
+
+
 def discard(
     *,
     force: ForceOption = False,
@@ -402,6 +381,11 @@ def discard(
     run_cli(run)
 
 
+# ---------------------------------------------------------------------------
+# Finalize
+# ---------------------------------------------------------------------------
+
+
 def finalize(
     *,
     message: MessageOption = None,
@@ -419,6 +403,62 @@ def finalize(
         write_and_flush(sys.stdout, result.report + "\n")
 
     run_cli(run)
+
+
+# ---------------------------------------------------------------------------
+# Stop
+# ---------------------------------------------------------------------------
+
+
+def _parse_stop_message(value: str) -> str:
+    """Reject a blank ``--message`` before any lock is taken."""
+    if not value.strip():
+        msg = "message must not be empty"
+        raise typer.BadParameter(msg)
+    return value
+
+
+_StopMessageOption = Annotated[
+    str,
+    typer.Option(
+        "--message", "-m", parser=_parse_stop_message, help="why the session is being stopped"
+    ),
+]
+
+
+def stop(
+    *,
+    message: _StopMessageOption,
+    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
+    debug: DebugOption = False,
+) -> None:
+    """Record a stop in the session log without reverting or committing."""
+    apply_debug(debug)
+
+    use_json = format == OutputFormat.json
+
+    async def run() -> None:
+        root = repo_root()
+
+        async def body() -> StopResult:
+            return stop_session(root, message)
+
+        result = await with_repo_lock("stop", body)
+        _write_budget_report(
+            root,
+            use_json=use_json,
+            render_json=lambda summary: render_stop_json(
+                at=result.record.at, message=result.record.message, budget=summary
+            ),
+            text_report=result.report,
+        )
+
+    run_cli(run)
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
 
 
 def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
@@ -465,6 +505,11 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 
     with broken_pipe_guard():
         write_and_flush(sys.stdout, report + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Sync
+# ---------------------------------------------------------------------------
 
 
 def _format_sync_summary(result: SyncResult) -> str:

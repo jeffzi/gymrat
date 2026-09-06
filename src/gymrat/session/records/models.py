@@ -340,6 +340,16 @@ class FinalizeRecord(BaseModel):
     message: str
 
 
+class StopRecord(BaseModel):
+    """A user-requested stop: halts the loop without finalizing the session."""
+
+    model_config = _RECORD_CONFIG
+
+    type: Literal["stop"]
+    at: str
+    message: Annotated[str, Field(min_length=1)]
+
+
 type SessionLogRecord = (
     SessionRecord
     | BaselineRecord
@@ -348,6 +358,7 @@ type SessionLogRecord = (
     | DiscardRecord
     | HookRecord
     | FinalizeRecord
+    | StopRecord
 )
 
 

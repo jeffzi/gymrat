@@ -22,6 +22,7 @@ from gymrat.loop.finalize import (
 )
 from gymrat.loop.start import start_session
 from gymrat.session import (
+    FinalizeRecord,
     SessionLogRecord,
     SessionRecord,
     append_record,
@@ -31,7 +32,7 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests._git import run_git
-from tests.session.records._fixtures import committed_keep, iteration_record
+from tests.session.records._fixtures import committed_keep, iteration_record, stop_record
 
 ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
@@ -104,6 +105,13 @@ def _capture_error(action: Callable[[], object]) -> GymratError:
     with pytest.raises(GymratError) as excinfo:
         action()
     return excinfo.value
+
+
+def _mentions_keep_and_discard(hint: str) -> bool:
+    """Whether ``hint`` names both settling commands."""
+    return bool(
+        re.search(r"keep", hint, re.IGNORECASE) and re.search(r"discard", hint, re.IGNORECASE)
+    )
 
 
 @pytest.fixture
@@ -187,8 +195,7 @@ def test_finalize_when_last_iteration_unsettled_does_refuse_writing_no_record(re
     error = _capture_error(lambda: finalize_session(repo))
 
     assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert _mentions_keep_and_discard(error.hint)
     assert len(_records(repo)) == before
 
 
@@ -205,8 +212,7 @@ def test_finalize_when_experiment_worktree_dirty_does_refuse_writing_no_record(r
     error = _capture_error(lambda: finalize_session(repo))
 
     assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert _mentions_keep_and_discard(error.hint)
     assert len(_records(repo)) == before
 
 
@@ -228,8 +234,7 @@ def test_finalize_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_ke
     error = _capture_error(lambda: finalize_session(repo))
 
     assert error.hint is not None
-    assert re.search(r"keep", error.hint, re.IGNORECASE)
-    assert re.search(r"discard", error.hint, re.IGNORECASE)
+    assert _mentions_keep_and_discard(error.hint)
     assert len(_records(repo)) == before
 
 
@@ -448,3 +453,18 @@ def test_finalize_does_close_the_session_even_when_git_refuses_to_remove_a_workt
     assert experiment in result.report
     assert re.search(r"git worktree remove", result.report, re.IGNORECASE)
     assert _last_record(kept_repo) == result.record
+
+
+# ---------------------------------------------------------------------------
+# when the session has a stop record followed by kept work
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_when_stopped_and_has_kept_work_does_close_the_session(kept_repo: str):
+    append_record(session_jsonl_path(kept_repo), stop_record())
+
+    result = finalize_session(kept_repo)
+
+    record = _last_record(kept_repo)
+    assert isinstance(record, FinalizeRecord)
+    assert record == result.record

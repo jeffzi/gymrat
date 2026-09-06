@@ -49,6 +49,7 @@ from tests.session.records._fixtures import (
     hook_record,
     iteration_record,
     session_record,
+    stop_record,
     write_session_log,
 )
 
@@ -376,6 +377,34 @@ def test_status_session_when_runbook_not_configured_does_omit_the_runbook_line(t
     report = status_session(root, _config())
 
     assert not any("runbook" in line for line in _report_lines(report))
+
+
+# ---------------------------------------------------------------------------
+# stop record in history
+# ---------------------------------------------------------------------------
+
+
+def test_status_session_when_log_has_stop_record_does_render_stopped_line_in_file_order(
+    tmp_path: Path,
+):
+    root = str(tmp_path)
+    write_session_log(
+        root,
+        _session(root),
+        (
+            _iteration(1, -7.2, "improved"),
+            committed_keep(1, commit=_KEEP_COMMIT),
+            stop_record(message="target reached\ncleaning up"),
+        ),
+    )
+
+    report = status_session(root, _config())
+
+    assert _body_lines(report) == [
+        "iteration 1 · ✓ -7.2% · kept b1b2b3b",
+        "stopped · target reached",
+        "1 iteration · 1 kept · 0 discarded",
+    ]
 
 
 # ---------------------------------------------------------------------------

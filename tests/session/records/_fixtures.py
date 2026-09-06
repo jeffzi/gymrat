@@ -28,6 +28,7 @@ from gymrat.session import (
     SessionConfig,
     SessionLogRecord,
     SessionRecord,
+    StopRecord,
     Worktrees,
     session_jsonl_path,
 )
@@ -179,15 +180,21 @@ def finalize_record(**overrides: Any) -> FinalizeRecord:
     return _overridden(default, overrides)
 
 
+def stop_record(**overrides: Any) -> StopRecord:
+    """A stop record requesting the loop halt, with every field overridable."""
+    default = StopRecord(
+        type="stop",
+        at=AT,
+        message="user requested stop",
+    )
+    return _overridden(default, overrides)
+
+
 def write_session_log(
     root: str,
     header: SessionRecord,
     history: tuple[SessionLogRecord, ...] = (),
 ) -> None:
-    """Write a session log opening on ``header`` and holding ``history`` after it.
-
-    The header is appended first, then each history record in order.
-    """
     jsonl_path = session_jsonl_path(root)
     for record in (header, *history):
         append_record(jsonl_path, record)

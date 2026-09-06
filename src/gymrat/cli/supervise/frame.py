@@ -482,6 +482,14 @@ def _completed_on_its_own(result: SupervisionResult) -> bool:
     return result.ended_by == "session" and result.outcome.reason != "error"
 
 
+def _resolve_agent_text(
+    session_result: ReadSessionResult | None, final_text: str | None
+) -> str | None:
+    """The session's stop message, falling back to the agent's last text block."""
+    stop_message = session_result.stop_message if session_result is not None else None
+    return stop_message or final_text
+
+
 @dataclass(frozen=True, slots=True)
 class SessionLabels:
     """Optional model/effort labels shown in the closing summary."""
@@ -509,13 +517,16 @@ def build_summary(
 
     When the session ended on its own (not by a cap or error) and the agent
     produced text, an ``agent`` row appears after the headline showing the
-    agent's last text block with paragraph breaks preserved.
+    session's stop message when the log ends on one, otherwise the agent's
+    last text block, with paragraph breaks preserved.
 
     ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
     """
     rows = [_build_outcome_text(result)]
-    if _completed_on_its_own(result) and final_text is not None:
-        rows.append(_build_agent_row(final_text))
+    if _completed_on_its_own(result):
+        agent_text = _resolve_agent_text(session_result, final_text)
+        if agent_text is not None:
+            rows.append(_build_agent_row(agent_text))
     if labels.model is not None:
         rows.append(_summary_row("model", Text(labels.model)))
     if labels.effort is not None:

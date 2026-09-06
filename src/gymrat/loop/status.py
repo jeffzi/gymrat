@@ -24,6 +24,7 @@ from gymrat.report.loop import (
     format_status_header,
     format_status_iteration,
     format_status_settle,
+    format_status_stop,
 )
 from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.session import (
@@ -31,6 +32,7 @@ from gymrat.session import (
     DiscardRecord,
     IterationRecord,
     KeepRecord,
+    StopRecord,
     require_session,
 )
 
@@ -146,7 +148,6 @@ def _settle_states(records: Sequence[SessionLogRecord]) -> dict[int, SettleState
 
 
 def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
-    """Walk the log and render each record into its status line."""
     settled = _settle_states(records)
     history: list[str] = []
     for position, record in enumerate(records):
@@ -164,6 +165,8 @@ def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
                     )
                 )
             )
+        elif isinstance(record, StopRecord):
+            history.append(format_status_stop(record.message))
         elif isinstance(record, (KeepRecord, DiscardRecord)):
             settle = settled.get(position)
             if settle is not None:
@@ -235,6 +238,7 @@ class StatusData:
     discard_count: int
     unsettled: bool
     finalized: bool
+    stopped: bool
 
 
 def status_data(root: str) -> StatusData:
@@ -251,4 +255,5 @@ def status_data(root: str) -> StatusData:
         discard_count=state.discard_count,
         unsettled=state.unsettled,
         finalized=state.finalized is not None,
+        stopped=state.ends_on_stop,
     )
