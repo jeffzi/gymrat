@@ -123,12 +123,15 @@ def session_state(**changes: Any) -> SessionState:
 
 
 def baseline_record(
-    *, label: str = ".gymrat/worktrees/baseline", duration_ms: float | None = None
+    *,
+    label: str = ".gymrat/worktrees/baseline",
+    duration_ms: float | None = None,
+    at: str = "2026-08-08T14:15:30.000Z",
 ) -> BaselineRecord:
     """A baseline record with an optional wall-clock duration."""
     return BaselineRecord(
         type="baseline",
-        at="2026-08-08T14:15:30.000Z",
+        at=at,
         label=label,
         samples=({"total_ms": 15200},),
         duration_ms=duration_ms,
