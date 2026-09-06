@@ -36,6 +36,7 @@ from gymrat.session.records import (
     KeepRecord,
     SessionLogRecord,
     SessionRecord,
+    StopRecord,
     parse_record,
     record_to_wire,
 )
@@ -87,6 +88,10 @@ class SessionState:
     #: discard after the block supersedes it — except a keep refused for want of a
     #: measurement, which must not wedge the edit in place.
     ends_on_gating_block: bool
+    #: Whether the newest record that is neither a hook nor a baseline is a stop.
+    #: A stop followed by only baseline or hook records still reads as stopped;
+    #: any iteration, keep, discard, or finalize supersedes it.
+    ends_on_stop: bool
     #: The record that closed the session, absent while it is still open.
     finalized: FinalizeRecord | None
 
@@ -279,7 +284,14 @@ class _FoldState:
     last_seq: int
     last_kept_commit: str | None
     ends_on_gating_block: bool
+    ends_on_stop: bool
     finalized: FinalizeRecord | None
+
+
+def _clear_ends_on_flags(acc: _FoldState) -> None:
+    """Reset both "ends on" flags: any settling record supersedes them."""
+    acc.ends_on_gating_block = False
+    acc.ends_on_stop = False
 
 
 def _fold_iteration(
@@ -289,12 +301,20 @@ def _fold_iteration(
     acc.last_seq = max(acc.last_seq, record.seq)
     acc.last_iteration = record
     acc.unsettled = True
-    acc.ends_on_gating_block = False
+    _clear_ends_on_flags(acc)
     target_reached[record.seq] = record.target_reached
 
 
 def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRecord) -> None:
     acc.last_seq = max(acc.last_seq, record.seq)
+    # A "nothing-measured" refusal commits and settles nothing, so it leaves the
+    # stop state and the gating-block window as it found them — both guards
+    # below skip a "nothing-measured" record.
+    # _clear_ends_on_flags is bypassed (not called) because a gating-regression
+    # keep sets ends_on_gating_block further down in this same function.
+    nothing_measured = record.reason == "nothing-measured"
+    if not nothing_measured:
+        acc.ends_on_stop = False
     if record.status == "committed":
         acc.unsettled = False
         acc.keep_count += 1
@@ -303,13 +323,11 @@ def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRec
         acc.target_reached_and_kept = target_reached.get(record.seq, False)
         if record.commit is not None:
             acc.last_kept_commit = record.commit
-    elif record.reason is not None and record.reason not in ("checks-failed", "nothing-measured"):
+    elif record.reason is not None and record.reason != "checks-failed" and not nothing_measured:
         # A blocked keep settles the iteration — except "checks-failed" (fix and
         # retry) and an absent reason (nothing says the edit is beyond recovery).
         acc.unsettled = False
-    # A "nothing-measured" refusal commits and settles nothing, so it leaves the
-    # standing edit — and the gating-block window — as it found them.
-    if record.reason != "nothing-measured":
+    if not nothing_measured:
         acc.ends_on_gating_block = (
             record.status == "blocked" and record.reason == "gating-regression"
         )
@@ -319,7 +337,7 @@ def _fold_discard(acc: _FoldState, record: DiscardRecord) -> None:
     acc.last_seq = max(acc.last_seq, record.seq)
     acc.unsettled = False
     acc.discard_count += 1
-    acc.ends_on_gating_block = False
+    _clear_ends_on_flags(acc)
 
 
 def fold_session(records: list[SessionLogRecord]) -> SessionState:
@@ -339,6 +357,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
         last_seq=0,
         last_kept_commit=None,
         ends_on_gating_block=False,
+        ends_on_stop=False,
         finalized=None,
     )
     target_reached: dict[int, bool] = {}
@@ -356,6 +375,9 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
                 _fold_discard(acc, record)
             case FinalizeRecord():
                 acc.finalized = record
+                acc.ends_on_stop = False
+            case StopRecord():
+                acc.ends_on_stop = True
             case BaselineRecord() | HookRecord():
                 pass
             case _ as unreachable:
@@ -372,6 +394,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
         last_seq=acc.last_seq,
         last_kept_commit=acc.last_kept_commit,
         ends_on_gating_block=acc.ends_on_gating_block,
+        ends_on_stop=acc.ends_on_stop,
         finalized=acc.finalized,
     )
 

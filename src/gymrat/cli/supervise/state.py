@@ -32,6 +32,10 @@ class ReadSessionResult:
     The ``best_*`` fields track the committed-keep iteration with the best
     primary delta.  ``make_default_read`` computes them from the session
     records; injected test readers set them directly.
+
+    ``stop_message`` holds the newest stop record's message only while the
+    folded log ends on a stop; it is ``None`` once any iteration, keep,
+    discard, or finalize record supersedes it.
     """
 
     state: SessionState
@@ -40,6 +44,7 @@ class ReadSessionResult:
     best_seq: int | None = None
     primary_label: str | None = None
     baseline_sha: str | None = None
+    stop_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

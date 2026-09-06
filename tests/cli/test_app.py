@@ -74,6 +74,7 @@ def test_app_when_help_does_show_description():
     assert "Performance comparison tool for benchmarks" in out
     assert "compare" in out
     assert "measure" in out
+    assert "stop" in out
 
 
 def test_app_when_help_does_show_root_epilogue_examples_and_links():
@@ -108,14 +109,13 @@ def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
 # --debug in both positions
 # ---------------------------------------------------------------------------
 
+DEBUG_FLAG_POSITIONS = [
+    pytest.param(["--debug", "measure", "--bench", "sh bench.sh"], id="before-subcommand"),
+    pytest.param(["measure", "--bench", "sh bench.sh", "--debug"], id="after-subcommand"),
+]
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        pytest.param(["--debug", "measure", "--bench", "sh bench.sh"], id="before-subcommand"),
-        pytest.param(["measure", "--bench", "sh bench.sh", "--debug"], id="after-subcommand"),
-    ],
-)
+
+@pytest.mark.parametrize("argv", DEBUG_FLAG_POSITIONS)
 @pytest.mark.usefixtures("_patched_measure")
 def test_app_when_debug_flag_in_either_position_does_not_error(argv: Sequence[str]):
     result = runner.invoke(app, list(argv))
@@ -123,16 +123,7 @@ def test_app_when_debug_flag_in_either_position_does_not_error(argv: Sequence[st
     assert result.exit_code == 0
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        pytest.param(
-            ["--debug", "measure", "--bench", "sh bench.sh"],
-            id="before-subcommand",
-        ),
-        pytest.param(["measure", "--bench", "sh bench.sh", "--debug"], id="after-subcommand"),
-    ],
-)
+@pytest.mark.parametrize("argv", DEBUG_FLAG_POSITIONS)
 def test_app_when_debug_flag_does_show_traceback_on_error(
     argv: Sequence[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

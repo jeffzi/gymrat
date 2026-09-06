@@ -14,7 +14,6 @@ import asyncio
 import sys
 from typing import TYPE_CHECKING
 
-from gymrat.cli.loop_cmds import format_start_summary
 from gymrat.cli.shared import (
     SharedFlags,
     begin_run,
@@ -29,6 +28,7 @@ from gymrat.errors import GymratError
 from gymrat.loop.baseline import measure_baseline
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
+from gymrat.report.loop import format_start_summary
 from gymrat.sampling import TargetSpec
 from gymrat.session import (
     BaselineRecord,

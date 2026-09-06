@@ -1,4 +1,4 @@
-"""JSON contract tests for keep, discard, and status ``--format json``.
+"""JSON contract tests for keep, discard, stop, and status ``--format json``.
 
 Budget-key tests verify that a live budget inserts a ``budget`` object into
 every JSON document, and that no budget means no key.
@@ -16,11 +16,19 @@ from gymrat.session import (
     FinalizeRecord,
     KeepChecks,
     KeepRecord,
+    SessionLogRecord,
+    StopRecord,
     append_record,
     session_jsonl_path,
 )
 from tests.cli._budget import install_budget
-from tests.cli._loop_cmds import make_discard_repo, never_tty, runner, write_config
+from tests.cli._loop_cmds import (
+    make_discard_repo,
+    make_stop_repo,
+    never_tty,
+    runner,
+    write_config,
+)
 from tests.loop.iterate._fixtures import resolved_config
 from tests.session.records._fixtures import (
     AT,
@@ -227,11 +235,18 @@ def test_discard_command_when_format_text_does_produce_plain_report(
 # ---------------------------------------------------------------------------
 
 
+def _write_status_session(repo: str, *trailing_records: SessionLogRecord) -> None:
+    """A configured session with one kept iteration, followed by ``trailing_records``."""
+    write_session_log(
+        repo, session_record(), (iteration_record(seq=1), committed_keep(1), *trailing_records)
+    )
+    write_config(repo)
+
+
 @pytest.fixture
 def status_repo(repo: str) -> str:
     """A repository with a configured session and one kept iteration."""
-    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
-    write_config(repo)
+    _write_status_session(repo)
     return repo
 
 
@@ -249,25 +264,20 @@ def test_status_command_when_format_json_does_emit_structured_json_on_stdout(sta
     assert doc["discardCount"] == 0
     assert doc["unsettled"] is False
     assert doc["finalized"] is False
+    assert doc["stopped"] is False
 
 
 def test_status_command_when_format_json_and_finalized_does_set_finalized_true(repo: str):
-    write_session_log(
+    _write_status_session(
         repo,
-        session_record(),
-        (
-            iteration_record(seq=1),
-            committed_keep(1),
-            FinalizeRecord(
-                type="finalize",
-                at=AT,
-                branch=f"gymrat/{SESSION_ID}-final",
-                commit=COMMIT,
-                message="squash 1 kept iteration",
-            ),
+        FinalizeRecord(
+            type="finalize",
+            at=AT,
+            branch=f"gymrat/{SESSION_ID}-final",
+            commit=COMMIT,
+            message="squash 1 kept iteration",
         ),
     )
-    write_config(repo)
 
     result = runner.invoke(app, ["status", "--format", "json"])
 
@@ -290,8 +300,19 @@ def test_status_command_when_format_json_does_include_stable_key_names(status_re
         "discardCount",
         "unsettled",
         "finalized",
+        "stopped",
     } <= doc.keys()
     assert {"ref", "sha"} <= doc["baseline"].keys()
+
+
+def test_status_command_when_format_json_and_stop_record_does_set_stopped_true(repo: str):
+    _write_status_session(repo, StopRecord(type="stop", at=AT, message="user requested stop"))
+
+    result = runner.invoke(app, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["stopped"] is True
 
 
 def test_status_command_when_format_text_does_produce_identical_output(status_repo: str):
@@ -395,6 +416,52 @@ def test_status_command_when_format_json_and_no_budget_does_omit_budget_key(
     status_repo: str,
 ):
     result = runner.invoke(app, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+# ---------------------------------------------------------------------------
+# stop --format json
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stop_repo(repo: str) -> str:
+    """A repository with a settled, configured session ready for the stop command."""
+    return make_stop_repo(repo)
+
+
+def test_stop_command_when_format_json_does_emit_structured_json_with_at_and_message(
+    stop_repo: str,
+):
+    result = runner.invoke(app, ["stop", "-m", "user requested stop", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["message"] == "user requested stop"
+    assert "at" in doc
+
+
+def test_stop_command_when_format_json_and_budget_active_does_include_budget_object(
+    stop_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    install_budget(stop_repo, monkeypatch)
+
+    result = runner.invoke(app, ["stop", "-m", "done", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["capMinutes"] == 30
+    assert isinstance(doc["budget"]["remainingSeconds"], int)
+
+
+def test_stop_command_when_format_json_and_no_budget_does_omit_budget_key(
+    stop_repo: str,
+):
+    result = runner.invoke(app, ["stop", "-m", "done", "--format", "json"])
 
     assert result.exit_code == 0
     doc = json.loads(result.stdout)

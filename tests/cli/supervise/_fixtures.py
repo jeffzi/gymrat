@@ -112,6 +112,7 @@ def empty_session_state() -> SessionState:
         last_seq=0,
         last_kept_commit=None,
         ends_on_gating_block=False,
+        ends_on_stop=False,
         finalized=None,
     )
 
@@ -142,7 +143,6 @@ def start_open_session(repo: str) -> None:
 def seed_session_with_baseline(
     repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
 ) -> None:
-    """Open a session and append a baseline record with the given duration."""
     start_open_session(repo)
     log = session_jsonl_path(repo)
     append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
@@ -155,7 +155,12 @@ def seed_session_with_iteration(
     include_baseline: bool = True,
     label: str = ".gymrat/worktrees/baseline",
 ) -> None:
-    """Open a session and append an iteration record, optionally preceded by a baseline."""
+    """Seed a session whose iteration carries the given duration.
+
+    The seeded baseline (when included) gets no ``duration_ms`` of its own —
+    there is no parameter to set one — so any feasibility math a test exercises
+    is driven entirely by ``iteration_duration_ms``.
+    """
     start_open_session(repo)
     log = session_jsonl_path(repo)
     if include_baseline:
@@ -183,7 +188,7 @@ def make_iteration(delta_pct: float | None, outcome: str, seq: int = 1) -> Itera
 
 
 def session_state_three_iterations(delta_pct: float, outcome: str, *, seq: int = 1) -> SessionState:
-    """Three iterations (2 kept, 1 discarded) ending with the given last iteration.
+    """Build a three-iteration session state for loop-row tests.
 
     The shared "loop row has content" arrangement used by summary, frame, and
     reporter tests that only vary the last iteration's delta and outcome.
@@ -204,11 +209,13 @@ def make_read_session(
     best_seq: int | None = None,
     primary_label: str | None = None,
     baseline_sha: str | None = None,
+    stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns ``state`` and ``has_baseline``.
 
-    ``best_*`` / ``baseline_sha`` default to ``None`` on ``ReadSessionResult``
-    itself, so callers that omit best-tracking still get a valid result.
+    ``best_*`` / ``baseline_sha`` / ``stop_message`` default to ``None`` on
+    ``ReadSessionResult`` itself, so callers that omit them still get a valid
+    result.
     """
     result = ReadSessionResult(
         state=state,
@@ -217,6 +224,7 @@ def make_read_session(
         best_seq=best_seq,
         primary_label=primary_label,
         baseline_sha=baseline_sha,
+        stop_message=stop_message,
     )
     return lambda: result
 
@@ -357,7 +365,7 @@ def fire_thinking_update(
 
 
 def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
-    """Launch, then run a Bash start/end cycle.
+    """Minimum event sequence that gets session state into the loop/best rows.
 
     The Bash end triggers the reporter's session re-read, so this is the
     minimum event sequence that gets session state into the loop/best rows.
@@ -368,7 +376,7 @@ def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
 
 
 def fire_launch_and_bash_start(observer: SessionObserver) -> None:
-    """Launch, then start a Bash tool without ending it.
+    """Fire launch and Bash start, leaving the tool in flight.
 
     Used by the in-flight-guard and nested-event tests, which fire a second
     event on top of the still-running Bash call and assert whether it takes

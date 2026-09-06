@@ -40,6 +40,7 @@ from gymrat.report.loop import (
     format_status_footer,
     format_status_header,
     format_status_iteration,
+    format_status_stop,
     format_verdict_block,
 )
 from gymrat.report.style import render_lines
@@ -496,3 +497,32 @@ def test_format_status_baseline_when_metric_name_contains_brackets_does_render_t
     line = _plain(format_status_baseline(record))
 
     assert "total[ms]" in line
+
+
+# ---------------------------------------------------------------------------
+# format_status_stop
+# ---------------------------------------------------------------------------
+
+
+def test_format_status_stop_when_given_single_line_message_does_render_stopped_and_message():
+    line = _plain(format_status_stop("user requested stop"))
+
+    assert line == "stopped · user requested stop"
+
+
+def test_format_status_stop_when_given_multiline_message_does_render_only_the_first_line():
+    line = _plain(format_status_stop("target reached\ncleaning up\nfinal notes"))
+
+    assert line == "stopped · target reached"
+
+
+def test_format_status_stop_when_colored_does_embolden_stopped():
+    line = _colored(format_status_stop("user requested stop"))
+
+    assert "1" in styles_at(line, "stopped")
+
+
+def test_format_status_stop_when_colored_does_dim_the_separator():
+    line = _colored(format_status_stop("user requested stop"))
+
+    assert "2" in styles_at(line, "·")
