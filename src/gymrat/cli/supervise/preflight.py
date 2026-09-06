@@ -36,6 +36,7 @@ from gymrat.session import (
     append_record,
     baseline_worktree_dir,
     read_records,
+    recover_torn_tail,
     session_jsonl_path,
 )
 from gymrat.session.budget import (
@@ -80,10 +81,15 @@ def run_preflight(
             feasibility check refuses.
     """
     _checks_warning(config)
-    result = _session_step(root, config, baseline_ref)
-    _stop_condition_gate(config, result.state, force=force)
-    _baseline_step(root, config)
-    _check_feasibility(root, max_minutes=max_minutes, force=force)
+    release = acquire_lock(lockfile_path(root), "supervise")
+    try:
+        recover_torn_tail(session_jsonl_path(root))
+        result = _session_step(root, config, baseline_ref)
+        _stop_condition_gate(config, result.state, force=force)
+        _baseline_step(root, config)
+        _check_feasibility(root, max_minutes=max_minutes, force=force)
+    finally:
+        release()
     return result
 
 
@@ -111,12 +117,11 @@ def _session_step(
     config: ResolvedConfig,
     baseline_ref: str | None,
 ) -> StartResult:
-    """Open, resume, or archive-and-reopen the session under the repository lock."""
-    release = acquire_lock(lockfile_path(root), "supervise")
-    try:
-        result = start_session(root, baseline_ref, config)
-    finally:
-        release()
+    """Open, resume, or archive-and-reopen the session.
+
+    The caller holds the repository lock for the full session-through-feasibility span.
+    """
+    result = start_session(root, baseline_ref, config)
 
     summary = format_start_summary(result, config.runbook)
     write_and_flush(sys.stdout, summary + "\n")
@@ -152,7 +157,10 @@ def _baseline_step(
     root: str,
     config: ResolvedConfig,
 ) -> None:
-    """Measure the baseline when the log holds no baseline record."""
+    """Measure the baseline when the log holds no baseline record.
+
+    The caller holds the repository lock for the full session-through-feasibility span.
+    """
     if _has_baseline(_read_records(root)):
         return
 
@@ -161,12 +169,8 @@ def _baseline_step(
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
         run_options = run_options_of(config, progress)
-        release = acquire_lock(lockfile_path(root), "supervise")
-        try:
-            _result, record = asyncio.run(measure_baseline(target, run_options))
-            append_record(session_jsonl_path(root), record)
-        finally:
-            release()
+        _result, record = asyncio.run(measure_baseline(target, run_options))
+        append_record(session_jsonl_path(root), record)
     finally:
         progress.stop()
 
