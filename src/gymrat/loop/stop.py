@@ -1,8 +1,9 @@
 """Stop the current session: append a stop record without reverting or committing anything.
 
-A stop tells the loop to pause: no iteration runs while the log ends on a stop,
-but the session is still open, the worktree is untouched, and ``iterate``,
-``keep``, ``discard``, and ``finalize`` all remain available.
+A stop records a closing report and marks the session as stopped. The session
+stays open, the worktree is untouched, and ``iterate``, ``keep``, ``discard``,
+and ``finalize`` all remain available. ``iterate``, ``keep``, and ``discard``
+clear the stopped state; ``finalize`` after a stop is allowed.
 
 Five states refuse a stop:
 
