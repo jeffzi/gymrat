@@ -163,8 +163,7 @@ class _Supervision:
             initial_record_count=self._initial_record_count(),
         )
         self._reply_outstanding = False
-        self._settle_task: asyncio.Task[None] | None = None
-        self._lock_poll_task: asyncio.Task[None] | None = None
+        self._tasks: dict[Literal["settle", "lock_poll"], asyncio.Task[None]] = {}
         self._in_flight = False
         self._last_cost_usd = 0.0
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -200,18 +199,28 @@ class _Supervision:
 
     def _enter_in_flight(self) -> None:
         self._in_flight = True
-        self._cancel_settle()
-        self._cancel_lock_poll()
+        self._cancel("settle")
+        self._cancel("lock_poll")
 
-    def _cancel_settle(self) -> None:
-        if self._settle_task is not None:
-            self._settle_task.cancel()
-            self._settle_task = None
+    def _cancel(self, slot: Literal["settle", "lock_poll"]) -> None:
+        task = self._tasks.pop(slot, None)
+        if task is not None:
+            task.cancel()
 
-    def _cancel_lock_poll(self) -> None:
-        if self._lock_poll_task is not None:
-            self._lock_poll_task.cancel()
-            self._lock_poll_task = None
+    def _schedule(
+        self,
+        slot: Literal["settle", "lock_poll"],
+        routine: Coroutine[object, object, None],
+    ) -> None:
+        task = asyncio.create_task(routine)
+
+        def _clear_on_done(finished: asyncio.Task[None]) -> None:
+            if self._tasks.get(slot) is finished:
+                del self._tasks[slot]
+
+        task.add_done_callback(_clear_on_done)
+        task.add_done_callback(_warn_unhandled)
+        self._tasks[slot] = task
 
     def _handle_turn_end(self, event: TurnEndEvent) -> None:
         if self._reply_outstanding:
@@ -224,8 +233,8 @@ class _Supervision:
         self._schedule_settle(event)
 
     def _schedule_settle(self, event: TurnEndEvent) -> None:
-        self._cancel_settle()
-        self._settle_task = asyncio.create_task(self._run_settle(event))
+        self._cancel("settle")
+        self._schedule("settle", self._run_settle(event))
 
     async def _run_settle(self, turn: TurnEndEvent, *, after_wait: bool = False) -> None:
         if self._config.settle_window_ms > 0:
@@ -303,9 +312,7 @@ class _Supervision:
                 self._combined(
                     FollowUpEvent(timestamp=now_ms(), action="waiting"),
                 )
-                self._lock_poll_task = asyncio.create_task(
-                    self._run_lock_poll(turn),
-                )
+                self._schedule("lock_poll", self._run_lock_poll(turn))
 
     async def _run_lock_poll(self, turn: TurnEndEvent) -> None:
         poll_s = self._config.lock_poll_ms / 1000
@@ -314,11 +321,7 @@ class _Supervision:
         await self._run_settle(turn, after_wait=True)
 
     def _is_idle(self) -> bool:
-        return (
-            self._settle_task is not None
-            or self._lock_poll_task is not None
-            or (self._reply_outstanding and not self._in_flight)
-        )
+        return bool(self._tasks)
 
     def _trigger_cap(self, cap: CapType) -> None:
         if self._cap_fired:
@@ -333,8 +336,8 @@ class _Supervision:
             self._wall_task.cancel()
 
         was_idle = self._is_idle()
-        self._cancel_settle()
-        self._cancel_lock_poll()
+        self._cancel("settle")
+        self._cancel("lock_poll")
 
         self._combined(CapEvent(timestamp=now_ms(), cap=cap))
 
@@ -395,8 +398,8 @@ class _Supervision:
                 cost_usd=outcome.cost_usd,
             )
         finally:
-            self._cancel_settle()
-            self._cancel_lock_poll()
+            self._cancel("settle")
+            self._cancel("lock_poll")
             if self._wall_task is not None:
                 self._wall_task.cancel()
             if self._grace_task is not None:

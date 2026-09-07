@@ -1,12 +1,10 @@
 """Behavioral tests for the mock driver test fixture.
 
 ``create_mock_driver`` builds a :class:`Driver` whose ``start`` runs a
-caller-supplied script of steps on the running event loop. The upstream suite
-drove these behaviors with fake timers; the asyncio port replaces them with
-small real delays and coordinates ordering through ``asyncio.Event`` handshakes
-so every test stays deterministic under ``pytest-randomly`` and
-``pytest-xdist``. Timing is asserted only as loose lower bounds, never exact
-wall-clock values.
+caller-supplied script of steps on the running event loop. Tests coordinate
+ordering through ``asyncio.Event`` handshakes and small real delays so every
+test stays deterministic under ``pytest-randomly`` and ``pytest-xdist``.
+Timing is asserted only as loose lower bounds, never exact wall-clock values.
 """
 
 import asyncio
@@ -372,6 +370,19 @@ async def test_create_mock_driver_when_multiple_turns_does_record_calls_in_order
     await session.outcome
 
     assert driver.sessions[-1].calls == [("send", "first"), ("send", "second")]
+
+
+async def test_create_mock_driver_when_interrupt_called_does_record_call_in_order():
+    driver = create_mock_driver([TurnEndStep(), TurnEndStep()])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.send("first")
+    await asyncio.sleep(0.05)
+    await session.interrupt()
+    await session.outcome
+
+    assert driver.sessions[-1].calls == [("send", "first"), ("interrupt", None)]
 
 
 # ---------------------------------------------------------------------------

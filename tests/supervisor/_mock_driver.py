@@ -99,6 +99,8 @@ class _MockSession:
         return self._script
 
     async def interrupt(self) -> None:
+        if not self._settled:
+            self.calls.append(("interrupt", None))
         self._abort.set()
         self._turn_gate.set()
 

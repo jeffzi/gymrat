@@ -5,20 +5,42 @@ stdio driver), so they live in one module rather than being duplicated per
 test file. ``collecting_observer`` hands back an appending observer paired with
 the list it fills; ``make_launch`` builds a fully-populated ``LaunchEvent`` from
 overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
+``seed_session_log``, ``seed_with_stop``, ``add_stop_async``, and
+``supervise_fast`` share the turn-loop test boilerplate.
 """
 
 import asyncio
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NamedTuple, override
 
 from gymrat.config import BenchlessConfig, Effort
 from gymrat.session.clock import now_ms
+from gymrat.session.paths import session_jsonl_path
+from gymrat.session.store import append_record
+from gymrat.supervisor import (
+    Driver,
+    FollowUpEvent,
+    supervise,
+)
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import SessionPrompt
-from gymrat.supervisor.events import CapEvent, DirtyInfo, LaunchEvent, SessionEvent, SessionObserver
+from gymrat.supervisor.events import (
+    CapEvent,
+    DirtyInfo,
+    LaunchEvent,
+    SessionEvent,
+    SessionObserver,
+    TurnEndEvent,
+)
+from gymrat.supervisor.supervise import SupervisionResult
+from tests.session.records._fixtures import (
+    session_record,
+    stop_record,
+)
+from tests.supervisor._mock_driver import EmitStep, _MockSession
 
 
 class ObserverProbe(NamedTuple):
@@ -242,4 +264,85 @@ def make_context(
         deadline_ms=deadline_ms,
         max_minutes=max_minutes,
         max_usd=max_usd,
+    )
+
+
+# ---------------------------------------------------------------------------
+# turn-loop test helpers
+# ---------------------------------------------------------------------------
+
+
+def follow_up_events(events: list[SessionEvent]) -> list[FollowUpEvent]:
+    return [e for e in events if isinstance(e, FollowUpEvent)]
+
+
+def follow_ups_with_action(events: list[SessionEvent], action: str) -> list[FollowUpEvent]:
+    """Return every ``FollowUpEvent`` in ``events`` whose ``action`` matches."""
+    return [e for e in follow_up_events(events) if e.action == action]
+
+
+def seed_session_log(root: str) -> None:
+    """Write a minimal session header so ``read_records`` / ``fold_session`` work."""
+    jsonl_path = session_jsonl_path(root)
+    Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    append_record(jsonl_path, session_record())
+
+
+def seed_with_stop(root: str) -> None:
+    """Seed the session log and append a stop record so the classifier sees ``ends_on_stop``."""
+    seed_session_log(root)
+    append_record(session_jsonl_path(root), stop_record())
+
+
+async def add_stop_async(root: str) -> None:
+    """Append a stop record so the classifier sees ``ends_on_stop`` on the next turn end."""
+    append_record(session_jsonl_path(root), stop_record())
+
+
+def sent_texts(session: _MockSession) -> list[str | None]:
+    """Return the text of every ``send`` call the mock session recorded."""
+    return [text for call_type, text in session.calls if call_type == "send"]
+
+
+def emit_turn_end(
+    *,
+    cost_usd: float = 0.01,
+    origin: Literal["agent", "injected"] = "agent",
+    delay_ms: int | None = None,
+) -> EmitStep:
+    """Build an ``EmitStep`` for a ``TurnEndEvent`` with the fields every caller shares."""
+    return EmitStep(
+        emit=TurnEndEvent(
+            timestamp=now_ms(),
+            text="",
+            cost_usd=cost_usd,
+            origin=origin,
+            budget_exhausted=False,
+        ),
+        delay_ms=delay_ms,
+    )
+
+
+async def supervise_fast(
+    driver: Driver,
+    prompt: SessionPrompt,
+    *,
+    context: SupervisedSession,
+    launch: LaunchEvent,
+    observer: SessionObserver | None = None,
+    is_lock_held: Callable[[], bool] = lambda: False,
+    grace_ms: int = 30_000,
+    settle_window_ms: int = 0,
+) -> SupervisionResult:
+    """Call ``supervise`` with the settle-window and lock-poll defaults every fast test shares."""
+    return await supervise(
+        driver,
+        prompt,
+        context=context,
+        launch=launch,
+        observer=observer,
+        settle_window_ms=settle_window_ms,
+        lock_poll_ms=1,
+        is_lock_held=is_lock_held,
+        grace_ms=grace_ms,
     )

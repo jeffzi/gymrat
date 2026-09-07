@@ -31,6 +31,7 @@ from gymrat.supervisor.turns import (
 )
 from tests.cli.supervise._fixtures import session_state
 from tests.session.records._fixtures import (
+    blocked_keep,
     committed_keep,
     discard_record,
     finalize_record,
@@ -116,6 +117,17 @@ def _classify(
         guards=guards,
         turn=turn,
         **defaults,  # type: ignore[arg-type]
+    )
+
+
+def _classify_discards(records: list[SessionLogRecord]) -> Decision:
+    """Runs classify with the discard-streak defaults, varying only ``records``."""
+    return _classify(
+        config=_benchless_config(),
+        state=session_state(),
+        records=records,
+        guards=_guards(),
+        turn=_turn_end(),
     )
 
 
@@ -378,20 +390,11 @@ def test_classify_when_no_progress_reaches_limit_does_end_no_progress():
 
 
 def test_classify_when_consecutive_discards_reach_limit_does_end_consecutive_discards():
-    config = _benchless_config()
-    state = session_state()
     records: list[SessionLogRecord] = [
         discard_record(seq=i) for i in range(1, CONSECUTIVE_DISCARD_LIMIT + 1)
     ]
-    guards = _guards(initial_record_count=0)
 
-    result = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
+    result = _classify_discards(records)
 
     assert isinstance(result, End)
     assert result.reason == "consecutive-discards"
@@ -399,8 +402,6 @@ def test_classify_when_consecutive_discards_reach_limit_does_end_consecutive_dis
 
 def test_classify_when_committed_keep_between_discards_does_reset_streak():
     """A committed keep resets the consecutive-discard counter."""
-    config = _benchless_config()
-    state = session_state()
     records: list[SessionLogRecord] = [
         discard_record(seq=1),
         discard_record(seq=2),
@@ -410,23 +411,14 @@ def test_classify_when_committed_keep_between_discards_does_reset_streak():
         discard_record(seq=6),
         discard_record(seq=7),
     ]
-    guards = _guards(initial_record_count=0)
 
-    result = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
+    result = _classify_discards(records)
 
     assert isinstance(result, Reply)
 
 
 def test_classify_when_iteration_and_hook_records_between_discards_does_not_break_streak():
     """Iteration and hook records between discards do not break the run."""
-    config = _benchless_config()
-    state = session_state()
     records: list[SessionLogRecord] = [
         discard_record(seq=1),
         iteration_record(seq=2),
@@ -437,15 +429,28 @@ def test_classify_when_iteration_and_hook_records_between_discards_does_not_brea
         discard_record(seq=4),
         discard_record(seq=5),
     ]
-    guards = _guards(initial_record_count=0)
 
-    result = _classify(
-        config=config,
-        state=state,
-        records=records,
-        guards=guards,
-        turn=_turn_end(),
-    )
+    result = _classify_discards(records)
+
+    assert isinstance(result, End)
+    assert result.reason == "consecutive-discards"
+
+
+def test_classify_when_blocked_keep_between_discards_does_not_reset_streak():
+    """Five discards with a blocked keep interleaved still trips the guard.
+
+    Only a committed keep resets the counter.
+    """
+    records: list[SessionLogRecord] = [
+        discard_record(seq=1),
+        discard_record(seq=2),
+        blocked_keep(seq=3),
+        discard_record(seq=4),
+        discard_record(seq=5),
+        discard_record(seq=6),
+    ]
+
+    result = _classify_discards(records)
 
     assert isinstance(result, End)
     assert result.reason == "consecutive-discards"

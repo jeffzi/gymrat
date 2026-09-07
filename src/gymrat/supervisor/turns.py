@@ -89,7 +89,8 @@ def _consecutive_discard_count(
     """Count trailing discards among settlement records appended since launch.
 
     Only keep and discard records are settlements. Iteration and hook records
-    between discards do not break the streak. A committed keep resets it.
+    between discards do not break the streak. A committed keep resets it. A
+    keep that is not committed neither counts nor resets the streak.
     """
     settlements = [
         r for r in records[initial_record_count:] if isinstance(r, KeepRecord | DiscardRecord)
@@ -99,8 +100,6 @@ def _consecutive_discard_count(
         if isinstance(record, DiscardRecord):
             count += 1
         elif isinstance(record, KeepRecord) and record.status == "committed":
-            break
-        else:
             break
     return count
 
@@ -157,7 +156,7 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
     if lock_held:
         return WaitForLock()
 
-    # --- From here, counters are updated ---
+    # From here, counters are updated on every non-WaitForLock outcome.
 
     current_count = len(records)
 
