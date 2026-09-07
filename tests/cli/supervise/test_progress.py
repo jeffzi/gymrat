@@ -33,6 +33,7 @@ from tests.cli.supervise._fixtures import (
     empty_session_state,
     finalize_record,
     fire_cap,
+    fire_follow_up,
     fire_launch,
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
@@ -40,6 +41,7 @@ from tests.cli.supervise._fixtures import (
     fire_thinking_update,
     fire_tool_end,
     fire_tool_start,
+    fire_turn_end,
     fire_usage_update,
     make_iteration,
     make_read_session,
@@ -1147,24 +1149,123 @@ def test_final_text_when_no_text_received_does_return_none():
     assert kit.reporter.final_text() is None
 
 
-def test_final_text_when_top_level_text_deltas_received_does_return_last_chunk():
+def test_final_text_when_agent_turn_ends_does_return_its_text():
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
-    observer(TextDeltaEvent(timestamp=2000, chunk="first message"))
-    observer(TextDeltaEvent(timestamp=3000, chunk="final message"))
+    fire_turn_end(observer, 2000, text="first turn summary")
+    fire_turn_end(observer, 3000, text="second turn summary")
 
-    assert kit.reporter.final_text() == "final message"
+    assert kit.reporter.final_text() == "second turn summary"
 
 
-def test_final_text_when_nested_text_delta_received_does_not_replace_top_level():
+def test_final_text_when_injected_turn_ends_does_not_replace_agent_text():
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
-    observer(TextDeltaEvent(timestamp=2000, chunk="top-level text"))
-    observer(TextDeltaEvent(timestamp=3000, chunk="nested text", parent_tool_use_id="tu_sub"))
+    fire_turn_end(observer, 2000, text="agent said this", origin="agent")
+    fire_turn_end(observer, 3000, text="injected turn text", origin="injected")
 
-    assert kit.reporter.final_text() == "top-level text"
+    assert kit.reporter.final_text() == "agent said this"
+
+
+def test_final_text_when_text_delta_received_does_not_set_final_text():
+    """TextDeltaEvent is a no-op for final_text; only TurnEndEvent sets it."""
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    observer(TextDeltaEvent(timestamp=2000, chunk="streamed text"))
+
+    assert kit.reporter.final_text() is None
+
+
+# ---------------------------------------------------------------------------
+# turn counting and follow-up rendering (live mode)
+# ---------------------------------------------------------------------------
+
+
+def test_follow_up_when_replied_does_show_turn_count_and_replied():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_turn_end(observer, 2000, text="done")
+    fire_follow_up(observer, 3000, action="replied")
+
+    frame = render_frame(kit.reporter)
+
+    assert "turn 1 ended" in frame
+    assert "replied" in frame
+
+
+def test_follow_up_when_waiting_does_show_turn_count_and_waiting_for_gymrat():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_turn_end(observer, 2000, text="done")
+    fire_follow_up(observer, 3000, action="waiting")
+
+    frame = render_frame(kit.reporter)
+
+    assert "turn 1 ended" in frame
+    assert "waiting for gymrat" in frame
+
+
+def test_follow_up_when_ended_does_show_turn_count_and_ended_with_reason():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_turn_end(observer, 2000, text="done")
+    fire_follow_up(observer, 3000, action="ended", reason="budget exhausted")
+
+    frame = render_frame(kit.reporter)
+
+    assert "turn 1 ended" in frame
+    assert "ended budget exhausted" in frame
+
+
+def test_follow_up_when_multiple_turns_does_increment_turn_count():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_turn_end(observer, 2000, text="first")
+    fire_follow_up(observer, 3000, action="replied")
+    fire_turn_end(observer, 4000, text="second")
+    fire_follow_up(observer, 5000, action="replied")
+
+    frame = render_frame(kit.reporter)
+
+    assert "turn 2 ended" in frame
+
+
+# ---------------------------------------------------------------------------
+# liveness — turn end and follow-up transitions
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_when_turn_ends_does_show_waiting():
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_model_phase(observer, 1500, "responding")
+    fire_turn_end(observer, 2000, text="done")
+
+    frame = render_frame(kit.reporter)
+
+    assert "waiting" in frame
+
+
+def test_liveness_when_follow_up_does_not_change_liveness():
+    """FollowUpEvent leaves liveness unchanged; the next model phase moves it."""
+    kit = make_reporter()
+    observer = kit.reporter.observer
+    fire_launch(observer, 1000)
+    fire_model_phase(observer, 1500, "responding")
+    fire_turn_end(observer, 2000, text="done")
+    fire_follow_up(observer, 3000, action="replied")
+
+    frame = render_frame(kit.reporter)
+
+    assert "waiting" in frame
 
 
 # ---------------------------------------------------------------------------

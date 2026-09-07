@@ -1,6 +1,6 @@
 """Session event vocabulary and the helpers that render and fan them out.
 
-A session emits a fixed set of nine events to any number of
+A session emits a fixed set of eleven events to any number of
 :data:`SessionObserver` callbacks. Each event is a frozen pydantic model tagged
 by a ``type`` literal and stamped with an epoch-millisecond ``timestamp``;
 together they form the :data:`SessionEvent` union.
@@ -192,6 +192,44 @@ class LaunchEvent(_EventModel):
         return data
 
 
+class TurnEndEvent(_EventModel):
+    """Emitted when the agent finishes a conversational turn."""
+
+    type: Literal["turn_end"] = "turn_end"
+    timestamp: int
+    text: str
+    cost_usd: float
+    origin: Literal["agent", "injected"]
+    budget_exhausted: bool
+
+
+class FollowUpEvent(_EventModel):
+    """Emitted when the supervisor acts on a completed turn.
+
+    ``reason`` and ``text`` are omitted from the wire form when ``None``
+    (not serialized as ``null`` — absent from the dict), matching the
+    ``LaunchEvent`` convention.
+    """
+
+    type: Literal["follow_up"] = "follow_up"
+    timestamp: int
+    action: Literal["replied", "waiting", "ended"]
+    reason: str | None = None
+    text: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_none_optionals(
+        self,
+        handler: SerializerFunctionWrapHandler,
+    ) -> dict[str, object]:
+        data: dict[str, object] = handler(self)
+        if self.reason is None:
+            data.pop("reason", None)
+        if self.text is None:
+            data.pop("text", None)
+        return data
+
+
 SessionEvent = (
     ThinkingUpdateEvent
     | ToolStartEvent
@@ -202,6 +240,8 @@ SessionEvent = (
     | CapEvent
     | ModelPhaseEvent
     | LaunchEvent
+    | TurnEndEvent
+    | FollowUpEvent
 )
 """The union of every event a session can emit to a :data:`SessionObserver`."""
 

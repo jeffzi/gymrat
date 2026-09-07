@@ -1093,3 +1093,44 @@ def test_summary_when_no_labels_does_omit_model_and_effort_rows() -> None:
 
     assert "model" not in text.lower()
     assert "effort" not in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# closing summary — guard-ended session
+# ---------------------------------------------------------------------------
+
+
+def test_summary_headline_when_guard_ended_does_show_stopped_by_guard_with_reason() -> None:
+    summary = build_summary(
+        make_supervision_result(
+            reason="interrupted",
+            ended_by="guard",
+            end_reason="safety limit reached",
+        ),
+        log_path=_LOG_PATH,
+        session_result=None,
+    )
+
+    headline = frame_text(summary, width=FRAME_WIDTH).splitlines()[0]
+
+    assert "stopped by guard" in headline
+    assert "safety limit reached" in headline
+
+
+def test_summary_when_guard_ended_does_show_agent_row() -> None:
+    """The agent row appears for guard-ended sessions (the agent's last text is useful)."""
+    summary = build_summary(
+        make_supervision_result(
+            reason="interrupted",
+            ended_by="guard",
+            end_reason="safety limit reached",
+        ),
+        log_path=_LOG_PATH,
+        session_result=None,
+        final_text="I was working on the optimization.",
+    )
+
+    text = frame_text(summary, width=FRAME_WIDTH)
+
+    assert "  agent" in text
+    assert "I was working on the optimization." in text

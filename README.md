@@ -121,8 +121,10 @@ gymrat finalize            # squash kept iterations into one commit and close
 ```
 
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs that loop under an AI
-agent. The runbook scaffolded by `init` describes the goal and constraints, and the session ends
-when the agent finishes or a cap trips.
+agent. The runbook scaffolded by `init` describes the goal and constraints. The session continues
+across an early turn end — the supervisor replies and the run ends on `gymrat stop`, a stop
+condition, a cap, or a guard (no-progress, consecutive-discard). Both the agent backend and the
+supervisor enforce `--max-usd`.
 
 `supervise` opens the session and records the baseline itself before handing control to the agent;
 `--baseline <ref>` pins the session to a specific ref (default HEAD; ignored when resuming an open

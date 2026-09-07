@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `follow_up` and `turn_end` lines in the supervisor event log.
+- A `guard` end reason in the closing summary (exit 1) when the no-progress or consecutive-discard
+  guard trips.
+
+### Changed
+
+- A supervised session now continues across early turn ends; the run ends on `gymrat stop`, a stop
+  condition, a cap, or a guard.
+
+### Fixed
+
+- The spend cap now fires on live cost updates instead of waiting for a settled total.
+
 ## [0.15.0] - 2026-09-06
 
 ### Added

@@ -18,6 +18,7 @@ from gymrat.supervisor.events import (
     SUMMARY_MAX_CHARS,
     CapEvent,
     DirtyInfo,
+    FollowUpEvent,
     ModelPhaseEvent,
     SessionEvent,
     TextDeltaEvent,
@@ -25,6 +26,7 @@ from gymrat.supervisor.events import (
     ToolEndEvent,
     ToolProgressEvent,
     ToolStartEvent,
+    TurnEndEvent,
     UsageUpdateEvent,
     combine_observers,
     event_from_wire,
@@ -32,7 +34,7 @@ from gymrat.supervisor.events import (
     summarize_input,
     to_json_line,
 )
-from tests.supervisor._fixtures import collecting_observer, make_launch
+from tests.supervisor._fixtures import collecting_observer, make_launch, make_prompt
 
 # ---------------------------------------------------------------------------
 # Event vocabulary
@@ -62,6 +64,10 @@ _MODEL_PHASE_TOOL_INPUT = ModelPhaseEvent(
     timestamp=10, phase="tool_input", tool_name="Read", parent_tool_use_id="p1"
 )
 _MODEL_PHASE_TURN_END = ModelPhaseEvent(timestamp=11, phase="turn_end")
+_TURN_END = TurnEndEvent(
+    timestamp=12, text="done", cost_usd=0.05, origin="agent", budget_exhausted=False
+)
+_FOLLOW_UP = FollowUpEvent(timestamp=13, action="replied", reason="user asked", text="hello")
 
 EVENT_SAMPLES: list[tuple[object, str]] = [
     (_THINKING_UPDATE, "thinking_update"),
@@ -76,6 +82,8 @@ EVENT_SAMPLES: list[tuple[object, str]] = [
     (_MODEL_PHASE_TOOL_INPUT, "model_phase"),
     (_MODEL_PHASE_TURN_END, "model_phase"),
     (make_launch(), "launch"),
+    (_TURN_END, "turn_end"),
+    (_FOLLOW_UP, "follow_up"),
 ]
 
 
@@ -87,7 +95,7 @@ def test_event_when_constructed_does_expose_its_type_literal(event: object, expe
     assert event.type == expected_type  # type: ignore[attr-defined]
 
 
-def test_session_event_union_when_enumerated_does_expose_exactly_nine_type_literals():
+def test_session_event_union_when_enumerated_does_expose_exactly_eleven_type_literals():
     event_classes = typing.get_args(SessionEvent)
     types = {cls.model_fields["type"].default for cls in event_classes}
 
@@ -101,6 +109,8 @@ def test_session_event_union_when_enumerated_does_expose_exactly_nine_type_liter
         "cap",
         "model_phase",
         "launch",
+        "turn_end",
+        "follow_up",
     }
 
 
@@ -202,6 +212,29 @@ JSON_CASES = [
         },
         id="model_phase-tool_input",
     ),
+    pytest.param(
+        _TURN_END,
+        {
+            "type": "turn_end",
+            "timestamp": 12,
+            "text": "done",
+            "costUsd": 0.05,
+            "origin": "agent",
+            "budgetExhausted": False,
+        },
+        id="turn_end",
+    ),
+    pytest.param(
+        _FOLLOW_UP,
+        {
+            "type": "follow_up",
+            "timestamp": 13,
+            "action": "replied",
+            "reason": "user asked",
+            "text": "hello",
+        },
+        id="follow_up-with-optionals",
+    ),
 ]
 
 
@@ -278,6 +311,67 @@ def test_launch_event_model_dump_when_optionals_are_set_does_include_them(
 
 
 # ---------------------------------------------------------------------------
+# FollowUpEvent — None-optional omission
+# ---------------------------------------------------------------------------
+
+
+def test_to_json_line_when_follow_up_has_no_optionals_does_omit_reason_and_text():
+    event = FollowUpEvent(timestamp=20, action="waiting")
+
+    parsed = json.loads(to_json_line(event))
+
+    assert parsed == {
+        "type": "follow_up",
+        "timestamp": 20,
+        "action": "waiting",
+    }
+
+
+def test_to_json_line_when_follow_up_has_optionals_does_emit_them():
+    event = FollowUpEvent(timestamp=20, action="ended", reason="budget", text="bye")
+
+    parsed = json.loads(to_json_line(event))
+
+    assert parsed["reason"] == "budget"
+    assert parsed["text"] == "bye"
+
+
+def test_follow_up_event_model_dump_when_optionals_are_none_does_omit_them():
+    event = FollowUpEvent(timestamp=20, action="waiting")
+
+    dumped = event.model_dump(by_alias=True)
+
+    assert "reason" not in dumped
+    assert "text" not in dumped
+
+
+def test_follow_up_event_model_dump_when_optionals_are_set_does_include_them():
+    event = FollowUpEvent(timestamp=20, action="replied", reason="clarify", text="hi")
+
+    dumped = event.model_dump(by_alias=True)
+
+    assert dumped["reason"] == "clarify"
+    assert dumped["text"] == "hi"
+
+
+# ---------------------------------------------------------------------------
+# SessionPrompt — max_budget_usd
+# ---------------------------------------------------------------------------
+
+
+def test_session_prompt_when_max_budget_usd_given_does_carry_it():
+    prompt = make_prompt(max_budget_usd=2.5)
+
+    assert prompt.max_budget_usd == 2.5
+
+
+def test_session_prompt_when_max_budget_usd_omitted_does_default_to_none():
+    prompt = make_prompt()
+
+    assert prompt.max_budget_usd is None
+
+
+# ---------------------------------------------------------------------------
 # event_from_wire
 # ---------------------------------------------------------------------------
 
@@ -285,6 +379,10 @@ ROUND_TRIP_EVENTS = [pytest.param(event, id=type_) for event, type_ in EVENT_SAM
     pytest.param(
         make_launch(max_usd=1.5, model="opus", dirty=DirtyInfo(file_count=4)),
         id="launch-with-optionals",
+    ),
+    pytest.param(
+        FollowUpEvent(timestamp=20, action="waiting"),
+        id="follow_up-no-optionals",
     ),
 ]
 

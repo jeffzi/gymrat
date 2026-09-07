@@ -33,7 +33,7 @@ from gymrat.supervisor.driver import (
     SessionOutcome,
     SessionPrompt,
 )
-from gymrat.supervisor.events import UsageUpdateEvent, event_from_wire
+from gymrat.supervisor.events import TurnEndEvent, UsageUpdateEvent, event_from_wire
 
 _STREAM_LIMIT = 8 * 1024 * 1024
 """Max bytes buffered for a single child stdout line before the reader overruns.
@@ -63,6 +63,8 @@ def _start_command(prompt: SessionPrompt) -> dict[str, object]:
         wire["effort"] = prompt.effort
     if prompt.command_timeout_ms is not None:
         wire["commandTimeoutMs"] = prompt.command_timeout_ms
+    if prompt.max_budget_usd is not None:
+        wire["maxBudgetUsd"] = prompt.max_budget_usd
     return {"type": "start", "prompt": wire}
 
 
@@ -118,6 +120,12 @@ class _StdioSession:
     async def interrupt(self) -> None:
         self._interrupt_requested = True
         await self._write_line({"type": "interrupt"})
+
+    async def send(self, text: str) -> None:
+        await self._write_line({"type": "message", "text": text})
+
+    async def end(self) -> None:
+        await self._write_line({"type": "end"})
 
     async def _write_line(self, obj: dict[str, object]) -> None:
         """Write one JSON command line to the child's stdin, best-effort.
@@ -196,7 +204,7 @@ class _StdioSession:
         event = event_from_wire(decoded)
         if event is None:
             return False
-        if isinstance(event, UsageUpdateEvent):
+        if isinstance(event, (UsageUpdateEvent, TurnEndEvent)):
             self._cost_usd = event.cost_usd
         self._observer(event)
         return False
