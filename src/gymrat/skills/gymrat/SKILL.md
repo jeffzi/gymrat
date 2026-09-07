@@ -140,9 +140,9 @@ the same repository, and the supervise lock does not stop it.
 **In supervised mode (this text in your system prompt), no human reads your turns.** Ending a turn
 early is recoverable but wasteful — the supervisor replies with a reminder to re-read the session
 and continue, so the run does not end on an early turn. The session ends on `gymrat stop`, a stop
-condition, a cap, or a guard (no-progress, consecutive-discard). Never end a turn with a question,
-a request for a decision, or an offer of alternatives: nobody answers. Decide from the runbook and
-continue. The only turn you should end is the one after `gymrat stop -m "<report>"`.
+condition, a cap, or a guard (follow-up ceiling, no-progress, consecutive-discard). Never end a turn
+with a question, a request for a decision, or an offer of alternatives: nobody answers. Decide from
+the runbook and continue. The only turn you should end is the one after `gymrat stop -m "<report>"`.
 
 **Never run a gymrat command in the background.** The command must run in the foreground with no
 timeout — the supervisor raises the command's timeout ceiling to match the run's wall-clock cap. A
