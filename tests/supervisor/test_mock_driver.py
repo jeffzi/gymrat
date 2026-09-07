@@ -1,12 +1,10 @@
 """Behavioral tests for the mock driver test fixture.
 
 ``create_mock_driver`` builds a :class:`Driver` whose ``start`` runs a
-caller-supplied script of steps on the running event loop. The upstream suite
-drove these behaviors with fake timers; the asyncio port replaces them with
-small real delays and coordinates ordering through ``asyncio.Event`` handshakes
-so every test stays deterministic under ``pytest-randomly`` and
-``pytest-xdist``. Timing is asserted only as loose lower bounds, never exact
-wall-clock values.
+caller-supplied script of steps on the running event loop. Tests coordinate
+ordering through ``asyncio.Event`` handshakes and small real delays so every
+test stays deterministic under ``pytest-randomly`` and ``pytest-xdist``.
+Timing is asserted only as loose lower bounds, never exact wall-clock values.
 """
 
 import asyncio
@@ -14,10 +12,16 @@ import time
 
 import pytest
 
-from gymrat.supervisor import SessionOutcome, TextDeltaEvent
+from gymrat.supervisor import SessionOutcome, TextDeltaEvent, TurnEndEvent
 from gymrat.supervisor.events import SessionEvent
 from tests.supervisor._fixtures import collecting_observer, make_prompt, noop_observer
-from tests.supervisor._mock_driver import ActionStep, CostStep, EmitStep, create_mock_driver
+from tests.supervisor._mock_driver import (
+    ActionStep,
+    CostStep,
+    EmitStep,
+    TurnEndStep,
+    create_mock_driver,
+)
 
 
 async def _noop_action() -> None:
@@ -235,3 +239,221 @@ async def test_create_mock_driver_when_abort_preset_does_resolve_interrupted_imm
 
     assert outcome.reason == "interrupted"
     assert ran == []
+
+
+# ---------------------------------------------------------------------------
+# turn end step
+# ---------------------------------------------------------------------------
+
+
+async def test_create_mock_driver_when_turn_end_step_runs_does_emit_turn_end_event():
+    probe = collecting_observer()
+    driver = create_mock_driver([CostStep(cost_usd=0.05), TurnEndStep(text="thinking")])
+
+    session = driver.start(make_prompt(), probe.observer)
+    await asyncio.sleep(0.05)
+    await session.send("continue")
+    await session.outcome
+
+    turn_ends = [e for e in probe.events if e.type == "turn_end"]
+    assert len(turn_ends) == 1
+    te = turn_ends[0]
+    assert isinstance(te, TurnEndEvent)
+    assert te.text == "thinking"
+    assert te.cost_usd == 0.05
+    assert te.origin == "agent"
+    assert te.budget_exhausted is False
+
+
+async def test_create_mock_driver_when_turn_end_step_has_cost_usd_does_override_running_cost():
+    probe = collecting_observer()
+    driver = create_mock_driver([CostStep(cost_usd=0.05), TurnEndStep(text="", cost_usd=0.99)])
+
+    session = driver.start(make_prompt(), probe.observer)
+    await asyncio.sleep(0.05)
+    await session.send("go")
+    outcome = await session.outcome
+
+    turn_ends = [e for e in probe.events if e.type == "turn_end"]
+    assert len(turn_ends) == 1
+    assert turn_ends[0].cost_usd == 0.99  # type: ignore[attr-defined]
+    assert outcome.cost_usd == 0.99
+
+
+async def test_create_mock_driver_when_turn_end_step_blocks_does_continue_after_send():
+    order: list[str] = []
+
+    async def before() -> None:
+        order.append("before")
+
+    async def after() -> None:
+        order.append("after")
+
+    driver = create_mock_driver(
+        [ActionStep(action=before), TurnEndStep(), ActionStep(action=after)]
+    )
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    assert order == ["before"]
+
+    await session.send("go")
+    await session.outcome
+
+    assert order == ["before", "after"]
+
+
+async def test_create_mock_driver_when_end_called_during_turn_end_does_settle_completed():
+    driver = create_mock_driver(
+        [CostStep(cost_usd=0.1), TurnEndStep(), ActionStep(action=_noop_action)]
+    )
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.end()
+    outcome = await session.outcome
+
+    assert outcome == SessionOutcome(reason="completed", cost_usd=0.1)
+
+
+async def test_create_mock_driver_when_end_called_during_turn_end_does_stop_successor_steps():
+    reached: list[str] = []
+
+    async def after() -> None:
+        reached.append("after")
+
+    driver = create_mock_driver([TurnEndStep(), ActionStep(action=after)])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.end()
+    await session.outcome
+
+    assert reached == []
+
+
+# ---------------------------------------------------------------------------
+# session call recording
+# ---------------------------------------------------------------------------
+
+
+async def test_create_mock_driver_when_send_called_does_record_call():
+    driver = create_mock_driver([TurnEndStep()])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.send("hello")
+    await session.outcome
+
+    assert driver.sessions[-1].calls == [("send", "hello")]
+
+
+async def test_create_mock_driver_when_end_called_does_record_call():
+    driver = create_mock_driver([TurnEndStep()])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.end()
+    await session.outcome
+
+    assert driver.sessions[-1].calls == [("end", None)]
+
+
+async def test_create_mock_driver_when_multiple_turns_does_record_calls_in_order():
+    driver = create_mock_driver([TurnEndStep(), TurnEndStep()])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.send("first")
+    await asyncio.sleep(0.05)
+    await session.send("second")
+    await session.outcome
+
+    assert driver.sessions[-1].calls == [("send", "first"), ("send", "second")]
+
+
+async def test_create_mock_driver_when_interrupt_called_does_record_call_in_order():
+    driver = create_mock_driver([TurnEndStep(), TurnEndStep()])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.send("first")
+    await asyncio.sleep(0.05)
+    await session.interrupt()
+    await session.outcome
+
+    assert driver.sessions[-1].calls == [("send", "first"), ("interrupt", None)]
+
+
+# ---------------------------------------------------------------------------
+# send/end on settled session
+# ---------------------------------------------------------------------------
+
+
+async def test_create_mock_driver_when_send_on_settled_session_does_noop():
+    driver = create_mock_driver([ActionStep(action=_noop_action)])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await session.outcome
+
+    await session.send("late")
+
+    assert driver.sessions[-1].calls == []
+
+
+async def test_create_mock_driver_when_end_on_settled_session_does_noop():
+    driver = create_mock_driver([ActionStep(action=_noop_action)])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await session.outcome
+
+    await session.end()
+
+    assert driver.sessions[-1].calls == []
+
+
+async def test_create_mock_driver_when_end_with_no_step_waiting_does_stop_at_next_boundary():
+    reached: list[str] = []
+
+    async def first() -> None:
+        reached.append("first")
+
+    async def second() -> None:
+        reached.append("second")
+
+    driver = create_mock_driver([ActionStep(action=first), ActionStep(action=second, delay_ms=50)])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.02)
+    await session.end()
+    outcome = await session.outcome
+
+    assert reached == ["first"]
+    assert outcome == SessionOutcome(reason="completed", cost_usd=0.0)
+
+
+# ---------------------------------------------------------------------------
+# sessions tracking
+# ---------------------------------------------------------------------------
+
+
+async def test_create_mock_driver_does_track_sessions():
+    driver = create_mock_driver([ActionStep(action=_noop_action)])
+
+    session1 = driver.start(make_prompt(), noop_observer())
+    await session1.outcome
+    session2 = driver.start(make_prompt(), noop_observer())
+    await session2.outcome
+
+    assert len(driver.sessions) == 2
+
+
+async def test_create_mock_driver_when_interrupted_during_turn_end_does_settle_interrupted():
+    driver = create_mock_driver([TurnEndStep()])
+
+    session = driver.start(make_prompt(), noop_observer())
+    await asyncio.sleep(0.05)
+    await session.interrupt()
+    outcome = await session.outcome
+
+    assert outcome.reason == "interrupted"

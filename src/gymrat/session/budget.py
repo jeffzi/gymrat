@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE
+from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE, format_duration
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
 from gymrat.session.records.models import BaselineRecord, IterationRecord, SessionLogRecord
@@ -166,3 +166,9 @@ def estimate_iterate_duration(
             )
 
     return None
+
+
+def format_budget_trailer(budget: Budget, current_ms: float) -> str:
+    """The ``12m 34s left of 30m`` trailer a report appends when a budget is active."""
+    remaining = budget.remaining_ms(current_ms)
+    return f"{format_duration(remaining)} left of {budget.max_minutes:g}m"

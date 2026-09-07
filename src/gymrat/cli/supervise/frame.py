@@ -63,6 +63,9 @@ if TYPE_CHECKING:
 _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
 
+#: Shown in place of the loop summary before any session data has been read.
+NO_SESSION_TEXT = "no session yet"
+
 
 # ---------------------------------------------------------------------------
 # Time and cost formatting
@@ -151,7 +154,7 @@ def _iter_label_text(count: int, max_iterations: int | None) -> Text:
 def build_loop_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> Text:
     """Build the iteration-progress summary shown in the supervise frame."""
     if session_result is None:
-        return Text("no session yet", style=STYLE_PENDING)
+        return Text(NO_SESSION_TEXT, style=STYLE_PENDING)
 
     state = session_result.state
 
@@ -164,7 +167,7 @@ def build_loop_text(session_result: ReadSessionResult | None, max_iterations: in
         return Text("baseline recorded · no iterations yet")
 
     if state.iteration_count == 0:
-        return Text("no session yet", style=STYLE_PENDING)
+        return Text(NO_SESSION_TEXT, style=STYLE_PENDING)
 
     text = _iter_label_text(state.iteration_count, max_iterations)
     text.append(" · ")
@@ -229,8 +232,8 @@ def _build_waiting_text(waiting: Waiting, now: int, tz: tzinfo | None, *, no_col
     style = _style_unless_no_color(STYLE_ALERT, no_color=no_color)
     if waiting.tool_name is None:
         return Text(f"no output for {format_duration(ago)}", style=style)
-    at = waiting.tool_ended_at if waiting.tool_ended_at is not None else waiting.since
-    clock = _format_wall_clock(at, tz)
+    clock_ms = waiting.tool_ended_at if waiting.tool_ended_at is not None else waiting.since
+    clock = _format_wall_clock(clock_ms, tz)
     mark = f" {GLYPH_ERROR}" if waiting.result == "error" else ""
     label = f"(last tool: {waiting.tool_name}{mark} at {clock})"
     return Text(f"no output for {format_duration(ago)} {label}", style=style)
@@ -315,6 +318,11 @@ def _build_summary_table(ctx: ReporterCtx, elapsed_ms: int) -> Table:
         best_row = Text("best ", style=STYLE_META)
         best_row.append_text(best_text)
         summary.add_row(best_row)
+
+    if ctx.last_decision is not None:
+        turns_row = Text("turns  ", style=STYLE_META)
+        turns_row.append(ctx.last_decision)
+        summary.add_row(turns_row)
 
     return summary
 
@@ -432,6 +440,9 @@ def _build_outcome_text(result: SupervisionResult) -> Text:
         text.append(f"{GLYPH_DONE} completed", style=STYLE_DONE)
     elif result.outcome.reason == "error":
         text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
+    elif result.ended_by == "guard":
+        reason = result.end_reason or "unknown"
+        text.append(f"{GLYPH_ALERT} stopped by guard: {reason}", style=STYLE_ALERT)
     else:
         cap = _CAP_LABELS[result.ended_by]
         text.append(f"{GLYPH_ALERT} interrupted by {cap}", style=STYLE_ALERT)
@@ -523,7 +534,7 @@ def build_summary(
     ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
     """
     rows = [_build_outcome_text(result)]
-    if _completed_on_its_own(result):
+    if _completed_on_its_own(result) or result.ended_by == "guard":
         agent_text = _resolve_agent_text(session_result, final_text)
         if agent_text is not None:
             rows.append(_build_agent_row(agent_text))
@@ -540,7 +551,7 @@ def build_summary(
 
 
 def format_caps(max_minutes: float, max_usd: float | None) -> str:
-    """Format the cap summary line for the launch event."""
+    """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
     caps_parts = [f"{_format_minutes(max_minutes)}m"]
     if max_usd is not None:
         caps_parts.append(format_cost(max_usd))

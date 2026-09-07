@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `follow_up` and `turn_end` lines in the supervisor event log.
+- A `guard` end reason in the closing summary (exit 1) when the follow-up ceiling, no-progress, or
+  consecutive-discard guard trips.
+
+### Changed
+
+- A supervised session now continues across early turn ends instead of ending the moment the agent
+  ends a turn.
+
+### Fixed
+
+- The spend cap now fires on live cost updates instead of waiting for a settled total.
+- A wall-clock or spend cap that fires while a reply was just sent now interrupts the session
+  instead of ending it outright, giving the agent its grace period to wrap up.
+- A discard streak is no longer reset by a keep that was not committed, so the consecutive-discard
+  guard still trips as expected.
+
 ## [0.15.0] - 2026-09-06
 
 ### Added

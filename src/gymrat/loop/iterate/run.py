@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Sequence
 
-    from gymrat.config import ResolvedConfig
+    from gymrat.config import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
     from gymrat.session import SessionLogRecord
 
@@ -343,7 +343,7 @@ class BudgetExceededError(LoopStopError):
     """
 
 
-def stop_condition(config: ResolvedConfig, state: SessionState) -> LoopStopError | None:
+def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopError | None:
     """The configured stop condition this session has already met, if any.
 
     Read off the folded log alone, so it settles before a bench command runs: an
