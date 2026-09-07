@@ -2,8 +2,7 @@
 
 ``supervise`` runs a driver session under a wall-clock cap, an optional spend
 cap, and a grace fallback that arms the driver's abort event when a cap fires
-but the session keeps running. The upstream suite drove every timing behavior
-with fake timers; the asyncio port uses tiny ``max_minutes``/``grace_ms`` values
+but the session keeps running. Tests use tiny ``max_minutes``/``grace_ms`` values
 and ``asyncio.Event`` handshakes so the session stays open only as long as a
 test needs it. Timing is asserted as loose lower bounds, never exact values, to
 stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
@@ -20,21 +19,30 @@ from typing import override
 import pytest
 
 from gymrat.supervisor import (
+    LaunchEvent,
     SessionOutcome,
+    SupervisedSession,
+    SupervisionResult,
     TextDeltaEvent,
-    UsageUpdateEvent,
     supervise,
 )
 from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
-from gymrat.supervisor.events import CapEvent, SessionEvent, SessionObserver
+from gymrat.supervisor.events import SessionEvent, SessionObserver
 from tests.supervisor._fixtures import (
+    _cap_events,
     collecting_observer,
     make_context,
     make_launch,
     make_prompt,
     read_log_lines,
 )
-from tests.supervisor._mock_driver import ActionStep, CostStep, EmitStep, create_mock_driver
+from tests.supervisor._mock_driver import (
+    ActionStep,
+    CostStep,
+    EmitStep,
+    TurnEndStep,
+    create_mock_driver,
+)
 
 
 async def _noop_action() -> None:
@@ -46,6 +54,30 @@ _GUARD_MESSAGE = "this step must not run after a cap fires"
 
 async def _guard_action() -> None:
     raise AssertionError(_GUARD_MESSAGE)
+
+
+async def _supervise_fast(
+    driver: Driver,
+    prompt: SessionPrompt,
+    *,
+    context: SupervisedSession,
+    launch: LaunchEvent,
+    observer: SessionObserver | None = None,
+    is_lock_held: Callable[[], bool] = lambda: False,
+    grace_ms: int = 30_000,
+) -> SupervisionResult:
+    """Call ``supervise`` with the settle-window and lock-poll defaults every fast test shares."""
+    return await supervise(
+        driver,
+        prompt,
+        context=context,
+        launch=launch,
+        observer=observer,
+        settle_window_ms=0,
+        lock_poll_ms=1,
+        is_lock_held=is_lock_held,
+        grace_ms=grace_ms,
+    )
 
 
 @dataclass
@@ -61,7 +93,10 @@ class _Box:
 
 
 class _DelegatingSession:
-    """Wraps a ``DriverSession``, delegating ``outcome`` and ``interrupt``."""
+    """Wraps a ``DriverSession``.
+
+    Delegates ``outcome``, ``interrupt``, ``send``, and ``end``.
+    """
 
     def __init__(self, inner: DriverSession) -> None:
         self._inner = inner
@@ -72,6 +107,12 @@ class _DelegatingSession:
 
     async def interrupt(self) -> None:
         await self._inner.interrupt()
+
+    async def send(self, text: str) -> None:
+        await self._inner.send(text)
+
+    async def end(self) -> None:
+        await self._inner.end()
 
 
 class _CountingSession(_DelegatingSession):
@@ -131,21 +172,11 @@ class _FutureSession:
     async def interrupt(self) -> None:
         return None
 
+    async def send(self, text: str) -> None:
+        return None
 
-class _SyncSpendDriver:
-    """Emits a spend-cap-tripping usage update synchronously inside ``start``."""
-
-    def start(
-        self,
-        prompt: SessionPrompt,
-        observer: SessionObserver,
-        abort: asyncio.Event | None = None,
-    ) -> DriverSession:
-        observer(UsageUpdateEvent(timestamp=1, cost_usd=5.0))
-        loop = asyncio.get_running_loop()
-        settled: asyncio.Future[SessionOutcome] = loop.create_future()
-        settled.set_result(SessionOutcome(reason="interrupted", cost_usd=5.0))
-        return _FutureSession(settled)
+    async def end(self) -> None:
+        return None
 
 
 class _RejectingDriver:
@@ -161,10 +192,6 @@ class _RejectingDriver:
         settled: asyncio.Future[SessionOutcome] = loop.create_future()
         settled.set_exception(RuntimeError("session crashed"))
         return _FutureSession(settled)
-
-
-def _cap_events(events: list[SessionEvent]) -> list[CapEvent]:
-    return [event for event in events if isinstance(event, CapEvent)]
 
 
 # ---------------------------------------------------------------------------
@@ -320,10 +347,9 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(tmp_
 async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
     tmp_path: Path,
 ):
-    steps = [CostStep(cost_usd=0.05), CostStep(cost_usd=0.12), ActionStep(action=_guard_action)]
-    driver = create_mock_driver(steps)
+    driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
 
-    result = await supervise(
+    result = await _supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -331,16 +357,15 @@ async def test_supervise_when_cost_reaches_max_usd_does_report_spend_cap(
     )
 
     assert result.ended_by == "spend-cap"
-    assert result.outcome.reason == "interrupted"
 
 
 async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_event(
     tmp_path: Path,
 ):
     probe = collecting_observer()
-    driver = create_mock_driver([CostStep(cost_usd=0.05), CostStep(cost_usd=0.12)])
+    driver = create_mock_driver([TurnEndStep(cost_usd=0.12)])
 
-    await supervise(
+    await _supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -371,11 +396,10 @@ async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path)
 async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
     tmp_path: Path,
 ):
-    steps = [CostStep(cost_usd=0.05), CostStep(cost_usd=0.12)]
-    driver = create_mock_driver(steps)
+    driver = create_mock_driver([CostStep(cost_usd=0.12), TurnEndStep(cost_usd=0.12)])
     log_path = tmp_path / "events.jsonl"
 
-    await supervise(
+    await _supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(log_path)),
@@ -387,7 +411,7 @@ async def test_supervise_when_spend_cap_trips_does_log_usage_update_before_cap(
     assert "cap" in types
     cap_idx = types.index("cap")
     preceding = types[:cap_idx]
-    assert preceding[-1] == "usage_update"
+    assert "usage_update" in preceding
 
 
 # ---------------------------------------------------------------------------
@@ -399,13 +423,12 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     tmp_path: Path,
 ):
     probe = collecting_observer()
-    counter = _Box()
-    inner = create_mock_driver(
-        [CostStep(cost_usd=0.15), ActionStep(action=_noop_action, delay_ms=60_000)]
-    )
-    driver = _WrapDriver(inner, lambda session: _CountingSession(session, counter))
+    # The turn end carries cost above max_usd. The settle → classify fires
+    # the spend-cap before the wall clock reaches its deadline, proving the
+    # spend cap wins the race when both could fire.
+    driver = create_mock_driver([TurnEndStep(cost_usd=0.15)])
 
-    result = await supervise(
+    result = await _supervise_fast(
         driver,
         make_prompt(),
         context=make_context(
@@ -417,22 +440,25 @@ async def test_supervise_when_both_caps_could_fire_does_report_first_cap_only(
     )
 
     assert result.ended_by == "spend-cap"
-    assert counter.value == 1
     assert len(_cap_events(probe.events)) == 1
 
 
-async def test_supervise_when_spend_cap_trips_inside_start_does_report_spend_cap(
+async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     tmp_path: Path,
 ):
     probe = collecting_observer()
+    driver = create_mock_driver(
+        [
+            CostStep(cost_usd=5.0),
+            TurnEndStep(cost_usd=5.0),
+        ]
+    )
 
-    result = await supervise(
-        _SyncSpendDriver(),
+    result = await _supervise_fast(
+        driver,
         make_prompt(),
-        context=make_context(
-            max_minutes=0.001, max_usd=1.0, log_path=str(tmp_path / "events.jsonl")
-        ),
-        launch=make_launch(max_minutes=0.001, max_usd=1.0),
+        context=make_context(max_minutes=10, max_usd=1.0, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(max_usd=1.0),
         observer=probe.observer,
     )
 
@@ -508,9 +534,9 @@ async def test_supervise_when_observer_raises_does_still_fire_spend_cap(tmp_path
         if event.type == "usage_update":
             raise RuntimeError(observer_message)
 
-    driver = create_mock_driver([CostStep(cost_usd=0.5)])
+    driver = create_mock_driver([TurnEndStep(cost_usd=0.5)])
 
-    result = await supervise(
+    result = await _supervise_fast(
         driver,
         make_prompt(),
         context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
@@ -689,3 +715,98 @@ async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
 
     assert result.ended_by == "wall-clock"
     assert call_count >= 3
+
+
+# ---------------------------------------------------------------------------
+# _spawn exception reporting
+# ---------------------------------------------------------------------------
+
+
+class _EndThenRaiseSession(_DelegatingSession):
+    """Delegates ``end()`` to the inner session, then raises.
+
+    The inner call releases the mock's turn gate so the session settles
+    normally; the post-call raise is the exception that ``_spawn``'s
+    done-callback should surface via ``warn_to_stderr``.
+    """
+
+    @override
+    async def end(self) -> None:
+        await self._inner.end()
+        msg = "end exploded"
+        raise RuntimeError(msg)
+
+
+async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
+    driver = _WrapDriver(inner, _EndThenRaiseSession)
+
+    result = await _supervise_fast(
+        driver,
+        make_prompt(),
+        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(max_usd=0.1),
+    )
+
+    await asyncio.sleep(0)
+
+    assert result.ended_by == "spend-cap"
+    captured = capsys.readouterr()
+    assert "end exploded" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# _end_session re-entry guard
+# ---------------------------------------------------------------------------
+
+
+class _CountingEndSession(_DelegatingSession):
+    """Counts ``end`` calls to detect duplicate ``_end_session`` invocations."""
+
+    def __init__(self, inner: DriverSession, counter: _Box) -> None:
+        super().__init__(inner)
+        self._counter = counter
+
+    @override
+    async def end(self) -> None:
+        self._counter.value += 1
+        await self._inner.end()
+
+
+async def test_supervise_when_end_session_called_twice_does_fire_session_end_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    end_count = _Box()
+
+    def wrap(inner: DriverSession) -> DriverSession:
+        return _CountingEndSession(inner, end_count)
+
+    inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
+    driver = _WrapDriver(inner, wrap)
+
+    supervise_mod = sys.modules["gymrat.supervisor.supervise"]
+    cls = supervise_mod._Supervision  # type: ignore[attr-defined]
+    original_end_session = cls._end_session
+    entry_count = _Box()
+
+    def double_end(self_inner: object, *args: object, **kwargs: object) -> None:
+        entry_count.value += 1
+        original_end_session(self_inner, *args, **kwargs)
+        if entry_count.value == 1:
+            original_end_session(self_inner, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "_end_session", double_end)
+
+    result = await _supervise_fast(
+        driver,
+        make_prompt(),
+        context=make_context(max_minutes=10, max_usd=0.1, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(max_usd=0.1),
+    )
+
+    assert result.ended_by == "spend-cap"
+    assert end_count.value == 1

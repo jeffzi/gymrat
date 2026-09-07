@@ -8,20 +8,23 @@ imported lazily inside the run task (never at import or construction) so that
 merely importing this module — the import-latency guard depends on it — does not
 require ``claude-agent-sdk`` to be installed.
 
-Each SDK message is mapped to a session event by attribute, not by class name,
-so any duck-typed object shaped like the SDK's message and block dataclasses
-maps correctly and anything malformed is skipped in silence.
+Message-to-event mapping lives in :mod:`gymrat.supervisor.claude_messages`;
+this module owns the session lifecycle: connect, stream, interrupt, send, end.
 """
 
 import asyncio
 import contextlib
-import json
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
-from math import ceil
-from typing import Literal, Protocol
+from typing import Protocol
 
 from gymrat.session.clock import now_ms
+from gymrat.supervisor.claude_messages import (
+    MessageMapper,
+    detect_origin,
+    read_cost,
+    result_outcome_from,
+)
 from gymrat.supervisor.driver import (
     Driver,
     DriverSession,
@@ -29,16 +32,7 @@ from gymrat.supervisor.driver import (
     SessionOutcome,
     SessionPrompt,
 )
-from gymrat.supervisor.events import (
-    ModelPhaseEvent,
-    TextDeltaEvent,
-    ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolStartEvent,
-    UsageUpdateEvent,
-    summarize,
-    summarize_input,
-)
+from gymrat.supervisor.events import TurnEndEvent, UsageUpdateEvent
 
 
 class ClaudeClient(Protocol):
@@ -115,30 +109,9 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
             "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": timeout_ms,
             "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
         }
+    if prompt.max_budget_usd is not None:
+        options["max_budget_usd"] = prompt.max_budget_usd
     return options
-
-
-#: Rough chars-per-token ratio used to estimate thinking-block token counts,
-#: since the SDK reports thinking as text, not a token count.
-_CHARS_PER_TOKEN_ESTIMATE = 4
-
-#: A ThinkingUpdateEvent is emitted only after this many characters accumulate
-#: since the last emit, keeping the event rate bounded during long thinking blocks.
-_THINKING_EMIT_CHARS = 200
-
-#: Mirrors :class:`~gymrat.supervisor.events.ModelPhaseEvent`'s ``phase`` literal.
-_ModelPhase = Literal["thinking", "responding", "tool_input", "turn_end"]
-
-
-class _ThinkingStream:
-    """Per-parent running state for streamed thinking deltas."""
-
-    __slots__ = ("chars_since_emit", "estimated_tokens", "text_len")
-
-    def __init__(self) -> None:
-        self.estimated_tokens: int = 0
-        self.chars_since_emit: int = 0
-        self.text_len: int = 0
 
 
 async def _disconnect_quietly(client: ClaudeClient) -> None:
@@ -151,15 +124,6 @@ async def _disconnect_quietly(client: ClaudeClient) -> None:
         await client.disconnect()
     except Exception as err:  # noqa: BLE001 - must not replace the already-settled outcome
         warnings.warn(f"claude client disconnect failed: {err!s}", RuntimeWarning, stacklevel=2)
-
-
-def _stringify_result(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    try:
-        return json.dumps(content)
-    except (TypeError, ValueError):
-        return str(content)
 
 
 class _ClaudeSession:
@@ -186,9 +150,9 @@ class _ClaudeSession:
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._cost_usd = 0.0
-        self._thinking_streams: dict[str | None, _ThinkingStream] = {}
-        self._tool_starts: dict[str, int] = {}
-        self._tool_names: dict[str, str] = {}
+        self._mapper = MessageMapper(observer, prompt.cwd)
+        self._had_turn_end: bool = False
+        self._turn_end_count: int = 0
         self._stopped: SessionOutcome | None = None
         self._result_outcome: SessionOutcome | None = None
         self._task: asyncio.Task[SessionOutcome] = asyncio.create_task(self._run())
@@ -207,6 +171,27 @@ class _ClaudeSession:
     async def interrupt(self) -> None:
         if self._claim_interrupted() and self._client is not None:
             await self._client.interrupt()
+
+    async def send(self, text: str) -> None:
+        if self._stopped is not None or self._result_outcome is not None:
+            return
+        if self._client is None:
+            return
+        try:
+            await self._client.query(text)
+        except Exception as err:  # noqa: BLE001 - query failure settles the session as error
+            self._stopped = SessionOutcome(
+                reason="error", cost_usd=self._cost_usd, message=str(err)
+            )
+            await _disconnect_quietly(self._client)
+
+    async def end(self) -> None:
+        if self._stopped is not None or self._result_outcome is not None:
+            return
+        self._stopped = SessionOutcome(reason="completed", cost_usd=self._cost_usd)
+        self._commit_cost(self._cost_usd, settled=True)
+        if self._client is not None:
+            await _disconnect_quietly(self._client)
 
     async def _watch_abort(self, abort: asyncio.Event, client: ClaudeClient) -> None:
         await abort.wait()
@@ -260,9 +245,15 @@ class _ClaudeSession:
         async for message in client.receive_messages():
             if self._stopped is not None:
                 break
+            turns_before = self._turn_end_count
             self._map_message(message)
             if self._result_outcome is not None:
                 break
+            # After a turn-end result the recv iterator's own yield between
+            # messages provides the interrupt-check window; an extra sleep
+            # here would double the per-message yield count needlessly.
+            if self._turn_end_count > turns_before:
+                continue
             # Yield so an observer-scheduled interrupt or a fired abort is
             # applied before the next message is drawn from the stream.
             await asyncio.sleep(0)
@@ -270,10 +261,14 @@ class _ClaudeSession:
                 break
         return self._settled_or(
             self._result_outcome
-            or SessionOutcome(
-                reason="error",
-                cost_usd=self._cost_usd,
-                message="Agent stream ended without a result message",
+            or (
+                SessionOutcome(reason="completed", cost_usd=self._cost_usd)
+                if self._had_turn_end
+                else SessionOutcome(
+                    reason="error",
+                    cost_usd=self._cost_usd,
+                    message="Agent stream ended without a result message",
+                )
             )
         )
 
@@ -289,43 +284,50 @@ class _ClaudeSession:
             await _disconnect_quietly(self._client)
 
     def _map_message(self, message: object) -> None:
-        """Dispatch by message shape, in order: stream event, settled result, content blocks."""
-        # Stream events carry an ``event`` dict and no ``content``.
+        """Dispatch by message shape, in order: stream event, result, content blocks."""
         event = getattr(message, "event", None)
         if isinstance(event, dict) and not hasattr(message, "content"):
             parent = getattr(message, "parent_tool_use_id", None)
-            self._map_stream_event(event, parent)
+            self._mapper.map_stream_event(event, parent)
             return
 
-        # A result message carries both ``subtype`` and ``num_turns``; a
-        # system message has ``subtype`` alone and is silently passed through.
-        # Checked ahead of the usage handling below: a result settles the
-        # session on its own, so ``_result_outcome`` is set here rather than
-        # falling through to the content-block dispatch.
         subtype = getattr(message, "subtype", None)
         num_turns = getattr(message, "num_turns", None)
         if isinstance(subtype, str) and num_turns is not None:
-            cost = self._read_cost(message)
+            is_error = getattr(message, "is_error", False)
+
+            if is_error and subtype != "error_max_budget_usd":
+                cost = read_cost(message)
+                if cost is not None:
+                    self._commit_cost(cost, settled=True)
+                self._result_outcome = result_outcome_from(message, subtype, self._cost_usd)
+                return
+
+            cost = read_cost(message)
             if cost is not None:
-                self._commit_cost(cost, settled=True)
-            self._result_outcome = self._result_outcome_from(message, subtype)
+                self._commit_cost(cost)
+            self._observer(
+                TurnEndEvent(
+                    timestamp=now_ms(),
+                    text=self._mapper.last_top_level_text,
+                    cost_usd=self._cost_usd,
+                    origin=detect_origin(message),
+                    budget_exhausted=bool(is_error and subtype == "error_max_budget_usd"),
+                )
+            )
+            self._had_turn_end = True
+            self._turn_end_count += 1
+            self._mapper.reset_turn_text()
             return
 
-        cost = self._read_cost(message)
+        cost = read_cost(message)
         if cost is not None:
             self._commit_cost(cost)
 
         parent = getattr(message, "parent_tool_use_id", None)
         content = getattr(message, "content", None)
         if isinstance(content, list):
-            for block in content:
-                self._map_block(block, parent)
-
-    def _read_cost(self, message: object) -> float | None:
-        cost = getattr(message, "total_cost_usd", None)
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
-            return float(cost)
-        return None
+            self._mapper.map_blocks(content, parent)
 
     def _commit_cost(self, cost: float, *, settled: bool = False) -> None:
         """Set the running cost and notify observers.
@@ -339,142 +341,6 @@ class _ClaudeSession:
         self._observer(
             UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd, settled=settled)
         )
-
-    def _result_outcome_from(self, message: object, subtype: str) -> SessionOutcome:
-        """Classify a settled result message as completed or errored."""
-        is_error = getattr(message, "is_error", False)
-        if is_error:
-            result_text = getattr(message, "result", None)
-            return SessionOutcome(
-                reason="error",
-                cost_usd=self._cost_usd,
-                message=result_text if isinstance(result_text, str) else subtype,
-            )
-        return SessionOutcome(reason="completed", cost_usd=self._cost_usd)
-
-    def _emit_phase(
-        self, phase: _ModelPhase, parent: str | None, tool_name: str | None = None
-    ) -> None:
-        self._observer(
-            ModelPhaseEvent(
-                timestamp=now_ms(), phase=phase, tool_name=tool_name, parent_tool_use_id=parent
-            )
-        )
-
-    def _map_stream_event(self, event: dict[str, object], parent: str | None) -> None:
-        event_type = event.get("type")
-        if event_type == "content_block_start":
-            content_block = event.get("content_block")
-            if isinstance(content_block, dict):
-                self._handle_block_start(content_block, parent)
-        elif event_type == "content_block_delta":
-            delta_obj = event.get("delta")
-            if isinstance(delta_obj, dict) and delta_obj.get("type") == "thinking_delta":
-                text = delta_obj.get("thinking", "")
-                if isinstance(text, str):
-                    self._handle_thinking_delta(text, parent)
-        elif event_type == "content_block_stop":
-            self._flush_thinking_remainder(parent)
-        elif event_type == "message_stop":
-            self._emit_phase("turn_end", parent)
-
-    def _handle_block_start(self, content_block: dict[str, object], parent: str | None) -> None:
-        block_type = content_block.get("type")
-        if block_type == "thinking":
-            self._emit_phase("thinking", parent)
-            stream = self._thinking_streams.setdefault(parent, _ThinkingStream())
-            self._observer(
-                ThinkingUpdateEvent(
-                    timestamp=now_ms(),
-                    estimated_tokens=stream.estimated_tokens,
-                    delta=0,
-                    parent_tool_use_id=parent,
-                )
-            )
-        elif block_type == "text":
-            self._emit_phase("responding", parent)
-        elif block_type == "tool_use":
-            name = content_block.get("name")
-            self._emit_phase(
-                "tool_input", parent, tool_name=name if isinstance(name, str) else None
-            )
-
-    def _emit_thinking_update(self, stream: _ThinkingStream, parent: str | None) -> None:
-        new_estimate = ceil(stream.text_len / _CHARS_PER_TOKEN_ESTIMATE)
-        delta = new_estimate - stream.estimated_tokens
-        stream.estimated_tokens = new_estimate
-        stream.chars_since_emit = 0
-        self._observer(
-            ThinkingUpdateEvent(
-                timestamp=now_ms(),
-                estimated_tokens=stream.estimated_tokens,
-                delta=delta,
-                parent_tool_use_id=parent,
-            )
-        )
-
-    def _handle_thinking_delta(self, text: str, parent: str | None) -> None:
-        stream = self._thinking_streams.setdefault(parent, _ThinkingStream())
-        stream.text_len += len(text)
-        stream.chars_since_emit += len(text)
-        if stream.chars_since_emit >= _THINKING_EMIT_CHARS:
-            self._emit_thinking_update(stream, parent)
-
-    def _flush_thinking_remainder(self, parent: str | None) -> None:
-        stream = self._thinking_streams.get(parent)
-        if stream is not None and stream.chars_since_emit != 0:
-            self._emit_thinking_update(stream, parent)
-
-    def _map_block(self, block: object, parent: str | None = None) -> None:
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            self._observer(
-                TextDeltaEvent(timestamp=now_ms(), chunk=text, parent_tool_use_id=parent)
-            )
-            return
-
-        # Complete ThinkingBlocks are skipped — streamed deltas already counted them.
-        if hasattr(block, "thinking"):
-            return
-
-        block_id = getattr(block, "id", None)
-        name = getattr(block, "name", None)
-        if isinstance(block_id, str) and isinstance(name, str):
-            self._tool_starts[block_id] = now_ms()
-            self._tool_names[block_id] = name
-            tool_input = getattr(block, "input", None)
-            self._observer(
-                ToolStartEvent(
-                    timestamp=now_ms(),
-                    tool_use_id=block_id,
-                    tool_name=name,
-                    input=tool_input,
-                    input_summary=summarize_input(
-                        tool_input,
-                        tool_name=name,
-                        supervised_root=self._prompt.cwd,
-                    ),
-                    parent_tool_use_id=parent,
-                )
-            )
-            return
-
-        tool_use_id = getattr(block, "tool_use_id", None)
-        if isinstance(tool_use_id, str):
-            start = self._tool_starts.get(tool_use_id)
-            duration_ms = now_ms() - start if start is not None else 0
-            result = _stringify_result(getattr(block, "content", None))
-            self._observer(
-                ToolEndEvent(
-                    timestamp=now_ms(),
-                    tool_use_id=tool_use_id,
-                    tool_name=self._tool_names.get(tool_use_id, "unknown"),
-                    duration_ms=duration_ms,
-                    result=result,
-                    result_summary=summarize(result),
-                    parent_tool_use_id=parent,
-                )
-            )
 
 
 class _ClaudeDriver:

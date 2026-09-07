@@ -30,6 +30,9 @@ from gymrat.supervisor.events import (
     summarize,
 )
 from tests.supervisor._fixtures import (
+    FactoryProbe,
+    FakeClient,
+    FiniteClient,
     collecting_observer,
     make_prompt,
     noop_observer,
@@ -38,67 +41,8 @@ from tests.supervisor._fixtures import (
 )
 
 # ---------------------------------------------------------------------------
-# fake streaming client
+# test-local client variants
 # ---------------------------------------------------------------------------
-
-
-class FakeClient:
-    """A stand-in for the SDK streaming client that replays scripted messages.
-
-    ``receive_messages`` yields each supplied message after an
-    ``asyncio.sleep(0)`` handshake so an observer-scheduled interrupt or an
-    abort lands deterministically between messages.  After the scripted
-    messages, the stream blocks until ``disconnect`` releases it, mirroring
-    the real SDK whose ``receive_messages`` iterator never terminates.
-    """
-
-    def __init__(
-        self,
-        messages: Sequence[object],
-        *,
-        throw: Exception | None = None,
-    ) -> None:
-        self.messages = messages
-        self.throw = throw
-        self.options: dict[str, object] | None = None
-        self.query_prompt: str | None = None
-        self.interrupt_called = False
-        self.disconnect_count = 0
-        self._released = asyncio.Event()
-
-    async def connect(self) -> None:
-        return None
-
-    async def query(self, prompt: str) -> None:
-        self.query_prompt = prompt
-
-    async def receive_messages(self):
-        for message in self.messages:
-            await asyncio.sleep(0)
-            yield message
-        if self.throw is not None:
-            raise self.throw
-        await self._released.wait()
-
-    async def interrupt(self) -> None:
-        self.interrupt_called = True
-
-    async def disconnect(self) -> None:
-        self.disconnect_count += 1
-        self._released.set()
-
-
-class FactoryProbe:
-    """A client factory that records its call count and the options it saw."""
-
-    def __init__(self, client: FakeClient) -> None:
-        self._client = client
-        self.calls = 0
-
-    def __call__(self, options: Mapping[str, object]) -> FakeClient:
-        self.calls += 1
-        self._client.options = dict(options)
-        return self._client
 
 
 class Unserializable:
@@ -152,13 +96,12 @@ async def run_outcome(
 async def run_with_messages(messages: Sequence[object]) -> list[SessionEvent]:
     """Drive a session over scripted ``messages`` and return the events it emitted.
 
-    A no-cost result message is appended to end the stream cleanly.  Tests
-    that need precise control over the result message use ``run_session``
-    directly.
+    The stream terminates naturally after the scripted messages so mapping
+    tests exercise message-to-event logic without a result message or an
+    explicit ``end()`` call.  Tests that need a specific outcome or the
+    turn-end protocol use ``run_session`` directly.
     """
-    driver = create_claude_driver(
-        client_factory=FactoryProbe(FakeClient([*messages, result_message()]))
-    )
+    driver = create_claude_driver(client_factory=FactoryProbe(FiniteClient(list(messages))))
     probe = collecting_observer()
     await run_session(driver, probe.observer)
     return probe.events
@@ -202,9 +145,9 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: 
 # ---------------------------------------------------------------------------
 
 
-async def _start_with_prompt(prompt: SessionPrompt) -> FakeClient:
+async def _start_with_prompt(prompt: SessionPrompt) -> FiniteClient:
     """Start a session with ``prompt`` and return the client it drove."""
-    client = FakeClient([result_message()])
+    client = FiniteClient([result_message()])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
     await run_session(driver, collecting_observer().observer, prompt)
     return client
@@ -218,7 +161,7 @@ async def test_start_when_launched_does_forward_options_to_client():
         "permission_mode": "bypassPermissions",
         "include_partial_messages": True,
     }
-    assert client.query_prompt == "hello agent"
+    assert client.query_prompts == ["hello agent"]
 
 
 async def test_start_when_system_prompt_append_present_does_include_preset_append():
@@ -320,7 +263,7 @@ async def test_mapping_when_read_path_under_cwd_does_summarize_relative_to_cwd()
         id="tu_1", name="Read", input={"file_path": "/my/project/src/main.py"}
     )
     driver = create_claude_driver(
-        client_factory=FactoryProbe(FakeClient([assistant(tool_use), result_message()]))
+        client_factory=FactoryProbe(FiniteClient([assistant(tool_use), result_message()]))
     )
     probe = collecting_observer()
 
@@ -989,7 +932,7 @@ async def test_result_when_stream_yields_result_message_does_settle_completed():
         result_message(total_cost_usd=0.05, num_turns=3),
     ]
 
-    outcome = await run_outcome(FakeClient(messages))
+    outcome = await run_outcome(FiniteClient(messages))
 
     assert outcome.reason == "completed"
     assert outcome.cost_usd == 0.05
@@ -1018,7 +961,7 @@ async def test_result_when_message_settles_and_has_cost_does_emit_usage_update()
     messages = [result_message(total_cost_usd=0.05)]
     probe = collecting_observer()
 
-    await run_outcome(FakeClient(messages), probe.observer)
+    await run_outcome(FiniteClient(messages), probe.observer)
 
     updates = events_of(probe.events, UsageUpdateEvent)
     assert [update.cost_usd for update in updates] == [0.05]
@@ -1037,21 +980,12 @@ async def test_result_when_message_settles_without_cost_does_not_emit_usage_upda
     messages = [result_message(total_cost_usd=cost)]
     probe = collecting_observer()
 
-    await run_outcome(FakeClient(messages), probe.observer)
+    await run_outcome(FiniteClient(messages), probe.observer)
 
     assert events_of(probe.events, UsageUpdateEvent) == []
 
 
 async def test_result_when_stream_ends_without_result_does_settle_error():
-    class FiniteClient(FakeClient):
-        """A client whose stream ends instead of blocking after the script."""
-
-        @override
-        async def receive_messages(self):
-            for message in self.messages:
-                await asyncio.sleep(0)
-                yield message
-
     outcome = await run_outcome(FiniteClient([assistant(SimpleNamespace(text="hello"))]))
 
     assert outcome.reason == "error"
@@ -1131,7 +1065,7 @@ async def test_start_when_client_factory_raises_does_resolve_error_without_raisi
 
 
 async def test_start_when_disconnect_raises_after_normal_stream_does_still_resolve_completed():
-    class DisconnectFailingClient(FakeClient):
+    class DisconnectFailingClient(FiniteClient):
         @override
         async def disconnect(self) -> None:
             message = "teardown boom"
@@ -1164,4 +1098,4 @@ async def test_start_when_interrupted_before_connect_does_never_send_kickoff_que
     outcome = await session.outcome
 
     assert outcome.reason == "interrupted"
-    assert client.query_prompt is None
+    assert client.query_prompts == []

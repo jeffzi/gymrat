@@ -26,6 +26,7 @@ class SessionPrompt:
     model: str | None = None
     effort: Effort | None = None
     command_timeout_ms: int | None = None
+    max_budget_usd: float | None = None
 
 
 SessionEndReason = Literal["completed", "interrupted", "error"]
@@ -51,6 +52,14 @@ class DriverSession(Protocol):
 
     async def interrupt(self) -> None:
         """Ask the session to stop; the outcome then settles as ``interrupted``."""
+        ...
+
+    async def send(self, text: str) -> None:
+        """Inject a follow-up message into the running session."""
+        ...
+
+    async def end(self) -> None:
+        """Signal that the session should end gracefully after the current turn."""
         ...
 
 

@@ -35,12 +35,14 @@ from gymrat.session.store import SessionState
 from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapEvent,
+    FollowUpEvent,
     LaunchEvent,
     ModelPhaseEvent,
     SessionObserver,
     ThinkingUpdateEvent,
     ToolEndEvent,
     ToolStartEvent,
+    TurnEndEvent,
     UsageUpdateEvent,
 )
 from tests._rich import frame_text
@@ -57,6 +59,7 @@ __all__ = [
     "empty_session_state",
     "finalize_record",
     "fire_cap",
+    "fire_follow_up",
     "fire_launch",
     "fire_launch_and_bash_cycle",
     "fire_launch_and_bash_start",
@@ -64,6 +67,7 @@ __all__ = [
     "fire_thinking_update",
     "fire_tool_end",
     "fire_tool_start",
+    "fire_turn_end",
     "fire_usage_update",
     "make_iteration",
     "make_plain_reporter",
@@ -146,6 +150,7 @@ def start_open_session(repo: str) -> None:
 def seed_session_with_baseline(
     repo: str, *, baseline_duration_ms: float, label: str = ".gymrat/worktrees/baseline"
 ) -> None:
+    """Open a session and append a single baseline record with the given duration."""
     start_open_session(repo)
     log = session_jsonl_path(repo)
     append_record(log, baseline_record(label=label, duration_ms=baseline_duration_ms))
@@ -235,15 +240,20 @@ def make_read_session(
 def make_supervision_result(
     *,
     reason: Literal["completed", "error", "interrupted"] = "completed",
-    ended_by: Literal["session", "spend-cap", "wall-clock"] = "session",
+    ended_by: Literal["session", "spend-cap", "wall-clock", "guard"] = "session",
     duration_ms: int = 60_000,
     cost_usd: float = 0.05,
     message: str | None = None,
+    end_reason: str | None = None,
 ) -> SupervisionResult:
     """The ``SupervisionResult`` a finished supervised run hands back."""
     outcome = SessionOutcome(reason=reason, cost_usd=cost_usd, message=message)
     return SupervisionResult(
-        outcome=outcome, ended_by=ended_by, duration_ms=duration_ms, cost_usd=cost_usd
+        outcome=outcome,
+        ended_by=ended_by,
+        duration_ms=duration_ms,
+        cost_usd=cost_usd,
+        end_reason=end_reason,
     )
 
 
@@ -255,6 +265,10 @@ def _throwing_read() -> ReadSessionResult:
 # ---------------------------------------------------------------------------
 # Event firers
 # ---------------------------------------------------------------------------
+
+# Default timestamp for fire_tool_start; fire_tool_end's default duration_ms
+# is computed against it so the two stay in sync.
+_DEFAULT_TOOL_START_TS = 2000
 
 
 def fire_launch(
@@ -283,7 +297,7 @@ def fire_tool_start(
     observer: SessionObserver,
     tool_name: str,
     tool_use_id: str,
-    timestamp: int = 2000,
+    timestamp: int = _DEFAULT_TOOL_START_TS,
     *,
     input_summary: str = "...",
     parent_tool_use_id: str | None = None,
@@ -310,12 +324,13 @@ def fire_tool_end(
     result_summary: str = "ok",
     parent_tool_use_id: str | None = None,
 ) -> None:
+    """Publish a ``ToolEndEvent`` with duration measured from the default start timestamp."""
     observer(
         ToolEndEvent(
             timestamp=timestamp,
             tool_use_id=tool_use_id,
             tool_name=tool_name,
-            duration_ms=timestamp - 2000,
+            duration_ms=timestamp - _DEFAULT_TOOL_START_TS,
             result=result,
             result_summary=result_summary,
             parent_tool_use_id=parent_tool_use_id,
@@ -324,6 +339,7 @@ def fire_tool_end(
 
 
 def fire_usage_update(observer: SessionObserver, cost_usd: float, timestamp: int = 4000) -> None:
+    """Publish a ``UsageUpdateEvent`` carrying the given cumulative cost."""
     observer(UsageUpdateEvent(timestamp=timestamp, cost_usd=cost_usd))
 
 
@@ -367,11 +383,48 @@ def fire_thinking_update(
     )
 
 
+def fire_turn_end(
+    observer: SessionObserver,
+    timestamp: int = 5000,
+    *,
+    text: str = "Turn summary.",
+    cost_usd: float = 0.01,
+    origin: Literal["agent", "injected"] = "agent",
+    budget_exhausted: bool = False,
+) -> None:
+    observer(
+        TurnEndEvent(
+            timestamp=timestamp,
+            text=text,
+            cost_usd=cost_usd,
+            origin=origin,
+            budget_exhausted=budget_exhausted,
+        )
+    )
+
+
+def fire_follow_up(
+    observer: SessionObserver,
+    timestamp: int = 6000,
+    *,
+    action: Literal["replied", "waiting", "ended"] = "replied",
+    reason: str | None = None,
+    text: str | None = None,
+) -> None:
+    observer(
+        FollowUpEvent(
+            timestamp=timestamp,
+            action=action,
+            reason=reason,
+            text=text,
+        )
+    )
+
+
 def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
     """Minimum event sequence that gets session state into the loop/best rows.
 
-    The Bash end triggers the reporter's session re-read, so this is the
-    minimum event sequence that gets session state into the loop/best rows.
+    The Bash end triggers the reporter's session re-read.
     """
     fire_launch(observer, 1000)
     fire_tool_start(observer, "Bash", "bash-1", 2000)

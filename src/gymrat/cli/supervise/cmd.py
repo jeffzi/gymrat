@@ -83,6 +83,10 @@ from gymrat.supervisor import (
 from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
 
+# ---------------------------------------------------------------------------
+# CLI option surface
+# ---------------------------------------------------------------------------
+
 _PromptArgument = Annotated[
     str | None,
     typer.Argument(metavar="[PROMPT]", help="optimization prompt for the agent"),
@@ -139,6 +143,11 @@ _EffortOption = Annotated[
     Effort | None,
     typer.Option("--effort", parser=_parse_effort, metavar="<level>", help="effort level"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight guards
+# ---------------------------------------------------------------------------
 
 
 def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
@@ -204,6 +213,11 @@ def _resolve_log_path(root: str, explicit: str | None) -> str:
         return explicit
     ensure_git_exclude(root)
     return str(Path(session_dir(root)) / f"supervisor-{now_ms()}.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# Session budget and run
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +320,7 @@ def _run_session(ctx: _SessionContext) -> None:
         model=ctx.model,
         effort=ctx.effort,
         command_timeout_ms=minutes_to_ms(ctx.max_minutes),
+        max_budget_usd=ctx.max_usd,
     )
     context = SupervisedSession(
         root=ctx.root,
@@ -337,6 +352,11 @@ def _run_session(ctx: _SessionContext) -> None:
         session_result=reporter.session_result(),
         final_text=reporter.final_text(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Command entry point
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)

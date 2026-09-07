@@ -1031,3 +1031,48 @@ def test_supervise_when_run_does_set_command_timeout_to_wall_clock_cap(
     prompt = call["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.command_timeout_ms == _CAP_MS
+
+
+# ---------------------------------------------------------------------------
+# guard-ended session — exit code
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_guard_ended_does_exit_one_with_guard_headline(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(
+        monkeypatch,
+        result=make_supervision_result(
+            reason="interrupted",
+            ended_by="guard",
+            duration_ms=30_000,
+            cost_usd=0.10,
+            end_reason="safety limit reached",
+        ),
+    )
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 1
+    headline = result.stdout.splitlines()[0]
+    assert "stopped by guard" in headline
+    assert "safety limit reached" in headline
+
+
+# ---------------------------------------------------------------------------
+# session prompt — max_budget_usd
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_max_usd_given_does_pass_it_as_max_budget_usd_on_prompt(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+
+    result = _run("optimize it", "--max-minutes", "10", "--max-usd", "5.0")
+
+    assert result.exit_code == 0
+    prompt = seams.supervise_calls[0]["prompt"]
+    assert isinstance(prompt, SessionPrompt)
+    assert prompt.max_budget_usd == 5.0

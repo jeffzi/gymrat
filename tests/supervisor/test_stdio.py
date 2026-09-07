@@ -24,11 +24,14 @@ from gymrat.supervisor.events import (
     SessionEvent,
     TextDeltaEvent,
     ToolProgressEvent,
+    TurnEndEvent,
     UsageUpdateEvent,
 )
 from tests._cli import try_read_report
 from tests._process_helpers import wait_until_dead
 from tests.supervisor._fixtures import collecting_observer, make_prompt
+
+_TEST_TIMEOUT_S = 15.0
 
 pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only process groups for tree-kill"),
@@ -46,7 +49,7 @@ def double_argv(config: dict[str, Any]) -> list[str]:
 async def wait_for_event(
     events: list[SessionEvent],
     event_type: type,
-    timeout_s: float = 15.0,
+    timeout_s: float = _TEST_TIMEOUT_S,
 ) -> None:
     """Poll until an event of ``event_type`` has reached the observer's list."""
     loop = asyncio.get_running_loop()
@@ -63,7 +66,7 @@ def resolved(path: str | Path) -> Path:
     return Path(path).resolve()
 
 
-async def read_report(report_path: Path, timeout_s: float = 15.0) -> dict[str, Any]:
+async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> dict[str, Any]:
     """Poll until ``report_path`` holds a complete JSON report, then return it."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -127,7 +130,7 @@ async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(prompt, probe.observer)
 
-    await asyncio.wait_for(session.outcome, 15)
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     report_data = await read_report(report)
     expected_prompt = {**expected_prompt, "cwd": str(tmp_path)}
@@ -168,7 +171,7 @@ async def test_stdio_driver_when_child_emits_lines_does_relay_typed_events(
         make_prompt(cwd=str(tmp_path)), probe.observer
     )
 
-    await asyncio.wait_for(session.outcome, 15)
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert probe.events == [
         UsageUpdateEvent(timestamp=6, cost_usd=0.01),
@@ -199,7 +202,7 @@ async def test_stdio_driver_when_outcome_line_received_does_settle_with_its_fiel
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert outcome == SessionOutcome(reason="completed", cost_usd=0.5, message="all done")
 
@@ -224,7 +227,7 @@ async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_runni
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert outcome.cost_usd == 0.42
 
@@ -242,7 +245,7 @@ async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exi
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert outcome.reason == "error"
     assert outcome.cost_usd == 0.3
@@ -258,7 +261,7 @@ async def test_stdio_driver_when_child_cannot_spawn_does_settle_error_without_ra
         make_prompt(cwd=str(tmp_path)), collecting_observer().observer
     )
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert outcome.reason == "error"
     assert outcome.message
@@ -284,7 +287,7 @@ async def test_stdio_driver_when_interrupt_then_child_exits_does_settle_interrup
 
     await session.interrupt()
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.5)
 
 
@@ -304,7 +307,7 @@ async def test_stdio_driver_when_interrupt_precedes_a_later_outcome_line_does_wi
 
     await session.interrupt()
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.7)
 
 
@@ -331,7 +334,138 @@ async def test_stdio_driver_when_abort_fires_does_settle_interrupted(
 
     abort.set()
 
-    outcome = await asyncio.wait_for(session.outcome, 15)
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.4)
     await wait_until_dead(int(processes["pid"]))
     await wait_until_dead(int(processes["grandchild"]))
+
+
+# ---------------------------------------------------------------------------
+# Turn-end events and running cost
+# ---------------------------------------------------------------------------
+
+
+async def test_stdio_driver_when_child_emits_turn_end_does_relay_as_turn_end_event_and_update_cost(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "mode": "script",
+        "lines": [
+            {"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.1}},
+            {
+                "json": {
+                    "type": "turn_end",
+                    "timestamp": 2,
+                    "text": "done",
+                    "costUsd": 0.25,
+                    "origin": "agent",
+                    "budgetExhausted": False,
+                }
+            },
+        ],
+        "outcome": {"type": "outcome", "reason": "completed", "costUsd": True},
+    }
+    probe = collecting_observer()
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), probe.observer
+    )
+
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+    turn_ends = [e for e in probe.events if isinstance(e, TurnEndEvent)]
+    assert turn_ends == [
+        TurnEndEvent(
+            timestamp=2,
+            text="done",
+            cost_usd=0.25,
+            origin="agent",
+            budget_exhausted=False,
+        )
+    ]
+    # costUsd=True in the outcome is boolean, so the driver falls back to the
+    # running cost, which should be updated to 0.25 from the turn_end line.
+    assert outcome.cost_usd == 0.25
+
+
+# ---------------------------------------------------------------------------
+# send / end protocol
+# ---------------------------------------------------------------------------
+
+
+async def test_stdio_driver_when_send_and_end_does_write_protocol_lines_to_child_stdin(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.json"
+    config = {
+        "mode": "await_message",
+        "report_path": str(report),
+        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.01}}],
+        "turn_end": {
+            "type": "turn_end",
+            "timestamp": 2,
+            "text": "hi",
+            "costUsd": 0.01,
+            "origin": "agent",
+            "budgetExhausted": False,
+        },
+        "outcome": {"type": "outcome", "reason": "completed", "costUsd": 0.02},
+    }
+    probe = collecting_observer()
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), probe.observer
+    )
+    await wait_for_event(probe.events, TurnEndEvent)
+
+    await session.send("follow-up text")
+    await session.end()
+
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    assert outcome.reason == "completed"
+    report_data = await read_report(report)
+    assert report_data["message_text"] == "follow-up text"
+    turn_ends = [e for e in probe.events if isinstance(e, TurnEndEvent)]
+    assert len(turn_ends) == 2
+
+
+# ---------------------------------------------------------------------------
+# maxBudgetUsd in start command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected_in_start"),
+    [
+        pytest.param(
+            2.5,
+            True,
+            id="budget-present",
+        ),
+        pytest.param(
+            None,
+            False,
+            id="budget-omitted",
+        ),
+    ],
+)
+async def test_stdio_driver_when_max_budget_usd_does_include_or_omit_in_start_command(
+    tmp_path: Path,
+    budget: float | None,
+    expected_in_start: bool,
+) -> None:
+    report = tmp_path / "report.json"
+    config = {
+        "mode": "script",
+        "report_path": str(report),
+        "outcome": {"type": "outcome", "reason": "completed", "costUsd": 0.0},
+    }
+    prompt = make_prompt(cwd=str(tmp_path), max_budget_usd=budget)
+    session = create_stdio_driver(double_argv(config)).start(prompt, collecting_observer().observer)
+
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+    report_data = await read_report(report)
+    start_obj = json.loads(report_data["start_line"])
+    if expected_in_start:
+        assert start_obj["prompt"]["maxBudgetUsd"] == budget
+    else:
+        assert "maxBudgetUsd" not in start_obj["prompt"]

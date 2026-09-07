@@ -31,7 +31,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -148,14 +148,14 @@ def task_leak_messages(records: list[dict[str, object]]) -> list[str]:
 class ScriptedClaudeClient:
     """A minimal stand-in for the SDK streaming client the Claude driver drives.
 
-    After yielding all scripted messages, the stream blocks until ``disconnect``
-    releases it, mirroring the real SDK whose iterator never terminates.
+    The stream ends naturally after all scripted messages are yielded.  Tests
+    that need the stream to block (e.g. for abort handling) use
+    :class:`BlockingClaudeClient` instead.
     """
 
     def __init__(self, messages: list[object]) -> None:
         self.messages = messages
         self.disconnect_count = 0
-        self._released = asyncio.Event()
 
     async def connect(self) -> None:
         return None
@@ -167,11 +167,33 @@ class ScriptedClaudeClient:
         for message in self.messages:
             await asyncio.sleep(0)
             yield message
-        await self._released.wait()
 
     async def interrupt(self) -> None:
         return None
 
+    async def disconnect(self) -> None:
+        self.disconnect_count += 1
+
+
+class BlockingClaudeClient(ScriptedClaudeClient):
+    """Like :class:`ScriptedClaudeClient` but blocks after the script.
+
+    The stream blocks on a gate until ``disconnect`` releases it, mirroring
+    the real SDK whose iterator never terminates on its own.
+    """
+
+    def __init__(self, messages: list[object]) -> None:
+        super().__init__(messages)
+        self._released = asyncio.Event()
+
+    @override
+    async def receive_messages(self) -> AsyncIterator[object]:
+        for message in self.messages:
+            await asyncio.sleep(0)
+            yield message
+        await self._released.wait()
+
+    @override
     async def disconnect(self) -> None:
         self.disconnect_count += 1
         self._released.set()
@@ -345,7 +367,7 @@ async def test_claude_driver_when_abort_fires_mid_read_does_not_leak_task_diagno
     records = install_task_leak_recorder()
     # The stream hangs after the cost update, so the abort is what unblocks it:
     # the watch task starts, fires, then teardown cancels it on the settle path.
-    client = ScriptedClaudeClient([SimpleNamespace(total_cost_usd=0.1)])
+    client = BlockingClaudeClient([SimpleNamespace(total_cost_usd=0.1)])
     driver = create_claude_driver(client_factory=claude_factory(client))
     abort = asyncio.Event()
 

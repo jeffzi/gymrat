@@ -83,10 +83,19 @@ def compose_kickoff(
         "elapsed time yourself. A measurement the cap kills records nothing."
     )
 
+    contract = (
+        "No human reads the turns of this session. Ask-first rules resolve to deciding "
+        "from the runbook — the runbook is the authority. When the work is done, run "
+        '`gymrat stop -m "<report>"` and only then end the turn. The supervisor replies '
+        "after every turn and the session continues, so ending a turn never waits for "
+        "anything. Never run a gymrat command in the background."
+    )
+
     system_prompt_append = (
         f"{skill_content}\n\n"
         "**The gymrat skill is already loaded above. Do not call `Skill(gymrat)`.**\n\n"
         f"{clock_rule}\n\n"
+        f"{contract}\n\n"
         f"## Runbook: {config.runbook}\n\n{runbook_content}"
     )
 

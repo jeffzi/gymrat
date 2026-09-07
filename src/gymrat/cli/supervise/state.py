@@ -198,6 +198,8 @@ class ReporterCtx:
     nested_tool_ids: dict[str, str]
     no_color: bool
     log_path: str
-    last_top_level_text: str | None
+    last_agent_text: str | None
+    turn_count: int
+    last_decision: str | None
     model: str | None
     effort: Effort | None

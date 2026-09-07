@@ -289,3 +289,73 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_end_with_preflight
     assert experiment_path in trailing
     assert "step" in trailing.lower()
     assert "runbook" in trailing.lower()
+
+
+# ---------------------------------------------------------------------------
+# compose_kickoff — supervised-mode contract paragraph
+# ---------------------------------------------------------------------------
+
+
+def test_compose_kickoff_when_happy_path_does_include_contract_paragraph_in_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    append_lower = result.system_prompt_append.lower()
+    assert "no human reads" in append_lower or "no human" in append_lower
+    assert "runbook" in append_lower
+    assert "gymrat stop" in append_lower
+    assert "-m" in result.system_prompt_append
+    assert "never" in append_lower
+    assert "background" in append_lower
+
+
+def test_compose_kickoff_when_happy_path_does_place_contract_before_runbook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    append = result.system_prompt_append
+    append_lower = append.lower()
+    contract_pos = append_lower.index("gymrat stop")
+    runbook_pos = append_lower.index("## runbook:")
+    assert contract_pos < runbook_pos
+
+
+def test_compose_kickoff_when_happy_path_does_state_turn_ending_never_waits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    append_lower = result.system_prompt_append.lower()
+    assert "ending a turn" in append_lower or "end" in append_lower
+    assert "never waits" in append_lower or "does not wait" in append_lower
+
+
+# ---------------------------------------------------------------------------
+# compose_kickoff — no spend/usd/dollar language in code-authored text
+# ---------------------------------------------------------------------------
+
+
+def test_compose_kickoff_when_happy_path_does_omit_usd_and_dollar_from_authored_paragraphs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code-authored paragraphs must never mention spend, usd, or dollars.
+
+    The embedded skill body is excluded because it legitimately references
+    ``--max-usd`` in its usage block.
+    """
+    skill_text = "# Skill Title\n\nSome guidance with --max-usd 10 and spend and $ dollar.\n"
+    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
+
+    append = result.system_prompt_append
+    # The contract paragraph must exist for this guard to be meaningful.
+    assert "gymrat stop" in append.lower(), "contract paragraph is missing"
+    # Strip the embedded skill body to isolate code-authored text.
+    authored = append.replace(skill_text, "").lower()
+    for forbidden in ("usd", "spend", "$"):
+        assert forbidden not in authored, f"Code-authored text must not contain {forbidden!r}"

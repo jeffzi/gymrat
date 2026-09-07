@@ -17,6 +17,7 @@ from rich.live import Live
 
 from gymrat.cli.console import stderr_console
 from gymrat.cli.supervise.frame import (
+    NO_SESSION_TEXT,
     build_frame,
     build_loop_text,
     format_caps,
@@ -45,6 +46,7 @@ from gymrat.session.clock import now_ms
 from gymrat.session.progress_file import read_progress as _default_read_progress
 from gymrat.supervisor.events import (
     CapEvent,
+    FollowUpEvent,
     LaunchEvent,
     ModelPhaseEvent,
     SessionEvent,
@@ -53,6 +55,7 @@ from gymrat.supervisor.events import (
     ToolEndEvent,
     ToolProgressEvent,
     ToolStartEvent,
+    TurnEndEvent,
     UsageUpdateEvent,
 )
 
@@ -64,6 +67,9 @@ if TYPE_CHECKING:
     from gymrat.session.progress_file import ProgressSnapshot
 
 logger = logging.getLogger(__name__)
+
+#: Number of recently finished tools retained for the dashboard's last-N log.
+_MAX_FINISHED_TOOLS = 3
 
 __all__ = [
     "IDLE_WARN_MS",
@@ -105,7 +111,7 @@ def _plain_loop_update(ctx: ReporterCtx) -> None:
     if not ctx.is_plain:
         return
     plain = build_loop_text(ctx.session_result, ctx.max_iterations).plain
-    if plain not in {ctx.last_loop_text, "no session yet"}:
+    if plain not in {ctx.last_loop_text, NO_SESSION_TEXT}:
         ctx.last_loop_text = plain
         ctx.plain_write_fn(plain)
 
@@ -138,14 +144,26 @@ def _next_liveness_after_tool_end(
     )
 
 
+def _waiting_from_last_tool(ctx: ReporterCtx, timestamp: int) -> Waiting:
+    last = ctx.finished_tools[-1] if ctx.finished_tools else None
+    return Waiting(
+        since=timestamp,
+        tool_name=last.tool_name if last is not None else None,
+        tool_ended_at=last.ended_at if last is not None else None,
+        result=last.result if last is not None else None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Event handlers
 # ---------------------------------------------------------------------------
 
 
 def _handle_cap_event(ctx: ReporterCtx, cap: CapEvent) -> None:
+    is_idle = isinstance(ctx.liveness, Waiting) and not ctx.in_flight_tools
     ctx.liveness = Capped(cap_type=cap.cap)
-    _emit(ctx, f"cap {cap.cap} — interrupting")
+    verb = "ending" if is_idle else "interrupting"
+    _emit(ctx, f"cap {cap.cap} — {verb}")
 
 
 def _handle_launch(ctx: ReporterCtx, event: LaunchEvent) -> None:
@@ -192,8 +210,12 @@ def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
         return
 
     tracked = ctx.in_flight_tools.get(event.tool_use_id)
-    tool_name = tracked.tool_name if tracked is not None else event.tool_name
-    input_summary = tracked.input_summary if tracked is not None else ""
+    if tracked is not None:
+        tool_name = tracked.tool_name
+        input_summary = tracked.input_summary
+    else:
+        tool_name = event.tool_name
+        input_summary = ""
     should_refresh_session = tracked is None or tool_name == "Bash"
 
     ctx.in_flight_tools.pop(event.tool_use_id, None)
@@ -258,19 +280,45 @@ def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
             tool_name = event.tool_name if event.tool_name is not None else "unknown"
             ctx.liveness = Composing(tool_name=tool_name, since=event.timestamp)
         case "turn_end":
-            last = ctx.finished_tools[-1] if ctx.finished_tools else None
-            ctx.liveness = Waiting(
-                since=event.timestamp,
-                tool_name=last.tool_name if last is not None else None,
-                tool_ended_at=last.ended_at if last is not None else None,
-                result=last.result if last is not None else None,
-            )
+            ctx.liveness = _waiting_from_last_tool(ctx, event.timestamp)
     _emit_live(ctx)
 
 
-def _handle_text_delta(ctx: ReporterCtx, event: TextDeltaEvent) -> None:
-    if event.parent_tool_use_id is None:
-        ctx.last_top_level_text = event.chunk
+_FOLLOW_UP_LABELS: dict[str, str] = {
+    "replied": "replied",
+    "waiting": "waiting for gymrat",
+}
+
+
+def _handle_turn_end(ctx: ReporterCtx, event: TurnEndEvent) -> None:
+    ctx.turn_count += 1
+    if event.origin == "agent":
+        ctx.last_agent_text = event.text
+    if not isinstance(ctx.liveness, Capped):
+        ctx.liveness = _waiting_from_last_tool(ctx, event.timestamp)
+    _emit_live(ctx)
+
+
+def _handle_follow_up(ctx: ReporterCtx, event: FollowUpEvent) -> None:
+    if event.action == "ended":
+        label = f"ended {event.reason}" if event.reason else "ended"
+    else:
+        label = _FOLLOW_UP_LABELS.get(event.action, event.action)
+    decision = f"turn {ctx.turn_count} ended · {label}"
+    ctx.last_decision = decision
+    _emit(ctx, decision)
+
+
+def _handle_tool_event(
+    ctx: ReporterCtx, event: ToolStartEvent | ToolEndEvent | ToolProgressEvent
+) -> None:
+    match event:
+        case ToolStartEvent():
+            _handle_tool_start(ctx, event)
+        case ToolEndEvent():
+            _handle_tool_end(ctx, event)
+        case ToolProgressEvent():
+            _emit_live(ctx)
 
 
 def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
@@ -281,18 +329,18 @@ def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
             _handle_launch(ctx, event)
         case UsageUpdateEvent():
             _handle_usage_update(ctx, event)
-        case ToolStartEvent():
-            _handle_tool_start(ctx, event)
-        case ToolEndEvent():
-            _handle_tool_end(ctx, event)
-        case ToolProgressEvent():
-            _emit_live(ctx)
+        case ToolStartEvent() | ToolEndEvent() | ToolProgressEvent():
+            _handle_tool_event(ctx, event)
         case ThinkingUpdateEvent():
             _handle_thinking_update(ctx, event)
         case ModelPhaseEvent():
             _handle_model_phase(ctx, event)
         case TextDeltaEvent():
-            _handle_text_delta(ctx, event)
+            pass  # no dashboard rendering depends on streamed text deltas
+        case TurnEndEvent():
+            _handle_turn_end(ctx, event)
+        case FollowUpEvent():
+            _handle_follow_up(ctx, event)
         case _:  # pragma: no cover - exhaustive over the event union
             assert_never(event)
 
@@ -345,7 +393,7 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         session_id=session_id,
         branch=branch,
         in_flight_tools={},
-        finished_tools=deque(maxlen=3),
+        finished_tools=deque(maxlen=_MAX_FINISHED_TOOLS),
         launch_timestamp=None,
         cost_usd=None,
         session_result=None,
@@ -359,7 +407,9 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         nested_tool_ids={},
         no_color=no_color,
         log_path=log_path,
-        last_top_level_text=None,
+        last_agent_text=None,
+        turn_count=0,
+        last_decision=None,
         model=model,
         effort=effort,
     )
@@ -435,5 +485,5 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         frame=lambda: build_frame(ctx),
         warn=warn,
         session_result=lambda: ctx.session_result,
-        final_text=lambda: ctx.last_top_level_text,
+        final_text=lambda: ctx.last_agent_text,
     )

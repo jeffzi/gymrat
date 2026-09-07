@@ -10,9 +10,11 @@ import pytest
 from tests.cli.supervise._fixtures import (
     _throwing_read,
     fire_cap,
+    fire_follow_up,
     fire_launch,
     fire_tool_end,
     fire_tool_start,
+    fire_turn_end,
     fire_usage_update,
     make_iteration,
     make_plain_reporter,
@@ -109,3 +111,42 @@ def test_plain_stop_when_called_does_not_raise():
     fire_launch(plain.observer, 1000)
 
     plain.reporter.stop()
+
+
+# ---------------------------------------------------------------------------
+# turn end / follow-up in plain mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_suffix"),
+    [
+        pytest.param("replied", "replied", id="replied"),
+        pytest.param("waiting", "waiting for gymrat", id="waiting"),
+        pytest.param("ended", "ended budget exhausted", id="ended"),
+    ],
+)
+def test_plain_when_follow_up_does_print_turn_count_and_action(action: str, expected_suffix: str):
+    plain = make_plain_reporter()
+    fire_launch(plain.observer, 1000)
+    fire_turn_end(plain.observer, 2000, text="done")
+
+    reason = "budget exhausted" if action == "ended" else None
+    fire_follow_up(plain.observer, 3000, action=action, reason=reason)  # type: ignore[arg-type]
+
+    assert any(f"turn 1 ended · {expected_suffix}" in w for w in plain.writes)
+
+
+# ---------------------------------------------------------------------------
+# cap event — interrupting vs ending
+# ---------------------------------------------------------------------------
+
+
+def test_plain_when_capped_while_idle_after_turn_end_does_print_cap_ending():
+    """When the last event was a turn end (model is idle), cap prints 'ending'."""
+    plain = make_plain_reporter()
+    fire_launch(plain.observer, 1000)
+    fire_turn_end(plain.observer, 2000, text="done")
+    fire_cap(plain.observer, "wall-clock")
+
+    assert plain.writes[-1] == "cap wall-clock — ending"

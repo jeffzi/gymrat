@@ -137,15 +137,16 @@ first.
 supervised agent: a nested launch spawns a second agent, a second cap, and a second bill against
 the same repository, and the supervise lock does not stop it.
 
-**In supervised mode (this text in your system prompt), no human reads your turns.** The run ends
-the moment you end your turn — no further messages arrive. Never end a turn with a question, a
-request for a decision, or an offer of alternatives: nobody answers, and the session closes with the
-question hanging. Decide from the runbook and continue. The only turn you end is the final report.
+**In supervised mode (this text in your system prompt), no human reads your turns.** Ending a turn
+early is recoverable but wasteful — the supervisor replies with a reminder to re-read the session
+and continue, so the run does not end on an early turn. The session ends on `gymrat stop`, a stop
+condition, a cap, or a guard (follow-up ceiling, no-progress, consecutive-discard). Never end a turn
+with a question, a request for a decision, or an offer of alternatives: nobody answers. Decide from
+the runbook and continue. The only turn you should end is the one after `gymrat stop -m "<report>"`.
 
-**Never run a gymrat command in the background.** No completion notification arrives in a
-supervised session: ending the turn to "wait for it" ends the run and kills the command. Run it in
-the foreground and pass no timeout — the supervisor raises the command's timeout ceiling to match
-the run's wall-clock cap.
+**Never run a gymrat command in the background.** The command must run in the foreground with no
+timeout — the supervisor raises the command's timeout ceiling to match the run's wall-clock cap. A
+background command runs unobserved, and its output never reaches the session.
 
 ## Keeping iterations cheap
 

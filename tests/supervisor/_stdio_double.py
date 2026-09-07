@@ -74,33 +74,73 @@ def _write_stderr(config: dict[str, object]) -> None:
         sys.stderr.flush()
 
 
+def _exit_code(config: dict[str, object]) -> int:
+    return int(cast("int", config.get("exit_code", 0)))
+
+
+def _base_report(start_line: str) -> dict[str, object]:
+    return {"start_line": start_line.rstrip("\n"), "cwd": str(Path.cwd())}
+
+
+def _wait_for_command(command_type: str) -> dict[str, object] | None:
+    """Read stdin lines until one parses as JSON with a matching "type", or EOF."""
+    while True:
+        command = sys.stdin.readline()
+        if not command:
+            return None
+        try:
+            parsed = json.loads(command)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("type") == command_type:
+            return parsed
+
+
 def _run_script(config: dict[str, object], start_line: str) -> int:
-    _write_report(config, {"start_line": start_line.rstrip("\n"), "cwd": str(Path.cwd())})
+    _write_report(config, _base_report(start_line))
     _write_stderr(config)
     _emit_lines(config)
     outcome = config.get("outcome")
     if outcome is not None:
         _writeln(json.dumps(outcome))
-    return int(cast("int", config.get("exit_code", 0)))
+    return _exit_code(config)
 
 
 def _run_await_interrupt(config: dict[str, object], start_line: str) -> int:
-    _write_report(config, {"start_line": start_line.rstrip("\n"), "cwd": str(Path.cwd())})
+    _write_report(config, _base_report(start_line))
     _emit_lines(config)
-    while True:
-        command = sys.stdin.readline()
-        if not command:
-            break
-        try:
-            parsed = json.loads(command)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict) and parsed.get("type") == "interrupt":
-            outcome = config.get("emit_outcome_on_interrupt")
-            if outcome is not None:
-                _writeln(json.dumps(outcome))
-            break
-    return int(cast("int", config.get("exit_code", 0)))
+    command = _wait_for_command("interrupt")
+    if command is not None:
+        outcome = config.get("emit_outcome_on_interrupt")
+        if outcome is not None:
+            _writeln(json.dumps(outcome))
+    return _exit_code(config)
+
+
+def _run_await_message(config: dict[str, object], start_line: str) -> int:
+    """Mode that exercises the send/end turn protocol through stdin commands."""
+    _write_report(config, _base_report(start_line))
+    _emit_lines(config)
+    turn_end = config.get("turn_end")
+    if turn_end is not None:
+        _writeln(json.dumps(turn_end))
+
+    message_text: str | None = None
+    message = _wait_for_command("message")
+    if message is not None:
+        message_text = cast("str", message.get("text", ""))
+
+    _write_report(config, {**_base_report(start_line), "message_text": message_text})
+
+    if turn_end is not None:
+        _writeln(json.dumps(turn_end))
+
+    _wait_for_command("end")
+
+    outcome = config.get("outcome")
+    if outcome is not None:
+        _writeln(json.dumps(outcome))
+    return _exit_code(config)
 
 
 def _run_sleep_forever(config: dict[str, object]) -> int:
@@ -114,6 +154,7 @@ def _run_sleep_forever(config: dict[str, object]) -> int:
 
 
 def main() -> int:
+    """Dispatch to the mode handler named by config['mode']."""
     config = json.loads(sys.argv[1])
     mode = config["mode"]
     if mode == "sleep_forever":
@@ -123,6 +164,8 @@ def main() -> int:
         return _run_script(config, start_line)
     if mode == "await_interrupt":
         return _run_await_interrupt(config, start_line)
+    if mode == "await_message":
+        return _run_await_message(config, start_line)
     message = f"unknown mode: {mode}"
     raise SystemExit(message)
 
