@@ -45,6 +45,7 @@
     "mitata",
     "mkfifo",
     "pipx",
+    "pymaxlines",
     "preexec",
     "prek",
     "pthread",

@@ -187,12 +187,14 @@ gymrat serves two audiences with the same statistical engine:
   keep/discard decisions backed by statistics. `gymrat supervise` automates the same loop under an
   AI agent.
 
+The principles behind these choices, and what gymrat deliberately is not, are in
+[VISION.md](VISION.md).
+
 ## Machine-readable output
 
 Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `stop`,
-`status`) accepts `--format json` for structured output. The JSON key shapes are a stability contract:
-additions only, no renames or removals without a breaking change. Text output is for humans and may
-change between releases. `start`, `sync`, and `finalize` are text-only.
+`status`) accepts `--format json` for structured output. Text output is for humans and may change
+between releases. `start`, `sync`, and `finalize` are text-only.
 
 ## How verdicts work
 
