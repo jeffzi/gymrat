@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Session log records, supervisor event log lines, `--format json` documents, and hook payloads use
+  snake_case keys matching Python attribute names.
+- Timestamps in session log records and supervisor events are integer nanoseconds since the epoch
+  under the field `at`.
+- The session header carries a `schema` field (replacing `schemaVersion`).
+- The supervisor launch event carries the open session's `session_id`.
+
 ## [0.16.0] - 2026-09-07
 
 ### Added
