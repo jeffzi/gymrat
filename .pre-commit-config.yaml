@@ -45,7 +45,7 @@ repos:
 
   # Python code line limits
   - repo: https://github.com/jeffzi/pymaxlines
-    rev: v0.6.0
+    rev: v0.7.0
     hooks:
       - id: check-max-lines
 
