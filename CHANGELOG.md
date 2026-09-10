@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every command run inside a session now appends a `command` record to the session log.
+- A `compaction` event in the supervisor event log marks when the agent's context was compacted.
+- The `otel` optional extra (`pip install gymrat[otel]`) enables live OpenTelemetry span export for
+  every command and supervised run when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- `gymrat export` replays a finished session's logs into the same span structure for post-hoc
+  analysis.
+- Generated JSON Schema, AsyncAPI 3.0, and Markdown reference for the session and supervisor log
+  formats under `schemas/` and `docs/`.
+
 ### Changed
 
 - Session log records, supervisor event log lines, `--format json` documents, and hook payloads use
@@ -15,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under the field `at`.
 - The session header carries a `schema` field (replacing `schemaVersion`).
 - The supervisor launch event carries the open session's `session_id`.
+- `status` now holds the repository lock briefly while it reads the session log and records itself.
 
 ## [0.16.0] - 2026-09-07
 

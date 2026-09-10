@@ -3,6 +3,11 @@
   "includes": [
     "**/*.{json,yaml,yml,md,toml}"
   ],
+  "excludes": [
+    "schemas/**",
+    "docs/event-reference.md",
+    "tests/event_docs/vendor/**"
+  ],
   "lineWidth": 100,
   "markdown": {
     "textWrap": "maintain"

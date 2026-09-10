@@ -30,6 +30,12 @@ dependencies = [
   "typer>=0.27.2,<0.28",
 ]
 
+[project.optional-dependencies]
+otel = [
+  "opentelemetry-sdk>=1.44,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+]
+
 [project.urls]
 Repository = "https://github.com/jeffzi/gymrat"
 Issues = "https://github.com/jeffzi/gymrat/issues"
@@ -42,9 +48,11 @@ gymrat = "gymrat.cli.app:main"
 dev = [
   "diff-cover>=10.5,<11",
   "hypothesis>=6.167,<7",
+  "jsonschema>=4.24,<5",
   "prek>=0.5.0,<0.6",
   "pyrefly>=1.2,<2",
   "pyte>=0.8.2,<0.9",
+  "pyyaml>=6.0,<7",
   "pytest>=9.1,<10",
   "pytest-asyncio>=1.4,<2",
   "pytest-cov>=7.1,<8",
@@ -54,6 +62,8 @@ dev = [
   "ruff>=0.16.5,<0.17",
   "syrupy>=6.0,<7",
   "tomli-w>=1.2,<2",
+  "types-jsonschema>=4.26,<5",
+  "types-pyyaml>=6.0,<7",
 ]
 
 [build-system]
@@ -70,6 +80,7 @@ malware-check = true
 
 [tool.pyrefly]
 preset = "strict"
+min-severity = "warn"
 project-includes = ["src", "tests"]
 python-version = "3.12"
 search-path = ["src", "."]
@@ -77,11 +88,14 @@ search-path = ["src", "."]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+preview = true
 
 [tool.ruff.lint]
 select = ["ALL"]
+explicit-preview-rules = true
+extend-select = ["DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501"]
 # Scientific glyphs that appear verbatim in report output strings; not typos.
-allowed-confusables = ["×", "α"]
+allowed-confusables = ["×", "α", "µ"]
 ignore = [
   # --- Docstrings (relaxed for practicality) ---
   "D100", # missing docstring in public module
@@ -99,6 +113,7 @@ ignore = [
 "__init__.py" = ["E402", "F401"]
 "**/tests/*" = [
   "D101", # missing docstring in public class
+  "DOC", # docstring section checks (fixtures and helpers)
   "D102", # missing docstring in public method
   "D103", # missing docstring in public function
   "E402", # module import not at top of file
@@ -131,6 +146,9 @@ ignore = [
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = true
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
@@ -140,7 +158,7 @@ pythonpath = ["."]
 addopts = "--import-mode=importlib -n auto --cov --cov-report=term-missing"
 filterwarnings = ["error"]
 asyncio_mode = "auto"
-xfail_strict = true
+strict = true
 
 [tool.coverage.run]
 source = ["src"]
@@ -148,8 +166,7 @@ branch = true
 parallel = true
 
 [tool.coverage.report]
-exclude_lines = [
-  "pragma: no cover",
+exclude_also = [
   "if TYPE_CHECKING:",
   "if __name__ == .__main__.",
   "raise NotImplementedError",
