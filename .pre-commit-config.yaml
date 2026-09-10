@@ -103,6 +103,7 @@ repos:
     rev: v1.30.0
     hooks:
       - id: zizmor
+        args: [--persona=pedantic]
 
   # Conventional commit messages
   - repo: https://github.com/compilerla/conventional-pre-commit
