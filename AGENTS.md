@@ -1,41 +1,67 @@
-# gymrat
+# AGENTS.md
 
-If `AGENTS.local.md` exists at the repo root, its instructions take precedence over this file.
+## Local overrides
 
-## Design
-
-`VISION.md` states the ranked pillars and vetoes that decide design questions. Read it before
-designing a change that touches the session loop, the supervisor, or a contract, and check the
-design against it. Rules that follow from it:
-
-- Liveness is the advisory file lock. Never probe process IDs. A file that gates behavior carries
-  its own deadline; never infer staleness from a file's age.
-- The turn protocol (a turn ended, a follow-up is accepted) is the only backend seam. Abstract
-  nothing else ahead of a second harness, and keep the Claude Agent SDK's transport names inside
-  its driver.
-- A tool exposed to the agent is a thin host over the CLI command: spawn it, relay its output, kill
-  the child when the call ends.
-- Every timing constant is a parameter a test can override.
-- Import the agent SDK, and anything else with a startup cost, inside the function that needs it.
+If `AGENTS.local.md` exists at the repo root, read it and let its instructions take precedence over
+this file. It is gitignored for personal, machine-specific preferences and never committed.
 
 ## Commands
 
-`task --list` shows the workflows. Use `task` targets instead of calling `pytest`, `ruff`, or
-`python` directly. Exceptions:
+`Taskfile.yml` wraps the common workflows — run `task --list` to see them. These are the only
+entrypoints; never bypass them by calling scripts, tools, or `python` directly — the task and prek
+layers manage the virtualenv, file selection, and flags.
 
-- `task test -- -k name` disables coverage; a subset run would fail the global threshold.
-- `task check` before committing. One hook: `uv run prek run <hook-id>`; IDs are in
-  `.pre-commit-config.yaml`.
-- `uvx pymaxlines --show-sizes [path]` prints code-line sizes per file and function, largest first,
-  counted the way the `check-max-lines` hook counts.
+- `task install` — sync the project and dev dependencies from the lockfile (`uv sync --locked`),
+  then install the prek hooks.
+- `task test` — `uv run pytest` (append args after `--`, e.g. `task test -- -k name`; passing args
+  disables coverage, since a subset run would fail the global coverage threshold).
+- `task test:matrix` — run the suite on every supported Python version.
+- `task check` — `uv run prek run -a` (all hooks). Run before committing.
+- To run a single hook: `uv run prek run <hook-id>` (e.g. `uv run prek run check-max-lines`). Hook
+  IDs are in `.pre-commit-config.yaml`.
+- `uvx pymaxlines --show-sizes` — print a code-line breakdown of every file (largest first) instead
+  of checking limits. Pass paths to scope it: `uvx pymaxlines --show-sizes src/heavy_module.py`.
+  Use it to find the biggest files and functions before deciding where to split. Counts exclude
+  blanks, comments, and docstrings — matching what the `check-max-lines` hook enforces.
+- `task check:fix` — auto-fix everything that supports it: `uv run ruff check --fix`,
+  `uv run ruff format`, `dprint fmt`, markdownlint (`uv run prek run -a markdownlint-cli2`).
+- `task clean` — remove build artifacts, caches, and virtualenvs.
 
-## Checks
+## Git hygiene
 
-- Never skip the prek hooks (`--no-verify`, `-n`).
-- Fix a failing check at its source. Never edit a test to make it pass.
-- Lint and type-check config is fixed: never add an ignore, disable a rule, lower a severity, or
-  exclude a file. Suppress only a genuine false positive, inline, with a reason. A config-level
-  ignore needs the user's explicit approval.
-- A cspell failure is a prompt to reword. A word earns a `cspell.json` entry only when it comes
-  from outside the project and cannot be renamed. In tests, use a real word (`banana`) for filler,
-  never gibberish; `# cspell:disable-line` only where the gibberish is the behavior under test.
+- Never run `git commit --no-verify`, `git commit -n`, or anything else that skips the prek hooks —
+  the hooks are the gate, not an obstacle.
+- Fix a failing check at its source. Never edit a test to make it pass; never widen a lint ignore to
+  silence a real finding.
+
+## Linter and type-checker configuration
+
+Treat lint and type-check config as fixed. Never add to an ignore list, disable a rule, lower a
+severity, or exclude a file to get a check passing — fix the code instead. A suppression is
+warranted only when the finding is a genuine false positive or the rule cannot apply (e.g. a
+generated file, a documented upstream bug); then suppress at the narrowest scope — an inline
+directive with a reason — not in the shared config. When the same inline directive keeps recurring
+for the same rule, that is a signal the rule may deserve a config-level ignore — propose it to the
+user and wait for explicit approval; never promote a suppression into config on your own.
+
+## Docstrings
+
+Google style. None is required on private functions. A one-line docstring is complete on its own —
+no `Args:`, `Returns:`, or `Raises:` sections — when the signature says the rest. When a function
+needs more than one line (a side effect, an invariant, a precondition, what None means, or behavior
+the name does not convey), use a multi-line docstring with sections: `Args:` listing every
+parameter, however obvious its name, `Returns:`, and `Raises:` for every exception raised or
+propagated. Parameters, return values, and exceptions are described only in their sections, never in
+prose. A function you edit gets its docstring brought to this shape even if you did not write it;
+deadlines and reviewer preference do not change that. Tests: no docstrings on test functions, the
+name carries the intent; every fixture gets a one-line docstring.
+
+## Spelling (cspell)
+
+Treat a cspell failure as a prompt to reword, not to grow the dictionary. Prefer plain words in
+prose and identifiers. A word earns a `cspell.json` entry only when it comes from outside the
+project and cannot be renamed — command names, API identifiers, file formats, proper nouns, domain
+vocabulary (e.g. `addopts`, `conftest`, `pyrefly`). In tests, never invent gibberish that needs a
+suppression — any real word works for an unknown command, a bogus flag, or filler data, so pick one
+(`banana`, not an invented pseudo-word). `# cspell:disable-line` is reserved for fixtures where the
+gibberish itself is the behavior under test, never a dictionary entry.
