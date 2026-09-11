@@ -25,6 +25,9 @@ layers manage the virtualenv, file selection, and flags.
   blanks, comments, and docstrings — matching what the `check-max-lines` hook enforces.
 - `task check:fix` — auto-fix everything that supports it: `uv run ruff check --fix`,
   `uv run ruff format`, `dprint fmt`, markdownlint (`uv run prek run -a markdownlint-cli2`).
+- `task schemas` — regenerate `schemas/` and `docs/event-reference.md` from the pydantic record and
+  event models. Run it after any change to a model field or docstring and commit the output; the
+  drift test in `tests/event_docs/test_drift.py` fails on stale artifacts.
 - `task clean` — remove build artifacts, caches, and virtualenvs.
 
 ## Git hygiene

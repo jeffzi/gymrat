@@ -49,6 +49,16 @@ repos:
     hooks:
       - id: check-max-lines
 
+  # Generated event docs must match the models they are rendered from
+  - repo: local
+    hooks:
+      - id: check-schemas
+        name: check-schemas
+        entry: uv run python -m gymrat.event_docs
+        language: system
+        pass_filenames: false
+        files: ^(src/gymrat/(session|supervisor|config|event_docs)/.*\.py|schemas/.*|docs/event-reference\.md)$
+
   # Python type checking
   - repo: local
     hooks:
