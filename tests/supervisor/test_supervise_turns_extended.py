@@ -1,16 +1,11 @@
-"""Extended supervisor turn-loop tests.
-
-Wall-clock caps, settle-window cancellation, log writing, and consecutive-discard
-guards.  Split from ``test_supervise_turns`` to stay within the module code-line
-limit.
-"""
+"""Wall-clock caps, settle-window cancellation, log writing, and consecutive-discard guards."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (
@@ -90,20 +85,14 @@ def _calls_of_kind(calls: list[tuple[str, str | None]], kind: str) -> list[tuple
 async def test_supervise_when_wall_clock_fires_during_settle_window_does_call_end_not_interrupt(
     tmp_path: Path,
 ):
-    """The settle window (10 s) far outlasts the wall-clock deadline (~60 ms).
-
-    The idle path calls ``end()`` directly and never ``interrupt()``.
-    """
     root = str(tmp_path / "repo")
     seed_session_log(root)
     lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
 
-    driver = create_mock_driver(
-        [
-            TurnEndStep(cost_usd=0.01),
-        ]
-    )
+    driver = create_mock_driver([
+        TurnEndStep(cost_usd=0.01),
+    ])
 
     result = await _supervise_wall_clock(
         driver,
@@ -135,22 +124,15 @@ async def test_supervise_when_wall_clock_fires_during_settle_window_does_call_en
 async def test_supervise_when_wall_clock_fires_after_reply_sent_does_call_interrupt_not_end(
     tmp_path: Path,
 ):
-    """The driver replies once, then enters a long delay with no new events.
-
-    Because the reply already flipped the supervisor to in-flight, the cap
-    takes the interrupt-plus-grace path.
-    """
     root = str(tmp_path / "repo")
     seed_session_log(root)
     lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
 
-    driver = create_mock_driver(
-        [
-            TurnEndStep(cost_usd=0.01, origin="agent"),
-            CostStep(cost_usd=0.01, delay_ms=2_000),
-        ]
-    )
+    driver = create_mock_driver([
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+        CostStep(cost_usd=0.01, delay_ms=2_000),
+    ])
 
     result = await _supervise_wall_clock(
         driver,
@@ -185,7 +167,6 @@ async def test_supervise_when_wall_clock_fires_after_reply_sent_does_call_interr
 async def test_supervise_when_log_read_fails_does_return_error_outcome(
     tmp_path: Path,
 ):
-    """A GymratError from the log fold emits a FollowUpEvent and returns an error result."""
     root = str(tmp_path / "repo")
     # Write a corrupt session log so read_records raises GymratError
     corrupt_log = Path(session_jsonl_path(root))
@@ -194,11 +175,9 @@ async def test_supervise_when_log_read_fails_does_return_error_outcome(
     lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
 
-    driver = create_mock_driver(
-        [
-            TurnEndStep(cost_usd=0.01),
-        ]
-    )
+    driver = create_mock_driver([
+        TurnEndStep(cost_usd=0.01),
+    ])
 
     result = await supervise_fast(
         driver,
@@ -229,28 +208,20 @@ async def test_supervise_when_log_read_fails_does_return_error_outcome(
 async def test_supervise_when_in_flight_event_during_settle_does_cancel_settle(
     tmp_path: Path,
 ):
-    """The non-blocking ``EmitStep`` opens a genuine settle window (50 ms).
-
-    The ``TextDeltaEvent`` arrives at ~5 ms while the window is still open,
-    cancelling the settle — no ``replied`` follow-up and no ``send`` for that
-    turn. The second turn end (with the stop record) ends the session.
-    """
     root = str(tmp_path / "repo")
     seed_session_log(root)
     lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
 
-    driver = create_mock_driver(
-        [
-            emit_turn_end(),
-            EmitStep(
-                emit=TextDeltaEvent(timestamp=now_ms(), chunk="hello"),
-                delay_ms=5,
-            ),
-            ActionStep(action=lambda: add_stop_async(root)),
-            TurnEndStep(cost_usd=0.01, origin="agent"),
-        ]
-    )
+    driver = create_mock_driver([
+        emit_turn_end(),
+        EmitStep(
+            emit=TextDeltaEvent(at=now_ns(), chunk="hello"),
+            delay_ms=5,
+        ),
+        ActionStep(action=lambda: add_stop_async(root)),
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+    ])
 
     result = await supervise_fast(
         driver,
@@ -277,27 +248,20 @@ async def test_supervise_when_in_flight_event_during_settle_does_cancel_settle(
 async def test_supervise_when_usage_update_during_settle_does_not_cancel_settle(
     tmp_path: Path,
 ):
-    """The settle completes at 50 ms and classify returns Reply.
-
-    No stop record exists yet, so the reply goes out. The second turn end
-    (with the stop record) ends the session.
-    """
     root = str(tmp_path / "repo")
     seed_session_log(root)
     lock_path = str(tmp_path / "lockfile")
     probe = collecting_observer()
 
-    driver = create_mock_driver(
-        [
-            emit_turn_end(),
-            EmitStep(
-                emit=UsageUpdateEvent(timestamp=now_ms(), cost_usd=0.02),
-                delay_ms=5,
-            ),
-            ActionStep(action=lambda: add_stop_async(root), delay_ms=200),
-            TurnEndStep(cost_usd=0.01, origin="agent"),
-        ]
-    )
+    driver = create_mock_driver([
+        emit_turn_end(),
+        EmitStep(
+            emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.02),
+            delay_ms=5,
+        ),
+        ActionStep(action=lambda: add_stop_async(root), delay_ms=200),
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+    ])
 
     result = await supervise_fast(
         driver,
@@ -334,11 +298,9 @@ async def test_supervise_when_turn_classified_does_write_turn_end_and_follow_up_
     lock_path = str(tmp_path / "lockfile")
     log_path = tmp_path / "events.jsonl"
 
-    driver = create_mock_driver(
-        [
-            TurnEndStep(cost_usd=0.01),
-        ]
-    )
+    driver = create_mock_driver([
+        TurnEndStep(cost_usd=0.01),
+    ])
 
     await supervise_fast(
         driver,
@@ -381,12 +343,10 @@ async def test_supervise_when_consecutive_discards_guard_trips_does_end_as_guard
         for i in range(1, CONSECUTIVE_DISCARD_LIMIT + 1):
             append_record(session_jsonl_path(root), discard_record(seq=i))
 
-    driver = create_mock_driver(
-        [
-            ActionStep(action=add_discards),
-            TurnEndStep(cost_usd=0.01, origin="agent"),
-        ]
-    )
+    driver = create_mock_driver([
+        ActionStep(action=add_discards),
+        TurnEndStep(cost_usd=0.01, origin="agent"),
+    ])
 
     result = await supervise_fast(
         driver,

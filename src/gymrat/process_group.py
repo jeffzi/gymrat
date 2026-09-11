@@ -32,6 +32,9 @@ def kill_process_group(pid: int) -> None:
     group is already gone and warning on any other failure. On Windows it
     delegates to ``taskkill /T /F``, staying silent when the process is already
     gone and warning on any other failure.
+
+    Args:
+        pid: The process ID leading the group to kill.
     """
     if sys.platform == "win32":
         try:

@@ -80,14 +80,12 @@ def commit_project(
     files = {
         ".gitignore": ".gymrat/\n",
         BENCH_FILE: bench_script(gate_file),
-        "gymrat.toml": tomli_w.dumps(
-            {
-                "bench": f"{sys.executable} {BENCH_FILE}",
-                "adapter": "metric-lines",
-                "samples": samples,
-                "timeout_seconds": 120,
-            }
-        ),
+        "gymrat.toml": tomli_w.dumps({
+            "bench": f"{sys.executable} {BENCH_FILE}",
+            "adapter": "metric-lines",
+            "samples": samples,
+            "timeout_seconds": 120,
+        }),
     }
     for name, content in files.items():
         (Path(repo_dir) / name).write_text(content, encoding="utf-8")

@@ -42,6 +42,13 @@ def env_string_result(env_var: str) -> EnvResult:
     A whitespace-only value is rejected alongside the empty string: these vars
     name work to do -- a command to run, or a config path to load -- and a blank
     value would run as a no-op shell or resolve to a meaningless path.
+
+    Args:
+        env_var: Name of the ``GYMRAT_*`` environment variable to read.
+
+    Returns:
+        An :class:`EnvResult` with the raw string value, a problem, or neither
+        when the variable is unset.
     """
     raw = os.environ.get(env_var)
     if raw is None:
@@ -59,6 +66,14 @@ def env_positive_int_result(env_var: str, maximum: int | None = None) -> EnvResu
 
     The ``isascii() and isdigit()`` check rejects sign, decimal point,
     exponent, and hex notation, so only a bare run of ASCII digits parses.
+
+    Args:
+        env_var: Name of the ``GYMRAT_*`` environment variable to read.
+        maximum: Largest accepted value, or ``None`` for no upper bound.
+
+    Returns:
+        An :class:`EnvResult` with the parsed integer, a problem, or neither
+        when the variable is unset.
     """
     raw = os.environ.get(env_var)
     if raw is None:

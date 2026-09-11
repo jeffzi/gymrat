@@ -20,11 +20,19 @@ from typer.testing import CliRunner
 
 from gymrat.cli.app import app
 from gymrat.config import ResolvedConfig
+from gymrat.errors import GymratError
 from gymrat.measure import MeasureOptions
 from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
-from gymrat.session import BaselineRecord, append_record, read_records, session_jsonl_path
+from gymrat.session import (
+    BaselineRecord,
+    CommandRecord,
+    append_record,
+    read_records,
+    session_jsonl_path,
+)
 from tests.cli._budget import install_budget, install_tight_budget
+from tests.cli._loop_cmds import last_command_record
 from tests.report._inputs import create_measurement_result
 from tests.session.records._fixtures import (
     finalize_record,
@@ -37,7 +45,6 @@ runner = CliRunner()
 
 # An ISO-8601 timestamp at millisecond precision, ``Z``-suffixed — the shape the
 # session writer stamps every record with.
-ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 
 def _resolved() -> ResolvedConfig:
@@ -69,7 +76,7 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
 def _capture_measure(
     monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
 ) -> list[MeasureOptions]:
-    """Replace the ``measure`` seam with a fake that records the options it received.
+    """Stub the ``measure`` seam and return captured options.
 
     The fake hands back ``result`` (a default clean run when omitted), so a test
     can pin the label and raw rounds a recording is built from, or assert the
@@ -203,10 +210,14 @@ def test_measure_when_record_and_open_session_does_append_baseline_and_print_rep
     result = runner.invoke(app, ["measure", positional, "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 0
-    recorded = read_records(session_jsonl_path(record_repo))[-1]
-    assert isinstance(recorded, BaselineRecord)
+    baselines = [
+        r for r in read_records(session_jsonl_path(record_repo)) if isinstance(r, BaselineRecord)
+    ]
+    assert len(baselines) == 1
+    recorded = baselines[0]
     assert recorded.type == "baseline"
-    assert ISO_PATTERN.match(recorded.at)
+    assert isinstance(recorded.at, int)
+    assert recorded.at > 0
     assert recorded.label == label
     assert recorded.samples == tuple(rounds)
     assert label in result.stdout
@@ -267,7 +278,10 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0
-    assert read_records(session_jsonl_path(record_repo)) == [session_record()]
+    non_command = [
+        r for r in read_records(session_jsonl_path(record_repo)) if not isinstance(r, CommandRecord)
+    ]
+    assert non_command == [session_record()]
     assert "recorded to session" not in result.stdout
 
 
@@ -282,15 +296,17 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
 ):
     _open_session(record_repo)
     _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
-    ticks = iter([1_000.0, 1_500.0])
+    ticks = iter([1_000.0, 1_500.0, 2_000.0, 2_500.0])
     monkeypatch.setattr("gymrat.session.clock.monotonic_ms", lambda: next(ticks))
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 
     assert result.exit_code == 0
-    recorded = read_records(session_jsonl_path(record_repo))[-1]
-    assert isinstance(recorded, BaselineRecord)
-    assert recorded.duration_ms == 500
+    baselines = [
+        r for r in read_records(session_jsonl_path(record_repo)) if isinstance(r, BaselineRecord)
+    ]
+    assert len(baselines) == 1
+    assert baselines[0].duration_ms == 500
 
 
 # ---------------------------------------------------------------------------
@@ -336,8 +352,8 @@ def test_measure_when_format_json_and_budget_active_does_include_budget_object(
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_measure_when_format_json_and_no_budget_does_omit_budget_key(
@@ -380,7 +396,6 @@ def test_measure_when_budget_tight_and_estimate_known_does_warn_on_stderr(
     monkeypatch: pytest.MonkeyPatch,
     record_repo: str,
 ):
-    """When half the estimated duration exceeds budget remaining, measure warns."""
     _open_session(record_repo)
     _capture_measure(monkeypatch)
     install_tight_budget(record_repo, monkeypatch)
@@ -404,3 +419,135 @@ def test_measure_when_estimate_unknown_does_not_warn(
 
     assert result.exit_code == 0
     assert "warning" not in result.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
+# command trace — args and exit recording
+# ---------------------------------------------------------------------------
+
+
+def test_measure_when_success_does_record_trace_with_target_and_record_false(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_measure(monkeypatch)
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "measure"
+    assert cmd.args["target"] == "main"
+    assert cmd.args["record"] is False
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+    for key in ("prepare", "adapter", "samples", "timeout", "config"):
+        assert key not in cmd.args
+
+
+def test_measure_when_default_target_does_record_dot_in_trace_args(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_measure(monkeypatch)
+
+    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.args["target"] == "."
+
+
+def test_measure_when_config_overrides_given_does_include_them_in_trace_args(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_measure(monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "measure",
+            "main",
+            "--bench",
+            "sh bench.sh",
+            "--prepare",
+            "make",
+            "--adapter",
+            "mitata",
+            "--samples",
+            "7",
+            "--timeout",
+            "42",
+            "--config",
+            "gymrat.json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.args["bench"] == "sh bench.sh"
+    assert cmd.args["prepare"] == "make"
+    assert cmd.args["adapter"] == "mitata"
+    assert cmd.args["samples"] == 7
+    assert cmd.args["timeout"] == 42
+    assert cmd.args["config"] == "gymrat.json"
+
+
+def test_measure_when_record_success_does_record_trace_with_record_true(
+    monkeypatch: pytest.MonkeyPatch,
+    record_repo: str,
+):
+    _open_session(record_repo)
+    _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(record_repo)
+    assert cmd.args["target"] == "main"
+    assert cmd.args["record"] is True
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_measure_when_record_and_finalized_session_does_record_trace_with_exit_two_finalized(
+    monkeypatch: pytest.MonkeyPatch,
+    record_repo: str,
+):
+    _finalize_session(record_repo)
+    _capture_measure(monkeypatch)
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(record_repo)
+    assert cmd.args["target"] == "main"
+    assert cmd.args["record"] is True
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
+
+
+def test_measure_when_bench_fails_does_record_trace_with_exit_two_error(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_resolve(monkeypatch)
+
+    async def failing_measure(_options: MeasureOptions) -> MeasurementResult:
+        msg = "bench exploded"
+        raise GymratError(msg)
+
+    monkeypatch.setattr("gymrat.measure.measure", failing_measure)
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.args["target"] == "main"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "error"

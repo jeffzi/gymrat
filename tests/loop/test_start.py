@@ -8,6 +8,7 @@ reveal their behavior against real worktrees, and the assertions read commit SHA
 straight out of the worktrees git laid down.
 """
 
+import json
 import re
 import shutil
 import sys
@@ -34,12 +35,12 @@ from gymrat.session import (
     remove_worktrees,
     session_jsonl_path,
 )
+from gymrat.session.clock import now_ns
 from tests._git import run_git
 from tests.session.records._fixtures import committed_keep, finalize_record, iteration_record
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 BRANCH_PATTERN = re.compile(r"^gymrat/\d{8}-\d{6}-[0-9a-f]{4}$")
-ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 HOOKS = HooksConfig(before="npm run warm-cache", after="npm run cool-down")
 
@@ -141,11 +142,13 @@ def _close_session_with_one_keep(root: str) -> str:
 
 @pytest.fixture
 def repo(create_scratch_repo: Callable[[], str]) -> str:
+    """A fresh scratch repository for one start_session test."""
     return create_scratch_repo()
 
 
 @pytest.fixture
 def head_sha(repo: str) -> str:
+    """The commit SHA ``repo`` starts at."""
     return _git(["rev-parse", "HEAD"], repo)
 
 
@@ -164,7 +167,8 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
     assert header.type == "session"
     assert header.schema_version == 1
     assert SESSION_ID_PATTERN.match(header.session_id)
-    assert ISO_PATTERN.match(header.created_at)
+    assert isinstance(header.at, int)
+    assert header.at > 0
     assert header.baseline == BaselineRef(ref="main", sha=head_sha)
     assert BRANCH_PATTERN.match(header.branch)
     assert header.worktrees == Worktrees(
@@ -172,6 +176,28 @@ def test_start_session_when_no_session_yet_does_write_header_naming_baseline_bra
         baseline=baseline_worktree_dir(repo),
     )
     assert header.config == CONFIG_SNAPSHOT
+
+
+def test_start_session_when_new_does_stamp_at_within_now_ns_bracket(repo: str):
+    before = now_ns()
+
+    start_session(repo, "main", CONFIG)
+
+    header = _session_header_of(repo)
+    after = now_ns()
+    assert before <= header.at <= after
+
+
+def test_start_session_when_new_does_write_no_created_at_or_schema_version_on_disk(repo: str):
+    start_session(repo, "main", CONFIG)
+
+    raw = json.loads(Path(session_jsonl_path(repo)).read_text(encoding="utf-8").splitlines()[0])
+    assert "created_at" not in raw
+    assert "schema_version" not in raw
+    assert "createdAt" not in raw
+    assert "schemaVersion" not in raw
+    assert raw["schema"] == 1
+    assert isinstance(raw["at"], int)
 
 
 def test_start_session_when_no_hooks_configured_does_leave_hooks_out_of_the_config_snapshot(

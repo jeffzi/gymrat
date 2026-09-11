@@ -15,7 +15,8 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -66,6 +67,17 @@ _LOCK_AT = "2026-01-01T00:00:00.000Z"
 # The wall-clock cap the ``--max-minutes``-driven tests below assert against.
 _CAP_MINUTES = 10
 _CAP_MS = _CAP_MINUTES * 60_000
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tracing_provider() -> Iterator[None]:
+    """Reset the telemetry provider singleton so a leaked xdist worker instance can't bleed in."""
+    yield
+    from gymrat.telemetry.provider import _reset_for_tests
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -177,15 +189,13 @@ def _install_seams(
         max_minutes: float,
         force: bool,
     ) -> StartResult:
-        seams.preflight_calls.append(
-            {
-                "root": root,
-                "config": config,
-                "baseline_ref": baseline_ref,
-                "max_minutes": max_minutes,
-                "force": force,
-            }
-        )
+        seams.preflight_calls.append({
+            "root": root,
+            "config": config,
+            "baseline_ref": baseline_ref,
+            "max_minutes": max_minutes,
+            "force": force,
+        })
         return _make_start_result(root)
 
     def fake_compose(
@@ -572,7 +582,6 @@ def test_supervise_when_session_has_iterations_does_show_them_in_the_summary_loo
 def test_supervise_when_log_path_is_long_does_print_it_unwrapped(
     repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """A wrapped path breaks copy-paste, so the log row is never re-flowed."""
     _install_seams(monkeypatch)
     nested = tmp_path / ("supervise-log-directory-" * 3)
     nested.mkdir()
@@ -789,11 +798,8 @@ def test_supervise_when_run_completes_does_stop_the_reporter(
 def test_supervise_when_run_completes_does_stop_reporter_before_printing_summary(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """The reporter must be stopped before the summary is printed.
-
-    Without this ordering, the summary text appends to the still-open status
-    row, corrupting the output.
-    """
+    # Without stop-before-print ordering the summary appends to the still-open
+    # status row, corrupting the output.
     order: list[str] = []
     seams = _install_seams(monkeypatch)
     seams.reporter_stop.side_effect = lambda: order.append("stop")
@@ -887,16 +893,13 @@ def test_supervise_when_help_does_describe_flags(repo: str):
 
     text = _err_text(result)
     flat = re.sub(r"[│╭╮╰╯─\s]+", " ", text)
-    # --baseline
     assert "--baseline" in text
     assert re.search(r"pin.*freshly opened", flat, re.IGNORECASE)
     assert re.search(r"default.*HEAD", flat, re.IGNORECASE)
     assert re.search(r"ignored.*resumed", flat, re.IGNORECASE)
-    # --force
     assert "--force" in text
     assert re.search(r"cap.*cannot fit.*iteration", flat, re.IGNORECASE)
     assert re.search(r"stop condition.*already met", flat, re.IGNORECASE)
-    # --max-minutes
     assert "--max-minutes" in text
     assert re.search(r"counted.*baseline.*recorded", flat, re.IGNORECASE)
 
@@ -909,7 +912,6 @@ def test_supervise_when_help_does_describe_flags(repo: str):
 def test_supervise_when_preflight_raises_does_exit_two_with_message(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """A pre-flight error (feasibility, stop condition, doctor) surfaces on stderr."""
     _install_seams(monkeypatch)
 
     msg = "cap too small"
@@ -928,7 +930,6 @@ def test_supervise_when_preflight_raises_does_exit_two_with_message(
 def test_supervise_when_run_does_propagate_resolved_config_to_kickoff_context_and_reporter(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """The same resolved config reaches kickoff composition, the session context, and the reporter's ``max_iterations`` — sourced from ``config.stop``, not a separate field."""
     cfg = _config(stop=StopConfig(max_iterations=9))
     seams = _install_seams(monkeypatch, config=cfg)
 

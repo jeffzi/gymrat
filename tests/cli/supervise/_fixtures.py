@@ -35,6 +35,7 @@ from gymrat.session.store import SessionState
 from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
     CapEvent,
+    CompactionEvent,
     FollowUpEvent,
     LaunchEvent,
     ModelPhaseEvent,
@@ -47,7 +48,7 @@ from gymrat.supervisor.events import (
 )
 from tests._rich import frame_text
 from tests.loop.iterate._fixtures import resolved_config
-from tests.session.records._fixtures import finalize_record, iteration_record
+from tests.session.records._fixtures import AT, finalize_record, iteration_record
 
 __all__ = [
     "FRAME_WIDTH",
@@ -59,6 +60,7 @@ __all__ = [
     "empty_session_state",
     "finalize_record",
     "fire_cap",
+    "fire_compaction",
     "fire_follow_up",
     "fire_launch",
     "fire_launch_and_bash_cycle",
@@ -130,7 +132,7 @@ def baseline_record(
     *,
     label: str = ".gymrat/worktrees/baseline",
     duration_ms: float | None = None,
-    at: str = "2026-08-08T14:15:30.000Z",
+    at: int = AT,
 ) -> BaselineRecord:
     """A baseline record with an optional wall-clock duration."""
     return BaselineRecord(
@@ -246,7 +248,11 @@ def make_supervision_result(
     message: str | None = None,
     end_reason: str | None = None,
 ) -> SupervisionResult:
-    """The ``SupervisionResult`` a finished supervised run hands back."""
+    """Build a default-completed supervision result.
+
+    ``cost_usd`` is duplicated onto both the ``outcome`` and the top-level
+    result, mirroring the shape ``supervise`` returns.
+    """
     outcome = SessionOutcome(reason=reason, cost_usd=cost_usd, message=message)
     return SupervisionResult(
         outcome=outcome,
@@ -270,18 +276,28 @@ def _throwing_read() -> ReadSessionResult:
 # is computed against it so the two stay in sync.
 _DEFAULT_TOOL_START_TS = 2000
 
+# Converts an event firer's `at_ms` (milliseconds) to the `at` field's
+# nanosecond-since-epoch unit.
+_NS_PER_MS = 1_000_000
+
 
 def fire_launch(
     observer: SessionObserver,
-    timestamp: int = 1000,
+    at_ms: int = 1000,
     *,
     max_minutes: float = 60,
     max_usd: float | None = None,
 ) -> None:
-    """Publish a ``LaunchEvent`` with sensible defaults for cap and model fields."""
+    """Publish a ``LaunchEvent`` with sensible defaults for cap and model fields.
+
+    ``at_ms`` is in the test's millisecond vocabulary; the event is stamped
+    ``at=at_ms * _NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
+    boundary (``event.at // 1_000_000``) recovers the same millisecond value.
+    """
     observer(
         LaunchEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
+            schema_version=1,
             head_sha="abc123",
             dirty=False,
             max_minutes=max_minutes,
@@ -289,6 +305,7 @@ def fire_launch(
             model=None,
             runbook_path="/path/to/runbook.md",
             kickoff_summary="test kickoff",
+            session_id="20260813-125044-34ec",
         )
     )
 
@@ -297,14 +314,15 @@ def fire_tool_start(
     observer: SessionObserver,
     tool_name: str,
     tool_use_id: str,
-    timestamp: int = _DEFAULT_TOOL_START_TS,
+    at_ms: int = _DEFAULT_TOOL_START_TS,
     *,
     input_summary: str = "...",
     parent_tool_use_id: str | None = None,
 ) -> None:
+    """Publish a ``ToolStartEvent`` at the default start timestamp used by ``fire_tool_end``."""
     observer(
         ToolStartEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
             tool_use_id=tool_use_id,
             tool_name=tool_name,
             input={},
@@ -318,7 +336,7 @@ def fire_tool_end(
     observer: SessionObserver,
     tool_name: str,
     tool_use_id: str,
-    timestamp: int = 3000,
+    at_ms: int = 3000,
     *,
     result: str = "ok",
     result_summary: str = "ok",
@@ -327,10 +345,10 @@ def fire_tool_end(
     """Publish a ``ToolEndEvent`` with duration measured from the default start timestamp."""
     observer(
         ToolEndEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
             tool_use_id=tool_use_id,
             tool_name=tool_name,
-            duration_ms=timestamp - _DEFAULT_TOOL_START_TS,
+            duration_ms=at_ms - _DEFAULT_TOOL_START_TS,
             result=result,
             result_summary=result_summary,
             parent_tool_use_id=parent_tool_use_id,
@@ -338,26 +356,33 @@ def fire_tool_end(
     )
 
 
-def fire_usage_update(observer: SessionObserver, cost_usd: float, timestamp: int = 4000) -> None:
+def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4000) -> None:
     """Publish a ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    observer(UsageUpdateEvent(timestamp=timestamp, cost_usd=cost_usd))
+    observer(UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd))
 
 
-def fire_cap(observer: SessionObserver, cap: CapType, timestamp: int = 5000) -> None:
-    observer(CapEvent(timestamp=timestamp, cap=cap))
+def fire_cap(observer: SessionObserver, cap: CapType, at_ms: int = 5000) -> None:
+    """Publish a ``CapEvent`` signaling that the given cap has fired."""
+    observer(CapEvent(at=at_ms * _NS_PER_MS, cap=cap))
+
+
+def fire_compaction(observer: SessionObserver, at_ms: int = 5000) -> None:
+    """Publish a ``CompactionEvent`` marking a context-window compaction."""
+    observer(CompactionEvent(at=at_ms * _NS_PER_MS))
 
 
 def fire_model_phase(
     observer: SessionObserver,
-    timestamp: int,
+    at_ms: int,
     phase: str,
     *,
     tool_name: str | None = None,
     parent_tool_use_id: str | None = None,
 ) -> None:
+    """Publish a ``ModelPhaseEvent``; ``tool_name``/``parent_tool_use_id`` scope it to a nested tool."""
     observer(
         ModelPhaseEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
             phase=phase,  # type: ignore[arg-type]
             tool_name=tool_name,
             parent_tool_use_id=parent_tool_use_id,
@@ -367,15 +392,16 @@ def fire_model_phase(
 
 def fire_thinking_update(
     observer: SessionObserver,
-    timestamp: int,
+    at_ms: int,
     *,
     estimated_tokens: int = 100,
     delta: int = 10,
     parent_tool_use_id: str | None = None,
 ) -> None:
+    """Publish a ``ThinkingUpdateEvent`` with the given token estimate and delta."""
     observer(
         ThinkingUpdateEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
             estimated_tokens=estimated_tokens,
             delta=delta,
             parent_tool_use_id=parent_tool_use_id,
@@ -385,16 +411,17 @@ def fire_thinking_update(
 
 def fire_turn_end(
     observer: SessionObserver,
-    timestamp: int = 5000,
+    at_ms: int = 5000,
     *,
     text: str = "Turn summary.",
     cost_usd: float = 0.01,
     origin: Literal["agent", "injected"] = "agent",
     budget_exhausted: bool = False,
 ) -> None:
+    """Publish a ``TurnEndEvent``; ``budget_exhausted`` gates the cap-triggered path."""
     observer(
         TurnEndEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
             text=text,
             cost_usd=cost_usd,
             origin=origin,
@@ -405,15 +432,16 @@ def fire_turn_end(
 
 def fire_follow_up(
     observer: SessionObserver,
-    timestamp: int = 6000,
+    at_ms: int = 6000,
     *,
     action: Literal["replied", "waiting", "ended"] = "replied",
     reason: str | None = None,
     text: str | None = None,
 ) -> None:
+    """Publish a ``FollowUpEvent`` with the given follow-up action."""
     observer(
         FollowUpEvent(
-            timestamp=timestamp,
+            at=at_ms * _NS_PER_MS,
             action=action,
             reason=reason,
             text=text,

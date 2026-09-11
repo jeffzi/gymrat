@@ -32,7 +32,8 @@ class MetricName:
     def group(self) -> str | None:
         """Path prefix minus the last segment, joined with ``/``.
 
-        Returns ``None`` for single-segment paths.
+        Returns:
+            The group string, or ``None`` for single-segment paths.
         """
         if len(self.path) <= 1:
             return None
@@ -76,17 +77,7 @@ def parse(name: str) -> MetricName:
 
 
 def format_inline(metric: MetricName) -> str:
-    """Format a parsed metric name for inline display.
-
-    The group prefix and kind suffix are wrapped in rich ``[dim]`` markup so
-    the case segment stands out.
-
-    Args:
-        metric: A parsed :class:`MetricName`.
-
-    Returns:
-        The formatted string with rich markup.
-    """
+    """Format a parsed metric name for inline display with rich dim markup."""
     group = metric.group
     prefix = f"[dim]{escape(group)}/[/dim]" if group is not None else ""
     suffix = f"[dim]#{escape(metric.kind)}[/dim]" if metric.kind is not None else ""

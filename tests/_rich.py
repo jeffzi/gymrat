@@ -11,6 +11,7 @@ from io import StringIO
 from typing import TYPE_CHECKING
 
 import pyte
+import pyte.modes
 from rich.console import Console, RenderableType
 
 from gymrat.cli.style import CLI_THEME

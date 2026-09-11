@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import Literal, NamedTuple, override
 
 from gymrat.config import BenchlessConfig, Effort
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (
@@ -62,7 +62,7 @@ def _cap_events(events: list[SessionEvent]) -> list[CapEvent]:
 
 def make_launch(
     *,
-    timestamp: int = 1000,
+    at: int = 1_000_000_000_000,
     head_sha: str = "abc123def",
     dirty: Literal[False] | DirtyInfo = False,
     max_minutes: float = 5,
@@ -71,10 +71,12 @@ def make_launch(
     effort: Effort | None = None,
     runbook_path: str = "/path/to/runbook.md",
     kickoff_summary: str = "test kickoff",
+    session_id: str = "20260813-125044-34ec",
 ) -> LaunchEvent:
     """Build a ``LaunchEvent`` from shared defaults, overridden per keyword."""
     return LaunchEvent(
-        timestamp=timestamp,
+        at=at,
+        schema_version=1,
         head_sha=head_sha,
         dirty=dirty,
         max_minutes=max_minutes,
@@ -83,6 +85,7 @@ def make_launch(
         effort=effort,
         runbook_path=runbook_path,
         kickoff_summary=kickoff_summary,
+        session_id=session_id,
     )
 
 
@@ -101,6 +104,7 @@ def make_prompt(
     effort: Effort | None = None,
     command_timeout_ms: int | None = None,
     max_budget_usd: float | None = None,
+    traceparent: str | None = None,
 ) -> SessionPrompt:
     """Build a ``SessionPrompt`` from shared defaults, overridden per keyword."""
     return SessionPrompt(
@@ -111,6 +115,7 @@ def make_prompt(
         effort=effort,
         command_timeout_ms=command_timeout_ms,
         max_budget_usd=max_budget_usd,
+        traceparent=traceparent,
     )
 
 
@@ -145,9 +150,14 @@ def result_message(
     )
 
 
-def system_message(*, subtype: str = "init") -> SimpleNamespace:
+def system_message(
+    *, subtype: str = "init", data: dict[str, object] | None = None
+) -> SimpleNamespace:
     """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
-    return SimpleNamespace(subtype=subtype)
+    ns = SimpleNamespace(subtype=subtype)
+    if data is not None:
+        ns.data = data
+    return ns
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +283,7 @@ def make_context(
 
 
 def follow_up_events(events: list[SessionEvent]) -> list[FollowUpEvent]:
+    """Return every ``FollowUpEvent`` in ``events``."""
     return [e for e in events if isinstance(e, FollowUpEvent)]
 
 
@@ -313,7 +324,7 @@ def emit_turn_end(
     """Build an ``EmitStep`` for a ``TurnEndEvent`` with the fields every caller shares."""
     return EmitStep(
         emit=TurnEndEvent(
-            timestamp=now_ms(),
+            at=now_ns(),
             text="",
             cost_usd=cost_usd,
             origin=origin,

@@ -46,11 +46,12 @@ import gymrat.signals
 import gymrat.sampling
 import gymrat.targets
 import gymrat.supervisor
+import gymrat.telemetry
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'numpy', 'claude_agent_sdk'}
-    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
+    if name in {'scipy', 'numpy', 'claude_agent_sdk', 'opentelemetry'}
+    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.', 'opentelemetry.'))
 )
 if heavy:
     print(f'package import pulled in heavy modules: {heavy}', file=sys.stderr)
@@ -80,8 +81,8 @@ if result.exit_code != 0:
 heavy = sorted(
     name
     for name in sys.modules
-    if name in {'scipy', 'numpy', 'claude_agent_sdk'}
-    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.'))
+    if name in {'scipy', 'numpy', 'claude_agent_sdk', 'opentelemetry'}
+    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.', 'opentelemetry.'))
 )
 bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
 if heavy:

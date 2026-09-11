@@ -11,5 +11,6 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force a colorless, deterministic rendering environment for every report test."""
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)

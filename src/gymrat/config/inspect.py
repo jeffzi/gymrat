@@ -60,6 +60,13 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
     An env var is consulted only when its flag is ``None`` (a flag always wins
     without the env var's validation firing). ``GYMRAT_CONFIG`` is handled in
     :func:`_resolve_config_source` because it selects the file, not a field.
+
+    Args:
+        flags: The CLI flags to check for unset fields before reading env vars.
+
+    Returns:
+        A ``(env_flags, problems)`` pair: the flags populated from env vars and
+        any validation problems encountered.
     """
     problems: list[str] = []
     strings: dict[str, str] = {}
@@ -89,11 +96,7 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
 
 
 def _build_effective_flags(flags: CliFlags, env_flags: CliFlags) -> CliFlags:
-    """Layer flags over env values: flag > env, with empty strings ignored.
-
-    An empty ``--bench``/``--prepare``/``--adapter`` never overrides the env value
-    -- it is already recorded as a problem by :func:`_collect_flag_problems`.
-    """
+    """Layer flags over env values: flag > env, with empty strings ignored."""
 
     def pick_string(flag_value: str | None, env_value: str | None) -> str | None:
         return flag_value if flag_value is not None and flag_value != "" else env_value
@@ -115,6 +118,16 @@ def _resolve_config_source(
     When the config source itself is broken (blank ``--config``, blank
     ``GYMRAT_CONFIG``), file loading is skipped and an empty ``ConfigFile`` is
     returned so the merge still yields defaults without probing the filesystem.
+
+    Args:
+        flags: Command-line overrides, consulted for an explicit ``--config``.
+        base_dir: Anchor for the implicit ``gymrat.toml`` lookup; falls back to
+            :func:`find_implicit_base` when ``None``.
+
+    Returns:
+        A ``(config_path, config_file, problems)`` triple: the resolved path
+        (``None`` when no file applies), the parsed config (``None`` on fatal
+        read/parse failure), and any problems found.
     """
     problems: list[str] = []
 
@@ -155,6 +168,16 @@ def _resolve_runbook(
 
     A runbook is checked only when a config path exists, since it is authored
     relative to the directory the config lives in.
+
+    Args:
+        config: The settled config whose ``runbook`` field to resolve.
+        config_path: Path to the loaded config file, or ``None`` when none applies.
+        problems: The running problem list; appended to in place when the
+            runbook cannot be resolved.
+
+    Returns:
+        The config with ``runbook`` resolved to an absolute path, or unchanged
+        when no resolution is needed or a problem was recorded.
     """
     if config.runbook is None or config_path is None:
         return config

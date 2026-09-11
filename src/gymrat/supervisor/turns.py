@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from gymrat.eta import format_duration
 from gymrat.loop.iterate.run import stop_condition
-from gymrat.session.records.models import DiscardRecord, KeepRecord
+from gymrat.session.records.models import CommandRecord, DiscardRecord, KeepRecord
 
 if TYPE_CHECKING:
     from gymrat.config import BenchlessConfig
@@ -82,19 +82,53 @@ class WaitForLock(Decision):
     """Another process holds the lock; wait without updating counters."""
 
 
+def outcome_record_count(records: list[SessionLogRecord]) -> int:
+    """Count records that are not command records.
+
+    The no-progress guard and the supervisor's launch-time baseline both compare
+    outcome counts — excluding command records like ``status`` calls — so that
+    bookkeeping commands never masquerade as session progress.
+
+    Args:
+        records: The session log records to count.
+
+    Returns:
+        The number of non-command records.
+    """
+    return sum(1 for r in records if not isinstance(r, CommandRecord))
+
+
 def _consecutive_discard_count(
     records: list[SessionLogRecord],
-    initial_record_count: int,
+    initial_outcome_count: int,
 ) -> int:
     """Count trailing discards among settlement records appended since launch.
 
     Only keep and discard records are settlements. Iteration and hook records
     between discards do not break the streak. A committed keep resets it. A
     keep that is not committed neither counts nor resets the streak.
+
+    ``initial_outcome_count`` is the number of non-command records at launch.
+    The slice skips that many outcome records regardless of interleaved command
+    records.
+
+    Args:
+        records: The session log records to scan.
+        initial_outcome_count: The number of non-command records at launch.
+
+    Returns:
+        The number of consecutive trailing discards.
     """
-    settlements = [
-        r for r in records[initial_record_count:] if isinstance(r, KeepRecord | DiscardRecord)
-    ]
+    skipped = 0
+    post_launch: list[SessionLogRecord] = []
+    for r in records:
+        if isinstance(r, CommandRecord):
+            continue
+        if skipped < initial_outcome_count:
+            skipped += 1
+        else:
+            post_launch.append(r)
+    settlements = [r for r in post_launch if isinstance(r, KeepRecord | DiscardRecord)]
     count = 0
     for record in reversed(settlements):
         if isinstance(record, DiscardRecord):
@@ -139,8 +173,24 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
 
     Mutates *guards* on every non-``WaitForLock`` outcome: updates the
     record-count baseline, the no-progress counter, and the reply counter.
+
+    Args:
+        config: The session's Benchless configuration.
+        state: The current session state.
+        records: The session log records accumulated so far.
+        guards: The mutable per-run counters to read and update.
+        lock_held: Whether another process currently holds the repository
+            lock.
+        turn: The turn-end event being classified.
+        max_usd: The spend cap in USD, or ``None`` for no cap.
+        deadline_ms: The session deadline, in epoch milliseconds.
+        max_minutes: The session's configured time budget, in minutes.
+        now_ms: The current time, in epoch milliseconds.
+        after_wait: Whether this turn follows a wait for a running command.
+
+    Returns:
+        The next action: continue, end, or wait for lock.
     """
-    # Rule 1: session finished
     if (
         state.finalized is not None
         or state.ends_on_stop
@@ -148,29 +198,25 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
     ):
         return End(reason="finished")
 
-    # Rule 2: spend cap
     if turn.budget_exhausted or (max_usd is not None and turn.cost_usd >= max_usd):
         return End(reason="spend-cap")
 
-    # Rule 3: lock held — freeze all counters
+    # Freeze all counters while the lock is held.
     if lock_held:
         return WaitForLock()
 
     # From here, counters are updated on every non-WaitForLock outcome.
 
-    current_count = len(records)
+    current_count = outcome_record_count(records)
 
-    # No-progress accounting: only after at least one reply has been sent
     if guards.replies_sent > 0:
         if current_count > guards.last_record_count:
             guards.no_progress_count = 0
         else:
             guards.no_progress_count += 1
 
-    # Move baseline on every non-WaitForLock classification
     guards.last_record_count = current_count
 
-    # Rule 4: guards
     if guards.replies_sent >= FOLLOW_UP_CEILING:
         return End(reason="follow-up-ceiling")
 
@@ -181,7 +227,6 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
     if trailing_discards >= CONSECUTIVE_DISCARD_LIMIT:
         return End(reason="consecutive-discards")
 
-    # Rule 5: reply
     guards.replies_sent += 1
     text = _format_reply(
         deadline_ms=deadline_ms,

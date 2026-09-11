@@ -1,21 +1,22 @@
 """Schemas and parsing for the lines of a session JSONL log.
 
 Each line of a session log is one record, discriminated on its ``type`` field.
-Records are frozen pydantic models with camelCase wire aliases and snake_case
-attribute access.
+Records are frozen pydantic models with snake_case attribute names that match
+the wire keys directly.
 
 Two entry points bridge the two forms:
 
 - :func:`parse_record` validates a decoded-JSON value into the typed model
   for its ``type``, raising a :class:`GymratError` worded for a session log.
-- :func:`record_to_wire` renders a model back to its camelCase wire dict,
+- :func:`record_to_wire` renders a model back to its snake_case wire dict,
   the form the store serializes. Optional fields whose value is ``None`` are
-  omitted, except ``deltaPct`` (on a metric verdict and on an iteration's
+  omitted, except ``delta_pct`` (on a metric verdict and on an iteration's
   primary), which is always present and serializes ``None`` as JSON ``null``.
 """
 
 from gymrat.session.records.models import (
     BaselineRecord,
+    CommandRecord,
     Confirm,
     DiscardRecord,
     FinalizeRecord,
@@ -42,6 +43,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "BaselineRecord",
     "BaselineRef",
+    "CommandRecord",
     "Confirm",
     "DiscardRecord",
     "FinalizeRecord",

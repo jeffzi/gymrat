@@ -72,18 +72,16 @@ def test_render_doctor_report_when_section_present_does_show_title():
 
 
 def test_render_doctor_report_when_mixed_statuses_does_mark_each_with_its_glyph():
-    report = _report(
-        [
-            CheckSection(
-                title="Checks",
-                checks=[
-                    Check("git", "ok", "found"),
-                    Check("repo", "warn", "not inside"),
-                    Check("config", "fail", "missing"),
-                ],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Checks",
+            checks=[
+                Check("git", "ok", "found"),
+                Check("repo", "warn", "not inside"),
+                Check("config", "fail", "missing"),
+            ],
+        )
+    ])
 
     rendered = lines(render_doctor_report(report))
 
@@ -93,14 +91,12 @@ def test_render_doctor_report_when_mixed_statuses_does_mark_each_with_its_glyph(
 
 
 def test_render_doctor_report_when_hint_present_does_indent_four_with_backticks_stripped():
-    report = _report(
-        [
-            CheckSection(
-                title="Env",
-                checks=[Check("git", "fail", "not found", hint="run `gymrat init` to set up")],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Env",
+            checks=[Check("git", "fail", "not found", hint="run `gymrat init` to set up")],
+        )
+    ])
 
     hint_line = next(line for line in lines(render_doctor_report(report)) if "gymrat init" in line)
 
@@ -109,14 +105,12 @@ def test_render_doctor_report_when_hint_present_does_indent_four_with_backticks_
 
 
 def test_render_doctor_report_when_multiline_detail_does_indent_continuations_under_glyph():
-    report = _report(
-        [
-            CheckSection(
-                title="Bench",
-                checks=[Check("bench", "ok", "line one\nline two\nline three")],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Bench",
+            checks=[Check("bench", "ok", "line one\nline two\nline three")],
+        )
+    ])
 
     rendered = lines(render_doctor_report(report))
 
@@ -152,14 +146,12 @@ def test_render_doctor_report_when_default_does_mention_skill_file_location_in_n
 
 
 def test_render_doctor_report_when_workflow_skipped_does_switch_note():
-    report = _report(
-        [
-            CheckSection(
-                title="Workflow",
-                checks=[Check("workflow", "ok", "Skipped — fix config errors first")],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Workflow",
+            checks=[Check("workflow", "ok", "Skipped — fix config errors first")],
+        )
+    ])
 
     note = _note(render_doctor_report(report))
 
@@ -168,14 +160,12 @@ def test_render_doctor_report_when_workflow_skipped_does_switch_note():
 
 
 def test_render_doctor_report_when_workflow_ran_own_checks_does_keep_default_note():
-    report = _report(
-        [
-            CheckSection(
-                title="Workflow",
-                checks=[Check("skill file", "ok", "Skill file is installed")],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Workflow",
+            checks=[Check("skill file", "ok", "Skill file is installed")],
+        )
+    ])
 
     assert "skill file location" in _note(render_doctor_report(report))
 
@@ -186,19 +176,17 @@ def test_render_doctor_report_when_workflow_ran_own_checks_does_keep_default_not
 
 
 def test_render_doctor_report_when_mixed_statuses_does_report_all_three_counts():
-    report = _report(
-        [
-            CheckSection(
-                title="Mixed",
-                checks=[
-                    Check("a", "ok", ""),
-                    Check("b", "ok", ""),
-                    Check("c", "warn", ""),
-                    Check("d", "fail", ""),
-                ],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Mixed",
+            checks=[
+                Check("a", "ok", ""),
+                Check("b", "ok", ""),
+                Check("c", "warn", ""),
+                Check("d", "fail", ""),
+            ],
+        )
+    ])
 
     output = strip_ansi(render_doctor_report(report))
 
@@ -208,21 +196,19 @@ def test_render_doctor_report_when_mixed_statuses_does_report_all_three_counts()
 
 
 def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
-    report = _report(
-        [
-            CheckSection(
-                title="All",
-                checks=[
-                    Check("a", "ok", ""),
-                    Check("b", "warn", ""),
-                    Check("c", "warn", ""),
-                    Check("d", "fail", ""),
-                    Check("e", "fail", ""),
-                    Check("f", "fail", ""),
-                ],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="All",
+            checks=[
+                Check("a", "ok", ""),
+                Check("b", "warn", ""),
+                Check("c", "warn", ""),
+                Check("d", "fail", ""),
+                Check("e", "fail", ""),
+                Check("f", "fail", ""),
+            ],
+        )
+    ])
 
     output = strip_ansi(render_doctor_report(report))
 
@@ -238,34 +224,34 @@ def test_render_doctor_report_when_multiple_per_status_does_pluralize_counts():
 
 def test_render_doctor_report_when_no_color_does_suppress_ansi(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NO_COLOR", "1")
-    report = _report(
-        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
-    )
+    report = _report([
+        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
+    ])
 
     assert "\x1b[" not in render_doctor_report(report)
 
 
 def test_render_doctor_report_when_force_color_does_emit_ansi(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    report = _report(
-        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
-    )
+    report = _report([
+        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
+    ])
 
     assert "\x1b[" in render_doctor_report(report)
 
 
 def test_render_doctor_report_when_color_false_does_suppress_ansi():
-    report = _report(
-        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
-    )
+    report = _report([
+        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
+    ])
 
     assert "\x1b[" not in render_doctor_report(report, color=False)
 
 
 def test_render_doctor_report_when_color_true_does_emit_ansi():
-    report = _report(
-        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
-    )
+    report = _report([
+        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
+    ])
 
     assert "\x1b[" in render_doctor_report(report, color=True)
 
@@ -279,9 +265,9 @@ def test_render_doctor_json_when_force_color_env_does_carry_no_ansi(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    report = _report(
-        [CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])]
-    )
+    report = _report([
+        CheckSection(title="Env", checks=[Check("a", "ok", "x"), Check("b", "fail", "y")])
+    ])
 
     output = render_doctor_json(report)
 
@@ -304,22 +290,22 @@ def test_render_doctor_json_when_rendered_does_carry_environment_sections_and_co
 
     parsed = json.loads(render_doctor_json(report))
 
-    assert parsed["environment"]["pythonVersion"] == "3.13.0"
-    assert "nodeVersion" not in parsed["environment"]
-    assert parsed["okCount"] == 1
-    assert parsed["warnCount"] == 1
-    assert parsed["failCount"] == 0
+    assert parsed["environment"]["gymrat_version"] == "1.0.0"
+    assert parsed["environment"]["python_version"] == "3.13.0"
+    assert "node_version" not in parsed["environment"]
+    assert parsed["ok_count"] == 1
+    assert parsed["warn_count"] == 1
+    assert parsed["fail_count"] == 0
+    assert parsed["has_failures"] is False
 
 
 def test_render_doctor_json_when_check_has_hint_does_carry_status_and_hint():
-    report = _report(
-        [
-            CheckSection(
-                title="Config",
-                checks=[Check("file", "fail", "missing", hint="create gymrat.json")],
-            )
-        ]
-    )
+    report = _report([
+        CheckSection(
+            title="Config",
+            checks=[Check("file", "fail", "missing", hint="create gymrat.json")],
+        )
+    ])
 
     parsed = json.loads(render_doctor_json(report))
     check = parsed["sections"][0]["checks"][0]

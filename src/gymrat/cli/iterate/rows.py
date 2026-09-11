@@ -137,7 +137,7 @@ def render_done_row(node: NodeState) -> Text:
 
 
 def render_idle_row(node: NodeState) -> Text:
-    """Render a row that has not run yet: pending with its hint."""
+    """Render a not-yet-started phase: its glyph, noun, and optional hint."""
     text = Text()
     text.append(f"{node.glyph} {node.noun}", style=STYLE_PENDING)
     if node.hint:
@@ -155,7 +155,19 @@ def build_judge_detail(
     primary_delta_pct: float | None,
     regressed: Sequence[str],
 ) -> Text:
-    """Build the rich Text detail for the judge's done row."""
+    """Build the rich Text detail for the judge's done row.
+
+    Args:
+        primary_metric: Name of the primary metric, shown beside the delta.
+        primary_delta_pct: Percentage delta on the primary metric, or ``None``
+            when no delta is available (renders as ``"—"``).
+        regressed: Names of regressed metrics. At most
+            ``_REGRESSED_NAME_CAP`` names are spelled out; the rest are
+            collapsed to ``"…"``.
+
+    Returns:
+        A styled ``Text`` suitable for the judge node's ``detail`` field.
+    """
     delta_str = f"{primary_delta_pct:+.1f}%" if primary_delta_pct is not None else "—"
     primary = f"{delta_str} on {primary_metric}" if primary_delta_pct is not None else delta_str
 
@@ -206,7 +218,26 @@ def build_nodes(
     has_before_hook: bool,
     has_after_hook: bool,
 ) -> IterateNodes:
-    """Build the per-phase node states and return them with the ordered tuple."""
+    """Build per-phase node states.
+
+    The returned ``IterateNodes`` shares node instances between its individual
+    fields (``passes``, ``judge``, …) and ``all_nodes``.  Callers mutate a
+    node's ``status`` in place and the change is reflected when iterating
+    ``all_nodes``.
+
+    Args:
+        primary_metric: Name of the primary metric, shown in the judge node's
+            hint.
+        metric_count: Total number of evaluated metrics, shown in the judge
+            hint alongside the primary.
+        has_before_hook: Whether to include a before-hook node in the
+            checklist.
+        has_after_hook: Whether the record node's hint should mention a
+            subsequent after hook.
+
+    Returns:
+        The assembled node collection with shared instances across fields.
+    """
     judge_hint = f"{primary_metric} primary"
     if metric_count > 0:
         judge_hint = f"{pluralize(metric_count, 'metric')} · {judge_hint}"
@@ -242,7 +273,21 @@ def format_judge_plain(
     regressed: Sequence[str],
     metric_count: int,
 ) -> str:
-    """Format the judge result for plain (non-live) mode."""
+    """Format the judge result for plain (non-live) mode.
+
+    Args:
+        primary_delta_pct: Percentage delta on the primary metric, or ``None``
+            when no delta is available (renders as ``"—"``).
+        regressed: Names of regressed metrics. At most
+            ``_REGRESSED_NAME_CAP`` names are spelled out; the rest are
+            collapsed to ``"…"``.
+        metric_count: Total number of evaluated metrics, used to derive the
+            non-regressed count.
+
+    Returns:
+        A ``" · "``-joined string of the delta, non-regressed count, and
+        (when any regressed) their names.
+    """
     delta_str = f"{primary_delta_pct:+.1f}%" if primary_delta_pct is not None else "—"
     handoff: list[str] = []
     if regressed:

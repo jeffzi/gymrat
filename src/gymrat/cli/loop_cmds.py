@@ -1,31 +1,16 @@
-"""The optimization-loop subcommands: start, iterate, keep, discard, finalize, status.
+"""The optimization-loop subcommands: start, iterate, keep, discard, finalize, stop, status, sync.
 
-Each command resolves its configuration at the repository root — so a run from a
-subdirectory still finds the implicit ``gymrat.toml`` — and, where it mutates the
-session, holds the repository's single-flight lock for the length of the work.
-Two commands break that lock pattern deliberately:
-
-- ``discard`` runs its confirmation prompt *before* taking the lock: prompting a
-  human can block indefinitely, and the repository must not be held hostage to a
-  reader who never answers. The session id read at prompt time is carried into
-  the locked revert as a guard, so a session that turned over while the prompt
-  waited is refused rather than silently discarded.
-- ``status`` takes no lock at all: it only reads the log, and a read never races
-  a writer into corruption the way two writers would.
-
-The interrupt wiring for ``iterate`` routes a ``SIGINT`` / ``SIGTERM`` into an
-abort event the in-flight bench watches, so an interrupted iteration abandons the
-current sample rather than the process being torn down mid-measurement.
-
-The loop engines are imported at module load rather than lazily: unlike the
-measurement stack these are light, and every loop command reaches one.
+Each command resolves configuration at the repository root and holds the
+single-flight lock for the duration. ``discard`` prompts before taking the lock
+so the repository is not held hostage to a reader who never answers; the session
+id from prompt time guards the locked revert. ``iterate`` routes SIGINT/SIGTERM
+into an abort event so an interrupted iteration abandons the current sample.
 """
 
 from __future__ import annotations
 
 import sys
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
@@ -40,6 +25,7 @@ from gymrat.cli.shared import (
     BenchOption,
     BranchOption,
     ColorOption,
+    CommandTrace,
     ConfigOption,
     DebugOption,
     ForceOption,
@@ -54,6 +40,7 @@ from gymrat.cli.shared import (
     apply_debug,
     broken_pipe_guard,
     budget_snapshot,
+    config_trace_args,
     exit_with_error,
     is_tty,
     resolve_render_mode,
@@ -67,13 +54,7 @@ from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
 from gymrat.confirm import confirm_action
 from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
-from gymrat.loop.settle import (
-    DiscardResult,
-    KeepOptions,
-    KeepResult,
-    discard_session,
-    keep_session,
-)
+from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
 from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.status import status_data, status_session
 from gymrat.loop.stop import StopResult, stop_session
@@ -113,25 +94,11 @@ def _write_budget_report(
 # Start
 # ---------------------------------------------------------------------------
 
-_RefArgument = typer.Argument(
-    default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _StartOutcome:
-    """What the locked ``start`` produced: the session, and the runbook to point at.
-
-    ``runbook`` is carried out of the lock so the summary can name it after the
-    lock is released, the way the report itself is written unlocked.
-    """
-
-    result: StartResult
-    runbook: str | None
-
 
 def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
-    ref: str | None = _RefArgument,
+    ref: str | None = typer.Argument(
+        default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
+    ),
     *,
     bench: BenchOption = None,
     prepare: PrepareOption = None,
@@ -153,16 +120,18 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
         config=config,
     )
 
+    start_args: dict[str, object] = config_trace_args(flags)
+    if ref is not None:
+        start_args["ref"] = ref
+
     async def run() -> None:
-        async def body() -> _StartOutcome:
+        async def body(_trace: CommandTrace) -> tuple[StartResult, str | None]:
             root = repo_root()
             resolved = resolve_config(flags, root)
-            return _StartOutcome(
-                result=start_session(root, ref, resolved), runbook=resolved.runbook
-            )
+            return start_session(root, ref, resolved), resolved.runbook
 
-        outcome = await with_repo_lock("start", body)
-        write_and_flush(sys.stdout, format_start_summary(outcome.result, outcome.runbook) + "\n")
+        result, runbook = await with_repo_lock("start", body, args=start_args)
+        write_and_flush(sys.stdout, format_start_summary(result, runbook) + "\n")
 
     run_cli(run)
 
@@ -173,6 +142,7 @@ def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
 
 
 async def _iterate_body(
+    trace: CommandTrace,
     flags: CliFlags,
     *,
     color: bool | None,
@@ -183,13 +153,13 @@ async def _iterate_body(
     resolved = resolve_config(flags, root)
     required = require_open_session(root, "iterate")
 
-    from gymrat.cli.console import (  # noqa: PLC0415 -- console.py imports from shared.py
-        stderr_console,
-    )
+    from gymrat.cli.console import stderr_console  # noqa: PLC0415 -- avoids circular import
 
     mode = resolve_render_mode()
     console = stderr_console(color_flag=color)
     seq = required.state.last_seq + 1
+    # Pre-set to the unsettled seq so refusals carry it; success overwrites below.
+    trace.seq = required.state.last_seq
     metric_count = len(resolved.metrics) if resolved.metrics is not None else 0
     renderer = IterateRenderer(
         mode,
@@ -209,7 +179,7 @@ async def _iterate_body(
     fan_out = create_fan_out([renderer.report, sidecar_writer])
     uninstall_progress_cleanup = install_termination_cleanup(lambda: clear_progress(root))
     try:
-        return await run_with_signal_abort(
+        result = await run_with_signal_abort(
             lambda abort: iterate_session(
                 root,
                 resolved,
@@ -217,6 +187,8 @@ async def _iterate_body(
                 color=resolved_color,
             )
         )
+        trace.seq = result.record.seq
+        return result
     finally:
         renderer.stop()
         uninstall_progress_cleanup()
@@ -251,14 +223,17 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
         config=config,
     )
 
+    iterate_args = config_trace_args(flags)
+
     async def run() -> None:
         root = repo_root()
         try:
             result = await with_repo_lock(
                 "iterate",
-                lambda: _iterate_body(
-                    flags, color=color, verbose=verbose, resolved_color=resolved_color
+                lambda trace: _iterate_body(
+                    trace, flags, color=color, verbose=verbose, resolved_color=resolved_color
                 ),
+                args=iterate_args,
             )
         except LoopStopError as error:
             trailer, summary = budget_snapshot(root)
@@ -312,17 +287,26 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
         config=config,
     )
 
+    keep_args: dict[str, object] = config_trace_args(flags)
+    if message is not None:
+        keep_args["message"] = message
+
     async def run() -> None:
-        async def body() -> KeepResult:
+        async def body(trace: CommandTrace) -> KeepResult:
             root = repo_root()
-            return await keep_session(
+            keep_result = await keep_session(
                 root,
                 resolve_benchless_config(flags, root),
                 KeepOptions(message=message),
                 color=resolved_color,
             )
+            trace.seq = keep_result.record.seq
+            if keep_result.record.status == "blocked":
+                trace.gate = True
+                trace.reason = keep_result.record.reason
+            return keep_result
 
-        result = await with_repo_lock("keep", body)
+        result = await with_repo_lock("keep", body, args=keep_args)
         root = repo_root()
         _write_budget_report(
             root,
@@ -367,10 +351,13 @@ def discard(
                 write_and_flush(sys.stderr, "discard cancelled\n")
                 raise typer.Exit(GATE_EXIT_CODE)
 
-        async def body() -> DiscardResult:
-            return discard_session(root, confirmed_session_id)
+        async def body(trace: CommandTrace) -> DiscardResult:
+            discard_result = discard_session(root, confirmed_session_id)
+            if discard_result.record is not None:
+                trace.seq = discard_result.record.seq
+            return discard_result
 
-        result = await with_repo_lock("discard", body)
+        result = await with_repo_lock("discard", body, args={"force": force})
         _write_budget_report(
             root,
             use_json=use_json,
@@ -395,11 +382,17 @@ def finalize(
     """Collapse the session's kept iterations into one commit and close it."""
     apply_debug(debug)
 
+    finalize_args: dict[str, object] = {}
+    if branch is not None:
+        finalize_args["branch"] = branch
+    if message is not None:
+        finalize_args["message"] = message
+
     async def run() -> None:
-        async def body() -> FinalizeResult:
+        async def body(_trace: CommandTrace) -> FinalizeResult:
             return finalize_session(repo_root(), FinalizeOptions(message=message, branch=branch))
 
-        result = await with_repo_lock("finalize", body)
+        result = await with_repo_lock("finalize", body, args=finalize_args)
         write_and_flush(sys.stdout, result.report + "\n")
 
     run_cli(run)
@@ -410,19 +403,9 @@ def finalize(
 # ---------------------------------------------------------------------------
 
 
-def _parse_stop_message(value: str) -> str:
-    """Reject a blank ``--message`` before any lock is taken."""
-    if not value.strip():
-        msg = "message must not be empty"
-        raise typer.BadParameter(msg)
-    return value
-
-
 _StopMessageOption = Annotated[
     str,
-    typer.Option(
-        "--message", "-m", parser=_parse_stop_message, help="why the session is being stopped"
-    ),
+    typer.Option("--message", "-m", help="why the session is being stopped"),
 ]
 
 
@@ -434,13 +417,16 @@ def stop(
 ) -> None:
     """Record a stop in the session log without reverting or committing."""
     apply_debug(debug)
+    if not message.strip():
+        msg = "message must not be empty"
+        raise typer.BadParameter(msg)
 
     use_json = format == OutputFormat.json
 
     async def run() -> None:
         root = repo_root()
 
-        async def body() -> StopResult:
+        async def body(_trace: CommandTrace) -> StopResult:
             return stop_session(root, message)
 
         result = await with_repo_lock("stop", body)
@@ -488,23 +474,22 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
         config=config,
     )
 
-    try:
-        root = repo_root()
-        trailer, summary = budget_snapshot(root)
-        if use_json:
-            report = render_status_json(status_data(root), budget=summary)
-        else:
-            report = (
+    async def run() -> None:
+        async def body(_trace: CommandTrace) -> str:
+            root = repo_root()
+            trailer, summary = budget_snapshot(root)
+            if use_json:
+                return render_status_json(status_data(root), budget=summary)
+            return (
                 status_session(root, resolve_benchless_config(flags, root), color=resolved_color)
                 + trailer
             )
-    except typer.Exit:
-        raise
-    except Exception as error:  # noqa: BLE001 -- CLI boundary: route any failure through the formatter
-        exit_with_error(error)
 
-    with broken_pipe_guard():
-        write_and_flush(sys.stdout, report + "\n")
+        report = await with_repo_lock("status", body)
+        with broken_pipe_guard():
+            write_and_flush(sys.stdout, report + "\n")
+
+    run_cli(run)
 
 
 # ---------------------------------------------------------------------------
@@ -512,27 +497,21 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
 # ---------------------------------------------------------------------------
 
 
-def _format_sync_summary(result: SyncResult) -> str:
-    """One-line summary when nothing changed, file listing when something did."""
-    if not result.files:
-        return "nothing to sync"
-    header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
-    lines = [header, *(f"  {f}" for f in result.files)]
-    return "\n".join(lines)
-
-
 def sync(*, debug: DebugOption = False) -> None:
     """Sync uncommitted main-tree changes into the experiment worktree."""
     apply_debug(debug)
 
     async def run() -> None:
-        async def body() -> SyncResult:
+        async def body(_trace: CommandTrace) -> SyncResult:
             return sync_to_experiment(repo_root())
 
         result = await with_repo_lock("sync", body)
-        root = repo_root()
-        trailer, _ = budget_snapshot(root)
-        report = _format_sync_summary(result) + trailer
-        write_and_flush(sys.stdout, report + "\n")
+        if not result.files:
+            summary = "nothing to sync"
+        else:
+            header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
+            summary = "\n".join([header, *(f"  {f}" for f in result.files)])
+        trailer, _ = budget_snapshot(repo_root())
+        write_and_flush(sys.stdout, summary + trailer + "\n")
 
     run_cli(run)

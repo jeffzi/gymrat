@@ -4,10 +4,6 @@ import pytest
 
 from gymrat.config import flag_problem
 
-# ---------------------------------------------------------------------------
-# flag_problem
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     "value",

@@ -86,6 +86,13 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
     A NaN delta (the ratio is undefined because the baseline median was 0) has no
     direction to read, so it reports no signal rather than falling through to
     "regressed" — every comparison against NaN is false.
+
+    Args:
+        delta: The percentage delta between the two medians.
+        direction: Which sign of delta counts as an improvement for this metric.
+
+    Returns:
+        The verdict for the given delta and direction.
     """
     if delta == 0 or math.isnan(delta):
         return "no-signal"
@@ -95,12 +102,20 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
 
 
 def _compute_delta(median_a: float, median_b: float) -> float:
-    """Percentage delta between two medians, normalized by ``|median_a|``.
+    """Percentage delta between two medians, normalized by the baseline's magnitude.
 
     Normalizing by the magnitude keeps the delta's sign tied to the direction the
     value moved: a negative-median metric dropping further below zero is a
-    decrease, not an increase. When ``median_a`` is 0 the ratio is undefined — 0
+    decrease, not an increase. When the baseline is 0 the ratio is undefined — 0
     if both medians are 0, ``NaN`` otherwise.
+
+    Args:
+        median_a: The baseline median.
+        median_b: The candidate median.
+
+    Returns:
+        The percentage delta, or ``NaN`` when *median_a* is zero and *median_b*
+        is not.
     """
     if median_a == 0 and median_b == 0:
         return 0.0
@@ -110,10 +125,17 @@ def _compute_delta(median_a: float, median_b: float) -> float:
 
 
 def _fraction_of_median(numerator: float, median: float) -> float:
-    """``numerator`` as a fraction of a median's magnitude, or 0 with no magnitude.
+    """A value as a fraction of a median's magnitude, or 0 with no magnitude.
 
     A side that measured 0 contributes nothing instead of making the result
     infinite, so each side stands on its own term.
+
+    Args:
+        numerator: The value to express as a fraction of the median.
+        median: The median whose magnitude is the denominator.
+
+    Returns:
+        The fraction, or ``0.0`` when *median* is zero.
     """
     return 0.0 if median == 0 else numerator / abs(median)
 
@@ -131,6 +153,13 @@ def _compute_noise(samples: _PairedSamples, unit: MetricUnit | None) -> _Noise:
     is quantized to whole bytes, so a 4B → 3B move is one step of resolution
     rather than a measured 25% win, however tight its spread. Averaged units such
     as ``ns`` carry no such bound and keep the plain floor.
+
+    Args:
+        samples: The paired baseline/candidate samples for the metric.
+        unit: The metric's unit, or ``None`` when it carries no unit.
+
+    Returns:
+        The computed noise thresholds for this metric.
     """
     half_range_a = compute_half_range(samples.left)
     half_range_b = compute_half_range(samples.right)
@@ -179,6 +208,19 @@ def _compute_approximate_verdict(
     A significant p-value alone is not enough on the permutation path: the delta
     must also clear the metric's measurement resolution, or a one-byte
     quantization step reads as signal however many rounds agree on it.
+
+    Args:
+        samples: The paired baseline/candidate samples for the metric.
+        delta: The percentage delta between the two medians.
+        meta: The metric's metadata, including its direction and unit.
+        unstable_noise_pct: Noise band width, in percent, above which the
+            verdict is forced to ``"unstable"``.
+
+    Returns:
+        A permutation or band verdict record for the metric.
+
+    Raises:
+        ValueError: When ``PERMUTATION_FLOORS.p_threshold`` is ``None``.
     """
     _, nonzero_n = count_nonzero_pairs(samples.left, samples.right)
     noise = _compute_noise(samples, meta.unit)
@@ -255,6 +297,10 @@ def compute_verdicts(
     Returns:
         A mapping from metric name to verdict, holding only metrics that produced
         one.
+
+    Raises:
+        ValueError: When ``PERMUTATION_FLOORS.p_threshold`` is ``None`` and a
+            metric falls onto the permutation path.
     """
     result: dict[str, MetricVerdict] = {}
 

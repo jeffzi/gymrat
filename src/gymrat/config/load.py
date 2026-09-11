@@ -19,6 +19,14 @@ def _read_source(path: Path) -> tuple[str | None, str | None]:
     second is ``None``.  When the file does not exist both elements are
     ``None``.  On any other read failure the first element is ``None`` and
     the second describes the error.
+
+    Args:
+        path: Path to the config file to read.
+
+    Returns:
+        A ``(text, problem)`` pair: the file content and ``None`` on success,
+        ``(None, None)`` when the file is absent, or ``(None, message)`` on
+        read failure.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -44,6 +52,14 @@ def _validate_read(
     Shared by the collecting loader and the throwing loader: it never raises, so
     each caller decides whether a non-empty problem list becomes an exception or
     a returned result.
+
+    Args:
+        text: The raw config file content to parse.
+        config_path: Path to the config file, used to word parse-error messages.
+
+    Returns:
+        A ``(config_file, problems)`` pair: the parsed :class:`ConfigFile`
+        (``None`` on failure) and any validation problems found.
     """
     try:
         data = tomllib.loads(text)

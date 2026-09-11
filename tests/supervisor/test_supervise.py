@@ -93,10 +93,7 @@ class _Box:
 
 
 class _DelegatingSession:
-    """Wraps a ``DriverSession``.
-
-    Delegates ``outcome``, ``interrupt``, ``send``, and ``end``.
-    """
+    """Let subclasses override one method while inheriting the rest."""
 
     def __init__(self, inner: DriverSession) -> None:
         self._inner = inner
@@ -116,7 +113,7 @@ class _DelegatingSession:
 
 
 class _CountingSession(_DelegatingSession):
-    """Counts ``interrupt`` calls before delegating them."""
+    """Track how many times the supervisor calls ``interrupt`` before it gives up."""
 
     def __init__(self, inner: DriverSession, counter: _Box) -> None:
         super().__init__(inner)
@@ -138,7 +135,7 @@ class _ThrowingInterruptSession(_DelegatingSession):
 
 
 class _WrapDriver:
-    """Record the abort event and wrap the session an inner driver returns."""
+    """Capture the ``abort`` event the supervisor passes so tests can inspect or trigger it."""
 
     def __init__(
         self,
@@ -180,7 +177,7 @@ class _FutureSession:
 
 
 class _RejectingDriver:
-    """Returns a session whose ``outcome`` rejects immediately."""
+    """Exercise the supervisor's handling of a driver that errors before any turn runs."""
 
     def start(
         self,
@@ -220,7 +217,10 @@ async def test_supervise_when_session_completes_does_report_outcome(
 async def test_supervise_when_session_runs_does_log_launch_first_then_events_in_order(
     tmp_path: Path,
 ):
-    steps = [EmitStep(emit=TextDeltaEvent(timestamp=2000, chunk="hello")), CostStep(cost_usd=0.01)]
+    steps = [
+        EmitStep(emit=TextDeltaEvent(at=2_000_000_000_000, chunk="hello")),
+        CostStep(cost_usd=0.01),
+    ]
     driver = create_mock_driver(steps)
     log_path = tmp_path / "events.jsonl"
 
@@ -447,12 +447,10 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     tmp_path: Path,
 ):
     probe = collecting_observer()
-    driver = create_mock_driver(
-        [
-            CostStep(cost_usd=5.0),
-            TurnEndStep(cost_usd=5.0),
-        ]
-    )
+    driver = create_mock_driver([
+        CostStep(cost_usd=5.0),
+        TurnEndStep(cost_usd=5.0),
+    ])
 
     result = await _supervise_fast(
         driver,
@@ -480,7 +478,7 @@ def _error_steps() -> list[object]:
         raise RuntimeError(boom_message)
 
     return [
-        EmitStep(emit=TextDeltaEvent(timestamp=2000, chunk="partial output")),
+        EmitStep(emit=TextDeltaEvent(at=2_000_000_000_000, chunk="partial output")),
         CostStep(cost_usd=0.02),
         ActionStep(action=boom),
     ]
@@ -679,17 +677,13 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(tmp_path: 
 async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The poll loop compares ``now_ms()`` against a wall-clock deadline.
-
-    Advancing the fake clock past the deadline on the first poll makes the cap
-    fire immediately, proving the loop checks ``now_ms()`` rather than relying
-    on a single ``asyncio.sleep`` for the full duration.
-    """
     supervise_mod = sys.modules["gymrat.supervisor.supervise"]
 
     call_count = 0
     start_time = 1_000_000
 
+    # Advancing the fake clock past the deadline on the first poll proves the
+    # loop checks now_ms() rather than relying on a single asyncio.sleep.
     def fake_now_ms() -> float:
         nonlocal call_count
         call_count += 1

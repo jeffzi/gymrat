@@ -12,7 +12,7 @@ import math
 import re
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Generator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Annotated, Any, Literal, NoReturn, Protocol
@@ -21,12 +21,16 @@ import typer
 from rich.markup import escape
 
 from gymrat.adapters.types import AdapterError
+from gymrat.cli.lock import (
+    CommandTrace,
+    config_trace_args,
+    with_repo_lock,
+)
 from gymrat.cli.progress import ProgressReporter
 from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat.errors import GymratError, hint_of
 from gymrat.eta import format_duration
 from gymrat.exec import kill_live_process_groups
-from gymrat.git import NotAGitRepositoryError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.style import (
     RENDER_WIDTH,
@@ -46,11 +50,12 @@ from gymrat.session.budget import (
     format_budget_trailer,
     read_budget,
 )
-from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
-from gymrat.session.store import read_records, recover_torn_tail
+from gymrat.session.paths import repo_root, session_jsonl_path
+from gymrat.session.store import read_records
 from gymrat.signals import install_termination_cleanup
 from gymrat.warn import warn_to_stderr
+
+__all__ = ["CommandTrace", "config_trace_args", "with_repo_lock"]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -142,13 +147,21 @@ def write_and_flush(stream: _WritableStream, data: str) -> None:
 
 
 def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
-    """Resolve whether output to ``stream`` should carry color.
+    """Resolve whether ``stream`` should carry color.
 
     One precedence rule, shared by every color surface — the report on stdout,
     the progress line on stderr, and the error text on stderr — so they never
     disagree: an explicit ``override`` (the ``--color`` / ``--no-color`` flag)
     wins; then ``FORCE_COLOR`` (any value but ``0``/``false``/empty); then
     ``NO_COLOR`` (present, any value); then the stream's own TTY detection.
+
+    Args:
+        override: The explicit ``--color`` / ``--no-color`` flag, or ``None``
+            when neither was given.
+        stream: The output stream whose TTY status is the final fallback.
+
+    Returns:
+        Whether the stream should emit color.
     """
     if override is not None:
         return override
@@ -181,6 +194,13 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
     :class:`AdapterError` keeps its class-name prefix), the stack trace when
     ``debug`` is set, a dim hint line for a :class:`GymratError` that carries
     one, and a report-a-bug footer for errors that are not :class:`GymratError`.
+
+    Args:
+        error: The error to render.
+        debug: When set, include the full stack trace.
+
+    Returns:
+        The assembled error string with Rich markup.
     """
     error_label = f"{markup('Error', 'red')}: "
 
@@ -221,12 +241,15 @@ def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoRetu
 
 
 @contextlib.contextmanager
-def broken_pipe_guard() -> Iterator[None]:
+def broken_pipe_guard() -> Generator[None]:
     """Catch BrokenPipeError from a stdout write and exit cleanly.
 
     Sync counterpart of the same mapping in ``run_cli``: a broken pipe from the
     reading end closing is not an error for a CLI that already produced its
     output.
+
+    Raises:
+        typer.Exit: With code 0 when a ``BrokenPipeError`` is caught.
     """
     try:
         yield
@@ -257,6 +280,16 @@ def parse_positional(positional: str) -> TargetSpec:
     A target containing its own ``=`` survives intact — ``a=b=c`` parses to label
     ``a``, target ``b=c``. An empty half is always a typo, so each raises its own
     usage error rather than resolving to a silent default.
+
+    Args:
+        positional: The raw positional argument in ``label=target`` or bare
+            ``target`` form.
+
+    Returns:
+        The parsed label and target.
+
+    Raises:
+        typer.BadParameter: When the label or target half is empty.
     """
     head, sep, tail = positional.partition("=")
     label: str | None = head if sep else None
@@ -320,6 +353,15 @@ def parse_fail_on(value: str) -> FailOnCondition:
     """Parse a fail-on condition: ``regressed`` or ``geomean:<number>``.
 
     Anything else raises a usage error naming the allowed grammar.
+
+    Args:
+        value: The raw ``--fail-on`` flag value.
+
+    Returns:
+        The parsed fail-on condition.
+
+    Raises:
+        typer.BadParameter: When the value does not match the allowed grammar.
     """
     if value == "regressed":
         return RegressedFailOn()
@@ -343,41 +385,11 @@ def resolve_render_mode() -> Literal["live", "plain"]:
     A non-TTY stderr always renders plain; a TTY gets the rich-based live
     layout regardless of color — styling is handled by the console's own
     color resolution.
+
+    Returns:
+        ``"live"`` when stderr is a TTY, ``"plain"`` otherwise.
     """
     return "live" if is_tty(sys.stderr) else "plain"
-
-
-# ---------------------------------------------------------------------------
-# Repository lock
-# ---------------------------------------------------------------------------
-
-
-async def with_repo_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T:
-    """Hold the repository's single-flight lock for the length of ``body``.
-
-    Inside a git repository the lock is acquired around ``body`` and released
-    however it settles — including on exception, and always before the caller
-    renders its report. Outside every git repository the answer is to run
-    ``body`` with no lock at all; any other git failure exits without
-    benchmarking rather than running unlocked.
-
-    Holding the lock is what makes repairing the session log safe: a torn final
-    line can only belong to a writer the previous run left dead, so the tail is
-    dropped here — once per command, before ``body`` reads or appends anything.
-    """
-    try:
-        root = repo_root()
-    except NotAGitRepositoryError:
-        return await body()
-    except GymratError as error:
-        exit_with_error(error)
-
-    release = acquire_lock(lockfile_path(root), command)
-    try:
-        recover_torn_tail(session_jsonl_path(root))
-        return await body()
-    finally:
-        release()
 
 
 async def run_with_signal_abort[T](
@@ -396,6 +408,13 @@ async def run_with_signal_abort[T](
     process exits, so the cleanup kills any live exec-spawned group synchronously
     before setting the event; the event still drives the async abort race when
     the loop does keep running.
+
+    Args:
+        execute: An async callable that receives an abort event and returns the
+            run result.
+
+    Returns:
+        The value returned by ``execute``.
     """
     abort = asyncio.Event()
 
@@ -552,9 +571,7 @@ class JsonRenderer[T](Protocol):
     is ``None``, rather than serializing it as ``null``.
     """
 
-    def __call__(self, result: T, /, *, budget: BudgetSummary | None = None) -> str:
-        """Render ``result`` as a JSON document."""
-        ...
+    def __call__(self, result: T, /, *, budget: BudgetSummary | None = None) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,7 +598,12 @@ def budget_summary_of(budget: Budget, current_ms: float) -> BudgetSummary:
 def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
     """Read the live budget at *root* and return the text trailer and JSON summary.
 
-    Returns ``("", None)`` when no budget is active.
+    Args:
+        root: The repository root whose session budget to read.
+
+    Returns:
+        The text trailer and JSON summary, or ``("", None)`` when no budget
+        is active.
     """
     current = _clock.now_ms()
     budget = read_budget(root, now_ms=current)
@@ -601,7 +623,9 @@ def _repo_root_or_none() -> str | None:
 def budget_for_report() -> tuple[str, BudgetSummary | None]:
     """Read the live budget rooted at the current repository.
 
-    Returns ``("", None)`` outside a git repository or when no budget is active.
+    Returns:
+        The text trailer and JSON summary, or ``("", None)`` outside a git
+        repository or when no budget is active.
     """
     root = _repo_root_or_none()
     if root is None:
@@ -612,12 +636,14 @@ def budget_for_report() -> tuple[str, BudgetSummary | None]:
 def warn_duration_over_budget(*, halve: bool) -> None:
     """Warn on stderr when the estimated duration would outlast the budget.
 
-    ``halve=True`` checks half the last iterate estimate — one side, the shape
-    ``measure`` runs — and names that per-side figure on its own. ``halve=False``
-    checks the full estimate — both sides, the shape ``compare`` runs — and leads
-    with the full cost, keeping the per-side figure in parentheses so a per-side
-    number that still fits does not read as if nothing were wrong. Silently
-    returns when the budget or estimate is unknown.
+    Args:
+        halve: When ``True``, check half the last iterate estimate — one side,
+            the shape ``measure`` runs — and name that per-side figure on its
+            own. When ``False``, check the full estimate — both sides, the
+            shape ``compare`` runs — and lead with the full cost, keeping the
+            per-side figure in parentheses so a per-side number that still
+            fits does not read as if nothing were wrong. Silently returns when
+            the budget or estimate is unknown.
     """
     root = _repo_root_or_none()
     if root is None:
@@ -666,9 +692,15 @@ def emit_report[T](  # noqa: PLR0913 -- keyword-only budget params extend a 4-po
     is passed through untouched. The JSON document is never styled, so it ignores
     ``render_opts`` entirely.
 
-    ``budget_trailer`` is appended to text output (typically a time-left line)
-    and ``budget_summary`` is forwarded to the JSON renderer for the ``budget``
-    key in machine-readable output.
+    Args:
+        result: The typed result to render.
+        flags: CLI flags selecting ``text`` or ``json`` output format.
+        renderers: The text and JSON render callables for the result type.
+        render_opts: Styling options forwarded to the text renderer.
+        budget_trailer: Text appended after the report (typically a time-left
+            line).
+        budget_summary: Forwarded to the JSON renderer for the ``budget`` key
+            in machine-readable output.
     """
     if wants_json(flags):
         write_and_flush(sys.stdout, renderers.json(result, budget=budget_summary) + "\n")

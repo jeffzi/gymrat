@@ -117,7 +117,7 @@ def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
         auto_refresh=False,
         expand=True,
     )
-    task = progress.add_task("time", total=max_ms, completed=int(min(elapsed_ms, max_ms)))
+    task = progress.add_task("time", total=max_ms, completed=min(elapsed_ms, max_ms))
     progress.update(task)
     return progress
 
@@ -152,7 +152,19 @@ def _iter_label_text(count: int, max_iterations: int | None) -> Text:
 
 
 def build_loop_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> Text:
-    """Build the iteration-progress summary shown in the supervise frame."""
+    """Build the iteration-progress summary shown in the supervise frame.
+
+    Args:
+        session_result: The latest session read, or ``None`` when the session
+            file has not been created yet.
+        max_iterations: The configured iteration cap, shown as ``N/M`` in the
+            label.  ``None`` when uncapped.
+
+    Returns:
+        A styled ``Text`` whose content depends on session state: pending when
+        no session exists, a baseline-only note, a finalized marker, or a
+        kept/discarded/last-delta summary for an in-progress run.
+    """
     if session_result is None:
         return Text(NO_SESSION_TEXT, style=STYLE_PENDING)
 
@@ -195,6 +207,9 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
 
     The label is styled by each caller — dim inside the dashboard frame, plain in
     the closing summary — so it is not baked into the shared content.
+
+    Returns:
+        The styled ``Text``, or ``None`` when no best iteration exists.
     """
     if session_result is None:
         return None
@@ -478,6 +493,9 @@ def _build_agent_row(final_text: str) -> Text:
     with an ellipsis and a note directing the user to the event log (whose path
     is printed on the next row).  Short messages render unchanged with
     continuation-line indentation preserved.
+
+    Returns:
+        The styled ``Text`` row for the agent summary.
     """
     label = "agent"
     if len(final_text) > SUMMARY_MAX_CHARS:
@@ -532,6 +550,20 @@ def build_summary(
     last text block, with paragraph breaks preserved.
 
     ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
+
+    Args:
+        result: The supervision outcome whose ``ended_by`` drives the headline.
+        log_path: Absolute path to the event log, printed as the final row.
+        session_result: The latest session read, supplying best-iteration and
+            loop-progress content.  ``None`` when the session file was never
+            created.
+        final_text: Override text for the agent row.  When ``None``, the
+            function falls back to the session's stop message or last text
+            block.
+        labels: Model and effort labels to surface as extra rows.
+
+    Returns:
+        The assembled ``Text`` block for the closing summary.
     """
     rows = [_build_outcome_text(result)]
     if _completed_on_its_own(result) or result.ended_by == "guard":

@@ -20,6 +20,9 @@ def default_clock() -> float:
 
     ``perf_counter`` is monotonic, so an NTP correction or DST shift on the wall
     clock cannot make a gap appear negative or inflate an estimate.
+
+    Returns:
+        A monotonic timestamp in milliseconds.
     """
     return time.perf_counter() * 1000
 
@@ -63,7 +66,16 @@ class PassStarted:
 
 @dataclass(frozen=True, slots=True)
 class PassFinished:
-    """Emitted after a bench command completes for one round against a target."""
+    """Emitted after a bench command completes for one round against a target.
+
+    Attributes:
+        round: 1-based round number.
+        total_rounds: Total number of rounds in the schedule.
+        target_count: Number of targets in the schedule.
+        label: The target's display label.
+        phase: Whether this pass was a measurement or confirmation run.
+        at_ms: Monotonic millisecond timestamp from the emitter's clock.
+    """
 
     round: int
     total_rounds: int
@@ -98,7 +110,15 @@ class JudgeStarted:
 
 @dataclass(frozen=True, slots=True)
 class JudgeFinished:
-    """Emitted after the judge evaluates an iteration's samples."""
+    """Emitted after the judge evaluates an iteration's samples.
+
+    Attributes:
+        primary_delta_pct: The primary metric's delta as a percentage, or
+            ``None`` when the iteration has no primary metric.
+        regressed: Names of the metrics that regressed this iteration.
+        metric_count: Total number of metrics the judge evaluated.
+        at_ms: Monotonic millisecond timestamp from the emitter's clock.
+    """
 
     primary_delta_pct: float | None
     regressed: tuple[str, ...]
@@ -108,7 +128,13 @@ class JudgeFinished:
 
 @dataclass(frozen=True, slots=True)
 class ConfirmStarted:
-    """Emitted before a confirmation pass begins."""
+    """Emitted before a confirmation pass begins.
+
+    Attributes:
+        filtered_metrics: The metric names the confirmation pass is restricted
+            to, or ``None`` when the full suite is rerun.
+        at_ms: Monotonic millisecond timestamp from the emitter's clock.
+    """
 
     filtered_metrics: tuple[str, ...] | None
     at_ms: float
@@ -144,8 +170,10 @@ type ProgressEvent = (
     | ConfirmFinished
     | IterationRecorded
 )
+"""The union of progress events a sampling run can emit."""
 
 type ProgressCallback = Callable[[ProgressEvent], None]
+"""A callback a run notifies with each emitted :data:`ProgressEvent`."""
 
 
 def emit_progress(on_progress: ProgressCallback | None, event: ProgressEvent) -> None:
@@ -159,6 +187,12 @@ def create_fan_out(subscribers: Sequence[ProgressCallback]) -> ProgressCallback:
 
     One subscriber failing (raising an exception) never silences the others:
     exceptions are logged and swallowed so the remaining subscribers always run.
+
+    Args:
+        subscribers: The callbacks to fan each event out to.
+
+    Returns:
+        A callback that dispatches each event to all subscribers.
     """
     subs = list(subscribers)
 

@@ -82,7 +82,13 @@ async def confirm_regressions(
     ``filter`` template benches just the named metrics; without one the whole
     bench re-runs and the same metrics are read out of it.
 
-    Returns what the rerun found, or ``None`` when nothing called for one.
+    Args:
+        ctx: The iteration context, carrying the session, config, and options.
+        verdicts: The first run's per-metric verdicts, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+
+    Returns:
+        What the rerun found, or ``None`` when nothing called for one.
 
     Raises:
         GymratError: When the rerun's bench command fails — an iteration nobody
@@ -140,6 +146,14 @@ def apply_confirmation(
     A metric the rerun never reported is left regressed — the rerun's job is to
     disprove a regression, and silence disproves nothing. Only the verdict word
     moves; the delta, noise, and p-value stay the first run's.
+
+    Args:
+        verdicts: The first run's per-metric verdicts, by name.
+        confirmation: What the confirmation rerun found, or ``None`` when no
+            rerun was needed.
+
+    Returns:
+        The verdicts with unconfirmed regressions demoted to ``no-signal``.
     """
     if confirmation is None:
         return verdicts
@@ -167,6 +181,12 @@ def _shell_quote(value: str) -> str:
     On POSIX, ``shlex.quote`` handles safe-word detection and single-quote
     escaping. On win32, ``cmd.exe`` uses double quotes, and
     ``subprocess.list2cmdline`` produces the correct escaping.
+
+    Args:
+        value: The metric name to shell-quote for the filter template.
+
+    Returns:
+        The shell-quoted string safe for interpolation into a command.
     """
     if sys.platform == "win32":
         return subprocess.list2cmdline([value])

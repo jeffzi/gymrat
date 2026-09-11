@@ -13,6 +13,9 @@ def _regular_plural(noun: str) -> str:
     A sibilant ending takes ``-es``; a consonant followed by ``y`` takes
     ``-ies``; everything else takes ``-s``. Multi-word nouns inflect on their
     last word, which the suffix tests already look at.
+
+    Returns:
+        The pluralized noun.
     """
     if noun.endswith(_SIBILANT_ENDINGS):
         return f"{noun}es"
@@ -26,6 +29,14 @@ def pluralize(count: int, noun: str, plural: str | None = None) -> str:
 
     A count of one keeps ``noun`` as given; any other count — zero and
     negatives included — takes the plural form.
+
+    Args:
+        count: The count that determines singular vs. plural form.
+        noun: The singular form of the noun.
+        plural: An explicit plural form to use instead of the regular inflection.
+
+    Returns:
+        The count followed by the correctly inflected noun.
     """
     if count == 1:
         return f"{count} {noun}"

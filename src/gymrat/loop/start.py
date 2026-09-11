@@ -16,7 +16,7 @@ from pathlib import Path
 
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
-from gymrat.session.clock import format_iso
+from gymrat.session.clock import now_ns
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SCHEMA_VERSION, SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.store import SessionState, append_record, fold_session, read_records
@@ -53,6 +53,9 @@ def start_session(root: str, ref: str | None, config: ResolvedConfig) -> StartRe
         root: The repository the session lives in.
         ref: The ref the baseline is pinned to, or ``None`` to pin at ``HEAD``.
         config: The resolved run settings the header snapshots as provenance.
+
+    Returns:
+        The session record, folded state, and whether the session was resumed.
 
     Raises:
         GymratError: When ``ref`` names no commit or a directory, when the log is
@@ -117,17 +120,27 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
     The header lands last: a session the log claims exists but whose branch git
     never created would send every later command looking for a workspace that is
     not there.
+
+    Args:
+        root: Repository root directory.
+        jsonl_path: Path to the session JSONL log file.
+        ref: Git ref to pin the baseline to.
+        config: Resolved configuration for the session.
+
+    Returns:
+        The created session record, folded state, and ``resumed=False``.
     """
     sha = _resolve_baseline_sha(ref, root)
     now = datetime.now(UTC)
     session_id = _new_session_id(now)
     workspace = create_workspace(root, session_id, BaselineRef(ref=ref, sha=sha))
 
+    # pyrefly: ignore[missing-argument] -- validate_by_name=True accepts the Python name
     session = SessionRecord(
         type="session",
         schema_version=SCHEMA_VERSION,
         session_id=session_id,
-        created_at=format_iso(now),
+        at=now_ns(),
         baseline=workspace.baseline,
         branch=workspace.branch,
         worktrees=workspace.worktrees,
@@ -145,12 +158,20 @@ def _resolve_baseline_sha(ref: str, root: str) -> str:
     run, so a directory — which :func:`resolve_target` otherwise accepts, and
     prefers over a ref of the same name — has nothing to pin a branch at.
 
+    Args:
+        ref: Git ref to resolve.
+        root: Repository root directory.
+
+    Returns:
+        The SHA the ref resolves to.
+
     Raises:
         GymratError: When ``ref`` resolves to a directory or to no commit at all.
     """
     target = resolve_target(ref, root)
     if not isinstance(target, RefTarget):
-        raise _directory_baseline_error(ref)
+        err = _directory_baseline_error(ref)
+        raise err
     return target.resolved_sha
 
 
@@ -168,6 +189,12 @@ def _new_session_id(now: datetime) -> str:
     The timestamp sorts sessions the way they were started and reads back as a
     date; the random suffix keeps two sessions started in the same second — and
     therefore their branches — apart.
+
+    Args:
+        now: The instant the session is minted from.
+
+    Returns:
+        The session id string.
     """
     suffix = secrets.token_hex(SESSION_ID_ENTROPY_BYTES)
     return f"{now.strftime('%Y%m%d-%H%M%S')}-{suffix}"
@@ -180,6 +207,12 @@ def _snapshot_config(config: ResolvedConfig) -> SessionConfig:
     never set stays absent rather than becoming an explicit null. Every command
     re-reads its config for the settings it acts on, so this snapshot answers
     "what was this session started with", never "what runs next".
+
+    Args:
+        config: The resolved run configuration to snapshot.
+
+    Returns:
+        The session config model ready for the session record.
     """
     hooks = config.hooks
     return SessionConfig(

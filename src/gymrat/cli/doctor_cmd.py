@@ -53,7 +53,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
-    """Check the project setup and report any problems."""
+    """Run all doctor checks and exit ``GATE_EXIT_CODE`` if any check fails."""
     apply_debug(debug)
     color_override = apply_color_override(color)
     flags = SharedFlags(

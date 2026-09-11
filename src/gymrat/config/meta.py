@@ -54,6 +54,19 @@ def resolve_metric_meta(
     direction, gating, and exact, and a ``config_kinds`` entry for the resolved kind
     supplies gating when the metric entry does not. A per-metric gating override wins
     over its kind's gating.
+
+    Args:
+        metric_names: Metric names to resolve, in the order they should appear
+            in the result.
+        config_metrics: Per-metric overrides from the config file, keyed by
+            metric name, or ``None`` if none are configured.
+        adapter: Adapter supplying each metric's defaults.
+        config_kinds: Per-kind gating overrides from the config file, keyed by
+            kind name, or ``None`` if none are configured.
+
+    Returns:
+        An ordered mapping from metric name to its resolved
+        :class:`ResolvedMetricMeta`.
     """
     return {
         name: _resolve_one_metric(

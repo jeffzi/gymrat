@@ -1,8 +1,4 @@
-"""Shared progress-event builders for CLI progress test modules.
-
-The ``_ms``, ``_pass_started``, and ``_pass_finished`` helpers appeared
-identically in ``test_progress.py`` and ``iterate/test_progress.py``.
-"""
+"""Shared progress-event builders for ``test_progress`` and ``iterate/test_progress``."""
 
 from __future__ import annotations
 
@@ -32,7 +28,6 @@ def pass_started(
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
 ) -> PassStarted:
-    """Build a ``PassStarted`` event for round *round_num* of *total_rounds*."""
     return PassStarted(
         round=round_num,
         total_rounds=total_rounds,
@@ -52,7 +47,6 @@ def pass_finished(
     label: str = "bench",
     phase: Literal["measure", "confirm"] = "measure",
 ) -> PassFinished:
-    """Build a ``PassFinished`` event for round *round_num* of *total_rounds*."""
     return PassFinished(
         round=round_num,
         total_rounds=total_rounds,

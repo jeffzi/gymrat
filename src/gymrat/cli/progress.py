@@ -131,8 +131,16 @@ def compact_progress(
 ) -> tuple[Progress, _ClockColumn]:
     """Build a single-row compact progress bar for narrow terminals.
 
-    Returns the ``Progress`` and its ``_ClockColumn`` so callers can update the
-    remaining estimate as passes complete.
+    Callers can update the remaining estimate as passes complete via the
+    returned clock column.
+
+    Args:
+        console: The console the progress bar renders to.
+        clock: Optional time source injected for testing; defaults to
+            ``time.monotonic``.
+
+    Returns:
+        The ``Progress`` and its ``_ClockColumn``.
     """
     clock_col = _ClockColumn()
     progress = Progress(
@@ -154,8 +162,16 @@ def passes_progress(
 ) -> tuple[Progress, _ClockColumn]:
     """Build the sampling bar row shared by the measure/compare and iterate views.
 
-    Returns the ``Progress`` and its ``_ClockColumn`` so callers can update the
-    remaining estimate as passes complete.
+    Callers can update the remaining estimate as passes complete via the
+    returned clock column.
+
+    Args:
+        console: The console the progress bar renders to.
+        clock: Optional time source injected for testing; defaults to
+            ``time.monotonic``.
+
+    Returns:
+        The ``Progress`` and its ``_ClockColumn``.
     """
     clock_col = _ClockColumn()
     progress = Progress(
@@ -177,6 +193,18 @@ class ProgressReporter(LiveDisplayMixin):
     Call ``stop`` exactly once after the run ends. The reporter renders to the
     given ``console`` using either a rich ``Live`` block (live mode) or plain
     timestamped lines (plain mode).
+
+    Args:
+        mode: ``"live"`` for a rich live display or ``"plain"`` for timestamped
+            milestone lines.
+        console: The console to render progress to.
+        target_count: How many targets (baseline + candidates) the run covers.
+        sample_count: The number of samples per target, or ``None`` when the
+            total is discovered at runtime from ``PassStarted.total_rounds``.
+        clock: Optional time source injected for testing; defaults to
+            ``time.monotonic``.
+        command: A label printed in the header row of the live display.
+        target_labels: Labels for each target, shown when ``target_count > 1``.
     """
 
     def __init__(  # noqa: PLR0913 -- mirrors the factory below

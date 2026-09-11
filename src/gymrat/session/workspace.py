@@ -11,6 +11,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field
 
 from gymrat.errors import GymratError, stderr_text_of
 from gymrat.git import SHORT_SHA_LENGTH, repository_lookup_error, run_git, try_git
@@ -32,16 +35,16 @@ INSPECT_STATUS_HINT = "Inspect what is standing there with: git status"
 class BaselineRef:
     """A git ref together with the commit it resolved to when the session started."""
 
-    ref: str
-    sha: str
+    ref: Annotated[str, Field(description="Git ref name the baseline was taken from.")]
+    sha: Annotated[str, Field(description="Commit SHA the ref resolved to at session start.")]
 
 
 @dataclass(frozen=True, slots=True)
 class Worktrees:
     """The two worktree directories a session runs in."""
 
-    experiment: str
-    baseline: str
+    experiment: Annotated[str, Field(description="Path to the experiment worktree.")]
+    baseline: Annotated[str, Field(description="Path to the baseline worktree.")]
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +74,14 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     attempt had already checked out down with it, so a retry starts from the
     state it found instead of tripping over its own leftovers. A worktree
     directory that was already standing survives — see :func:`_unwind_workspace`.
+
+    Args:
+        root: Repository root to create the branch and worktrees in.
+        session_id: Unique session identifier used to name the branch.
+        baseline: The ref and commit sha to detach the baseline worktree at.
+
+    Returns:
+        The branch name, worktree paths, and baseline ref.
 
     Raises:
         GymratError: When ``root`` is not a git repository, or when git refuses
@@ -119,6 +130,10 @@ def ensure_git_exclude(root: str) -> None:
     is this checkout's business, not the project's: nothing gymrat writes should
     show up in a commit the agent under test prepares.
 
+    Args:
+        root: Repository root whose git exclude file gets the session
+            directory line.
+
     Raises:
         GymratError: When ``root`` is not a git repository.
     """
@@ -144,6 +159,12 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
     Resuming has to survive a worktree the user deleted, so this is a no-op when
     both are present — an experiment worktree carrying uncommitted work is never
     re-checked-out.
+
+    Args:
+        root: Repository root the worktrees live under.
+        branch: The session's branch name to reattach the experiment
+            worktree to.
+        baseline_sha: The commit sha to reattach the baseline worktree to.
 
     Raises:
         GymratError: When git refuses to prune or to add a worktree.
@@ -225,6 +246,13 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
     keep that left half an edit behind would put the next iteration's baseline
     out of step with the code that earned it.
 
+    Args:
+        experiment_dir: Path to the experiment worktree to stage and commit.
+        message: The commit message.
+
+    Returns:
+        The full SHA of the newly created commit.
+
     Raises:
         GymratError: When git refuses to stage or to commit — a worktree with
             nothing to commit included.
@@ -258,6 +286,10 @@ def revert_workspace(experiment_dir: str, *, target: str | None = None) -> None:
     agent added, which a reset alone would leave behind to be picked up by the
     next keep.
 
+    Args:
+        experiment_dir: Path to the experiment worktree to reset and clean.
+        target: Commit to reset to, or ``None`` to reset to HEAD.
+
     Raises:
         GymratError: When git refuses to reset or to clean.
     """
@@ -287,6 +319,9 @@ def worktree_fingerprint(directory: Path) -> str | None:
     Stages everything into a disposable copy of the worktree's index and runs
     ``git write-tree`` against it, so the real index is never touched: a
     partially staged worktree has byte-identical staged files before and after.
+
+    Args:
+        directory: The worktree to fingerprint.
 
     Returns:
         A hex tree-hash string covering the content and mode of every
@@ -319,6 +354,12 @@ def worktree_fingerprint(directory: Path) -> str | None:
 def worktree_head(directory: str) -> str:
     """The commit ``directory`` currently has checked out, as a full hex SHA.
 
+    Args:
+        directory: The worktree whose HEAD to read.
+
+    Returns:
+        The full hex SHA of HEAD.
+
     Raises:
         GymratError: When git refuses to read the HEAD.
     """
@@ -336,6 +377,12 @@ def is_worktree_dirty(directory: str) -> bool:
     A directory that is not there reads as clean: a worktree the user deleted
     carries no uncommitted work anyone can still act on, and refusing to finalize
     over a directory that cannot be inspected would strand the session.
+
+    Args:
+        directory: The worktree to check for uncommitted or untracked files.
+
+    Returns:
+        ``True`` when the worktree has uncommitted or untracked files.
     """
     return dirty_file_count(directory) > 0
 
@@ -347,6 +394,12 @@ def dirty_file_count(directory: str) -> int:
     rather than the directory alone, so a new folder of three files counts as
     three.  A directory that does not exist returns 0 for the same reason
     ``is_worktree_dirty`` reads a missing worktree as clean.
+
+    Args:
+        directory: The worktree to count dirty entries in.
+
+    Returns:
+        The number of dirty entries, or 0 when the directory is absent.
     """
     if not _is_directory(directory):
         return 0
@@ -366,6 +419,13 @@ def changed_file_count(directory: str, target: str) -> int:
     This includes tracked files whose content changed between ``target`` and
     the current working tree (committed or not) and untracked files that exist
     in the working tree but not in ``target``.  A missing directory returns 0.
+
+    Args:
+        directory: The worktree to compare against ``target``.
+        target: The git ref or commit to diff against.
+
+    Returns:
+        The number of changed or untracked files, or 0 when absent.
     """
     if not _is_directory(directory):
         return 0
@@ -400,6 +460,10 @@ def advance_baseline(baseline_dir: str, sha: str) -> None:
     the experiment worktree has checked out, and git refuses to check the same
     branch out twice.
 
+    Args:
+        baseline_dir: Path to the baseline worktree to move.
+        sha: The commit to detach the baseline worktree at.
+
     Raises:
         GymratError: When git refuses the checkout.
     """
@@ -423,6 +487,10 @@ def remove_worktrees(root: str, worktrees: Worktrees) -> list[str]:
     Removal failures are returned instead of raised because this runs after the
     finalize record is written — the session is closed either way, and the
     caller's job is to tell the user which directory to clear by hand.
+
+    Args:
+        root: Repository root the worktrees belong to.
+        worktrees: The experiment and baseline worktree paths to remove.
 
     Returns:
         One warning per worktree git left standing, empty when both went.
@@ -452,11 +520,18 @@ def _git_common_dir(root: str) -> str:
     ``.git`` is a file pointing elsewhere — excludes through the same file the
     main checkout uses. git prints the path relative to the working directory
     when it sits inside it, hence the resolve against ``root``.
+
+    Returns:
+        The resolved absolute path.
+
+    Raises:
+        GymratError: When ``root`` is not inside a git repository.
     """
     try:
         printed = run_git(["rev-parse", "--git-common-dir"], root).strip()
     except (subprocess.SubprocessError, OSError) as error:
-        raise repository_lookup_error(root, error) from error
+        err = repository_lookup_error(root, error)
+        raise err from error
     # An absolute path git prints (a linked worktree's common dir) stands on its
     # own; a relative one (``.git`` in the main checkout) resolves against root.
     return str(Path(root, printed))
@@ -471,6 +546,18 @@ def run_git_step(args: list[str], cwd: str, message: str, hint: str) -> str:
 
     The error carries git's own diagnostics after ``message`` so the reader sees
     the real reason, and ``hint`` for what to do next.
+
+    Args:
+        args: The git command-line arguments to run.
+        cwd: Working directory to run the command in.
+        message: The error message prefix used if the command fails.
+        hint: The hint appended to the raised error.
+
+    Returns:
+        The captured stdout from the git command.
+
+    Raises:
+        GymratError: When the git command exits non-zero.
     """
     try:
         return run_git(args, cwd)

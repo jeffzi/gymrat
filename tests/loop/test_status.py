@@ -43,6 +43,7 @@ from tests.session.records._fixtures import (
     AT,
     SESSION_ID,
     blocked_keep,
+    command_record,
     committed_keep,
     discard_record,
     finalize_record,
@@ -116,11 +117,10 @@ def _iteration(seq: int, delta_pct: float, outcome: Outcome) -> IterationRecord:
 
 
 def _nothing_measured_keep(seq: int) -> KeepRecord:
-    """A keep refused for want of a measurement, numbered ``seq``.
+    """``keep`` writes a blocked record when nothing has been measured since the last settle.
 
-    ``keep`` writes one of these when nothing has been measured since the last
-    settle, numbering it past every iteration on file — so the number it carries
-    belongs to an iteration that does not exist yet, and may never.
+    The number it carries belongs to an iteration that does not exist yet, and
+    may never — ``keep`` numbers the record past every iteration on file.
     """
     return blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True))
 
@@ -405,6 +405,36 @@ def test_status_session_when_log_has_stop_record_does_render_stopped_line_in_fil
         "stopped · target reached",
         "1 iteration · 1 kept · 0 discarded",
     ]
+
+
+# ---------------------------------------------------------------------------
+# CommandRecord is invisible in the rendered history
+# ---------------------------------------------------------------------------
+
+
+def test_status_session_when_command_records_interleaved_does_render_same_lines(
+    tmp_path: Path,
+):
+    root_without = str(tmp_path / "without")
+    root_with = str(tmp_path / "with")
+    Path(root_without).mkdir()
+    Path(root_with).mkdir()
+
+    base_history = four_iterations()
+    write_session_log(root_without, _session(root_without), base_history)
+
+    history_with_commands = (
+        command_record(seq=0),
+        *base_history[:3],
+        command_record(seq=1),
+        *base_history[3:],
+        command_record(seq=5),
+    )
+    write_session_log(root_with, _session(root_with), history_with_commands)
+
+    assert _body_lines(status_session(root_with, _config())) == _body_lines(
+        status_session(root_without, _config())
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -802,9 +802,12 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
     details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
     assert caught.value is not original
     assert isinstance(caught.value, CommandError)
-    assert str(caught.value) == "\n".join(
-        ["bench command failed", "", "cleanup did not finish:", *details]
-    )
+    assert str(caught.value) == "\n".join([
+        "bench command failed",
+        "",
+        "cleanup did not finish:",
+        *details,
+    ])
     assert caught.value.hint == "check the target"
     assert caught.value.__cause__ is original
 

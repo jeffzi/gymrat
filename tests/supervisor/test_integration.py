@@ -99,15 +99,13 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     # so the iterate is a step forward, not a no-op.
     assert TUNED_LATENCY < BASELINE_LATENCY
 
-    driver = create_mock_driver(
-        [
-            ActionStep(action=start),
-            ActionStep(action=iterate),
-            ActionStep(action=keep),
-            ActionStep(action=finalize),
-            CostStep(cost_usd=0.42),
-        ]
-    )
+    driver = create_mock_driver([
+        ActionStep(action=start),
+        ActionStep(action=iterate),
+        ActionStep(action=keep),
+        ActionStep(action=finalize),
+        CostStep(cost_usd=0.42),
+    ])
 
     result = await supervise(
         driver=driver,
@@ -124,8 +122,6 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     assert result.outcome.reason == "completed"
     assert result.cost_usd == 0.42
 
-    # The event log opens with the launch event, then carries the cost step's
-    # usage update from the running session.
     log_lines = read_log_lines(log_path)
     assert log_lines[0]["type"] == "launch"
     assert any(line["type"] == "usage_update" for line in log_lines[1:])

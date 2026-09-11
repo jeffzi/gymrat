@@ -45,6 +45,7 @@ from tests.session.records._fixtures import (
     TORN_PREFIX,
     Worktrees,
     blocked_keep,
+    command_record,
     committed_keep,
     discard_record,
     finalize_record,
@@ -732,6 +733,38 @@ def test_fold_session_when_stop_appended_does_not_change_counts_or_seq():
 
 
 # ---------------------------------------------------------------------------
+# fold_session — CommandRecord is transparent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "base_records",
+    [
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), stop_record()],
+            id="a-command-after-a-stop-preserves-ends-on-stop",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, _gating_block(1)],
+            id="a-command-after-a-gating-block-preserves-ends-on-gating-block",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), ITERATION_2],
+            id="a-command-after-an-unsettled-iteration-preserves-unsettled",
+        ),
+    ],
+)
+def test_fold_session_when_command_record_appended_does_leave_state_unchanged(
+    base_records: list[SessionLogRecord],
+):
+    expected = fold_session(base_records)
+
+    with_command = [*base_records, command_record()]
+
+    assert fold_session(with_command) == expected
+
+
+# ---------------------------------------------------------------------------
 # require_session
 # ---------------------------------------------------------------------------
 
@@ -766,6 +799,13 @@ def test_require_session_when_no_session_opened_does_raise_naming_root_and_verb(
 
     assert fresh_root in str(excinfo.value)
     assert hint_of(excinfo.value) == f"Run gymrat start to open one before {verb}."
+
+
+def test_require_session_when_no_session_opened_does_carry_no_session_reason(fresh_root: str):
+    with pytest.raises(GymratError) as excinfo:
+        require_session(fresh_root, "measuring an edit")
+
+    assert excinfo.value.reason == "no-session"
 
 
 def test_require_session_when_session_finalized_does_still_hand_the_closed_session_back(
@@ -803,3 +843,14 @@ def test_require_open_session_when_session_finalized_does_raise_naming_the_close
 
     assert SESSION.session_id in str(excinfo.value)
     assert "gymrat start" in (hint_of(excinfo.value) or "")
+
+
+def test_require_open_session_when_session_finalized_does_carry_finalized_reason(
+    fresh_root: str,
+):
+    write_session_log(fresh_root, SESSION, (ITERATION_1, committed_keep(1), FINALIZE))
+
+    with pytest.raises(GymratError) as excinfo:
+        require_open_session(fresh_root, "measuring an edit")
+
+    assert excinfo.value.reason == "finalized"

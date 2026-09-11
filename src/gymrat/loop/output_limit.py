@@ -19,6 +19,14 @@ def limit_output(text: str) -> str:
     ``errors="ignore"`` silently drops the trailing bytes of a character the
     cut split, so a multi-byte character is never severed and no U+FFFD
     replacement character is emitted.
+
+    Args:
+        text: The text to cap.
+
+    Returns:
+        The original text when it fits the budget, or the longest prefix
+        cut at a whole-line boundary (falling back to the last whole
+        character when no usable newline exists).
     """
     encoded = text.encode("utf-8")
     if len(encoded) <= _OUTPUT_LIMIT_BYTES:

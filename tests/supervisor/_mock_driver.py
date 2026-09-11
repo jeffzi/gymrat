@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ns
 from gymrat.supervisor.driver import (
     DriverSession,
     SessionOutcome,
@@ -150,7 +150,7 @@ class _MockSession:
                 if self._aborted():
                     return
                 self._cost_usd = step.cost_usd
-                self._observer(UsageUpdateEvent(timestamp=now_ms(), cost_usd=step.cost_usd))
+                self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=step.cost_usd))
             case TurnEndStep():
                 if self._aborted():
                     return
@@ -158,7 +158,7 @@ class _MockSession:
                     self._cost_usd = step.cost_usd
                 self._observer(
                     TurnEndEvent(
-                        timestamp=now_ms(),
+                        at=now_ns(),
                         text=step.text,
                         cost_usd=self._cost_usd,
                         origin=step.origin,

@@ -20,6 +20,7 @@ on stderr wherever the cursor happens to be.
 def warn_to_stderr(message: str) -> None:
     """Default :data:`WarnSink` for callers called without an explicit one.
 
-    Writes ``message`` followed by a newline to stderr.
+    Args:
+        message: The text to write to stderr, followed by a newline.
     """
     sys.stderr.write(f"{message}\n")

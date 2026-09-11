@@ -24,6 +24,14 @@ def strip_frontmatter(text: str) -> str:
     line — so consumers that feed the skill to a model as plain instructions
     drop it. Text that does not open with a delimiter line, or whose block is
     never closed, is returned unchanged.
+
+    Args:
+        text: The skill file contents, possibly prefixed with a frontmatter
+            block.
+
+    Returns:
+        The text with its frontmatter block removed, or unchanged when there
+        is none to strip.
     """
     if not text.startswith(f"{_FRONTMATTER_DELIMITER}\n"):
         return text
@@ -39,6 +47,9 @@ def _skill_resource() -> Traversable:
 
 def read_bundled_skill() -> str:
     """Return the text of the skill file shipped as package data.
+
+    Returns:
+        The bundled skill file's contents.
 
     Raises:
         GymratError: When the packaged skill file cannot be resolved or read — a

@@ -10,6 +10,7 @@ import pytest
 from tests.cli.supervise._fixtures import (
     _throwing_read,
     fire_cap,
+    fire_compaction,
     fire_follow_up,
     fire_launch,
     fire_tool_end,
@@ -143,10 +144,22 @@ def test_plain_when_follow_up_does_print_turn_count_and_action(action: str, expe
 
 
 def test_plain_when_capped_while_idle_after_turn_end_does_print_cap_ending():
-    """When the last event was a turn end (model is idle), cap prints 'ending'."""
     plain = make_plain_reporter()
     fire_launch(plain.observer, 1000)
     fire_turn_end(plain.observer, 2000, text="done")
     fire_cap(plain.observer, "wall-clock")
 
     assert plain.writes[-1] == "cap wall-clock — ending"
+
+
+# ---------------------------------------------------------------------------
+# compaction event — plain mode
+# ---------------------------------------------------------------------------
+
+
+def test_plain_when_compaction_does_print_context_compacted():
+    plain = make_plain_reporter()
+    fire_launch(plain.observer, 1000)
+    fire_compaction(plain.observer, 3000)
+
+    assert any("context compacted" in w for w in plain.writes)

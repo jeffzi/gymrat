@@ -120,15 +120,17 @@ def labeled_lines(report: str, stage: HookStage) -> list[str]:
 
 
 def expected_hook_record(**overrides: Any) -> HookRecord:
-    """The ``HookRecord`` ``run_hook`` produces, with ``duration_ms`` normalized to 0.
+    """The ``HookRecord`` ``run_hook`` produces, with ``at`` and ``duration_ms`` normalized to 0.
 
-    ``duration_ms`` is nondeterministic, so it defaults to 0 here and callers
-    compare against a record whose own ``duration_ms`` they have replaced with 0.
+    ``at`` and ``duration_ms`` are both nondeterministic, so each defaults to 0
+    here and callers compare against a record whose own ``at`` and
+    ``duration_ms`` they have replaced with 0.
     ``timed_out`` defaults to ``False`` and ``stderr_bytes`` to 0; every other
     field is the caller's to name.
     """
     fields: dict[str, Any] = {
         "type": "hook",
+        "at": 0,
         "timed_out": False,
         "stderr_bytes": 0,
         "duration_ms": 0,

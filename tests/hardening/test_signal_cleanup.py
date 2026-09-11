@@ -98,7 +98,6 @@ def _wait_for_pid(path: Path, timeout_s: float = 30.0) -> int:
 
 
 def _wait_until_dead(pid: int, timeout_s: float = 30.0) -> None:
-    """Poll until the process with ``pid`` no longer exists."""
     deadline = time.monotonic() + timeout_s
     while _is_alive(pid):
         if time.monotonic() > deadline:
@@ -110,7 +109,6 @@ def _wait_until_dead(pid: int, timeout_s: float = 30.0) -> None:
 def _wait_for_worktree_count(
     list_worktree_dirs: Callable[..., list[str]], repo: str, count: int, timeout_s: float = 30.0
 ) -> None:
-    """Poll until at least ``count`` non-main worktrees exist for ``repo``."""
     deadline = time.monotonic() + timeout_s
     while len(list_worktree_dirs(repo, include_main=False)) < count:
         if time.monotonic() > deadline:
@@ -122,13 +120,7 @@ def _wait_for_worktree_count(
 
 @pytest.fixture
 def reap_groups() -> Iterator[list[int]]:
-    """Track process-group leaders and hard-kill any survivor on teardown.
-
-    Every test here drives a real bench process tree; a failed assertion must
-    not strand a live bench or the grandchild it forked. The bench writes its
-    own ``$$`` to ``bench.pid``; tests append that leader pid, and the whole
-    group is ``SIGKILL``ed when the test ends.
-    """
+    """Track process-group leaders and hard-kill any survivor on teardown."""
     leaders: list[int] = []
     try:
         yield leaders

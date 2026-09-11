@@ -349,8 +349,6 @@ def test_scaffold_when_runbook_path_is_a_dangling_symlink_does_raise_gymrat_erro
 def test_scaffold_when_config_write_fails_does_not_leave_partial_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A crash during the config write must not leave a truncated gymrat.toml."""
-
     def exploding_replace(src: object, dst: object) -> None:
         msg = "disk full"
         raise OSError(msg)
@@ -361,7 +359,6 @@ def test_scaffold_when_config_write_fails_does_not_leave_partial_config(
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
     assert not (tmp_path / "gymrat.toml").exists()
-    # Also verify no .tmp sibling was left behind.
     tmp_files = list(tmp_path.glob("gymrat.toml.*"))
     assert tmp_files == []
 
@@ -388,11 +385,6 @@ def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(
 def test_scaffold_when_filesystem_error_does_include_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """OSError during writing surfaces as GymratError with a hint.
-
-    The report-a-bug footer must never appear.
-    """
-
     def exploding_replace(src: object, dst: object) -> None:
         msg = "Read-only file system"
         raise OSError(msg)
@@ -402,6 +394,7 @@ def test_scaffold_when_filesystem_error_does_include_hint(
     with pytest.raises(GymratError) as exc_info:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
+    # The report-a-bug footer must never appear for a filesystem error.
     assert hint_of(exc_info.value) is not None
 
 
@@ -429,13 +422,9 @@ def test_scaffold_module_does_not_import_tomli_w():
 def test_scaffold_when_rollback_unlink_fails_does_propagate_original_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A failing cleanup unlink must never replace the original scaffold error.
-
-    The runbook write failure happens after the config is written, so the
-    except-block tries to unlink the just-created config; that unlink is made
-    to raise OSError too, and the original error must still propagate.
-    """
-
+    # The runbook write fails after the config is written, so the except-block
+    # tries to unlink the config; that unlink also raises, and the original
+    # error must still propagate.
     def exploding_write_runbook(*args: object, **kwargs: object) -> None:
         msg = "runbook write failed"
         raise GymratError(msg)

@@ -201,6 +201,13 @@ def markup(text: str, style: str) -> str:
 
     The single markup primitive the report package styles a run of plain text
     with; :func:`render_lines` resolves the span to ANSI (or strips it) once.
+
+    Args:
+        text: The plain text to wrap.
+        style: The rich style to apply.
+
+    Returns:
+        The text wrapped in rich-markup style tags.
     """
     return f"[{style}]{escape(text)}[/]"
 
@@ -333,6 +340,9 @@ def _force_color_env() -> bool:
     ``FORCE_COLOR`` wins over ``NO_COLOR`` when both are set:
     any value other than ``0``, ``false`` or the empty string enables color. Only
     the ``color=None`` branch consults this; an explicit choice never does.
+
+    Returns:
+        Whether ``FORCE_COLOR`` is present and set to an enabling value.
     """
     value = os.environ.get("FORCE_COLOR")
     if value is None:
@@ -350,6 +360,10 @@ def color_from_env() -> bool | None:
     Rich's presence-based detection which treats any ``FORCE_COLOR`` as "on";
     ``NO_COLOR`` (present, any value) then forces it off; with neither the
     answer is ``None`` so the caller decides from the stream's own TTY state.
+
+    Returns:
+        ``True`` for forced color, ``False`` for suppressed color, or ``None``
+        when neither environment variable is set.
     """
     if _force_color_env():
         return True

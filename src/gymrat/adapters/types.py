@@ -60,12 +60,6 @@ class Adapter(Protocol):
     Conformance is structural: any object exposing ``name``, ``parse``, and
     ``defaults`` satisfies the protocol without inheriting from it.
 
-    ``parse`` receives a bench script's full stdout and raises
-    :class:`AdapterError` when it yields no usable metric — returning an empty
-    map instead would let a silently broken bench script read as a run with
-    nothing to compare. Complaints about individual unreadable lines go to
-    ``warn``, which defaults to stderr so a direct caller need not supply one.
-
     ``defaults`` is consulted once per metric name during config resolution, and
     only for fields the user's config does not override.
     """
@@ -73,7 +67,18 @@ class Adapter(Protocol):
     name: str
 
     def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
-        """Parse ``stdout`` into a metric map, routing complaints to ``warn``."""
+        """Parse ``stdout`` into a metric map, routing complaints to ``warn``.
+
+        Args:
+            stdout: The bench script's full standard output.
+            warn: Where to send complaints about individual unreadable lines.
+
+        Returns:
+            One value per metric name.
+
+        Raises:
+            AdapterError: When ``stdout`` yields no usable metric.
+        """
         ...
 
     def defaults(self, metric_name: str) -> MetricDefaults:

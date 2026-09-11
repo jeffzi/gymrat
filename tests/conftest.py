@@ -30,15 +30,17 @@ from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from tests._git import run_git as _run_git
 
-#: Every GYMRAT_* variable the config resolver reads; cleared before each
-#: test so ambient developer environment never leaks into expectations.
-GYMRAT_ENV_VARS = (
+#: Every environment variable a test must not inherit from the developer's
+#: shell — the GYMRAT_* set the config resolver reads, plus the OTLP endpoint
+#: configure_tracing reads.
+SCRUBBED_ENV_VARS = (
     "GYMRAT_BENCH",
     "GYMRAT_PREPARE",
     "GYMRAT_ADAPTER",
     "GYMRAT_SAMPLES",
     "GYMRAT_TIMEOUT",
     "GYMRAT_CONFIG",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
 )
 
 
@@ -68,14 +70,7 @@ def hold_lock(
 
 @pytest.fixture(autouse=True)
 def _restore_signal_dispositions() -> Iterator[None]:
-    """Restore termination-signal dispositions after every test.
-
-    Any test that reaches the real ``install_termination_cleanup`` — directly
-    or through a live renderer — leaves the gymrat handler installed for the
-    rest of the worker's life; a later Ctrl-C would then ``os._exit`` the
-    worker and skip every remaining teardown. Restoring the saved dispositions
-    keeps pytest's own interrupt handling in charge between tests.
-    """
+    """Restore termination-signal dispositions after every test."""
     saved = {sig: signal.getsignal(sig) for sig in TERMINATION_SIGNALS}
     yield
     if any(signal.getsignal(sig) is not handler for sig, handler in saved.items()):
@@ -90,17 +85,19 @@ def _restore_signal_dispositions() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _clear_gymrat_env() -> Iterator[None]:
+    """Remove every GYMRAT_* and OTLP env var for the duration of the test."""
     # A private MonkeyPatch context rather than the `monkeypatch` fixture: an
     # autouse dependency on `monkeypatch` would reorder its teardown after
     # module-level autouse cleanups, running them under still-active patches.
     with pytest.MonkeyPatch.context() as patcher:
-        for var in GYMRAT_ENV_VARS:
+        for var in SCRUBBED_ENV_VARS:
             patcher.delenv(var, raising=False)
         yield
 
 
 @pytest.fixture(autouse=True)
 def _reset_stderr_color() -> Iterator[None]:
+    """Reset the stderr color override before and after every test."""
     set_stderr_color_override(None)
     yield
     set_stderr_color_override(None)
@@ -160,14 +157,7 @@ def _remove_stranded_worktrees(repo_dir: str) -> None:
 
 @pytest.fixture
 def create_scratch_repo() -> Iterator[Callable[[], str]]:
-    """Factory yielding fresh scratch repositories, all cleaned up on teardown.
-
-    The returned callable can be invoked several times; every repository it
-    hands back is torn down together, and any worktree stranded in the system
-    temp directory is swept before the repositories are removed. If a test
-    changed into a repository, the working directory is restored first (a
-    directory that is a process's cwd cannot always be removed).
-    """
+    """Factory yielding fresh scratch repositories, all cleaned up on teardown."""
     created: list[str] = []
     original_cwd = Path.cwd()
 
@@ -206,13 +196,7 @@ def list_worktree_dirs() -> Callable[..., list[str]]:
 
 @pytest.fixture
 def kill_git_during_worktree_add() -> Callable[[str], None]:
-    """Install a post-checkout hook that kills git once a worktree is on disk.
-
-    Reproduces the one state a run can strand: a worktree on disk whose
-    ``git worktree add`` never returned success. ``post-checkout`` fires after
-    git has laid the worktree down and registered it, so what survives the kill
-    is a complete worktree, not a half-written one. POSIX-only.
-    """
+    """Install a post-checkout hook that kills git once a worktree is on disk."""
 
     def install(repo_dir: str) -> None:
         hook_path = Path(repo_dir) / ".git" / "hooks" / "post-checkout"
@@ -228,13 +212,7 @@ def kill_git_during_worktree_add() -> Callable[[str], None]:
 
 @pytest.fixture
 def register_absent_worktree() -> Callable[[str], str]:
-    """Register a worktree of a repo the way a user would, then delete its dir.
-
-    Stands in for a user's own worktree that is only temporarily absent. Git
-    keeps listing it until ``git worktree prune`` runs, which makes its entry a
-    probe for whether a sweep reached past the worktrees it was asked about.
-    Returns the resolved path git lists the worktree under.
-    """
+    """Register a worktree of a repo the way a user would, then delete its dir."""
 
     def register(repo_dir: str) -> str:
         directory = str(Path(os.path.realpath(repo_dir)) / "absent-user-worktree")
@@ -247,11 +225,7 @@ def register_absent_worktree() -> Callable[[str], str]:
 
 @pytest.fixture
 def create_in_place_target_dir() -> Callable[[str, str, str], str]:
-    """Write a bench script into a plain subdirectory of a repo.
-
-    ``resolve_target`` sees a plain directory and returns an in-place target,
-    so benching it never creates a worktree. Returns the created directory.
-    """
+    """Write a bench script into a plain subdirectory of a repo."""
 
     def create(repo_dir: str, name: str, bench_script: str) -> str:
         target = Path(repo_dir) / name

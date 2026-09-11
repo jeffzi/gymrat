@@ -9,18 +9,30 @@ in text and JSON output (including on gate-refusal), and duration warnings when
 the budget is tight.
 """
 
+from __future__ import annotations
+
 import json
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from gymrat.cli.app import app
+from gymrat.cli.compare_cmd import _serialize_fail_on
 from gymrat.config import CliFlags, ResolvedConfig
-from gymrat.report.types import ComparisonResult
+from gymrat.report.types import (
+    ComparisonResult,
+    FailOnCondition,
+    GeomeanFailOn,
+    RegressedFailOn,
+)
 from gymrat.session import append_record, session_jsonl_path
 from tests.cli._budget import install_budget, install_tight_budget
+from tests.cli._loop_cmds import last_command_record
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
@@ -66,6 +78,16 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
         return _resolved()
 
     monkeypatch.setattr("gymrat.cli.compare_cmd.resolve_config", fake)
+
+
+def _stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
+    """Stub ``resolve_config`` and ``compare`` so invoking the command succeeds.
+
+    ``result`` becomes the comparison the fake ``compare`` returns; defaults to
+    a comparison with no regressions.
+    """
+    _stub_resolve(monkeypatch)
+    _patch_compare(monkeypatch, create_comparison_result() if result is None else result)
 
 
 def _regressed_result() -> ComparisonResult:
@@ -133,8 +155,7 @@ def test_compare_when_flags_given_does_feed_them_to_resolve_config(
 
 @pytest.mark.usefixtures("_in_non_repo")
 def test_compare_when_format_text_does_render_report_to_stdout(monkeypatch: pytest.MonkeyPatch):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "text"]
@@ -148,8 +169,7 @@ def test_compare_when_format_text_does_render_report_to_stdout(monkeypatch: pyte
 def test_compare_when_format_json_does_render_json_document_to_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
@@ -183,8 +203,7 @@ def test_compare_when_bench_missing_does_exit_two_with_message_on_stderr():
 def test_compare_when_fail_on_trips_does_exit_one_after_printing_report(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, _regressed_result())
+    _stub_compare(monkeypatch, _regressed_result())
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
@@ -196,8 +215,7 @@ def test_compare_when_fail_on_trips_does_exit_one_after_printing_report(
 
 @pytest.mark.usefixtures("_in_non_repo")
 def test_compare_when_fail_on_does_not_trip_does_exit_zero(monkeypatch: pytest.MonkeyPatch):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
@@ -215,8 +233,7 @@ def test_compare_when_budget_active_does_end_text_with_time_left_line(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
@@ -230,8 +247,7 @@ def test_compare_when_no_budget_does_omit_time_left_line(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
 
@@ -243,8 +259,7 @@ def test_compare_when_format_json_and_budget_active_does_include_budget_object(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(
@@ -254,16 +269,15 @@ def test_compare_when_format_json_and_budget_active_does_include_budget_object(
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_compare_when_format_json_and_no_budget_does_omit_budget_key(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
 
     result = runner.invoke(
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--format", "json"]
@@ -283,8 +297,7 @@ def test_compare_when_fail_on_trips_and_budget_active_does_include_time_left_lin
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, _regressed_result())
+    _stub_compare(monkeypatch, _regressed_result())
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(
@@ -300,8 +313,7 @@ def test_compare_when_fail_on_trips_and_format_json_and_budget_active_does_inclu
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, _regressed_result())
+    _stub_compare(monkeypatch, _regressed_result())
     install_budget(repo, monkeypatch)
 
     result = runner.invoke(
@@ -322,7 +334,7 @@ def test_compare_when_fail_on_trips_and_format_json_and_budget_active_does_inclu
     assert result.exit_code == 1
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
+    assert doc["budget"]["cap_minutes"] == 30
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +370,7 @@ def test_compare_when_budget_tight_and_estimate_known_does_warn_on_stderr(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    """When the full estimated pair duration exceeds budget remaining, compare warns."""
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
     install_tight_budget(repo, monkeypatch)
     _write_session_with_duration(repo, 720_000)
 
@@ -374,12 +384,162 @@ def test_compare_when_estimate_unknown_does_not_warn(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
 ):
-    """No warning when there's no duration estimate, even with a tight budget."""
-    _stub_resolve(monkeypatch)
-    _patch_compare(monkeypatch, create_comparison_result())
+    _stub_compare(monkeypatch)
     install_tight_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
 
     assert result.exit_code == 0
     assert "warning" not in result.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
+# command trace — args and exit recording
+# ---------------------------------------------------------------------------
+
+
+def _open_session(repo: str) -> None:
+    """Open a session in ``repo`` so the command trace has somewhere to write."""
+    write_session_log(repo, session_record())
+
+
+def test_compare_when_success_does_record_trace_with_baseline_candidates_fail_on(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_compare(monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "compare"
+    assert cmd.args["baseline"] == "main"
+    assert cmd.args["candidates"] == ["cand"]
+    assert cmd.args["fail_on"] == ""
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+    for key in ("prepare", "adapter", "samples", "timeout", "config"):
+        assert key not in cmd.args
+
+
+def test_compare_when_config_overrides_given_does_include_them_in_trace_args(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_compare(monkeypatch)
+
+    result = runner.invoke(
+        app,
+        [
+            "compare",
+            "main",
+            "cand",
+            "--bench",
+            "sh bench.sh",
+            "--prepare",
+            "make",
+            "--adapter",
+            "mitata",
+            "--samples",
+            "7",
+            "--timeout",
+            "42",
+            "--config",
+            "gymrat.json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.args["bench"] == "sh bench.sh"
+    assert cmd.args["prepare"] == "make"
+    assert cmd.args["adapter"] == "mitata"
+    assert cmd.args["samples"] == 7
+    assert cmd.args["timeout"] == 42
+    assert cmd.args["config"] == "gymrat.json"
+
+
+def test_compare_when_multiple_candidates_does_record_all_in_trace_args(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_compare(monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand1", "cand2", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.args["candidates"] == ["cand1", "cand2"]
+
+
+def test_compare_when_fail_on_trips_does_record_exit_one_with_gate_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_compare(monkeypatch, _regressed_result())
+
+    result = runner.invoke(
+        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
+    )
+
+    assert result.exit_code == 1
+    cmd = last_command_record(repo)
+    assert cmd.exit_code == 1
+    assert cmd.reason == "fail-on"
+
+
+def test_compare_when_fail_on_does_not_trip_does_record_trace_with_baseline_and_exit_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    _open_session(repo)
+    _stub_compare(monkeypatch)
+
+    result = runner.invoke(
+        app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", "regressed"]
+    )
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.args["baseline"] == "main"
+    assert cmd.args["fail_on"] == "regressed"
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+# ---------------------------------------------------------------------------
+# _serialize_fail_on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("conditions", "expected"),
+    [
+        pytest.param((RegressedFailOn(),), "regressed", id="regressed-only"),
+        pytest.param((GeomeanFailOn(pct=3.5),), "geomean:3.5", id="geomean-only"),
+        pytest.param(
+            (RegressedFailOn(), GeomeanFailOn(pct=2.5)),
+            "regressed,geomean:2.5",
+            id="regressed-and-geomean",
+        ),
+    ],
+)
+def test_serialize_fail_on_when_known_conditions_does_render_csv(
+    conditions: tuple[FailOnCondition, ...],
+    expected: str,
+) -> None:
+    result = _serialize_fail_on(conditions)
+
+    assert result == expected
+
+
+def test_serialize_fail_on_when_unknown_condition_does_raise() -> None:
+    bogus = cast("FailOnCondition", object())
+
+    with pytest.raises(AssertionError, match="Expected code to be unreachable"):
+        _serialize_fail_on((bogus,))

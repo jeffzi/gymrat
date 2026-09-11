@@ -69,7 +69,7 @@ def kill_live_process_groups() -> None:
 class ExecOptions:
     """Inputs for a single :func:`exec` run.
 
-    Args:
+    Attributes:
         cwd: Working directory the command runs in.
         timeout_ms: Wall-clock budget in milliseconds; ``None`` waits forever.
         abort: Event that, once set, kills the run and resolves a failed result.
@@ -126,7 +126,13 @@ class OutputBuffer:
     byte_count: int = 0
 
     def append(self, chunk: str, chunk_bytes: int) -> None:
-        """Add ``chunk`` (worth ``chunk_bytes`` raw bytes) subject to the cap."""
+        """Add ``chunk`` (worth ``chunk_bytes`` raw bytes) subject to the cap.
+
+        Args:
+            chunk: The decoded text to append.
+            chunk_bytes: The raw byte count the chunk is worth, counted toward
+                :data:`OUTPUT_CAP` even when the chunk itself is dropped past it.
+        """
         self.byte_count += chunk_bytes
         if self.byte_count - chunk_bytes >= OUTPUT_CAP:
             return
@@ -138,6 +144,9 @@ class OutputBuffer:
         An error explaining why a run failed must always reach the caller, so it
         bypasses the truncation cap that governs ordinary output. The diagnostic
         is not counted as command output — ``byte_count`` is left unchanged.
+
+        Args:
+            message: The failure text to append.
         """
         self._chunks.append(f"{message}\n")
 
@@ -153,6 +162,10 @@ def _exit_code(returncode: int | None) -> int:
     A signal kill surfaces as a negative return code, and a child whose status
     has not been collected yet as ``None``; both collapse to
     :data:`FAILURE_EXIT_CODE` rather than leaking a negative or missing value.
+
+    Returns:
+        The non-negative exit code, or :data:`FAILURE_EXIT_CODE` for abnormal
+        terminations.
     """
     if returncode is None or returncode < 0:
         return FAILURE_EXIT_CODE
@@ -347,6 +360,14 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
     spawned, a non-zero exit, a signal kill, an abort, and a stream error all
     resolve as an :class:`ExecResult`. Only exceeding ``options.timeout_ms``
     resolves the distinct :class:`ExecTimeoutError` value.
+
+    Args:
+        command: The shell command line to run.
+        options: Spawn, timeout, and abort settings for the run.
+
+    Returns:
+        An :class:`ExecResult` on completion (including failures), or an
+        :class:`ExecTimeoutError` when the timeout is exceeded.
     """
     if options.abort is not None and options.abort.is_set():
         return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)

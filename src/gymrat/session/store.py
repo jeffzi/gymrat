@@ -29,6 +29,7 @@ from gymrat.finite_json import null_non_finite
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
     BaselineRecord,
+    CommandRecord,
     DiscardRecord,
     FinalizeRecord,
     HookRecord,
@@ -51,6 +52,7 @@ __all__ = [
     "recover_torn_tail",
     "require_open_session",
     "require_session",
+    "session_header",
 ]
 
 
@@ -119,8 +121,43 @@ def last_kept_position(state: SessionState, baseline_sha: str) -> str:
     ``baseline_sha`` when the session has kept nothing. Both ``discard_session``
     and ``finalize_session`` need this position: discard resets the worktree to
     it, and finalize refuses when the worktree has drifted past it.
+
+    Args:
+        state: The folded session state to inspect for a kept commit.
+        baseline_sha: Fallback commit when no keep has landed.
+
+    Returns:
+        The last kept commit SHA, or ``baseline_sha`` when nothing was kept.
     """
     return state.last_kept_commit or baseline_sha
+
+
+def session_header(root: str) -> SessionRecord | None:
+    """Read only the first line of the session log and return the session record.
+
+    Returns ``None`` when the log is absent, empty, or its first line is not a
+    session record. Unlike :func:`read_records` this never reads past the first
+    line, making it safe for hot paths that only need the session ID.
+
+    Args:
+        root: Repository root whose session log is inspected.
+
+    Returns:
+        The session record, or ``None`` when the log is absent or invalid.
+    """
+    jsonl = session_jsonl_path(root)
+    try:
+        with Path(jsonl).open(encoding="utf-8") as f:
+            first_line = f.readline()
+    except OSError:
+        return None
+    if not first_line.strip():
+        return None
+    try:
+        record = parse_record(json.loads(first_line))
+    except (json.JSONDecodeError, GymratError):
+        return None
+    return record if isinstance(record, SessionRecord) else None
 
 
 def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
@@ -131,6 +168,10 @@ def append_record(jsonl_path: str, record: SessionLogRecord) -> None:
     existing bytes are never read or truncated: a writer holding no lock must not
     be able to destroy a record another writer is still appending. Repairing a
     torn final line is :func:`recover_torn_tail`'s job, under the lock.
+
+    Args:
+        jsonl_path: Path to the session log file.
+        record: The record to serialize and append.
 
     Raises:
         GymratError: When ``record`` would not read back. The log is left
@@ -157,6 +198,12 @@ def _serialize_record(record: SessionLogRecord) -> str:
     very parser :func:`read_records` uses. Nothing is written until that round
     trip succeeds, which stops a single bad measurement from leaving the whole
     session log unreadable.
+
+    Returns:
+        The JSON-encoded line ready for appending.
+
+    Raises:
+        GymratError: When the record does not survive the JSON round trip.
     """
     try:
         wire = record_to_wire(record)
@@ -183,6 +230,9 @@ def recover_torn_tail(jsonl_path: str) -> None:
     Truncation is destructive and unsynchronized, so this must run only while the
     session lock is held — never from :func:`append_record`, which appends
     concurrently with writers that hold no lock.
+
+    Args:
+        jsonl_path: Path to the session log file to inspect and repair.
     """
     path = Path(jsonl_path)
     try:
@@ -205,6 +255,12 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     A log that does not exist reads as no session — an empty list — because the
     loop commands distinguish "no session" from "corrupt session" and only the
     latter is a failure.
+
+    Args:
+        jsonl_path: Path to the session log file.
+
+    Returns:
+        The records in file order, or an empty list when the log is absent.
 
     Raises:
         GymratError: When a line is not JSON, when a line matches no record
@@ -347,6 +403,12 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
 
     Folds whatever it is given: validating the log — that it parses and opens
     with a session header — belongs to :func:`read_records`.
+
+    Args:
+        records: Session log records in file order.
+
+    Returns:
+        The accumulated session state.
     """
     acc = _FoldState(
         session=None,
@@ -380,7 +442,7 @@ def fold_session(records: list[SessionLogRecord]) -> SessionState:
                 acc.ends_on_stop = False
             case StopRecord():
                 acc.ends_on_stop = True
-            case BaselineRecord() | HookRecord():
+            case BaselineRecord() | CommandRecord() | HookRecord():
                 pass
             case _ as unreachable:
                 assert_never(unreachable)
@@ -408,6 +470,14 @@ def require_session(root: str, verb: str) -> RequiredSession:
     becomes the thing the hint says no session was open for, so every loop
     command refuses in its own words while sharing one guard.
 
+    Args:
+        root: Repository root whose session log is read and folded.
+        verb: Gerund describing the caller's intent, surfaced in the hint
+            when no session exists (e.g. ``"measuring an edit"``).
+
+    Returns:
+        The session header, folded state, log path, and records.
+
     Raises:
         GymratError: When no session has been started, or when the log is
             corrupt — every parse failure names the log and the line at fault.
@@ -418,7 +488,9 @@ def require_session(root: str, verb: str) -> RequiredSession:
 
     if state.session is None:
         message = f"No session in {root}"
-        raise GymratError(message, hint=f"Run gymrat start to open one before {verb}.")
+        raise GymratError(
+            message, hint=f"Run gymrat start to open one before {verb}.", reason="no-session"
+        )
 
     return RequiredSession(
         session=state.session, state=state, jsonl_path=jsonl_path, records=records
@@ -433,6 +505,14 @@ def require_open_session(root: str, verb: str) -> RequiredSession:
     and its worktrees removed, so appending to it would record work no branch
     carries. Reading a closed session stays on the unguarded path.
 
+    Args:
+        root: Repository root whose session log is read and folded.
+        verb: Gerund describing the caller's intent, surfaced in the hint
+            when the session is absent or finalized.
+
+    Returns:
+        The session header, folded state, log path, and records.
+
     Raises:
         GymratError: When no session has been started, when the log is corrupt,
             or when the session was already finalized.
@@ -442,6 +522,10 @@ def require_open_session(root: str, verb: str) -> RequiredSession:
 
     if finalized is not None:
         message = f"Session {required.session.session_id} was finalized onto {finalized.branch}"
-        raise GymratError(message, hint=f"Run gymrat start to open a new session before {verb}.")
+        raise GymratError(
+            message,
+            hint=f"Run gymrat start to open a new session before {verb}.",
+            reason="finalized",
+        )
 
     return required

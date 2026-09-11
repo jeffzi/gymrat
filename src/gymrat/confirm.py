@@ -18,6 +18,13 @@ def confirm_action(message: str, stream: TextIO) -> bool:
     (ignoring the trailing line terminator). End-of-input reads as an empty line
     and declines. A stderr that cannot be written to — a closed or broken pipe —
     also declines.
+
+    Args:
+        message: The question to display before the ``[y/N]`` suffix.
+        stream: The stream to read the answer line from.
+
+    Returns:
+        Whether the user answered ``y`` or ``Y``.
     """
     try:
         sys.stderr.write(f"{message} [y/N] ")

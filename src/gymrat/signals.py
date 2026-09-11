@@ -16,7 +16,7 @@ that registry, never the signal disposition.
 import os
 import signal
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from types import FrameType
 from typing import NoReturn
@@ -129,7 +129,7 @@ pthread_sigmask: Callable[[int, Iterable[int]], list[int]] | None = getattr(
 
 
 @contextmanager
-def deferring_termination_signals() -> Iterator[None]:
+def deferring_termination_signals() -> Generator[None]:
     """Defer termination signals for the duration of the wrapped call.
 
     A termination signal delivered while the wrapped code is running must not

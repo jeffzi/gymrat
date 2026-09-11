@@ -85,7 +85,7 @@ def test_init_when_help_does_not_list_old_wizard_flags(flag: str):
     "flag", [pytest.param("runbook", id="runbook"), pytest.param("skill", id="skill")]
 )
 def test_init_when_help_does_not_list_standalone_flag(flag: str):
-    """``--no-<flag>`` is legitimate; a standalone ``--<flag>`` option is not."""
+    # --no-<flag> is legitimate; a standalone --<flag> option is not.
     assert not re.search(rf"(?<!no-)--{flag}\b", help_output("init"))
 
 

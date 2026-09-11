@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from gymrat.config import BenchlessConfig, ResolvedConfig
     from gymrat.progress_events import ProgressCallback
     from gymrat.session import SessionLogRecord
+    from gymrat.session.schema import CommandReason
 
 __all__ = [
     "BenchRunOutputs",
@@ -175,6 +176,7 @@ def _guard_ready(
         raise GymratError(
             message,
             hint="Run gymrat keep or gymrat discard before measuring the next edit.",
+            reason="unsettled",
         )
     stop = stop_condition(config, state)
     if stop is not None:
@@ -333,6 +335,14 @@ class LoopStopError(GymratError):
     rather than as a tool failure.
     """
 
+    def __init__(
+        self,
+        *args: object,
+        hint: str | None = None,
+        reason: CommandReason | None = "stop-condition",
+    ) -> None:
+        super().__init__(*args, hint=hint, reason=reason)
+
 
 class BudgetExceededError(LoopStopError):
     """The session's time budget cannot afford another iteration.
@@ -342,6 +352,14 @@ class BudgetExceededError(LoopStopError):
     any other stop condition.
     """
 
+    def __init__(
+        self,
+        *args: object,
+        hint: str | None = None,
+        reason: CommandReason | None = "budget-exceeded",
+    ) -> None:
+        super().__init__(*args, hint=hint, reason=reason)
+
 
 def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopError | None:
     """The configured stop condition this session has already met, if any.
@@ -350,6 +368,15 @@ def stop_condition(config: BenchlessConfig, state: SessionState) -> LoopStopErro
     iteration measured past the end of the loop is one the agent would have to
     throw away. ``target_value`` stops the loop only once the target-reaching
     iteration is *kept* — discarding it puts the target back out of reach.
+
+    Args:
+        config: The resolved config, carrying the configured stop conditions.
+        state: The session's folded state, read for iteration count and
+            whether the target has been reached and kept.
+
+    Returns:
+        The stop error describing which condition fired, or ``None`` when no
+        condition is met yet.
     """
     stop = config.stop
     if stop is None:
@@ -387,7 +414,18 @@ def render_iteration(
     *,
     color: bool | None = None,
 ) -> str:
-    """The iteration as it prints: the loop's header, the comparison table, the verdict."""
+    """The iteration as it prints: the loop's header, the comparison table, the verdict.
+
+    Args:
+        result: The comparison result for this iteration.
+        seq: The 1-based iteration sequence number, used for the header.
+        judgment: The outcome, primary, and optional confirmation.
+        color: Explicit ANSI color choice — ``True`` forces color, ``False``
+            suppresses it, ``None`` defers to the environment.
+
+    Returns:
+        The fully rendered iteration report as a single string.
+    """
     confirmation = judgment.confirmation
     reruns: list[RerunConfirmation] = (
         [

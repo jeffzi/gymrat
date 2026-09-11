@@ -19,6 +19,21 @@ def to_command_error(  # noqa: PLR0913, PLR0917 -- one field per failure axis
     A ref target contributes ``ref`` and ``worktree`` location lines plus the
     hint that the worktree only holds tracked files; a plain directory
     contributes a single ``dir`` line and no hint.
+
+    Args:
+        phase: Name of the phase the command ran in, e.g. ``"prepare"``.
+        sample_index: The sample number to mention in the header, or ``None``
+            when the failure is not tied to a specific sample.
+        command: The command line that failed.
+        ctx: The target context supplying the header label, position, and
+            location lines.
+        result: The execution outcome, either a failed ``ExecResult`` or a
+            timeout.
+        request_timeout_ms: The configured timeout, used when ``result`` did
+            not time out.
+
+    Returns:
+        The formatted command error with target-specific location context.
     """
     timed_out = isinstance(result, ExecTimeoutError)
     if timed_out:
@@ -59,11 +74,20 @@ def _field(label: str, value: object) -> str:
 
 
 def _captured_output(stdout: str, stdout_bytes: int, stderr: str, stderr_bytes: int) -> list[str]:
-    """Render whatever the failed command wrote to its output streams.
+    """Render the captured output of a failed command.
 
     A lone non-empty stream is emitted bare unless its captured text was
     truncated, in which case it — like every stream when both are present —
     becomes a labeled entry annotated with the true byte total.
+
+    Args:
+        stdout: The captured stdout text.
+        stdout_bytes: The true byte total of stdout before truncation.
+        stderr: The captured stderr text.
+        stderr_bytes: The true byte total of stderr before truncation.
+
+    Returns:
+        Lines of rendered output, ready for joining into the error message.
     """
     streams = [
         ("stderr", stderr, stderr_bytes),

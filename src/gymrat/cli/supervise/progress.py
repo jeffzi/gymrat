@@ -1,8 +1,6 @@
 """Progress reporter for a supervised optimization run.
 
-Event handlers, factory, and session-reading helpers for the supervise
-dashboard. Frame builders live in :mod:`.frame` and state types
-in :mod:`.state`.
+Event handlers, factory, and session-reading helpers for the supervise dashboard.
 """
 
 from __future__ import annotations
@@ -46,6 +44,7 @@ from gymrat.session.clock import now_ms
 from gymrat.session.progress_file import read_progress as _default_read_progress
 from gymrat.supervisor.events import (
     CapEvent,
+    CompactionEvent,
     FollowUpEvent,
     LaunchEvent,
     ModelPhaseEvent,
@@ -59,6 +58,8 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 
+__all__ = ["IDLE_WARN_MS", "CapType"]
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import tzinfo
@@ -68,16 +69,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Number of recently finished tools retained for the dashboard's last-N log.
 _MAX_FINISHED_TOOLS = 3
-
-__all__ = [
-    "IDLE_WARN_MS",
-    "CapType",
-    "ReadSessionResult",
-    "SuperviseReporter",
-    "create_supervise_reporter",
-]
+_NS_PER_MS = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +129,11 @@ def _next_liveness_after_tool_end(
             since=tracked.started_at,
             input_summary=tracked.input_summary,
         )
+    ended_at_ms = event.at // _NS_PER_MS
     return Waiting(
-        since=event.timestamp,
+        since=ended_at_ms,
         tool_name=event.tool_name,
-        tool_ended_at=event.timestamp,
+        tool_ended_at=ended_at_ms,
         result=event.result,
     )
 
@@ -167,7 +161,7 @@ def _handle_cap_event(ctx: ReporterCtx, cap: CapEvent) -> None:
 
 
 def _handle_launch(ctx: ReporterCtx, event: LaunchEvent) -> None:
-    ctx.launch_timestamp = event.timestamp
+    ctx.launch_timestamp = event.at // _NS_PER_MS
     _try_read_session(ctx)
     _emit(ctx, format_caps(ctx.max_minutes, ctx.max_usd))
 
@@ -178,25 +172,26 @@ def _handle_usage_update(ctx: ReporterCtx, event: UsageUpdateEvent) -> None:
 
 
 def _handle_tool_start(ctx: ReporterCtx, event: ToolStartEvent) -> None:
+    at_ms = event.at // _NS_PER_MS
     if event.parent_tool_use_id is not None:
         if event.parent_tool_use_id not in ctx.in_flight_tools:
             return
         ctx.nested[event.parent_tool_use_id] = NestedTool(
             tool_name=event.tool_name,
             input_summary=event.input_summary,
-            since=event.timestamp,
+            since=at_ms,
         )
         ctx.nested_tool_ids[event.tool_use_id] = event.parent_tool_use_id
         return
 
     ctx.in_flight_tools[event.tool_use_id] = TrackedTool(
-        tool_name=event.tool_name, started_at=event.timestamp, input_summary=event.input_summary
+        tool_name=event.tool_name, started_at=at_ms, input_summary=event.input_summary
     )
     if not isinstance(ctx.liveness, Capped):
         ctx.liveness = InFlight(
             tool_use_id=event.tool_use_id,
             tool_name=event.tool_name,
-            since=event.timestamp,
+            since=at_ms,
             input_summary=event.input_summary,
         )
     _emit_live(ctx)
@@ -228,7 +223,7 @@ def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
             input_summary=input_summary,
             duration_ms=event.duration_ms,
             result=event.result,
-            ended_at=event.timestamp,
+            ended_at=event.at // _NS_PER_MS,
         )
     )
 
@@ -249,11 +244,14 @@ def _handle_thinking_update(ctx: ReporterCtx, event: ThinkingUpdateEvent) -> Non
     if isinstance(ctx.liveness, Thinking):
         ctx.liveness = Thinking(since=ctx.liveness.since, estimated_tokens=event.estimated_tokens)
     else:
-        ctx.liveness = Thinking(since=event.timestamp, estimated_tokens=event.estimated_tokens)
+        ctx.liveness = Thinking(
+            since=event.at // _NS_PER_MS, estimated_tokens=event.estimated_tokens
+        )
     _emit_live(ctx)
 
 
 def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
+    at_ms = event.at // _NS_PER_MS
     if event.parent_tool_use_id is not None:
         parent_id = event.parent_tool_use_id
         if parent_id not in ctx.in_flight_tools:
@@ -262,9 +260,7 @@ def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
             ctx.nested.pop(parent_id, None)
         elif not isinstance(ctx.nested.get(parent_id), NestedTool):
             tool_name = event.tool_name if event.phase == "tool_input" else None
-            ctx.nested[parent_id] = NestedPhase(
-                phase=event.phase, since=event.timestamp, tool_name=tool_name
-            )
+            ctx.nested[parent_id] = NestedPhase(phase=event.phase, since=at_ms, tool_name=tool_name)
         return
 
     if isinstance(ctx.liveness, (Capped, InFlight)):
@@ -273,21 +269,18 @@ def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
     match event.phase:
         case "thinking":
             tokens = ctx.liveness.estimated_tokens if isinstance(ctx.liveness, Thinking) else 0
-            ctx.liveness = Thinking(since=event.timestamp, estimated_tokens=tokens)
+            ctx.liveness = Thinking(since=at_ms, estimated_tokens=tokens)
         case "responding":
-            ctx.liveness = Responding(since=event.timestamp)
+            ctx.liveness = Responding(since=at_ms)
         case "tool_input":
             tool_name = event.tool_name if event.tool_name is not None else "unknown"
-            ctx.liveness = Composing(tool_name=tool_name, since=event.timestamp)
+            ctx.liveness = Composing(tool_name=tool_name, since=at_ms)
         case "turn_end":
-            ctx.liveness = _waiting_from_last_tool(ctx, event.timestamp)
+            ctx.liveness = _waiting_from_last_tool(ctx, at_ms)
     _emit_live(ctx)
 
 
-_FOLLOW_UP_LABELS: dict[str, str] = {
-    "replied": "replied",
-    "waiting": "waiting for gymrat",
-}
+_FOLLOW_UP_LABELS: dict[str, str] = {"replied": "replied", "waiting": "waiting for gymrat"}
 
 
 def _handle_turn_end(ctx: ReporterCtx, event: TurnEndEvent) -> None:
@@ -295,7 +288,7 @@ def _handle_turn_end(ctx: ReporterCtx, event: TurnEndEvent) -> None:
     if event.origin == "agent":
         ctx.last_agent_text = event.text
     if not isinstance(ctx.liveness, Capped):
-        ctx.liveness = _waiting_from_last_tool(ctx, event.timestamp)
+        ctx.liveness = _waiting_from_last_tool(ctx, event.at // _NS_PER_MS)
     _emit_live(ctx)
 
 
@@ -321,7 +314,12 @@ def _handle_tool_event(
             _emit_live(ctx)
 
 
-def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
+def _handle_compaction(ctx: ReporterCtx) -> None:
+    ctx.last_decision = "context compacted"
+    _emit(ctx, ctx.last_decision)
+
+
+def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:  # noqa: C901 -- flat match over the event union
     match event:
         case CapEvent():
             _handle_cap_event(ctx, event)
@@ -341,6 +339,8 @@ def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
             _handle_turn_end(ctx, event)
         case FollowUpEvent():
             _handle_follow_up(ctx, event)
+        case CompactionEvent():
+            _handle_compaction(ctx)
         case _:  # pragma: no cover - exhaustive over the event union
             assert_never(event)
 
@@ -445,7 +445,36 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     model: str | None = None,
     effort: Effort | None = None,
 ) -> SuperviseReporter:
-    """Build the observer/stop/frame/warn surface for the supervise dashboard."""
+    """Build the observer/stop/frame/warn surface for the supervise dashboard.
+
+    Args:
+        root: Project root whose session directory is monitored.
+        max_minutes: Wall-clock cap in minutes.
+        max_usd: Spend cap in USD, or ``None`` for uncapped.
+        max_iterations: Iteration cap, or ``None`` for uncapped.
+        mode: ``"live"`` for a Rich Live dashboard, ``"plain"`` for line-by-line
+            stderr output.
+        log_path: Path to the supervisor event log, shown in the closing summary.
+        now: Monotonic-clock source returning milliseconds.  Defaults to
+            :func:`~gymrat.session.clock.now_ms`; override in tests.
+        read_session: Callable that reads the current session state.  Defaults to
+            :func:`make_default_read`; override in tests.
+        label: Human label for the run, shown in the frame header.
+        session_id: Session identifier propagated to the frame.
+        branch: Git branch name shown in the frame header.
+        plain_write: Stderr writer for plain mode.  Defaults to
+            ``sys.stderr.write``; override in tests.
+        read_progress: Callable that reads the iterate progress sidecar.
+            Defaults to the standard reader; override in tests.
+        color: Tri-state color override: ``True`` forces color, ``False``
+            disables it, ``None`` auto-detects.
+        tz: Timezone for wall-clock timestamps.  ``None`` uses the local zone.
+        model: Model name shown as a labelled row when set.
+        effort: Effort level shown as a labelled row when set.
+
+    Returns:
+        A fully wired reporter whose callbacks drive the dashboard lifecycle.
+    """
     ctx = _new_ctx(
         root=root,
         max_minutes=max_minutes,

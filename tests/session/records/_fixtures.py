@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from gymrat.session import (
     BaselineRef,
+    CommandRecord,
     DiscardRecord,
     FinalizeRecord,
     HookRecord,
@@ -34,8 +35,8 @@ from gymrat.session import (
 )
 from gymrat.session.store import append_record
 
-#: The instant every fixture record in this file was written at.
-AT = "2026-08-08T14:15:30.000Z"
+#: The instant every fixture record in this file was written at (nanoseconds since epoch).
+AT = 1_786_198_530_000_000_000
 
 #: A commit SHA fixture records point at; not a real commit.
 COMMIT = "b" * 40
@@ -68,11 +69,12 @@ def session_record(**overrides: Any) -> SessionRecord:
     overrides both explicitly.
     """
     session_id = overrides.get("session_id", SESSION_ID)
+    # pyrefly: ignore[missing-argument] -- validate_by_name accepts schema_version
     default = SessionRecord(
         type="session",
         schema_version=1,
         session_id=session_id,
-        created_at=AT,
+        at=AT,
         baseline=BaselineRef(ref="main", sha="a" * 40),
         branch=f"gymrat/{session_id}",
         worktrees=Worktrees(
@@ -150,7 +152,6 @@ def blocked_keep(seq: int, **overrides: Any) -> KeepRecord:
 
 
 def discard_record(seq: int) -> DiscardRecord:
-    """A discard of the iteration numbered ``seq``."""
     return DiscardRecord(type="discard", seq=seq, at=AT)
 
 
@@ -158,6 +159,7 @@ def hook_record(**overrides: Any) -> HookRecord:
     """The hook a ``before`` stage runs, with every field overridable."""
     default = HookRecord(
         type="hook",
+        at=AT,
         stage="before",
         seq=1,
         exit_code=0,
@@ -190,11 +192,27 @@ def stop_record(**overrides: Any) -> StopRecord:
     return _overridden(default, overrides)
 
 
+def command_record(**overrides: Any) -> CommandRecord:
+    """A command record for a failed iterate, with every field overridable."""
+    default = CommandRecord(
+        type="command",
+        at=AT,
+        name="iterate",
+        args={},
+        exit_code=1,
+        reason="budget-exceeded",
+        duration_ms=1840,
+        seq=3,
+    )
+    return _overridden(default, overrides)
+
+
 def write_session_log(
     root: str,
     header: SessionRecord,
     history: tuple[SessionLogRecord, ...] = (),
 ) -> None:
+    """Append *header* then every record in *history* to the session JSONL log."""
     jsonl_path = session_jsonl_path(root)
     for record in (header, *history):
         append_record(jsonl_path, record)

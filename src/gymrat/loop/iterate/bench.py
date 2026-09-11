@@ -86,7 +86,18 @@ def build_iteration_comparison(
     adapter: str,
     config_kinds: dict[str, KindEntry] | None,
 ) -> ComparisonResult:
-    """Build a comparison result for a single iteration: one baseline, one candidate, no cleanup."""
+    """Build a comparison result for a single iteration: one baseline, one candidate, no cleanup.
+
+    Args:
+        run: The bench run's measurement outputs — baseline, experiment,
+            verdicts, and metric metadata.
+        adapter: The adapter name used to parse bench output.
+        config_kinds: Per-kind configuration entries for aggregation, or
+            ``None`` when no kind overrides are configured.
+
+    Returns:
+        The comparison result built from the single iteration's pair.
+    """
     from gymrat.compare import (  # noqa: PLC0415 -- deferred to keep compare out of the CLI import chain
         CandidateMeasurement,
         build_comparison_result,
@@ -120,14 +131,23 @@ async def bench_and_judge(
 ) -> _BenchRun:
     """Bench a session's worktrees and judge the resulting samples, in one call.
 
-    ``metric_meta`` is optional because the first run does not know the metric set
-    until it has samples to read it from; the confirmation rerun already has one
-    from the first run and passes it through unchanged.
+    Args:
+        ctx: The iteration context, carrying the session, config, and options.
+        bench: The bench command to run against both worktrees.
+        metric_meta: Previously resolved metric metadata to reuse, or ``None``
+            to resolve it fresh from the collected samples.  Optional because
+            the first run does not know the metric set until it has samples to
+            read it from; the confirmation rerun already has one from the first
+            run and passes it through unchanged.
+        announce_judging: Whether to emit a judge-started progress event once
+            benching finishes, so a progress renderer shows judging as running
+            only while verdicts are actually being computed.  The confirmation
+            rerun leaves it off: its judging belongs to the confirm phase,
+            which reports itself.
 
-    ``announce_judging`` opens the judge phase once the bench has stopped
-    reporting passes, so a progress renderer shows judging as running only while
-    the verdicts are actually being computed. The confirmation rerun leaves it
-    off: its judging belongs to the confirm phase, which reports itself.
+    Returns:
+        The bench run with baseline/experiment samples, resolved metric metadata,
+        and computed verdicts.
     """
     baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
     if announce_judging:
@@ -170,8 +190,18 @@ async def _measure(
 
     The order is the one :func:`gymrat.compare.compare` samples in — old side
     first — so a round of the loop perturbs the two sides in the same sequence a
-    plain comparison would. ``bench`` is a parameter because a confirmation rerun
-    narrows the command while sampling the same pair of worktrees the same way.
+    plain comparison would.
+
+    Args:
+        session: The session whose baseline and experiment worktrees are benched.
+        config: The resolved configuration supplying prepare, samples, and timeout.
+        options: The iterate options supplying the progress callback.
+        bench: The bench command to run. A parameter because a confirmation rerun
+            narrows the command while sampling the same pair of worktrees the same
+            way.
+
+    Returns:
+        The baseline and experiment target samples, in that order.
     """
     contexts: list[TargetContext] = [
         _worktree_context(session.worktrees.baseline, "baseline", "old"),
@@ -204,10 +234,17 @@ def resolve_primary(
 ) -> LoopPrimary:
     """The figure the iteration is read on: a gating geomean, or the named metric.
 
-    A named metric the run never measured yields a primary with no delta at all —
-    ``None``, the form a figure that has no value takes everywhere in the record.
-    A zero must never stand there: a zero is a measurement, and it would have the
-    report, the log, and the keep commit all claim the run held its ground.
+    Args:
+        primary: The configured primary — a gating geomean marker or a metric name.
+        verdicts: The computed verdict for each measured metric, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+
+    Returns:
+        The resolved primary — a :class:`GeomeanPrimary` or :class:`MetricPrimary`
+        carrying the recorded delta, or ``None`` when the named metric was never
+        measured.  A zero must never stand there: a zero is a measurement, and it
+        would have the report, the log, and the keep commit all claim the run held
+        its ground.
     """
     if primary == GEOMEAN_PRIMARY:
         gating = {name: meta for name, meta in metric_meta.items() if meta.gating}
@@ -228,6 +265,12 @@ def recorded_delta(delta: float) -> float | None:
     ``NaN``, and JSON serialization writes that as ``null`` whatever the writer
     intended. Making the substitution here keeps the record a caller holds
     identical to the one read back off the log.
+
+    Args:
+        delta: The raw delta ratio, possibly ``NaN``.
+
+    Returns:
+        The delta as a float, or ``None`` when the ratio had no value.
     """
     return None if math.isnan(delta) else delta
 
@@ -241,6 +284,14 @@ def target_reached(
 
     The target is read in the primary metric's own direction, so it needs a named
     primary — which config validation already demands of a ``stop.target_value``.
+
+    Args:
+        config: The resolved config, carrying the configured stop target.
+        primary: The resolved primary the run was judged on.
+        metrics: The comparison figures for every measured metric.
+
+    Returns:
+        Whether the primary metric's delta meets or exceeds the configured target.
     """
     target = config.stop.target_value if config.stop is not None else None
     if target is None or not isinstance(primary, MetricPrimary):

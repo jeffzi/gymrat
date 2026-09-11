@@ -568,7 +568,6 @@ def test_compute_verdicts_when_band_both_medians_zero_does_apply_floor():
 
 
 def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_no_signal():
-    """D4: one tied + one doubled pair reads no-signal when only one differs."""
     result = run(samples(100.0, 100.0), samples(100.0, 210.0), METRIC_APPROX_LOWER)
 
     verdict = get_band(result)
@@ -865,7 +864,6 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
 
 
 def test_compute_verdicts_when_bytes_zero_median_and_zero_spread_does_not_report_unstable():
-    """D2: byte-floor on a 0-byte median with zero spread does not force unstable."""
     result = run(create_samples(2, 0.0), create_samples(2, 0.0), METRIC_BYTES_LOWER)
 
     verdict = get_band(result)

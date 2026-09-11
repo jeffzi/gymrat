@@ -42,6 +42,9 @@ def _stderr_color() -> bool:
     :func:`color_from_env` owns the ``FORCE_COLOR`` / ``NO_COLOR`` precedence
     every color surface shares; with neither declared, stderr's own TTY state
     decides, so a warning piped into a file stays plain.
+
+    Returns:
+        Whether stderr output should carry ANSI color escapes.
     """
     declared = color_from_env()
     return declared if declared is not None else sys.stderr.isatty()
@@ -54,6 +57,10 @@ async def run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun 
     gate asks whether the tree is provably good, and a run that never finished has
     not answered. Each stream is cut to the relay limit on its own, so a suite that
     writes its failures to stderr is as readable as one that writes them to stdout.
+
+    Args:
+        config: The resolved config, carrying the checks command and timeout.
+        experiment_dir: The experiment worktree to run the checks command in.
 
     Returns:
         What the command answered, or ``None`` when no checks are configured — in
@@ -115,6 +122,12 @@ def has_standing_gating_regression(iteration: IterationRecord) -> bool:
     about and never reported back on lands in ``confirm.absent``, its ``confirmed``
     still ``False`` because nothing re-measured it. The gate fails closed on those —
     a rerun that cannot see the metric is not evidence the regression went away.
+
+    Args:
+        iteration: The iteration record to check for a standing gating regression.
+
+    Returns:
+        Whether the iteration carries a confirmed or exact gating regression.
     """
     if iteration.outcome != "regressed":
         return False
@@ -149,6 +162,12 @@ def gating_refusal(iteration: IterationRecord) -> str:
     the missing measurement named, the block reads as gymrat contradicting itself.
     The extra hint points at the likeliest cause — a filter template that narrows
     the rerun to a subset the bench does not answer with.
+
+    Args:
+        iteration: The iteration record whose gating regression is refused.
+
+    Returns:
+        The refusal message as markup, including a hint for the agent.
     """
     refusal = f"Keep refused: iteration {iteration.seq} regressed a gating metric."
     settle_hint = "fix the regression and run `gymrat iterate` again, or run `gymrat discard`"

@@ -24,6 +24,12 @@ def _samples_hint(command: str) -> str:
     The command is stated whole and backtick-marked so
     :func:`gymrat.report.style.format_hint` sets it apart from the prose: a
     reader copies the line rather than assembling the invocation themselves.
+
+    Args:
+        command: The subcommand name to embed in the suggested re-run.
+
+    Returns:
+        The hint string naming the re-run command and sample count.
     """
     return (
         f"re-run with `gymrat {command} --samples {MIN_PERMUTATION_N}` "
@@ -90,6 +96,12 @@ def _method_lines(data: _FooterData) -> list[str]:
     shortage — even the best-off metric fell this far short — and the lowest
     usable pair count for ties, so each line stays true of every metric behind
     it.
+
+    Args:
+        data: The pair counts sorted by the cause that forced each fallback.
+
+    Returns:
+        One dimmed line per method that contributed a verdict.
     """
     lines: list[str] = []
     if data.permutation:
@@ -120,6 +132,16 @@ def _shortage_hint(shortage: Sequence[int], samples: int | None, command: str) -
     When the run's own sample count is below the floor, more samples are the
     fix. When it had enough samples but rounds were dropped during pairing,
     suggesting more samples is misleading.
+
+    Args:
+        shortage: The pair counts of verdicts that fell to the band method
+            for lack of pairs.
+        samples: The run's own sample count, or ``None`` when unknown.
+        command: The subcommand name to embed in the suggested re-run.
+
+    Returns:
+        The samples hint, the dropped-rounds hint, or ``None`` when the
+        shortage list is empty.
     """
     if not shortage:
         return None

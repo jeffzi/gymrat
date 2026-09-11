@@ -163,6 +163,14 @@ def build_workflow_section(
 
     When ``config_has_problems`` is true the individual checks are meaningless — the
     config never settled — so the section collapses to a single skip placeholder.
+
+    Args:
+        config: The resolved benchless configuration to check against.
+        config_has_problems: Whether config inspection already found problems.
+        skill_file_exists: Whether the project's skill file is installed.
+
+    Returns:
+        The assembled workflow check section.
     """
     if config_has_problems:
         return CheckSection(

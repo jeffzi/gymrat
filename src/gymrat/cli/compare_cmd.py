@@ -9,7 +9,7 @@ CLI never pulls the heavy statistics stack.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, assert_never
 
 import typer
 
@@ -19,6 +19,7 @@ from gymrat.cli.shared import (
     AdapterOption,
     BenchOption,
     ColorOption,
+    CommandTrace,
     CompareFlags,
     ConfigOption,
     DebugOption,
@@ -32,6 +33,7 @@ from gymrat.cli.shared import (
     apply_debug,
     begin_run,
     budget_for_report,
+    config_trace_args,
     emit_report,
     parse_fail_on,
     parse_positional,
@@ -42,7 +44,13 @@ from gymrat.cli.shared import (
 )
 from gymrat.config import resolve_config
 from gymrat.report import render_json, render_report
-from gymrat.report.types import ComparisonResult, FailOnCondition, ReportOptions
+from gymrat.report.types import (
+    ComparisonResult,
+    FailOnCondition,
+    GeomeanFailOn,
+    RegressedFailOn,
+    ReportOptions,
+)
 from gymrat.sampling import TargetSpec
 
 _BaselineArgument = Annotated[
@@ -74,12 +82,30 @@ _FailOnOption = Annotated[
 ]
 
 
+def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
+    """Serialize fail-on conditions to the CLI grammar for trace args."""
+    parts: list[str] = []
+    for condition in conditions:
+        if isinstance(condition, RegressedFailOn):
+            parts.append("regressed")
+        elif isinstance(condition, GeomeanFailOn):
+            parts.append(f"geomean:{condition.pct:g}")
+        else:
+            assert_never(condition)
+    return ",".join(parts)
+
+
+def _label_of(spec: TargetSpec) -> str:
+    """The display label for ``spec`` — its explicit label, or the target itself."""
+    return spec.label or spec.target
+
+
 async def _compare_body(
     flags: CompareFlags,
     baseline: TargetSpec,
     candidates: list[TargetSpec],
 ) -> ComparisonResult:
-    labels = [s.label or s.target for s in [baseline, *candidates]]
+    labels = [_label_of(s) for s in [baseline, *candidates]]
     progress = begin_run(
         flags,
         1 + len(candidates),
@@ -145,7 +171,22 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         warn_duration_over_budget(halve=False)
-        result = await with_repo_lock("compare", lambda: _compare_body(flags, baseline, candidates))
+        trace_args: dict[str, object] = {
+            "baseline": _label_of(baseline),
+            "candidates": [_label_of(s) for s in candidates],
+            "fail_on": _serialize_fail_on(flags.fail_on),
+            **config_trace_args(flags),
+        }
+
+        async def body(trace: CommandTrace) -> ComparisonResult:
+            comparison = await _compare_body(flags, baseline, candidates)
+            warn_empty_geomean_gates(flags.fail_on, comparison)
+            if should_fail_gate(flags.fail_on, comparison):
+                trace.gate = True
+                trace.reason = "fail-on"
+            return comparison
+
+        result = await with_repo_lock("compare", body, args=trace_args)
         budget_trailer, budget_summary = budget_for_report()
         emit_report(
             result,
@@ -155,7 +196,6 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             budget_trailer=budget_trailer,
             budget_summary=budget_summary,
         )
-        warn_empty_geomean_gates(flags.fail_on, result)
         if should_fail_gate(flags.fail_on, result):
             raise typer.Exit(GATE_EXIT_CODE)
 

@@ -36,7 +36,6 @@ from tests.loop.settle._fixtures import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,
-    ISO_PATTERN,
     LONG_STDERR,
     LONG_STDOUT,
     RERUN_SAMPLES,
@@ -132,7 +131,8 @@ async def test_keep_session_when_checks_pass_does_append_committed_keep_with_com
     result = await keep_session(repo, checks_config(), KeepOptions(message="cache the regex"))
 
     record = result.record
-    assert ISO_PATTERN.match(record.at)
+    assert isinstance(record.at, int)
+    assert record.at > 0
     assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
     assert record.commit == head_of(experiment_worktree_dir(repo))
     assert record.message == "cache the regex"
@@ -206,7 +206,8 @@ async def test_keep_session_when_no_checks_configured_does_keep_and_record_gate_
 
     assert recorder.calls == []
     record = result.record
-    assert ISO_PATTERN.match(record.at)
+    assert isinstance(record.at, int)
+    assert record.at > 0
     assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
     assert record.commit == head_of(experiment_worktree_dir(repo))
     assert isinstance(record.message, str)

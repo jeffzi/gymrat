@@ -59,14 +59,12 @@ def _format_artifact(label: str, artifact: ScaffoldArtifact, base_dir: str) -> s
 
 
 def _format_summary(result: ScaffoldResult, base_dir: str, *, color: bool | None = None) -> str:
-    doc = "\n".join(
-        [
-            escape(_format_artifact("Config:", result.config, base_dir)),
-            escape(_format_artifact("Runbook:", result.runbook, base_dir)),
-            escape(_format_artifact("Skill:", result.skill, base_dir)),
-            format_hint("Run `gymrat doctor` to verify the setup."),
-        ]
-    )
+    doc = "\n".join([
+        escape(_format_artifact("Config:", result.config, base_dir)),
+        escape(_format_artifact("Runbook:", result.runbook, base_dir)),
+        escape(_format_artifact("Skill:", result.skill, base_dir)),
+        format_hint("Run `gymrat doctor` to verify the setup."),
+    ])
     return render_lines(doc, color=color, width=RENDER_WIDTH)
 
 

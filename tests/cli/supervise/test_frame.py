@@ -159,7 +159,6 @@ def test_build_frame_panel_when_launched_does_have_nondefault_border_style():
 
 
 def test_panel_title_when_label_present_does_style_supervise_and_label_with_label_style():
-    """STYLE_LABEL is ``bold blue`` — the title line must carry bold SGR."""
     kit = make_reporter(label="ecstatic-ts", session_id="", branch="")
     fire_launch(kit.reporter.observer, 1000)
 
@@ -173,7 +172,6 @@ def test_panel_title_when_label_present_does_style_supervise_and_label_with_labe
 
 
 def test_panel_title_when_connector_present_does_dim_the_connector_word():
-    """Connector words (``session``, ``branch``) render dim in the title."""
     kit = make_reporter(
         label="",
         session_id="20260813-125044-34ec",
@@ -321,10 +319,6 @@ def test_liveness_inflight_when_rendered_with_color_does_not_emit_special_stylin
 
 
 def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout():
-    """An in-flight tool row should contain wall-clock, tool name, summary, and elapsed.
-
-    The layout must match the column alignment of a finished tool line.
-    """
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
 
@@ -445,7 +439,6 @@ def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
 
 
 def test_finished_tools_when_three_completed_does_render_newest_first():
-    """Finished tool history lines appear newest-first (closest to the in-flight row)."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
 
@@ -1118,7 +1111,6 @@ def test_summary_headline_when_guard_ended_does_show_stopped_by_guard_with_reaso
 
 
 def test_summary_when_guard_ended_does_show_agent_row() -> None:
-    """The agent row appears for guard-ended sessions (the agent's last text is useful)."""
     summary = build_summary(
         make_supervision_result(
             reason="interrupted",

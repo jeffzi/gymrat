@@ -113,13 +113,13 @@ def test_render_json_when_single_candidate_does_produce_schema_version_2_shape()
 
     doc = json.loads(render_json(result))
 
-    assert doc["schemaVersion"] == 2
+    assert doc["schema_version"] == 2
     assert doc["baseline"] == "main"
     assert doc["candidates"] == ["experiment"]
     assert doc["samples"] == 10
     assert doc["adapter"] == "mitata"
     assert "metrics" in doc
-    assert "perCandidate" in doc
+    assert "per_candidate" in doc
     assert "worktrees" in doc
 
 
@@ -131,13 +131,13 @@ def test_render_json_when_top_level_keys_does_order_them_canonically():
     doc = json.loads(render_json(result))
 
     assert list(doc.keys()) == [
-        "schemaVersion",
+        "schema_version",
         "baseline",
         "candidates",
         "samples",
         "adapter",
         "metrics",
-        "perCandidate",
+        "per_candidate",
         "worktrees",
     ]
 
@@ -168,8 +168,8 @@ def test_render_json_when_several_candidates_does_include_all_in_order():
     doc = json.loads(render_json(result))
 
     assert doc["candidates"] == ["alpha", "beta", "gamma"]
-    assert len(doc["perCandidate"]) == 3
-    assert [entry["label"] for entry in doc["perCandidate"]] == ["alpha", "beta", "gamma"]
+    assert len(doc["per_candidate"]) == 3
+    assert [entry["label"] for entry in doc["per_candidate"]] == ["alpha", "beta", "gamma"]
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ def test_render_json_when_single_pair_does_store_no_signal_band_verdict():
 
     assert candidate["verdict"] == "no-signal"
     assert candidate["method"] == "band"
-    assert candidate["noisePct"] == 0.5
+    assert candidate["noise_pct"] == 0.5
     assert candidate["band"] == 0.5
 
 
@@ -218,7 +218,7 @@ def test_render_json_when_exact_verdict_does_null_noise_p_and_band():
     candidate = json.loads(render_json(result))["metrics"]["alloc/heap"]["candidates"][0]
 
     assert candidate["method"] == "exact"
-    assert candidate["noisePct"] is None
+    assert candidate["noise_pct"] is None
     assert candidate["p"] is None
     assert candidate["band"] is None
 
@@ -299,7 +299,7 @@ def test_render_json_when_baseline_measured_does_include_median_and_spread():
     baseline = json.loads(render_json(result))["metrics"]["decode/time"]["baseline"]
 
     assert baseline["median"] == 200
-    assert baseline["spreadPct"] == 3.5
+    assert baseline["spread_pct"] == 3.5
 
 
 # ---------------------------------------------------------------------------
@@ -310,10 +310,10 @@ def test_render_json_when_baseline_measured_does_include_median_and_spread():
 def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
     doc = json.loads(render_json(_two_kind_with_exclusions()))
 
-    assert doc["perCandidate"][0]["kinds"] == [
+    assert doc["per_candidate"][0]["kinds"] == [
         {
             "kind": "time",
-            "hasGating": True,
+            "has_gating": True,
             "geomean": {
                 "value": -3.2,
                 "n": 2,
@@ -326,14 +326,14 @@ def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
             "groups": [
                 {"group": "entity", "geomean": {"value": -3.1, "n": 2, "excluded": [], "band": 0}},
             ],
-            "gatedGeomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
+            "gated_geomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
         },
         {
             "kind": "memory",
-            "hasGating": False,
+            "has_gating": False,
             "geomean": {"value": -7, "n": 1, "excluded": [], "band": 0},
             "groups": [],
-            "gatedGeomean": None,
+            "gated_geomean": None,
         },
     ]
 
@@ -341,7 +341,7 @@ def test_render_json_when_candidate_spans_kinds_does_carry_one_entry_per_kind():
 def test_render_json_when_candidate_spans_kinds_does_leave_no_blended_geomean():
     doc = json.loads(render_json(_two_kind_with_exclusions()))
 
-    assert "geomean" not in doc["perCandidate"][0]
+    assert "geomean" not in doc["per_candidate"][0]
 
 
 def test_render_json_when_single_kind_does_use_same_shape_with_one_entry():
@@ -352,13 +352,13 @@ def test_render_json_when_single_kind_does_use_same_shape_with_one_entry():
 
     doc = json.loads(render_json(result))
 
-    assert doc["perCandidate"][0]["kinds"] == [
+    assert doc["per_candidate"][0]["kinds"] == [
         {
             "kind": "other",
-            "hasGating": True,
+            "has_gating": True,
             "geomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
             "groups": [],
-            "gatedGeomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
+            "gated_geomean": {"value": -3.2, "n": 2, "excluded": [], "band": 0},
         },
     ]
 
@@ -402,9 +402,9 @@ def test_render_json_when_metrics_vary_does_tally_verdict_counts_per_candidate()
         },
     )
 
-    counts = json.loads(render_json(result))["perCandidate"][0]["verdictCounts"]
+    counts = json.loads(render_json(result))["per_candidate"][0]["verdict_counts"]
 
-    assert counts == {"improved": 2, "regressed": 1, "unstable": 1, "noSignal": 1}
+    assert counts == {"improved": 2, "regressed": 1, "unstable": 1, "no_signal": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -439,9 +439,9 @@ def test_render_json_when_baseline_unmeasured_does_render_null_baseline_fields()
     serialized = json.loads(render_json(result))["metrics"]["sparse/time"]
 
     assert serialized["baseline"]["median"] is None
-    assert serialized["baseline"]["spreadPct"] is None
+    assert serialized["baseline"]["spread_pct"] is None
     assert serialized["candidates"][0]["median"] is None
-    assert serialized["candidates"][0]["spreadPct"] is None
+    assert serialized["candidates"][0]["spread_pct"] is None
 
 
 def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
@@ -475,11 +475,11 @@ def test_render_json_when_candidate_has_no_metric_data_does_render_all_nulls():
 
     assert beta["label"] == "beta"
     assert beta["median"] is None
-    assert beta["spreadPct"] is None
+    assert beta["spread_pct"] is None
     assert beta["verdict"] is None
     assert beta["method"] is None
     assert beta["delta"] is None
-    assert beta["noisePct"] is None
+    assert beta["noise_pct"] is None
     assert beta["p"] is None
     assert beta["band"] is None
 
@@ -514,7 +514,7 @@ def test_render_json_when_candidate_measured_but_unpaired_does_keep_measurements
     beta = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][1]
 
     assert beta["median"] == 95
-    assert beta["spreadPct"] == 3
+    assert beta["spread_pct"] == 3
     assert beta["verdict"] is None
 
 
@@ -532,7 +532,7 @@ def test_render_json_when_cleanup_clean_does_report_no_issues():
 
     worktrees = json.loads(render_json(result))["worktrees"]
 
-    assert worktrees == {"removed": 2, "leftBehind": [], "pruneError": None}
+    assert worktrees == {"removed": 2, "left_behind": [], "prune_error": None}
 
 
 def test_render_json_when_cleanup_has_failures_does_report_left_behind_and_prune_error():
@@ -547,10 +547,10 @@ def test_render_json_when_cleanup_has_failures_does_report_left_behind_and_prune
     worktrees = json.loads(render_json(result))["worktrees"]
 
     assert worktrees["removed"] == 1
-    assert worktrees["leftBehind"] == [
+    assert worktrees["left_behind"] == [
         {"path": "/tmp/gymrat-abc", "reason": "contains modified files"},
     ]
-    assert worktrees["pruneError"] == "fatal: prune failed"
+    assert worktrees["prune_error"] == "fatal: prune failed"
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +597,7 @@ def test_render_measure_json_when_single_run_does_use_schema_version_1_shape():
 
     doc = json.loads(render_measure_json(result))
 
-    assert doc["schemaVersion"] == 1
+    assert doc["schema_version"] == 1
     assert doc["label"] == "experiment"
     assert doc["samples"] == 10
     assert doc["adapter"] == "mitata"
@@ -617,7 +617,7 @@ def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
     doc = json.loads(render_measure_json(two_kind_measurement()))
 
     assert list(doc.keys()) == [
-        "schemaVersion",
+        "schema_version",
         "label",
         "samples",
         "adapter",
@@ -632,13 +632,9 @@ def test_render_measure_json_when_top_level_keys_does_order_them_canonically():
 
 
 def test_render_measure_json_when_grouped_metric_does_carry_contract_derived_group():
-    """``infer_group`` must derive the group from the metric name key, not ``short_name``.
-
-    Metric name ``entity/alive_check#time`` has path ``("entity", "alive_check")``,
-    so its contract group is ``"entity"``.  The short_name ``alive_check`` has no
-    dot and would yield ``None`` — so this test can only pass when ``infer_group``
-    operates on the metric name key.
-    """
+    # infer_group derives the group from the metric name key, not short_name:
+    # "entity/alive_check#time" → group "entity"; short_name "alive_check"
+    # would yield None.
     result = create_measurement_result(
         metrics={
             "entity/alive_check#time": measured_metric(
@@ -674,7 +670,7 @@ def test_render_measure_json_when_single_segment_name_does_report_null_group():
 
 @pytest.mark.parametrize(
     ("field", "median", "spread"),
-    [("median", None, 1.0), ("spreadPct", 100.0, None)],
+    [("median", None, 1.0), ("spread_pct", 100.0, None)],
 )
 def test_render_measure_json_when_field_absent_does_render_null(
     field: str,
@@ -708,7 +704,7 @@ def test_render_measure_json_when_metric_has_no_unit_does_render_null_unit():
 def test_render_measure_json_when_cleanup_clean_does_report_no_issues():
     doc = json.loads(render_measure_json(create_measurement_result(worktrees_removed=2)))
 
-    assert doc["worktrees"] == {"removed": 2, "leftBehind": [], "pruneError": None}
+    assert doc["worktrees"] == {"removed": 2, "left_behind": [], "prune_error": None}
 
 
 def test_render_measure_json_when_cleanup_has_failures_does_report_left_behind_and_prune_error():
@@ -724,8 +720,8 @@ def test_render_measure_json_when_cleanup_has_failures_does_report_left_behind_a
 
     assert doc["worktrees"] == {
         "removed": 1,
-        "leftBehind": [{"path": "/tmp/gymrat-abc", "reason": "contains modified files"}],
-        "pruneError": "fatal: prune failed",
+        "left_behind": [{"path": "/tmp/gymrat-abc", "reason": "contains modified files"}],
+        "prune_error": "fatal: prune failed",
     }
 
 
@@ -752,6 +748,6 @@ def test_render_measure_json_when_nesting_fields_does_indent_two_spaces_per_leve
     lines = render_measure_json(result).split("\n")
     worktrees_line = next(i for i, line in enumerate(lines) if line.strip() == '"worktrees": {')
 
-    assert re.match(r'^ {2}"schemaVersion": 1,$', lines[1])
+    assert re.match(r'^ {2}"schema_version": 1,$', lines[1])
     assert re.match(r'^ {2}"worktrees": \{$', lines[worktrees_line])
     assert re.match(r'^ {4}"removed": 1,$', lines[worktrees_line + 1])

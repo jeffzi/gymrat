@@ -23,10 +23,8 @@ class MethodFloors:
 
 
 PERMUTATION_FLOORS = MethodFloors(method="permutation", min_n=6, p_threshold=0.05)
-"""Permutation floors: at least 6 usable pairs, gated at p < 0.05."""
 
 BAND_FLOORS = MethodFloors(method="band", min_n=2, p_threshold=None)
-"""Band floors: at least 2 usable entries; no significance gate."""
 
 NOISE_K = 1.5
 """Multiplier applied to the noise floor when deriving the instability band."""

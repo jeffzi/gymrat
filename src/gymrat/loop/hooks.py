@@ -41,6 +41,7 @@ from gymrat.progress_events import (
     emit_progress,
 )
 from gymrat.session import HookRecord, IterationRecord, SessionRecord, append_record, record_to_wire
+from gymrat.session.clock import now_ns
 from gymrat.session.schema import HookStage
 
 #: How long a hook may run before it is killed. Long enough to build, short
@@ -113,6 +114,12 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
     Whatever it does -- succeed, fail, time out, or fail to start -- comes back
     as a :class:`HookRun`; nothing here raises. The record is not appended to
     any log: the caller owns that.
+
+    Args:
+        invocation: The stage, command, session, and payload data for the run.
+
+    Returns:
+        The hook run result containing the log record and the formatted report.
     """
     timeout_ms = HOOK_TIMEOUT_MS if invocation.timeout_ms is None else invocation.timeout_ms
     payload = json.dumps(_build_payload(invocation))
@@ -132,6 +139,7 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
 
     record = HookRecord(
         type="hook",
+        at=now_ns(),
         stage=invocation.stage,
         seq=invocation.seq,
         exit_code=outcome.exit_code,
@@ -146,11 +154,9 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
 
 
 def _describe_outcome(result: ExecResult | ExecTimeoutError) -> _CommandOutcome:
-    """Fold exec's two result shapes into the one the log and report read.
-
-    A timeout carries no exit code of its own -- the process was killed before
-    it had one -- so the shared failure code stands in for it.
-    """
+    """Fold exec's two result shapes into the one the log and report read."""
+    # A timeout carries no exit code of its own -- the process was killed before
+    # it had one -- so the shared failure code stands in for it.
     if isinstance(result, ExecTimeoutError):
         exit_code, timed_out = FAILURE_EXIT_CODE, True
     else:
@@ -171,14 +177,14 @@ def _build_payload(invocation: HookInvocation) -> dict[str, object]:
     last_iteration = invocation.last_iteration
     return {
         "stage": invocation.stage,
-        "experimentDir": session.worktrees.experiment,
+        "experiment_dir": session.worktrees.experiment,
         "seq": invocation.seq,
-        "lastIteration": record_to_wire(last_iteration) if last_iteration is not None else None,
+        "last_iteration": record_to_wire(last_iteration) if last_iteration is not None else None,
         "session": {
-            "sessionId": session.session_id,
+            "session_id": session.session_id,
             "baseline": {"ref": session.baseline.ref, "sha": session.baseline.sha},
             "branch": session.branch,
-            "iterationCount": invocation.iteration_count,
+            "iteration_count": invocation.iteration_count,
         },
     }
 
@@ -219,8 +225,18 @@ async def run_hook_stage(
     """Run one lifecycle hook stage, bracketed by progress events when a command is configured.
 
     A stage the config leaves out passes ``None`` and runs nothing at all: no
-    process, no record, no line in the report. Returns what to print for the hook
-    — empty when there was no hook or it said nothing.
+    process, no record, no line in the report.
+
+    Args:
+        jsonl_path: Path to the session's JSONL log to append the hook record to.
+        on_progress: Callback for stage-started and stage-finished progress
+            events, or ``None`` to skip progress reporting.
+        invocation: The stage, command, session, and payload data for the run,
+            or ``None`` when the stage has no configured hook.
+
+    Returns:
+        The text to print for the hook — empty when there was no hook or it
+        said nothing.
     """
     if invocation is None:
         return ""

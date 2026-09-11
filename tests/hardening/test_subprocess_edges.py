@@ -95,7 +95,6 @@ def file_exists(path: Path) -> bool:
 
 
 async def wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
-    """Poll until ``path`` exists."""
     await _poll_until(
         lambda: path if file_exists(path) else None,
         timeout_s=timeout_s,
@@ -306,7 +305,7 @@ async def test_stdio_driver_when_child_survives_kill_does_bound_teardown_and_set
     program = (
         "import json, sys, time\n"
         "sys.stdout.write(json.dumps("
-        "{'type': 'outcome', 'reason': 'completed', 'costUsd': 0.0}) + '\\n')\n"
+        "{'type': 'outcome', 'reason': 'completed', 'cost_usd': 0.0}) + '\\n')\n"
         "sys.stdout.flush()\n"
         "time.sleep(120)\n"
     )
@@ -393,7 +392,16 @@ async def test_stdio_driver_when_aborted_mid_read_does_not_leak_task_diagnostics
     config = {
         "mode": "sleep_forever",
         "report_path": str(report),
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.4}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.4,
+                    "settled": False,
+                }
+            }
+        ],
     }
     argv = [sys.executable, _DOUBLE, json.dumps(config)]
     abort = asyncio.Event()

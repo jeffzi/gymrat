@@ -35,6 +35,12 @@ def format_duration(ms: float) -> str:
     Uses at most two tiers and always shows a zero remainder in the lower tier
     (``60_000`` renders ``"1m 0s"``, ``3_600_000`` renders ``"1h 00m"``).  The
     hour tier zero-pads the minute remainder to two digits.
+
+    Args:
+        ms: The elapsed duration in milliseconds.
+
+    Returns:
+        The formatted duration string (e.g. ``"5s"``, ``"1m 0s"``, ``"1h 00m"``).
     """
     total_seconds = _floored_whole_seconds(ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
@@ -51,6 +57,13 @@ def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
 
     Falls back to zero elapsed when ``run_start_ms`` is ``None`` (the run has not
     yet been anchored), matching how each caller anchors its own run start.
+
+    Args:
+        at_ms: The timestamp in milliseconds to format.
+        run_start_ms: The run's start timestamp in milliseconds, or ``None``.
+
+    Returns:
+        A bracketed timestamp string, e.g. ``"[00:07:45]"``.
     """
     start_ms = at_ms if run_start_ms is None else run_start_ms
     elapsed_ms = at_ms - start_ms
@@ -64,6 +77,12 @@ def format_clock(ms: float) -> str:
 
     Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
     appears only when there are whole hours (``"1:07:45"``).
+
+    Args:
+        ms: The duration in milliseconds.
+
+    Returns:
+        The clock string, e.g. ``"07:45"`` or ``"1:07:45"``.
     """
     total_seconds = _floored_whole_seconds(ms)
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)
@@ -78,6 +97,12 @@ def format_eta(ms: float) -> str:
 
     Clamps to at least one second and drops a zero remainder in the lower tier
     (``60_000`` renders ``"~1m left"``, not ``"~1m 0s left"``).
+
+    Args:
+        ms: The forward time estimate in milliseconds.
+
+    Returns:
+        The ETA string, e.g. ``"~5s left"`` or ``"~1m left"``.
     """
     total_seconds = max(1, round(ms / MS_PER_SECOND))
     hours, minutes, seconds = _hours_minutes_seconds(total_seconds)

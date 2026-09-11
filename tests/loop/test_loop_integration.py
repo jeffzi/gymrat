@@ -136,9 +136,6 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     repo = create_scratch_repo()
     commit_project(repo, samples=SAMPLES)
 
-    # Each command runs from a cold start, in the order an agent would drive
-    # them: open the session, pin the baseline, edit, measure, keep, edit,
-    # measure, throw away.
     exit_codes: list[int] = [
         _run_cli(repo, "start", "main").returncode,
         _run_cli(repo, "measure", "main", "--record").returncode,
@@ -163,12 +160,13 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     kept_commit = keep.commit
     assert kept_commit is not None
 
-    # Every command in the sequence succeeded.
     assert exit_codes == [0, 0, 0, 0, 0, 0]
 
     # The log holds the session, the baseline, both iterations, the keep, and
-    # the discard in exact order.
-    assert [record.type for record in records] == [
+    # the discard in exact order (command records interleaved by the seam are
+    # filtered out — they are verified by their own tests).
+    domain_types = [record.type for record in records if record.type != "command"]
+    assert domain_types == [
         "session",
         "baseline",
         "iteration",
@@ -185,7 +183,6 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     assert keep.status == "committed"
     assert _pick(records, DiscardRecord)[0].seq == 2
 
-    # The records hold what the real bench printed in each worktree it ran in.
     baseline = _pick(records, BaselineRecord)[0]
     assert baseline.label == "main"
     assert baseline.samples == _latency_samples(BASELINE_LATENCY)
@@ -201,16 +198,11 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     assert f"baseline main · latency {BASELINE_LATENCY}" in lines
     assert re.search(rf"^iteration 1 · .* · kept {kept_commit[:7]}$", status_report, re.MULTILINE)
 
-    # The main working tree ends clean.
     assert _git(repo, "status", "--porcelain") == ""
 
-    # The kept edit is the only commit on the experiment branch, and the branch
-    # carries the tuned latency.
     assert _git(repo, "log", "--format=%H", f"main..{branch}").split("\n") == [kept_commit]
     assert _git(repo, "show", f"{branch}:{TUNING_FILE}") == str(KEPT_LATENCY)
 
-    # The discarded edit is nowhere on disk or in history, and the worktree is
-    # back to the kept latency.
     worktree = Path(experiment_worktree_dir(repo))
     assert DISCARD_MARKER not in _git(repo, "log", "--all", "-p")
     assert not (worktree / DISCARDED_FILE).exists()
@@ -277,9 +269,7 @@ def test_loop_when_restarted_after_a_finalize_without_worktree_does_open_fresh(
 ):
     repo = create_scratch_repo()
 
-    # Drive a whole session by hand: open it, commit the edit a keep would
-    # commit, log the iteration and the keep behind it, then close it. The bench
-    # never runs — the iteration record stands in for what iterate measured.
+    # The bench never runs — the iteration record stands in for what iterate measured.
     first = start_session(repo, "main", resolved_config())
     closed_session_id = first.session.session_id
 
@@ -301,13 +291,10 @@ def test_loop_when_restarted_after_a_finalize_without_worktree_does_open_fresh(
 
     restarted = start_session(repo, "main", resolved_config())
 
-    # A fresh session opens rather than resuming the closed one.
     assert restarted.resumed is False
     assert restarted.session.session_id != closed_session_id
 
-    # Both worktrees of the fresh session check out.
     assert Path(experiment_worktree_dir(repo)).exists()
     assert Path(baseline_worktree_dir(repo)).exists()
 
-    # The closed session's log is archived under the id it belonged to.
     assert read_records(archived_session_path(repo, closed_session_id)) == closed_log

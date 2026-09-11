@@ -28,6 +28,7 @@ from gymrat.errors import GymratError
 from gymrat.loop.baseline import measure_baseline
 from gymrat.loop.iterate.run import stop_condition
 from gymrat.loop.start import start_session
+from gymrat.plural import pluralize
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import TargetSpec
 from gymrat.session import (
@@ -45,7 +46,9 @@ from gymrat.session.budget import (
     ms_to_minutes,
 )
 from gymrat.session.lock import acquire_lock
-from gymrat.session.paths import lockfile_path
+from gymrat.session.paths import experiment_worktree_dir, lockfile_path
+from gymrat.session.store import fold_session, last_kept_position
+from gymrat.session.workspace import changed_file_count
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
@@ -75,6 +78,19 @@ def run_preflight(
     Order: checks warning, session (under repo lock), stop condition,
     baseline measurement, feasibility check. The doctor gate runs before
     this function — the command calls it earlier.
+
+    Args:
+        root: The repository root path.
+        config: The resolved configuration for the session.
+        baseline_ref: The git ref to measure as baseline, or ``None`` to
+            reuse the existing baseline.
+        max_minutes: The cap on one iterate's duration used by the
+            feasibility check.
+        force: Whether to launch despite a met stop condition or a failed
+            feasibility check.
+
+    Returns:
+        The session start result with state, baseline, and lock release.
 
     Raises:
         GymratError: When a stop condition is met (without ``force``) or the
@@ -120,6 +136,9 @@ def _session_step(
     """Open, resume, or archive-and-reopen the session.
 
     The caller holds the repository lock for the full session-through-feasibility span.
+
+    Returns:
+        The session start result.
     """
     result = start_session(root, baseline_ref, config)
 
@@ -165,7 +184,7 @@ def _baseline_step(
         return
 
     worktree_dir = baseline_worktree_dir(root)
-    target = TargetSpec(label=_BASELINE_LABEL, target=str(worktree_dir))
+    target = TargetSpec(label=_BASELINE_LABEL, target=worktree_dir)
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
         run_options = run_options_of(config, progress)
@@ -200,4 +219,44 @@ def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
         f"the {cap_minutes}m cap cannot fit one."
     )
     hint = "Raise --max-minutes, or pass --force to launch anyway."
+    raise GymratError(message, hint=hint)
+
+
+def validate_experiment_worktree(root: str) -> None:
+    """Refuse to launch when the experiment worktree has unmeasured changes.
+
+    An unsettled iteration needs settling first; unmeasured edits — committed or
+    still uncommitted — need measuring or reverting. The check runs regardless of
+    ``--allow-dirty``, which covers only the main working tree.
+
+    Args:
+        root: The repository root path.
+
+    Raises:
+        GymratError: When the experiment worktree has unsettled or unmeasured
+            changes.
+    """
+    records = _read_records(root)
+    if not records:
+        return
+
+    state = fold_session(records)
+    if state.finalized is not None or state.session is None:
+        return
+
+    worktree = experiment_worktree_dir(root)
+    target = last_kept_position(state, state.session.baseline.sha)
+    count = changed_file_count(worktree, target)
+    if count == 0:
+        return
+
+    if state.unsettled:
+        message = "The experiment worktree has an unsettled iteration with uncommitted changes."
+        hint = "Run gymrat keep or gymrat discard first."
+    elif state.ends_on_gating_block:
+        message = "The last keep was refused for a gating regression."
+        hint = "Run gymrat discard to revert it."
+    else:
+        message = f"The experiment worktree has {pluralize(count, 'unmeasured edit')}."
+        hint = "Measure them with gymrat iterate or revert them with gymrat discard."
     raise GymratError(message, hint=hint)

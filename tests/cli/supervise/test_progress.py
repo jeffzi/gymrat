@@ -33,6 +33,7 @@ from tests.cli.supervise._fixtures import (
     empty_session_state,
     finalize_record,
     fire_cap,
+    fire_compaction,
     fire_follow_up,
     fire_launch,
     fire_launch_and_bash_cycle,
@@ -69,7 +70,6 @@ def test_create_reporter_when_built_does_expose_frame():
 
 
 def test_create_reporter_when_session_read_does_expose_the_latest_session_result():
-    """The closing summary reads the final session state off the reporter."""
     state = session_state_three_iterations(-4.2, "improved", seq=3)
     kit = make_reporter(read_session=make_read_session(state, has_baseline=True))
 
@@ -470,7 +470,6 @@ def test_reread_when_tool_end_has_unknown_id_does_reread():
 
 
 def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAssertion):
-    """A mid-session snapshot with time, cost, loop, best, and liveness."""
     state = session_state(
         iteration_count=3,
         keep_count=1,
@@ -492,7 +491,6 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
     )
     fire_launch(kit.reporter.observer, 1000, max_minutes=480, max_usd=10.0)
 
-    # Simulate 2h41m elapsed
     kit.clock.now = 1000 + (2 * 3600 + 41 * 60) * 1000
     fire_usage_update(kit.reporter.observer, 4.12, kit.clock.now)
 
@@ -533,7 +531,6 @@ LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
 
 
 def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():
-    """Live is constructed with ``get_renderable`` so it rebuilds on its 1 Hz refresh."""
     with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
         make_reporter(mode="live")
 
@@ -737,11 +734,6 @@ def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line
 
 
 def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
-    """Wall-clock uses the reporter's timezone.
-
-    The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
-    string is a fixed UTC value regardless of the host timezone.
-    """
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -760,12 +752,6 @@ def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
 
 
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
-    """Verify local-time fallback without an explicit timezone.
-
-    The expected timestamp is computed from the same epoch-to-local conversion
-    the implementation should use, so this assertion is the only remaining user
-    of ``_epoch_ms_to_local_hms``.
-    """
     ended_at_ms = 3000
     expected_time = _epoch_ms_to_local_hms(ended_at_ms)
 
@@ -815,7 +801,6 @@ def test_liveness_when_tool_ends_below_threshold_does_show_waiting():
 def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
     result: str, expected_fragment: str
 ):
-    """Reporter is built with ``tz=UTC`` so wall-clock is fixed."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -832,7 +817,6 @@ def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
 
 
 def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
-    """When no tool has finished, above-threshold waiting shows bare ``no output for Xs``."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     fire_model_phase(kit.reporter.observer, 2000, "turn_end")
@@ -1090,7 +1074,7 @@ def test_liveness_when_text_delta_after_launch_does_stay_starting():
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
-    observer(TextDeltaEvent(timestamp=2500, chunk="hello"))
+    observer(TextDeltaEvent(at=2_500_000_000, chunk="hello"))
 
     frame = render_frame(kit.reporter)
 
@@ -1102,7 +1086,7 @@ def test_liveness_when_thinking_after_launch_does_show_thinking():
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
-    observer(ThinkingUpdateEvent(timestamp=2500, estimated_tokens=100, delta=10))
+    observer(ThinkingUpdateEvent(at=2_500_000_000, estimated_tokens=100, delta=10))
 
     frame = render_frame(kit.reporter)
 
@@ -1115,7 +1099,7 @@ def test_liveness_when_tool_progress_after_launch_does_not_crash():
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
-    observer(ToolProgressEvent(timestamp=2000, tool_use_id="tp-1", elapsed_ms=500))
+    observer(ToolProgressEvent(at=2_000_000_000, tool_use_id="tp-1", elapsed_ms=500))
 
     frame = render_frame(kit.reporter)
 
@@ -1170,11 +1154,10 @@ def test_final_text_when_injected_turn_ends_does_not_replace_agent_text():
 
 
 def test_final_text_when_text_delta_received_does_not_set_final_text():
-    """TextDeltaEvent is a no-op for final_text; only TurnEndEvent sets it."""
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
-    observer(TextDeltaEvent(timestamp=2000, chunk="streamed text"))
+    observer(TextDeltaEvent(at=2_000_000_000, chunk="streamed text"))
 
     assert kit.reporter.final_text() is None
 
@@ -1255,7 +1238,6 @@ def test_liveness_when_turn_ends_does_show_waiting():
 
 
 def test_liveness_when_follow_up_does_not_change_liveness():
-    """FollowUpEvent leaves liveness unchanged; the next model phase moves it."""
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
@@ -1278,3 +1260,19 @@ def test_stop_when_called_does_not_raise():
     fire_launch(kit.reporter.observer, 1000)
 
     kit.reporter.stop()
+
+
+# ---------------------------------------------------------------------------
+# compaction event — context compacted line
+# ---------------------------------------------------------------------------
+
+
+def test_compaction_when_fired_does_show_context_compacted_in_frame():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 3000
+    fire_compaction(kit.reporter.observer, 3000)
+
+    frame = render_frame(kit.reporter)
+
+    assert "context compacted" in frame

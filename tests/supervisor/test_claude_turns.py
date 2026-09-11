@@ -99,7 +99,6 @@ async def _drain(n: int = 4) -> None:
 
 
 async def test_turn_when_result_message_received_does_emit_turn_end_event():
-    """A result message produces a TurnEndEvent with its text."""
     result = result_message(total_cost_usd=0.05)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -107,7 +106,6 @@ async def test_turn_when_result_message_received_does_emit_turn_end_event():
 
     session = driver.start(make_prompt(), probe.observer)
 
-    # Give messages time to process, then end the session
     await _drain()
     await session.end()
     await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
@@ -117,7 +115,6 @@ async def test_turn_when_result_message_received_does_emit_turn_end_event():
 
 
 async def test_turn_when_result_has_top_level_text_does_carry_text_on_turn_end():
-    """TurnEndEvent.text is the last top-level text block of the turn."""
     messages = [
         SimpleNamespace(content=[SimpleNamespace(text="first answer")]),
         result_message(total_cost_usd=0.01),
@@ -137,7 +134,6 @@ async def test_turn_when_result_has_top_level_text_does_carry_text_on_turn_end()
 
 
 async def test_turn_when_result_has_no_text_does_carry_empty_string():
-    """TurnEndEvent.text is '' when the turn had no top-level text blocks."""
     result = result_message(total_cost_usd=0.01)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -154,7 +150,6 @@ async def test_turn_when_result_has_no_text_does_carry_empty_string():
 
 
 async def test_turn_when_second_turn_does_reset_text_accumulator():
-    """Each turn's TurnEndEvent carries only that turn's text."""
     messages = [
         SimpleNamespace(content=[SimpleNamespace(text="turn one text")]),
         result_message(total_cost_usd=0.01),
@@ -177,7 +172,6 @@ async def test_turn_when_second_turn_does_reset_text_accumulator():
 
 
 async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn_end():
-    """Only top-level text (parent_tool_use_id is None) counts for TurnEndEvent.text."""
     top_level_msg = SimpleNamespace(content=[SimpleNamespace(text="top level")])
     subagent_msg = SimpleNamespace(
         content=[SimpleNamespace(text="subagent output")],
@@ -204,7 +198,6 @@ async def test_turn_when_subagent_text_present_does_ignore_subagent_text_in_turn
 
 
 async def test_turn_when_origin_absent_does_report_agent():
-    """No origin attribute → origin is 'agent'."""
     result = result_message(total_cost_usd=0.01)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -221,7 +214,6 @@ async def test_turn_when_origin_absent_does_report_agent():
 
 
 async def test_turn_when_origin_none_does_report_agent():
-    """Explicit origin=None → origin is 'agent'."""
     result = result_message(total_cost_usd=0.01)
     result.origin = None
     client = FakeClient([result])
@@ -238,7 +230,6 @@ async def test_turn_when_origin_none_does_report_agent():
 
 
 async def test_turn_when_origin_kind_human_does_report_agent():
-    """origin.kind == 'human' → origin is 'agent' (human-initiated turn)."""
     result = result_message(total_cost_usd=0.01)
     result.origin = SimpleNamespace(kind="human")
     client = FakeClient([result])
@@ -255,7 +246,6 @@ async def test_turn_when_origin_kind_human_does_report_agent():
 
 
 async def test_turn_when_origin_kind_task_notification_does_report_injected():
-    """origin.kind != 'human' → origin is 'injected'."""
     result = result_message(total_cost_usd=0.01)
     result.origin = SimpleNamespace(kind="task-notification")
     client = FakeClient([result])
@@ -272,7 +262,6 @@ async def test_turn_when_origin_kind_task_notification_does_report_injected():
 
 
 async def test_turn_when_origin_kind_via_mapping_does_detect_correctly():
-    """Origin as a dict with kind='human' → 'agent'."""
     result = result_message(total_cost_usd=0.01)
     result.origin = {"kind": "human"}
     client = FakeClient([result])
@@ -294,7 +283,6 @@ async def test_turn_when_origin_kind_via_mapping_does_detect_correctly():
 
 
 async def test_turn_when_result_has_cost_does_emit_unsettled_usage_update():
-    """A result's total_cost_usd produces a UsageUpdateEvent with settled=False."""
     result = result_message(total_cost_usd=0.10)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -306,14 +294,12 @@ async def test_turn_when_result_has_cost_does_emit_unsettled_usage_update():
     await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     usage_updates = events_of(probe.events, UsageUpdateEvent)
-    # Should have at least an unsettled one from the result, plus a settled one from end()
     unsettled = [u for u in usage_updates if not u.settled]
     assert len(unsettled) >= 1
     assert unsettled[0].cost_usd == 0.10
 
 
 async def test_turn_when_result_has_cost_does_carry_cost_on_turn_end():
-    """TurnEndEvent.cost_usd matches the result's total_cost_usd."""
     result = result_message(total_cost_usd=0.10)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -329,7 +315,6 @@ async def test_turn_when_result_has_cost_does_carry_cost_on_turn_end():
 
 
 async def test_turn_when_two_results_with_rising_cost_does_emit_two_unsettled_updates_and_turn_ends():
-    """Two turn results with rising cost produce two unsettled usage updates and two turn ends."""
     messages = [
         result_message(total_cost_usd=0.05),
         result_message(total_cost_usd=0.15),
@@ -361,7 +346,6 @@ async def test_turn_when_two_results_with_rising_cost_does_emit_two_unsettled_up
 
 
 async def test_turn_when_error_result_with_regular_subtype_does_settle_error_immediately():
-    """A result with is_error=True and subtype != 'error_max_budget_usd' settles error."""
     result = result_message(subtype="error", is_error=True, result="something went wrong")
     client = FakeClient([result])
 
@@ -372,7 +356,6 @@ async def test_turn_when_error_result_with_regular_subtype_does_settle_error_imm
 
 
 async def test_turn_when_error_result_without_text_does_use_subtype_as_message():
-    """Error result with no result text falls back to the subtype string."""
     result = result_message(subtype="error", is_error=True, result=None)
     client = FakeClient([result])
 
@@ -383,7 +366,6 @@ async def test_turn_when_error_result_without_text_does_use_subtype_as_message()
 
 
 async def test_turn_when_budget_exhausted_does_emit_turn_end_with_flag():
-    """error_max_budget_usd is a turn end with budget_exhausted=True, not an error."""
     result = result_message(
         subtype="error_max_budget_usd",
         is_error=True,
@@ -406,7 +388,6 @@ async def test_turn_when_budget_exhausted_does_emit_turn_end_with_flag():
 
 
 async def test_turn_when_budget_exhausted_does_not_settle_error():
-    """Budget exhaustion does not settle the session as error."""
     result = result_message(
         subtype="error_max_budget_usd",
         is_error=True,
@@ -421,7 +402,6 @@ async def test_turn_when_budget_exhausted_does_not_settle_error():
     await session.end()
     outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
-    # end() settles as completed, not error
     assert outcome.reason == "completed"
 
 
@@ -431,7 +411,6 @@ async def test_turn_when_budget_exhausted_does_not_settle_error():
 
 
 async def test_send_when_called_does_forward_text_to_client_query():
-    """send(text) calls client.query(text) on the same connection."""
     result = result_message(total_cost_usd=0.01)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -452,7 +431,6 @@ async def test_send_when_called_does_forward_text_to_client_query():
 
 
 async def test_send_when_query_raises_does_settle_error():
-    """If client.query raises, the session settles as error."""
     client = QueryRaisingClient(
         [result_message(total_cost_usd=0.01)],
         raise_on_query=2,
@@ -472,12 +450,10 @@ async def test_send_when_query_raises_does_settle_error():
 
 
 async def test_send_when_session_settled_does_noop():
-    """send() on a settled session is a no-op — no exception, no query."""
     result = result_message(subtype="error", is_error=True, result="fatal")
     client = FakeClient([result])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
-    # The session is settled. send should be a no-op.
     # We can't easily call send on the settled session through run_session,
     # so let's use the session handle directly.
     session = driver.start(make_prompt(), noop_observer())
@@ -492,7 +468,6 @@ async def test_send_when_session_settled_does_noop():
 
 
 async def test_end_when_called_does_settle_completed():
-    """end() claims completed with the last known cost."""
     result = result_message(total_cost_usd=0.20)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -508,7 +483,6 @@ async def test_end_when_called_does_settle_completed():
 
 
 async def test_end_when_called_does_emit_settled_usage_update():
-    """end() emits a UsageUpdateEvent with settled=True."""
     result = result_message(total_cost_usd=0.20)
     client = FakeClient([result])
     probe = collecting_observer()
@@ -526,7 +500,6 @@ async def test_end_when_called_does_emit_settled_usage_update():
 
 
 async def test_end_when_called_does_disconnect_client():
-    """end() disconnects the client."""
     result = result_message(total_cost_usd=0.01)
     client = FakeClient([result])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
@@ -540,7 +513,6 @@ async def test_end_when_called_does_disconnect_client():
 
 
 async def test_end_when_called_after_interrupt_does_preserve_interrupted():
-    """end() after interrupt() leaves the outcome as interrupted — no settled usage update."""
     client = FakeClient([result_message(total_cost_usd=0.10)])
     probe = collecting_observer()
     driver = create_claude_driver(client_factory=FactoryProbe(client))
@@ -558,7 +530,6 @@ async def test_end_when_called_after_interrupt_does_preserve_interrupted():
 
 
 async def test_end_when_called_on_settled_session_does_noop():
-    """end() on a settled session is a no-op."""
     result = result_message(subtype="error", is_error=True, result="fatal")
     client = FakeClient([result])
     probe = collecting_observer()
@@ -568,10 +539,8 @@ async def test_end_when_called_on_settled_session_does_noop():
     outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
     assert outcome.reason == "error"
 
-    # end() after settlement should do nothing
     await session.end()
 
-    # No settled usage update should have been emitted
     usage_updates = events_of(probe.events, UsageUpdateEvent)
     settled = [u for u in usage_updates if u.settled]
     assert settled == []
@@ -583,7 +552,6 @@ async def test_end_when_called_on_settled_session_does_noop():
 
 
 async def test_stream_end_when_after_turn_end_does_settle_completed():
-    """A stream that ends naturally after at least one TurnEndEvent settles completed."""
     result = result_message(total_cost_usd=0.05)
     client = FiniteClient([result])
 
@@ -594,7 +562,6 @@ async def test_stream_end_when_after_turn_end_does_settle_completed():
 
 
 async def test_stream_end_when_no_turn_end_does_settle_error():
-    """A stream that ends with no turn end settles error."""
     client = FiniteClient([SimpleNamespace(content=[SimpleNamespace(text="hello")])])
 
     outcome = await run_outcome(client)
@@ -610,7 +577,6 @@ async def test_stream_end_when_no_turn_end_does_settle_error():
 
 
 async def test_interrupt_when_called_does_settle_interrupted():
-    """Interrupt settles as interrupted (same as before turn protocol)."""
     client = FakeClient([])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
@@ -622,7 +588,6 @@ async def test_interrupt_when_called_does_settle_interrupted():
 
 
 async def test_interrupt_when_called_before_end_does_win():
-    """Interrupt first-wins over a later end()."""
     client = FakeClient([result_message(total_cost_usd=0.10)])
     driver = create_claude_driver(client_factory=FactoryProbe(client))
 
@@ -640,7 +605,6 @@ async def test_interrupt_when_called_before_end_does_win():
 
 
 async def test_options_when_max_budget_usd_set_does_include_max_budget_usd():
-    """max_budget_usd from the prompt is forwarded in the client options."""
     client = FakeClient([result_message(total_cost_usd=0.01)])
     probe = FactoryProbe(client)
     driver = create_claude_driver(client_factory=probe)
@@ -655,7 +619,6 @@ async def test_options_when_max_budget_usd_set_does_include_max_budget_usd():
 
 
 async def test_options_when_max_budget_usd_absent_does_omit_key():
-    """When max_budget_usd is not set, the key is absent from options."""
     client = FakeClient([result_message(total_cost_usd=0.01)])
     probe = FactoryProbe(client)
     driver = create_claude_driver(client_factory=probe)

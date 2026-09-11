@@ -47,6 +47,12 @@ def _workflow_was_skipped(report: DoctorReport) -> bool:
 
     When that happened the skill file was never looked at, so the caveat note
     drops the skill-file claim.
+
+    Args:
+        report: The doctor report whose workflow section is checked.
+
+    Returns:
+        ``True`` when the workflow section contains only the skip placeholder.
     """
     workflow = next(
         (section for section in report.sections if section.title == WORKFLOW_SECTION_TITLE),
@@ -81,6 +87,9 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
         report: The assembled doctor report.
         color: Explicit color choice — ``True`` forces ANSI, ``False``
             suppresses it, ``None`` defers to the environment and TTY.
+
+    Returns:
+        The rendered report string, with or without ANSI escapes.
     """
     lines: list[str] = [_header_line(report), ""]
 
@@ -112,11 +121,11 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
 
 
 def render_doctor_json(report: DoctorReport) -> str:
-    """Serialize the report as JSON for machine consumption, keyed as the shipped surface."""
+    """Serialize the report as JSON for machine consumption, keyed in snake_case."""
     document = {
         "environment": {
-            "gymratVersion": report.environment.gymrat_version,
-            "pythonVersion": report.environment.python_version,
+            "gymrat_version": report.environment.gymrat_version,
+            "python_version": report.environment.python_version,
             "platform": report.environment.platform,
         },
         "sections": [
@@ -126,10 +135,10 @@ def render_doctor_json(report: DoctorReport) -> str:
             }
             for section in report.sections
         ],
-        "okCount": report.ok_count,
-        "warnCount": report.warn_count,
-        "failCount": report.fail_count,
-        "hasFailures": report.has_failures,
+        "ok_count": report.ok_count,
+        "warn_count": report.warn_count,
+        "fail_count": report.fail_count,
+        "has_failures": report.has_failures,
     }
     return json.dumps(document, ensure_ascii=False)
 

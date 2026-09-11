@@ -195,7 +195,7 @@ def _baseline(duration_ms: float | None = None) -> BaselineRecord:
     """A baseline record with only the fields ``estimate_iterate_duration`` inspects."""
     return BaselineRecord(
         type="baseline",
-        at="2026-08-08T14:15:30.000Z",
+        at=1_786_198_530_000_000_000,
         label="main",
         samples=({"total_ms": 15200},),
         duration_ms=duration_ms,

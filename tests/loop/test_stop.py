@@ -26,7 +26,6 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests.loop.settle._fixtures import (
-    ISO_PATTERN,
     capture_error,
     confirmed_regression,
     gating_block,
@@ -82,7 +81,8 @@ def test_stop_session_when_open_does_append_a_stop_record_and_return_a_report(
     record = last_record_of(repo)
     assert isinstance(record, StopRecord)
     assert record.message == "switched to a different approach\nsecond line"
-    assert ISO_PATTERN.match(record.at)
+    assert isinstance(record.at, int)
+    assert record.at > 0
     assert isinstance(result, StopResult)
     assert "Stopped" in result.report
     assert "switched to a different approach" in result.report
@@ -143,6 +143,14 @@ def test_stop_session_when_last_iteration_unsettled_does_refuse_naming_settle_hi
     assert _record_count(repo) == before
 
 
+def test_stop_session_when_last_iteration_unsettled_does_carry_unsettled_reason(repo: str):
+    start_with(repo, (iteration(1),))
+
+    error = capture_error(lambda: stop_session(repo, "done"))
+
+    assert error.reason == "unsettled"
+
+
 # ---------------------------------------------------------------------------
 # when a gating block stands
 # ---------------------------------------------------------------------------
@@ -157,6 +165,14 @@ def test_stop_session_when_gating_block_stands_does_refuse_with_settle_hint(repo
     assert error.hint is not None
     assert _mentions_keep_or_discard(error.hint)
     assert _record_count(repo) == before
+
+
+def test_stop_session_when_gating_block_stands_does_carry_gating_block_reason(repo: str):
+    start_with(repo, (confirmed_regression(1), gating_block(1)))
+
+    error = capture_error(lambda: stop_session(repo, "done"))
+
+    assert error.reason == "gating-block"
 
 
 # ---------------------------------------------------------------------------
@@ -176,3 +192,12 @@ def test_stop_session_when_already_stopped_does_refuse_with_hint(repo: str):
     assert "iterate" in error.hint.lower()
     assert _mentions_keep_or_discard(error.hint)
     assert _record_count(repo) == before
+
+
+def test_stop_session_when_already_stopped_does_carry_already_stopped_reason(repo: str):
+    start_with(repo, (iteration(1), committed_keep(1)))
+    append_record(session_jsonl_path(repo), stop_record())
+
+    error = capture_error(lambda: stop_session(repo, "stop again"))
+
+    assert error.reason == "already-stopped"

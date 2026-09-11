@@ -26,7 +26,6 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests.loop.settle._fixtures import (
-    ISO_PATTERN,
     assert_settling_record,
     checks_config,
     checks_pass,
@@ -281,7 +280,8 @@ def test_discard_session_when_nothing_measured_and_dirty_does_revert_and_return_
     assert status_of(worktree) == ""
     assert len(read_records(session_jsonl_path(repo))) == records_before
     assert result.record is None
-    assert ISO_PATTERN.match(result.at)
+    assert isinstance(result.at, int)
+    assert result.at > 0
     assert (
         result.report
         == f"Reverted 2 unmeasured edits: the experiment worktree is back at {baseline_sha[:7]}"
@@ -322,3 +322,23 @@ def test_discard_session_when_nothing_measured_and_clean_does_refuse(
         discard_session(repo)
 
     assert len(read_records(session_jsonl_path(repo))) == before
+
+
+def test_discard_session_when_nothing_measured_and_clean_does_carry_nothing_to_discard_reason(
+    repo: str,
+):
+    start_with(repo, ())
+
+    with pytest.raises(GymratError) as excinfo:
+        discard_session(repo)
+
+    assert excinfo.value.reason == "nothing-to-discard"
+
+
+def test_discard_session_when_session_id_mismatches_does_carry_stale_session_reason(repo: str):
+    start_with(repo, (iteration(1),))
+
+    with pytest.raises(GymratError) as excinfo:
+        discard_session(repo, expected_session_id="wrong-id")
+
+    assert excinfo.value.reason == "stale-session"

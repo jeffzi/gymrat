@@ -1,7 +1,6 @@
 """JSON report document builders for the compare, measure, and loop commands.
 
-Each builder assembles a plain nested structure keyed by the parity JSON surface
-(camelCase string literals, distinct from the snake_case dataclass fields) and
+Each builder assembles a plain nested structure keyed in snake_case and
 serializes it with a two-space indent. None takes presentation options, so the
 output never carries ANSI, whatever the ambient environment forces.
 
@@ -49,10 +48,19 @@ class BudgetSummary:
     """Pre-computed budget snapshot for JSON output.
 
     Computed at report time so the renderer stays clock-free.
+
+    Attributes:
+        cap_minutes: The session's configured time cap, in minutes.
+        remaining_seconds: Whole seconds left in the budget at report time.
     """
 
     cap_minutes: float
     remaining_seconds: int
+
+
+# ---------------------------------------------------------------------------
+# Compare-result serialization
+# ---------------------------------------------------------------------------
 
 
 def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None) -> str:
@@ -66,7 +74,7 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schemaVersion": _COMPARE_SCHEMA_VERSION,
+        "schema_version": _COMPARE_SCHEMA_VERSION,
         "baseline": result.baseline_label,
         "candidates": [candidate.label for candidate in result.candidates],
         "samples": result.samples,
@@ -75,10 +83,15 @@ def render_json(result: ComparisonResult, *, budget: BudgetSummary | None = None
             name: _serialize_metric(name, metric, result.candidates)
             for name, metric in result.metrics.items()
         },
-        "perCandidate": _serialize_per_candidate(result),
+        "per_candidate": _serialize_per_candidate(result),
         "worktrees": _serialize_worktrees(result),
     }
     return _render(document, budget)
+
+
+# ---------------------------------------------------------------------------
+# Measurement serialization
+# ---------------------------------------------------------------------------
 
 
 def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | None = None) -> str:
@@ -92,7 +105,7 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         The document as a two-space-indented JSON string.
     """
     document: dict[str, object] = {
-        "schemaVersion": _MEASURE_SCHEMA_VERSION,
+        "schema_version": _MEASURE_SCHEMA_VERSION,
         "label": result.label,
         "samples": result.samples,
         "adapter": result.adapter,
@@ -124,7 +137,7 @@ def _serialize_metric(
         "gating": metric.meta.gating,
         "kind": metric.meta.kind,
         "group": infer_group(name),
-        "baseline": {"median": metric.baseline_median, "spreadPct": metric.baseline_spread},
+        "baseline": {"median": metric.baseline_median, "spread_pct": metric.baseline_spread},
         "candidates": rows,
     }
 
@@ -134,7 +147,7 @@ def _candidate_row(label: str, candidate: CandidateMetric) -> dict[str, object]:
     return {
         "label": label,
         "median": candidate.median,
-        "spreadPct": candidate.spread,
+        "spread_pct": candidate.spread,
         **_verdict_fields(candidate.verdict),
     }
 
@@ -143,15 +156,21 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     """The verdict-derived fields, padded per method.
 
     Permutation carries a p-value and no band; band carries a noise figure in
-    both ``noisePct`` and ``band``; exact carries none. A candidate with no
+    both ``noise_pct`` and ``band``; exact carries none. A candidate with no
     verdict leaves every field null while its measurements survive on the row.
+
+    Args:
+        verdict: The candidate's verdict, or ``None`` when it has none.
+
+    Returns:
+        The verdict fields as a flat dict suitable for merging into a row.
     """
     if verdict is None:
         return {
             "verdict": None,
             "method": None,
             "delta": None,
-            "noisePct": None,
+            "noise_pct": None,
             "p": None,
             "band": None,
         }
@@ -173,7 +192,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         "verdict": verdict.verdict,
         "method": verdict.method,
         "delta": verdict.delta.value,
-        "noisePct": noise_pct,
+        "noise_pct": noise_pct,
         "p": p,
         "band": band,
     }
@@ -185,7 +204,7 @@ def _serialize_per_candidate(result: ComparisonResult) -> list[dict[str, object]
         {
             "label": candidate.label,
             "kinds": [_serialize_kind(kind) for kind in candidate.kinds],
-            "verdictCounts": _serialize_counts(count_verdicts(result.metrics, index)),
+            "verdict_counts": _serialize_counts(count_verdicts(result.metrics, index)),
         }
         for index, candidate in enumerate(result.candidates)
     ]
@@ -196,13 +215,13 @@ def _serialize_kind(kind: KindAggregate) -> dict[str, object]:
     gated = kind.gated_geomean
     return {
         "kind": kind.kind,
-        "hasGating": gated is not None,
+        "has_gating": gated is not None,
         "geomean": _serialize_geomean(kind.geomean),
         "groups": [
             {"group": group.group, "geomean": _serialize_geomean(group.geomean)}
             for group in kind.groups
         ],
-        "gatedGeomean": _serialize_geomean(gated) if gated is not None else None,
+        "gated_geomean": _serialize_geomean(gated) if gated is not None else None,
     }
 
 
@@ -220,12 +239,12 @@ def _serialize_geomean(geomean: GeomeanResult) -> dict[str, object]:
 
 
 def _serialize_counts(counts: VerdictCounts) -> dict[str, int]:
-    """The per-candidate verdict tally under its camelCase keys."""
+    """The per-candidate verdict tally under its snake_case keys."""
     return {
         "improved": counts.improved,
         "regressed": counts.regressed,
         "unstable": counts.unstable,
-        "noSignal": counts.no_signal,
+        "no_signal": counts.no_signal,
     }
 
 
@@ -233,7 +252,7 @@ def _serialize_measure_metric(name: str, metric: MetricMeasurement) -> dict[str,
     """One metric's measurement beside the metadata behind it."""
     return {
         "median": metric.median,
-        "spreadPct": metric.spread,
+        "spread_pct": metric.spread,
         "unit": metric.meta.unit,
         "direction": metric.meta.direction,
         "gating": metric.meta.gating,
@@ -247,12 +266,17 @@ def _serialize_worktrees(result: WorktreeCleanupOutcome) -> dict[str, object]:
     """The cleanup outcome: count removed, failures, and any prune error."""
     return {
         "removed": result.worktrees_removed,
-        "leftBehind": [
+        "left_behind": [
             {"path": failure.dir, "reason": failure.error}
             for failure in result.worktrees_left_behind
         ],
-        "pruneError": result.worktree_prune_error,
+        "prune_error": result.worktree_prune_error,
     }
+
+
+# ---------------------------------------------------------------------------
+# Loop and session-event serialization
+# ---------------------------------------------------------------------------
 
 
 def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None = None) -> str:
@@ -260,7 +284,7 @@ def render_iterate_json(result: IterateResult, *, budget: BudgetSummary | None =
     return _render(_serialize_iteration(result.record), budget)
 
 
-def render_stop_json(*, at: str, message: str, budget: BudgetSummary | None = None) -> str:
+def render_stop_json(*, at: int, message: str, budget: BudgetSummary | None = None) -> str:
     """Render a stop result as ``{"at": …, "message": …}`` with an optional budget."""
     return _render({"at": at, "message": message}, budget)
 
@@ -276,8 +300,8 @@ def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None)
     checks: dict[str, object] = {
         "configured": record.checks.configured,
         "passed": record.checks.passed,
-        "stdoutBytes": record.checks.stdout_bytes,
-        "stderrBytes": record.checks.stderr_bytes,
+        "stdout_bytes": record.checks.stdout_bytes,
+        "stderr_bytes": record.checks.stderr_bytes,
     }
     document: dict[str, object] = {
         "status": record.status,
@@ -293,6 +317,9 @@ def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None =
     """Render the discard's ``seq``, timestamp, and ``measured`` flag.
 
     ``seq`` is ``null`` when no iteration was measured.
+
+    Returns:
+        The JSON string of the discard document.
     """
     record = result.record
     measured = record is not None
@@ -303,12 +330,12 @@ def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None =
 def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None) -> str:
     """Session identity, branch, nested baseline ref/SHA, and record counts."""
     document: dict[str, object] = {
-        "sessionId": data.session_id,
+        "session_id": data.session_id,
         "branch": data.branch,
         "baseline": {"ref": data.baseline_ref, "sha": data.baseline_sha},
-        "iterationCount": data.iteration_count,
-        "keepCount": data.keep_count,
-        "discardCount": data.discard_count,
+        "iteration_count": data.iteration_count,
+        "keep_count": data.keep_count,
+        "discard_count": data.discard_count,
         "unsettled": data.unsettled,
         "finalized": data.finalized,
         "stopped": data.stopped,
@@ -319,7 +346,7 @@ def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None)
 def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     primary: dict[str, object] = {
         "kind": record.primary.kind,
-        "deltaPct": record.primary.delta_pct,
+        "delta_pct": record.primary.delta_pct,
     }
     if record.primary.name is not None:
         primary["name"] = record.primary.name
@@ -335,7 +362,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
     metrics: dict[str, object] = {}
     for name, verdict in record.metrics.items():
         entry: dict[str, object] = {
-            "deltaPct": verdict.delta_pct,
+            "delta_pct": verdict.delta_pct,
             "verdict": verdict.verdict,
             "method": verdict.method,
             "gating": verdict.gating,
@@ -344,7 +371,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
         if verdict.p is not None:
             entry["p"] = verdict.p
         if verdict.noise_pct is not None:
-            entry["noisePct"] = verdict.noise_pct
+            entry["noise_pct"] = verdict.noise_pct
         metrics[name] = entry
 
     return {
@@ -360,10 +387,18 @@ def _render(document: dict[str, object], budget: BudgetSummary | None) -> str:
     """Insert the budget key when present, then serialize with a two-space indent.
 
     Every non-finite float is nulled before the dump (see module docstring).
+
+    Args:
+        document: The JSON document to serialize, mutated in place with the
+            budget key when ``budget`` is provided.
+        budget: The run's budget summary, or ``None`` when not tracked.
+
+    Returns:
+        The pretty-printed JSON string.
     """
     if budget is not None:
         document["budget"] = {
-            "capMinutes": budget.cap_minutes,
-            "remainingSeconds": budget.remaining_seconds,
+            "cap_minutes": budget.cap_minutes,
+            "remaining_seconds": budget.remaining_seconds,
         }
     return json.dumps(null_non_finite(document), indent=2, allow_nan=False)

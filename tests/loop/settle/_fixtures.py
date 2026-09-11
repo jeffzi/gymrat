@@ -9,7 +9,6 @@ The module is name-prefixed with ``_`` so pytest never collects it: it is a
 helper imported as ``tests.loop.settle._fixtures``.
 """
 
-import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -28,6 +27,7 @@ from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session
 from gymrat.session import (
+    CommandRecord,
     Confirm,
     DiscardRecord,
     IterationPrimary,
@@ -186,12 +186,13 @@ def checks_fail(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
 
 
 def last_record_of(root: str) -> SessionLogRecord:
-    """The record ``root``'s log ends on, failing the test when the log is empty."""
+    """The last non-command record in ``root``'s log, failing when the log holds none."""
     records = read_records(session_jsonl_path(root))
-    if not records:
-        msg = f"expected a record in {session_jsonl_path(root)}"
-        raise AssertionError(msg)
-    return records[-1]
+    for record in reversed(records):
+        if not isinstance(record, CommandRecord):
+            return record
+    msg = f"expected a non-command record in {session_jsonl_path(root)}"
+    raise AssertionError(msg)
 
 
 def capture_error(action: Callable[[], object]) -> GymratError:
@@ -204,8 +205,6 @@ def capture_error(action: Callable[[], object]) -> GymratError:
 # ---------------------------------------------------------------------------
 # Record builders — the iteration and keep shapes the engine produces
 # ---------------------------------------------------------------------------
-
-ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 #: The run timeout from ``checks_config().timeout_seconds``, in milliseconds.
 TIMEOUT_MS = 1_800_000
@@ -317,10 +316,11 @@ def assert_settling_record(
 ) -> None:
     """Assert ``actual`` equals ``expected`` once its stamped ``at`` is normalized.
 
-    The settle stamps a real timestamp the fixtures cannot predict, so the ``at``
-    is checked against the ISO shape and then aligned before the structural compare.
+    The settle stamps a real nanosecond timestamp the fixtures cannot predict, so
+    the ``at`` is checked as an integer and then aligned before the structural compare.
     """
-    assert ISO_PATTERN.match(actual.at)
+    assert isinstance(actual.at, int)
+    assert actual.at > 0
     assert actual.model_copy(update={"at": expected.at}) == expected
 
 

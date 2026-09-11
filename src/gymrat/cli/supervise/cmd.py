@@ -1,11 +1,8 @@
 """The ``gymrat supervise`` command: a supervised agent session under caps.
 
-The action guards against a dirty working tree, takes the supervise lock (never
-the repository lock a bench holds), resolves where the JSONL event log lands,
-and hands a Claude driver, a progress reporter, and the composed kickoff to the
-supervisor. The supervisor's backend is imported lazily inside the driver, so
-assembling the CLI never pulls the agent SDK; every collaborator this module
-touches stays light enough to import when ``gymrat --help`` runs.
+Guards against a dirty working tree, takes the supervise lock, resolves the JSONL
+event log, and hands a driver, reporter, and kickoff to the supervisor. The agent
+SDK is imported lazily inside the driver so ``gymrat --help`` stays fast.
 """
 
 from __future__ import annotations
@@ -14,7 +11,7 @@ import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import typer
 
@@ -36,8 +33,12 @@ from gymrat.cli.shared import (
     write_and_flush,
 )
 from gymrat.cli.supervise.frame import SessionLabels, build_summary
-from gymrat.cli.supervise.preflight import doctor_gate, run_preflight
-from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
+from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
+from gymrat.cli.supervise.progress import (
+    ReadSessionResult,
+    SuperviseReporter,
+    create_supervise_reporter,
+)
 from gymrat.config import (
     EFFORT_LEVELS,
     EFFORT_PHRASE,
@@ -58,18 +59,16 @@ from gymrat.session.budget import (
     minutes_to_ms,
     write_budget,
 )
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import (
-    experiment_worktree_dir,
     lockfile_path,
     repo_root,
     session_dir,
-    session_jsonl_path,
     supervise_lockfile_path,
+    supervisor_log_name,
 )
-from gymrat.session.store import fold_session, last_kept_position, read_records
-from gymrat.session.workspace import changed_file_count, dirty_file_count, ensure_git_exclude
+from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
     KickoffResult,
@@ -169,50 +168,20 @@ def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
     return count
 
 
-def _validate_experiment_worktree(root: str) -> None:
-    """Refuse to launch when the experiment worktree has unmeasured changes.
-
-    An unsettled iteration needs settling first; unmeasured edits — committed or
-    still uncommitted — need measuring or reverting. The check runs regardless of
-    ``--allow-dirty``, which covers only the main working tree.
-    """
-    records = read_records(session_jsonl_path(root))
-    if not records:
-        return
-
-    state = fold_session(records)
-    if state.finalized is not None or state.session is None:
-        return
-
-    worktree = experiment_worktree_dir(root)
-    target = last_kept_position(state, state.session.baseline.sha)
-    count = changed_file_count(worktree, target)
-    if count == 0:
-        return
-
-    if state.unsettled:
-        message = "The experiment worktree has an unsettled iteration with uncommitted changes."
-        hint = "Run gymrat keep or gymrat discard first."
-    elif state.ends_on_gating_block:
-        message = "The last keep was refused for a gating regression."
-        hint = "Run gymrat discard to revert it."
-    else:
-        message = f"The experiment worktree has {pluralize(count, 'unmeasured edit')}."
-        hint = "Measure them with gymrat iterate or revert them with gymrat discard."
-    exit_with_error(GymratError(message, hint=hint))
-
-
 def _resolve_log_path(root: str, explicit: str | None) -> str:
     """The caller's ``--log`` verbatim, or a timestamped path under the session dir.
 
     Only the default path is written under ``.gymrat/``, so only that branch
     ensures the directory is git-excluded; a caller-supplied path is left to the
     caller to place and ignore.
+
+    Returns:
+        The resolved absolute path for the event log.
     """
     if explicit is not None:
         return explicit
     ensure_git_exclude(root)
-    return str(Path(session_dir(root)) / f"supervisor-{now_ms()}.jsonl")
+    return str(Path(session_dir(root)) / supervisor_log_name(now_ms()))
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +204,18 @@ class _SessionContext:
     model: str | None
     effort: Effort | None
     color: bool | None
+    branch: str
+
+    def session_prompt(self) -> SessionPrompt:
+        return SessionPrompt(
+            kickoff=self.kickoff.kickoff,
+            cwd=self.root,
+            system_prompt_append=self.kickoff.system_prompt_append,
+            model=self.model,
+            effort=self.effort,
+            command_timeout_ms=minutes_to_ms(self.max_minutes),
+            max_budget_usd=self.max_usd,
+        )
 
 
 def _report_result(
@@ -244,12 +225,6 @@ def _report_result(
     session_result: ReadSessionResult | None,
     final_text: str | None,
 ) -> None:
-    """Print the closing summary to stdout, then exit per how the run ended.
-
-    A session that ended on its own returns normally (exit 0). A cap trip exits
-    on the gate code. An error outcome exits on the tool-failure code, surfacing
-    its message to stderr only when one is present.
-    """
     summary = render_lines(
         build_summary(
             result,
@@ -275,8 +250,15 @@ def _report_result(
 def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], None]]:
     """Create, persist, and arm cleanup for the session time budget.
 
-    Returns the deadline in epoch milliseconds and a callback that
-    removes the budget file and uninstalls the termination hook.
+    The callback removes the budget file and uninstalls the termination hook.
+
+    Args:
+        root: Session root directory.
+        max_minutes: Maximum session duration in minutes.
+
+    Returns:
+        A ``(deadline_ms, cleanup)`` pair: the absolute deadline and a callback
+        that tears down the budget file and termination hook.
     """
     started_at_ms = now_ms()
     deadline_ms = started_at_ms + minutes_to_ms(max_minutes)
@@ -291,11 +273,8 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
     return deadline_ms, uninstall
 
 
-def _run_session(ctx: _SessionContext) -> None:
-    """Drive the supervised session, reporting progress and stopping it cleanly."""
-    driver = create_claude_driver()
-    mode = resolve_render_mode()
-    reporter = create_supervise_reporter(
+def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> SuperviseReporter:
+    return create_supervise_reporter(
         root=ctx.root,
         max_minutes=ctx.max_minutes,
         max_usd=ctx.max_usd,
@@ -305,23 +284,36 @@ def _run_session(ctx: _SessionContext) -> None:
         color=ctx.color,
         model=ctx.model,
         effort=ctx.effort,
+        session_id=ctx.launch.session_id,
     )
+
+
+def _run_session(ctx: _SessionContext) -> None:
+    """Drive the supervised session, reporting progress and stopping it cleanly."""
+    driver = create_claude_driver()
+    mode = resolve_render_mode()
+    reporter = _create_reporter(ctx, mode)
     uninstall_cleanup = install_termination_cleanup(reporter.stop)
-
     deadline_ms, uninstall_budget_cleanup = _init_budget(ctx.root, ctx.max_minutes)
-
     if mode == "plain":
         write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
 
-    prompt = SessionPrompt(
-        kickoff=ctx.kickoff.kickoff,
-        cwd=ctx.root,
-        system_prompt_append=ctx.kickoff.system_prompt_append,
-        model=ctx.model,
+    from gymrat.cli.supervise.span_lifecycle import finalize_tracing, setup_tracing  # noqa: PLC0415
+
+    prompt, observer, tracing = setup_tracing(
+        session_id=ctx.launch.session_id,
+        branch=ctx.branch,
+        launch_at=ctx.launch.at,
+        head_sha=ctx.launch.head_sha,
+        max_minutes=ctx.max_minutes,
+        max_usd=ctx.max_usd,
         effort=ctx.effort,
-        command_timeout_ms=minutes_to_ms(ctx.max_minutes),
-        max_budget_usd=ctx.max_usd,
+        model=ctx.model,
+        prompt=ctx.session_prompt(),
+        reporter_observer=reporter.observer,
     )
+    tracing.run_start_ms = now_ms()
+
     context = SupervisedSession(
         root=ctx.root,
         log_path=ctx.log_path,
@@ -331,27 +323,32 @@ def _run_session(ctx: _SessionContext) -> None:
         max_minutes=ctx.max_minutes,
         max_usd=ctx.max_usd,
     )
+    result: SupervisionResult | None = None
     try:
-        result = asyncio.run(
-            supervise(
-                driver=driver,
-                prompt=prompt,
-                context=context,
-                launch=ctx.launch,
-                observer=reporter.observer,
+        try:
+            result = asyncio.run(
+                supervise(
+                    driver=driver,
+                    prompt=prompt,
+                    context=context,
+                    launch=ctx.launch,
+                    observer=observer,
+                )
             )
+        finally:
+            clear_budget(ctx.root)
+            reporter.stop()
+            uninstall_cleanup()
+            uninstall_budget_cleanup()
+        _report_result(
+            result,
+            ctx=ctx,
+            session_result=reporter.session_result(),
+            final_text=reporter.final_text(),
         )
     finally:
-        clear_budget(ctx.root)
-        reporter.stop()
-        uninstall_cleanup()
-        uninstall_budget_cleanup()
-    _report_result(
-        result,
-        ctx=ctx,
-        session_result=reporter.session_result(),
-        final_text=reporter.final_text(),
-    )
+        if tracing.active:
+            finalize_tracing(tracing, result)
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +383,7 @@ def _execute(options: _Options) -> None:
     root = repo_root()
     doctor_gate(root, color=options.color)
     dirty_count = _validate_working_tree(root, allow_dirty=options.allow_dirty)
-    _validate_experiment_worktree(root)
+    validate_experiment_worktree(root)
 
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
@@ -416,7 +413,9 @@ def _execute(options: _Options) -> None:
         effort = options.effort if options.effort is not None else supervise_config.effort
 
         launch = LaunchEvent(
-            timestamp=now_ms(),
+            at=now_ns(),
+            schema_version=1,
+            session_id=preflight.session.session_id,
             head_sha=head_sha,
             dirty=DirtyInfo(file_count=dirty_count) if dirty_count > 0 else False,
             max_minutes=options.max_minutes,
@@ -440,6 +439,7 @@ def _execute(options: _Options) -> None:
                 model=model,
                 effort=effort,
                 color=options.color,
+                branch=preflight.session.branch,
             )
         )
     finally:

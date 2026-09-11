@@ -48,6 +48,9 @@ def compose_kickoff(
         prompt: An explicit kickoff message; when omitted, a default is used.
         experiment_worktree: Absolute path to the experiment worktree directory.
 
+    Returns:
+        The system-prompt append and kickoff message for the agent session.
+
     Raises:
         GymratError: When the bundled skill cannot be read, when no runbook is
             configured, or when the configured runbook file cannot be read.

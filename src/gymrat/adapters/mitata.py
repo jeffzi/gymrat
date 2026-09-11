@@ -40,6 +40,10 @@ def _scan_json_objects(text: str) -> tuple[list[str], str | None]:
     Each ``{`` in ``text`` is tried via ``raw_decode``.  Successes become
     candidates; the failure spanning the most remaining text is captured so
     ``_extract_json`` can surface an actionable diagnostic without a second scan.
+
+    Returns:
+        A ``(candidates, longest_failure)`` pair: valid JSON text slices, and the
+        error message from the longest failed attempt (or ``None``).
     """
     candidates: list[str] = []
     longest: tuple[int, str] | None = None
@@ -73,6 +77,12 @@ def find_json_candidates(text: str) -> list[str]:
     unbalanced braces and banner text like ``cpu: {model}`` because the JSON
     decoder rejects them rather than requiring a hand-rolled brace-balancing
     scanner.
+
+    Args:
+        text: The raw text to scan for JSON objects.
+
+    Returns:
+        Original text slices of the successfully parsed JSON objects.
     """
     candidates, _ = _scan_json_objects(text)
     return candidates
@@ -97,6 +107,14 @@ def _extract_json(stdout: str) -> dict[str, object]:
     ``stdout`` failed to start a valid JSON object. The diagnostic names the
     failure of the longest attempt — the ``{`` spanning the most remaining text
     is most likely to be the real payload.
+
+    Returns:
+        The parsed JSON object carrying a ``benchmarks`` list, or the first
+        dict-shaped fallback.
+
+    Raises:
+        AdapterError: When no usable JSON object is found, or the most
+            promising candidate failed to parse.
     """
     candidates, longest_failure = _scan_json_objects(stdout)
 
@@ -155,6 +173,9 @@ def _describe_run_error(error: object) -> str:
     string — ``str()`` on a plain dict would print an unhelpful Python repr.
     ``json.dumps`` renders that case usefully instead, with a ``str()`` fallback
     for values it cannot serialize.
+
+    Returns:
+        A human-readable rendering of the error value.
     """
     if isinstance(error, str):
         return error
@@ -171,6 +192,9 @@ def _serialize_arg_value(value: object) -> str:
     ``false`` and ``None`` reads ``null``; objects and arrays serialize via JSON
     with recursively sorted keys so two structurally equal objects always produce
     the same metric name.
+
+    Returns:
+        The serialized string representation suitable for metric names.
     """
     if isinstance(value, (dict, list)):
         return json.dumps(value, separators=(",", ":"), sort_keys=True)
@@ -195,6 +219,9 @@ def _build_metric_name_prefix(alias: str, args: dict[str, object]) -> str:
     regex replacement syntax (``$&``, ``$\\```, ``$'``) in argument values.
     Unmatched ``$`` tokens stay as-is because the alternation only covers keys
     present in ``args``.
+
+    Returns:
+        The alias with ``$key`` placeholders replaced by ``key=value`` pairs.
     """
     if not args:
         return alias

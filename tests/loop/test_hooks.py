@@ -38,6 +38,7 @@ KILL_SANITY_BOUND_MS = 4000
 
 @pytest.fixture
 def hooks(tmp_path: Path) -> HookScripts:
+    """A ``HookScripts`` builder scoped to a fresh scratch directory."""
     experiment_dir = tmp_path / "side-experiment"
     experiment_dir.mkdir()
     return HookScripts(str(tmp_path), str(experiment_dir))
@@ -77,14 +78,14 @@ async def test_run_hook_when_command_runs_does_hand_stage_payload_on_stdin(
     payload = json.loads("\n".join(labeled_lines(run.report, stage)))
     assert payload == {
         "stage": stage,
-        "experimentDir": hooks.experiment_dir,
+        "experiment_dir": hooks.experiment_dir,
         "seq": seq,
-        "lastIteration": record_to_wire(last_iteration) if last_iteration is not None else None,
+        "last_iteration": record_to_wire(last_iteration) if last_iteration is not None else None,
         "session": {
-            "sessionId": SESSION_ID,
+            "session_id": SESSION_ID,
             "baseline": {"ref": "main", "sha": "a" * 40},
             "branch": f"gymrat/{SESSION_ID}",
-            "iterationCount": iteration_count,
+            "iteration_count": iteration_count,
         },
     }
 
@@ -146,7 +147,7 @@ async def test_run_hook_when_command_runs_does_record_bytes_the_hook_printed(
 
     run = await run_hook(hooks.invocation_of(command))
 
-    assert run.record.model_copy(update={"duration_ms": 0}) == expected_hook_record(
+    assert run.record.model_copy(update={"duration_ms": 0, "at": 0}) == expected_hook_record(
         stage="before", seq=2, exit_code=0, stdout_bytes=6
     )
 
@@ -243,7 +244,7 @@ async def test_run_hook_when_hook_exits_nonzero_does_report_and_record(hooks: Ho
         "hook exited 3",
         "no warm copy",
     ]
-    assert run.record.model_copy(update={"duration_ms": 0}) == expected_hook_record(
+    assert run.record.model_copy(update={"duration_ms": 0, "at": 0}) == expected_hook_record(
         stage="before", seq=2, exit_code=3, stdout_bytes=18, stderr_bytes=13
     )
 

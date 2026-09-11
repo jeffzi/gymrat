@@ -1,8 +1,9 @@
 """Tests for the config subsystem simplification.
 
 Verifies that:
-- The three-dataclass read-outcome union is replaced by tuple returns in load.py
-- Throwing duplicates are removed from validate.py
+- load.py exposes no ``_ReadOk`` / ``_ReadAbsent`` / ``_ReadError`` names
+- validate.py exposes no ``assert_flag_not_empty`` / ``validate_loop_keys`` /
+  ``assert_runbook_exists``
 - The config package loads without circular imports
 - resolve_benchless_config delegates to inspect_config
 """
@@ -31,7 +32,7 @@ def write_config(directory: Path, content: dict[str, object]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# _ReadOk / _ReadAbsent / _ReadError removed from load.py
+# load.py exposes no _ReadOk / _ReadAbsent / _ReadError
 # ---------------------------------------------------------------------------
 
 
@@ -50,7 +51,7 @@ def test_load_module_when_read_outcome_class_accessed_does_raise_attribute_error
 
 
 # ---------------------------------------------------------------------------
-# assert_flag_not_empty / validate_loop_keys / assert_runbook_exists removed
+# validate.py exposes no assert_flag_not_empty / validate_loop_keys / assert_runbook_exists
 # ---------------------------------------------------------------------------
 
 
@@ -74,11 +75,6 @@ def test_validate_module_when_removed_function_accessed_does_raise_attribute_err
 
 
 def test_config_package_when_imported_fresh_does_not_raise_import_error():
-    """Import gymrat.config in a subprocess to detect circular imports.
-
-    A subprocess is necessary because the test process has already imported the
-    package, which masks cycles that only manifest on first import.
-    """
     result = subprocess.run(
         [sys.executable, "-c", "import gymrat.config"],
         capture_output=True,
@@ -93,12 +89,6 @@ def test_config_package_when_imported_fresh_does_not_raise_import_error():
 
 
 def test_config_inspect_module_when_imported_fresh_does_not_raise_import_error():
-    """Import gymrat.config.inspect in a subprocess to detect circular imports.
-
-    inspect.py is the most likely candidate for a circular import because it
-    imports from the config package while the package init imports from
-    resolve.py, which now delegates to inspect_config.
-    """
     result = subprocess.run(
         [sys.executable, "-c", "import gymrat.config.inspect"],
         capture_output=True,

@@ -614,11 +614,6 @@ def test_render_report_when_closing_the_table_does_end_on_the_geomean_row():
 
 
 def test_render_report_when_metric_name_has_cjk_does_align_separator_columns():
-    """CJK characters occupy 2 terminal cells each.
-
-    The column-width logic must use cell_len rather than len so separators
-    align across ASCII and CJK rows.
-    """
     result = create_comparison_result(
         metrics={
             "ascii-name": permutation_metric(

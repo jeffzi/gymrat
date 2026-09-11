@@ -13,6 +13,7 @@ from gymrat.supervisor.event_log import create_event_log_writer
 from gymrat.supervisor.events import (
     SUMMARY_MAX_CHARS,
     CapEvent,
+    CompactionEvent,
     DirtyInfo,
     FollowUpEvent,
     LaunchEvent,
@@ -40,6 +41,7 @@ __all__ = [
     "SUMMARY_MAX_CHARS",
     "CapEvent",
     "ClientFactory",
+    "CompactionEvent",
     "DirtyInfo",
     "Driver",
     "DriverSession",

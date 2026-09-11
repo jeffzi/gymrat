@@ -154,12 +154,10 @@ def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
 def spawned_processes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[list[asyncio.subprocess.Process]]:
-    """Record every child ``exec`` spawns, so a test can reach into its stdio pipes.
-
-    ``exec`` calls ``asyncio.create_subprocess_shell`` (module-qualified), so
-    wrapping that attribute captures the real ``Process`` while leaving the spawn
-    itself real.
-    """
+    """Record every child ``exec`` spawns, so a test can reach into its stdio pipes."""
+    # exec calls asyncio.create_subprocess_shell (module-qualified), so
+    # wrapping that attribute captures the real Process while leaving the spawn
+    # itself real.
     processes = capture_spawns(monkeypatch, "create_subprocess_shell")
     yield processes
 

@@ -108,14 +108,6 @@ class CleanupResult:
     prune_error: str | None
 
 
-def _unresolvable_target_error(target_input: str, cause: object) -> GymratError:
-    """The failure a target the tool cannot make sense of is reported as."""
-    return GymratError(
-        f"Cannot resolve target '{target_input}': {stderr_text_of(cause)}",
-        hint=_RESOLVE_TARGET_HINT,
-    )
-
-
 def _is_absent_path_error(error: OSError) -> bool:
     """Whether a probe failure means "no directory here", not "the probe broke".
 
@@ -123,6 +115,9 @@ def _is_absent_path_error(error: OSError) -> bool:
     that resolves underneath one of its own components (``fix/typo`` with a file
     named ``fix`` present). Both leave ref resolution as the input's only
     remaining reading; any other errno is reported instead of retried as a ref.
+
+    Returns:
+        Whether the error indicates the path simply does not exist.
     """
     return error.errno in (errno.ENOENT, errno.ENOTDIR)
 
@@ -132,6 +127,14 @@ def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
 
     A symlink loop or an unsearchable parent says nothing about whether the
     input is a ref, so it is reported rather than silently retried as one.
+
+    Returns:
+        An :class:`InPlaceTarget` when the input names an existing directory,
+        ``None`` otherwise.
+
+    Raises:
+        GymratError: When the probe fails for a reason other than an absent
+            path.
     """
     # ``absolute`` mirrors path resolution against the process cwd without
     # touching the filesystem, so a symlink loop surfaces from the stat probe
@@ -142,7 +145,8 @@ def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
     except OSError as error:
         if _is_absent_path_error(error):
             return None
-        raise _unresolvable_target_error(target_input, error) from error
+        message = f"Cannot resolve target '{target_input}': {stderr_text_of(error)}"
+        raise GymratError(message, hint=_RESOLVE_TARGET_HINT) from error
 
     if not stat.S_ISDIR(stats.st_mode):
         return None
@@ -183,7 +187,8 @@ def resolve_target(target_input: str, repo_dir: str) -> Target:
             repo_dir,
         ).strip()
     except subprocess.CalledProcessError as error:
-        raise _unresolvable_target_error(target_input, error) from error
+        message = f"Cannot resolve target '{target_input}': {stderr_text_of(error)}"
+        raise GymratError(message, hint=_RESOLVE_TARGET_HINT) from error
 
     return RefTarget(ref=target_input, resolved_sha=resolved_sha)
 
@@ -262,6 +267,10 @@ def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:
     repository, because git clears the entry of a directory that vanished behind
     its back only when asked for that path — which leaves a worktree of the
     user's own that is merely temporarily absent registered.
+
+    Returns:
+        The removal status or a :class:`WorktreeRemovalFailure` when git
+        refused.
     """
     on_disk = Path(worktree.dir).exists()
     if not on_disk and not worktree.created:

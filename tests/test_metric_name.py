@@ -6,21 +6,12 @@ from gymrat.errors import GymratError
 from gymrat.metric_name import format_inline, parse
 from gymrat.report.style import render_lines
 
-# ---------------------------------------------------------------------------
-# parse — with kind
-# ---------------------------------------------------------------------------
-
 
 def test_parse_when_name_has_kind_does_split_path_and_kind():
     result = parse("node/access.get_1field#time")
 
     assert result.path == ("node", "access.get_1field")
     assert result.kind == "time"
-
-
-# ---------------------------------------------------------------------------
-# parse — without kind
-# ---------------------------------------------------------------------------
 
 
 def test_parse_when_name_has_no_kind_does_return_none_kind():
@@ -30,19 +21,9 @@ def test_parse_when_name_has_no_kind_does_return_none_kind():
     assert result.kind is None
 
 
-# ---------------------------------------------------------------------------
-# parse — multi-hash error
-# ---------------------------------------------------------------------------
-
-
 def test_parse_when_name_has_multiple_hashes_does_raise_gymrat_error():
     with pytest.raises(GymratError, match="a#b#c"):
         parse("a#b#c")
-
-
-# ---------------------------------------------------------------------------
-# parse — malformed segments
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -58,16 +39,10 @@ def test_parse_when_name_has_multiple_hashes_does_raise_gymrat_error():
     ],
 )
 def test_parse_when_name_has_empty_segment_does_raise_gymrat_error(raw_name: str):
-    """The grammar requires every path segment and the kind to be non-empty."""
     with pytest.raises(GymratError) as excinfo:
         parse(raw_name)
 
     assert raw_name in str(excinfo.value)
-
-
-# ---------------------------------------------------------------------------
-# parse — group key
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -99,11 +74,6 @@ def test_parse_when_varying_depth_does_expose_correct_group_and_case(
     assert result.case == expected_case
 
 
-# ---------------------------------------------------------------------------
-# format_inline — always colored
-# ---------------------------------------------------------------------------
-
-
 def test_format_inline_when_called_does_return_rich_markup():
     name = parse("node/access.get_1field#time")
 
@@ -112,21 +82,11 @@ def test_format_inline_when_called_does_return_rich_markup():
     assert result == "[dim]node/[/dim]access.get_1field[dim]#time[/dim]"
 
 
-# ---------------------------------------------------------------------------
-# MetricName — frozen
-# ---------------------------------------------------------------------------
-
-
 def test_metric_name_when_mutated_does_raise():
     name = parse("fib/total")
 
     with pytest.raises(AttributeError):
         name.kind = "time"  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# format_inline — bracket escaping (rich markup metacharacters)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -158,7 +118,6 @@ def test_format_inline_when_color_on_and_brackets_in_segments_does_render_litera
     raw_name: str,
     expected_plain: str,
 ):
-    """Metric names with rich-markup-shaped brackets must survive color rendering."""
     name = parse(raw_name)
 
     markup = format_inline(name)
