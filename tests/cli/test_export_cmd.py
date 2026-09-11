@@ -287,7 +287,10 @@ def test_export_when_first_line_corrupt_does_exit_two_naming_line(
     assert expected_fragment in _output(result)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions")
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="requires Unix file permissions and non-root user",
+)
 def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_reason(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -305,7 +308,10 @@ def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_rea
     assert "No session found" not in output
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions")
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="requires Unix file permissions and non-root user",
+)
 def test_export_when_supervisor_log_unreadable_does_exit_two_naming_path_and_os_reason(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
