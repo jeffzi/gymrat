@@ -5,16 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gymrat.session.clock import now_ns
+import pytest
+
+from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (
     Driver,
+    FollowUpEvent,
     LaunchEvent,
     SessionObserver,
     SessionPrompt,
     SupervisedSession,
     TextDeltaEvent,
+    ToolStartEvent,
     UsageUpdateEvent,
     supervise,
 )
@@ -24,6 +28,7 @@ if TYPE_CHECKING:
     from gymrat.supervisor.supervise import SupervisionResult
 from tests.session.records._fixtures import discard_record
 from tests.supervisor._fixtures import (
+    InterruptEmitsEndDriver,
     _cap_events,
     add_stop_async,
     collecting_observer,
@@ -42,6 +47,7 @@ from tests.supervisor._mock_driver import (
     ActionStep,
     CostStep,
     EmitStep,
+    MockStep,
     TurnEndStep,
     create_mock_driver,
 )
@@ -115,6 +121,7 @@ async def test_supervise_when_wall_clock_fires_during_settle_window_does_call_en
     caps = _cap_events(probe.events)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
+    assert caps[0].action == "ending"
 
     session = driver.sessions[0]
     assert len(_calls_of_kind(session.calls, "end")) == 1
@@ -153,6 +160,7 @@ async def test_supervise_when_wall_clock_fires_after_reply_sent_does_call_interr
     caps = _cap_events(probe.events)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
+    assert caps[0].action == "interrupting"
 
     session = driver.sessions[0]
     assert len(_calls_of_kind(session.calls, "interrupt")) >= 1
@@ -361,3 +369,74 @@ async def test_supervise_when_consecutive_discards_guard_trips_does_end_as_guard
 
     assert result.ended_by == "guard"
     assert result.end_reason == "consecutive-discards"
+
+
+# ---------------------------------------------------------------------------
+# cap fired — later turn ends emit no follow-up
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        pytest.param(
+            [
+                EmitStep(
+                    emit=ToolStartEvent(
+                        at=now_ns(),
+                        tool_use_id="t1",
+                        tool_name="Read",
+                        input={},
+                        input_summary="/x",
+                    ),
+                ),
+                CostStep(cost_usd=0.01, delay_ms=60_000),
+            ],
+            id="in-flight",
+        ),
+        pytest.param(
+            [
+                TurnEndStep(cost_usd=0.01, origin="agent"),
+                CostStep(cost_usd=0.01, delay_ms=60_000),
+            ],
+            id="reply-outstanding",
+        ),
+    ],
+)
+async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_up(
+    tmp_path: Path,
+    steps: list[MockStep],
+):
+    root = str(tmp_path / "repo")
+    seed_session_log(root)
+    lock_path = str(tmp_path / "lockfile")
+    probe = collecting_observer()
+
+    inner = create_mock_driver(steps)
+    driver = InterruptEmitsEndDriver(inner)
+
+    result = await _supervise_wall_clock(
+        driver,
+        make_prompt(cwd=root),
+        context=make_context(
+            root=root,
+            log_path=str(tmp_path / "events.jsonl"),
+            lock_path=lock_path,
+            max_minutes=_WALL_CLOCK_MAX_MINUTES,
+            deadline_ms=now_ms(),
+        ),
+        launch=make_launch(max_minutes=_WALL_CLOCK_MAX_MINUTES),
+        observer=probe.observer,
+        settle_window_ms=0,
+    )
+
+    assert result.ended_by == "wall-clock"
+
+    caps = _cap_events(probe.events)
+    assert len(caps) == 1
+    assert caps[0].cap == "wall-clock"
+
+    cap_idx = probe.events.index(caps[0])
+    events_after_cap = probe.events[cap_idx + 1 :]
+    follow_ups_after = [e for e in events_after_cap if isinstance(e, FollowUpEvent)]
+    assert follow_ups_after == []

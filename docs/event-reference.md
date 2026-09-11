@@ -327,6 +327,7 @@ Emitted when a supervision cap (wall-clock or spend) fires.
 | `type` | `"cap"` | required | Event type discriminator. |
 | `at` | integer | required | Nanoseconds since the Unix epoch when the event was created. |
 | `cap` | `"wall-clock"` \| `"spend-cap"` | required | Which supervision cap fired. |
+| `action` | `"ending"` \| `"interrupting"` | required | Whether the supervisor is ending the idle session or interrupting an in-flight turn. |
 
 ### `model_phase`
 

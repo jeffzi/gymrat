@@ -11,7 +11,7 @@ overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NamedTuple, override
@@ -26,7 +26,7 @@ from gymrat.supervisor import (
     supervise,
 )
 from gymrat.supervisor.context import SupervisedSession
-from gymrat.supervisor.driver import SessionPrompt
+from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CapEvent,
     DirtyInfo,
@@ -126,6 +126,71 @@ def noop_observer() -> SessionObserver:
         return None
 
     return _observer
+
+
+# ---------------------------------------------------------------------------
+# driver double: interrupt emits TurnEndEvent
+# ---------------------------------------------------------------------------
+
+
+class _InterruptEmitsEndSession:
+    """A session whose ``interrupt`` also emits a ``TurnEndEvent`` to the observer.
+
+    Models a driver that, on ``interrupt()``, pushes one more agent
+    ``TurnEndEvent`` before the session settles — exercising the cap guard in
+    ``_handle_turn_end``.
+    """
+
+    def __init__(self, inner: DriverSession, observer: SessionObserver) -> None:
+        self._inner = inner
+        self._observer = observer
+
+    @property
+    def outcome(self) -> Awaitable[SessionOutcome]:
+        """Forward the inner session's outcome."""
+        return self._inner.outcome
+
+    async def interrupt(self) -> None:
+        await self._inner.interrupt()
+        self._observer(
+            TurnEndEvent(
+                at=now_ns(),
+                text="",
+                cost_usd=0.0,
+                origin="agent",
+                budget_exhausted=False,
+            )
+        )
+
+    async def send(self, text: str) -> None:
+        await self._inner.send(text)
+
+    async def end(self) -> None:
+        await self._inner.end()
+
+
+class InterruptEmitsEndDriver:
+    """A driver wrapper whose sessions emit a ``TurnEndEvent`` on ``interrupt``.
+
+    Wraps a driver (typically from ``create_mock_driver``) and intercepts the
+    observer from ``start``.  Each session's ``interrupt`` delegates to the
+    inner session and then fires a ``TurnEndEvent(origin="agent")`` into the
+    observer, simulating a driver that delivers a final turn boundary on
+    interrupt.
+    """
+
+    def __init__(self, inner: Driver) -> None:
+        self._inner = inner
+
+    def start(
+        self,
+        prompt: SessionPrompt,
+        observer: SessionObserver,
+        abort: asyncio.Event | None = None,
+    ) -> DriverSession:
+        """Start a session that emits a ``TurnEndEvent`` on ``interrupt``."""
+        inner_session = self._inner.start(prompt, observer, abort)
+        return _InterruptEmitsEndSession(inner_session, observer)
 
 
 def result_message(

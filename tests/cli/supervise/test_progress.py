@@ -16,18 +16,14 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
-from gymrat.cli.supervise.progress import IDLE_WARN_MS, CapType, ReadSessionResult
+from gymrat.cli.supervise.state import IDLE_WARN_MS, ReadSessionResult
 from gymrat.session.progress_file import ProgressSnapshot
-from gymrat.supervisor.events import (
-    TextDeltaEvent,
-    ThinkingUpdateEvent,
-    ToolProgressEvent,
-)
+from gymrat.supervisor.events import TextDeltaEvent, ThinkingUpdateEvent, ToolProgressEvent
 from tests.cli.supervise._fixtures import (
+    ReporterKit,
     _epoch_ms_to_local_hms,
     _throwing_read,
     empty_session_state,
@@ -55,6 +51,8 @@ from tests.cli.supervise._fixtures import (
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
 
+    from gymrat.supervisor.events import CapAction, CapType
+
 
 # ---------------------------------------------------------------------------
 # factory / contract
@@ -78,16 +76,6 @@ def test_create_reporter_when_session_read_does_expose_the_latest_session_result
     session_result = kit.reporter.session_result()
     assert session_result is not None
     assert session_result.state == state
-
-
-def test_create_reporter_when_color_false_does_build_colorless_console():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        make_reporter(mode="live", color=False)
-
-        call_kwargs = mock_live_cls.call_args.kwargs
-        console = call_kwargs.get("console")
-        assert console is not None
-        assert console.color_system is None
 
 
 # ---------------------------------------------------------------------------
@@ -524,35 +512,6 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
 
 
 # ---------------------------------------------------------------------------
-# ticking display (#28) — Live uses get_renderable
-# ---------------------------------------------------------------------------
-
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
-
-
-def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        make_reporter(mode="live")
-
-        call_kwargs = mock_live_cls.call_args.kwargs
-        assert "get_renderable" in call_kwargs
-        assert callable(call_kwargs["get_renderable"])
-
-
-# ---------------------------------------------------------------------------
-# mounted display (#30) — Live.start() called during creation
-# ---------------------------------------------------------------------------
-
-
-def test_create_reporter_when_live_mode_does_mount_the_live_display():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        make_reporter(mode="live")
-
-        mock_live.start.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
 # liveness — starting state
 # ---------------------------------------------------------------------------
 
@@ -829,6 +788,42 @@ def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
 
 
 # ---------------------------------------------------------------------------
+# custom idle_warn_ms — configurable threshold
+# ---------------------------------------------------------------------------
+
+
+def _make_reporter_past_bash_end(*, custom_ms: int) -> ReporterKit:
+    """A reporter with ``custom_ms`` as the idle-warn threshold, clock frozen right after a Bash end."""
+    kit = make_reporter(idle_warn_ms=custom_ms)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
+    return kit
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected_fragment", "unexpected_fragment"),
+    [
+        pytest.param(1, "no output", "waiting", id="past-custom-idle-warn"),
+        pytest.param(-1, "waiting", "no output", id="below-custom-idle-warn"),
+    ],
+)
+def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
+    offset: int, expected_fragment: str, unexpected_fragment: str
+):
+    custom_ms = 100
+    kit = _make_reporter_past_bash_end(custom_ms=custom_ms)
+    kit.clock.now = 3000 + custom_ms + offset
+
+    frame = render_frame(kit.reporter)
+
+    assert expected_fragment in frame
+    assert unexpected_fragment not in frame
+
+
+# ---------------------------------------------------------------------------
 # liveness — model phase transitions
 # ---------------------------------------------------------------------------
 
@@ -1041,14 +1036,15 @@ def test_liveness_when_iterate_tool_has_no_sidecar_does_show_plain_elapsed():
 
 
 @pytest.mark.parametrize("cap", ["wall-clock", "spend-cap"])
-def test_cap_when_fired_does_show_interrupting_with_cap_type(cap: CapType):
+@pytest.mark.parametrize("action", ["ending", "interrupting"])
+def test_cap_when_fired_does_show_action_with_cap_type(cap: CapType, action: CapAction):
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
-    fire_cap(kit.reporter.observer, cap)
+    fire_cap(kit.reporter.observer, cap, action=action)
 
     frame = render_frame(kit.reporter)
 
-    assert f"interrupting ({cap})" in frame
+    assert f"{action} ({cap})" in frame
 
 
 def test_cap_when_fired_does_freeze_liveness_against_later_tool_events():

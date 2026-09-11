@@ -113,7 +113,7 @@ def test_create_run_span_observer_when_cap_does_add_span_event():
         span = start_span("run")
         span.__enter__()
         observer = create_run_span_observer(span)
-        event = CapEvent(at=4_000_000_000, cap="wall-clock")
+        event = CapEvent(at=4_000_000_000, cap="wall-clock", action="interrupting")
 
         observer(event)
 

@@ -18,7 +18,7 @@ from rich.console import Console, RenderableType
 from rich.panel import Panel
 
 from gymrat.cli.style import CLI_THEME
-from gymrat.cli.supervise.frame import SessionLabels, build_summary
+from gymrat.cli.supervise.summary import SessionLabels, build_summary
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from tests._ansi import SGR_RE, strip_sgr
 from tests._rich import frame_text

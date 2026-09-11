@@ -1,64 +1,33 @@
 """Progress reporter for a supervised optimization run.
 
-Event handlers, factory, and session-reading helpers for the supervise dashboard.
+Event dispatching lives in :mod:`gymrat.cli.supervise.handlers`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import sys
 from collections import deque
-from typing import TYPE_CHECKING, Literal, assert_never
+from typing import TYPE_CHECKING, Literal
 
 from rich.live import Live
 
 from gymrat.cli.console import stderr_console
-from gymrat.cli.supervise.frame import (
-    NO_SESSION_TEXT,
-    build_frame,
-    build_loop_text,
-    format_caps,
-    format_cost,
-)
+from gymrat.cli.supervise.frame import build_frame
+from gymrat.cli.supervise.handlers import handle_event, render_live
 from gymrat.cli.supervise.session_read import make_default_read
 from gymrat.cli.supervise.state import (
     IDLE_WARN_MS,
-    Capped,
-    CapType,
-    Composing,
-    FinishedTool,
-    InFlight,
-    NestedPhase,
-    NestedTool,
     ReadSessionResult,
     ReporterCtx,
-    Responding,
     Starting,
     SuperviseReporter,
-    Thinking,
-    TrackedTool,
-    Waiting,
 )
+from gymrat.eta import MS_PER_SECOND
 from gymrat.session.clock import now_ms
 from gymrat.session.progress_file import read_progress as _default_read_progress
-from gymrat.supervisor.events import (
-    CapEvent,
-    CompactionEvent,
-    FollowUpEvent,
-    LaunchEvent,
-    ModelPhaseEvent,
-    SessionEvent,
-    TextDeltaEvent,
-    ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolProgressEvent,
-    ToolStartEvent,
-    TurnEndEvent,
-    UsageUpdateEvent,
-)
-
-__all__ = ["IDLE_WARN_MS", "CapType"]
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,282 +36,12 @@ if TYPE_CHECKING:
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
 
-logger = logging.getLogger(__name__)
+_tick_logger = logging.getLogger(__name__)
 
 _MAX_FINISHED_TOOLS = 3
-_NS_PER_MS = 1_000_000
 
-
-# ---------------------------------------------------------------------------
-# Emit / refresh
-# ---------------------------------------------------------------------------
-
-
-def _try_read_session(ctx: ReporterCtx) -> None:
-    try:
-        ctx.session_result = ctx.read_session_fn()
-    except Exception as exc:
-        logger.exception("session read failed")
-        ctx.warn_fn(f"session read failed: {exc}")
-        ctx.session_result = None
-
-
-def _emit_live(ctx: ReporterCtx) -> None:
-    if ctx.is_plain or ctx.live is None:
-        return
-    ctx.live.update(build_frame(ctx))
-
-
-def _emit(ctx: ReporterCtx, plain_text: str) -> None:
-    if ctx.is_plain:
-        ctx.plain_write_fn(plain_text)
-    else:
-        _emit_live(ctx)
-
-
-def _plain_loop_update(ctx: ReporterCtx) -> None:
-    if not ctx.is_plain:
-        return
-    plain = build_loop_text(ctx.session_result, ctx.max_iterations).plain
-    if plain not in {ctx.last_loop_text, NO_SESSION_TEXT}:
-        ctx.last_loop_text = plain
-        ctx.plain_write_fn(plain)
-
-
-def _refresh_session(ctx: ReporterCtx) -> None:
-    _try_read_session(ctx)
-    _plain_loop_update(ctx)
-    _emit_live(ctx)
-
-
-def _next_liveness_after_tool_end(
-    ctx: ReporterCtx, event: ToolEndEvent
-) -> Capped | InFlight | Waiting:
-    if isinstance(ctx.liveness, Capped):
-        return ctx.liveness
-    last_entry = next(reversed(ctx.in_flight_tools.items()), None)
-    if last_entry is not None:
-        tool_id, tracked = last_entry
-        return InFlight(
-            tool_use_id=tool_id,
-            tool_name=tracked.tool_name,
-            since=tracked.started_at,
-            input_summary=tracked.input_summary,
-        )
-    ended_at_ms = event.at // _NS_PER_MS
-    return Waiting(
-        since=ended_at_ms,
-        tool_name=event.tool_name,
-        tool_ended_at=ended_at_ms,
-        result=event.result,
-    )
-
-
-def _waiting_from_last_tool(ctx: ReporterCtx, timestamp: int) -> Waiting:
-    last = ctx.finished_tools[-1] if ctx.finished_tools else None
-    return Waiting(
-        since=timestamp,
-        tool_name=last.tool_name if last is not None else None,
-        tool_ended_at=last.ended_at if last is not None else None,
-        result=last.result if last is not None else None,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Event handlers
-# ---------------------------------------------------------------------------
-
-
-def _handle_cap_event(ctx: ReporterCtx, cap: CapEvent) -> None:
-    is_idle = isinstance(ctx.liveness, Waiting) and not ctx.in_flight_tools
-    ctx.liveness = Capped(cap_type=cap.cap)
-    verb = "ending" if is_idle else "interrupting"
-    _emit(ctx, f"cap {cap.cap} — {verb}")
-
-
-def _handle_launch(ctx: ReporterCtx, event: LaunchEvent) -> None:
-    ctx.launch_timestamp = event.at // _NS_PER_MS
-    _try_read_session(ctx)
-    _emit(ctx, format_caps(ctx.max_minutes, ctx.max_usd))
-
-
-def _handle_usage_update(ctx: ReporterCtx, event: UsageUpdateEvent) -> None:
-    ctx.cost_usd = event.cost_usd
-    _emit(ctx, f"cost {format_cost(event.cost_usd)}")
-
-
-def _handle_tool_start(ctx: ReporterCtx, event: ToolStartEvent) -> None:
-    at_ms = event.at // _NS_PER_MS
-    if event.parent_tool_use_id is not None:
-        if event.parent_tool_use_id not in ctx.in_flight_tools:
-            return
-        ctx.nested[event.parent_tool_use_id] = NestedTool(
-            tool_name=event.tool_name,
-            input_summary=event.input_summary,
-            since=at_ms,
-        )
-        ctx.nested_tool_ids[event.tool_use_id] = event.parent_tool_use_id
-        return
-
-    ctx.in_flight_tools[event.tool_use_id] = TrackedTool(
-        tool_name=event.tool_name, started_at=at_ms, input_summary=event.input_summary
-    )
-    if not isinstance(ctx.liveness, Capped):
-        ctx.liveness = InFlight(
-            tool_use_id=event.tool_use_id,
-            tool_name=event.tool_name,
-            since=at_ms,
-            input_summary=event.input_summary,
-        )
-    _emit_live(ctx)
-
-
-def _handle_tool_end(ctx: ReporterCtx, event: ToolEndEvent) -> None:
-    if event.parent_tool_use_id is not None:
-        parent_id = ctx.nested_tool_ids.pop(event.tool_use_id, None)
-        if parent_id is not None and isinstance(ctx.nested.get(parent_id), NestedTool):
-            del ctx.nested[parent_id]
-        return
-
-    tracked = ctx.in_flight_tools.get(event.tool_use_id)
-    if tracked is not None:
-        tool_name = tracked.tool_name
-        input_summary = tracked.input_summary
-    else:
-        tool_name = event.tool_name
-        input_summary = ""
-    should_refresh_session = tracked is None or tool_name == "Bash"
-
-    ctx.in_flight_tools.pop(event.tool_use_id, None)
-    ctx.nested.pop(event.tool_use_id, None)
-    ctx.nested_tool_ids = {k: v for k, v in ctx.nested_tool_ids.items() if v != event.tool_use_id}
-
-    ctx.finished_tools.append(
-        FinishedTool(
-            tool_name=tool_name,
-            input_summary=input_summary,
-            duration_ms=event.duration_ms,
-            result=event.result,
-            ended_at=event.at // _NS_PER_MS,
-        )
-    )
-
-    if tracked is not None:
-        ctx.liveness = _next_liveness_after_tool_end(ctx, event)
-
-    if should_refresh_session:
-        _refresh_session(ctx)
-    else:
-        _emit_live(ctx)
-
-
-def _handle_thinking_update(ctx: ReporterCtx, event: ThinkingUpdateEvent) -> None:
-    if event.parent_tool_use_id is not None:
-        return
-    if isinstance(ctx.liveness, (Capped, InFlight)):
-        return
-    if isinstance(ctx.liveness, Thinking):
-        ctx.liveness = Thinking(since=ctx.liveness.since, estimated_tokens=event.estimated_tokens)
-    else:
-        ctx.liveness = Thinking(
-            since=event.at // _NS_PER_MS, estimated_tokens=event.estimated_tokens
-        )
-    _emit_live(ctx)
-
-
-def _handle_model_phase(ctx: ReporterCtx, event: ModelPhaseEvent) -> None:
-    at_ms = event.at // _NS_PER_MS
-    if event.parent_tool_use_id is not None:
-        parent_id = event.parent_tool_use_id
-        if parent_id not in ctx.in_flight_tools:
-            return
-        if event.phase == "turn_end":
-            ctx.nested.pop(parent_id, None)
-        elif not isinstance(ctx.nested.get(parent_id), NestedTool):
-            tool_name = event.tool_name if event.phase == "tool_input" else None
-            ctx.nested[parent_id] = NestedPhase(phase=event.phase, since=at_ms, tool_name=tool_name)
-        return
-
-    if isinstance(ctx.liveness, (Capped, InFlight)):
-        return
-
-    match event.phase:
-        case "thinking":
-            tokens = ctx.liveness.estimated_tokens if isinstance(ctx.liveness, Thinking) else 0
-            ctx.liveness = Thinking(since=at_ms, estimated_tokens=tokens)
-        case "responding":
-            ctx.liveness = Responding(since=at_ms)
-        case "tool_input":
-            tool_name = event.tool_name if event.tool_name is not None else "unknown"
-            ctx.liveness = Composing(tool_name=tool_name, since=at_ms)
-        case "turn_end":
-            ctx.liveness = _waiting_from_last_tool(ctx, at_ms)
-    _emit_live(ctx)
-
-
-_FOLLOW_UP_LABELS: dict[str, str] = {"replied": "replied", "waiting": "waiting for gymrat"}
-
-
-def _handle_turn_end(ctx: ReporterCtx, event: TurnEndEvent) -> None:
-    ctx.turn_count += 1
-    if event.origin == "agent":
-        ctx.last_agent_text = event.text
-    if not isinstance(ctx.liveness, Capped):
-        ctx.liveness = _waiting_from_last_tool(ctx, event.at // _NS_PER_MS)
-    _emit_live(ctx)
-
-
-def _handle_follow_up(ctx: ReporterCtx, event: FollowUpEvent) -> None:
-    if event.action == "ended":
-        label = f"ended {event.reason}" if event.reason else "ended"
-    else:
-        label = _FOLLOW_UP_LABELS.get(event.action, event.action)
-    decision = f"turn {ctx.turn_count} ended · {label}"
-    ctx.last_decision = decision
-    _emit(ctx, decision)
-
-
-def _handle_tool_event(
-    ctx: ReporterCtx, event: ToolStartEvent | ToolEndEvent | ToolProgressEvent
-) -> None:
-    match event:
-        case ToolStartEvent():
-            _handle_tool_start(ctx, event)
-        case ToolEndEvent():
-            _handle_tool_end(ctx, event)
-        case ToolProgressEvent():
-            _emit_live(ctx)
-
-
-def _handle_compaction(ctx: ReporterCtx) -> None:
-    ctx.last_decision = "context compacted"
-    _emit(ctx, ctx.last_decision)
-
-
-def _handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:  # noqa: C901 -- flat match over the event union
-    match event:
-        case CapEvent():
-            _handle_cap_event(ctx, event)
-        case LaunchEvent():
-            _handle_launch(ctx, event)
-        case UsageUpdateEvent():
-            _handle_usage_update(ctx, event)
-        case ToolStartEvent() | ToolEndEvent() | ToolProgressEvent():
-            _handle_tool_event(ctx, event)
-        case ThinkingUpdateEvent():
-            _handle_thinking_update(ctx, event)
-        case ModelPhaseEvent():
-            _handle_model_phase(ctx, event)
-        case TextDeltaEvent():
-            pass  # no dashboard rendering depends on streamed text deltas
-        case TurnEndEvent():
-            _handle_turn_end(ctx, event)
-        case FollowUpEvent():
-            _handle_follow_up(ctx, event)
-        case CompactionEvent():
-            _handle_compaction(ctx)
-        case _:  # pragma: no cover - exhaustive over the event union
-            assert_never(event)
+REFRESH_MS = 1000
+"""Default Live dashboard refresh interval in milliseconds."""
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +55,16 @@ def _stderr_write(text: str) -> None:
 
 def _stop_live(live: Live | None) -> None:
     if live is not None:
-        with contextlib.suppress(Exception):
-            live.stop()
+        try:
+            # stderr closed or broken at shutdown raises OSError on write
+            with contextlib.suppress(OSError):
+                live.stop()
+        except ValueError as exc:
+            # A closed text stream raises ValueError("I/O operation on closed
+            # file") on write, not OSError; any other ValueError is unexpected
+            # and must propagate.
+            if "closed file" not in str(exc):
+                raise
 
 
 def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
@@ -379,6 +86,8 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     log_path: str,
     model: str | None,
     effort: Effort | None,
+    idle_warn_ms: int,
+    refresh_ms: int,
 ) -> ReporterCtx:
     return ReporterCtx(
         now=now,
@@ -412,7 +121,60 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
         last_decision=None,
         model=model,
         effort=effort,
+        idle_warn_ms=idle_warn_ms,
+        refresh_ms=refresh_ms,
     )
+
+
+async def _tick(ctx: ReporterCtx) -> None:
+    """Periodically refresh the Live display so elapsed time stays current.
+
+    Runs until cancelled. If a render raises, the failure is reported once
+    through ``ctx.warn_fn`` and the task exits — event-driven renders are
+    unaffected.
+
+    Args:
+        ctx: The shared reporter context supplying the refresh interval and
+            the state rendered on each tick.
+    """
+    interval = ctx.refresh_ms / MS_PER_SECOND
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            render_live(ctx)
+        except Exception as exc:
+            # warn_fn may write to the same failed console; never let it mask
+            # the original failure or skip the log below.
+            with contextlib.suppress(Exception):
+                ctx.warn_fn(f"tick render failed: {exc}")
+            _tick_logger.exception("tick render failed")
+            return
+
+
+def _on_tick_done(task: asyncio.Task[None]) -> None:
+    """Log unhandled tick-task failures so they are never silently swallowed."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _tick_logger.error("tick task failed", exc_info=exc)
+
+
+def _start_tick(ctx: ReporterCtx) -> None:
+    """Create the tick task if in live mode; no-op in plain mode."""
+    if ctx.is_plain:
+        return
+    task = asyncio.create_task(_tick(ctx))
+    task.add_done_callback(_on_tick_done)
+    ctx.tick_task = task
+
+
+def _stop_tick_and_live(ctx: ReporterCtx) -> None:
+    """Cancel the tick task (if running) then stop Live."""
+    if ctx.tick_task is not None:
+        ctx.tick_task.cancel()
+        ctx.tick_task = None
+    _stop_live(ctx.live)
 
 
 def _make_warn(ctx: ReporterCtx) -> Callable[[str], None]:
@@ -444,8 +206,13 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     tz: tzinfo | None = None,
     model: str | None = None,
     effort: Effort | None = None,
+    refresh_ms: int = REFRESH_MS,
+    idle_warn_ms: int = IDLE_WARN_MS,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
+
+    The returned reporter's ``start`` must be called from within a running
+    event loop; it is a no-op in plain mode.
 
     Args:
         root: Project root whose session directory is monitored.
@@ -471,6 +238,9 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         tz: Timezone for wall-clock timestamps.  ``None`` uses the local zone.
         model: Model name shown as a labelled row when set.
         effort: Effort level shown as a labelled row when set.
+        refresh_ms: Live dashboard refresh interval in milliseconds.
+        idle_warn_ms: Milliseconds of inactivity before the liveness line
+            escalates to alert styling.
 
     Returns:
         A fully wired reporter whose callbacks drive the dashboard lifecycle.
@@ -493,24 +263,25 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         log_path=log_path,
         model=model,
         effort=effort,
+        idle_warn_ms=idle_warn_ms,
+        refresh_ms=refresh_ms,
     )
 
-    # Live is created after ctx — Rich's Live.__init__ eagerly calls
-    # get_renderable() to size the initial layout, so ctx must be populated.
     if not ctx.is_plain:
         ctx.live = Live(
             console=stderr_console(color_flag=color),
-            refresh_per_second=1,
+            auto_refresh=False,
             transient=True,
-            get_renderable=lambda: build_frame(ctx),
         )
         ctx.live.start()
+        ctx.live.update(build_frame(ctx), refresh=True)
 
     warn = _make_warn(ctx)
     ctx.warn_fn = warn
     return SuperviseReporter(
-        observer=lambda event: _handle_event(ctx, event),
-        stop=lambda: _stop_live(ctx.live),
+        observer=lambda event: handle_event(ctx, event),
+        start=lambda: _start_tick(ctx),
+        stop=lambda: _stop_tick_and_live(ctx),
         frame=lambda: build_frame(ctx),
         warn=warn,
         session_result=lambda: ctx.session_result,

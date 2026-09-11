@@ -86,10 +86,10 @@ def test_create_event_log_writer_when_cap_event_written_does_round_trip(
     log_path = tmp_path / "events.jsonl"
     writer = create_event_log_writer(log_path)
 
-    writer(CapEvent(cap="wall-clock", at=5_000_000_000_000))
+    writer(CapEvent(cap="wall-clock", at=5_000_000_000_000, action="interrupting"))
 
     assert read_log_lines(log_path) == [
-        {"type": "cap", "at": 5_000_000_000_000, "cap": "wall-clock"},
+        {"type": "cap", "at": 5_000_000_000_000, "cap": "wall-clock", "action": "interrupting"},
     ]
 
 

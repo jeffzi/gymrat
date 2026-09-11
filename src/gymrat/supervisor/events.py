@@ -130,12 +130,24 @@ class UsageUpdateEvent(_EventModel):
     settled: bool = Field(default=False, description="Whether the session has already settled.")
 
 
+CapType = Literal["wall-clock", "spend-cap"]
+"""The cap variety that ended or is ending a supervised run."""
+
+CapAction = Literal["ending", "interrupting"]
+"""Whether the cap is ending the idle session or interrupting an in-flight turn."""
+
+
 class CapEvent(_EventModel):
     """Emitted when a supervision cap (wall-clock or spend) fires."""
 
     type: Literal["cap"] = Field("cap", description="Event type discriminator.")
     at: int = Field(description="Nanoseconds since the Unix epoch when the event was created.")
-    cap: Literal["wall-clock", "spend-cap"] = Field(description="Which supervision cap fired.")
+    cap: CapType = Field(description="Which supervision cap fired.")
+    action: CapAction = Field(
+        description=(
+            "Whether the supervisor is ending the idle session or interrupting an in-flight turn."
+        ),
+    )
 
 
 class ModelPhaseEvent(_EventModel):

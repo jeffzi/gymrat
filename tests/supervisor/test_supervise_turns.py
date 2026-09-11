@@ -176,6 +176,7 @@ async def test_supervise_when_cost_exceeds_max_usd_at_turn_end_does_end_as_spend
     caps = _cap_events(probe.events)
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
+    assert caps[0].action == "ending"
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,9 @@ from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.event_log import create_event_log_writer
 from gymrat.supervisor.events import (
+    CapAction,
     CapEvent,
+    CapType,
     FollowUpEvent,
     LaunchEvent,
     SessionEvent,
@@ -57,7 +59,6 @@ LOCK_POLL_MS = 5000
 """Default interval (in milliseconds) for polling the repository lock while
 waiting for another process to release it."""
 
-CapType = Literal["wall-clock", "spend-cap"]
 EndedBy = Literal["session", "wall-clock", "spend-cap", "guard"]
 
 _IN_FLIGHT_EXCLUSION = frozenset({
@@ -177,7 +178,6 @@ class _Supervision:
         )
         self._reply_outstanding = False
         self._tasks: dict[Literal["settle", "lock_poll"], asyncio.Task[None]] = {}
-        self._in_flight = False
         self._last_cost_usd = 0.0
         self._background_tasks: set[asyncio.Task[None]] = set()
 
@@ -208,10 +208,9 @@ class _Supervision:
             return
 
         if event.type not in _IN_FLIGHT_EXCLUSION:
-            self._enter_in_flight()
+            self._cancel_pending()
 
-    def _enter_in_flight(self) -> None:
-        self._in_flight = True
+    def _cancel_pending(self) -> None:
         self._cancel("settle")
         self._cancel("lock_poll")
 
@@ -236,13 +235,14 @@ class _Supervision:
         self._tasks[slot] = task
 
     def _handle_turn_end(self, event: TurnEndEvent) -> None:
+        if self._cap_fired:
+            return
         if self._reply_outstanding:
             if event.origin == "agent":
                 self._reply_outstanding = False
                 self._schedule_settle(event)
             return
 
-        self._in_flight = False
         self._schedule_settle(event)
 
     def _schedule_settle(self, event: TurnEndEvent) -> None:
@@ -307,7 +307,7 @@ class _Supervision:
                 self._end_session("finished", ended_by="session")
 
             case End(reason="spend-cap"):
-                self._combined(CapEvent(at=now_ns(), cap="spend-cap"))
+                self._combined(CapEvent(at=now_ns(), cap="spend-cap", action="ending"))
                 self._end_session("spend-cap", ended_by="spend-cap", end_reason="spend-cap")
 
             case End(reason=reason):
@@ -352,7 +352,8 @@ class _Supervision:
         self._cancel("settle")
         self._cancel("lock_poll")
 
-        self._combined(CapEvent(at=now_ns(), cap=cap))
+        action: CapAction = "ending" if was_idle else "interrupting"
+        self._combined(CapEvent(at=now_ns(), cap=cap, action=action))
 
         if was_idle:
             self._spawn(self._session.end())

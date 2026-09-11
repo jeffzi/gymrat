@@ -17,12 +17,12 @@ if TYPE_CHECKING:
     from gymrat.session.progress_file import ProgressSnapshot
 
 from gymrat.cli.supervise.progress import (
-    IDLE_WARN_MS,
-    CapType,
+    REFRESH_MS,
     ReadSessionResult,
     SuperviseReporter,
     create_supervise_reporter,
 )
+from gymrat.cli.supervise.state import IDLE_WARN_MS
 from gymrat.loop.start import start_session
 from gymrat.session import (
     BaselineRecord,
@@ -34,7 +34,9 @@ from gymrat.session import (
 from gymrat.session.store import SessionState
 from gymrat.supervisor import SessionOutcome, SupervisionResult
 from gymrat.supervisor.events import (
+    CapAction,
     CapEvent,
+    CapType,
     CompactionEvent,
     FollowUpEvent,
     LaunchEvent,
@@ -52,7 +54,6 @@ from tests.session.records._fixtures import AT, finalize_record, iteration_recor
 
 __all__ = [
     "FRAME_WIDTH",
-    "IDLE_WARN_MS",
     "Clock",
     "PlainCapture",
     "ReporterKit",
@@ -361,9 +362,15 @@ def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4
     observer(UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd))
 
 
-def fire_cap(observer: SessionObserver, cap: CapType, at_ms: int = 5000) -> None:
+def fire_cap(
+    observer: SessionObserver,
+    cap: CapType,
+    at_ms: int = 5000,
+    *,
+    action: CapAction = "interrupting",
+) -> None:
     """Publish a ``CapEvent`` signaling that the given cap has fired."""
-    observer(CapEvent(at=at_ms * _NS_PER_MS, cap=cap))
+    observer(CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action))
 
 
 def fire_compaction(observer: SessionObserver, at_ms: int = 5000) -> None:
@@ -503,6 +510,8 @@ def make_reporter(
     tz: tzinfo | None = UTC,
     model: str | None = None,
     effort: Effort | None = None,
+    idle_warn_ms: int = IDLE_WARN_MS,
+    refresh_ms: int = REFRESH_MS,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
 
@@ -530,6 +539,8 @@ def make_reporter(
         color=color,
         model=model,
         effort=effort,
+        idle_warn_ms=idle_warn_ms,
+        refresh_ms=refresh_ms,
     )
     return ReporterKit(reporter, clock)
 

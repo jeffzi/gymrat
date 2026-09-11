@@ -3,6 +3,15 @@
     "CapEvent": {
       "description": "Emitted when a supervision cap (wall-clock or spend) fires.",
       "properties": {
+        "action": {
+          "description": "Whether the supervisor is ending the idle session or interrupting an in-flight turn.",
+          "enum": [
+            "ending",
+            "interrupting"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
         "at": {
           "description": "Nanoseconds since the Unix epoch when the event was created.",
           "title": "At",
@@ -27,7 +36,8 @@
       },
       "required": [
         "at",
-        "cap"
+        "cap",
+        "action"
       ],
       "title": "CapEvent",
       "type": "object"

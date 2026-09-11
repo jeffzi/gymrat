@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import asyncio
     from collections import deque
     from collections.abc import Callable
     from datetime import tzinfo
@@ -16,13 +17,10 @@ if TYPE_CHECKING:
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
-    from gymrat.supervisor.events import SessionObserver
+    from gymrat.supervisor.events import CapAction, CapType, SessionObserver
 
 IDLE_WARN_MS = 30_000
 """After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
-
-type CapType = Literal["wall-clock", "spend-cap"]
-"""The cap variety that ended or is ending a supervised run."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,9 +51,13 @@ class SuperviseReporter:
 
     ``session_result`` hands back the session state as of the last re-read, which
     is what the closing summary reports once the display has stopped.
+
+    ``start`` must be called from within a running event loop — it schedules the
+    tick task via ``asyncio.create_task``. In plain mode it is a no-op.
     """
 
     observer: SessionObserver
+    start: Callable[[], None]
     stop: Callable[[], None]
     frame: Callable[[], RenderableType]
     warn: Callable[[str], None]
@@ -117,9 +119,10 @@ class Waiting:
 
 @dataclass(frozen=True, slots=True)
 class Capped:
-    """A cap fired; the run is interrupting and liveness is frozen."""
+    """A cap fired; liveness is frozen and the action comes from the event."""
 
     cap_type: CapType
+    action: CapAction
 
 
 type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waiting | Capped
@@ -203,3 +206,6 @@ class ReporterCtx:
     last_decision: str | None
     model: str | None
     effort: Effort | None
+    idle_warn_ms: int
+    refresh_ms: int
+    tick_task: asyncio.Task[None] | None = None

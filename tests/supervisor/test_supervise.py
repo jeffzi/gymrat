@@ -292,6 +292,7 @@ async def test_supervise_when_wall_clock_elapses_does_emit_single_wall_clock_cap
     caps = _cap_events(probe.events)
     assert len(caps) == 1
     assert caps[0].cap == "wall-clock"
+    assert caps[0].action == "interrupting"
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +377,7 @@ async def test_supervise_when_cost_reaches_max_usd_does_emit_single_spend_cap_ev
     caps = _cap_events(probe.events)
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
+    assert caps[0].action == "ending"
 
 
 async def test_supervise_when_max_usd_none_does_not_enforce_cost(tmp_path: Path):
@@ -464,6 +466,7 @@ async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
     assert result.ended_by == "spend-cap"
     assert len(caps) == 1
     assert caps[0].cap == "spend-cap"
+    assert caps[0].action == "ending"
 
 
 # ---------------------------------------------------------------------------

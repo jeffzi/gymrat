@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 import typer
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
 from gymrat.cli.shared import (
     GATE_EXIT_CODE,
@@ -32,13 +32,13 @@ from gymrat.cli.shared import (
     resolve_stream_color,
     write_and_flush,
 )
-from gymrat.cli.supervise.frame import SessionLabels, build_summary
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
 from gymrat.cli.supervise.progress import (
     ReadSessionResult,
     SuperviseReporter,
     create_supervise_reporter,
 )
+from gymrat.cli.supervise.summary import SessionLabels, build_summary
 from gymrat.config import (
     EFFORT_LEVELS,
     EFFORT_PHRASE,
@@ -288,6 +288,14 @@ def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> Su
     )
 
 
+async def _start_and_supervise(
+    reporter: SuperviseReporter, pending: Coroutine[object, object, SupervisionResult]
+) -> SupervisionResult:
+    """Start the reporter tick inside the running loop, then await the supervisor."""
+    reporter.start()
+    return await pending
+
+
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly."""
     driver = create_claude_driver()
@@ -327,12 +335,15 @@ def _run_session(ctx: _SessionContext) -> None:
     try:
         try:
             result = asyncio.run(
-                supervise(
-                    driver=driver,
-                    prompt=prompt,
-                    context=context,
-                    launch=ctx.launch,
-                    observer=observer,
+                _start_and_supervise(
+                    reporter,
+                    supervise(
+                        driver=driver,
+                        prompt=prompt,
+                        context=context,
+                        launch=ctx.launch,
+                        observer=observer,
+                    ),
                 )
             )
         finally:

@@ -10,6 +10,7 @@ replaced at the names ``supervise.cmd`` imports them under, mirroring the
 upstream test harness.
 """
 
+import asyncio
 import os
 import re
 import shutil
@@ -85,6 +86,17 @@ def _isolate_tracing_provider() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
+def _real_reporter_start() -> Callable[[], None]:
+    """The production reporter's real ``start`` closure, used only as an autospec source.
+
+    ``SuperviseReporter.start`` is a nested closure with no importable name, so it
+    can't be targeted directly by ``create_autospec``. Building a real (side-effect-free,
+    plain-mode) reporter and taking its ``start`` attribute gives ``create_autospec``
+    the actual production callable to bind against.
+    """
+    return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain").start
+
+
 def _real_reporter_stop() -> Callable[[], None]:
     """The production reporter's real ``stop`` closure, used only as an autospec source.
 
@@ -111,6 +123,7 @@ class _Seams:
         self.observer: Callable[[object], None] = lambda _event: None
         self.session_result: ReadSessionResult | None = None
         self.final_text: str | None = None
+        self.reporter_start = create_autospec(_real_reporter_start(), name="reporter.start")
         self.reporter_stop = create_autospec(_real_reporter_stop(), name="reporter.stop")
         self.ensure_git_exclude = create_autospec(ensure_git_exclude, name="ensure_git_exclude")
         self.create_driver = create_autospec(
@@ -217,6 +230,7 @@ def _install_seams(
         seams.reporter_calls.append(kwargs)
         return SimpleNamespace(
             observer=seams.observer,
+            start=seams.reporter_start,
             stop=seams.reporter_stop,
             session_result=lambda: seams.session_result,
             final_text=lambda: seams.final_text,
@@ -782,6 +796,42 @@ def test_supervise_when_color_flag_given_does_forward_it_to_doctor_gate(
     assert result.exit_code == 0
     call_kwargs = seams.doctor_gate.call_args.kwargs
     assert call_kwargs.get("color") is expected_color
+
+
+def test_supervise_when_run_does_start_reporter_inside_event_loop_before_supervise(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    order: list[str] = []
+    had_running_loop = False
+
+    def recording_start() -> None:
+        nonlocal had_running_loop
+        try:
+            asyncio.get_running_loop()
+            had_running_loop = True
+        except RuntimeError:
+            had_running_loop = False
+        order.append("start")
+
+    seams = _install_seams(monkeypatch)
+    seams.reporter_start.side_effect = recording_start
+
+    original_record = seams.record_supervise_call
+
+    def tracking_supervise(args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+        order.append("supervise")
+        original_record(args, kwargs)
+
+    seams.record_supervise_call = tracking_supervise
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert seams.reporter_start.called, "reporter.start() was never called"
+    assert had_running_loop, "reporter.start() must run inside a running event loop"
+    assert order.index("start") < order.index("supervise"), (
+        f"reporter.start() must precede supervise(); order was {order}"
+    )
 
 
 def test_supervise_when_run_completes_does_stop_the_reporter(

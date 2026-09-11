@@ -147,7 +147,7 @@ def test_plain_when_capped_while_idle_after_turn_end_does_print_cap_ending():
     plain = make_plain_reporter()
     fire_launch(plain.observer, 1000)
     fire_turn_end(plain.observer, 2000, text="done")
-    fire_cap(plain.observer, "wall-clock")
+    fire_cap(plain.observer, "wall-clock", action="ending")
 
     assert plain.writes[-1] == "cap wall-clock — ending"
 

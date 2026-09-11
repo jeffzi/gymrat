@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
@@ -14,8 +13,6 @@ from rich.table import Table
 from rich.text import Text
 
 from gymrat.cli.style import (
-    GLYPH_ALERT,
-    GLYPH_DONE,
     GLYPH_ERROR,
     STYLE_ALERT,
     STYLE_COUNT,
@@ -27,19 +24,13 @@ from gymrat.cli.style import (
     STYLE_RUNNING,
 )
 from gymrat.cli.supervise.state import (
-    IDLE_WARN_MS,
     Capped,
     Composing,
-    FinishedTool,
     InFlight,
-    NestedPhase,
     NestedTool,
-    ReadSessionResult,
-    ReporterCtx,
     Responding,
     Starting,
     Thinking,
-    TrackedTool,
     Waiting,
 )
 from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
@@ -48,15 +39,19 @@ from gymrat.paths import abbreviate_home
 from gymrat.report.format import format_delta
 from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.budget import minutes_to_ms
-from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
-    from gymrat.cli.supervise.state import Liveness
-    from gymrat.config import Effort
+    from gymrat.cli.supervise.state import (
+        FinishedTool,
+        Liveness,
+        NestedPhase,
+        ReadSessionResult,
+        ReporterCtx,
+        TrackedTool,
+    )
     from gymrat.session.progress_file import ProgressSnapshot
-    from gymrat.supervisor import SupervisionResult
 
 # Bounds for the tool-name column: floor prevents jitter across short names
 # (Read, Edit, Bash); ceiling prevents a long name from pushing the layout.
@@ -75,10 +70,6 @@ NO_SESSION_TEXT = "no session yet"
 def format_cost(usd: float) -> str:
     """Format a USD amount as a two-decimal dollar string."""
     return f"${usd:.2f}"
-
-
-def _format_minutes(minutes: float) -> str:
-    return f"{minutes:g}"
 
 
 def _format_iter_label(count: int, max_iterations: int | None) -> str:
@@ -202,7 +193,7 @@ def build_loop_text(session_result: ReadSessionResult | None, max_iterations: in
     return text
 
 
-def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
+def build_best_text(session_result: ReadSessionResult | None) -> Text | None:
     """The best-iteration content, without its ``best`` label.
 
     The label is styled by each caller — dim inside the dashboard frame, plain in
@@ -235,13 +226,14 @@ def _build_best_text(session_result: ReadSessionResult | None) -> Text | None:
 
 
 def _style_unless_no_color(style: str, *, no_color: bool) -> str:
-    """Rich style string, or empty when the frame is rendered without color."""
     return "" if no_color else style
 
 
-def _build_waiting_text(waiting: Waiting, now: int, tz: tzinfo | None, *, no_color: bool) -> Text:
+def _build_waiting_text(
+    waiting: Waiting, now: int, tz: tzinfo | None, *, no_color: bool, idle_warn_ms: int
+) -> Text:
     ago = now - waiting.since
-    if ago < IDLE_WARN_MS:
+    if ago < idle_warn_ms:
         style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
         return Text(f"  waiting  {format_duration(ago)}", style=style)
     style = _style_unless_no_color(STYLE_ALERT, no_color=no_color)
@@ -254,8 +246,14 @@ def _build_waiting_text(waiting: Waiting, now: int, tz: tzinfo | None, *, no_col
     return Text(f"no output for {format_duration(ago)} {label}", style=style)
 
 
-def _build_liveness_text(
-    liveness: Liveness, now: int, tz: tzinfo | None, *, tool_col: int, no_color: bool
+def _build_liveness_text(  # noqa: PLR0913 -- ctx fields threaded to leaf renderers
+    liveness: Liveness,
+    now: int,
+    tz: tzinfo | None,
+    *,
+    tool_col: int,
+    no_color: bool,
+    idle_warn_ms: int,
 ) -> Text | None:
     match liveness:
         case Starting():
@@ -280,9 +278,15 @@ def _build_liveness_text(
             style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
             return Text(f"  {label}  {elapsed}", style=style)
         case Waiting():
-            return _build_waiting_text(liveness, now, tz, no_color=no_color)
-        case Capped(cap_type=cap_type):
-            return Text(f"interrupting ({cap_type})", style=STYLE_ALERT)
+            return _build_waiting_text(
+                liveness,
+                now,
+                tz,
+                no_color=no_color,
+                idle_warn_ms=idle_warn_ms,
+            )
+        case Capped(cap_type=cap_type, action=action):
+            return Text(f"{action} ({cap_type})", style=STYLE_ALERT)
         case _:  # pragma: no cover - exhaustive over the liveness union
             assert_never(liveness)
 
@@ -300,7 +304,9 @@ def _build_finished_tool_line(tool: FinishedTool, tz: tzinfo | None, *, tool_col
 
 
 def _build_iterate_nest(
-    sidecar: ProgressSnapshot | None, now_ms: int, tool_started_at: int
+    sidecar: ProgressSnapshot | None,
+    now_ms: int,
+    tool_started_at: int,
 ) -> str | None:
     if sidecar is None:
         return None
@@ -320,7 +326,6 @@ def _build_iterate_nest(
 def _build_summary_table(ctx: ReporterCtx, elapsed_ms: int) -> Table:
     summary = Table.grid(padding=(0, 1))
     summary.add_column()
-
     summary.add_row(_build_time_bar(elapsed_ms, ctx.max_minutes))
     summary.add_row(_build_cost_text(ctx.cost_usd, ctx.max_usd))
 
@@ -328,7 +333,7 @@ def _build_summary_table(ctx: ReporterCtx, elapsed_ms: int) -> Table:
     loop_row.append_text(build_loop_text(ctx.session_result, ctx.max_iterations))
     summary.add_row(loop_row)
 
-    best_text = _build_best_text(ctx.session_result)
+    best_text = build_best_text(ctx.session_result)
     if best_text is not None:
         best_row = Text("best ", style=STYLE_META)
         best_row.append_text(best_text)
@@ -373,7 +378,12 @@ def _build_liveness_table(ctx: ReporterCtx, now: int, *, tool_col: int) -> Table
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
     liveness_text = _build_liveness_text(
-        ctx.liveness, now, ctx.tz, tool_col=tool_col, no_color=ctx.no_color
+        ctx.liveness,
+        now,
+        ctx.tz,
+        tool_col=tool_col,
+        no_color=ctx.no_color,
+        idle_warn_ms=ctx.idle_warn_ms,
     )
     if liveness_text is not None:
         liveness_table.add_row(liveness_text)
@@ -417,6 +427,13 @@ def _build_title(ctx: ReporterCtx) -> Text:
     return title
 
 
+def log_path_text(log_path: str) -> Text:
+    """Build a ``Text`` for a log path with an OSC 8 file hyperlink."""
+    display = abbreviate_home(log_path)
+    uri = Path(log_path).resolve().as_uri()
+    return Text(display, style=f"link {uri}")
+
+
 def build_frame(ctx: ReporterCtx) -> RenderableType:
     """Assemble the supervise dashboard panel from the current reporter context."""
     now = ctx.now()
@@ -432,159 +449,5 @@ def build_frame(ctx: ReporterCtx) -> RenderableType:
     if not ctx.log_path:
         return panel
     log_line = Text("log: ")
-    log_line.append_text(_log_path_text(ctx.log_path))
+    log_line.append_text(log_path_text(ctx.log_path))
     return Group(log_line, panel)
-
-
-# ---------------------------------------------------------------------------
-# Closing summary
-# ---------------------------------------------------------------------------
-
-# The label column of the summary rows, wide enough for "agent"; the two
-# spaces on either side indent the block and separate label from content.
-_SUMMARY_LABEL_WIDTH = 6
-
-#: How a cap that stopped the session reads in the closing headline.
-_CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spend cap"}
-
-
-def _build_outcome_text(result: SupervisionResult) -> Text:
-    """The glyph-led headline: how the run ended, then its duration and cost."""
-    text = Text()
-    if _completed_on_its_own(result):
-        text.append(f"{GLYPH_DONE} completed", style=STYLE_DONE)
-    elif result.outcome.reason == "error":
-        text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
-    elif result.ended_by == "guard":
-        reason = result.end_reason or "unknown"
-        text.append(f"{GLYPH_ALERT} stopped by guard: {reason}", style=STYLE_ALERT)
-    else:
-        cap = _CAP_LABELS[result.ended_by]
-        text.append(f"{GLYPH_ALERT} interrupted by {cap}", style=STYLE_ALERT)
-    text.append(" · ", style=STYLE_META)
-    text.append(format_duration(result.duration_ms))
-    text.append(" · ", style=STYLE_META)
-    text.append(format_cost(result.cost_usd))
-    return text
-
-
-def _row_prefix(label: str) -> str:
-    """The two-space-indented, padded label lead-in shared by every summary row."""
-    return f"  {label:<{_SUMMARY_LABEL_WIDTH}}  "
-
-
-def _summary_row(label: str, content: Text) -> Text:
-    row = Text(_row_prefix(label))
-    row.append_text(content)
-    return row
-
-
-def _log_path_text(log_path: str) -> Text:
-    """Build a ``Text`` for a log path with an OSC 8 file hyperlink."""
-    display = abbreviate_home(log_path)
-    uri = Path(log_path).resolve().as_uri()
-    return Text(display, style=f"link {uri}")
-
-
-def _build_agent_row(final_text: str) -> Text:
-    """Build the agent summary row, clipping long messages.
-
-    When *final_text* exceeds ``SUMMARY_MAX_CHARS`` code points, it is truncated
-    with an ellipsis and a note directing the user to the event log (whose path
-    is printed on the next row).  Short messages render unchanged with
-    continuation-line indentation preserved.
-
-    Returns:
-        The styled ``Text`` row for the agent summary.
-    """
-    label = "agent"
-    if len(final_text) > SUMMARY_MAX_CHARS:
-        clipped = f"{final_text[:SUMMARY_MAX_CHARS]}… (full message in log)"
-        return _summary_row(label, Text(clipped))
-    indent = " " * len(_row_prefix(label))
-    indented = final_text.replace("\n", f"\n{indent}")
-    return _summary_row(label, Text(indented))
-
-
-def _completed_on_its_own(result: SupervisionResult) -> bool:
-    """Whether the session ended by itself, not by a cap trip or an error."""
-    return result.ended_by == "session" and result.outcome.reason != "error"
-
-
-def _resolve_agent_text(
-    session_result: ReadSessionResult | None, final_text: str | None
-) -> str | None:
-    """The session's stop message, falling back to the agent's last text block."""
-    stop_message = session_result.stop_message if session_result is not None else None
-    return stop_message or final_text
-
-
-@dataclass(frozen=True, slots=True)
-class SessionLabels:
-    """Optional model/effort labels shown in the closing summary."""
-
-    model: str | None = None
-    effort: Effort | None = None
-
-
-_NO_LABELS = SessionLabels()
-
-
-def build_summary(
-    result: SupervisionResult,
-    *,
-    log_path: str,
-    session_result: ReadSessionResult | None,
-    final_text: str | None = None,
-    labels: SessionLabels = _NO_LABELS,
-) -> Text:
-    """Build the closing summary ``gymrat supervise`` prints when a run ends.
-
-    The headline states how the run ended; the rows below it reuse the
-    dashboard's best and loop renderables, so the last thing printed reads like
-    the frame it replaces, and end with where the event log landed.
-
-    When the session ended on its own (not by a cap or error) and the agent
-    produced text, an ``agent`` row appears after the headline showing the
-    session's stop message when the log ends on one, otherwise the agent's
-    last text block, with paragraph breaks preserved.
-
-    ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
-
-    Args:
-        result: The supervision outcome whose ``ended_by`` drives the headline.
-        log_path: Absolute path to the event log, printed as the final row.
-        session_result: The latest session read, supplying best-iteration and
-            loop-progress content.  ``None`` when the session file was never
-            created.
-        final_text: Override text for the agent row.  When ``None``, the
-            function falls back to the session's stop message or last text
-            block.
-        labels: Model and effort labels to surface as extra rows.
-
-    Returns:
-        The assembled ``Text`` block for the closing summary.
-    """
-    rows = [_build_outcome_text(result)]
-    if _completed_on_its_own(result) or result.ended_by == "guard":
-        agent_text = _resolve_agent_text(session_result, final_text)
-        if agent_text is not None:
-            rows.append(_build_agent_row(agent_text))
-    if labels.model is not None:
-        rows.append(_summary_row("model", Text(labels.model)))
-    if labels.effort is not None:
-        rows.append(_summary_row("effort", Text(labels.effort)))
-    best_text = _build_best_text(session_result)
-    if best_text is not None:
-        rows.append(_summary_row("best", best_text))
-    rows.append(_summary_row("loop", build_loop_text(session_result, None)))
-    rows.append(_summary_row("log", _log_path_text(log_path)))
-    return Text("\n").join(rows)
-
-
-def format_caps(max_minutes: float, max_usd: float | None) -> str:
-    """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
-    caps_parts = [f"{_format_minutes(max_minutes)}m"]
-    if max_usd is not None:
-        caps_parts.append(format_cost(max_usd))
-    return f"caps {', '.join(caps_parts)}"

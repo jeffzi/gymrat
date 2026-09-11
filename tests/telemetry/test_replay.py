@@ -292,7 +292,7 @@ def test_replay_session_when_supervisor_events_present_does_mirror_onto_run_span
             _launch_event(at=_T1),
             _turn_end(at=_T2),
             FollowUpEvent(at=_T3, action="replied", reason="continue"),
-            CapEvent(at=_T4, cap="wall-clock"),
+            CapEvent(at=_T4, cap="wall-clock", action="interrupting"),
             CompactionEvent(at=_T5),
         ],
     )

@@ -59,7 +59,7 @@ _TOOL_END = ToolEndEvent(
 )
 _TEXT_DELTA = TextDeltaEvent(at=5_000_000_000, chunk="hello")
 _USAGE_UPDATE = UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01)
-_CAP = CapEvent(at=7_000_000_000, cap="wall-clock")
+_CAP = CapEvent(at=7_000_000_000, cap="wall-clock", action="interrupting")
 _MODEL_PHASE_THINKING = ModelPhaseEvent(at=8_000_000_000, phase="thinking")
 _MODEL_PHASE_RESPONDING = ModelPhaseEvent(at=9_000_000_000, phase="responding")
 _MODEL_PHASE_TOOL_INPUT = ModelPhaseEvent(
@@ -209,7 +209,7 @@ JSON_CASES = [
     ),
     pytest.param(
         _CAP,
-        {"type": "cap", "at": 7_000_000_000, "cap": "wall-clock"},
+        {"type": "cap", "at": 7_000_000_000, "cap": "wall-clock", "action": "interrupting"},
         id="cap",
     ),
     pytest.param(
@@ -459,6 +459,9 @@ def test_event_from_wire_when_tool_start_input_is_none_does_round_trip():
         pytest.param({"at": 1}, id="missing-type"),
         pytest.param({"type": "mystery", "at": 1}, id="unknown-type"),
         pytest.param({"type": "usage_update", "at": 6}, id="missing-required-field"),
+        pytest.param(
+            {"type": "cap", "at": 7_000_000_000, "cap": "wall-clock"}, id="cap-missing-action"
+        ),
     ],
 )
 def test_event_from_wire_when_input_unrecognized_does_return_none(obj: object):

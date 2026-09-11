@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The session header carries a `schema` field (replacing `schemaVersion`).
 - The supervisor launch event carries the open session's `session_id`.
 - `status` now holds the repository lock briefly while it reads the session log and records itself.
+- The supervisor cap event carries an `action` field naming what the supervisor did.
+
+### Fixed
+
+- The supervise dashboard's elapsed timers keep counting while a run is in progress.
+- A cap no longer sends a follow-up to a session it is ending.
+- The cap line in the dashboard and plain output names the action the supervisor took instead of
+  always saying "interrupting".
 
 ## [0.16.0] - 2026-09-07
 
