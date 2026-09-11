@@ -5,9 +5,10 @@ from __future__ import annotations
 import importlib.metadata
 import sys
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
+from opentelemetry.sdk.trace import SpanProcessor
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -24,17 +25,20 @@ from tests.telemetry._fixtures import memory_tracing
 SESSION = "test-session-provider"
 
 
+def _reset_provider_quietly() -> None:
+    """Call ``_reset_for_tests`` with OTel's deprecation warnings suppressed."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _reset_for_tests()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Ensure every test starts and ends with no provider and a clean environment."""
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
+    _reset_provider_quietly()
     yield
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
+    _reset_provider_quietly()
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +159,22 @@ def test_configure_tracing_when_called_twice_does_reuse_provider(
     assert result is True
 
 
+def test_configure_tracing_when_already_configured_with_span_processor_does_raise(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
+
+    with pytest.raises(ValueError, match="span_processor"):
+        configure_tracing(
+            SESSION,
+            span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
+        )
+
+
 def test_configure_tracing_when_called_with_different_session_id_does_raise(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -225,6 +245,44 @@ def test_flush_tracing_when_no_provider_does_not_raise():
 # ---------------------------------------------------------------------------
 
 
+class _ShutdownFailingSpanProcessor(SpanProcessor):
+    """Span processor whose first ``shutdown`` raises, mimicking a failing exporter.
+
+    Later shutdowns are no-ops so the provider's ``atexit`` handler — left
+    registered when the first shutdown raises — stays quiet at interpreter exit.
+    """
+
+    def __init__(self) -> None:
+        self._shut_down = False
+
+    @override
+    def shutdown(self) -> None:
+        if self._shut_down:
+            return
+        self._shut_down = True
+        msg = "exporter shutdown failed"
+        raise RuntimeError(msg)
+
+
+def test_reset_for_tests_when_shutdown_raises_does_clear_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    configure_tracing(SESSION, span_processor=_ShutdownFailingSpanProcessor())
+
+    with pytest.raises(RuntimeError, match="shutdown failed"):
+        _reset_provider_quietly()
+
+    result = configure_tracing(
+        "session-after-failed-reset",
+        span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
+    )
+    assert result is True
+
+
 def test_reset_for_tests_when_called_does_allow_fresh_provider(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -234,9 +292,7 @@ def test_reset_for_tests_when_called_does_allow_fresh_provider(
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
     configure_tracing(SESSION, span_processor=SimpleSpanProcessor(InMemorySpanExporter()))
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        _reset_for_tests()
+    _reset_provider_quietly()
 
     exporter2 = InMemorySpanExporter()
     result = configure_tracing(

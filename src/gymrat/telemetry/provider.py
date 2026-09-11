@@ -42,7 +42,9 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
         is configured or the SDK is missing).
 
     Raises:
-        ValueError: When called a second time with a different *session_id*.
+        ValueError: When called a second time with a different *session_id*,
+            or with a non-None *span_processor* when a provider is already
+            configured (the processor would be silently discarded).
     """
     global _provider, _tracer, _session_id, _session_trace_id  # noqa: PLW0603 — module singleton
 
@@ -51,6 +53,12 @@ def configure_tracing(session_id: str, *, span_processor: SpanProcessor | None =
             msg = (
                 f"configure_tracing already called with session_id={_session_id!r}; "
                 f"cannot reconfigure with session_id={session_id!r}"
+            )
+            raise ValueError(msg)
+        if span_processor is not None:
+            msg = (
+                f"configure_tracing already called for session_id={_session_id!r}; "
+                f"span_processor would be silently discarded"
             )
             raise ValueError(msg)
         return True
@@ -127,16 +135,25 @@ def flush_tracing() -> None:
 
 
 def _reset_for_tests() -> None:
-    """Shut down and clear the module singleton so the next configure starts fresh."""
+    """Shut down and clear the module singleton so the next configure starts fresh.
+
+    The singleton is cleared before the shutdown runs, so a provider whose
+    shutdown fails cannot leave stale state behind for the next configure.
+
+    Raises:
+        Exception: Whatever the provider's ``shutdown`` raises, propagated after
+            the singleton has been cleared.
+    """
     global _provider, _tracer, _session_id, _session_trace_id  # noqa: PLW0603
-    if _provider is not None:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            _provider.shutdown()
+    provider = _provider
     _provider = None
     _tracer = None
     _session_id = ""
     _session_trace_id = 0
+    if provider is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            provider.shutdown()
 
 
 class _DeterministicIdGenerator:

@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,9 +27,20 @@ from tests.cli._help import help_output
 from tests.session.records._fixtures import AT, SESSION_ID, command_record, session_record
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tracing_provider() -> Iterator[None]:
+    """Reset the telemetry provider singleton between tests."""
+    yield
+    from gymrat.telemetry.provider import _reset_for_tests
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _reset_for_tests()
 
 
 def _output(result: Result) -> str:
