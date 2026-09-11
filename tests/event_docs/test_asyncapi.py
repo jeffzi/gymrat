@@ -13,6 +13,7 @@ without importing ``yaml`` at module level.
 channel and message type lists.
 """
 
+import importlib.metadata
 import json
 import sys
 from pathlib import Path
@@ -77,7 +78,7 @@ def test_render_asyncapi_when_called_does_return_valid_asyncapi_300_envelope():
 
     assert doc["asyncapi"] == "3.0.0"
     assert doc["info"]["title"] == "gymrat logs"
-    assert doc["info"]["version"] == "0.16.0"
+    assert doc["info"]["version"] == importlib.metadata.version("gymrat")
     assert isinstance(doc["info"]["description"], str)
     assert len(doc["info"]["description"]) > 0
 

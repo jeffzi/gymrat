@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-11
+
 ### Added
 
 - Append a `command` record to the session log for every command run inside a session.
@@ -32,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the action the supervisor took on a cap — in the dashboard, plain output, and supervisor
   event log — instead of always saying "interrupting".
 - Stop sending a follow-up to a session a cap is ending.
+- Reject a second span processor once tracing is configured.
 
 ## [0.16.0] - 2026-09-07
 
@@ -295,7 +298,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add structured error reporting for every gymrat failure: a clear message and, where applicable, an
   actionable hint.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/jeffzi/gymrat/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jeffzi/gymrat/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/jeffzi/gymrat/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/jeffzi/gymrat/compare/v0.13.0...v0.14.0
