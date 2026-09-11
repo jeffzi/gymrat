@@ -1,0 +1,621 @@
+{
+  "$defs": {
+    "CapEvent": {
+      "description": "Emitted when a supervision cap (wall-clock or spend) fires.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "cap": {
+          "description": "Which supervision cap fired.",
+          "enum": [
+            "wall-clock",
+            "spend-cap"
+          ],
+          "title": "Cap",
+          "type": "string"
+        },
+        "type": {
+          "const": "cap",
+          "default": "cap",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "cap"
+      ],
+      "title": "CapEvent",
+      "type": "object"
+    },
+    "CompactionEvent": {
+      "description": "Emitted when the agent SDK reports a context compaction boundary.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "type": {
+          "const": "compaction",
+          "default": "compaction",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "title": "CompactionEvent",
+      "type": "object"
+    },
+    "DirtyInfo": {
+      "description": "The dirty-worktree provenance carried on a launch event.",
+      "properties": {
+        "file_count": {
+          "description": "Number of dirty files in the worktree.",
+          "title": "File Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file_count"
+      ],
+      "title": "DirtyInfo",
+      "type": "object"
+    },
+    "FollowUpEvent": {
+      "description": "Emitted when the supervisor acts on a completed turn.\n\n``reason`` and ``text`` are ``None``-optional and omitted from the wire\nform via the global ``exclude_none=True`` in :func:`to_json_line`.",
+      "properties": {
+        "action": {
+          "description": "Supervisor action taken after the turn.",
+          "enum": [
+            "replied",
+            "waiting",
+            "ended"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "reason": {
+          "default": null,
+          "description": "Reason for the action, if applicable.",
+          "title": "Reason",
+          "type": "string"
+        },
+        "text": {
+          "default": null,
+          "description": "Follow-up text sent to the agent, if any.",
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "follow_up",
+          "default": "follow_up",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "action"
+      ],
+      "title": "FollowUpEvent",
+      "type": "object"
+    },
+    "LaunchEvent": {
+      "description": "Written by the supervisor as the log's first line: launch provenance.\n\n``max_usd``, ``model``, and ``effort`` are ``None``-optional and omitted\nfrom the wire form via the global ``exclude_none=True`` in\n:func:`to_json_line`.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "dirty": {
+          "anyOf": [
+            {
+              "const": false,
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/DirtyInfo"
+            }
+          ],
+          "description": "False when the worktree is clean, or dirty-file details.",
+          "title": "Dirty"
+        },
+        "effort": {
+          "default": null,
+          "description": "Effort level, if specified.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "title": "Effort",
+          "type": "string"
+        },
+        "head_sha": {
+          "description": "Git HEAD commit SHA at launch time.",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "kickoff_summary": {
+          "description": "One-line summary of the kickoff prompt.",
+          "title": "Kickoff Summary",
+          "type": "string"
+        },
+        "max_minutes": {
+          "description": "Wall-clock timeout in minutes.",
+          "title": "Max Minutes",
+          "type": "number"
+        },
+        "max_usd": {
+          "default": null,
+          "description": "Spend cap in US dollars, if configured.",
+          "title": "Max Usd",
+          "type": "number"
+        },
+        "model": {
+          "default": null,
+          "description": "Model identifier, if specified.",
+          "title": "Model",
+          "type": "string"
+        },
+        "runbook_path": {
+          "description": "Path to the runbook file.",
+          "title": "Runbook Path",
+          "type": "string"
+        },
+        "schema": {
+          "const": 1,
+          "description": "Supervisor log format version.",
+          "title": "Schema",
+          "type": "integer"
+        },
+        "session_id": {
+          "description": "Unique identifier for this session.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "launch",
+          "default": "launch",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "schema",
+        "session_id",
+        "head_sha",
+        "dirty",
+        "max_minutes",
+        "runbook_path",
+        "kickoff_summary"
+      ],
+      "title": "LaunchEvent",
+      "type": "object"
+    },
+    "ModelPhaseEvent": {
+      "description": "Emitted when the model transitions between processing phases within a turn.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "parent_tool_use_id": {
+          "default": null,
+          "description": "Tool use ID of the enclosing tool call, if any.",
+          "title": "Parent Tool Use Id",
+          "type": "string"
+        },
+        "phase": {
+          "description": "Model processing phase the turn entered.",
+          "enum": [
+            "thinking",
+            "responding",
+            "tool_input",
+            "turn_end"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "tool_name": {
+          "default": null,
+          "description": "Tool name when the phase is tool_input.",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "type": {
+          "const": "model_phase",
+          "default": "model_phase",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "phase"
+      ],
+      "title": "ModelPhaseEvent",
+      "type": "object"
+    },
+    "TextDeltaEvent": {
+      "description": "Emitted for each chunk of assistant text as it streams in.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "chunk": {
+          "description": "Text chunk streamed from the assistant.",
+          "title": "Chunk",
+          "type": "string"
+        },
+        "parent_tool_use_id": {
+          "default": null,
+          "description": "Tool use ID of the enclosing tool call, if any.",
+          "title": "Parent Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "text_delta",
+          "default": "text_delta",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "chunk"
+      ],
+      "title": "TextDeltaEvent",
+      "type": "object"
+    },
+    "ThinkingUpdateEvent": {
+      "description": "Emitted as the model's extended-thinking token estimate changes mid-turn.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "delta": {
+          "description": "Token count change since the last thinking update.",
+          "title": "Delta",
+          "type": "integer"
+        },
+        "estimated_tokens": {
+          "description": "Cumulative estimated thinking tokens so far.",
+          "title": "Estimated Tokens",
+          "type": "integer"
+        },
+        "parent_tool_use_id": {
+          "default": null,
+          "description": "Tool use ID of the enclosing tool call, if any.",
+          "title": "Parent Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "thinking_update",
+          "default": "thinking_update",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "estimated_tokens",
+        "delta"
+      ],
+      "title": "ThinkingUpdateEvent",
+      "type": "object"
+    },
+    "ToolEndEvent": {
+      "description": "Emitted when a tool call completes and its result is available.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "Wall-clock milliseconds the tool call took.",
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "parent_tool_use_id": {
+          "default": null,
+          "description": "Tool use ID of the enclosing tool call, if any.",
+          "title": "Parent Tool Use Id",
+          "type": "string"
+        },
+        "result": {
+          "description": "Raw result returned by the tool.",
+          "title": "Result",
+          "type": "string"
+        },
+        "result_summary": {
+          "description": "Human-readable summary of the tool result.",
+          "title": "Result Summary",
+          "type": "string"
+        },
+        "tool_name": {
+          "description": "Name of the tool that completed.",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_use_id": {
+          "description": "Unique identifier of the completed tool invocation.",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_end",
+          "default": "tool_end",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "tool_use_id",
+        "tool_name",
+        "duration_ms",
+        "result",
+        "result_summary"
+      ],
+      "title": "ToolEndEvent",
+      "type": "object"
+    },
+    "ToolProgressEvent": {
+      "description": "Emitted periodically while a long-running tool call is still in flight.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "description": "Milliseconds elapsed since the tool call started.",
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "tool_use_id": {
+          "description": "Unique identifier of the in-flight tool invocation.",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_progress",
+          "default": "tool_progress",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "tool_use_id",
+        "elapsed_ms"
+      ],
+      "title": "ToolProgressEvent",
+      "type": "object"
+    },
+    "ToolStartEvent": {
+      "description": "Emitted when the model invokes a tool.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "input": {
+          "description": "Raw input passed to the tool.",
+          "title": "Input"
+        },
+        "input_summary": {
+          "description": "Human-readable summary of the tool input.",
+          "title": "Input Summary",
+          "type": "string"
+        },
+        "parent_tool_use_id": {
+          "default": null,
+          "description": "Tool use ID of the enclosing tool call, if any.",
+          "title": "Parent Tool Use Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "description": "Name of the tool being invoked.",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_use_id": {
+          "description": "Unique identifier for this tool invocation.",
+          "title": "Tool Use Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_start",
+          "default": "tool_start",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "tool_use_id",
+        "tool_name",
+        "input",
+        "input_summary"
+      ],
+      "title": "ToolStartEvent",
+      "type": "object"
+    },
+    "TurnEndEvent": {
+      "description": "Emitted when the agent finishes a conversational turn.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "budget_exhausted": {
+          "description": "Whether the turn exhausted the remaining budget.",
+          "title": "Budget Exhausted",
+          "type": "boolean"
+        },
+        "cost_usd": {
+          "description": "Cost of this turn in US dollars.",
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "origin": {
+          "description": "Whether the turn was agent-generated or injected by the supervisor.",
+          "enum": [
+            "agent",
+            "injected"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "text": {
+          "description": "Full text the agent produced in this turn.",
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "turn_end",
+          "default": "turn_end",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "text",
+        "cost_usd",
+        "origin",
+        "budget_exhausted"
+      ],
+      "title": "TurnEndEvent",
+      "type": "object"
+    },
+    "UsageUpdateEvent": {
+      "description": "Emitted when the driver observes updated cumulative cost.\n\n``settled`` marks a usage update carried by a result message that has\nalready settled the session on its own; a spend-cap observer must not\ntreat it as a live crossing of the cap, since the session is ending\nregardless. Always written to the wire (``\"settled\": false`` on an\nunsettled update).",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the event was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "cost_usd": {
+          "description": "Cumulative session cost in US dollars.",
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "settled": {
+          "default": false,
+          "description": "Whether the session has already settled.",
+          "title": "Settled",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "usage_update",
+          "default": "usage_update",
+          "description": "Event type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "cost_usd"
+      ],
+      "title": "UsageUpdateEvent",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/jeffzi/gymrat/schemas/supervisor-log.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "discriminator": {
+    "mapping": {
+      "cap": "#/$defs/CapEvent",
+      "compaction": "#/$defs/CompactionEvent",
+      "follow_up": "#/$defs/FollowUpEvent",
+      "launch": "#/$defs/LaunchEvent",
+      "model_phase": "#/$defs/ModelPhaseEvent",
+      "text_delta": "#/$defs/TextDeltaEvent",
+      "thinking_update": "#/$defs/ThinkingUpdateEvent",
+      "tool_end": "#/$defs/ToolEndEvent",
+      "tool_progress": "#/$defs/ToolProgressEvent",
+      "tool_start": "#/$defs/ToolStartEvent",
+      "turn_end": "#/$defs/TurnEndEvent",
+      "usage_update": "#/$defs/UsageUpdateEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ThinkingUpdateEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolStartEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolProgressEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolEndEvent"
+    },
+    {
+      "$ref": "#/$defs/TextDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/UsageUpdateEvent"
+    },
+    {
+      "$ref": "#/$defs/CapEvent"
+    },
+    {
+      "$ref": "#/$defs/ModelPhaseEvent"
+    },
+    {
+      "$ref": "#/$defs/LaunchEvent"
+    },
+    {
+      "$ref": "#/$defs/TurnEndEvent"
+    },
+    {
+      "$ref": "#/$defs/FollowUpEvent"
+    },
+    {
+      "$ref": "#/$defs/CompactionEvent"
+    }
+  ],
+  "title": "gymrat supervisor log event"
+}

@@ -1,0 +1,327 @@
+asyncapi: 3.0.0
+info:
+  title: gymrat logs
+  version: 0.16.0
+  description: 'gymrat writes two append-only JSONL log files during a session: the session log (.gymrat/session.jsonl)
+    records high-level session lifecycle events, and the supervisor log (.gymrat/supervisor-<ms>.jsonl)
+    captures fine-grained agent activity. Both files are strictly append-only; each line is a self-contained
+    JSON object discriminated by a type field.'
+channels:
+  session-log:
+    address: .gymrat/session.jsonl
+    messages:
+      baseline:
+        $ref: '#/components/messages/baseline'
+      command:
+        $ref: '#/components/messages/command'
+      discard:
+        $ref: '#/components/messages/discard'
+      finalize:
+        $ref: '#/components/messages/finalize'
+      hook:
+        $ref: '#/components/messages/hook'
+      iteration:
+        $ref: '#/components/messages/iteration'
+      keep:
+        $ref: '#/components/messages/keep'
+      session:
+        $ref: '#/components/messages/session'
+      stop:
+        $ref: '#/components/messages/stop'
+  supervisor-log:
+    address: .gymrat/supervisor-<ms>.jsonl
+    messages:
+      cap:
+        $ref: '#/components/messages/cap'
+      compaction:
+        $ref: '#/components/messages/compaction'
+      follow_up:
+        $ref: '#/components/messages/follow_up'
+      launch:
+        $ref: '#/components/messages/launch'
+      model_phase:
+        $ref: '#/components/messages/model_phase'
+      text_delta:
+        $ref: '#/components/messages/text_delta'
+      thinking_update:
+        $ref: '#/components/messages/thinking_update'
+      tool_end:
+        $ref: '#/components/messages/tool_end'
+      tool_progress:
+        $ref: '#/components/messages/tool_progress'
+      tool_start:
+        $ref: '#/components/messages/tool_start'
+      turn_end:
+        $ref: '#/components/messages/turn_end'
+      usage_update:
+        $ref: '#/components/messages/usage_update'
+operations:
+  fold-session:
+    action: receive
+    channel:
+      $ref: '#/channels/session-log'
+    messages:
+    - $ref: '#/channels/session-log/messages/session'
+    - $ref: '#/channels/session-log/messages/iteration'
+    - $ref: '#/channels/session-log/messages/keep'
+    - $ref: '#/channels/session-log/messages/discard'
+    - $ref: '#/channels/session-log/messages/finalize'
+    - $ref: '#/channels/session-log/messages/stop'
+  status-history:
+    action: receive
+    channel:
+      $ref: '#/channels/session-log'
+    messages:
+    - $ref: '#/channels/session-log/messages/baseline'
+    - $ref: '#/channels/session-log/messages/iteration'
+    - $ref: '#/channels/session-log/messages/keep'
+    - $ref: '#/channels/session-log/messages/discard'
+    - $ref: '#/channels/session-log/messages/stop'
+  supervisor-guard:
+    action: receive
+    channel:
+      $ref: '#/channels/session-log'
+    messages:
+    - $ref: '#/channels/session-log/messages/session'
+    - $ref: '#/channels/session-log/messages/baseline'
+    - $ref: '#/channels/session-log/messages/iteration'
+    - $ref: '#/channels/session-log/messages/keep'
+    - $ref: '#/channels/session-log/messages/discard'
+    - $ref: '#/channels/session-log/messages/hook'
+    - $ref: '#/channels/session-log/messages/finalize'
+    - $ref: '#/channels/session-log/messages/stop'
+    description: Every record type except command. keep and discard drive the discard streak and the rest
+      count as progress.
+  dashboard:
+    action: receive
+    channel:
+      $ref: '#/channels/supervisor-log'
+    messages:
+    - $ref: '#/channels/supervisor-log/messages/launch'
+    - $ref: '#/channels/supervisor-log/messages/thinking_update'
+    - $ref: '#/channels/supervisor-log/messages/tool_start'
+    - $ref: '#/channels/supervisor-log/messages/tool_progress'
+    - $ref: '#/channels/supervisor-log/messages/tool_end'
+    - $ref: '#/channels/supervisor-log/messages/text_delta'
+    - $ref: '#/channels/supervisor-log/messages/usage_update'
+    - $ref: '#/channels/supervisor-log/messages/cap'
+    - $ref: '#/channels/supervisor-log/messages/model_phase'
+    - $ref: '#/channels/supervisor-log/messages/turn_end'
+    - $ref: '#/channels/supervisor-log/messages/follow_up'
+    - $ref: '#/channels/supervisor-log/messages/compaction'
+components:
+  messages:
+    baseline:
+      contentType: application/json
+      title: BaselineRecord
+      summary: A labelled set of baseline sample rounds.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/BaselineRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    command:
+      contentType: application/json
+      title: CommandRecord
+      summary: 'A CLI command invocation: name, arguments, exit code, and optional reason.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/CommandRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    discard:
+      contentType: application/json
+      title: DiscardRecord
+      summary: The reverted settlement of an iteration.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/DiscardRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    finalize:
+      contentType: application/json
+      title: FinalizeRecord
+      summary: 'Closes a session: the branch and squash commit its kept work collapsed onto.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/FinalizeRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    hook:
+      contentType: application/json
+      title: HookRecord
+      summary: One hook invocation around an iteration.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/HookRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    iteration:
+      contentType: application/json
+      title: IterationRecord
+      summary: 'One measured edit: raw samples, per-metric verdicts, and the outcome.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/IterationRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    keep:
+      contentType: application/json
+      title: KeepRecord
+      summary: 'The settlement of an iteration: committed, or blocked with a reason.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/KeepRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    session:
+      contentType: application/json
+      title: SessionRecord
+      summary: 'Opens a session log: identity, worktrees, and a config snapshot.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/SessionRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    stop:
+      contentType: application/json
+      title: StopRecord
+      summary: 'A user-requested stop: halts the loop without finalizing the session.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./session-log.schema.json#/$defs/StopRecord
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    cap:
+      contentType: application/json
+      title: CapEvent
+      summary: Emitted when a supervision cap (wall-clock or spend) fires.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/CapEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    compaction:
+      contentType: application/json
+      title: CompactionEvent
+      summary: Emitted when the agent SDK reports a context compaction boundary.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/CompactionEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    follow_up:
+      contentType: application/json
+      title: FollowUpEvent
+      summary: Emitted when the supervisor acts on a completed turn.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/FollowUpEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    launch:
+      contentType: application/json
+      title: LaunchEvent
+      summary: 'Written by the supervisor as the log''s first line: launch provenance.'
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/LaunchEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    model_phase:
+      contentType: application/json
+      title: ModelPhaseEvent
+      summary: Emitted when the model transitions between processing phases within a turn.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/ModelPhaseEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    text_delta:
+      contentType: application/json
+      title: TextDeltaEvent
+      summary: Emitted for each chunk of assistant text as it streams in.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/TextDeltaEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    thinking_update:
+      contentType: application/json
+      title: ThinkingUpdateEvent
+      summary: Emitted as the model's extended-thinking token estimate changes mid-turn.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/ThinkingUpdateEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    tool_end:
+      contentType: application/json
+      title: ToolEndEvent
+      summary: Emitted when a tool call completes and its result is available.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/ToolEndEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    tool_progress:
+      contentType: application/json
+      title: ToolProgressEvent
+      summary: Emitted periodically while a long-running tool call is still in flight.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/ToolProgressEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    tool_start:
+      contentType: application/json
+      title: ToolStartEvent
+      summary: Emitted when the model invokes a tool.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/ToolStartEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    turn_end:
+      contentType: application/json
+      title: TurnEndEvent
+      summary: Emitted when the agent finishes a conversational turn.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/TurnEndEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+    usage_update:
+      contentType: application/json
+      title: UsageUpdateEvent
+      summary: Emitted when the driver observes updated cumulative cost.
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: ./supervisor-log.schema.json#/$defs/UsageUpdateEvent
+      traits:
+      - $ref: '#/components/messageTraits/envelope'
+  messageTraits:
+    envelope:
+      description: Every record and event carries `type` (string discriminator) and `at` (integer nanoseconds
+        since the Unix epoch). Sequenced records also carry `seq` (positive integer).
