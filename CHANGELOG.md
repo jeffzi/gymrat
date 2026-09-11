@@ -9,305 +9,291 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Every command run inside a session now appends a `command` record to the session log.
-- A `compaction` event in the supervisor event log marks when the agent's context was compacted.
-- The `otel` optional extra (`pip install gymrat[otel]`) enables live OpenTelemetry span export for
-  every command and supervised run when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-- `gymrat export` replays a finished session's logs into the same span structure for post-hoc
+- Append a `command` record to the session log for every command run inside a session.
+- Add a `compaction` event to the supervisor event log marking when the agent's context is compacted.
+- Add the `otel` optional extra (`pip install gymrat[otel]`) to export OpenTelemetry spans for every
+  command and supervised run when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- Add `gymrat export` to replay a finished session's logs into the same span structure for post-hoc
   analysis.
-- Generated JSON Schema, AsyncAPI 3.0, and Markdown reference for the session and supervisor log
-  formats under `schemas/` and `docs/`.
+- Add `session_id` to the supervisor launch event.
+- Publish the session and supervisor log formats as JSON Schema, AsyncAPI 3.0, and a Markdown event
+  reference under `schemas/` and `docs/`.
 
 ### Changed
 
-- Session log records, supervisor event log lines, `--format json` documents, and hook payloads use
-  snake_case keys matching Python attribute names.
-- Timestamps in session log records and supervisor events are integer nanoseconds since the epoch
-  under the field `at`.
-- The session header carries a `schema` field (replacing `schemaVersion`).
-- The supervisor launch event carries the open session's `session_id`.
-- `status` now holds the repository lock briefly while it reads the session log and records itself.
-- The supervisor cap event carries an `action` field naming what the supervisor did.
+- **Breaking:** Reshape session log records, supervisor event lines, `--format json` documents, and
+  hook payloads: snake_case keys, integer-nanosecond timestamps under `at`, and the header version
+  field renamed to `schema`; delete existing logs and event files.
+- Make `status` contend for the repository lock, so it waits behind another running `gymrat` command.
 
 ### Fixed
 
-- The supervise dashboard's elapsed timers keep counting while a run is in progress.
-- A cap no longer sends a follow-up to a session it is ending.
-- The cap line in the dashboard and plain output names the action the supervisor took instead of
-  always saying "interrupting".
+- Keep the supervise dashboard's timers running for the whole run.
+- Report the action the supervisor took on a cap — in the dashboard, plain output, and supervisor
+  event log — instead of always saying "interrupting".
+- Stop sending a follow-up to a session a cap is ending.
 
 ## [0.16.0] - 2026-09-07
 
 ### Added
 
-- `follow_up` and `turn_end` lines in the supervisor event log.
-- A `guard` end reason in the closing summary (exit 1) when the follow-up ceiling, no-progress, or
-  consecutive-discard guard trips.
+- Add `follow_up` and `turn_end` lines to the supervisor event log.
+- Add a `guard` end reason to the closing summary (exit 1) when the follow-up ceiling, no-progress,
+  or consecutive-discard guard trips.
 
 ### Changed
 
-- A supervised session now continues across early turn ends instead of ending the moment the agent
-  ends a turn.
+- Continue supervised sessions across early turn ends instead of ending the moment the agent ends a
+  turn.
 
 ### Fixed
 
-- The spend cap now fires on live cost updates instead of waiting for a settled total.
-- A wall-clock or spend cap that fires while a reply was just sent now interrupts the session
-  instead of ending it outright, giving the agent its grace period to wrap up.
-- A discard streak is no longer reset by a keep that was not committed, so the consecutive-discard
+- Fire the spend cap on live cost updates instead of waiting for a settled total.
+- Interrupt the session instead of ending it outright when a wall-clock or spend cap fires while a
+  reply was just sent, giving the agent its grace period.
+- Stop resetting the discard streak on a keep that was not committed, so the consecutive-discard
   guard still trips as expected.
 
 ## [0.15.0] - 2026-09-06
 
 ### Added
 
-- `supervise` runs a doctor pre-flight before launching: any failed check renders the report to
-  stderr and exits before any lock is taken.
-- `supervise --baseline <ref>` pins a freshly opened session to the given git ref (defaults to HEAD;
-  ignored when resuming an existing session).
-- `supervise` refuses to launch when a stop condition is already met (exit 2 with the condition's
-  message) or when the wall-clock cap cannot fit one iteration; `--force` downgrades these two
-  refusals to a warning.
-- `gymrat stop -m "<report>"` records a closing report in the session log without closing the
+- Run a doctor pre-flight before `supervise` launches: any failed check renders the report to stderr
+  and exits before any lock is taken.
+- Add `supervise --baseline <ref>` to pin a freshly opened session to the given git ref (defaults to
+  HEAD; ignored when resuming an existing session).
+- Add `gymrat stop -m "<report>"` to record a closing report in the session log without closing the
   session; `stop` also accepts `--format json`.
-- `gymrat status` reports whether the session is stopped, in both the text report and a new
-  `stopped` key in its JSON output.
+- Report whether the session is stopped in `gymrat status`, in both the text report and a new
+  `stopped` key in JSON output.
 
 ### Changed
 
-- `supervise` now opens the session and records the baseline itself, and the wall-clock cap starts
-  only once the baseline is recorded.
+- Refuse to launch `supervise` when a stop condition is already met (exit 2); `--force` downgrades
+  launch refusals to a warning.
+- Open the session and record the baseline in `supervise` before the agent starts; the wall-clock
+  cap starts only once the baseline is recorded.
 
 ### Fixed
 
-- `supervise` now holds the repository lock across the full startup sequence, closing a window where
-  another process could interleave between opening the session and measuring the baseline.
+- Stop another `gymrat` command from interleaving with `supervise` startup.
 
 ## [0.14.0] - 2026-09-05
 
 ### Added
 
-- The `[supervise]` table in `gymrat.toml` pins a model and an effort level for supervised sessions.
-- `supervise --effort <level>` sets the agent's reasoning effort, overriding the configured level.
-- `iterate`, `keep`, `discard`, `measure`, `compare`, `status`, and `sync` print a time-left line
-  when a supervised session has a wall-clock cap active.
-- `iterate`, `keep`, `discard`, `measure`, `compare`, and `status` add a top-level `budget` object
-  to their JSON output, with the cap in minutes and the whole seconds remaining.
-- Baseline records now carry the measurement's elapsed duration; iteration records carry the whole
-  iteration's elapsed duration.
-- Iteration records carry a fingerprint of the experiment worktree at measurement time.
+- Add the `[supervise]` table in `gymrat.toml` to pin a model and effort level for supervised
+  sessions.
+- Add `supervise --effort <level>` to set the agent's reasoning effort, overriding the configured
+  level.
+- Print a time-left line from `iterate`, `keep`, `discard`, `measure`, `compare`, `status`, and
+  `sync` when a supervised session has a wall-clock cap active.
+- Add a top-level `budget` object to the JSON output of `iterate`, `keep`, `discard`, `measure`,
+  `compare`, and `status`.
+- Add elapsed duration to baseline records (measurement duration) and iteration records (whole
+  iteration duration).
+- Add a fingerprint of the experiment worktree at measurement time to iteration records.
 
 ### Changed
 
-- The agent's shell-command ceiling now follows the run's wall-clock cap, so a long measurement
-  runs to completion.
-- `supervise` refuses to launch when the wall-clock cap cannot fit one iteration, unless `--force`
-  is passed.
-- `iterate` refuses before any hook or bench when the wall-clock cap's remaining time is smaller
-  than the estimated iteration duration.
+- Raise the agent's shell-command ceiling to the run's wall-clock cap, so a long measurement runs to
+  completion.
+- Refuse to launch `supervise` when the wall-clock cap cannot fit one iteration, unless `--force` is
+  passed.
+- Refuse `iterate` before any hook or bench when the remaining time is smaller than the estimated
+  iteration duration.
 
 ### Fixed
 
-- The wall-clock cap now fires at the intended clock time even when the machine sleeps mid-run.
-- Display paths in supervised-session output now use forward slashes on every platform.
+- Fire the wall-clock cap at the intended clock time even when the machine sleeps mid-run.
 
 ## [0.13.0] - 2026-09-03
 
+### Added
+
+- Add a `measured` field to `gymrat discard --format json`.
+
 ### Changed
 
-- `gymrat discard --format json` adds a `measured` field and reports `seq` as `null` for an
-  unmeasured revert.
+- Report `seq` as `null` in `gymrat discard --format json` for an unmeasured revert.
+- Refuse to launch `supervise` when the experiment worktree has moved past the last kept commit.
 
 ### Fixed
 
-- `gymrat discard` now reverts unmeasured edits in the experiment worktree instead of refusing.
-- Supervised sessions now end when the agent finishes — or would have stopped to ask a question —
-  instead of streaming idle until the wall-clock cap fires, and the closing summary shows the
-  agent's final message.
-- `supervise` refuses to launch when the experiment worktree has moved past the last kept commit,
-  whether through an unsettled iteration, a blocked keep, or unmeasured edits, committed or not,
-  regardless of `--allow-dirty`.
-- The spend cap no longer fires on a supervised session that is already ending on its own.
-- A `gymrat` command blocked by the repository lock now reports the holder's process, command, and
-  start time reliably instead of incomplete or stale details.
+- Revert unmeasured edits in `gymrat discard` instead of refusing.
+- End supervised sessions when the agent finishes — or would have stopped to ask a question —
+  instead of streaming idle until the wall-clock cap fires, and show the agent's final message in
+  the closing summary.
+- Stop firing the spend cap on a supervised session that is already ending on its own.
+- Report the lock holder's process, command, and start time reliably when a `gymrat` command is
+  blocked by the repository lock.
 
 ## [0.12.0] - 2026-09-02
 
 ### Added
 
-- Windows support.
-- `gymrat sync` copies uncommitted main-tree changes into the experiment worktree, refusing when
-  that worktree has conflicting uncommitted changes.
-- `iterate`, `keep`, `discard`, and `status` accept `--format json`, with the same stable,
+- Add Windows support.
+- Add `gymrat sync` to copy uncommitted main-tree changes into the experiment worktree, refusing
+  when that worktree has conflicting uncommitted changes.
+- Add `--format json` to `iterate`, `keep`, `discard`, and `status`, with the same stable,
   backward-compatible schema as `compare` and `measure`.
-- A `--color` flag complements `--no-color`: it forces color output on, overriding `NO_COLOR` and
-  non-TTY detection.
+- Add a `--color` flag that forces color output on, overriding `NO_COLOR` and non-TTY detection.
 
 ### Changed
 
-- The distribution and import package are now both named `gymrat`, replacing `gymrat-py` /
-  `gymrat_py`: install with `pip install gymrat` (or `uv tool install gymrat`) and
-  `import gymrat`. The `gymrat` command name is unchanged.
-- The configuration file is now `gymrat.toml`, written in TOML with snake_case keys, replacing the
-  former `gymrat.json`. Keys that were camelCase are now snake_case: `timeout_seconds`,
-  `unstable_noise_pct`, `stop.target_value`, and `stop.max_iterations`. `gymrat init` scaffolds the
-  new file, and existing configs must be converted to TOML and re-keyed.
-- `gymrat init` is now non-interactive, driven by `--bench`, `--no-runbook`, and `--no-skill`.
-- `gymrat doctor` validates the bench configuration without running a benchmark.
-- Significance verdicts now use an exact sign-flip permutation test instead of Wilcoxon
+- **Breaking:** Rename the distribution and import package to `gymrat`, replacing `gymrat-py` /
+  `gymrat_py`; install with `pip install gymrat` and `import gymrat`.
+- **Breaking:** Replace `gymrat.json` with `gymrat.toml` using snake_case keys; convert existing
+  configs to TOML and re-key them.
+- Make `gymrat init` non-interactive, driven by `--bench`, `--no-runbook`, and `--no-skill`.
+- Validate the bench configuration in `gymrat doctor` without running a benchmark.
+- Switch significance verdicts to an exact sign-flip permutation test instead of Wilcoxon
   signed-rank, so results near the boundary may differ from earlier releases.
-- A supervised session runs fewer full measurements per loop: edits are probed with
-  `gymrat measure` and `gymrat iterate` runs only before `keep`.
-- Metric names now separate the kind suffix with `#` instead of `/` (`bench/time` becomes
-  `bench#time`); `/` continues to separate path segments and drives report grouping.
-- Verdicts with too few paired samples for the permutation test now display as inconclusive.
+- Reduce full measurements per supervised loop: probe edits with `gymrat measure` and run
+  `gymrat iterate` only before `keep`.
+- **Breaking:** Separate metric kind suffixes with `#` instead of `/`.
+- Display verdicts with too few paired samples for the permutation test as inconclusive.
+- Refuse `finalize` when the experiment worktree has moved past the last kept commit, hinting to
+  keep or discard first.
 
 ### Fixed
 
-- Band verdicts now require pairs that actually differ, so a run dominated by tied samples can no
-  longer produce a false signal, and a metric whose median is zero while its samples spread is
-  judged `unstable` instead of measured against a percentage band.
-- `discard` after a blocked keep now reports the iteration that was actually reverted.
-- `finalize` refuses when the experiment worktree has moved past the last kept commit, hinting to
-  keep or discard first.
-- Metric names containing spaces, parentheses, or quotes now reach the bench command intact when
+- Judge metrics dominated by tied samples or with a zero median as `unstable` instead of producing
+  a false band verdict.
+- Report the actually reverted iteration when `discard` follows a blocked keep.
+- Pass metric names containing spaces, parentheses, or quotes intact to the bench command when
   substituted into a `filter` template.
-- `--debug` takes effect whether written before or after the subcommand.
-- A closed output pipe ends the run quietly instead of printing a bug-report footer.
-- The mitata adapter no longer fails to read its report when the bench command prints extra
-  output around the JSON, and warns about entries it cannot use instead of skipping them silently.
-- A session log whose final line was torn by a crash mid-write is repaired on the next run, and a
-  record reported as written survives a crash immediately after.
-- A `gymrat.toml` that is not valid UTF-8 is reported as unreadable instead of crashing, and an
-  oversized integer in a `GYMRAT_*` environment variable is reported as invalid instead of
-  crashing.
-- A lock file left behind by another user in a shared temporary directory now reports a clear remedy
+- Accept `--debug` whether written before or after the subcommand.
+- End the run quietly on a closed output pipe instead of printing a bug-report footer.
+- Read the mitata adapter's report correctly when the bench command prints extra output around the
+  JSON, and warn about unusable entries instead of skipping them silently.
+- Keep the session log readable and complete after a crash mid-write.
+- Report a `gymrat.toml` that is not valid UTF-8 as unreadable and an oversized integer in a
+  `GYMRAT_*` environment variable as invalid, instead of crashing.
+- Report a clear remedy for a lock file left behind by another user in a shared temporary directory
   instead of failing with a raw permission error.
-- `--no-color` no longer leaks into the environment of the benchmark commands.
-- A supervised session handles oversized benchmark output and unresponsive processes at teardown
-  without crashing or hanging.
+- Stop leaking `--no-color` into the environment of benchmark commands.
+- Handle oversized benchmark output and unresponsive processes at teardown without crashing or
+  hanging.
 
 ### Removed
 
-- The interactive wizard prompts in `gymrat init` and the `--adapter`, `--checks`, `--stop-target`,
-  `--stop-max-iterations`, `--primary`, `--runbook PATH`, and `--yes` flags.
-- `gymrat doctor --no-bench`, along with the smoke benchmark run it used to skip.
+- Remove the interactive wizard prompts in `gymrat init` and the `--adapter`, `--checks`,
+  `--stop-target`, `--stop-max-iterations`, `--primary`, `--runbook PATH`, and `--yes` flags.
+- Remove `gymrat doctor --no-bench` and the smoke benchmark run it used to skip.
 
 ## [0.11.0] - 2026-08-25
 
 ### Added
 
-- `gymrat supervise [prompt]` runs an agent that drives the optimization loop, bounded by a
+- Add `gymrat supervise [prompt]` to run an agent that drives the optimization loop, bounded by a
   wall-clock cap (`--max-minutes`) and an optional spend cap (`--max-usd`).
-- `gymrat init` scaffolds a project with `gymrat.json`, a runbook stub, and the skill file.
-- `gymrat doctor` checks the project setup and reports grouped findings, exiting non-zero on
+- Add `gymrat init` to scaffold a project with `gymrat.json`, a runbook stub, and the skill file.
+- Add `gymrat doctor` to check the project setup and report grouped findings, exiting non-zero on
   failure.
-- The gymrat skill file ships inside the package.
+- Ship the gymrat skill file inside the package.
 
 ## [0.10.0] - 2026-08-25
 
 ### Added
 
-- `gymrat start [ref]` opens or resumes an optimization session, pinning the baseline at a ref
+- Add `gymrat start [ref]` to open or resume an optimization session, pinning the baseline at a ref
   (default `HEAD`).
-- `gymrat iterate` measures the experiment worktree against the baseline and reports the verdict.
-- `gymrat keep` commits the measured edit and advances the baseline, refusing when checks fail or
-  a gating regression stands.
-- `gymrat discard` reverts the experiment worktree to its last commit.
-- `gymrat finalize` squashes the session's kept commits into one commit on the baseline and closes
-  the session.
-- `gymrat status` prints the session history.
-- A noisy gating regression triggers a confirmation rerun before the verdict stands.
-- Lifecycle hooks: `before` and `after` commands run around each measurement.
+- Add `gymrat iterate` to measure the experiment worktree against the baseline and report the
+  verdict.
+- Add `gymrat keep` to commit the measured edit and advance the baseline, refusing when checks fail
+  or a gating regression stands.
+- Add `gymrat discard` to revert the experiment worktree to its last commit.
+- Add `gymrat finalize` to squash the session's kept commits into one commit on the baseline and
+  close the session.
+- Add `gymrat status` to print the session history.
+- Trigger a confirmation rerun for a noisy gating regression before the verdict stands.
+- Add lifecycle hooks: `before` and `after` commands run around each measurement.
 
 ## [0.9.0] - 2026-08-24
 
 ### Added
 
-- A `--record` (`-r`) flag for `gymrat measure` that appends the run to the open session log as a
-  labeled baseline, refusing before it benchmarks when no open session exists.
+- Add a `--record` (`-r`) flag to `gymrat measure` to append the run to the open session log as a
+  labeled baseline, refusing when no open session exists.
 
 ## [0.8.0] - 2026-08-24
 
 ### Added
 
-- `gymrat compare` compares a baseline revision against one or more candidates and reports as
+- Add `gymrat compare` to compare a baseline revision against one or more candidates and report as
   text or JSON.
-- `gymrat measure` measures a single revision or directory on its own.
-- A `--fail-on` gate for `compare` that exits non-zero on a gating regression or a geometric-mean
-  threshold.
-- A repository lock prevents two gymrat runs from colliding.
-- Canceling a run stops the benchmark, removes worktrees the run created, and exits with
-  `128 + N`.
+- Add `gymrat measure` to measure a single revision or directory on its own.
+- Add a `--fail-on` gate to `compare` that exits non-zero on a gating regression or a
+  geometric-mean threshold.
+- Add a repository lock to prevent two gymrat runs from colliding.
+- Stop the benchmark, remove worktrees, and exit with `128 + N` on cancellation.
 
 ## [0.7.0] - 2026-08-23
 
 ### Added
 
-- `compare` reports a metric-by-metric table with verdicts and a geometric-mean row per kind.
-- `measure` reports each metric's median and spread, grouped by kind.
-- Reports include a verdict summary and a highlights block calling out the metrics that moved
-  most.
-- `--fail-on` reports the kind and threshold when tripped, and leftover worktrees appear in a
+- Report a metric-by-metric table with verdicts and a geometric-mean row per kind in `compare`.
+- Report each metric's median and spread, grouped by kind, in `measure`.
+- Include a verdict summary and a highlights block calling out the metrics that moved most.
+- Report the kind and threshold from `--fail-on` when tripped, and show leftover worktrees in a
   closing footer.
-- `compare` and `measure` support `--format json` for machine-readable output.
-- Reports honor `FORCE_COLOR` and `NO_COLOR`.
-- Each loop iteration reports its verdict and outcome.
+- Add `--format json` to `compare` and `measure` for machine-readable output.
+- Honor `FORCE_COLOR` and `NO_COLOR` in reports.
+- Report each loop iteration's verdict and outcome.
 
 ## [0.6.0] - 2026-08-23
 
 ### Added
 
-- `gymrat` reads and validates a `gymrat.json` configuration file, reporting the offending key
-  when a value is wrong.
-- Run configuration resolves from command-line values, `GYMRAT_*` environment variables, the
-  config file, and built-in defaults, in that order.
-- Per-metric metadata resolves from adapter defaults and per-metric and per-kind overrides.
-- Invalid configuration reports all problems at once instead of stopping at the first.
+- Read and validate a `gymrat.json` configuration file, reporting the offending key when a value is
+  wrong.
+- Resolve run configuration from command-line values, `GYMRAT_*` environment variables, the config
+  file, and built-in defaults, in that order.
+- Resolve per-metric metadata from adapter defaults and per-metric and per-kind overrides.
+- Report all configuration problems at once instead of stopping at the first.
 
 ## [0.5.0] - 2026-08-23
 
 ### Added
 
-- Per-metric verdicts judge each metric improved, regressed, or unchanged, reporting noisy metrics
-  as unstable.
-- Aggregates roll up verdicts per kind, per benchmark group, and over gating metrics, excluding
-  metrics that cannot be judged.
-- A warning appears when a metric is present in only some rounds, reporting how many were dropped.
+- Judge each metric improved, regressed, or unchanged, reporting noisy metrics as unstable.
+- Roll up verdicts per kind, per benchmark group, and over gating metrics, excluding metrics that
+  cannot be judged.
+- Warn when a metric is present in only some rounds, reporting how many were dropped.
 
 ### Fixed
 
-- Parsing a `METRIC` line with an out-of-range radix value (e.g. a very long hex literal) no longer
-  crashes; the value is skipped with a warning like any other unparseable one.
+- Skip a `METRIC` line with an out-of-range radix value with a warning instead of crashing.
 
 ## [0.4.0] - 2026-08-23
 
 ### Added
 
-- Benchmark sampling collects repeated measurements for one or more targets, running an optional
-  setup step before the timed runs.
-- Benchmark commands run under an optional timeout and stop cleanly when canceled or timed out.
-- Interrupting gymrat with Ctrl-C or a signal runs pending cleanup before exiting.
+- Collect repeated benchmark measurements for one or more targets, running an optional setup step
+  before the timed runs.
+- Run benchmark commands under an optional timeout and stop cleanly on cancellation or timeout.
+- Run pending cleanup before exiting on Ctrl-C or a signal.
 
 ## [0.3.0] - 2026-08-23
 
 ### Added
 
-- Two built-in benchmark-output adapters — `metric-lines` and `mitata` — parse a bench script's
-  output into metrics.
+- Add two built-in benchmark-output adapters — `metric-lines` and `mitata` — to parse a bench
+  script's output into metrics.
 
 ## [0.2.0] - 2026-08-23
 
 ### Added
 
-- Significance testing and summary statistics for paired benchmark samples.
+- Add significance testing and summary statistics for paired benchmark samples.
 
 ## [0.1.0] - 2026-08-22
 
 ### Added
 
-- Structured error reporting for every gymrat failure: the command prints a clear message and, where
-  one applies, an actionable hint for what to do next.
+- Add structured error reporting for every gymrat failure: a clear message and, where applicable, an
+  actionable hint.
 
 [Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.16.0...HEAD
 [0.16.0]: https://github.com/jeffzi/gymrat/compare/v0.15.0...v0.16.0
