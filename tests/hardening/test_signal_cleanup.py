@@ -110,9 +110,14 @@ def _wait_for_worktree_count(
     list_worktree_dirs: Callable[..., list[str]], repo: str, count: int, timeout_s: float = 30.0
 ) -> None:
     deadline = time.monotonic() + timeout_s
-    while len(list_worktree_dirs(repo, include_main=False)) < count:
-        if time.monotonic() > deadline:
+    while True:
+        try:
             got = list_worktree_dirs(repo, include_main=False)
+        except subprocess.CalledProcessError:
+            got: list[str] = []
+        if len(got) >= count:
+            return
+        if time.monotonic() > deadline:
             message = f"expected >= {count} worktrees, saw {got}"
             raise AssertionError(message)
         time.sleep(0.05)
