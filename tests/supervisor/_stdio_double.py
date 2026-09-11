@@ -75,7 +75,7 @@ def _write_stderr(config: dict[str, object]) -> None:
 
 
 def _exit_code(config: dict[str, object]) -> int:
-    return int(cast("int", config.get("exit_code", 0)))
+    return cast("int", config.get("exit_code", 0))
 
 
 def _base_report(start_line: str) -> dict[str, object]:

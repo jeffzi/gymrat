@@ -203,11 +203,6 @@ def test_acquire_lock_when_released_then_reacquired_does_succeed():
 def test_acquire_lock_when_transient_contention_does_succeed_after_retry(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A lock held for microseconds releases before the next retry.
-
-    An is_held probe holds the OS lock only while probing, so acquire_lock
-    succeeds instead of raising.
-    """
     lock_path = fresh_lock_path()
     monkeypatch.setattr("gymrat.session.lock.LOCK_ACQUIRE_POLL_MS", 1)
     monkeypatch.setattr("gymrat.session.lock.LOCK_ACQUIRE_RETRIES", 3)
@@ -238,10 +233,6 @@ def test_acquire_lock_when_transient_contention_does_succeed_after_retry(
 
 
 def test_acquire_lock_when_previous_holder_released_does_succeed():
-    """Simulates kernel cleanup after crash.
-
-    Stale holder JSON remains on disk but the advisory lock is free.
-    """
     lock_path = fresh_lock_path()
     holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
     blocker = hold_lock(lock_path, holder=holder)
@@ -371,11 +362,6 @@ def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable():
 def test_acquire_lock_when_publish_lock_times_out_does_still_acquire(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Simulates a stalled publisher via a publish-lock ``Timeout``.
-
-    The main lock is free, so ``acquire_lock`` should fall through to a
-    successful acquisition and still publish the holder record.
-    """
     lock_path = fresh_lock_path()
     publish_path = _publish_lock_file(lock_path)
     time_out_publish_lock(monkeypatch, publish_path)
@@ -390,11 +376,6 @@ def test_acquire_lock_when_publish_lock_times_out_does_still_acquire(
 def test_acquire_lock_when_publish_lock_times_out_and_contended_does_still_report_holder(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Loser reports diagnostics even when the publish lock is unobtainable.
-
-    A stalled publisher must not prevent the contention error from including
-    best-effort diagnostics from whatever the holder file contains.
-    """
     lock_path = fresh_lock_path()
     publish_path = _publish_lock_file(lock_path)
     holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
@@ -451,7 +432,6 @@ def test_is_held_when_lock_never_existed_does_return_false():
 
 
 def test_is_held_when_called_from_holding_process_does_return_true():
-    """A probe from the same process that holds the lock still reports held."""
     lock_path = fresh_lock_path()
     release = acquire_lock(lock_path, "compare")
 
@@ -464,12 +444,6 @@ def test_is_held_when_called_from_holding_process_does_return_true():
 
 
 def test_is_held_when_probed_does_preserve_lock_file():
-    """The probe must not unlink the OS lock file, even on Windows backends.
-
-    The ``hold_lock`` helper builds its ``FileLock`` without
-    ``preserve_lock_file``, so this test constructs its own lock to control
-    the file's lifetime.
-    """
     lock_path = fresh_lock_path()
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     os_lock_path = _os_lock_file(lock_path)
@@ -485,7 +459,6 @@ def test_is_held_when_probed_does_preserve_lock_file():
 
 
 def test_is_held_when_probed_does_not_read_or_write_holder_record():
-    """The probe touches the OS lock file only, never the holder JSON."""
     lock_path = fresh_lock_path()
     holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
     blocker = hold_lock(lock_path, holder=holder)

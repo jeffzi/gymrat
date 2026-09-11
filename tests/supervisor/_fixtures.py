@@ -11,13 +11,13 @@ overridable defaults; ``read_log_lines`` parses a JSONL log into dicts.
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NamedTuple, override
 
 from gymrat.config import BenchlessConfig, Effort
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (
@@ -26,7 +26,7 @@ from gymrat.supervisor import (
     supervise,
 )
 from gymrat.supervisor.context import SupervisedSession
-from gymrat.supervisor.driver import SessionPrompt
+from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
     CapEvent,
     DirtyInfo,
@@ -62,7 +62,7 @@ def _cap_events(events: list[SessionEvent]) -> list[CapEvent]:
 
 def make_launch(
     *,
-    timestamp: int = 1000,
+    at: int = 1_000_000_000_000,
     head_sha: str = "abc123def",
     dirty: Literal[False] | DirtyInfo = False,
     max_minutes: float = 5,
@@ -71,10 +71,12 @@ def make_launch(
     effort: Effort | None = None,
     runbook_path: str = "/path/to/runbook.md",
     kickoff_summary: str = "test kickoff",
+    session_id: str = "20260813-125044-34ec",
 ) -> LaunchEvent:
     """Build a ``LaunchEvent`` from shared defaults, overridden per keyword."""
     return LaunchEvent(
-        timestamp=timestamp,
+        at=at,
+        schema_version=1,
         head_sha=head_sha,
         dirty=dirty,
         max_minutes=max_minutes,
@@ -83,6 +85,7 @@ def make_launch(
         effort=effort,
         runbook_path=runbook_path,
         kickoff_summary=kickoff_summary,
+        session_id=session_id,
     )
 
 
@@ -101,6 +104,7 @@ def make_prompt(
     effort: Effort | None = None,
     command_timeout_ms: int | None = None,
     max_budget_usd: float | None = None,
+    traceparent: str | None = None,
 ) -> SessionPrompt:
     """Build a ``SessionPrompt`` from shared defaults, overridden per keyword."""
     return SessionPrompt(
@@ -111,6 +115,7 @@ def make_prompt(
         effort=effort,
         command_timeout_ms=command_timeout_ms,
         max_budget_usd=max_budget_usd,
+        traceparent=traceparent,
     )
 
 
@@ -121,6 +126,71 @@ def noop_observer() -> SessionObserver:
         return None
 
     return _observer
+
+
+# ---------------------------------------------------------------------------
+# driver double: interrupt emits TurnEndEvent
+# ---------------------------------------------------------------------------
+
+
+class _InterruptEmitsEndSession:
+    """A session whose ``interrupt`` also emits a ``TurnEndEvent`` to the observer.
+
+    Models a driver that, on ``interrupt()``, pushes one more agent
+    ``TurnEndEvent`` before the session settles — exercising the cap guard in
+    ``_handle_turn_end``.
+    """
+
+    def __init__(self, inner: DriverSession, observer: SessionObserver) -> None:
+        self._inner = inner
+        self._observer = observer
+
+    @property
+    def outcome(self) -> Awaitable[SessionOutcome]:
+        """Forward the inner session's outcome."""
+        return self._inner.outcome
+
+    async def interrupt(self) -> None:
+        await self._inner.interrupt()
+        self._observer(
+            TurnEndEvent(
+                at=now_ns(),
+                text="",
+                cost_usd=0.0,
+                origin="agent",
+                budget_exhausted=False,
+            )
+        )
+
+    async def send(self, text: str) -> None:
+        await self._inner.send(text)
+
+    async def end(self) -> None:
+        await self._inner.end()
+
+
+class InterruptEmitsEndDriver:
+    """A driver wrapper whose sessions emit a ``TurnEndEvent`` on ``interrupt``.
+
+    Wraps a driver (typically from ``create_mock_driver``) and intercepts the
+    observer from ``start``.  Each session's ``interrupt`` delegates to the
+    inner session and then fires a ``TurnEndEvent(origin="agent")`` into the
+    observer, simulating a driver that delivers a final turn boundary on
+    interrupt.
+    """
+
+    def __init__(self, inner: Driver) -> None:
+        self._inner = inner
+
+    def start(
+        self,
+        prompt: SessionPrompt,
+        observer: SessionObserver,
+        abort: asyncio.Event | None = None,
+    ) -> DriverSession:
+        """Start a session that emits a ``TurnEndEvent`` on ``interrupt``."""
+        inner_session = self._inner.start(prompt, observer, abort)
+        return _InterruptEmitsEndSession(inner_session, observer)
 
 
 def result_message(
@@ -145,9 +215,14 @@ def result_message(
     )
 
 
-def system_message(*, subtype: str = "init") -> SimpleNamespace:
+def system_message(
+    *, subtype: str = "init", data: dict[str, object] | None = None
+) -> SimpleNamespace:
     """Build a system message (has ``subtype`` but lacks ``num_turns``)."""
-    return SimpleNamespace(subtype=subtype)
+    ns = SimpleNamespace(subtype=subtype)
+    if data is not None:
+        ns.data = data
+    return ns
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +348,7 @@ def make_context(
 
 
 def follow_up_events(events: list[SessionEvent]) -> list[FollowUpEvent]:
+    """Return every ``FollowUpEvent`` in ``events``."""
     return [e for e in events if isinstance(e, FollowUpEvent)]
 
 
@@ -313,7 +389,7 @@ def emit_turn_end(
     """Build an ``EmitStep`` for a ``TurnEndEvent`` with the fields every caller shares."""
     return EmitStep(
         emit=TurnEndEvent(
-            timestamp=now_ms(),
+            at=now_ns(),
             text="",
             cost_usd=cost_usd,
             origin=origin,

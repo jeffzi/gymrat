@@ -14,7 +14,7 @@ from gymrat.session import (
     IterationRecord,
 )
 from gymrat.session import MetricVerdict as RecordMetricVerdict
-from gymrat.session.clock import now_iso
+from gymrat.session.clock import now_ns
 
 if TYPE_CHECKING:
     from gymrat.loop.iterate.confirm import Confirmation
@@ -22,7 +22,15 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class IterationJudgment:
-    """The iteration's judgment: what happened, what drove it, and whether a target was met."""
+    """The outcome, primary figure, and optional confirmation rerun to report.
+
+    Attributes:
+        outcome: The loop outcome derived from the comparison.
+        primary: The primary figure that drives the verdict display.
+        confirmation: What the confirmation rerun found, or ``None`` when no
+            rerun was needed.
+        reached_target: Whether the run met its declared target.
+    """
 
     outcome: LoopOutcome
     primary: LoopPrimary
@@ -37,9 +45,17 @@ def recorded_verdicts(
 ) -> dict[str, RecordMetricVerdict]:
     """The per-metric verdicts as the log keeps them, flattened out of the method shapes.
 
-    A key whose value is absent is left out — ``p`` off a non-permutation verdict,
-    ``noise_pct`` off an exact one — so a record handed to a caller matches the one
-    read back off the log.
+    Args:
+        verdicts: The per-metric verdicts to flatten, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
+        confirmation: What the confirmation rerun found, or ``None`` when no
+            rerun was needed.
+
+    Returns:
+        The per-metric verdicts keyed by metric name, each carrying only the
+        fields the log serializes: ``p`` is omitted for non-permutation
+        verdicts, ``noise_pct`` for exact ones, so a record handed to a
+        caller matches the one read back off the log.
     """
     recorded: dict[str, RecordMetricVerdict] = {}
     for name, verdict in verdicts.items():
@@ -64,7 +80,23 @@ def build_iteration_record(
     duration_ms: int | None = None,
     measured_tree: str | None = None,
 ) -> IterationRecord:
-    """An empty ``absent`` tuple collapses to ``None`` so the log never carries ``[]``."""
+    """Assemble the session-log record for one measured iteration.
+
+    An empty ``absent`` tuple collapses to ``None`` so the log never
+    carries ``[]``.
+
+    Args:
+        judged: The bench run outputs and comparison result.
+        seq: The 1-based iteration sequence number.
+        judgment: The outcome, primary, and optional confirmation.
+        duration_ms: Wall-clock milliseconds the iteration took, or ``None``
+            when timing is unavailable.
+        measured_tree: The experiment worktree fingerprint at measurement time,
+            or ``None`` when fingerprinting failed.
+
+    Returns:
+        The iteration record ready to append to the session log.
+    """
     confirmation = judgment.confirmation
     confirm: Confirm | None = None
     if confirmation is not None:
@@ -79,7 +111,7 @@ def build_iteration_record(
     return IterationRecord(
         type="iteration",
         seq=seq,
-        at=now_iso(),
+        at=now_ns(),
         samples=judged.samples,
         metrics=recorded_verdicts(judged.run.verdicts, judged.run.metric_meta, confirmation),
         primary=IterationPrimary(

@@ -67,6 +67,9 @@ def _defaults_as_benchless() -> BenchlessConfig:
     Used for the workflow section when the config failed to settle: that path
     collapses to a skip check before any config field is read, so the missing
     loop keys never matter.
+
+    Returns:
+        A :class:`BenchlessConfig` populated from :data:`CONFIG_DEFAULTS`.
     """
     return BenchlessConfig(
         adapter=CONFIG_DEFAULTS.adapter,
@@ -89,6 +92,14 @@ def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
     """Coordinate the git probe, config inspection, and section builders into a single report.
 
     Falls back to config defaults for the workflow section when config inspection fails.
+
+    Args:
+        flags: The command-line overrides to apply during config inspection.
+        cwd: The working directory to probe git and config from.
+
+    Returns:
+        The assembled doctor report with environment, config, workflow, and bench
+        sections.
     """
     git_env = detect_git_environment(cwd)
     base_dir = git_env.repo_root_dir or cwd

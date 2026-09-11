@@ -11,16 +11,19 @@ from gymrat.cli.style import CLI_THEME
 def stderr_console(*, color_flag: bool | None = None) -> Console:
     """Build a ``Console`` that writes to stderr with resolved color and width.
 
-    ``color_flag`` is the Typer ``--color`` / ``--no-color`` option value:
-    ``True`` forces color, ``False`` vetoes color, and ``None``
-    (the default) defers to auto-detection (env vars and TTY).
-
     When colorless the console uses ``color_system=None`` rather than
     ``no_color=True`` so that **all** SGR is suppressed — including bold and
     dim — matching the stdout report surface.
 
     Rich's own ``Console`` already reads ``COLUMNS`` through a guarded path
     that ignores non-numeric values, so we do not reimplement that lookup.
+
+    Args:
+        color_flag: The Typer ``--color`` / ``--no-color`` option value.
+
+    Returns:
+        A stderr ``Console`` configured with the resolved color system and
+        CLI theme.
     """
     colored = resolve_stream_color(color_flag, sys.stderr)
 

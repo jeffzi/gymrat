@@ -44,7 +44,14 @@ class Observations:
 
     @classmethod
     def from_rounds(cls, samples: Sequence[Repeat]) -> Self:
-        """Build a container keyed by 0-based round index, one repeat per round, order preserved."""
+        """Build a container keyed by 0-based round index, one repeat per round, order preserved.
+
+        Args:
+            samples: One repeat per round, in round order.
+
+        Returns:
+            A container keyed by 0-based round index, one repeat per round.
+        """
         return cls(by_key={index: (sample,) for index, sample in enumerate(samples)})
 
 
@@ -53,6 +60,9 @@ def _require_single_repeat(observations: Observations) -> None:
 
     A multi-repeat container is constructible, but pairing over one is not defined — surface it
     rather than silently taking the first repeat.
+
+    Raises:
+        ValueError: When any key carries more than one repeat.
     """
     for key, repeats in observations.by_key.items():
         if len(repeats) != 1:
@@ -80,6 +90,17 @@ def pair_metric(
     drop.
 
     Both containers must be single-repeat; a multi-repeat container raises ``ValueError``.
+
+    Args:
+        left: The baseline observation container.
+        right: The candidate observation container.
+        metric: The metric name to pair across both containers.
+
+    Returns:
+        The paired samples and drop count for the requested metric.
+
+    Raises:
+        ValueError: If either container carries more than one repeat for a shared key.
     """
     _require_single_repeat(left)
     _require_single_repeat(right)

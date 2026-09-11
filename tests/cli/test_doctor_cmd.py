@@ -60,6 +60,7 @@ def _patch_doctor(
 
 @pytest.fixture(autouse=True)
 def _preserve_color_env(monkeypatch: pytest.MonkeyPatch):
+    """Restore NO_COLOR and FORCE_COLOR to their pre-test values after each test."""
     for name in ("NO_COLOR", "FORCE_COLOR"):
         value = os.environ.get(name)
         if value is None:

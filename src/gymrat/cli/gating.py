@@ -31,7 +31,15 @@ def _gated_geomeans_of(candidate: CandidateComparison) -> list[GeomeanResult]:
 
 
 def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: ComparisonResult) -> bool:
-    """Return ``True`` when any condition trips — meaning the process should exit non-zero."""
+    """Return ``True`` when any condition trips — meaning the process should exit non-zero.
+
+    Args:
+        conditions: The fail-on conditions to evaluate (OR-ed).
+        result: The comparison result to check the conditions against.
+
+    Returns:
+        ``True`` when any condition trips.
+    """
     if not conditions:
         return False
 
@@ -65,6 +73,10 @@ def warn_empty_geomean_gates(
 
     Runs only when a geomean condition is present; such a candidate never trips
     the gate, so the warning is how the user learns the gate was inert for it.
+
+    Args:
+        conditions: The fail-on conditions in effect.
+        result: The comparison result to inspect for inert gates.
     """
     if not any(isinstance(condition, GeomeanFailOn) for condition in conditions):
         return

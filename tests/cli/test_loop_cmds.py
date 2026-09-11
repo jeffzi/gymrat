@@ -42,6 +42,7 @@ from tests.cli._budget import install_budget
 from tests.cli._help import help_output
 from tests.cli._loop_cmds import (
     always_tty,
+    last_command_record,
     make_discard_repo,
     make_stop_repo,
     never_tty,
@@ -103,9 +104,14 @@ def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     lock_names: list[str] = []
     original_with_repo_lock = loop_cmds.with_repo_lock
 
-    async def recording_lock[T](command: str, body: Callable[[], Awaitable[T]]) -> T:
+    async def recording_lock[T](
+        command: str,
+        body: Callable[..., Awaitable[T]],
+        *,
+        args: dict[str, object] | None = None,
+    ) -> T:
         lock_names.append(command)
-        return await original_with_repo_lock(command, body)
+        return await original_with_repo_lock(command, body, args=args)
 
     monkeypatch.setattr(loop_cmds, "with_repo_lock", recording_lock)
     return lock_names
@@ -200,6 +206,36 @@ def test_start_command_when_runbook_absent_does_omit_the_runbook_row(
     assert "runbook" not in result.stdout
 
 
+def test_start_command_when_run_does_record_command_trace_with_ref_and_exit_zero(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "main"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "start"
+    assert cmd.args == {"ref": "main"}
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_start_command_when_config_overrides_given_does_record_them_in_args(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "main", "--bench", "sh run.sh", "--samples", "5"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "start"
+    assert cmd.args["ref"] == "main"
+    assert cmd.args["bench"] == "sh run.sh"
+    assert cmd.args["samples"] == 5
+
+
 @pytest.mark.parametrize("resumed", [False, True])
 def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
     repo: str, monkeypatch: pytest.MonkeyPatch, resumed: bool
@@ -231,6 +267,32 @@ def test_status_command_when_run_does_render_the_session_on_stdout(repo: str):
     text = strip_ansi(result.stdout)
     assert f"session {SESSION_ID}" in text
     assert "1 kept" in text
+
+
+def test_status_command_when_run_does_record_command_trace_with_exit_zero(repo: str):
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "status"
+    assert cmd.args == {}
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_status_command_when_finalized_does_record_command_trace_with_exit_zero(repo: str):
+    _close_session_with_one_keep(repo)
+    write_config(repo)
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "status"
+    assert cmd.exit_code == 0
 
 
 @pytest.mark.parametrize("has_config", [True, False])
@@ -407,6 +469,35 @@ def test_finalize_command_commits_the_message_it_was_given(repo: str):
     assert record.message == "squash the tuning session"
 
 
+def test_finalize_command_when_run_does_record_command_trace_with_branch_and_message(
+    repo: str,
+):
+    _session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize", "--branch", "perf/regex", "-m", "squash the session"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "finalize"
+    assert cmd.args == {"branch": "perf/regex", "message": "squash the session"}
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_finalize_command_when_finalized_does_record_command_trace_with_exit_two(
+    repo: str,
+):
+    _close_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "finalize"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
+
+
 def test_finalize_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):
     result = runner.invoke(app, ["finalize"])
 
@@ -502,6 +593,20 @@ def test_sync_command_when_run_does_take_the_repo_lock(
     assert "sync" in lock_names
 
 
+def test_sync_command_when_finalized_does_record_command_trace_with_exit_two(
+    repo: str,
+):
+    _close_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "sync"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
+
+
 def test_sync_command_when_no_session_does_exit_two_with_a_start_hint(
     repo: str,
 ):
@@ -531,6 +636,74 @@ def test_keep_command_when_checks_pass_does_commit_and_print_the_short_commit(
     assert isinstance(record, KeepRecord)
     assert record.status == "committed"
     assert head_of(experiment_worktree_dir(repo))[:7] in result.stdout
+
+
+def test_keep_command_when_committed_does_record_command_trace_with_seq_and_exit_zero(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep", "-m", "cache the regex"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "keep"
+    assert cmd.args == {"message": "cache the regex"}
+    assert cmd.seq == 1
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_keep_command_when_blocked_does_record_command_trace_with_gate_and_reason(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    cmd = last_command_record(repo)
+    assert cmd.name == "keep"
+    assert cmd.seq == 1
+    assert cmd.exit_code == 1
+    assert cmd.reason == "nothing-to-commit"
+
+
+def test_keep_command_when_checks_fail_does_record_command_trace_with_checks_failed_reason(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    checks_fail(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    cmd = last_command_record(repo)
+    assert cmd.name == "keep"
+    assert cmd.exit_code == 1
+    assert cmd.reason == "checks-failed"
+
+
+def test_keep_command_when_finalized_does_record_command_trace_with_exit_two(
+    repo: str,
+):
+    _close_session_with_one_keep(repo)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "keep"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
 
 
 def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
@@ -596,6 +769,53 @@ def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
     assert isinstance(record, KeepRecord)
     assert record.status == "blocked"
     assert record.reason == "checks-failed"
+
+
+def test_discard_command_when_run_does_record_command_trace_with_seq_and_force(
+    repo: str,
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    write_config(repo)
+
+    result = runner.invoke(app, ["discard"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "discard"
+    assert cmd.args == {"force": False}
+    assert cmd.seq == 1
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_discard_command_when_force_does_record_force_true_in_args(
+    repo: str,
+):
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
+    write_config(repo)
+
+    result = runner.invoke(app, ["discard", "--force"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.args == {"force": True}
+
+
+def test_discard_command_when_finalized_does_record_command_trace_with_exit_two(
+    repo: str,
+):
+    _close_session_with_one_keep(repo)
+    write_config(repo)
+
+    result = runner.invoke(app, ["discard"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "discard"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
 
 
 def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard(repo: str):
@@ -765,9 +985,9 @@ def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_re
     assert "Stopped" in text
     assert "switched to a different approach" in text
     records = read_records(session_jsonl_path(stop_repo))
-    last = records[-1]
-    assert isinstance(last, StopRecord)
-    assert last.message == "switched to a different approach"
+    stop_records = [r for r in records if isinstance(r, StopRecord)]
+    assert len(stop_records) == 1
+    assert stop_records[0].message == "switched to a different approach"
 
 
 def test_stop_command_when_message_flag_does_accept_both_forms(stop_repo: str):
@@ -792,6 +1012,21 @@ def test_stop_command_when_blank_message_does_exit_two_naming_the_option(
 
     assert result.exit_code == 2
     assert "message" in (result.stderr + result.stdout).lower()
+
+
+def test_stop_command_when_finalized_does_record_command_trace_with_exit_two(
+    repo: str,
+):
+    _close_session_with_one_keep(repo)
+    write_config(repo)
+
+    result = runner.invoke(app, ["stop", "-m", "done"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "stop"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
 
 
 def test_stop_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):

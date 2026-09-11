@@ -138,6 +138,12 @@ def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
     The word standing in for a delta is not measured: it is wider than any
     percentage, and sizing the field from it would push a whole column of bands
     right for the sake of the one row that has none.
+
+    Args:
+        cells: The verdict cells to measure.
+
+    Returns:
+        The maximum delta and band widths across all cells.
     """
     return VerdictWidths(
         delta=max((len(cell.delta) for cell in cells), default=0),
@@ -252,6 +258,14 @@ def _join_styled(fields: Sequence[str], plain_fields: Sequence[str]) -> str:
     is kept only when its plain text is non-empty, and the trailing gutter is
     trimmed. Trimming works on the markup because the gutter is plain spaces at
     the end.
+
+    Args:
+        fields: The styled (markup) fields, in cell order.
+        plain_fields: The corresponding plain-text fields, used to decide
+            which are empty.
+
+    Returns:
+        The non-empty fields joined by the cell gutter, trailing space trimmed.
     """
     kept = [styled for styled, plain in zip(fields, plain_fields, strict=True) if plain != ""]
     return CELL_GUTTER.join(kept).rstrip()

@@ -25,7 +25,7 @@ tasks:
     internal: true
     deps: [_require-uv]
     cmds:
-      - uv sync --locked
+      - uv sync --locked --all-extras
 
   install:
     desc: Sync the project and dev dependencies from the lockfile
@@ -60,6 +60,12 @@ tasks:
       - uv run ruff format
       - dprint fmt
       - uv run prek run -a markdownlint-cli2
+
+  schemas:
+    desc: Regenerate the JSON Schema, AsyncAPI, and Markdown reference artifacts
+    deps: [_sync]
+    cmds:
+      - uv run python -m gymrat.event_docs
 
   clean:
     desc: Remove build artifacts, caches, and virtualenvs

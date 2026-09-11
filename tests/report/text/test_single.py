@@ -75,7 +75,6 @@ def _grouped_flat_result() -> ComparisonResult:
 
 
 def test_render_report_when_flat_grouped_does_indent_member_rows():
-    """Grouped metrics show their case name indented, not the full metric name."""
     report = render_report(_grouped_flat_result())
 
     line = line_starting_with(report, "  alive_check")
@@ -89,11 +88,8 @@ def test_render_report_when_flat_grouped_does_indent_member_rows():
 
 
 def test_render_report_when_flat_grouped_does_show_kind_on_group_header():
-    """The group header carries the kind when it is uniform across the group.
-
-    In the flat (single-section) layout there is no section header to carry the
-    kind, so it is stated on the group header instead (e.g. ``entity  time``).
-    """
+    # In the flat layout there is no section header to carry the kind, so it
+    # is stated on the group header instead (e.g. "entity  time").
     report = strip_ansi(render_report(_grouped_flat_result()))
 
     entity_header = line_starting_with(report, "entity ")

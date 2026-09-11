@@ -77,6 +77,13 @@ def is_held(lock_path: Path) -> bool:
     lock is held; if it succeeds or the file cannot be opened at all the lock
     is not held.  The probe never reads or writes the holder record and always
     preserves the lock file on disk.
+
+    Args:
+        lock_path: Path to the holder-record file whose sibling OS lock file
+            is probed.
+
+    Returns:
+        ``True`` when the lock is held by another party, ``False`` otherwise.
     """
     os_lock_path = _os_lock_file(str(lock_path))
     probe = _non_blocking_lock(os_lock_path)
@@ -96,6 +103,12 @@ def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
 
     Returns the lock object and whether acquisition succeeded. A timeout is not
     an error — the caller proceeds without the publish lock in that case.
+
+    Args:
+        pub_lock_path: Path to the publish lock file to acquire.
+
+    Returns:
+        A ``(lock, acquired)`` pair: the lock object and whether it was taken.
     """
     pub_lock = FileLock(pub_lock_path, timeout=_PUBLISH_LOCK_TIMEOUT, preserve_lock_file=True)
     try:
@@ -114,6 +127,14 @@ def _acquire_os_lock(lock_path: str, os_lock_path: str) -> FileLock:
     Retries up to ``LOCK_ACQUIRE_RETRIES`` times with ``LOCK_ACQUIRE_POLL_MS``
     between attempts so a transient hold (e.g. an ``is_held`` probe) does not
     cause a spurious contention error.
+
+    Args:
+        lock_path: Path to the holder-record file, passed through to
+            :func:`_raise_contention_error` if all retries are exhausted.
+        os_lock_path: Path to the sibling OS lock file to acquire.
+
+    Returns:
+        The acquired ``FileLock``.
     """
     lock = _non_blocking_lock(os_lock_path)
     last_attempt = LOCK_ACQUIRE_RETRIES - 1
@@ -136,6 +157,15 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
 
     Returns a zero-argument callable that releases the lock. The release is
     idempotent: calling it more than once is harmless.
+
+    Args:
+        lock_path: Path to the holder-record file whose sibling OS lock file
+            is acquired.
+        command: Name of the command taking the lock, written into the holder
+            record for diagnostics when a rival process finds it.
+
+    Returns:
+        An idempotent callable that releases the lock.
 
     Raises:
         GymratError: When another process (or the same process) already holds
@@ -182,6 +212,12 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
     "held by another process" message is used. In both cases the hint directs the
     caller to wait — never to remove the file, because the OS lock proves a holder
     is live.
+
+    Args:
+        lock_path: Path to the contended holder-record file to read.
+
+    Raises:
+        GymratError: Always — with holder details when available.
     """
     try:
         content = Path(lock_path).read_text(encoding="utf-8")

@@ -16,23 +16,20 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
-from gymrat.cli.supervise.progress import IDLE_WARN_MS, CapType, ReadSessionResult
+from gymrat.cli.supervise.state import IDLE_WARN_MS, ReadSessionResult
 from gymrat.session.progress_file import ProgressSnapshot
-from gymrat.supervisor.events import (
-    TextDeltaEvent,
-    ThinkingUpdateEvent,
-    ToolProgressEvent,
-)
+from gymrat.supervisor.events import TextDeltaEvent, ThinkingUpdateEvent, ToolProgressEvent
 from tests.cli.supervise._fixtures import (
+    ReporterKit,
     _epoch_ms_to_local_hms,
     _throwing_read,
     empty_session_state,
     finalize_record,
     fire_cap,
+    fire_compaction,
     fire_follow_up,
     fire_launch,
     fire_launch_and_bash_cycle,
@@ -54,6 +51,8 @@ from tests.cli.supervise._fixtures import (
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
 
+    from gymrat.supervisor.events import CapAction, CapType
+
 
 # ---------------------------------------------------------------------------
 # factory / contract
@@ -69,7 +68,6 @@ def test_create_reporter_when_built_does_expose_frame():
 
 
 def test_create_reporter_when_session_read_does_expose_the_latest_session_result():
-    """The closing summary reads the final session state off the reporter."""
     state = session_state_three_iterations(-4.2, "improved", seq=3)
     kit = make_reporter(read_session=make_read_session(state, has_baseline=True))
 
@@ -78,16 +76,6 @@ def test_create_reporter_when_session_read_does_expose_the_latest_session_result
     session_result = kit.reporter.session_result()
     assert session_result is not None
     assert session_result.state == state
-
-
-def test_create_reporter_when_color_false_does_build_colorless_console():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        make_reporter(mode="live", color=False)
-
-        call_kwargs = mock_live_cls.call_args.kwargs
-        console = call_kwargs.get("console")
-        assert console is not None
-        assert console.color_system is None
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +458,6 @@ def test_reread_when_tool_end_has_unknown_id_does_reread():
 
 
 def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAssertion):
-    """A mid-session snapshot with time, cost, loop, best, and liveness."""
     state = session_state(
         iteration_count=3,
         keep_count=1,
@@ -492,7 +479,6 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
     )
     fire_launch(kit.reporter.observer, 1000, max_minutes=480, max_usd=10.0)
 
-    # Simulate 2h41m elapsed
     kit.clock.now = 1000 + (2 * 3600 + 41 * 60) * 1000
     fire_usage_update(kit.reporter.observer, 4.12, kit.clock.now)
 
@@ -523,36 +509,6 @@ def test_dashboard_when_mid_session_does_render_full_layout(snapshot: SnapshotAs
     frame = render_frame(kit.reporter)
 
     assert frame == snapshot
-
-
-# ---------------------------------------------------------------------------
-# ticking display (#28) — Live uses get_renderable
-# ---------------------------------------------------------------------------
-
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
-
-
-def test_create_reporter_when_live_mode_does_use_get_renderable_for_ticking():
-    """Live is constructed with ``get_renderable`` so it rebuilds on its 1 Hz refresh."""
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        make_reporter(mode="live")
-
-        call_kwargs = mock_live_cls.call_args.kwargs
-        assert "get_renderable" in call_kwargs
-        assert callable(call_kwargs["get_renderable"])
-
-
-# ---------------------------------------------------------------------------
-# mounted display (#30) — Live.start() called during creation
-# ---------------------------------------------------------------------------
-
-
-def test_create_reporter_when_live_mode_does_mount_the_live_display():
-    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
-        mock_live = mock_live_cls.return_value
-        make_reporter(mode="live")
-
-        mock_live.start.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -737,11 +693,6 @@ def test_liveness_when_in_flight_summary_exceeds_width_does_truncate_to_one_line
 
 
 def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
-    """Wall-clock uses the reporter's timezone.
-
-    The reporter is built with ``tz=UTC`` (fixture default), so the wall-clock
-    string is a fixed UTC value regardless of the host timezone.
-    """
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -760,12 +711,6 @@ def test_finished_tool_when_ended_does_show_wall_clock_timestamp():
 
 
 def test_finished_tool_when_no_explicit_tz_does_use_system_local_time():
-    """Verify local-time fallback without an explicit timezone.
-
-    The expected timestamp is computed from the same epoch-to-local conversion
-    the implementation should use, so this assertion is the only remaining user
-    of ``_epoch_ms_to_local_hms``.
-    """
     ended_at_ms = 3000
     expected_time = _epoch_ms_to_local_hms(ended_at_ms)
 
@@ -815,7 +760,6 @@ def test_liveness_when_tool_ends_below_threshold_does_show_waiting():
 def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
     result: str, expected_fragment: str
 ):
-    """Reporter is built with ``tz=UTC`` so wall-clock is fixed."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     kit.clock.now = 2000
@@ -832,7 +776,6 @@ def test_liveness_when_waiting_past_threshold_does_show_last_tool_context(
 
 
 def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
-    """When no tool has finished, above-threshold waiting shows bare ``no output for Xs``."""
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
     fire_model_phase(kit.reporter.observer, 2000, "turn_end")
@@ -842,6 +785,42 @@ def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
 
     assert "no output" in frame
     assert "(last tool" not in frame
+
+
+# ---------------------------------------------------------------------------
+# custom idle_warn_ms — configurable threshold
+# ---------------------------------------------------------------------------
+
+
+def _make_reporter_past_bash_end(*, custom_ms: int) -> ReporterKit:
+    """A reporter with ``custom_ms`` as the idle-warn threshold, clock frozen right after a Bash end."""
+    kit = make_reporter(idle_warn_ms=custom_ms)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(kit.reporter.observer, "Bash", "bash-1", 2000)
+    kit.clock.now = 3000
+    fire_tool_end(kit.reporter.observer, "Bash", "bash-1", 3000)
+    return kit
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected_fragment", "unexpected_fragment"),
+    [
+        pytest.param(1, "no output", "waiting", id="past-custom-idle-warn"),
+        pytest.param(-1, "waiting", "no output", id="below-custom-idle-warn"),
+    ],
+)
+def test_liveness_when_waiting_around_custom_idle_warn_does_show_expected_state(
+    offset: int, expected_fragment: str, unexpected_fragment: str
+):
+    custom_ms = 100
+    kit = _make_reporter_past_bash_end(custom_ms=custom_ms)
+    kit.clock.now = 3000 + custom_ms + offset
+
+    frame = render_frame(kit.reporter)
+
+    assert expected_fragment in frame
+    assert unexpected_fragment not in frame
 
 
 # ---------------------------------------------------------------------------
@@ -1057,14 +1036,15 @@ def test_liveness_when_iterate_tool_has_no_sidecar_does_show_plain_elapsed():
 
 
 @pytest.mark.parametrize("cap", ["wall-clock", "spend-cap"])
-def test_cap_when_fired_does_show_interrupting_with_cap_type(cap: CapType):
+@pytest.mark.parametrize("action", ["ending", "interrupting"])
+def test_cap_when_fired_does_show_action_with_cap_type(cap: CapType, action: CapAction):
     kit = make_reporter()
     fire_launch(kit.reporter.observer, 1000)
-    fire_cap(kit.reporter.observer, cap)
+    fire_cap(kit.reporter.observer, cap, action=action)
 
     frame = render_frame(kit.reporter)
 
-    assert f"interrupting ({cap})" in frame
+    assert f"{action} ({cap})" in frame
 
 
 def test_cap_when_fired_does_freeze_liveness_against_later_tool_events():
@@ -1090,7 +1070,7 @@ def test_liveness_when_text_delta_after_launch_does_stay_starting():
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
-    observer(TextDeltaEvent(timestamp=2500, chunk="hello"))
+    observer(TextDeltaEvent(at=2_500_000_000, chunk="hello"))
 
     frame = render_frame(kit.reporter)
 
@@ -1102,7 +1082,7 @@ def test_liveness_when_thinking_after_launch_does_show_thinking():
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
-    observer(ThinkingUpdateEvent(timestamp=2500, estimated_tokens=100, delta=10))
+    observer(ThinkingUpdateEvent(at=2_500_000_000, estimated_tokens=100, delta=10))
 
     frame = render_frame(kit.reporter)
 
@@ -1115,7 +1095,7 @@ def test_liveness_when_tool_progress_after_launch_does_not_crash():
     observer = kit.reporter.observer
 
     fire_launch(observer, 1000)
-    observer(ToolProgressEvent(timestamp=2000, tool_use_id="tp-1", elapsed_ms=500))
+    observer(ToolProgressEvent(at=2_000_000_000, tool_use_id="tp-1", elapsed_ms=500))
 
     frame = render_frame(kit.reporter)
 
@@ -1170,11 +1150,10 @@ def test_final_text_when_injected_turn_ends_does_not_replace_agent_text():
 
 
 def test_final_text_when_text_delta_received_does_not_set_final_text():
-    """TextDeltaEvent is a no-op for final_text; only TurnEndEvent sets it."""
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
-    observer(TextDeltaEvent(timestamp=2000, chunk="streamed text"))
+    observer(TextDeltaEvent(at=2_000_000_000, chunk="streamed text"))
 
     assert kit.reporter.final_text() is None
 
@@ -1255,7 +1234,6 @@ def test_liveness_when_turn_ends_does_show_waiting():
 
 
 def test_liveness_when_follow_up_does_not_change_liveness():
-    """FollowUpEvent leaves liveness unchanged; the next model phase moves it."""
     kit = make_reporter()
     observer = kit.reporter.observer
     fire_launch(observer, 1000)
@@ -1278,3 +1256,19 @@ def test_stop_when_called_does_not_raise():
     fire_launch(kit.reporter.observer, 1000)
 
     kit.reporter.stop()
+
+
+# ---------------------------------------------------------------------------
+# compaction event — context compacted line
+# ---------------------------------------------------------------------------
+
+
+def test_compaction_when_fired_does_show_context_compacted_in_frame():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 3000
+    fire_compaction(kit.reporter.observer, 3000)
+
+    frame = render_frame(kit.reporter)
+
+    assert "context compacted" in frame

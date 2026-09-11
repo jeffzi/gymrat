@@ -55,13 +55,11 @@ _live_reporters: list[ProgressReporter] = []
 
 @pytest.fixture(autouse=True)
 def _stop_reporters() -> Iterator[None]:
-    """Stop every reporter a test built, so a failing test leaks no live display.
-
-    ``stop()`` is idempotent, so tests that already stopped their reporter are
-    unaffected; without this teardown a failure before the in-test ``stop()``
-    leaks a refresh thread and a termination-cleanup registration.
-    """
+    """Stop every reporter a test built, so a failing test leaks no live display."""
     yield
+    # stop() is idempotent — tests that already stopped are unaffected; without
+    # this teardown a failure before the in-test stop() leaks a refresh thread
+    # and a termination-cleanup registration.
     while _live_reporters:
         _live_reporters.pop().stop()
 
@@ -126,7 +124,6 @@ def _run_two_passes(reporter: ProgressReporter, clock: Clock) -> None:
 def test_frame_when_prepare_running_does_show_spinner_and_label(
     snapshot: SnapshotAssertion,
 ):
-    """You should see a spinner and the 'bench' prepare label."""
     _console, _clock, reporter = _reporter("live")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
 
@@ -139,7 +136,6 @@ def test_frame_when_prepare_running_does_show_spinner_and_label(
 def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
     snapshot: SnapshotAssertion,
 ):
-    """Prepare row leaves the display; the sampling bar's clock reads --:-- until an ETA exists."""
     _console, clock, reporter = _reporter("live")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
     clock.tick(2)
@@ -156,7 +152,6 @@ def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
 def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
     snapshot: SnapshotAssertion,
 ):
-    """Bar clock shows elapsed over a projected total, ticking past the last event."""
     _console, clock, reporter = _reporter("live")
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
@@ -176,7 +171,6 @@ def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
 def test_frame_when_multi_target_compare_does_name_running_target(
     snapshot: SnapshotAssertion,
 ):
-    """Bar total is samples x targets; the running target is named on the bar row."""
     _console, clock, reporter = _reporter("live", target_count=2, sample_count=5)
     reporter.report(PrepareFinished(label="main", at_ms=0))
     clock.tick(1)
@@ -191,7 +185,6 @@ def test_frame_when_multi_target_compare_does_name_running_target(
 def test_frame_when_compact_layout_on_short_console_does_show_single_row(
     snapshot: SnapshotAssertion,
 ):
-    """A short console collapses the display to the single-row compact bar."""
     _console, clock, reporter = _reporter("live", height=10)
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
@@ -211,7 +204,6 @@ def test_frame_when_compact_layout_on_short_console_does_show_single_row(
 def test_frame_when_measure_command_does_show_header_with_command_and_labels(
     snapshot: SnapshotAssertion,
 ):
-    """Header line: ``measure ecstatic-ts · 5 samples``."""
     _console, _clock, reporter = _reporter(
         "live",
         command="measure",
@@ -229,7 +221,6 @@ def test_frame_when_measure_command_does_show_header_with_command_and_labels(
 def test_frame_when_compare_command_does_show_header_with_multiple_labels(
     snapshot: SnapshotAssertion,
 ):
-    """Header line: ``compare main, candidate · 5 samples``."""
     _console, _clock, reporter = _reporter(
         "live",
         command="compare",
@@ -311,7 +302,8 @@ def test_plain_renderer_when_any_event_does_not_emit_ansi_codes():
 
 
 def test_live_wiring_when_created_does_set_transient_and_not_redirect_stderr():
-    """redirect_stderr=False keeps stderr untouched so a signal's raw write reaches the terminal."""
+    # redirect_stderr=False keeps stderr untouched so a signal's raw write
+    # reaches the terminal.
     real_stderr = sys.stderr
     _console, _clock, reporter = _reporter("live")
 
@@ -322,7 +314,6 @@ def test_live_wiring_when_created_does_set_transient_and_not_redirect_stderr():
 
 
 def test_live_wiring_when_created_does_set_auto_refresh_and_render_current_frame():
-    """Live display auto-refreshes at the shared rate and paints from the current frame."""
     _console, _clock, reporter = _reporter("live")
 
     live = reporter.live
@@ -399,7 +390,6 @@ def test_stop_when_measure_done_does_print_summary(snapshot: SnapshotAssertion):
 
 
 def test_stop_when_plain_mode_does_not_print_summary():
-    """Plain mode stays milestone-lines-only: stopping prints no summary line."""
     console, clock, reporter = _reporter("plain", sample_count=2)
     _run_two_passes(reporter, clock)
 

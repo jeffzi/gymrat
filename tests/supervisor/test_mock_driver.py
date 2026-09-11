@@ -34,7 +34,7 @@ async def _noop_action() -> None:
 
 
 async def test_create_mock_driver_when_started_does_defer_first_emit_until_control_yields():
-    event = TextDeltaEvent(timestamp=1, chunk="hello")
+    event = TextDeltaEvent(at=1_000_000_000, chunk="hello")
     probe = collecting_observer()
     driver = create_mock_driver([EmitStep(emit=event)])
 
@@ -45,8 +45,8 @@ async def test_create_mock_driver_when_started_does_defer_first_emit_until_contr
 
 
 async def test_create_mock_driver_when_emit_steps_run_does_deliver_events_in_order():
-    event0 = TextDeltaEvent(timestamp=1, chunk="hello")
-    event1 = TextDeltaEvent(timestamp=2, chunk="world")
+    event0 = TextDeltaEvent(at=1_000_000_000, chunk="hello")
+    event1 = TextDeltaEvent(at=2_000_000_000, chunk="world")
     probe = collecting_observer()
     driver = create_mock_driver([EmitStep(emit=event0), EmitStep(emit=event1)])
 
@@ -111,9 +111,10 @@ async def test_create_mock_driver_when_steps_have_delay_ms_does_delay_before_run
     async def second() -> None:
         order.append("second")
 
-    driver = create_mock_driver(
-        [ActionStep(action=first, delay_ms=20), ActionStep(action=second, delay_ms=40)]
-    )
+    driver = create_mock_driver([
+        ActionStep(action=first, delay_ms=20),
+        ActionStep(action=second, delay_ms=40),
+    ])
 
     started = time.perf_counter()
     session = driver.start(make_prompt(), noop_observer())
@@ -158,9 +159,10 @@ async def test_create_mock_driver_when_interrupted_does_report_last_known_cost()
         if event.type == "usage_update":
             cost_seen.set()
 
-    driver = create_mock_driver(
-        [CostStep(cost_usd=0.07), ActionStep(action=_noop_action, delay_ms=1000)]
-    )
+    driver = create_mock_driver([
+        CostStep(cost_usd=0.07),
+        ActionStep(action=_noop_action, delay_ms=1000),
+    ])
 
     session = driver.start(make_prompt(), observer)
     await cost_seen.wait()
@@ -185,9 +187,11 @@ async def test_create_mock_driver_when_action_raises_does_resolve_error_and_stop
     async def after() -> None:
         reached.append("after")
 
-    driver = create_mock_driver(
-        [CostStep(cost_usd=0.03), ActionStep(action=boom), ActionStep(action=after)]
-    )
+    driver = create_mock_driver([
+        CostStep(cost_usd=0.03),
+        ActionStep(action=boom),
+        ActionStep(action=after),
+    ])
 
     session = driver.start(make_prompt(), noop_observer())
     outcome = await session.outcome
@@ -289,9 +293,11 @@ async def test_create_mock_driver_when_turn_end_step_blocks_does_continue_after_
     async def after() -> None:
         order.append("after")
 
-    driver = create_mock_driver(
-        [ActionStep(action=before), TurnEndStep(), ActionStep(action=after)]
-    )
+    driver = create_mock_driver([
+        ActionStep(action=before),
+        TurnEndStep(),
+        ActionStep(action=after),
+    ])
 
     session = driver.start(make_prompt(), noop_observer())
     await asyncio.sleep(0.05)
@@ -304,9 +310,11 @@ async def test_create_mock_driver_when_turn_end_step_blocks_does_continue_after_
 
 
 async def test_create_mock_driver_when_end_called_during_turn_end_does_settle_completed():
-    driver = create_mock_driver(
-        [CostStep(cost_usd=0.1), TurnEndStep(), ActionStep(action=_noop_action)]
-    )
+    driver = create_mock_driver([
+        CostStep(cost_usd=0.1),
+        TurnEndStep(),
+        ActionStep(action=_noop_action),
+    ])
 
     session = driver.start(make_prompt(), noop_observer())
     await asyncio.sleep(0.05)

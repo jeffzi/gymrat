@@ -18,7 +18,7 @@ import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Protocol
 
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ns
 from gymrat.supervisor.claude_messages import (
     MessageMapper,
     detect_origin,
@@ -32,7 +32,7 @@ from gymrat.supervisor.driver import (
     SessionOutcome,
     SessionPrompt,
 )
-from gymrat.supervisor.events import TurnEndEvent, UsageUpdateEvent
+from gymrat.supervisor.events import CompactionEvent, TurnEndEvent, UsageUpdateEvent
 
 
 class ClaudeClient(Protocol):
@@ -47,11 +47,19 @@ class ClaudeClient(Protocol):
         ...
 
     async def query(self, prompt: str) -> None:
-        """Send the kickoff prompt that starts the agent's work."""
+        """Send the kickoff prompt that starts the agent's work.
+
+        Args:
+            prompt: The initial prompt text to send.
+        """
         ...
 
     def receive_messages(self) -> AsyncIterator[object]:
-        """Stream SDK messages until the session ends."""
+        """Stream SDK messages until the session ends.
+
+        Returns:
+            An async iterator of raw SDK message objects.
+        """
         ...
 
     async def interrupt(self) -> None:
@@ -75,7 +83,8 @@ def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the pa
     def factory(options: Mapping[str, object]) -> ClaudeClient:
         # options is a validated dict from _build_options; checker can't verify
         # the **spread into ClaudeAgentOptions's typed kwargs.
-        return claude_agent_sdk.ClaudeSDKClient(claude_agent_sdk.ClaudeAgentOptions(**options))  # pyrefly: ignore[bad-argument-type]
+        opts = claude_agent_sdk.ClaudeAgentOptions(**options)  # pyrefly: ignore[bad-argument-type]
+        return claude_agent_sdk.ClaudeSDKClient(opts)
 
     return factory
 
@@ -97,6 +106,9 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
         options["model"] = prompt.model
     if prompt.effort is not None:
         options["effort"] = prompt.effort
+    env: dict[str, str] = {}
+    if prompt.traceparent is not None:
+        env["GYMRAT_TRACEPARENT"] = prompt.traceparent
     if prompt.command_timeout_ms is not None:
         # Raising the shell timeout ceiling to the wall-clock cap requires setting
         # both the default and max tool-use timeout variables. Automatically moving
@@ -104,11 +116,11 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
         # otherwise detach a long `gymrat` command into the background, where the
         # agent can no longer observe its output or exit status.
         timeout_ms = str(prompt.command_timeout_ms)
-        options["env"] = {
-            "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": timeout_ms,
-            "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": timeout_ms,
-            "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
-        }
+        env["CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS"] = timeout_ms
+        env["CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS"] = timeout_ms
+        env["CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS"] = ""
+    if env:
+        options["env"] = env
     if prompt.max_budget_usd is not None:
         options["max_budget_usd"] = prompt.max_budget_usd
     return options
@@ -293,6 +305,13 @@ class _ClaudeSession:
 
         subtype = getattr(message, "subtype", None)
         num_turns = getattr(message, "num_turns", None)
+
+        # System messages carry ``subtype`` but no ``num_turns``.
+        if isinstance(subtype, str) and num_turns is None:
+            if subtype == "compact_boundary":
+                self._observer(CompactionEvent(at=now_ns()))
+            return
+
         if isinstance(subtype, str) and num_turns is not None:
             is_error = getattr(message, "is_error", False)
 
@@ -308,7 +327,7 @@ class _ClaudeSession:
                 self._commit_cost(cost)
             self._observer(
                 TurnEndEvent(
-                    timestamp=now_ms(),
+                    at=now_ns(),
                     text=self._mapper.last_top_level_text,
                     cost_usd=self._cost_usd,
                     origin=detect_origin(message),
@@ -338,9 +357,7 @@ class _ClaudeSession:
         a spend-cap observer does not mistake it for a live cap crossing.
         """
         self._cost_usd = cost
-        self._observer(
-            UsageUpdateEvent(timestamp=now_ms(), cost_usd=self._cost_usd, settled=settled)
-        )
+        self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=self._cost_usd, settled=settled))
 
 
 class _ClaudeDriver:

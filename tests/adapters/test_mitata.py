@@ -28,9 +28,9 @@ def test_mitata_adapter_when_checked_does_satisfy_adapter_protocol():
 # basic JSON parsing
 # ---------------------------------------------------------------------------
 
-_BASIC_FIXTURE = build_stdout(
-    [{"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]}]
-)
+_BASIC_FIXTURE = build_stdout([
+    {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]}
+])
 
 
 @pytest.mark.parametrize(
@@ -68,17 +68,17 @@ def test_parse_when_json_surrounded_by_text_does_extract_metrics(stdout: str):
 def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     alias: str, args: dict[str, Any], p50: int, metric_name: str
 ):
-    stdout = build_stdout(
-        [{"alias": alias, "runs": [{"name": alias, "args": args, "stats": {"p50": p50}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": alias, "runs": [{"name": alias, "args": args, "stats": {"p50": p50}}]}
+    ])
 
     assert mitata_adapter.parse(stdout) == {metric_name: p50}
 
 
 def test_parse_when_alias_has_placeholders_and_args_empty_does_keep_placeholders_literal():
-    stdout = build_stdout(
-        [{"alias": "test/$x", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "test/$x", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}
+    ])
 
     assert mitata_adapter.parse(stdout) == {"test/$x#time": 42}
 
@@ -96,9 +96,9 @@ def test_parse_when_alias_has_placeholders_and_args_empty_does_keep_placeholders
     ],
 )
 def test_parse_when_arg_is_primitive_does_serialize_js_style(value: Any, serialized: str):
-    stdout = build_stdout(
-        [{"alias": "b/$v", "runs": [{"name": "b", "args": {"v": value}, "stats": {"p50": 1}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "b/$v", "runs": [{"name": "b", "args": {"v": value}, "stats": {"p50": 1}}]}
+    ])
 
     assert mitata_adapter.parse(stdout) == {f"b/v={serialized}#time": 1}
 
@@ -118,27 +118,23 @@ def test_parse_when_arg_is_primitive_does_serialize_js_style(value: Any, seriali
     ],
 )
 def test_parse_when_arg_value_holds_regex_replacement_syntax_does_keep_it_literal(value: str):
-    stdout = build_stdout(
-        [
-            {
-                "alias": "decode/$text",
-                "runs": [{"name": "d", "args": {"text": value}, "stats": {"p50": 42}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "decode/$text",
+            "runs": [{"name": "d", "args": {"text": value}, "stats": {"p50": 42}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {f"decode/text={value}#time": 42}
 
 
 def test_parse_when_arg_value_introduces_a_placeholder_does_not_re_substitute_it():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "op/$a/$b",
-                "runs": [{"name": "op", "args": {"a": "$b", "b": "y"}, "stats": {"p50": 7}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "op/$a/$b",
+            "runs": [{"name": "op", "args": {"a": "$b", "b": "y"}, "stats": {"p50": 7}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {"op/a=$b/b=y#time": 7}
 
@@ -158,12 +154,10 @@ _LINE_TERMINATORS = [
 @pytest.mark.parametrize("code_point", _LINE_TERMINATORS)
 def test_parse_when_alias_holds_line_terminator_does_warn_and_skip(code_point: int):
     offending = f"enc{chr(code_point)}ode"
-    stdout = build_stdout(
-        [
-            {"alias": offending, "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]},
-            {"alias": "valid", "runs": [{"name": "v", "args": {}, "stats": {"p50": 1}}]},
-        ]
-    )
+    stdout = build_stdout([
+        {"alias": offending, "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]},
+        {"alias": "valid", "runs": [{"name": "v", "args": {}, "stats": {"p50": 1}}]},
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -177,21 +171,19 @@ def test_parse_when_alias_holds_line_terminator_does_warn_and_skip(code_point: i
 
 @pytest.mark.parametrize("code_point", _LINE_TERMINATORS)
 def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_point: int):
-    stdout = build_stdout(
-        [
-            {
-                "alias": "decode/$text",
-                "runs": [
-                    {
-                        "name": "d1",
-                        "args": {"text": f"di{chr(code_point)}gits"},
-                        "stats": {"p50": 10},
-                    },
-                    {"name": "d2", "args": {"text": "words"}, "stats": {"p50": 20}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "decode/$text",
+            "runs": [
+                {
+                    "name": "d1",
+                    "args": {"text": f"di{chr(code_point)}gits"},
+                    "stats": {"p50": 10},
+                },
+                {"name": "d2", "args": {"text": "words"}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -209,23 +201,21 @@ def test_parse_when_arg_value_holds_line_terminator_does_warn_and_skip(code_poin
 
 
 def test_parse_when_alias_contains_hash_does_raise_adapter_error():
-    stdout = build_stdout(
-        [{"alias": "enc#ode", "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "enc#ode", "runs": [{"name": "e", "args": {}, "stats": {"p50": 42}}]}
+    ])
 
     with pytest.raises(AdapterError, match="enc#ode"):
         mitata_adapter.parse(stdout)
 
 
 def test_parse_when_substituted_arg_introduces_hash_does_raise_adapter_error():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "op/$v",
-                "runs": [{"name": "o", "args": {"v": "a#b"}, "stats": {"p50": 42}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "op/$v",
+            "runs": [{"name": "o", "args": {"v": "a#b"}, "stats": {"p50": 42}}],
+        }
+    ])
 
     with pytest.raises(AdapterError):
         mitata_adapter.parse(stdout)
@@ -237,17 +227,15 @@ def test_parse_when_substituted_arg_introduces_hash_does_raise_adapter_error():
 
 
 def test_parse_when_run_args_is_not_a_record_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [
-                    {"args": "not-a-record", "stats": {"p50": 1}},
-                    {"args": {}, "stats": {"p50": 5}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [
+                {"args": "not-a-record", "stats": {"p50": 1}},
+                {"args": {}, "stats": {"p50": 5}},
+            ],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -257,14 +245,12 @@ def test_parse_when_run_args_is_not_a_record_does_warn_and_skip():
 
 
 def test_parse_when_run_stats_is_not_a_record_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [{"args": {}, "stats": "not-a-record"}, {"args": {}, "stats": {"p50": 5}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [{"args": {}, "stats": "not-a-record"}, {"args": {}, "stats": {"p50": 5}}],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -284,12 +270,10 @@ def test_parse_when_run_args_missing_does_treat_as_empty_and_not_warn():
 
 
 def test_parse_when_benchmark_alias_is_not_a_string_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            {"alias": 42, "runs": [{"args": {}, "stats": {"p50": 1}}]},
-            {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
-        ]
-    )
+    stdout = build_stdout([
+        {"alias": 42, "runs": [{"args": {}, "stats": {"p50": 1}}]},
+        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -299,9 +283,10 @@ def test_parse_when_benchmark_alias_is_not_a_string_does_warn_and_skip():
 
 
 def test_parse_when_benchmark_runs_is_not_an_array_does_warn_and_skip():
-    stdout = build_stdout(
-        [{"alias": "orphan"}, {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "orphan"},
+        {"alias": "valid", "runs": [{"args": {}, "stats": {"p50": 1}}]},
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -311,17 +296,15 @@ def test_parse_when_benchmark_runs_is_not_an_array_does_warn_and_skip():
 
 
 def test_parse_when_run_has_error_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [
-                    {"args": {}, "error": "boom", "stats": {"p50": 10}},
-                    {"args": {}, "stats": {"p50": 20}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [
+                {"args": {}, "error": "boom", "stats": {"p50": 10}},
+                {"args": {}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -334,17 +317,15 @@ def test_parse_when_run_has_error_does_warn_and_skip():
 # metric-name collisions
 # ---------------------------------------------------------------------------
 
-_ALIAS_MISSING_PLACEHOLDER = build_stdout(
-    [
-        {
-            "alias": "decode",
-            "runs": [
-                {"name": "decode/digits", "args": {"text": "digits"}, "stats": {"p50": 10}},
-                {"name": "decode/words", "args": {"text": "words"}, "stats": {"p50": 20}},
-            ],
-        }
-    ]
-)
+_ALIAS_MISSING_PLACEHOLDER = build_stdout([
+    {
+        "alias": "decode",
+        "runs": [
+            {"name": "decode/digits", "args": {"text": "digits"}, "stats": {"p50": 10}},
+            {"name": "decode/words", "args": {"text": "words"}, "stats": {"p50": 20}},
+        ],
+    }
+])
 
 
 def test_parse_when_metric_names_collide_does_warn_and_keep_last(
@@ -370,12 +351,10 @@ def test_parse_when_collision_and_sink_given_does_route_warning_off_stderr(
 def test_parse_when_two_benchmarks_share_alias_does_warn_collision(
     capsys: pytest.CaptureFixture[str],
 ):
-    stdout = build_stdout(
-        [
-            {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 1}}]},
-            {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 2}}]},
-        ]
-    )
+    stdout = build_stdout([
+        {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 1}}]},
+        {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 2}}]},
+    ])
 
     mitata_adapter.parse(stdout)
 
@@ -392,9 +371,9 @@ def test_parse_when_two_benchmarks_share_alias_does_warn_collision(
     [pytest.param(123.456, id="decimal"), pytest.param(0.0791015625, id="high-precision")],
 )
 def test_parse_when_p50_present_does_use_it_as_time_metric(p50: float):
-    stdout = build_stdout(
-        [{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": p50}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": p50}}]}
+    ])
 
     assert mitata_adapter.parse(stdout) == {"test#time": p50}
 
@@ -419,33 +398,29 @@ def test_parse_when_p50_is_bool_does_warn_and_skip():
 
 
 def test_parse_when_heap_avg_present_does_emit_heap_metric():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": {"avg": 1024}}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": {"avg": 1024}}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {"test#time": 42, "test#heap": 1024}
 
 
 def test_parse_when_heap_avg_present_on_parameterized_bench_does_emit_named_heap_metric():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "decode/$text",
-                "runs": [
-                    {
-                        "name": "d",
-                        "args": {"text": "digits"},
-                        "stats": {"p50": 10, "heap": {"avg": 256}},
-                    }
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "decode/$text",
+            "runs": [
+                {
+                    "name": "d",
+                    "args": {"text": "digits"},
+                    "stats": {"p50": 10, "heap": {"avg": 256}},
+                }
+            ],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {
         "decode/text=digits#time": 10,
@@ -454,16 +429,12 @@ def test_parse_when_heap_avg_present_on_parameterized_bench_does_emit_named_heap
 
 
 def test_parse_when_heap_avg_missing_does_skip_heap_metric():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [
-                    {"name": "test", "args": {}, "stats": {"p50": 42, "heap": {"total": 1024}}}
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": {"total": 1024}}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {"test#time": 42}
 
@@ -478,14 +449,12 @@ def test_parse_when_heap_avg_missing_does_skip_heap_metric():
     ],
 )
 def test_parse_when_heap_is_not_an_object_does_warn_and_skip_heap(heap_value: object):
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": heap_value}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [{"name": "test", "args": {}, "stats": {"p50": 42, "heap": heap_value}}],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -496,9 +465,9 @@ def test_parse_when_heap_is_not_an_object_does_warn_and_skip_heap(heap_value: ob
 
 
 def test_parse_when_heap_absent_does_not_warn():
-    stdout = build_stdout(
-        [{"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "test", "runs": [{"name": "test", "args": {}, "stats": {"p50": 42}}]}
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -555,17 +524,15 @@ def test_parse_when_heap_avg_non_finite_does_warn_and_skip_heap():
 
 
 def test_parse_when_benchmark_has_multiple_runs_does_emit_metric_per_run():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "decode/$text",
-                "runs": [
-                    {"name": "d", "args": {"text": "digits"}, "stats": {"p50": 10}},
-                    {"name": "w", "args": {"text": "words"}, "stats": {"p50": 20}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "decode/$text",
+            "runs": [
+                {"name": "d", "args": {"text": "digits"}, "stats": {"p50": 10}},
+                {"name": "w", "args": {"text": "words"}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {
         "decode/text=digits#time": 10,
@@ -574,25 +541,23 @@ def test_parse_when_benchmark_has_multiple_runs_does_emit_metric_per_run():
 
 
 def test_parse_when_runs_have_heap_does_emit_heap_metric_per_run():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "decode/$text",
-                "runs": [
-                    {
-                        "name": "d",
-                        "args": {"text": "digits"},
-                        "stats": {"p50": 10, "heap": {"avg": 256}},
-                    },
-                    {
-                        "name": "w",
-                        "args": {"text": "words"},
-                        "stats": {"p50": 20, "heap": {"avg": 512}},
-                    },
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "decode/$text",
+            "runs": [
+                {
+                    "name": "d",
+                    "args": {"text": "digits"},
+                    "stats": {"p50": 10, "heap": {"avg": 256}},
+                },
+                {
+                    "name": "w",
+                    "args": {"text": "words"},
+                    "stats": {"p50": 20, "heap": {"avg": 512}},
+                },
+            ],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {
         "decode/text=digits#time": 10,
@@ -603,12 +568,10 @@ def test_parse_when_runs_have_heap_does_emit_heap_metric_per_run():
 
 
 def test_parse_when_multiple_benchmarks_does_emit_metrics_for_all():
-    stdout = build_stdout(
-        [
-            {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]},
-            {"alias": "decode", "runs": [{"name": "decode", "args": {}, "stats": {"p50": 100}}]},
-        ]
-    )
+    stdout = build_stdout([
+        {"alias": "encode", "runs": [{"name": "encode", "args": {}, "stats": {"p50": 42}}]},
+        {"alias": "decode", "runs": [{"name": "decode", "args": {}, "stats": {"p50": 100}}]},
+    ])
 
     assert mitata_adapter.parse(stdout) == {"encode#time": 42, "decode#time": 100}
 
@@ -754,14 +717,12 @@ def test_parse_when_no_run_has_valid_stats_does_raise():
 
 
 def test_parse_when_benchmark_entries_not_objects_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            None,
-            42,
-            "string",
-            {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
-        ]
-    )
+    stdout = build_stdout([
+        None,
+        42,
+        "string",
+        {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -771,14 +732,12 @@ def test_parse_when_benchmark_entries_not_objects_does_warn_and_skip():
 
 
 def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            {"alias": 42, "runs": []},
-            {"alias": "orphan"},
-            {"runs": [{"args": {}, "stats": {"p50": 1}}]},
-            {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
-        ]
-    )
+    stdout = build_stdout([
+        {"alias": 42, "runs": []},
+        {"alias": "orphan"},
+        {"runs": [{"args": {}, "stats": {"p50": 1}}]},
+        {"alias": "valid", "runs": [{"name": "valid", "args": {}, "stats": {"p50": 1}}]},
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -791,9 +750,9 @@ def test_parse_when_benchmarks_have_non_string_alias_or_missing_runs_does_warn_a
 
 
 def test_parse_when_runs_are_not_objects_does_warn_and_skip():
-    stdout = build_stdout(
-        [{"alias": "test", "runs": [None, 42, {"args": {}, "stats": {"p50": 1}}]}]
-    )
+    stdout = build_stdout([
+        {"alias": "test", "runs": [None, 42, {"args": {}, "stats": {"p50": 1}}]}
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -809,22 +768,20 @@ def test_parse_when_runs_are_not_objects_does_warn_and_skip():
 
 
 def test_parse_when_run_has_error_field_does_warn_and_skip_that_run():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test/$x",
-                "runs": [
-                    {
-                        "name": "a",
-                        "args": {"x": "a"},
-                        "error": "something went wrong",
-                        "stats": {"p50": 10},
-                    },
-                    {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test/$x",
+            "runs": [
+                {
+                    "name": "a",
+                    "args": {"x": "a"},
+                    "error": "something went wrong",
+                    "stats": {"p50": 10},
+                },
+                {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -836,46 +793,40 @@ def test_parse_when_run_has_error_field_does_warn_and_skip_that_run():
 
 
 def test_parse_when_all_runs_have_errors_does_raise():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [
-                    {"name": "test", "args": {}, "error": "something failed", "stats": {"p50": 10}}
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [
+                {"name": "test", "args": {}, "error": "something failed", "stats": {"p50": 10}}
+            ],
+        }
+    ])
 
     with pytest.raises(AdapterError, match=r"^No valid benchmark runs found$"):
         mitata_adapter.parse(stdout)
 
 
 def test_parse_when_error_field_is_null_does_process_run_normally():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [{"name": "test", "args": {}, "error": None, "stats": {"p50": 10}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [{"name": "test", "args": {}, "error": None, "stats": {"p50": 10}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {"test#time": 10}
 
 
 def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test",
-                "runs": [
-                    {"name": "a", "args": {}, "error": {"code": 7}, "stats": {"p50": 10}},
-                    {"name": "b", "args": {}, "stats": {"p50": 20}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test",
+            "runs": [
+                {"name": "a", "args": {}, "error": {"code": 7}, "stats": {"p50": 10}},
+                {"name": "b", "args": {}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -890,30 +841,26 @@ def test_parse_when_error_field_is_object_does_render_as_json_in_warning():
 
 
 def test_parse_when_arg_value_is_object_does_serialize_via_json():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "bench/$opts",
-                "runs": [{"name": "cfg", "args": {"opts": {"size": 100}}, "stats": {"p50": 5}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "bench/$opts",
+            "runs": [{"name": "cfg", "args": {"opts": {"size": 100}}, "stats": {"p50": 5}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {'bench/opts={"size":100}#time': 5}
 
 
 def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "bench/$opts",
-                "runs": [
-                    {"name": "a", "args": {"opts": {"size": 100}}, "stats": {"p50": 5}},
-                    {"name": "b", "args": {"opts": {"size": 200}}, "stats": {"p50": 10}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "bench/$opts",
+            "runs": [
+                {"name": "a", "args": {"opts": {"size": 100}}, "stats": {"p50": 5}},
+                {"name": "b", "args": {"opts": {"size": 200}}, "stats": {"p50": 10}},
+            ],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {
         'bench/opts={"size":100}#time': 5,
@@ -922,27 +869,23 @@ def test_parse_when_object_arg_values_differ_does_keep_distinct_names():
 
 
 def test_parse_when_object_arg_has_unsorted_keys_does_serialize_in_sorted_order():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "bench/$opts",
-                "runs": [{"name": "cfg", "args": {"opts": {"z": 1, "a": 2}}, "stats": {"p50": 5}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "bench/$opts",
+            "runs": [{"name": "cfg", "args": {"opts": {"z": 1, "a": 2}}, "stats": {"p50": 5}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {'bench/opts={"a":2,"z":1}#time': 5}
 
 
 def test_parse_when_arg_value_is_array_does_serialize_via_json():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "bench/$items",
-                "runs": [{"name": "list", "args": {"items": [1, 2, 3]}, "stats": {"p50": 7}}],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "bench/$items",
+            "runs": [{"name": "list", "args": {"items": [1, 2, 3]}, "stats": {"p50": 7}}],
+        }
+    ])
 
     assert mitata_adapter.parse(stdout) == {"bench/items=[1,2,3]#time": 7}
 
@@ -953,17 +896,15 @@ def test_parse_when_arg_value_is_array_does_serialize_via_json():
 
 
 def test_parse_when_p50_missing_does_warn_and_skip():
-    stdout = build_stdout(
-        [
-            {
-                "alias": "test/$x",
-                "runs": [
-                    {"name": "a", "args": {"x": "a"}, "stats": {}},
-                    {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
-                ],
-            }
-        ]
-    )
+    stdout = build_stdout([
+        {
+            "alias": "test/$x",
+            "runs": [
+                {"name": "a", "args": {"x": "a"}, "stats": {}},
+                {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
+            ],
+        }
+    ])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
@@ -1059,7 +1000,7 @@ def test_parse_when_no_candidate_carries_benchmarks_does_report_missing_array():
 def _decode_error_reason(text: str, pos: int = 0) -> str:
     """Return the JSONDecodeError message from attempting ``raw_decode`` at *pos*.
 
-    Uses :meth:`json.JSONDecoder.raw_decode` to match how the adapter now
+    Uses :meth:`json.JSONDecoder.raw_decode` to match how the adapter
     discovers candidates. The resulting char offset is absolute within *text*,
     not relative to a pre-sliced candidate.
     """

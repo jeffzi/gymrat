@@ -49,6 +49,7 @@ class MetricBlock[Row]:
     metric: Row
 
 
+#: One block of a section: either a named group or a single ungrouped metric.
 type SectionBlock[Row] = GroupBlock[Row] | MetricBlock[Row]
 
 
@@ -154,6 +155,12 @@ def spans_many_kinds(metrics: Mapping[str, SectionedMetric]) -> bool:
     Read straight off the metrics rather than off a :class:`SectionLayout`, so the
     parts of a report drawn outside the table can ask without building rows they
     have no use for.
+
+    Args:
+        metrics: The run's metrics, keyed by name.
+
+    Returns:
+        Whether the metrics span more than one kind.
     """
     return len({metric.meta.kind for metric in metrics.values()}) > 1
 
@@ -167,6 +174,15 @@ def informational_tag(kind: str, config_kinds: Mapping[str, KindEntry] | None) -
     Gating is resolved per metric before the report sees it, so only the config
     distinguishes a kind switched off wholesale from one whose metrics were each
     switched off by name. Naming the key is what lets the reader switch it back.
+
+    Args:
+        kind: The kind whose title the tag decorates.
+        config_kinds: The configured kinds, keyed by name, or ``None`` when
+            absent.
+
+    Returns:
+        The informational tag, optionally naming the config key that switched
+        gating off.
     """
     entry = config_kinds.get(kind) if config_kinds is not None else None
     switched_off = entry is not None and entry.gating is False
@@ -211,6 +227,10 @@ def flat_geomean_of(candidate: CandidateComparison) -> GeomeanResult:
 
     A run reporting one kind has no section to name, so its geomean row states
     what the run is judged on without saying which kind that was.
+
+    Returns:
+        The gated geomean of the single kind, or :data:`NO_AGGREGATE` when
+        none is available.
     """
     if not candidate.kinds:
         return NO_AGGREGATE

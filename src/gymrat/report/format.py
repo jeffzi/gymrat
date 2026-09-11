@@ -56,6 +56,9 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
     promoted to the tier above. The threshold is compared against the magnitude,
     since a sign is not a size: a negative reading picks the tier its magnitude
     names.
+
+    Returns:
+        The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
     """
     magnitude = abs(value)
     for threshold, divisor, suffix, decimals in tiers:

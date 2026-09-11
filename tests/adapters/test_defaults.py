@@ -159,7 +159,7 @@ def test_defaults_from_suffixes_when_given_metric_name_does_return_expected_defa
 
 
 # ---------------------------------------------------------------------------
-# Seam-7 constants
+# Default constants
 # ---------------------------------------------------------------------------
 
 

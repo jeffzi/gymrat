@@ -66,6 +66,12 @@ def infer_group(name: str) -> str | None:
     Exposed so a renderer laying out group blocks sorts its rows by the same rule
     the aggregates were computed under — a second rule would put a metric in one
     group and its geomean in another.
+
+    Args:
+        name: The metric name to derive the group from.
+
+    Returns:
+        The ``/``-joined group prefix, or ``None`` for single-segment names.
     """
     return parse_metric_name(name).group
 
@@ -73,12 +79,6 @@ def infer_group(name: str) -> str | None:
 def _bucket_by_kind(
     metric_meta: Mapping[str, ResolvedMetricMeta],
 ) -> dict[str, _KindBucket]:
-    """Sort every metric into its kind, and within that kind into its group.
-
-    Both levels are dicts keyed by name, so iteration yields kinds and groups in
-    the order their first metric introduced them — Python dicts preserve
-    insertion order.
-    """
     buckets: dict[str, _KindBucket] = {}
 
     for name, meta in metric_meta.items():

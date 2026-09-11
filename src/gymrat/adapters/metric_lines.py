@@ -54,6 +54,10 @@ def _js_number(raw: str) -> float | None:
     - Underscore separators, and the words ``inf``/``infinity``/``nan`` that
       Python's ``float`` accepts, are rejected because JS ``Number`` rejects them
       (or yields a non-finite value that fails the ``isfinite`` guard).
+
+    Returns:
+        The finite float, or ``None`` when the token is empty, non-numeric, or
+        non-finite.
     """
     token = raw.strip()
     # float("1_0") succeeds and is finite, so the isfinite guard below cannot

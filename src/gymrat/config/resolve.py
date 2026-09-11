@@ -39,6 +39,15 @@ def _read_env_flags(flags: CliFlags) -> CliFlags:
     An env var is consulted only when its flag is ``None``, so a flag always wins
     without the env var's validation ever firing. ``GYMRAT_CONFIG`` is handled in
     :func:`_settle_config` because it selects the file to load, not a field.
+
+    Args:
+        flags: The CLI flags to overlay env-var values onto.
+
+    Returns:
+        A :class:`CliFlags` with env-var values filled in for every unset flag.
+
+    Raises:
+        GymratError: When an env var carries an invalid value.
     """
     strings: dict[str, str] = {}
     for field_name, env_var in STRING_ENV_FIELDS:
@@ -70,6 +79,10 @@ def find_implicit_base() -> str:
     Inside a git repository the config lives at the repo root, so moving the cwd
     into a subdirectory must not lose it. Outside a repository — or when git is
     unavailable — the lookup falls back to the process cwd.
+
+    Returns:
+        The git repository root, or the current working directory when no
+        repository is found.
     """
     try:
         return repo_root()
@@ -82,6 +95,14 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
 
     ``bench`` is settled separately: benchmarking commands spread it into the
     result, and the rest never ask for it.
+
+    Args:
+        flags: CLI flags, taking precedence over the config file where set.
+        config_file: Parsed config file, filling in fields the flags leave unset.
+
+    Returns:
+        The merged :class:`BenchlessConfig` with every field resolved from its
+        highest-precedence source.
     """
     samples = (
         flags.samples
@@ -126,6 +147,12 @@ def validate_config_dict(config: dict[str, object]) -> None:
     checks over ``config``, raising a :class:`GymratError` on the first problem.
     Lets a writer (the init scaffold) reject a config before touching disk without
     a temp-file round-trip.
+
+    Args:
+        config: In-memory config data, shaped like a parsed ``gymrat.toml``.
+
+    Raises:
+        GymratError: When a schema or cross-field validation problem is found.
     """
     config_file, problems = validate_and_convert(config)
     if problems:
@@ -185,6 +212,14 @@ def resolve_benchless_config(
 
     Use for a command that runs no benchmark: it settles the same values without
     demanding a bench command none of them would run.
+
+    Args:
+        flags: CLI flags, taking precedence over env vars and the config file.
+        base_dir: Directory to anchor the implicit config-file lookup to, or
+            ``None`` to use :func:`find_implicit_base`.
+
+    Returns:
+        The fully settled :class:`BenchlessConfig`.
     """
     config, _ = _settle_config(flags, base_dir)
     return config
@@ -195,6 +230,18 @@ def resolve_config(flags: CliFlags, base_dir: str | Path | None = None) -> Resol
 
     ``bench`` has no default and must come from a flag or the config file — a run
     without it raises.
+
+    Args:
+        flags: CLI flags, taking precedence over env vars and the config file.
+        base_dir: Directory to anchor the implicit config-file lookup to, or
+            ``None`` to use :func:`find_implicit_base`.
+
+    Returns:
+        The fully settled :class:`ResolvedConfig` including ``bench``.
+
+    Raises:
+        GymratError: When ``bench`` is missing from both flags and the config
+            file, or when any other resolution step fails.
     """
     config, bench = _settle_config(flags, base_dir)
     if bench is None:

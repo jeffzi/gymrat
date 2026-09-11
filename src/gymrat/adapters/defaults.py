@@ -39,6 +39,13 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
     empty (the name equals the suffix, e.g. ``#time``), ``short_name`` is the
     full metric name so the report renders a visible label. A name matching no
     suffix yields defaults carrying only ``direction``.
+
+    Args:
+        metric_name: The metric name to match against the suffix table.
+
+    Returns:
+        Defaults for the first matching suffix, or direction-only defaults when
+        no suffix matches.
     """
     for suffix, unit, kind in _METRIC_SUFFIXES:
         if metric_name.endswith(suffix):

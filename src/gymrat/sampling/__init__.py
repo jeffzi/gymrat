@@ -195,7 +195,6 @@ async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-e
 
 
 def _parse(adapter: Adapter, stdout: str, warn: WarnSink | None) -> dict[str, float]:
-    """Parse a bench run's stdout, routing warnings through ``warn`` when given."""
     if warn is None:
         return adapter.parse(stdout)
     return adapter.parse(stdout, warn)
@@ -263,6 +262,11 @@ async def run_with_worktrees[M, R](
 
     Returns:
         The value ``build_result`` produced from the measurement and cleanup.
+
+    Raises:
+        Exception: Whatever ``phase`` raises, propagated as-is when the worktree
+            sweep succeeds, or — when the sweep also failed — a same-typed
+            replacement whose message appends the cleanup diagnostics.
     """
     repo_dir = str(Path.cwd())
     worktrees: list[WorktreeInfo] = []

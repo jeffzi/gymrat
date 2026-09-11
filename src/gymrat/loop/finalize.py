@@ -14,7 +14,7 @@ from gymrat.errors import GymratError
 from gymrat.git import try_git
 from gymrat.plural import pluralize
 from gymrat.report.loop import SHORT_SHA_LENGTH
-from gymrat.session.clock import now_iso
+from gymrat.session.clock import now_ns
 from gymrat.session.records import FinalizeRecord, KeepRecord, SessionLogRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -64,26 +64,36 @@ def _validate_finalize(
 ) -> tuple[str, str]:
     """Guard the session against all finalize refusals.
 
+    Args:
+        root: The repository root.
+        opts: The finalize options supplied by the caller.
+        session: The session record being finalized.
+        state: The session's current iteration state.
+
     Returns:
         The expected baseline position and the branch the squash will be pointed
         at — resolved here so the collision check and the branch that gets created
         can never name different refs.
+
+    Raises:
+        GymratError: When the session kept nothing, has an unsettled iteration,
+            or carries uncommitted work in the experiment worktree.
     """
     if state.keep_count == 0:
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
         hint = "Run gymrat keep on a measured edit before closing the session."
-        raise GymratError(message, hint=hint)
+        raise GymratError(message, hint=hint, reason="nothing-kept")
     if state.unsettled:
         message = (
             f"Finalize refused: iteration {state.last_seq} has been neither kept nor discarded."
         )
-        raise GymratError(message, hint=_SETTLE_FIRST_HINT)
+        raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unsettled")
     if is_worktree_dirty(session.worktrees.experiment):
         message = (
             f"Finalize refused: the experiment worktree at {session.worktrees.experiment} "
             "carries uncommitted work."
         )
-        raise GymratError(message, hint=_SETTLE_FIRST_HINT)
+        raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="dirty-worktree")
 
     expected_position = last_kept_position(state, session.baseline.sha)
     if state.last_kept_commit is not None and Path(session.worktrees.experiment).is_dir():
@@ -93,7 +103,7 @@ def _validate_finalize(
                 "Finalize refused: the experiment worktree has commits that were "
                 "neither kept nor discarded."
             )
-            raise GymratError(message, hint=_SETTLE_FIRST_HINT)
+            raise GymratError(message, hint=_SETTLE_FIRST_HINT, reason="unkept-commits")
 
     if opts.branch is not None and opts.branch.startswith("-"):
         message = (
@@ -104,13 +114,13 @@ def _validate_finalize(
             f"Name a branch that does not start with a dash, such as "
             f"--branch {session.branch}-final"
         )
-        raise GymratError(message, hint=hint)
+        raise GymratError(message, hint=hint, reason="bad-branch")
 
     branch = opts.branch if opts.branch is not None else f"{session.branch}-final"
     if try_git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root) is None:
         message = f"Finalize refused: the branch '{branch}' already exists."
         hint = f"Name another with --branch <name>, or delete it with: git branch -D {branch}"
-        raise GymratError(message, hint=hint)
+        raise GymratError(message, hint=hint, reason="branch-exists")
 
     return expected_position, branch
 
@@ -126,6 +136,15 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
 
     Holding the repository lock across the call is the caller's job: the record
     and the worktree removal it explains must not be separable by another run.
+
+    Args:
+        root: The repository root containing the session.
+        options: Finalize settings, such as the target branch name. Defaults
+            are used when omitted.
+
+    Returns:
+        The finalize result containing the squash commit, the branch it landed on,
+        and the session's final state.
 
     Raises:
         GymratError: When no open session exists, when the session kept nothing,
@@ -153,7 +172,7 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
 
     record = FinalizeRecord(
         type="finalize",
-        at=now_iso(),
+        at=now_ns(),
         branch=branch,
         commit=commit,
         message=message,
@@ -184,6 +203,15 @@ def _squash_onto_baseline(
     neither needs — or moves — a checkout. The single parent is the baseline the
     session started from, which is what makes the result a squash rather than a
     merge.
+
+    Args:
+        root: The repository root.
+        tree_source: The commit whose tree the squash should carry.
+        baseline_sha: The commit the squash is built onto as its sole parent.
+        message: The commit message for the squash commit.
+
+    Returns:
+        The SHA of the new squash commit.
     """
     tree = run_git_step(
         ["rev-parse", f"{tree_source}^{{tree}}"],
@@ -214,6 +242,12 @@ def _generated_message(records: list[SessionLogRecord]) -> str:
     A keep whose ``message`` the log omits — which gymrat never writes, but a
     hand-edited or older log can hold — falls back to its short commit rather than
     dropping its line and leaving the subject claiming more than the body shows.
+
+    Args:
+        records: The kept session-log records being collapsed into one commit.
+
+    Returns:
+        The multi-line commit message with a subject and per-keep body lines.
     """
     kept = [
         record.message

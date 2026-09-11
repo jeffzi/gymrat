@@ -216,11 +216,12 @@ Levers, in order of leverage:
 ## Machine-readable output
 
 `measure`, `compare`, `iterate`, `keep`, `discard`, `stop`, `status`, and `doctor` accept
-`--format json`.
+`--format json`. Keys are snake_case; timestamps are integer nanoseconds since the epoch under the
+field `at`.
 When driving the loop programmatically, always pass `--format json`. The JSON contract is
-additive-only (no renames or removals without a breaking change); the text report may change
-between releases. `start`, `finalize`, and `sync` are text-only: their outputs are one-shot
-summaries agents don't parse.
+additive-only from the first published release (no renames or removals without a breaking change);
+the text report may change between releases. `start`, `finalize`, and `sync` are text-only: their
+outputs are one-shot summaries agents don't parse.
 
 ## Syncing main-tree edits
 

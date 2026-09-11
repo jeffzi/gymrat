@@ -13,6 +13,7 @@ from gymrat.session.paths import (
 from gymrat.session.records import (
     SCHEMA_VERSION,
     BaselineRecord,
+    CommandRecord,
     Confirm,
     DiscardRecord,
     FinalizeRecord,
@@ -31,6 +32,7 @@ from gymrat.session.records import (
     parse_record,
     record_to_wire,
 )
+from gymrat.session.schema import CommandReason, KeepReason
 from gymrat.session.store import (
     RequiredSession,
     SessionState,
@@ -63,6 +65,8 @@ __all__ = [
     "SCHEMA_VERSION",
     "BaselineRecord",
     "BaselineRef",
+    "CommandReason",
+    "CommandRecord",
     "Confirm",
     "DiscardRecord",
     "FinalizeRecord",
@@ -70,6 +74,7 @@ __all__ = [
     "IterationPrimary",
     "IterationRecord",
     "KeepChecks",
+    "KeepReason",
     "KeepRecord",
     "MetricVerdict",
     "PairedSamples",

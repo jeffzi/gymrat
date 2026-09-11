@@ -31,6 +31,7 @@ from gymrat.cli.shared import (
     apply_debug,
     begin_run,
     budget_for_report,
+    config_trace_args,
     emit_report,
     parse_positional,
     run_cli,
@@ -126,7 +127,16 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         warn_duration_over_budget(halve=True)
-        outcome = await with_repo_lock("measure", lambda: _measure_body(flags, resolved_target))
+        trace_args: dict[str, object] = {
+            "target": resolved_target.label or resolved_target.target,
+            "record": record,
+            **config_trace_args(flags),
+        }
+        outcome = await with_repo_lock(
+            "measure",
+            lambda _trace: _measure_body(flags, resolved_target),
+            args=trace_args,
+        )
         budget_trailer, budget_summary = budget_for_report()
         emit_report(
             outcome.result,

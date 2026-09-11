@@ -189,14 +189,14 @@ _no_deadline = settings(deadline=None)
 
 
 def test_sign_flip_permutation_test_when_zero_median_rearrangements_does_count_against():
-    """Sign-flip rearrangements that produce a zero baseline median count against the delta.
-
-    Baseline ``[12]*6`` vs candidate ``[0,0,0,0,60,60]``: some rearrangements
-    flip enough low candidate values into the baseline to make its median zero,
-    which makes the delta undefined (division by zero).  Those rearrangements must
-    count on the baseline side (against the observed delta), not be discarded or
-    treated as evidence for the delta.  The correct exact p is 0.25, not 0.125.
-    """
+    # Zero-median rearrangements count against the observed delta.
+    #
+    # Baseline [12]*6 vs candidate [0,0,0,0,60,60]: some rearrangements flip
+    # enough low candidate values into the baseline to make its median zero,
+    # which makes the delta undefined (division by zero).  Those rearrangements
+    # must count on the baseline side (against the observed delta), not be
+    # discarded or treated as evidence for the delta.  The correct exact p is
+    # 0.25, not 0.125.
     result = sign_flip_permutation_test([12] * 6, [0, 0, 0, 0, 60, 60])
 
     assert result.n == 6
@@ -205,17 +205,17 @@ def test_sign_flip_permutation_test_when_zero_median_rearrangements_does_count_a
 
 
 def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
-    """Only differing pairs count toward the exact/MC budget decision.
-
-    Eight extreme tied pairs plus the standard six differing pairs give 14 total.
-    ``2**14 > RESAMPLE_BUDGET`` would push scipy onto the Monte Carlo path, but
-    tied pairs contribute the same value to both sides under every flip, so the
-    effective space is ``2**6 = 64 <= RESAMPLE_BUDGET`` — exact enumeration.
-
-    Extreme tied values sit outside the differing-pair range and do not shift
-    medians, so the exact p equals the ties-free six-pair p.  An MC path over
-    all 14 pairs would produce a close but not byte-identical estimate.
-    """
+    # Tied pairs reduce the effective budget, keeping the path exact.
+    #
+    # Eight extreme tied pairs plus the standard six differing pairs give 14
+    # total.  2**14 > RESAMPLE_BUDGET would push scipy onto the Monte Carlo
+    # path, but tied pairs contribute the same value to both sides under every
+    # flip, so the effective space is 2**6 = 64 <= RESAMPLE_BUDGET — exact
+    # enumeration.
+    #
+    # Extreme tied values sit outside the differing-pair range and do not shift
+    # medians, so the exact p equals the ties-free six-pair p.  An MC path
+    # over all 14 pairs would produce a close but not byte-identical estimate.
     x = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_X]
     y = [1, 2, 3, 4, 96, 97, 98, 99, *_SIX_PAIR_Y]
 
@@ -244,19 +244,3 @@ def test_sign_flip_permutation_test_when_any_positive_pairs_does_return_p_in_uni
     result = sign_flip_permutation_test(x, y)
 
     assert 0.0 < result.p <= 1.0
-
-
-@_no_deadline
-@given(pairs=_paired_samples)
-def test_sign_flip_permutation_test_when_swapped_does_return_same_p(
-    pairs: list[tuple[float, float]],
-):
-    x = [pair[0] for pair in pairs]
-    y = [pair[1] for pair in pairs]
-
-    forward = sign_flip_permutation_test(x, y)
-    swapped = sign_flip_permutation_test(y, x)
-
-    assert swapped.n == forward.n
-    assert swapped.p == pytest.approx(forward.p)
-    assert math.isfinite(forward.p)

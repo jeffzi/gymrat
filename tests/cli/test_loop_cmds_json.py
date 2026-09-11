@@ -104,8 +104,8 @@ def test_keep_command_when_format_json_and_committed_does_emit_structured_json(
     assert doc["reason"] is None
     assert doc["checks"]["configured"] is True
     assert doc["checks"]["passed"] is True
-    assert doc["checks"]["stdoutBytes"] == 80
-    assert doc["checks"]["stderrBytes"] == 0
+    assert doc["checks"]["stdout_bytes"] == 80
+    assert doc["checks"]["stderr_bytes"] == 0
 
 
 def test_keep_command_when_format_json_and_blocked_does_emit_blocked_json_with_reason(
@@ -133,7 +133,7 @@ def test_keep_command_when_format_json_does_include_stable_key_names(
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert {"status", "reason", "checks", "commit", "message"} <= doc.keys()
-    assert {"configured", "passed", "stdoutBytes", "stderrBytes"} <= doc["checks"].keys()
+    assert {"configured", "passed", "stdout_bytes", "stderr_bytes"} <= doc["checks"].keys()
 
 
 def test_keep_command_when_format_text_does_produce_plain_report(
@@ -216,6 +216,7 @@ def test_discard_command_when_format_json_does_emit_structured_json(
     doc = json.loads(result.stdout)
     assert doc["seq"] == expected_seq
     assert doc["at"] == AT
+    assert isinstance(doc["at"], int)
     assert doc["measured"] is expected_measured
 
 
@@ -255,13 +256,13 @@ def test_status_command_when_format_json_does_emit_structured_json_on_stdout(sta
 
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
-    assert doc["sessionId"] == SESSION_ID
+    assert doc["session_id"] == SESSION_ID
     assert doc["branch"] == f"gymrat/{SESSION_ID}"
     assert doc["baseline"]["ref"] == "main"
     assert doc["baseline"]["sha"] == "a" * 40
-    assert doc["iterationCount"] == 1
-    assert doc["keepCount"] == 1
-    assert doc["discardCount"] == 0
+    assert doc["iteration_count"] == 1
+    assert doc["keep_count"] == 1
+    assert doc["discard_count"] == 0
     assert doc["unsettled"] is False
     assert doc["finalized"] is False
     assert doc["stopped"] is False
@@ -292,12 +293,12 @@ def test_status_command_when_format_json_does_include_stable_key_names(status_re
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert {
-        "sessionId",
+        "session_id",
         "branch",
         "baseline",
-        "iterationCount",
-        "keepCount",
-        "discardCount",
+        "iteration_count",
+        "keep_count",
+        "discard_count",
         "unsettled",
         "finalized",
         "stopped",
@@ -340,8 +341,8 @@ def test_keep_command_when_format_json_and_budget_active_does_include_budget_obj
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_keep_command_when_format_json_and_blocked_and_budget_active_does_include_budget_object(
@@ -355,8 +356,8 @@ def test_keep_command_when_format_json_and_blocked_and_budget_active_does_includ
     assert result.exit_code == 1
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_keep_command_when_format_json_and_no_budget_does_omit_budget_key(
@@ -382,8 +383,8 @@ def test_discard_command_when_format_json_and_budget_active_does_include_budget_
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_discard_command_when_format_json_and_no_budget_does_omit_budget_key(
@@ -408,8 +409,8 @@ def test_status_command_when_format_json_and_budget_active_does_include_budget_o
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_status_command_when_format_json_and_no_budget_does_omit_budget_key(
@@ -442,6 +443,7 @@ def test_stop_command_when_format_json_does_emit_structured_json_with_at_and_mes
     doc = json.loads(result.stdout)
     assert doc["message"] == "user requested stop"
     assert "at" in doc
+    assert isinstance(doc["at"], int)
 
 
 def test_stop_command_when_format_json_and_budget_active_does_include_budget_object(
@@ -454,8 +456,8 @@ def test_stop_command_when_format_json_and_budget_active_does_include_budget_obj
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_stop_command_when_format_json_and_no_budget_does_omit_budget_key(

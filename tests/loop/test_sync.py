@@ -33,6 +33,7 @@ CONFIG = ResolvedConfig(
 
 @pytest.fixture
 def repo(create_scratch_repo: Callable[[], str]) -> str:
+    """A fresh scratch repository with no open session."""
     return create_scratch_repo()
 
 
@@ -134,6 +135,19 @@ def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_refuse_
     assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == "# Experiment change\n"
 
 
+def test_sync_to_experiment_when_experiment_has_conflicting_changes_does_carry_dirty_worktree_reason(
+    session: str,
+):
+    experiment = experiment_worktree_dir(session)
+    (Path(session) / "README.md").write_text("# Main change\n", encoding="utf-8")
+    (Path(experiment) / "README.md").write_text("# Experiment change\n", encoding="utf-8")
+
+    with pytest.raises(GymratError) as excinfo:
+        sync_to_experiment(session)
+
+    assert excinfo.value.reason == "dirty-worktree"
+
+
 # ---------------------------------------------------------------------------
 # no open session
 # ---------------------------------------------------------------------------
@@ -156,10 +170,7 @@ def test_sync_to_experiment_when_no_session_does_raise_pointing_at_start(
 def test_sync_to_experiment_when_filename_contains_non_ascii_does_sync_real_path(
     session: str,
 ):
-    """Sync uses the real filesystem path, not the C-quoted string.
-
-    Git with core.quotePath=true C-quotes non-ASCII names.
-    """
+    # core.quotePath=true C-quotes non-ASCII names; sync must use the real path.
     run_git(session, "config", "core.quotePath", "true")
     non_ascii_name = "été.txt"  # ete with accents
     (Path(session) / non_ascii_name).write_text("summer\n", encoding="utf-8")
@@ -179,7 +190,6 @@ def test_sync_to_experiment_when_filename_contains_non_ascii_does_sync_real_path
 def test_sync_to_experiment_when_file_renamed_does_remove_old_path_from_experiment(
     session: str,
 ):
-    """A staged rename removes the old path and syncs the new one."""
     run_git(session, "mv", "README.md", "GUIDE.md")
 
     result = sync_to_experiment(session)
@@ -263,7 +273,6 @@ def test_sync_to_experiment_when_experiment_worktree_missing_does_raise_gymrat_e
 def test_sync_to_experiment_when_git_status_fails_does_raise_gymrat_error(
     session: str,
 ):
-    """A git failure surfaces as GymratError, not CalledProcessError."""
     index = Path(session) / ".git" / "index"
     index.write_bytes(b"corrupt")
     (Path(session) / "change.txt").write_text("trigger\n", encoding="utf-8")

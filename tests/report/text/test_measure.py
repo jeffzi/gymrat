@@ -20,7 +20,6 @@ from tests.report._inputs import (
 
 
 def test_render_measure_report_when_single_kind_grouped_does_show_group_headers():
-    """A single-kind measurement with grouped metrics must group under headers."""
     result = create_measurement_result(
         metrics={
             "entity/alive_check#time": measured_metric(

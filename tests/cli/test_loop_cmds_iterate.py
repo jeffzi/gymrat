@@ -24,7 +24,7 @@ from gymrat.session import (
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
 from tests.cli._budget import install_budget
-from tests.cli._loop_cmds import plain_lines, runner, write_config
+from tests.cli._loop_cmds import last_command_record, plain_lines, runner, write_config
 from tests.loop.iterate._fixtures import (
     baseline_rounds,
     improved_rounds,
@@ -35,6 +35,7 @@ from tests.loop.iterate._fixtures import session_record as iterate_session_heade
 from tests.session.records._fixtures import (
     SESSION_ID,
     committed_keep,
+    finalize_record,
     iteration_record,
     write_session_log,
 )
@@ -57,7 +58,12 @@ def test_iterate_command_when_run_does_measure_the_repo_and_report_on_stdout(
     lines = plain_lines(result.stdout)
     assert lines[0] == "iteration 1 · experiment vs baseline · 10 paired samples"
     assert lines[-1] == "gymrat keep"
-    assert len(read_records(session_jsonl_path(repo))) == 2
+    from gymrat.session import CommandRecord
+
+    non_command = [
+        r for r in read_records(session_jsonl_path(repo)) if not isinstance(r, CommandRecord)
+    ]
+    assert len(non_command) == 2
 
 
 def test_iterate_command_when_stop_condition_met_does_exit_one_without_measuring(
@@ -81,6 +87,64 @@ def test_iterate_command_when_no_session_does_exit_two_with_a_start_hint(repo: s
 
     assert result.exit_code == 2
     assert "gymrat start" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# the iterate command — command trace annotations
+# ---------------------------------------------------------------------------
+
+
+def test_iterate_command_when_run_does_record_command_trace_with_seq_and_args(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo))
+    mock = install_collect_samples(monkeypatch)
+    stub_samples(mock, repo, improved_rounds(), baseline_rounds())
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--samples", "10"])
+
+    assert result.exit_code == 0
+    cmd = last_command_record(repo)
+    assert cmd.name == "iterate"
+    assert cmd.args["bench"] == "npm run bench"
+    assert cmd.args["samples"] == 10
+    assert cmd.seq == 1
+    assert cmd.exit_code == 0
+    assert cmd.reason is None
+
+
+def test_iterate_command_when_unsettled_does_record_command_trace_with_exit_two_and_seq(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_session_log(repo, iterate_session_header(repo), (iteration_record(seq=1),))
+    install_collect_samples(monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "iterate"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "unsettled"
+    assert cmd.seq == 1
+
+
+def test_iterate_command_when_finalized_does_record_command_trace_with_exit_two(
+    repo: str,
+):
+    write_session_log(
+        repo,
+        iterate_session_header(repo),
+        (iteration_record(seq=1), committed_keep(1), finalize_record()),
+    )
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 2
+    cmd = last_command_record(repo)
+    assert cmd.name == "iterate"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "finalized"
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +246,6 @@ class _IterateSessionRecorder:
 
 
 class _IterateSessionRaiser:
-    """A stand-in for ``iterate_session`` that raises on call."""
-
     def __init__(self, error: BaseException) -> None:
         self._error = error
         self.captured_options: IterateOptions | None = None
@@ -298,7 +360,6 @@ def test_iterate_command_when_run_does_pass_session_metadata_to_renderer(
 def test_iterate_command_when_run_does_register_progress_cleanup_for_termination(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """Termination signals must clear the progress sidecar even when finally is skipped."""
     write_session_log(repo, iterate_session_header(repo))
     _install_renderer_factory(monkeypatch)
 
@@ -331,6 +392,7 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
         )
         progress = Path(progress_path(root))
         assert progress.exists()  # noqa: ASYNC240 -- sync check in async test
+        # Termination signals must clear the sidecar even when finally is skipped.
         for cleanup in captured_cleanups:
             cleanup()
         progress_cleared_mid_run = not progress.exists()  # noqa: ASYNC240 -- sync check in async test
@@ -361,7 +423,7 @@ def test_iterate_command_when_format_json_does_emit_structured_json_on_stdout(
     assert doc["seq"] == 1
     assert doc["outcome"] == "improved"
     assert doc["primary"]["kind"] == "geomean"
-    assert doc["primary"]["deltaPct"] == pytest.approx(-7.2)
+    assert doc["primary"]["delta_pct"] == pytest.approx(-7.2)
     assert "metrics" in doc
     assert doc["confirm"] is None
 
@@ -470,8 +532,8 @@ def test_iterate_command_when_format_json_and_budget_active_does_include_budget_
     assert result.exit_code == 0
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_iterate_command_when_format_json_and_no_budget_does_omit_budget_key(
@@ -515,8 +577,8 @@ def test_iterate_command_when_stop_and_format_json_and_budget_active_does_includ
     assert result.exit_code == 1
     doc = json.loads(result.stdout)
     assert "budget" in doc
-    assert doc["budget"]["capMinutes"] == 30
-    assert isinstance(doc["budget"]["remainingSeconds"], int)
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
 
 
 def test_iterate_command_when_error_and_budget_active_does_not_include_budget(

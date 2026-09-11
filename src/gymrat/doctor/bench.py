@@ -24,6 +24,13 @@ def _first_command_word(bench: str) -> str | None:
     Skips env-var assignments (``VAR=val``) and returns ``None`` when the command
     contains shell metacharacters — the PATH check is meaningless for compound
     shell expressions.
+
+    Args:
+        bench: The shell command string to extract the first token from.
+
+    Returns:
+        The first non-assignment token, or ``None`` when the command contains
+        shell metacharacters or has no executable token.
     """
     if _SHELL_OPERATOR_RE.search(bench):
         return None
@@ -48,6 +55,14 @@ def build_bench_section(
     When ``config_problems`` is True and ``bench`` is None the section collapses
     to a single skip placeholder — the bench value was never resolved, so a FAIL
     would be misleading.
+
+    Args:
+        bench: The configured bench command, or ``None`` if unresolved.
+        adapter: The name of the adapter to validate.
+        config_problems: Whether config inspection already found problems.
+
+    Returns:
+        The assembled bench check section.
     """
     if config_problems and bench is None:
         return CheckSection(

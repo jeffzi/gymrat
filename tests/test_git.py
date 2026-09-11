@@ -190,8 +190,7 @@ def _install_sleep_post_checkout_hook(repo_dir: str, seconds: int) -> None:
     """Install a post-checkout hook that only sleeps.
 
     Keeps ``git worktree add`` in-flight long enough for a mid-call signal to
-    land. Borrows the hook mechanism from ``kill_git_during_worktree_add`` but
-    inverts its body: instead of killing git, git runs to completion slowly.
+    land.
     """
     hook_path = Path(repo_dir) / ".git" / "hooks" / "post-checkout"
     hook_path.parent.mkdir(parents=True, exist_ok=True)

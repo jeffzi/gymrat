@@ -34,8 +34,6 @@ from gymrat.session import (
 from tests._git import run_git
 from tests.session.records._fixtures import committed_keep, iteration_record, stop_record
 
-ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-
 # A settled run config carrying the keys the session header snapshots; it drives
 # ``start_session`` without ever being benched against.
 CONFIG = ResolvedConfig(
@@ -124,11 +122,9 @@ def repo(create_scratch_repo: Callable[[], str]) -> str:
 
 @pytest.fixture
 def baseline_sha(repo: str) -> str:
-    """The commit ``main`` sits on — the baseline every squash hangs from.
-
-    ``start_session`` never moves ``main``, so reading it after the session opens
-    yields the same commit the baseline is pinned to.
-    """
+    """The commit ``main`` sits on — the baseline every squash hangs from."""
+    # start_session never moves main, so reading it after the session opens
+    # yields the same commit the baseline is pinned to.
     return _git(["rev-parse", "HEAD"], repo)
 
 
@@ -182,6 +178,12 @@ def test_finalize_when_nothing_kept_does_refuse_creating_no_branch_and_no_record
     assert len(_records(repo)) == before
 
 
+def test_finalize_when_nothing_kept_does_carry_nothing_kept_reason(repo: str):
+    error = _capture_error(lambda: finalize_session(repo))
+
+    assert error.reason == "nothing-kept"
+
+
 # ---------------------------------------------------------------------------
 # when the last iteration is neither kept nor discarded
 # ---------------------------------------------------------------------------
@@ -199,6 +201,15 @@ def test_finalize_when_last_iteration_unsettled_does_refuse_writing_no_record(re
     assert len(_records(repo)) == before
 
 
+def test_finalize_when_last_iteration_unsettled_does_carry_unsettled_reason(repo: str):
+    _keep_iteration(repo, 1, "cache the regex")
+    append_record(session_jsonl_path(repo), iteration_record(seq=2))
+
+    error = _capture_error(lambda: finalize_session(repo))
+
+    assert error.reason == "unsettled"
+
+
 # ---------------------------------------------------------------------------
 # when the experiment worktree carries uncommitted work
 # ---------------------------------------------------------------------------
@@ -214,6 +225,15 @@ def test_finalize_when_experiment_worktree_dirty_does_refuse_writing_no_record(r
     assert error.hint is not None
     assert _mentions_keep_and_discard(error.hint)
     assert len(_records(repo)) == before
+
+
+def test_finalize_when_experiment_worktree_dirty_does_carry_dirty_worktree_reason(repo: str):
+    _keep_iteration(repo, 1, "cache the regex")
+    (Path(experiment_worktree_dir(repo)) / "scratch.txt").write_text("notes\n", encoding="utf-8")
+
+    error = _capture_error(lambda: finalize_session(repo))
+
+    assert error.reason == "dirty-worktree"
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +256,20 @@ def test_finalize_when_experiment_head_ahead_of_last_keep_does_refuse_hinting_ke
     assert error.hint is not None
     assert _mentions_keep_and_discard(error.hint)
     assert len(_records(repo)) == before
+
+
+def test_finalize_when_experiment_head_ahead_of_last_keep_does_carry_unkept_commits_reason(
+    repo: str,
+):
+    _keep_iteration(repo, 1, "cache the regex")
+    worktree = experiment_worktree_dir(repo)
+    (Path(worktree) / "extra.txt").write_text("extra\n", encoding="utf-8")
+    _git(["add", "-A"], worktree)
+    _git(["commit", "-m", "extra commit"], worktree)
+
+    error = _capture_error(lambda: finalize_session(repo))
+
+    assert error.reason == "unkept-commits"
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +390,8 @@ def test_finalize_when_committed_keeps_exist_does_append_a_finalize_record_namin
 
     record = result.record
     assert record.type == "finalize"
-    assert ISO_PATTERN.match(record.at)
+    assert isinstance(record.at, int)
+    assert record.at > 0
     assert record.branch == final_branch
     assert record.commit == _git(["rev-parse", final_branch], kept_repo)
     assert isinstance(record.message, str)
@@ -427,6 +462,12 @@ def test_finalize_when_branch_name_looks_like_flag_does_refuse_creating_nothing(
     assert len(_records(kept_repo)) == before
 
 
+def test_finalize_when_branch_name_looks_like_flag_does_carry_bad_branch_reason(kept_repo: str):
+    error = _capture_error(lambda: finalize_session(kept_repo, FinalizeOptions(branch="-m")))
+
+    assert error.reason == "bad-branch"
+
+
 def test_finalize_does_refuse_when_the_target_branch_already_exists_creating_nothing(
     kept_repo: str, baseline_sha: str, final_branch: str
 ):
@@ -438,6 +479,16 @@ def test_finalize_does_refuse_when_the_target_branch_already_exists_creating_not
     assert final_branch in str(error)
     assert _git(["rev-parse", final_branch], kept_repo) == baseline_sha
     assert len(_records(kept_repo)) == before
+
+
+def test_finalize_does_carry_branch_exists_reason_when_target_branch_already_exists(
+    kept_repo: str, baseline_sha: str, final_branch: str
+):
+    _git(["branch", final_branch, baseline_sha], kept_repo)
+
+    error = _capture_error(lambda: finalize_session(kept_repo))
+
+    assert error.reason == "branch-exists"
 
 
 def test_finalize_does_close_the_session_even_when_git_refuses_to_remove_a_worktree(

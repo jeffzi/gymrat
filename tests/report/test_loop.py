@@ -58,12 +58,10 @@ _WIDTH = 200
 
 
 def _plain(*markup: str) -> str:
-    """The markup rendered without color, as a terminal's visible text would read."""
     return render_lines(*markup, color=False, width=_WIDTH)
 
 
 def _colored(*markup: str) -> str:
-    """The markup rendered with color forced on, ANSI escapes and all."""
     return render_lines(*markup, color=True, width=_WIDTH)
 
 
@@ -359,7 +357,7 @@ def test_format_status_iteration_when_colored_does_paint_the_glyph(
 def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric():
     record = BaselineRecord(
         type="baseline",
-        at="2026-08-08T14:15:30.000Z",
+        at=1_786_198_530_000_000_000,
         label="main",
         samples=(
             {"total_ms": 15200, "alloc_bytes": 1500},
@@ -375,7 +373,7 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
 def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rounds_that_reported_it():
     record = BaselineRecord(
         type="baseline",
-        at="2026-08-08T14:15:30.000Z",
+        at=1_786_198_530_000_000_000,
         label="main",
         samples=({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}),
     )
@@ -467,7 +465,6 @@ def test_format_status_finalized_when_colored_does_embolden_finalized():
 
 
 def test_format_status_header_when_worktree_path_contains_brackets_does_render_them_literally():
-    """A worktree path with brackets must render literally, not as Rich markup."""
     session = session_record(
         baseline=BaselineRef(ref="main", sha=_BASELINE_SHA),
         worktrees=Worktrees(
@@ -486,10 +483,9 @@ def test_format_status_header_when_worktree_path_contains_brackets_does_render_t
 
 
 def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
-    """A metric name with brackets must render literally in the baseline line."""
     record = BaselineRecord(
         type="baseline",
-        at="2026-08-08T14:15:30.000Z",
+        at=1_786_198_530_000_000_000,
         label="main",
         samples=({"total[ms]": 15200},),
     )

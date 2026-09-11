@@ -41,12 +41,10 @@ def _sgr_params(text: str) -> str:
 
 
 def _plain(renderable: str) -> str:
-    """Render *renderable* at the standard test width with color suppressed."""
     return render_lines(renderable, color=False, width=_WIDTH)
 
 
 def _colored(renderable: str) -> str:
-    """Render *renderable* at the standard test width with color forced on."""
     return render_lines(renderable, color=True, width=_WIDTH)
 
 
@@ -126,12 +124,10 @@ def test_truncate_labels_when_a_label_overflows_does_join_head_and_tail():
 
 
 def test_truncate_labels_when_two_collide_does_widen_until_distinct():
-    result = truncate_labels(
-        [
-            "feature/experiment-one-fastpath",
-            "feature/exploration-two-fastpath",
-        ]
-    )
+    result = truncate_labels([
+        "feature/experiment-one-fastpath",
+        "feature/exploration-two-fastpath",
+    ])
 
     assert result == ["feature/ex…e-fastpath", "feature/ex…o-fastpath"]
 
@@ -139,13 +135,11 @@ def test_truncate_labels_when_two_collide_does_widen_until_distinct():
 def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it():
     short_enough = "release/candidate-2.1"
 
-    result = truncate_labels(
-        [
-            "feature/experiment-one-fastpath",
-            "feature/exploration-two-fastpath",
-            short_enough,
-        ]
-    )
+    result = truncate_labels([
+        "feature/experiment-one-fastpath",
+        "feature/exploration-two-fastpath",
+        short_enough,
+    ])
 
     assert result == [
         "feature/ex…e-fastpath",

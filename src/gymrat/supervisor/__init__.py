@@ -12,7 +12,10 @@ from gymrat.supervisor.driver import (
 from gymrat.supervisor.event_log import create_event_log_writer
 from gymrat.supervisor.events import (
     SUMMARY_MAX_CHARS,
+    CapAction,
     CapEvent,
+    CapType,
+    CompactionEvent,
     DirtyInfo,
     FollowUpEvent,
     LaunchEvent,
@@ -38,8 +41,11 @@ from gymrat.supervisor.supervise import SupervisionResult, supervise
 
 __all__ = [
     "SUMMARY_MAX_CHARS",
+    "CapAction",
     "CapEvent",
+    "CapType",
     "ClientFactory",
+    "CompactionEvent",
     "DirtyInfo",
     "Driver",
     "DriverSession",

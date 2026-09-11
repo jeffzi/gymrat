@@ -1,8 +1,8 @@
-"""Tests for the CLI shared infrastructure: parsing, locking, render modes.
+"""Tests for the CLI shared infrastructure: parsing, error rendering, render modes.
 
 These cover the CLI shared surface — the positional grammar, the numeric flag
-coercers, the render-mode resolution, and the repository lock wrapper — plus the
-import-latency guard.
+coercers, the render-mode resolution, the error formatter and exit path — plus
+the import-latency guard. Lock and trace tests live in ``test_lock.py``.
 """
 
 import asyncio
@@ -10,11 +10,9 @@ import io
 import subprocess
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 import pytest
 import typer
-from filelock import FileLock, Timeout
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
@@ -40,25 +38,14 @@ from gymrat.cli.shared import (
     run_with_signal_abort,
     set_debug_mode,
     set_stderr_color_override,
-    with_repo_lock,
     write_and_flush,
 )
 from gymrat.config import MAX_TIMEOUT_SECONDS
 from gymrat.errors import GymratError
-from gymrat.git import NotAGitRepositoryError
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
-from gymrat.session import append_record, read_records, session_jsonl_path
-from gymrat.session.lock import _os_lock_file
-from gymrat.session.paths import lockfile_path, repo_root
 from tests._streams import FakeStream as _FakeStream
 from tests.cli._help import help_output
-from tests.session.records._fixtures import (
-    iteration_record,
-    session_record,
-    tear_final_line,
-    write_session_log,
-)
 
 
 class _StubReporter:
@@ -89,16 +76,6 @@ def _capturing_progress_reporter(
         return _StubReporter()
 
     return fake_init
-
-
-def _path_exists(path: Path) -> bool:
-    """Filesystem probe kept out of the async body so it is not flagged as blocking I/O."""
-    return path.exists()
-
-
-def _read_bytes(path: Path) -> bytes:
-    """Filesystem read kept out of the async body so it is not flagged as blocking I/O."""
-    return path.read_bytes()
 
 
 def _clear_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,109 +409,6 @@ def test_begin_run_does_return_progress_reporter(
     result = begin_run(SharedFlags(bench="b", samples=1), target_count=1)
 
     assert isinstance(result, ProgressReporter)
-
-
-# ---------------------------------------------------------------------------
-# with_repo_lock
-# ---------------------------------------------------------------------------
-
-
-async def test_with_repo_lock_when_inside_repo_holds_lock_during_body_and_releases_before_return(
-    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
-):
-    repo = create_scratch_repo()
-    monkeypatch.chdir(repo)
-    lock_path = str(lockfile_path(repo_root()))
-    os_lock_path = _os_lock_file(lock_path)
-    probed: dict[str, bool] = {}
-
-    async def body() -> str:
-        try:
-            FileLock(os_lock_path, timeout=0).acquire()
-            probed["held_during"] = False
-        except Timeout:
-            probed["held_during"] = True
-        return "measured"
-
-    result = await with_repo_lock("compare", body)
-
-    assert result == "measured"
-    assert probed["held_during"] is True
-    try:
-        probe = FileLock(os_lock_path, timeout=0)
-        probe.acquire()
-        probe.release()
-    except Timeout:
-        pytest.fail("lock was still held after with_repo_lock returned")
-
-
-async def test_with_repo_lock_when_outside_repo_runs_body_without_a_lock(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    def not_a_repo(*_args: object, **_kwargs: object) -> str:
-        message = "nope"
-        raise NotAGitRepositoryError(message)
-
-    acquired: list[object] = []
-
-    def spy_acquire(*args: object, **_kwargs: object):
-        acquired.append(args)
-        return lambda: None
-
-    monkeypatch.setattr("gymrat.cli.shared.repo_root", not_a_repo)
-    monkeypatch.setattr("gymrat.cli.shared.acquire_lock", spy_acquire)
-
-    async def body() -> str:
-        return "ran"
-
-    result = await with_repo_lock("compare", body)
-
-    assert result == "ran"
-    assert acquired == []
-
-
-async def test_with_repo_lock_when_session_log_torn_does_repair_it_before_running_the_body(
-    repo: str,
-):
-    header = session_record()
-    write_session_log(repo, header)
-    jsonl_path = Path(session_jsonl_path(repo_root()))
-    intact_log = _read_bytes(jsonl_path)
-    tear_final_line(jsonl_path)
-    iteration = iteration_record()
-    seen: dict[str, bytes] = {}
-
-    async def body() -> str:
-        seen["log"] = _read_bytes(jsonl_path)
-        append_record(str(jsonl_path), iteration)
-        return "ran"
-
-    result = await with_repo_lock("compare", body)
-
-    assert result == "ran"
-    assert seen["log"] == intact_log
-    assert read_records(str(jsonl_path)) == [header, iteration]
-
-
-async def test_with_repo_lock_when_git_fails_otherwise_exits_two_without_running_body(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    def broken_git(*_args: object, **_kwargs: object) -> str:
-        message = "detected dubious ownership"
-        raise GymratError(message)
-
-    monkeypatch.setattr("gymrat.cli.shared.repo_root", broken_git)
-    called: list[bool] = []
-
-    async def body() -> str:
-        called.append(True)
-        return "should-not-run"
-
-    with pytest.raises(typer.Exit) as exc:
-        await with_repo_lock("compare", body)
-
-    assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
-    assert called == []
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from gymrat.report.loop import (
 from gymrat.report.style import RENDER_WIDTH, render_lines
 from gymrat.session import (
     BaselineRecord,
+    CommandRecord,
     DiscardRecord,
     IterationRecord,
     KeepRecord,
@@ -93,6 +94,18 @@ def _apply_settle_record(
     discard that follows a gating block, which supersedes the block's claim on the
     iteration it refused — the block moves to its own position and the iteration
     shows as discarded. Anything else settles no iteration and keeps its own line.
+
+    Args:
+        states: The settle states keyed by record position, updated in place.
+        pending: The iteration awaiting settlement, or ``None`` if none is pending.
+        last_block: The gating block still standing before this record, or
+            ``None`` if none stands.
+        position: This record's position in the log.
+        record: The keep or discard record being applied.
+
+    Returns:
+        The gating block still standing after this record is processed, or
+        ``None`` when no block remains.
     """
     settle = _settle_state_of(record)
 
@@ -133,6 +146,12 @@ def _settle_states(records: Sequence[SessionLogRecord]) -> dict[int, SettleState
     A record that settled no iteration keeps an entry under its own position, and
     so a line of its own: a refused keep is a decision the log reads back, never
     one it erases.
+
+    Args:
+        records: The session-log records to derive settle states from.
+
+    Returns:
+        The settle states keyed by record position in the log.
     """
     states: dict[int, SettleState] = {}
     pending: _PendingIteration | None = None
@@ -151,6 +170,8 @@ def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
     settled = _settle_states(records)
     history: list[str] = []
     for position, record in enumerate(records):
+        if isinstance(record, CommandRecord):
+            continue
         if isinstance(record, BaselineRecord):
             history.append(format_status_baseline(record))
         elif isinstance(record, IterationRecord):

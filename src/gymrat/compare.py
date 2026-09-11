@@ -104,6 +104,10 @@ def _baseline_paired_values(
     least one candidate. When no candidate ever reported the metric, falls back to
     every round the baseline reported it in: a baseline-only metric has no verdict
     to stay consistent with, so its displayed median is the baseline's own.
+
+    Returns:
+        The baseline float values paired with at least one candidate, or all
+        baseline values when no candidate reported the metric.
     """
     paired: list[float] = []
     for index, sample in enumerate(baseline_samples):
@@ -164,6 +168,20 @@ def build_comparison_result(  # noqa: PLR0913 -- flat parameter list avoids an i
 
     Both ``compare`` (multi-candidate, real cleanup) and the loop engine
     (single candidate, zeroed cleanup) call this.
+
+    Args:
+        baseline_label: Display label for the baseline target.
+        baseline_samples: Per-round metric samples collected for the baseline.
+        candidates: Measured candidates, each with its own verdicts and kinds.
+        metric_meta: Resolved metric metadata keyed by metric name.
+        samples: Number of samples requested per target.
+        adapter: Name of the adapter used to parse bench output.
+        config_kinds: Kind entries from the config, or ``None`` when not set.
+        cleanup: Outcome of the worktree cleanup performed after sampling.
+
+    Returns:
+        The assembled :class:`ComparisonResult` with per-metric baselines,
+        candidate verdicts, and worktree cleanup status.
     """
     candidate_sample_sets = [c.samples for c in candidates]
     baseline_obs = Observations.from_rounds(baseline_samples)
@@ -284,6 +302,14 @@ async def compare(options: CompareOptions) -> ComparisonResult:
     Resolves every target's directory or ref, runs the bench round-robin across
     all of them, parses each run with the configured adapter, and computes each
     candidate's verdicts against the shared baseline.
+
+    Args:
+        options: Fully resolved comparison options, including baseline and
+            candidate targets, sampling settings, and the adapter to use.
+
+    Returns:
+        The :class:`ComparisonResult` containing every candidate's verdicts
+        against the shared baseline.
     """
     return await run_with_worktrees(
         lambda repo_dir, worktrees, abort: _compare_phase(options, repo_dir, worktrees, abort),

@@ -19,6 +19,7 @@ import pytest
 from gymrat.supervisor import create_claude_driver
 from gymrat.supervisor.driver import Driver, DriverSession, SessionOutcome, SessionPrompt
 from gymrat.supervisor.events import (
+    CompactionEvent,
     ModelPhaseEvent,
     SessionEvent,
     SessionObserver,
@@ -137,7 +138,7 @@ def test_create_claude_driver_when_constructed_does_not_import_sdk(monkeypatch: 
 
     create_claude_driver()
 
-    assert loaded is False
+    assert loaded is False  # pyrefly: ignore[unnecessary-comparison] -- verifying spy was not called
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +231,33 @@ async def test_start_when_command_timeout_ms_absent_does_omit_timeout_env_vars()
     assert "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS" not in env
     assert "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS" not in env
     assert "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS" not in env
+
+
+@pytest.mark.parametrize(
+    "command_timeout_ms",
+    [pytest.param(300000, id="with-timeout"), pytest.param(None, id="without-timeout")],
+)
+async def test_start_when_traceparent_set_does_include_gymrat_traceparent_in_env(
+    command_timeout_ms: int | None,
+):
+    tp = "00-abc123-def456-01"
+
+    client = await _start_with_prompt(
+        make_prompt(traceparent=tp, command_timeout_ms=command_timeout_ms)
+    )
+
+    assert client.options is not None
+    env = client.options.get("env", {})
+    assert env["GYMRAT_TRACEPARENT"] == tp  # pyrefly: ignore[bad-index]
+    assert "TRACEPARENT" not in env  # pyrefly: ignore[not-iterable]
+
+
+async def test_start_when_traceparent_none_does_omit_gymrat_traceparent_from_env():
+    client = await _start_with_prompt(make_prompt())
+
+    assert client.options is not None
+    env = client.options.get("env", {})
+    assert "GYMRAT_TRACEPARENT" not in env  # pyrefly: ignore[not-iterable]
 
 
 # ---------------------------------------------------------------------------
@@ -333,12 +361,10 @@ async def test_mapping_when_tool_result_content_not_json_encodable_does_fall_bac
 async def test_mapping_when_single_thinking_block_streamed_does_report_delta_equal_to_estimated_tokens():
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "abcd"},
-            }
-        ),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "abcd"},
+        }),
         stream_event({"type": "content_block_stop"}),
     ]
 
@@ -355,20 +381,16 @@ async def test_mapping_when_single_thinking_block_streamed_does_report_delta_equ
 async def test_mapping_when_multiple_thinking_blocks_streamed_does_accumulate_estimated_tokens():
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "abcd"},
-            }
-        ),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "abcd"},
+        }),
         stream_event({"type": "content_block_stop"}),
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "abcdefgh"},
-            }
-        ),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "abcdefgh"},
+        }),
         stream_event({"type": "content_block_stop"}),
     ]
 
@@ -387,15 +409,12 @@ async def test_mapping_when_multiple_thinking_blocks_streamed_does_accumulate_es
 
 
 async def test_stream_when_thinking_delta_short_does_flush_only_on_block_stop():
-    """A delta under 200 chars emits nothing until content_block_stop flushes."""
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": "a" * 100},
-            }
-        ),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "a" * 100},
+        }),
         stream_event({"type": "content_block_stop"}),
     ]
 
@@ -406,16 +425,13 @@ async def test_stream_when_thinking_delta_short_does_flush_only_on_block_stop():
 
 
 async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block():
-    """A single delta >= 200 chars emits a ThinkingUpdateEvent immediately."""
     text = "a" * 250
     messages = [
         stream_event({"type": "content_block_start", "content_block": {"type": "thinking"}}),
-        stream_event(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "thinking_delta", "thinking": text},
-            }
-        ),
+        stream_event({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": text},
+        }),
         stream_event({"type": "content_block_stop"}),
     ]
 
@@ -429,7 +445,6 @@ async def test_stream_when_thinking_delta_crosses_throttle_does_emit_mid_block()
 
 
 async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count():
-    """Total ThinkingUpdateEvents for a block never exceed ceil(len / 200) + 2."""
     chunk = "a" * 50
     num_chunks = 20  # 1000 chars total
     messages = [
@@ -437,12 +452,10 @@ async def test_stream_when_thinking_deltas_accumulated_does_bound_update_count()
     ]
     for _ in range(num_chunks):
         messages.append(
-            stream_event(
-                {
-                    "type": "content_block_delta",
-                    "delta": {"type": "thinking_delta", "thinking": chunk},
-                }
-            )
+            stream_event({
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": chunk},
+            })
         )
     messages.append(stream_event({"type": "content_block_stop"}))
 
@@ -497,12 +510,10 @@ async def test_stream_when_thinking_block_start_does_emit_initial_thinking_updat
 
 async def test_stream_when_tool_use_block_start_does_emit_model_phase_tool_input():
     messages = [
-        stream_event(
-            {
-                "type": "content_block_start",
-                "content_block": {"type": "tool_use", "name": "Read"},
-            }
-        ),
+        stream_event({
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "name": "Read"},
+        }),
         stream_event({"type": "content_block_stop"}),
     ]
 
@@ -544,7 +555,6 @@ async def test_stream_when_silent_event_type_does_emit_nothing(event_type: str):
 
 
 async def test_stream_when_subagent_thinking_does_not_inflate_top_level_total():
-    """Each parent_tool_use_id keeps an independent estimated_tokens counter."""
     messages = [
         stream_event(
             {"type": "content_block_start", "content_block": {"type": "thinking"}},
@@ -634,7 +644,6 @@ async def test_stream_when_message_stop_with_parent_does_carry_parent_tool_use_i
 
 
 async def test_mapping_when_complete_thinking_block_does_not_emit_thinking_update():
-    """A complete ThinkingBlock (has ``thinking`` attr) is ignored — stream deltas counted it."""
     thinking = assistant(SimpleNamespace(thinking="abcd"))
 
     events = await run_with_messages([thinking])
@@ -770,27 +779,28 @@ async def _run_interrupting_on_first_usage_update(
 
 
 async def test_interrupt_when_scheduled_on_usage_update_does_report_crossing_cost():
-    outcome, _client = await _run_interrupting_on_first_usage_update(
-        [SimpleNamespace(total_cost_usd=0.15)]
-    )
+    outcome, _client = await _run_interrupting_on_first_usage_update([
+        SimpleNamespace(total_cost_usd=0.15)
+    ])
 
     assert outcome.reason == "interrupted"
     assert outcome.cost_usd == 0.15
 
 
 async def test_interrupt_when_first_call_wins_does_ignore_later_higher_cost():
-    outcome, _client = await _run_interrupting_on_first_usage_update(
-        [SimpleNamespace(total_cost_usd=0.1), SimpleNamespace(total_cost_usd=0.25)]
-    )
+    outcome, _client = await _run_interrupting_on_first_usage_update([
+        SimpleNamespace(total_cost_usd=0.1),
+        SimpleNamespace(total_cost_usd=0.25),
+    ])
 
     assert outcome.reason == "interrupted"
     assert outcome.cost_usd == 0.1
 
 
 async def test_interrupt_when_called_does_soft_stop_without_disconnecting():
-    _outcome, client = await _run_interrupting_on_first_usage_update(
-        [SimpleNamespace(total_cost_usd=0.15)]
-    )
+    _outcome, client = await _run_interrupting_on_first_usage_update([
+        SimpleNamespace(total_cost_usd=0.15)
+    ])
 
     assert client.interrupt_called is True
     assert client.disconnect_count == 1  # only the finally teardown, never interrupt itself
@@ -892,11 +902,6 @@ async def test_abort_when_already_set_at_start_does_resolve_interrupted_without_
 
 
 async def test_abort_when_disconnect_raises_does_preserve_settled_outcome():
-    """A failing disconnect() must not replace the settled session outcome.
-
-    The exception is swallowed with a warning, and the session's reason, cost,
-    and ended_by remain intact.
-    """
 
     class DisconnectRaisingClient(FakeClient):
         @override
@@ -994,7 +999,6 @@ async def test_result_when_stream_ends_without_result_does_settle_error():
 
 
 async def test_result_when_system_message_has_subtype_does_not_end_session():
-    """A system message with ``subtype`` but no ``num_turns`` does not end the session."""
     messages = [
         system_message(subtype="init"),
         assistant(SimpleNamespace(text="hello")),
@@ -1005,6 +1009,48 @@ async def test_result_when_system_message_has_subtype_does_not_end_session():
     text_events = events_of(events, TextDeltaEvent)
     assert len(text_events) == 1
     assert text_events[0].chunk == "hello"
+
+
+# ---------------------------------------------------------------------------
+# system message — compact_boundary → CompactionEvent
+# ---------------------------------------------------------------------------
+
+
+async def test_mapping_when_system_message_compact_boundary_does_emit_compaction_event():
+    messages = [
+        system_message(subtype="compact_boundary"),
+        assistant(SimpleNamespace(text="hello")),
+    ]
+
+    events = await run_with_messages(messages)
+
+    compaction_events = events_of(events, CompactionEvent)
+    assert len(compaction_events) == 1
+    assert compaction_events[0].at > 0
+
+
+async def test_mapping_when_system_message_compact_boundary_does_not_end_session():
+    messages = [
+        system_message(subtype="compact_boundary"),
+        result_message(total_cost_usd=0.05),
+    ]
+
+    outcome = await run_outcome(FiniteClient(messages))
+
+    assert outcome.reason == "completed"
+
+
+async def test_mapping_when_system_message_other_subtype_does_not_emit_compaction_event():
+    messages = [
+        system_message(subtype="init"),
+        system_message(subtype="some_other_subtype"),
+        assistant(SimpleNamespace(text="hello")),
+    ]
+
+    events = await run_with_messages(messages)
+
+    compaction_events = events_of(events, CompactionEvent)
+    assert compaction_events == []
 
 
 # ---------------------------------------------------------------------------

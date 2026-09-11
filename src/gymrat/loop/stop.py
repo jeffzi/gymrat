@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from gymrat.errors import GymratError
 from gymrat.report.loop import first_line
-from gymrat.session.clock import now_iso
+from gymrat.session.clock import now_ns
 from gymrat.session.records import StopRecord
 from gymrat.session.store import append_record, require_open_session
 
@@ -40,6 +40,13 @@ class StopResult:
 def stop_session(root: str, message: str) -> StopResult:
     """Append a stop record to the open session's log.
 
+    Args:
+        root: The repository root containing the session.
+        message: The reason to record for stopping the session.
+
+    Returns:
+        The stop result with the rendered report and timestamp.
+
     Raises:
         GymratError: When no session is open, when the session is finalized,
             when an iteration is unsettled, when a gating block stands, or
@@ -53,6 +60,7 @@ def stop_session(root: str, message: str) -> StopResult:
         raise GymratError(
             msg,
             hint=_SETTLE_FIRST_HINT,
+            reason="unsettled",
         )
 
     if state.ends_on_gating_block:
@@ -60,6 +68,7 @@ def stop_session(root: str, message: str) -> StopResult:
         raise GymratError(
             msg,
             hint=_SETTLE_FIRST_HINT,
+            reason="gating-block",
         )
 
     if state.ends_on_stop:
@@ -67,9 +76,10 @@ def stop_session(root: str, message: str) -> StopResult:
         raise GymratError(
             msg,
             hint="Run gymrat iterate, keep, or discard to continue.",
+            reason="already-stopped",
         )
 
-    at = now_iso()
+    at = now_ns()
     record = StopRecord(type="stop", at=at, message=message)
     append_record(required.jsonl_path, record)
 

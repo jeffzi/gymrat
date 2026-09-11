@@ -50,13 +50,26 @@ def parse_record(value: object) -> SessionLogRecord:
         _wire_validation.reset(token)
 
 
-_KNOWN_TYPES = ("session", "baseline", "iteration", "keep", "discard", "hook", "finalize", "stop")
+_KNOWN_TYPES = (
+    "session",
+    "baseline",
+    "iteration",
+    "keep",
+    "discard",
+    "hook",
+    "finalize",
+    "stop",
+    "command",
+)
 
 
 def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, object]) -> None:
     """Raise with the canonical "Unknown session record type" message.
 
     Callers match on this exact wording and the ``_KNOWN_TYPES`` hint.
+
+    Raises:
+        GymratError: When ``errors`` contains a discriminator-mismatch error.
     """
     if not errors:
         return
@@ -88,12 +101,21 @@ _OUTCOME = '"improved", "regressed" or "no-signal"'
 _STATUS = '"committed" or "blocked"'
 _REASON = '"checks-failed", "gating-regression", "nothing-measured" or "nothing-to-commit"'
 _STAGE = '"before" or "after"'
+_EXIT_CODE = "0, 1 or 2"
+_COMMAND_REASON = (
+    'one of "stop-condition", "budget-exceeded", "unsettled", "gating-block", '
+    '"already-stopped", "no-session", "finalized", "nothing-measured", '
+    '"gating-regression", "nothing-to-commit", "checks-failed", '
+    '"nothing-to-discard", "stale-session", "nothing-kept", '
+    '"dirty-worktree", "unkept-commits", "bad-branch", "branch-exists", '
+    '"fail-on" or "error"'
+)
 
 _PHRASES: dict[tuple[str, ...], str] = {
     # session
-    ("session", "schemaVersion"): str(SCHEMA_VERSION),
-    ("session", "sessionId"): _STRING,
-    ("session", "createdAt"): _STRING,
+    ("session", "schema"): str(SCHEMA_VERSION),
+    ("session", "session_id"): _STRING,
+    ("session", "at"): _INT,
     ("session", "baseline"): _OBJECT,
     ("session", "baseline", "ref"): _STRING,
     ("session", "baseline", "sha"): _STRING,
@@ -106,22 +128,22 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("session", "config", "prepare"): _STRING,
     ("session", "config", "adapter"): _STRING,
     ("session", "config", "samples"): _POSITIVE_INT,
-    ("session", "config", "timeoutSeconds"): _POSITIVE_INT,
+    ("session", "config", "timeout_seconds"): _POSITIVE_INT,
     ("session", "config", "primary"): _STRING,
     ("session", "config", "filter"): _STRING,
     ("session", "config", "hooks"): _OBJECT,
     ("session", "config", "hooks", "before"): "a non-empty string",
     ("session", "config", "hooks", "after"): "a non-empty string",
     # baseline
-    ("baseline", "at"): _STRING,
+    ("baseline", "at"): _INT,
     ("baseline", "label"): _STRING,
-    ("baseline", "durationMs"): _NUMBER,
+    ("baseline", "duration_ms"): _NUMBER,
     ("baseline", "samples"): _SAMPLE_ROUNDS,
     ("baseline", "samples", "*"): _OBJECT,
     ("baseline", "samples", "*", "*"): _NUMBER,
     # iteration
     ("iteration", "seq"): _POSITIVE_INT,
-    ("iteration", "at"): _STRING,
+    ("iteration", "at"): _INT,
     ("iteration", "samples"): _OBJECT,
     ("iteration", "samples", "experiment"): _SAMPLE_ROUNDS,
     ("iteration", "samples", "experiment", "*"): _OBJECT,
@@ -131,11 +153,11 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("iteration", "samples", "baseline", "*", "*"): _NUMBER,
     ("iteration", "metrics"): _OBJECT,
     ("iteration", "metrics", "*"): _OBJECT,
-    ("iteration", "metrics", "*", "deltaPct"): _DELTA,
+    ("iteration", "metrics", "*", "delta_pct"): _DELTA,
     ("iteration", "metrics", "*", "verdict"): _VERDICT,
     ("iteration", "metrics", "*", "method"): _METHOD,
     ("iteration", "metrics", "*", "p"): _NUMBER,
-    ("iteration", "metrics", "*", "noisePct"): _NUMBER,
+    ("iteration", "metrics", "*", "noise_pct"): _NUMBER,
     ("iteration", "metrics", "*", "gating"): _BOOL,
     ("iteration", "metrics", "*", "confirmed"): _BOOL,
     ("iteration", "confirm"): _OBJECT,
@@ -154,14 +176,14 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("iteration", "primary"): _OBJECT,
     ("iteration", "primary", "kind"): _KIND,
     ("iteration", "primary", "name"): _STRING,
-    ("iteration", "primary", "deltaPct"): _DELTA,
+    ("iteration", "primary", "delta_pct"): _DELTA,
     ("iteration", "outcome"): _OUTCOME,
-    ("iteration", "targetReached"): _BOOL,
-    ("iteration", "durationMs"): _NUMBER,
-    ("iteration", "measuredTree"): _STRING,
+    ("iteration", "target_reached"): _BOOL,
+    ("iteration", "duration_ms"): _NUMBER,
+    ("iteration", "measured_tree"): _STRING,
     # keep
     ("keep", "seq"): _NON_NEGATIVE_INT,
-    ("keep", "at"): _STRING,
+    ("keep", "at"): _INT,
     ("keep", "status"): _STATUS,
     ("keep", "commit"): _STRING,
     ("keep", "message"): _STRING,
@@ -169,27 +191,37 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("keep", "checks"): _OBJECT,
     ("keep", "checks", "configured"): _BOOL,
     ("keep", "checks", "passed"): _BOOL,
-    ("keep", "checks", "stdoutBytes"): _NON_NEGATIVE_INT,
-    ("keep", "checks", "stderrBytes"): _NON_NEGATIVE_INT,
+    ("keep", "checks", "stdout_bytes"): _NON_NEGATIVE_INT,
+    ("keep", "checks", "stderr_bytes"): _NON_NEGATIVE_INT,
     # discard
     ("discard", "seq"): _NON_NEGATIVE_INT,
-    ("discard", "at"): _STRING,
+    ("discard", "at"): _INT,
     # hook
+    ("hook", "at"): _INT,
     ("hook", "stage"): _STAGE,
     ("hook", "seq"): _NON_NEGATIVE_INT,
-    ("hook", "exitCode"): _INT,
-    ("hook", "durationMs"): _NUMBER,
-    ("hook", "stdoutBytes"): _INT,
-    ("hook", "stderrBytes"): _INT,
-    ("hook", "timedOut"): _BOOL,
+    ("hook", "exit_code"): _INT,
+    ("hook", "duration_ms"): _NUMBER,
+    ("hook", "stdout_bytes"): _INT,
+    ("hook", "stderr_bytes"): _INT,
+    ("hook", "timed_out"): _BOOL,
     # finalize
-    ("finalize", "at"): _STRING,
+    ("finalize", "at"): _INT,
     ("finalize", "branch"): _STRING,
     ("finalize", "commit"): _STRING,
     ("finalize", "message"): _STRING,
     # stop
-    ("stop", "at"): _STRING,
+    ("stop", "at"): _INT,
     ("stop", "message"): "a non-empty string",
+    # command
+    ("command", "at"): _INT,
+    ("command", "name"): "a non-empty string",
+    ("command", "args"): _OBJECT,
+    ("command", "exit_code"): _EXIT_CODE,
+    ("command", "reason"): _COMMAND_REASON,
+    ("command", "seq"): _INT,
+    ("command", "duration_ms"): _NON_NEGATIVE_INT,
+    ("command", "traceparent"): _STRING,
 }
 
 
@@ -204,6 +236,9 @@ def _normalize_loc(loc: tuple[int | str, ...]) -> tuple[str, ...]:
     Using ``isinstance(segment, int)`` instead of ``str.isdigit`` keeps all-digit
     dict keys (e.g. a metric named ``"123"``) from being conflated with array
     indices.
+
+    Returns:
+        The location tuple with indices and dynamic keys replaced by ``"*"``.
     """
     out: list[str] = []
     prev_index = False
@@ -227,24 +262,51 @@ def _strip_type_prefix(loc: tuple[int | str, ...], record_type: str) -> tuple[in
     The ``TypeAdapter`` on the tagged union prepends the record type (e.g.
     ``"iteration"``) to every field-level error location.  The ``_PHRASES``
     table and the display path both expect the location without that prefix.
+
+    Returns:
+        The location tuple without the leading type segment.
     """
     if loc and loc[0] == record_type:
         return loc[1:]
     return loc
 
 
+_VALUE_ERROR_PREFIX = "Value error, "
+
+
 def message_for_error(error: ErrorDetails, record_type: str) -> str:
-    """Translate one pydantic error into a session-record problem string."""
+    """Translate one pydantic error into a session-record problem string.
+
+    Model-level validators (``type="value_error"``, empty ``loc``) carry their
+    own sentence in ``msg``; field-level errors use the phrase table.
+
+    Args:
+        error: The pydantic ``ErrorDetails`` being translated.
+        record_type: The wire type name used to look up the phrase table.
+
+    Returns:
+        A human-readable problem string for the error.
+    """
     raw_loc = _strip_type_prefix(error["loc"], record_type)
     display_loc = tuple(str(part) for part in raw_loc)
     if error["type"] == "extra_forbidden":
         return f"Unknown session record key: {describe_key(display_loc)}"
+    if error["type"] == "value_error" and not raw_loc:
+        # Pydantic renders a model validator's ValueError as
+        # "Value error, <text>"; surface <text> directly.
+        msg = error["msg"].removeprefix(_VALUE_ERROR_PREFIX)
+        key = describe_key(display_loc)
+        separator = ": " if key else ""
+        return f"Invalid session record: {key}{separator}{msg}"
     normalized = _normalize_loc(raw_loc)
     phrase = _PHRASES.get((record_type, *normalized))
     if phrase is None and len(normalized) > 1:
         # Union-type fields (e.g. int | float) produce error paths with a
-        # variant suffix; fall back to the parent key.
+        # variant suffix; fall back to the parent key and strip the variant
+        # from the display path so the user sees ``seq``, not ``seq.int``.
         phrase = _PHRASES.get((record_type, *normalized[:-1]))
+        if phrase is not None:
+            display_loc = display_loc[:-1]
     if phrase is None:
         phrase = "a valid value"
     got = "undefined" if error["type"] == "missing" else json.dumps(error["input"])

@@ -30,7 +30,6 @@ LOOP_CONFIG: dict[str, object] = {
     "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
 }
 
-# Values every positive-integer env var (GYMRAT_SAMPLES, GYMRAT_TIMEOUT) rejects.
 INVALID_POSITIVE_INTEGER_VALUES = [
     pytest.param("abc", id="non-numeric"),
     pytest.param("1.5", id="non-integer"),
@@ -81,7 +80,6 @@ class EnvCase:
 
 
 def _arrange_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: EnvCase) -> None:
-    """Write a config file (if any) and inject the env var under test."""
     if case.config is not None:
         write_config(tmp_path, case.config)
     monkeypatch.chdir(tmp_path)

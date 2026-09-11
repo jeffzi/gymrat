@@ -138,9 +138,9 @@ def _measure_columns(
         for index in range(candidate_count)
     ]
     col_verdicts = [
-        verdict_widths(
-            [v.parts for row in ordered if (v := row.candidates[index].verdict) is not None]
-        )
+        verdict_widths([
+            v.parts for row in ordered if (v := row.candidates[index].verdict) is not None
+        ])
         for index in range(candidate_count)
     ]
     baseline = value_widths([row.baseline for row in ordered])
@@ -343,6 +343,9 @@ def _candidate_markup(
     delta (or the ``unstable`` word standing in for it) carry the verdict's color;
     an unstable cell paints them amber, a quiet cell recedes them to dim, and the
     figure itself stays plain whatever the verdict.
+
+    Returns:
+        The cell as a rich-markup string.
     """
     value = join_value_cell(cell.value, values)
     if cell.verdict is None:

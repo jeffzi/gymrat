@@ -4,11 +4,14 @@
 that runs each session in a child process (the supplied ``argv``). The driver
 and the child speak a line-delimited JSON protocol over the child's stdio:
 
-- The driver writes one ``start`` command line to stdin, carrying the prompt in
-  camelCase, and may later write an ``interrupt`` command line.
-- The child writes session-event lines — the same camelCase wire form
+- The driver writes ``{"type":"start","prompt":{"kickoff","cwd",
+  "system_prompt_append"?,"model"?,"effort"?,"command_timeout_ms"?,
+  "max_budget_usd"?,"traceparent"?}}`` — all snake_case keys — and may later
+  write an ``interrupt`` command line.
+- The child writes session-event lines — the same snake_case wire form
   :func:`~gymrat.supervisor.events.to_json_line` produces — followed by a
-  terminal ``{"type": "outcome", ...}`` line. Its stderr is never relayed.
+  terminal ``{"type": "outcome", "reason", "cost_usd", "message"?}`` line.
+  Its stderr is never relayed.
 
 The child is spawned into its own process group so an abort can tree-kill every
 descendant. The session never raises: a spawn failure, a nonzero exit without an
@@ -56,15 +59,17 @@ def _start_command(prompt: SessionPrompt) -> dict[str, object]:
     """Build the ``start`` command, omitting prompt optionals that are ``None``."""
     wire: dict[str, object] = {"kickoff": prompt.kickoff, "cwd": prompt.cwd}
     if prompt.system_prompt_append is not None:
-        wire["systemPromptAppend"] = prompt.system_prompt_append
+        wire["system_prompt_append"] = prompt.system_prompt_append
     if prompt.model is not None:
         wire["model"] = prompt.model
     if prompt.effort is not None:
         wire["effort"] = prompt.effort
     if prompt.command_timeout_ms is not None:
-        wire["commandTimeoutMs"] = prompt.command_timeout_ms
+        wire["command_timeout_ms"] = prompt.command_timeout_ms
     if prompt.max_budget_usd is not None:
-        wire["maxBudgetUsd"] = prompt.max_budget_usd
+        wire["max_budget_usd"] = prompt.max_budget_usd
+    if prompt.traceparent is not None:
+        wire["traceparent"] = prompt.traceparent
     return {"type": "start", "prompt": wire}
 
 
@@ -75,7 +80,7 @@ def _outcome_from_wire(wire: dict[str, Any], cost_usd: float) -> SessionOutcome:
     """Read a terminal ``outcome`` line, falling back to the running cost."""
     raw_reason = wire.get("reason", "error")
     reason: SessionEndReason = raw_reason if raw_reason in _SESSION_END_REASONS else "error"
-    raw_cost = wire.get("costUsd")
+    raw_cost = wire.get("cost_usd")
     cost = (
         float(raw_cost)
         if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)

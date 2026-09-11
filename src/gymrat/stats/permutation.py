@@ -104,7 +104,8 @@ def _partition_pairs(
 ) -> tuple[list[float], list[float], list[float], list[float]]:
     """Separate tied (zero-diff) and differing pairs over the first ``m`` indices.
 
-    Returns ``(tied_x, tied_y, diff_x, diff_y)``.
+    Returns:
+        A tuple ``(tied_x, tied_y, diff_x, diff_y)`` partitioning the pairs.
     """
     tied_x: list[float] = []
     tied_y: list[float] = []
@@ -155,6 +156,13 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
     exact; otherwise :data:`RESAMPLE_BUDGET` Monte Carlo resamples are drawn from
     a generator seeded with :data:`PERMUTATION_SEED`. Both paths are
     deterministic for a given input.
+
+    Args:
+        x: The baseline sample.
+        y: The candidate sample, paired positionally with ``x``.
+
+    Returns:
+        The p-value and the count of non-zero-difference pairs used.
     """
     m, n = count_nonzero_pairs(x, y)
     if n < _MIN_PAIRS:

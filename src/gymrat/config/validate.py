@@ -19,6 +19,14 @@ def flag_problem(field_name: str, value: str | None) -> str | None:
     Flags bypass the file schema, so ``--bench ""`` or ``--bench "   "`` is the
     one way a blank string reaches a settled field. The message names the flag,
     not the config key, because the flag is what the user typed.
+
+    Args:
+        field_name: Name of the flag, without the leading ``--``.
+        value: The flag's value, or ``None`` if it was not passed.
+
+    Returns:
+        A problem string when ``value`` is blank, or ``None`` when it is
+        unset or non-blank.
     """
     if value is not None and not value.strip():
         return invalid_value_message(f"--{field_name}", "a non-empty string", value)
@@ -30,6 +38,12 @@ def loop_key_problems(config: BenchlessConfig) -> list[str]:
 
     ``filter`` must carry its placeholder, and ``stop.target_value`` only makes
     sense when ``primary`` names a metric — the geomean is a ratio, not a value.
+
+    Args:
+        config: The merged config to check for cross-field violations.
+
+    Returns:
+        The list of cross-field problem strings found, empty when none.
     """
     problems: list[str] = []
     if config.filter is not None and FILTER_PLACEHOLDER not in config.filter:
@@ -58,6 +72,15 @@ def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
     Resolved against ``base_dir`` (or the cwd when ``None``), matching how the
     implicit ``gymrat.toml`` lookup is anchored — a runbook path is authored
     relative to the repository the config lives in.
+
+    Args:
+        runbook: Path to the runbook, relative to ``base_dir``.
+        base_dir: Directory the runbook path is resolved against, or ``None``
+            to use the current working directory.
+
+    Returns:
+        A problem string when ``runbook`` does not resolve to an existing
+        regular file, or ``None`` when it does.
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     resolved = Path(os.path.normpath(base / runbook))

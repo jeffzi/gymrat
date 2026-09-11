@@ -344,18 +344,14 @@ def test_compose_kickoff_when_happy_path_does_omit_usd_and_dollar_from_authored_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Code-authored paragraphs must never mention spend, usd, or dollars.
-
-    The embedded skill body is excluded because it legitimately references
-    ``--max-usd`` in its usage block.
-    """
     skill_text = "# Skill Title\n\nSome guidance with --max-usd 10 and spend and $ dollar.\n"
     result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
 
     append = result.system_prompt_append
     # The contract paragraph must exist for this guard to be meaningful.
     assert "gymrat stop" in append.lower(), "contract paragraph is missing"
-    # Strip the embedded skill body to isolate code-authored text.
+    # skill_text may legitimately contain --max-usd; exclude it so only
+    # code-authored text is checked.
     authored = append.replace(skill_text, "").lower()
     for forbidden in ("usd", "spend", "$"):
         assert forbidden not in authored, f"Code-authored text must not contain {forbidden!r}"

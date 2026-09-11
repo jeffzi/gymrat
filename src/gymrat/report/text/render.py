@@ -97,6 +97,14 @@ def _render_block(markup_lines: Sequence[str], *, color: bool | None) -> list[st
     Each line is resolved through the same color choice as the rest of the report,
     so a block built here sits flush against the table lines the table renderers
     already resolved.
+
+    Args:
+        markup_lines: The rich-markup lines to resolve.
+        color: The explicit color choice, or ``None`` to defer to the
+            environment and TTY detection.
+
+    Returns:
+        One rendered text line per input markup line.
     """
     if not markup_lines:
         return []
@@ -138,14 +146,12 @@ def _compare_header(display: ComparisonResult) -> str:
     candidate_names = ", ".join(
         markup(candidate.label, VARIANT_NAME_STYLE) for candidate in display.candidates
     )
-    return _join_header_parts(
-        [
-            markup("gymrat compare", "bold"),
-            f"baseline {markup(display.baseline_label, VARIANT_NAME_STYLE)} ↔ {candidate_names}",
-            escape(paired_samples(display.samples)),
-            f"adapter: {escape(display.adapter)}",
-        ]
-    )
+    return _join_header_parts([
+        markup("gymrat compare", "bold"),
+        f"baseline {markup(display.baseline_label, VARIANT_NAME_STYLE)} ↔ {candidate_names}",
+        escape(paired_samples(display.samples)),
+        f"adapter: {escape(display.adapter)}",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +232,9 @@ def _gate_trip_lines(
     Only the geomean conditions gate here; the regressed condition contributes no
     line. A kind with no gated geomean, or one aggregating nothing, never trips —
     an informational kind cannot fail a gate it does not stand behind.
+
+    Returns:
+        One markup line per kind whose gated geomean exceeded a threshold.
     """
     thresholds = [condition.pct for condition in conditions if isinstance(condition, GeomeanFailOn)]
     style = VERDICT_STYLES["regressed"]
@@ -252,6 +261,10 @@ def _highlight_section(blocks: Sequence[HighlightBlock]) -> list[str]:
     A block with a label heads its entries with the bold label and indents them
     under it; a block with no label lists its entries directly. The whole block is
     dropped when no candidate had anything to highlight.
+
+    Returns:
+        The heading, highlight entries, and futility note, or an empty list
+        when nothing highlighted.
     """
     non_empty = [block for block in blocks if block.entries]
     if not non_empty:
@@ -317,12 +330,6 @@ def _render_method_footer(result: ComparisonResult, *, verbose: bool, command: s
 
 
 def _to_single_line(text: str) -> str:
-    """Collapse a git diagnostic onto one line.
-
-    git routinely emits several lines for one failure — a ``warning:`` line before
-    the ``fatal:`` line, plus indented continuations — so the runs of whitespace
-    fold to a single space.
-    """
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -359,6 +366,13 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
 
     The lines are plain text escaped for markup rendering: the cleanup footer is
     the same color on or off.
+
+    Args:
+        result: The comparison or measurement result to draw the footer from.
+
+    Returns:
+        Markup lines describing the cleanup failures, or an empty list when
+        the cleanup was clean.
     """
     details = format_cleanup_failures(result.worktrees_left_behind, result.worktree_prune_error)
     if not details:
@@ -452,14 +466,12 @@ def render_measure_report(
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = _join_header_parts(
-        [
-            markup("gymrat measure", "bold"),
-            markup(label, VARIANT_NAME_STYLE),
-            escape(pluralize(result.samples, "sample")),
-            f"adapter: {escape(result.adapter)}",
-        ]
-    )
+    header = _join_header_parts([
+        markup("gymrat measure", "bold"),
+        markup(label, VARIANT_NAME_STYLE),
+        escape(pluralize(result.samples, "sample")),
+        f"adapter: {escape(result.adapter)}",
+    ])
 
     lines = [_render_line(header, color=color)]
     lines.extend(render_measure_table(result, label, color=color))

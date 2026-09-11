@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from gymrat.session import clock as _clock
-from gymrat.session.clock import now_iso
+from gymrat.session.clock import now_ns
 from gymrat.session.records import BaselineRecord
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ async def measure_baseline(
 
     record = BaselineRecord(
         type="baseline",
-        at=now_iso(),
+        at=now_ns(),
         label=result.label,
         samples=tuple(result.rounds),
         duration_ms=duration_ms,

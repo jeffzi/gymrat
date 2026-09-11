@@ -17,10 +17,17 @@ layers manage the virtualenv, file selection, and flags.
   disables coverage, since a subset run would fail the global coverage threshold).
 - `task test:matrix` — run the suite on every supported Python version.
 - `task check` — `uv run prek run -a` (all hooks). Run before committing.
-- To run a single hook: `uv run prek run <hook-id>` (e.g. `uv run prek run max-lines`). Hook IDs
-  are in `.pre-commit-config.yaml`.
+- To run a single hook: `uv run prek run <hook-id>` (e.g. `uv run prek run check-max-lines`). Hook
+  IDs are in `.pre-commit-config.yaml`.
+- `uvx pymaxlines --show-sizes` — print a code-line breakdown of every file (largest first) instead
+  of checking limits. Pass paths to scope it: `uvx pymaxlines --show-sizes src/heavy_module.py`.
+  Use it to find the biggest files and functions before deciding where to split. Counts exclude
+  blanks, comments, and docstrings — matching what the `check-max-lines` hook enforces.
 - `task check:fix` — auto-fix everything that supports it: `uv run ruff check --fix`,
   `uv run ruff format`, `dprint fmt`, markdownlint (`uv run prek run -a markdownlint-cli2`).
+- `task schemas` — regenerate `schemas/` and `docs/event-reference.md` from the pydantic record and
+  event models. Run it after any change to a model field or docstring and commit the output; the
+  drift test in `tests/event_docs/test_drift.py` fails on stale artifacts.
 - `task clean` — remove build artifacts, caches, and virtualenvs.
 
 ## Git hygiene
@@ -40,6 +47,18 @@ directive with a reason — not in the shared config. When the same inline direc
 for the same rule, that is a signal the rule may deserve a config-level ignore — propose it to the
 user and wait for explicit approval; never promote a suppression into config on your own.
 
+## Docstrings
+
+Google style. None is required on private functions. A one-line docstring is complete on its own —
+no `Args:`, `Returns:`, or `Raises:` sections — when the signature says the rest. When a function
+needs more than one line (a side effect, an invariant, a precondition, what None means, or behavior
+the name does not convey), use a multi-line docstring with sections: `Args:` listing every
+parameter, however obvious its name, `Returns:`, and `Raises:` for every exception raised or
+propagated. Parameters, return values, and exceptions are described only in their sections, never in
+prose. A function you edit gets its docstring brought to this shape even if you did not write it;
+deadlines and reviewer preference do not change that. Tests: no docstrings on test functions, the
+name carries the intent; every fixture gets a one-line docstring.
+
 ## Spelling (cspell)
 
 Treat a cspell failure as a prompt to reword, not to grow the dictionary. Prefer plain words in
@@ -48,5 +67,4 @@ project and cannot be renamed — command names, API identifiers, file formats, 
 vocabulary (e.g. `addopts`, `conftest`, `pyrefly`). In tests, never invent gibberish that needs a
 suppression — any real word works for an unknown command, a bogus flag, or filler data, so pick one
 (`banana`, not an invented pseudo-word). `# cspell:disable-line` is reserved for fixtures where the
-gibberish
-itself is the behavior under test, never a dictionary entry.
+gibberish itself is the behavior under test, never a dictionary entry.

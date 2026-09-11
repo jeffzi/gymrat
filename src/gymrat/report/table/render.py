@@ -106,7 +106,7 @@ class GroupLine:
 
 @dataclass(frozen=True, slots=True)
 class MetricLine[Metric]:
-    """A metric row, holding the row it draws."""
+    """A single metric's data row in the table body."""
 
     row: Metric
 
@@ -295,6 +295,13 @@ def _horizontal(widths: Sequence[int], junction: str) -> str:
     The dashes account for the padding rich draws with ``pad_edge`` off: the first
     column carries no left pad and the last no right pad, so their segments are one
     dash narrower than the interior columns'.
+
+    Args:
+        widths: The rendered width of each column, in order.
+        junction: The character drawn at each column boundary.
+
+    Returns:
+        A dashed rule string with junctions at every column boundary.
     """
     last = len(widths) - 1
     segments = [

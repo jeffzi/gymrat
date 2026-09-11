@@ -39,9 +39,14 @@ EFFORT_PHRASE: str = (
 
 _LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029")
 
-_NON_EMPTY_STRING_FIELDS = frozenset(
-    {"bench", "prepare", "adapter", "checks", "runbook", "primary"}
-)
+_NON_EMPTY_STRING_FIELDS = frozenset({
+    "bench",
+    "prepare",
+    "adapter",
+    "checks",
+    "runbook",
+    "primary",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +58,13 @@ def _coerce_number(value: object) -> object:
     """Widen a plain ``int`` to ``float`` so it satisfies strict float validation.
 
     ``bool`` is left untouched so it is rejected as a non-number.
+
+    Args:
+        value: The raw value being validated.
+
+    Returns:
+        The value as a ``float`` when it was an ``int``, or the original value
+        unchanged.
     """
     if isinstance(value, int) and not isinstance(value, bool):
         return float(value)
@@ -65,6 +77,15 @@ def _reject_non_finite(value: float | None) -> float | None:
     TOML parses ``nan``/``inf``/``-inf`` into real floats, so a numeric key can
     carry one past parsing. This surfaces it as an invalid value naming the key
     rather than letting it settle as a silent NaN or infinity.
+
+    Args:
+        value: The float being validated, or ``None``.
+
+    Returns:
+        The value unchanged when it is finite or ``None``.
+
+    Raises:
+        ValueError: When the value is ``nan``, ``inf``, or ``-inf``.
     """
     if value is not None and not math.isfinite(value):
         msg = "value must be finite"
@@ -78,6 +99,15 @@ def _reject_bad_dict(value: object) -> object:
     A non-mapping falls through to the model's own ``dict``-type error. The
     offending key is JSON-escaped so naming it cannot itself split the reported
     problem across lines.
+
+    Args:
+        value: The raw value being validated.
+
+    Returns:
+        The value unchanged when it is not a mapping or all keys are clean.
+
+    Raises:
+        ValueError: When a mapping key contains a line terminator.
     """
     if isinstance(value, dict):
         for key in value:
@@ -227,6 +257,15 @@ def invalid_value_message(field_name: str, expected_phrase: str, value: object) 
 
     The single shape both the schema translator and the cross-field settlement
     checks report.
+
+    Args:
+        field_name: Dotted name of the offending config field.
+        expected_phrase: Human-readable description of the expected shape.
+        value: The actual value that failed validation.
+
+    Returns:
+        A human-readable problem string naming the field, its expected shape,
+        and the actual value.
     """
     try:
         got = json.dumps(value)
@@ -241,6 +280,12 @@ def _message_for_error(error: ErrorDetails) -> str:
     A custom validator (``_reject_non_finite``, ``_reject_bad_dict``) already
     knows why it refused the value, so its own message is reported: the shape
     phrase for the location would describe a fault the value does not have.
+
+    Args:
+        error: The pydantic error detail to translate.
+
+    Returns:
+        The problem string describing the validation failure.
     """
     loc = tuple(str(part) for part in error["loc"])
     if error["type"] == "extra_forbidden":
@@ -263,7 +308,6 @@ def _to_metric_entry(model: _MetricModel) -> MetricEntry:
 
 
 def _to_config_file(model: _ConfigModel) -> ConfigFile:
-    """Convert a validated pydantic model to its frozen dataclass equivalent."""
     metrics = (
         {name: _to_metric_entry(entry) for name, entry in model.metrics.items()}
         if model.metrics is not None
@@ -309,7 +353,18 @@ def _to_config_file(model: _ConfigModel) -> ConfigFile:
 
 
 def validate_and_convert(data: dict[str, object]) -> tuple[ConfigFile | None, list[str]]:
-    """Validate a parsed TOML dict and convert to a ConfigFile, or return problems."""
+    """Run strict pydantic validation and return the converted config on success.
+
+    Never raises: validation failures are returned as a problem list, not
+    exceptions, so callers can collect and display all errors at once.
+
+    Args:
+        data: Raw config data, shaped like a parsed ``gymrat.toml``.
+
+    Returns:
+        A ``(config_file, problems)`` pair: the converted :class:`ConfigFile`
+        (``None`` on failure) and any validation problems.
+    """
     try:
         model = _ConfigModel.model_validate(data)
     except ValidationError as exc:

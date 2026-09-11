@@ -1,0 +1,950 @@
+{
+  "$defs": {
+    "BaselineRecord": {
+      "additionalProperties": false,
+      "description": "A labelled set of baseline sample rounds.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "default": null,
+          "description": "Wall-clock milliseconds the baseline measurement took.",
+          "title": "Duration Ms",
+          "type": "number"
+        },
+        "label": {
+          "description": "Human-readable label for this baseline measurement.",
+          "title": "Label",
+          "type": "string"
+        },
+        "samples": {
+          "description": "Baseline sample rounds mapping metric names to numbers.",
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Samples",
+          "type": "array"
+        },
+        "type": {
+          "const": "baseline",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "type",
+        "label",
+        "samples"
+      ],
+      "title": "BaselineRecord",
+      "type": "object"
+    },
+    "BaselineRef": {
+      "description": "A git ref together with the commit it resolved to when the session started.",
+      "properties": {
+        "ref": {
+          "description": "Git ref name the baseline was taken from.",
+          "title": "Ref",
+          "type": "string"
+        },
+        "sha": {
+          "description": "Commit SHA the ref resolved to at session start.",
+          "title": "Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "sha"
+      ],
+      "title": "BaselineRef",
+      "type": "object"
+    },
+    "CommandRecord": {
+      "additionalProperties": false,
+      "description": "A CLI command invocation: name, arguments, exit code, and optional reason.\n\nThe ``exit_code`` / ``reason`` pairing is constrained: a zero exit has no\nreason, and a non-zero exit always carries one.",
+      "properties": {
+        "args": {
+          "additionalProperties": true,
+          "description": "Arguments the command was invoked with.",
+          "title": "Args",
+          "type": "object"
+        },
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "description": "Wall-clock milliseconds the command took.",
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "exit_code": {
+          "description": "Process-style exit code: 0 success, 1 or 2 failure.",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "title": "Exit Code",
+          "type": "integer"
+        },
+        "name": {
+          "description": "CLI command name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "reason": {
+          "default": null,
+          "description": "Why the command exited non-zero, when it did.",
+          "enum": [
+            "stop-condition",
+            "budget-exceeded",
+            "unsettled",
+            "gating-block",
+            "already-stopped",
+            "no-session",
+            "finalized",
+            "nothing-measured",
+            "gating-regression",
+            "nothing-to-commit",
+            "checks-failed",
+            "nothing-to-discard",
+            "stale-session",
+            "nothing-kept",
+            "dirty-worktree",
+            "unkept-commits",
+            "bad-branch",
+            "branch-exists",
+            "fail-on",
+            "error"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "seq": {
+          "default": null,
+          "description": "Iteration sequence number, present on per-iteration records.",
+          "title": "Seq",
+          "type": "integer"
+        },
+        "traceparent": {
+          "default": null,
+          "description": "W3C Trace Context traceparent header for distributed tracing.",
+          "title": "Traceparent",
+          "type": "string"
+        },
+        "type": {
+          "const": "command",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "type",
+        "name",
+        "args",
+        "exit_code",
+        "duration_ms"
+      ],
+      "title": "CommandRecord",
+      "type": "object"
+    },
+    "Confirm": {
+      "additionalProperties": false,
+      "description": "A confirmation rerun: which metrics it re-measured, and the samples it took.\n\n``absent`` names metrics the rerun was asked about but skipped; it is\n``None`` on a log written before the field existed.",
+      "properties": {
+        "absent": {
+          "default": null,
+          "description": "Metric names the rerun was asked about but skipped.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Absent",
+          "type": "array"
+        },
+        "filtered": {
+          "description": "Metric names the rerun was filtered to.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Filtered",
+          "type": "array"
+        },
+        "ran": {
+          "description": "Whether the confirmation rerun actually executed.",
+          "title": "Ran",
+          "type": "boolean"
+        },
+        "samples": {
+          "$ref": "#/$defs/PairedSamples",
+          "description": "Sample rounds collected during the confirmation rerun."
+        }
+      },
+      "required": [
+        "ran",
+        "filtered",
+        "samples"
+      ],
+      "title": "Confirm",
+      "type": "object"
+    },
+    "DiscardRecord": {
+      "additionalProperties": false,
+      "description": "The reverted settlement of an iteration.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "seq": {
+          "description": "Iteration sequence number this discard settles.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "type": {
+          "const": "discard",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "seq",
+        "type"
+      ],
+      "title": "DiscardRecord",
+      "type": "object"
+    },
+    "FinalizeRecord": {
+      "additionalProperties": false,
+      "description": "Closes a session: the branch and squash commit its kept work collapsed onto.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "branch": {
+          "description": "Git branch the finalize squash landed on.",
+          "title": "Branch",
+          "type": "string"
+        },
+        "commit": {
+          "description": "Git commit SHA of the squash commit.",
+          "title": "Commit",
+          "type": "string"
+        },
+        "message": {
+          "description": "Commit message of the squash commit.",
+          "title": "Message",
+          "type": "string"
+        },
+        "type": {
+          "const": "finalize",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "type",
+        "branch",
+        "commit",
+        "message"
+      ],
+      "title": "FinalizeRecord",
+      "type": "object"
+    },
+    "HookRecord": {
+      "additionalProperties": false,
+      "description": "One hook invocation around an iteration.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "Wall-clock milliseconds the hook command ran.",
+          "title": "Duration Ms"
+        },
+        "exit_code": {
+          "description": "Process exit code of the hook command.",
+          "title": "Exit Code",
+          "type": "integer"
+        },
+        "seq": {
+          "description": "Iteration sequence number this hook is associated with.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "stage": {
+          "description": "Whether the hook ran before or after the iteration.",
+          "enum": [
+            "before",
+            "after"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "stderr_bytes": {
+          "default": null,
+          "description": "Bytes the hook command wrote to stderr.",
+          "minimum": 0,
+          "title": "Stderr Bytes",
+          "type": "integer"
+        },
+        "stdout_bytes": {
+          "description": "Bytes the hook command wrote to stdout.",
+          "minimum": 0,
+          "title": "Stdout Bytes",
+          "type": "integer"
+        },
+        "timed_out": {
+          "description": "Whether the hook command exceeded its timeout.",
+          "title": "Timed Out",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "hook",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "seq",
+        "type",
+        "stage",
+        "exit_code",
+        "duration_ms",
+        "stdout_bytes",
+        "timed_out"
+      ],
+      "title": "HookRecord",
+      "type": "object"
+    },
+    "IterationPrimary": {
+      "additionalProperties": false,
+      "description": "The primary an iteration was judged on -- the geomean, or a named metric.",
+      "properties": {
+        "delta_pct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Percentage change from baseline, or null when undefined.",
+          "title": "Delta Pct"
+        },
+        "kind": {
+          "description": "Whether the primary is a geomean aggregate or a named metric.",
+          "enum": [
+            "geomean",
+            "metric"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Metric name when kind is 'metric'.",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta_pct",
+        "kind"
+      ],
+      "title": "IterationPrimary",
+      "type": "object"
+    },
+    "IterationRecord": {
+      "additionalProperties": false,
+      "description": "One measured edit: raw samples, per-metric verdicts, and the outcome.\n\n``duration_ms`` is the wall-clock milliseconds from the readiness guard\npassing to the record being appended -- the before hook, both bench sides,\nthe confirmation rerun, and judging.  It excludes the after hook.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "confirm": {
+          "$ref": "#/$defs/Confirm",
+          "default": null,
+          "description": "Confirmation rerun results, if one was triggered."
+        },
+        "duration_ms": {
+          "default": null,
+          "description": "Wall-clock milliseconds the iteration measurement took.",
+          "title": "Duration Ms",
+          "type": "number"
+        },
+        "measured_tree": {
+          "default": null,
+          "description": "Git tree hash of the experiment worktree at measurement time.",
+          "title": "Measured Tree",
+          "type": "string"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "$ref": "#/$defs/MetricVerdict"
+          },
+          "description": "Per-metric verdicts keyed by metric name.",
+          "title": "Metrics",
+          "type": "object"
+        },
+        "outcome": {
+          "description": "Overall iteration outcome: improved, regressed, or no-signal.",
+          "enum": [
+            "improved",
+            "regressed",
+            "no-signal"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "primary": {
+          "$ref": "#/$defs/IterationPrimary",
+          "description": "The primary metric or aggregate the outcome was judged on."
+        },
+        "samples": {
+          "$ref": "#/$defs/PairedSamples",
+          "description": "Raw sample rounds from both worktrees."
+        },
+        "seq": {
+          "description": "Iteration sequence number, starting at 1.",
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "target_reached": {
+          "description": "Whether the iteration met the target threshold.",
+          "title": "Target Reached",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "iteration",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "seq",
+        "type",
+        "samples",
+        "metrics",
+        "primary",
+        "outcome",
+        "target_reached"
+      ],
+      "title": "IterationRecord",
+      "type": "object"
+    },
+    "KeepChecks": {
+      "additionalProperties": false,
+      "description": "The outcome of a keep's configured checks, with relayed output sizes.",
+      "properties": {
+        "configured": {
+          "description": "Whether checks were configured for this session.",
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "passed": {
+          "default": null,
+          "description": "Whether all configured checks passed.",
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "stderr_bytes": {
+          "default": null,
+          "description": "Bytes the check command wrote to stderr.",
+          "minimum": 0,
+          "title": "Stderr Bytes",
+          "type": "integer"
+        },
+        "stdout_bytes": {
+          "default": null,
+          "description": "Bytes the check command wrote to stdout.",
+          "minimum": 0,
+          "title": "Stdout Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "configured"
+      ],
+      "title": "KeepChecks",
+      "type": "object"
+    },
+    "KeepRecord": {
+      "additionalProperties": false,
+      "description": "The settlement of an iteration: committed, or blocked with a reason.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "checks": {
+          "$ref": "#/$defs/KeepChecks",
+          "description": "Outcome of the configured checks."
+        },
+        "commit": {
+          "default": null,
+          "description": "Git commit SHA when status is committed.",
+          "title": "Commit",
+          "type": "string"
+        },
+        "message": {
+          "default": null,
+          "description": "Commit message when status is committed.",
+          "title": "Message",
+          "type": "string"
+        },
+        "reason": {
+          "default": null,
+          "description": "Why the keep was blocked, when status is blocked.",
+          "enum": [
+            "checks-failed",
+            "gating-regression",
+            "nothing-measured",
+            "nothing-to-commit"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Iteration sequence number this keep settles.",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "status": {
+          "description": "Whether the iteration was committed or blocked.",
+          "enum": [
+            "committed",
+            "blocked"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "type": {
+          "const": "keep",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "seq",
+        "type",
+        "status",
+        "checks"
+      ],
+      "title": "KeepRecord",
+      "type": "object"
+    },
+    "MetricVerdict": {
+      "additionalProperties": false,
+      "description": "How one metric moved, with the statistics behind the judgement.\n\n``delta_pct`` is ``None`` when a zero baseline median left the ratio\nundefined; the field is always present so a dropped delta reads as a broken\nwriter, not a degenerate measurement.",
+      "properties": {
+        "confirmed": {
+          "description": "Whether a confirmation rerun validated this verdict.",
+          "title": "Confirmed",
+          "type": "boolean"
+        },
+        "delta_pct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Percentage change from baseline, or null when undefined.",
+          "title": "Delta Pct"
+        },
+        "gating": {
+          "description": "Whether this metric gates the iteration outcome.",
+          "title": "Gating",
+          "type": "boolean"
+        },
+        "method": {
+          "description": "Statistical test used to judge the metric.",
+          "enum": [
+            "permutation",
+            "band",
+            "exact"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "noise_pct": {
+          "default": null,
+          "description": "Estimated noise as a percentage of the baseline median.",
+          "title": "Noise Pct",
+          "type": "number"
+        },
+        "p": {
+          "default": null,
+          "description": "P-value from the statistical test.",
+          "title": "P",
+          "type": "number"
+        },
+        "verdict": {
+          "description": "Whether the metric improved, regressed, or showed no signal.",
+          "enum": [
+            "improved",
+            "regressed",
+            "no-signal",
+            "unstable"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta_pct",
+        "verdict",
+        "method",
+        "gating",
+        "confirmed"
+      ],
+      "title": "MetricVerdict",
+      "type": "object"
+    },
+    "PairedSamples": {
+      "additionalProperties": false,
+      "description": "The experiment and baseline sample rounds measured in one iteration.",
+      "properties": {
+        "baseline": {
+          "description": "Sample rounds from the baseline worktree.",
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Baseline",
+          "type": "array"
+        },
+        "experiment": {
+          "description": "Sample rounds from the experiment worktree.",
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Experiment",
+          "type": "array"
+        }
+      },
+      "required": [
+        "experiment",
+        "baseline"
+      ],
+      "title": "PairedSamples",
+      "type": "object"
+    },
+    "SessionConfig": {
+      "additionalProperties": false,
+      "description": "The settled configuration a session was opened with, kept for provenance.",
+      "properties": {
+        "adapter": {
+          "description": "Output adapter for parsing benchmark results.",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "bench": {
+          "description": "Benchmark command to run.",
+          "title": "Bench",
+          "type": "string"
+        },
+        "filter": {
+          "default": null,
+          "description": "Filter expression for selecting benchmarks.",
+          "title": "Filter",
+          "type": "string"
+        },
+        "hooks": {
+          "$ref": "#/$defs/SessionHooks",
+          "default": null,
+          "description": "Hook commands to run around iterations.",
+          "title": "Hooks"
+        },
+        "prepare": {
+          "default": null,
+          "description": "Preparation command to run before benchmarking.",
+          "title": "Prepare",
+          "type": "string"
+        },
+        "primary": {
+          "description": "Primary metric or aggregation method for judging iterations.",
+          "title": "Primary",
+          "type": "string"
+        },
+        "samples": {
+          "description": "Number of sample rounds per side.",
+          "minimum": 1,
+          "title": "Samples",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "description": "Maximum seconds per bench invocation.",
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bench",
+        "adapter",
+        "samples",
+        "timeout_seconds",
+        "primary"
+      ],
+      "title": "SessionConfig",
+      "type": "object"
+    },
+    "SessionHooks": {
+      "additionalProperties": false,
+      "description": "The hook commands a session was started with; an absent stage ran nothing.",
+      "properties": {
+        "after": {
+          "default": null,
+          "description": "Command to run after each iteration.",
+          "minLength": 1,
+          "title": "After",
+          "type": "string"
+        },
+        "before": {
+          "default": null,
+          "description": "Command to run before each iteration.",
+          "minLength": 1,
+          "title": "Before",
+          "type": "string"
+        }
+      },
+      "title": "SessionHooks",
+      "type": "object"
+    },
+    "SessionRecord": {
+      "additionalProperties": false,
+      "description": "Opens a session log: identity, worktrees, and a config snapshot.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "baseline": {
+          "$ref": "#/$defs/BaselineRef",
+          "description": "Git ref and SHA the baseline was taken from."
+        },
+        "branch": {
+          "description": "Git branch created for this session.",
+          "title": "Branch",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/SessionConfig",
+          "description": "Configuration snapshot the session was started with."
+        },
+        "schema": {
+          "const": 1,
+          "description": "Session log format version.",
+          "title": "Schema",
+          "type": "integer"
+        },
+        "session_id": {
+          "description": "Unique identifier for this session.",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "session",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        },
+        "worktrees": {
+          "$ref": "#/$defs/Worktrees",
+          "description": "Paths to the experiment and baseline worktrees."
+        }
+      },
+      "required": [
+        "at",
+        "type",
+        "schema",
+        "session_id",
+        "baseline",
+        "branch",
+        "worktrees",
+        "config"
+      ],
+      "title": "SessionRecord",
+      "type": "object"
+    },
+    "StopRecord": {
+      "additionalProperties": false,
+      "description": "A user-requested stop: halts the loop without finalizing the session.",
+      "properties": {
+        "at": {
+          "description": "Nanoseconds since the Unix epoch when the record was created.",
+          "title": "At",
+          "type": "integer"
+        },
+        "message": {
+          "description": "Reason the stop was requested.",
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "type": {
+          "const": "stop",
+          "description": "Record type discriminator.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "type",
+        "message"
+      ],
+      "title": "StopRecord",
+      "type": "object"
+    },
+    "Worktrees": {
+      "description": "The two worktree directories a session runs in.",
+      "properties": {
+        "baseline": {
+          "description": "Path to the baseline worktree.",
+          "title": "Baseline",
+          "type": "string"
+        },
+        "experiment": {
+          "description": "Path to the experiment worktree.",
+          "title": "Experiment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "experiment",
+        "baseline"
+      ],
+      "title": "Worktrees",
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/jeffzi/gymrat/schemas/session-log.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "discriminator": {
+    "mapping": {
+      "baseline": "#/$defs/BaselineRecord",
+      "command": "#/$defs/CommandRecord",
+      "discard": "#/$defs/DiscardRecord",
+      "finalize": "#/$defs/FinalizeRecord",
+      "hook": "#/$defs/HookRecord",
+      "iteration": "#/$defs/IterationRecord",
+      "keep": "#/$defs/KeepRecord",
+      "session": "#/$defs/SessionRecord",
+      "stop": "#/$defs/StopRecord"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SessionRecord"
+    },
+    {
+      "$ref": "#/$defs/BaselineRecord"
+    },
+    {
+      "$ref": "#/$defs/IterationRecord"
+    },
+    {
+      "$ref": "#/$defs/KeepRecord"
+    },
+    {
+      "$ref": "#/$defs/DiscardRecord"
+    },
+    {
+      "$ref": "#/$defs/HookRecord"
+    },
+    {
+      "$ref": "#/$defs/FinalizeRecord"
+    },
+    {
+      "$ref": "#/$defs/StopRecord"
+    },
+    {
+      "$ref": "#/$defs/CommandRecord"
+    }
+  ],
+  "title": "gymrat session log record"
+}

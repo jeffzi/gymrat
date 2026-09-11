@@ -75,7 +75,7 @@ def compute_median(values: Sequence[float]) -> float:
     if not values:
         msg = "compute_median requires at least one sample; got an empty sequence"
         raise ValueError(msg)
-    return float(median(values))
+    return median(values)
 
 
 def compute_half_range(values: Sequence[float]) -> float:

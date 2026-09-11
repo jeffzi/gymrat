@@ -156,18 +156,14 @@ def _dimming_result() -> ComparisonResult:
             create_candidate(label="candidate-b"),
         ],
         metrics={
-            "flat/time": n_way_metric(
-                [
-                    NWayCandidate(verdict="no-signal", delta=0.3, median=100),
-                    NWayCandidate(verdict="unstable", delta=-50, median=50),
-                ]
-            ),
-            "mixed/time": n_way_metric(
-                [
-                    NWayCandidate(verdict="no-signal", delta=0.3, median=100),
-                    NWayCandidate(verdict="improved", delta=-17.5, median=83),
-                ]
-            ),
+            "flat/time": n_way_metric([
+                NWayCandidate(verdict="no-signal", delta=0.3, median=100),
+                NWayCandidate(verdict="unstable", delta=-50, median=50),
+            ]),
+            "mixed/time": n_way_metric([
+                NWayCandidate(verdict="no-signal", delta=0.3, median=100),
+                NWayCandidate(verdict="improved", delta=-17.5, median=83),
+            ]),
         },
     )
 
@@ -625,12 +621,10 @@ def test_render_report_when_no_candidate_has_a_highlight_does_drop_the_section()
             create_candidate(label="candidate-b"),
         ],
         metrics={
-            "decode/time": n_way_metric(
-                [
-                    NWayCandidate(verdict="no-signal", delta=0.4, median=100),
-                    NWayCandidate(verdict="no-signal", delta=-0.3, median=100),
-                ]
-            ),
+            "decode/time": n_way_metric([
+                NWayCandidate(verdict="no-signal", delta=0.4, median=100),
+                NWayCandidate(verdict="no-signal", delta=-0.3, median=100),
+            ]),
         },
     )
 
@@ -749,7 +743,6 @@ def _multi_candidate_grouped_flat() -> ComparisonResult:
 
 
 def test_render_report_when_many_candidates_single_kind_grouped_does_show_group_headers():
-    """Even with multiple candidates and a single kind, grouped metrics show group headers."""
     region = table_region(render_report(_multi_candidate_grouped_flat()))
 
     assert "alive_check" in region

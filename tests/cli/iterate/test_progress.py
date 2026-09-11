@@ -99,12 +99,7 @@ _live_renderers: list[IterateRenderer] = []
 
 @pytest.fixture(autouse=True)
 def _stop_renderers() -> Iterator[None]:
-    """Stop every renderer a test built, so a failing test leaks no live display.
-
-    ``stop()`` is idempotent, so tests that already stopped their renderer are
-    unaffected; without this teardown a failure before the in-test ``stop()``
-    leaks a refresh thread and a termination-cleanup registration.
-    """
+    """Stop every renderer a test built, so a failing test leaks no live display."""
     yield
     while _live_renderers:
         _live_renderers.pop().stop()
@@ -207,7 +202,6 @@ def _plain(
 def test_frame_when_initial_does_show_all_nodes_pending(
     snapshot: SnapshotAssertion,
 ):
-    """All checklist rows pending with their hints; header shows seq and session id."""
     _console, _clock, renderer = _live(
         seq=3,
         session_id="abc-123",
@@ -224,7 +218,6 @@ def test_frame_when_initial_does_show_all_nodes_pending(
 def test_frame_when_before_hook_running_does_show_spinner(
     snapshot: SnapshotAssertion,
 ):
-    """Before-hook row spins while running; the record hint names the after hook."""
     _console, _clock, renderer = _live(has_before_hook=True, has_after_hook=True)
 
     renderer.report(HookStarted(stage="before", at_ms=0))
@@ -237,7 +230,6 @@ def test_frame_when_before_hook_running_does_show_spinner(
 def test_frame_when_both_worktrees_prepared_does_show_elapsed(
     snapshot: SnapshotAssertion,
 ):
-    """Prepare row done with the elapsed accumulated across both worktrees."""
     _console, clock, renderer = _live()
 
     renderer.report(HookFinished(stage="before", at_ms=0))
@@ -256,7 +248,6 @@ def test_frame_when_both_worktrees_prepared_does_show_elapsed(
 def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
     snapshot: SnapshotAssertion,
 ):
-    """Sampling bar mid-run: count, target label, and a clock ticking past the last event."""
     _console, clock, renderer = _live(sample_count=5)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -284,7 +275,6 @@ def test_frame_when_passes_mid_run_does_show_bar_count_and_clock(
 def test_frame_when_judge_finished_does_show_delta_and_regressed(
     snapshot: SnapshotAssertion,
 ):
-    """Judge done line carries the delta plus the regressed count and names."""
     _console, clock, renderer = _live(sample_count=1)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -309,7 +299,6 @@ def test_frame_when_judge_finished_does_show_delta_and_regressed(
 def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
     snapshot: SnapshotAssertion,
 ):
-    """Judge shows ! glyph, confirm shows a bar for the filtered metrics."""
     _console, clock, renderer = _live(sample_count=5)
 
     renderer.report(
@@ -336,7 +325,6 @@ def test_frame_when_judge_alerting_and_confirm_running_does_show_bar(
 def test_frame_when_recorded_does_show_outcome_suggested(
     snapshot: SnapshotAssertion,
 ):
-    """Record row reads 'recorded <outcome> suggested' with no seq text."""
     _console, _clock, renderer = _live(seq=3)
 
     renderer.report(IterationRecorded(seq=3, outcome="improved", at_ms=15000))
@@ -349,7 +337,6 @@ def test_frame_when_recorded_does_show_outcome_suggested(
 def test_frame_when_compact_layout_does_show_single_row(
     snapshot: SnapshotAssertion,
 ):
-    """You should see compact single-row progress bar."""
     _console, clock, renderer = _live(height=10, sample_count=5)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -372,7 +359,6 @@ def test_frame_when_compact_layout_does_show_single_row(
 def test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta(
     snapshot: SnapshotAssertion,
 ):
-    """You should see elapsed in the header but no ETA before any pass finishes."""
     _console, clock, renderer = _live()
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -391,7 +377,6 @@ def test_frame_when_header_before_first_pass_completes_does_show_elapsed_without
 def test_frame_when_judge_started_does_show_running_with_elapsed(
     snapshot: SnapshotAssertion,
 ):
-    """You should see running judge spinner with elapsed ticking from JudgeStarted."""
     _console, clock, renderer = _live(sample_count=1)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -409,7 +394,6 @@ def test_frame_when_judge_started_does_show_running_with_elapsed(
 def test_frame_when_judge_finished_after_started_does_show_elapsed(
     snapshot: SnapshotAssertion,
 ):
-    """You should see judge done node with elapsed computed from JudgeStarted to JudgeFinished."""
     _console, clock, renderer = _live(sample_count=1)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -432,7 +416,6 @@ def test_frame_when_judge_finished_after_started_does_show_elapsed(
 def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
     snapshot: SnapshotAssertion,
 ):
-    """You should see record node with 'checks (cmd) run at gymrat keep'."""
     _console, _clock, renderer = _live(
         seq=3,
         checks_cmd="npm run check && npm test",
@@ -604,7 +587,6 @@ def test_live_wiring_when_created_does_set_transient_from_verbose(
 
 
 def test_live_wiring_when_created_does_set_auto_refresh_true():
-    """Live is configured with auto_refresh so time-derived text ticks between events."""
     _console, _clock, renderer = _live()
 
     assert renderer.live is not None
@@ -620,7 +602,6 @@ def test_live_wiring_when_created_does_set_auto_refresh_true():
 def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_verdict(
     snapshot: SnapshotAssertion,
 ):
-    """No regression: the confirm row leaves the checklist and the judge line carries the verdict."""
     _console, clock, renderer = _live(sample_count=1, metric_count=4)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     renderer.report(_pass_finished(1, 1, label="bench", at_ms=5000))
@@ -636,7 +617,6 @@ def test_frame_when_judge_finished_no_regressions_does_drop_confirm_and_show_ver
 
 
 def test_plain_when_judge_finished_with_regressions_does_print_count_and_names():
-    """Plain mode judge line carries delta, improve/noise count, and the regressed list."""
     console, clock, renderer = _plain(metric_count=5)
     clock.tick(6)
     renderer.report(
@@ -653,7 +633,6 @@ def test_plain_when_judge_finished_with_regressions_does_print_count_and_names()
 
 
 def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names():
-    """The regressed list caps at three names and trails off; the count stays exact."""
     console, clock, renderer = _plain(width=120, metric_count=5)
     clock.tick(6)
     renderer.report(
@@ -672,13 +651,6 @@ def test_plain_when_more_regressions_than_cap_does_trail_off_after_three_names()
 
 
 def test_plain_when_judge_finished_does_use_event_metric_count_not_renderer_metric_count():
-    """Judge line computes improve/noise from the event's metric_count, not the renderer's.
-
-    When the config ``[metrics]`` table is absent the renderer receives
-    ``metric_count=0`` at construction, but the judge always knows the real
-    total from the collected metric metadata. The plain-mode line should read
-    ``4 improve/noise`` (5 total - 1 regressed), never ``-1 improve/noise``.
-    """
     console, clock, renderer = _plain(metric_count=0)
 
     clock.tick(6)
@@ -711,7 +683,6 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
     reproduced: bool,
     expected_fragment: str,
 ):
-    """Confirm done carries pass count and reproduced status; no stale sub-line text."""
     _console, clock, renderer = _live(sample_count=2)
     renderer.report(
         JudgeFinished(primary_delta_pct=2.0, regressed=("x",), metric_count=3, at_ms=5000)
@@ -759,12 +730,6 @@ def test_frame_when_confirm_finished_does_show_summary_on_node_line(
 
 
 def test_frame_when_compact_confirm_started_does_reset_bar_for_rerun():
-    """Compact bar resets and relabels for the confirm rerun instead of staying frozen at 100%.
-
-    In compact mode (short terminal) only one progress bar exists. After the
-    measure passes complete the bar sits at 100 %. When the confirm phase
-    starts, the bar must reset to show confirm progress — not stay frozen.
-    """
     _console, clock, renderer = _live(height=10, sample_count=1, metric_count=3)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))
@@ -808,7 +773,6 @@ def test_frame_when_compact_confirm_started_does_reset_bar_for_rerun():
 def test_frame_when_judge_regressed_does_style_names_via_format_inline(
     snapshot: SnapshotAssertion,
 ):
-    """Regressed names carry per-segment format_inline styling: dim group/kind, normal case."""
     _console, clock, renderer = _live(sample_count=1, metric_count=3)
 
     renderer.report(PrepareFinished(label="bench", at_ms=0))

@@ -71,21 +71,19 @@ CLEAR_LINE = "\r\x1b[K"
 # can't fit, so a renderer switches to a single-row compact bar.
 COMPACT_HEIGHT_THRESHOLD = 12
 
-CLI_THEME = Theme(
-    {
-        "progress.spinner": STYLE_RUNNING,
-        "progress.elapsed": STYLE_TIMER_RUNNING,
-        # MofNCompleteColumn renders its count with "progress.download".
-        "progress.download": STYLE_COUNT,
-        # BarColumn draws its filled span with "bar.complete" until the task
-        # completes and "bar.finished" after, and its indeterminate animation
-        # with "bar.pulse"; "bar.back" keeps rich's default for the unfilled
-        # span, which already reads as the dim track behind the bar.
-        "bar.complete": STYLE_BAR,
-        "bar.finished": STYLE_BAR,
-        "bar.pulse": STYLE_BAR,
-    }
-)
+CLI_THEME = Theme({
+    "progress.spinner": STYLE_RUNNING,
+    "progress.elapsed": STYLE_TIMER_RUNNING,
+    # MofNCompleteColumn renders its count with "progress.download".
+    "progress.download": STYLE_COUNT,
+    # BarColumn draws its filled span with "bar.complete" until the task
+    # completes and "bar.finished" after, and its indeterminate animation
+    # with "bar.pulse"; "bar.back" keeps rich's default for the unfilled
+    # span, which already reads as the dim track behind the bar.
+    "bar.complete": STYLE_BAR,
+    "bar.finished": STYLE_BAR,
+    "bar.pulse": STYLE_BAR,
+})
 
 
 class LiveDisplayMixin:

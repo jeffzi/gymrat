@@ -19,6 +19,12 @@ def probe_event_log_path(log_path: str | Path) -> None:
     Attempts to create the parent directory and open the file for appending.
     Raises :class:`GymratError` naming the path when the filesystem rejects the
     operation, so the command can fail up front rather than after the session.
+
+    Args:
+        log_path: The event log path to verify.
+
+    Raises:
+        GymratError: When the path or its parent directory is not writable.
     """
     path = Path(log_path)
     try:
@@ -36,6 +42,12 @@ def create_event_log_writer(log_path: str | Path) -> SessionObserver:
     The parent directory is created (recursively) on the first write if it does
     not already exist. A write failure surfaces as a :class:`GymratError` naming
     the log path, chaining the underlying OS error as its cause.
+
+    Args:
+        log_path: The event log path to append to.
+
+    Returns:
+        An observer callback that appends each event as a JSON line.
     """
     path = Path(log_path)
 

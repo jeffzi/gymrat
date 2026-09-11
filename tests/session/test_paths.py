@@ -17,6 +17,7 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.session.paths import (
+    SESSION_LOG_NAME,
     archived_session_path,
     baseline_worktree_dir,
     budget_path,
@@ -26,6 +27,7 @@ from gymrat.session.paths import (
     session_dir,
     session_jsonl_path,
     supervise_lockfile_path,
+    supervisor_log_name,
 )
 
 SESSION_ID = "20260808-141530-a3f2"
@@ -122,11 +124,31 @@ def test_lockfile_path_when_given_root_does_map_to_golden_name(root: str, name: 
 # The supervise lock shares the repo digest (it is keyed on the root, not the
 # prefix), so the golden names are the lockfile names with the supervise prefix.
 SUPERVISE_LOCKFILE_NAMES = [
-    ("/srv/projects/demo", "gymrat-supervise-lock-9fe2fb7fa4f9.json"),
-    ("/srv/projects/other", "gymrat-supervise-lock-4ff7d20c47bc.json"),
+    (root, name.replace("gymrat-lock-", "gymrat-supervise-lock-")) for root, name in LOCKFILE_NAMES
 ]
 
 
 @pytest.mark.parametrize(("root", "name"), SUPERVISE_LOCKFILE_NAMES)
 def test_supervise_lockfile_path_when_given_root_does_map_to_golden_name(root: str, name: str):
     assert supervise_lockfile_path(root) == str(Path(tempfile.gettempdir()) / name)
+
+
+# ---------------------------------------------------------------------------
+# log file names — single-source naming for session and supervisor logs
+# ---------------------------------------------------------------------------
+
+
+def test_session_log_name_when_accessed_does_return_bare_filename():
+    assert SESSION_LOG_NAME == "session.jsonl"
+
+
+def test_supervisor_log_name_when_given_timestamp_does_return_filename_with_ms():
+    name = supervisor_log_name(1723123456789)
+
+    assert name == "supervisor-1723123456789.jsonl"
+
+
+def test_session_jsonl_path_when_derived_does_end_with_session_log_name():
+    path = session_jsonl_path(ROOT)
+
+    assert path.endswith(SESSION_LOG_NAME)

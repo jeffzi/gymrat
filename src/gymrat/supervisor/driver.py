@@ -27,6 +27,7 @@ class SessionPrompt:
     effort: Effort | None = None
     command_timeout_ms: int | None = None
     max_budget_usd: float | None = None
+    traceparent: str | None = None
 
 
 SessionEndReason = Literal["completed", "interrupted", "error"]
@@ -47,7 +48,11 @@ class DriverSession(Protocol):
 
     @property
     def outcome(self) -> Awaitable[SessionOutcome]:
-        """Resolves with the session's outcome once it settles."""
+        """Resolves with the session's outcome once it settles.
+
+        Returns:
+            An awaitable that yields the final :class:`SessionOutcome`.
+        """
         ...
 
     async def interrupt(self) -> None:
@@ -55,7 +60,11 @@ class DriverSession(Protocol):
         ...
 
     async def send(self, text: str) -> None:
-        """Inject a follow-up message into the running session."""
+        """Inject a follow-up message into the running session.
+
+        Args:
+            text: The follow-up message to send.
+        """
         ...
 
     async def end(self) -> None:
@@ -72,5 +81,15 @@ class Driver(Protocol):
         observer: SessionObserver,
         abort: asyncio.Event | None = None,
     ) -> DriverSession:
-        """Start a session synchronously; async work runs behind ``outcome``."""
+        """Start a session synchronously; async work runs behind ``outcome``.
+
+        Args:
+            prompt: The initial prompt and any system instructions.
+            observer: Callback receiving every session event.
+            abort: When set, signals the session to stop. ``None`` disables
+                external abort.
+
+        Returns:
+            A live session whose ``outcome`` resolves when the agent finishes.
+        """
         ...

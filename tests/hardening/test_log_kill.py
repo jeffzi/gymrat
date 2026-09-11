@@ -63,7 +63,6 @@ def _spawn(tmp_path: Path, name: str, source: str, *args: str) -> subprocess.Pop
 
 
 def _wait_for_file(path: Path, timeout_s: float = 30.0) -> None:
-    """Poll until ``path`` exists."""
     deadline = time.monotonic() + timeout_s
     while not path.exists():
         if time.monotonic() > deadline:

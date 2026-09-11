@@ -1,9 +1,10 @@
 """Behavioral tests for the subprocess stdio driver.
 
 The driver spawns a child process and speaks a line-delimited JSON protocol over
-its stdio: it writes a ``start`` command, relays the child's event lines to the
-observer, and settles a :class:`SessionOutcome` from the child's terminal
-``outcome`` line, its exit code, an interrupt, or an external abort.
+its stdio: it writes a ``start`` command with snake_case keys, relays the child's
+event lines to the observer, and settles a :class:`SessionOutcome` from the
+child's terminal ``outcome`` line, its exit code, an interrupt, or an external
+abort.
 
 The child is a scripted Python double (``_stdio_double.py``) invoked through
 ``sys.executable``; the whole module is POSIX-only because the abort path relies
@@ -42,7 +43,7 @@ _DOUBLE = str(Path(__file__).parent / "_stdio_double.py")
 
 
 def double_argv(config: dict[str, Any]) -> list[str]:
-    """Build the argv that runs the protocol double with ``config``."""
+    """Return argv in the positional order the double's ``sys.argv`` parser expects."""
     return [sys.executable, _DOUBLE, json.dumps(config)]
 
 
@@ -81,7 +82,7 @@ async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> 
 
 
 # ---------------------------------------------------------------------------
-# Spawning and the start command
+# Spawning and the start command — snake_case wire
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +99,7 @@ async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> 
             {
                 "kickoff": "do the thing",
                 "cwd": None,
-                "systemPromptAppend": "extra",
+                "system_prompt_append": "extra",
                 "model": "opus",
             },
             id="optionals-present",
@@ -109,7 +110,7 @@ async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> 
                 "kickoff": "do the thing",
                 "cwd": None,
                 "effort": "high",
-                "commandTimeoutMs": 300000,
+                "command_timeout_ms": 300000,
             },
             id="effort-and-timeout-present",
         ),
@@ -124,7 +125,7 @@ async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(
     config = {
         "mode": "script",
         "report_path": str(report),
-        "outcome": {"type": "outcome", "reason": "completed", "costUsd": 0.0},
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
     }
     prompt = make_prompt(cwd=str(tmp_path), **overrides)
     probe = collecting_observer()
@@ -139,7 +140,7 @@ async def test_stdio_driver_when_started_does_spawn_with_correct_start_line(
 
 
 # ---------------------------------------------------------------------------
-# Relaying event lines
+# Relaying event lines — snake_case wire
 # ---------------------------------------------------------------------------
 
 
@@ -148,23 +149,30 @@ async def test_stdio_driver_when_child_emits_lines_does_relay_typed_events(
 ) -> None:
     config = {
         "mode": "script",
-        "stderr": json.dumps({"type": "cap", "timestamp": 7, "cap": "spend-cap"}),
+        "stderr": json.dumps({"type": "cap", "at": 7_000_000_000, "cap": "spend-cap"}),
         "lines": [
-            {"json": {"type": "usage_update", "timestamp": 6, "costUsd": 0.01}},
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 6_000_000_000,
+                    "cost_usd": 0.01,
+                    "settled": False,
+                }
+            },
             {"text": "not json at all"},
-            {"json": {"type": "text_delta", "timestamp": 5, "chunk": "hello"}},
+            {"json": {"type": "text_delta", "at": 5_000_000_000, "chunk": "hello"}},
             {"json": [1, 2, 3]},
-            {"json": {"type": "mystery", "timestamp": 9}},
+            {"json": {"type": "mystery", "at": 9_000_000_000}},
             {
                 "json": {
                     "type": "tool_progress",
-                    "timestamp": 3,
-                    "toolUseId": "t1",
-                    "elapsedMs": 500,
+                    "at": 3_000_000_000,
+                    "tool_use_id": "t1",
+                    "elapsed_ms": 500,
                 }
             },
         ],
-        "outcome": {"type": "outcome", "reason": "completed", "costUsd": 0.01},
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.01},
     }
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(
@@ -174,14 +182,14 @@ async def test_stdio_driver_when_child_emits_lines_does_relay_typed_events(
     await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert probe.events == [
-        UsageUpdateEvent(timestamp=6, cost_usd=0.01),
-        TextDeltaEvent(timestamp=5, chunk="hello"),
-        ToolProgressEvent(timestamp=3, tool_use_id="t1", elapsed_ms=500),
+        UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01),
+        TextDeltaEvent(at=5_000_000_000, chunk="hello"),
+        ToolProgressEvent(at=3_000_000_000, tool_use_id="t1", elapsed_ms=500),
     ]
 
 
 # ---------------------------------------------------------------------------
-# Resolution
+# Resolution — snake_case outcome wire
 # ---------------------------------------------------------------------------
 
 
@@ -190,11 +198,20 @@ async def test_stdio_driver_when_outcome_line_received_does_settle_with_its_fiel
 ) -> None:
     config = {
         "mode": "script",
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.2}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.2,
+                    "settled": False,
+                }
+            }
+        ],
         "outcome": {
             "type": "outcome",
             "reason": "completed",
-            "costUsd": 0.5,
+            "cost_usd": 0.5,
             "message": "all done",
         },
     }
@@ -216,11 +233,20 @@ async def test_stdio_driver_when_outcome_cost_is_boolean_does_fall_back_to_runni
 ) -> None:
     config = {
         "mode": "script",
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.42}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.42,
+                    "settled": False,
+                }
+            }
+        ],
         "outcome": {
             "type": "outcome",
             "reason": "completed",
-            "costUsd": bool_cost,
+            "cost_usd": bool_cost,
         },
     }
     session = create_stdio_driver(double_argv(config)).start(
@@ -237,7 +263,16 @@ async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exi
 ) -> None:
     config = {
         "mode": "script",
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.3}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.3,
+                    "settled": False,
+                }
+            }
+        ],
         "outcome": None,
         "exit_code": 7,
     }
@@ -277,7 +312,16 @@ async def test_stdio_driver_when_interrupt_then_child_exits_does_settle_interrup
 ) -> None:
     config = {
         "mode": "await_interrupt",
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.5}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.5,
+                    "settled": False,
+                }
+            }
+        ],
     }
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(
@@ -296,8 +340,17 @@ async def test_stdio_driver_when_interrupt_precedes_a_later_outcome_line_does_wi
 ) -> None:
     config = {
         "mode": "await_interrupt",
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.7}}],
-        "emit_outcome_on_interrupt": {"type": "outcome", "reason": "completed", "costUsd": 0.9},
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.7,
+                    "settled": False,
+                }
+            }
+        ],
+        "emit_outcome_on_interrupt": {"type": "outcome", "reason": "completed", "cost_usd": 0.9},
     }
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(
@@ -323,7 +376,16 @@ async def test_stdio_driver_when_abort_fires_does_settle_interrupted(
     config = {
         "mode": "sleep_forever",
         "report_path": str(report),
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.4}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.4,
+                    "settled": False,
+                }
+            }
+        ],
     }
     abort = asyncio.Event()
     probe = collecting_observer()
@@ -351,19 +413,26 @@ async def test_stdio_driver_when_child_emits_turn_end_does_relay_as_turn_end_eve
     config = {
         "mode": "script",
         "lines": [
-            {"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.1}},
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.1,
+                    "settled": False,
+                }
+            },
             {
                 "json": {
                     "type": "turn_end",
-                    "timestamp": 2,
+                    "at": 2_000_000_000,
                     "text": "done",
-                    "costUsd": 0.25,
+                    "cost_usd": 0.25,
                     "origin": "agent",
-                    "budgetExhausted": False,
+                    "budget_exhausted": False,
                 }
             },
         ],
-        "outcome": {"type": "outcome", "reason": "completed", "costUsd": True},
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": True},
     }
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(
@@ -375,7 +444,7 @@ async def test_stdio_driver_when_child_emits_turn_end_does_relay_as_turn_end_eve
     turn_ends = [e for e in probe.events if isinstance(e, TurnEndEvent)]
     assert turn_ends == [
         TurnEndEvent(
-            timestamp=2,
+            at=2_000_000_000,
             text="done",
             cost_usd=0.25,
             origin="agent",
@@ -399,16 +468,25 @@ async def test_stdio_driver_when_send_and_end_does_write_protocol_lines_to_child
     config = {
         "mode": "await_message",
         "report_path": str(report),
-        "lines": [{"json": {"type": "usage_update", "timestamp": 1, "costUsd": 0.01}}],
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.01,
+                    "settled": False,
+                }
+            }
+        ],
         "turn_end": {
             "type": "turn_end",
-            "timestamp": 2,
+            "at": 2_000_000_000,
             "text": "hi",
-            "costUsd": 0.01,
+            "cost_usd": 0.01,
             "origin": "agent",
-            "budgetExhausted": False,
+            "budget_exhausted": False,
         },
-        "outcome": {"type": "outcome", "reason": "completed", "costUsd": 0.02},
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.02},
     }
     probe = collecting_observer()
     session = create_stdio_driver(double_argv(config)).start(
@@ -428,7 +506,7 @@ async def test_stdio_driver_when_send_and_end_does_write_protocol_lines_to_child
 
 
 # ---------------------------------------------------------------------------
-# maxBudgetUsd in start command
+# max_budget_usd in start command — snake_case
 # ---------------------------------------------------------------------------
 
 
@@ -456,7 +534,7 @@ async def test_stdio_driver_when_max_budget_usd_does_include_or_omit_in_start_co
     config = {
         "mode": "script",
         "report_path": str(report),
-        "outcome": {"type": "outcome", "reason": "completed", "costUsd": 0.0},
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
     }
     prompt = make_prompt(cwd=str(tmp_path), max_budget_usd=budget)
     session = create_stdio_driver(double_argv(config)).start(prompt, collecting_observer().observer)
@@ -466,6 +544,42 @@ async def test_stdio_driver_when_max_budget_usd_does_include_or_omit_in_start_co
     report_data = await read_report(report)
     start_obj = json.loads(report_data["start_line"])
     if expected_in_start:
-        assert start_obj["prompt"]["maxBudgetUsd"] == budget
+        assert start_obj["prompt"]["max_budget_usd"] == budget
     else:
-        assert "maxBudgetUsd" not in start_obj["prompt"]
+        assert "max_budget_usd" not in start_obj["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# traceparent in start command — snake_case
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("traceparent", "expected_in_start"),
+    [
+        pytest.param("00-abc123-def456-01", True, id="traceparent-present"),
+        pytest.param(None, False, id="traceparent-omitted"),
+    ],
+)
+async def test_stdio_driver_when_traceparent_does_include_or_omit_in_start_command(
+    tmp_path: Path,
+    traceparent: str | None,
+    expected_in_start: bool,
+) -> None:
+    report = tmp_path / "report.json"
+    config = {
+        "mode": "script",
+        "report_path": str(report),
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
+    }
+    prompt = make_prompt(cwd=str(tmp_path), traceparent=traceparent)
+    session = create_stdio_driver(double_argv(config)).start(prompt, collecting_observer().observer)
+
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+    report_data = await read_report(report)
+    start_obj = json.loads(report_data["start_line"])
+    if expected_in_start:
+        assert start_obj["prompt"]["traceparent"] == traceparent
+    else:
+        assert "traceparent" not in start_obj["prompt"]

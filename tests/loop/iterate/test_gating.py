@@ -119,7 +119,6 @@ def _primary_line(report: str) -> str:
 def _assert_permutation(
     metric: MetricVerdict, *, delta: float, verdict: str, confirmed: bool
 ) -> None:
-    """Assert a permutation metric moved ``delta`` percent and settled as ``verdict``."""
     assert metric.delta_pct == pytest.approx(delta, abs=1e-6)
     assert metric.verdict == verdict
     assert metric.method == "permutation"
@@ -131,11 +130,13 @@ def _assert_permutation(
 
 @pytest.fixture
 def repo(create_scratch_repo: Callable[[], str]) -> str:
+    """A fresh scratch repository, no gymrat session yet."""
     return create_scratch_repo()
 
 
 @pytest.fixture
 def samples_mock(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
+    """A recorder installed in place of ``collect_samples``, not yet wired."""
     return install_collect_samples(monkeypatch)
 
 
@@ -356,6 +357,7 @@ def _partial_rerun() -> PairedRun:
 
 @pytest.fixture
 def partial_rerun_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
+    """An open session whose confirmation rerun only measured one of two regressed metrics."""
     partial = _partial_rerun()
     stub_runs(samples_mock, open_repo, [_regressed_run(), partial])
     return open_repo
@@ -498,6 +500,7 @@ def _proto_rounds(total_ms: list[float], proto: list[float]) -> list[dict[str, f
 
 @pytest.fixture
 def proto_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
+    """An open session whose metrics include a ``__proto__``-named key."""
     stub_samples(
         samples_mock,
         open_repo,
@@ -563,6 +566,7 @@ def _undefined_delta_iteration(seq: int) -> IterationRecord:
 
 @pytest.fixture
 def zero_baseline_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
+    """An open session whose baseline has ``total_ms`` flat at zero."""
     stub_samples(samples_mock, open_repo, improved_rounds(), _zero_baseline_rounds())
     return open_repo
 
@@ -615,6 +619,7 @@ async def test_iterate_session_when_log_holds_null_delta_does_measure_again(
 
 @pytest.fixture
 def improved_repo(open_repo: str, samples_mock: CollectSamplesRecorder):
+    """An open session with sampling stubbed to show improvement across all metrics."""
     stub_samples(samples_mock, open_repo, improved_rounds(), baseline_rounds())
     return open_repo
 
@@ -775,6 +780,7 @@ def _hook_records(root: str) -> list[HookRecord]:
 
 @pytest.fixture
 def hooks_setup(repo: str, samples_mock: CollectSamplesRecorder):
+    """A settled session with hook scripts wired and sampling stubbed improved."""
     experiment_dir = session_record(repo).worktrees.experiment
     Path(experiment_dir).mkdir(parents=True, exist_ok=True)
     scripts = HookScripts(repo, experiment_dir)
@@ -803,10 +809,34 @@ async def test_iterate_session_when_hooks_configured_does_fire_before_then_after
         "hook",
     ]
     hook_records = [record for record in records if isinstance(record, HookRecord)]
-    assert [record.model_copy(update={"duration_ms": 0}) for record in hook_records] == [
+    assert [record.model_copy(update={"duration_ms": 0, "at": 0}) for record in hook_records] == [
         expected_hook_record(stage="before", seq=2, exit_code=0, stdout_bytes=3),
         expected_hook_record(stage="after", seq=2, exit_code=0, stdout_bytes=4),
     ]
+
+
+async def test_iterate_session_when_hooks_configured_does_stamp_after_at_no_less_than_before_at(
+    hooks_setup: tuple[str, str, HookScripts],
+):
+    repo, _experiment_dir, hooks = hooks_setup
+    config = resolved_config(
+        hooks=HooksConfig(before=hooks.printing("hi"), after=hooks.printing("bye"))
+    )
+
+    await iterate_session(repo, config)
+
+    hook_records = [
+        record
+        for record in read_records(session_jsonl_path(repo))
+        if isinstance(record, HookRecord)
+    ]
+    assert len(hook_records) == 2
+    before_record, after_record = hook_records
+    assert isinstance(before_record.at, int)
+    assert before_record.at > 0
+    assert isinstance(after_record.at, int)
+    assert after_record.at > 0
+    assert after_record.at >= before_record.at
 
 
 async def test_iterate_session_when_hooks_configured_does_tell_each_which_iteration(
@@ -822,23 +852,23 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
     result = await iterate_session(repo, config)
 
     session_payload = {
-        "sessionId": SESSION_ID,
+        "session_id": SESSION_ID,
         "baseline": {"ref": "main", "sha": "a" * 40},
         "branch": f"gymrat/{SESSION_ID}",
     }
     assert _payload_of(experiment_dir, "before") == {
         "stage": "before",
-        "experimentDir": experiment_dir,
+        "experiment_dir": experiment_dir,
         "seq": 2,
-        "lastIteration": as_logged(iteration(1)),
-        "session": {**session_payload, "iterationCount": 1},
+        "last_iteration": as_logged(iteration(1)),
+        "session": {**session_payload, "iteration_count": 1},
     }
     assert _payload_of(experiment_dir, "after") == {
         "stage": "after",
-        "experimentDir": experiment_dir,
+        "experiment_dir": experiment_dir,
         "seq": 2,
-        "lastIteration": as_logged(result.record),
-        "session": {**session_payload, "iterationCount": 2},
+        "last_iteration": as_logged(result.record),
+        "session": {**session_payload, "iteration_count": 2},
     }
 
 
@@ -875,7 +905,9 @@ async def test_iterate_session_when_before_hook_fails_does_measure_on_reporting_
         "[before] hook exited 3",
         "[before] no warm copy",
     ]
-    hook_records = [record.model_copy(update={"duration_ms": 0}) for record in _hook_records(repo)]
+    hook_records = [
+        record.model_copy(update={"duration_ms": 0, "at": 0}) for record in _hook_records(repo)
+    ]
     assert hook_records == [
         expected_hook_record(stage="before", seq=2, exit_code=3, stdout_bytes=0, stderr_bytes=13)
     ]

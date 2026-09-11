@@ -9,7 +9,6 @@ order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -72,7 +71,6 @@ if TYPE_CHECKING:
 
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
-ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 #: The confirm-rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"
@@ -90,11 +88,13 @@ def _plain(report: str) -> str:
 
 @pytest.fixture
 def repo(create_scratch_repo: Callable[[], str]) -> str:
+    """A fresh scratch repository, no gymrat session yet."""
     return create_scratch_repo()
 
 
 @pytest.fixture
 def samples_mock(monkeypatch: pytest.MonkeyPatch) -> CollectSamplesRecorder:
+    """A recorder installed in place of ``collect_samples``, not yet wired."""
     return install_collect_samples(monkeypatch)
 
 
@@ -149,6 +149,17 @@ async def test_iterate_session_when_last_iteration_unsettled_does_refuse_naming_
     assert "gymrat keep" in hint
     assert "gymrat discard" in hint
     assert samples_mock.call_count == 0
+
+
+async def test_iterate_session_when_last_iteration_unsettled_does_carry_unsettled_reason(
+    repo: str, samples_mock: CollectSamplesRecorder
+):
+    write_session_log(repo, session_record(repo), (iteration(1),))
+
+    with pytest.raises(GymratError) as exc:
+        await iterate_session(repo, resolved_config())
+
+    assert exc.value.reason == "unsettled"
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +264,8 @@ async def test_iterate_session_when_measuring_does_append_iteration_after_last_s
 
     record = last_iteration_of(settled)
     assert record.seq == 2
-    assert ISO_PATTERN.match(record.at)
+    assert isinstance(record.at, int)
+    assert record.at > 0
     assert record.samples == PairedSamples(
         experiment=tuple(improved_rounds()), baseline=tuple(baseline_rounds())
     )
@@ -426,7 +438,6 @@ async def test_iterate_session_when_no_hooks_configured_does_emit_no_hook_events
 async def test_iterate_session_when_measuring_does_emit_judge_started_after_the_bench_passes(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """The judge phase opens when the verdict is computed, not while the bench still runs."""
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     worktrees = session_record(repo).worktrees
     by_dir = {worktrees.experiment: improved_rounds(), worktrees.baseline: baseline_rounds()}
@@ -536,7 +547,6 @@ async def test_iterate_session_when_confirmation_triggers_does_emit_confirm_even
 async def test_iterate_session_when_confirmation_without_filter_does_report_no_narrowing(
     repo: str, samples_mock: CollectSamplesRecorder
 ):
-    """Without a filter template the rerun is the whole bench, so no metric list is claimed."""
     write_session_log(repo, session_record(repo))
     regressed_rounds = rounds(scaled(BASELINE_MS, 1.1), scaled(BASELINE_BYTES, 1.1))
     stub_runs(
@@ -743,7 +753,6 @@ async def test_iterate_session_when_measuring_does_record_measured_tree_fingerpr
 async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
     repo: str, samples_mock: CollectSamplesRecorder
 ):
-    """A bench run that writes a file into the experiment worktree changes the fingerprint."""
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
@@ -753,7 +762,6 @@ async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
     result_clean = await iterate_session(repo, resolved_config())
     tree_clean = result_clean.record.measured_tree
 
-    # Stage the result for next iteration.
     write_session_log(
         repo,
         session_record(repo),
@@ -780,7 +788,7 @@ async def test_iterate_session_when_bench_writes_file_does_change_measured_tree(
 async def test_iterate_session_when_after_hook_writes_file_does_not_change_measured_tree(
     repo: str, samples_mock: CollectSamplesRecorder
 ):
-    """The after-hook fires after the fingerprint, so its writes must not affect measured_tree."""
+    # The after-hook fires after the fingerprint, so its writes must not affect measured_tree.
     experiment_dir = session_record(repo).worktrees.experiment
     _ensure_dir(experiment_dir)
     hooks = HookScripts(repo, experiment_dir)
@@ -888,7 +896,6 @@ async def test_iterate_session_when_budget_exceeded_does_name_estimate_source_in
 async def test_iterate_session_when_budget_live_but_no_estimate_does_run_normally(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    """A live budget with no recorded duration to estimate from does not block."""
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 
@@ -916,7 +923,6 @@ async def test_iterate_session_when_no_budget_does_run_normally(
 async def test_iterate_session_when_stop_condition_met_does_report_stop_before_budget_check(
     repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
 ):
-    """The stop condition fires before the budget check, so a session at its limit reports the stop."""
     write_session_log(repo, session_record(repo), (iteration(1), committed_keep(1)))
     stub_samples(samples_mock, repo, improved_rounds(), baseline_rounds())
 

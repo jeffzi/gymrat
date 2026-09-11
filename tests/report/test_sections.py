@@ -51,12 +51,9 @@ def _metric(*, kind: str = "time", short_name: str = "x") -> _FakeMetric:
 
 
 def test_plan_sections_when_multi_segment_name_does_group_by_metric_name_path():
-    """``infer_group`` must derive the group from the metric name key, not short_name.
-
-    Metric name ``entity/alive_check#time`` has path ``("entity", "alive_check")``,
-    so its group is ``"entity"``.  ``short_name="alive_check"`` has no dot and
-    would yield ``None`` — confirming the group comes from the key, not the label.
-    """
+    # infer_group derives the group from the metric name key, not short_name:
+    # "entity/alive_check#time" → group "entity"; short_name "alive_check"
+    # would yield None.
     layout = plan_sections(
         {
             "entity/alive_check#time": _metric(short_name="alive_check"),
@@ -104,12 +101,8 @@ def test_plan_sections_when_single_segment_name_does_produce_no_group():
 
 
 def test_plan_sections_when_measure_callback_does_receive_contract_derived_group():
-    """The measure callback receives the group derived from the metric name key.
-
-    ``"entity/alive_check#time"`` has group ``"entity"`` (path prefix), while
-    ``short_name="alive_check"`` has no dot.  Deriving from the key yields
-    ``"entity"``; deriving from short_name would yield ``None``.
-    """
+    # The group derives from the metric name key ("entity/alive_check#time" →
+    # "entity"), not from short_name ("alive_check" → None).
     layout = plan_sections(
         {
             "entity/alive_check#time": _metric(short_name="alive_check"),

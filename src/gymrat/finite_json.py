@@ -10,7 +10,17 @@ import math
 
 
 def null_non_finite(value: object) -> object:
-    """Recursively replace non-finite floats with ``None``, matching ``JSON.stringify``."""
+    """Recursively replace non-finite floats with ``None``, matching ``JSON.stringify``.
+
+    Args:
+        value: The JSON-bound value to sanitize. Dicts and lists are walked
+            recursively; non-finite floats (``NaN``, ``±Infinity``) are replaced
+            with ``None``.
+
+    Returns:
+        A structure identical to *value* with every non-finite float replaced by
+        ``None``.
+    """
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):

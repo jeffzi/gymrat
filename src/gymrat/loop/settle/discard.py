@@ -28,7 +28,7 @@ from gymrat.errors import GymratError
 from gymrat.git import try_git
 from gymrat.plural import pluralize
 from gymrat.report.loop import SHORT_SHA_LENGTH
-from gymrat.session.clock import now_iso
+from gymrat.session.clock import now_ns
 from gymrat.session.records import DiscardRecord, SessionRecord
 from gymrat.session.store import (
     SessionState,
@@ -47,14 +47,14 @@ from gymrat.session.workspace import (
 class DiscardResult:
     """What a discard did: an optional log record, a timestamp, and a human report.
 
-    ``at`` is the instant the discard happened. When a record is present, it
-    equals the record's timestamp; on the unmeasured path the caller supplies it
-    directly.
+    ``at`` is the instant the discard happened, in nanoseconds since the epoch.
+    When a record is present, it equals the record's ``at``; on the unmeasured
+    path the caller supplies it directly.
     """
 
     record: DiscardRecord | None
     report: str
-    at: str
+    at: int
 
 
 def discard_session(root: str, expected_session_id: str | None = None) -> DiscardResult:
@@ -62,6 +62,14 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
 
     See the module docstring for the three accepted states and when a record is
     appended.
+
+    Args:
+        root: The repository root containing the session.
+        expected_session_id: The session ID the caller expects to still be
+            open, or ``None`` to skip that check.
+
+    Returns:
+        The discard result with the rendered report and timestamp.
 
     Raises:
         GymratError: When no session has been started, when neither a measured
@@ -83,6 +91,7 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
                 "Another process started a new session between the confirmation and the "
                 "lock. Run gymrat discard again to confirm against the current session."
             ),
+            reason="stale-session",
         )
 
     has_measured = state.unsettled or state.ends_on_gating_block
@@ -95,7 +104,7 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
 
     reverted_seq = state.last_iteration.seq if state.last_iteration is not None else state.last_seq
 
-    at = now_iso()
+    at = now_ns()
     record = DiscardRecord(
         type="discard",
         # The block already settled the iteration it refused, so the discard behind
@@ -119,7 +128,6 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
 
 
 def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardResult:
-    """Revert an experiment worktree that has no measured iteration to settle."""
     experiment = session.worktrees.experiment
     target = _revert_target(state, session.baseline.sha, experiment)
     n_changed = changed_file_count(experiment, target)
@@ -130,13 +138,14 @@ def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardR
         raise GymratError(
             nothing_message,
             hint="Run gymrat iterate to measure an edit before settling it.",
+            reason="nothing-to-discard",
         )
 
     revert_workspace(experiment, target=target)
 
     return DiscardResult(
         record=None,
-        at=now_iso(),
+        at=now_ns(),
         report=(
             f"Reverted {pluralize(n_changed, 'unmeasured edit')}: "
             f"the experiment worktree is back at {target[:SHORT_SHA_LENGTH]}"
@@ -155,6 +164,14 @@ def _revert_target(
     kept). When the kept commit is no longer reachable — a corruption edge case
     that should not happen in practice — the current HEAD is already the best
     the worktree can offer.
+
+    Args:
+        state: The session's current iteration state.
+        baseline_sha: The commit the session started from.
+        experiment_dir: The experiment worktree's directory.
+
+    Returns:
+        The SHA of the commit to revert the experiment worktree to.
     """
     target = last_kept_position(state, baseline_sha)
     unreachable = try_git(["cat-file", "-t", target], experiment_dir) is not None

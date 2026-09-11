@@ -23,10 +23,6 @@ from gymrat.progress_events import (
 )
 from gymrat.session.schema import HookStage
 
-# ---------------------------------------------------------------------------
-# default_clock
-# ---------------------------------------------------------------------------
-
 
 def test_default_clock_when_called_does_return_perf_counter_in_milliseconds(
     monkeypatch: pytest.MonkeyPatch,
@@ -69,11 +65,6 @@ def _one_of_each_event(at_ms: float) -> list[ProgressEvent]:
 def test_event_when_field_assigned_does_raise_frozen(event: ProgressEvent) -> None:
     with pytest.raises(dataclasses.FrozenInstanceError):
         event.at_ms = 999.0  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# at_ms carried by every event
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("event", _one_of_each_event(at_ms=42.0), ids=lambda e: type(e).__name__)

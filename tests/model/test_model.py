@@ -100,6 +100,7 @@ def test_metric_meta_when_inspected_does_have_exactly_four_named_fields():
 
 @pytest.fixture
 def resolved_meta() -> ResolvedMetricMeta:
+    """A fully-populated ResolvedMetricMeta for reuse across assertions."""
     return ResolvedMetricMeta(
         direction="lower",
         gating=True,

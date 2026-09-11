@@ -63,12 +63,10 @@ def _percent(value: float) -> Effect:
 
 
 def _plain(part: str) -> str:
-    """The color-free rendering of a markup ``part``."""
     return render_lines(part, color=False, width=200)
 
 
 def _colored(part: str) -> str:
-    """The colored rendering of a markup ``part``, ANSI escapes included."""
     return render_lines(part, color=True, width=200)
 
 
@@ -78,7 +76,6 @@ def _sgr_codes(text: str) -> list[str]:
 
 
 def _find_plain(parts: Sequence[str], needle: str) -> str:
-    """The one part whose plain rendering contains ``needle``."""
     matches = [part for part in parts if needle in _plain(part)]
     assert len(matches) == 1, f"expected exactly one part containing {needle!r}, got {matches}"
     return matches[0]
@@ -379,12 +376,10 @@ def test_count_verdicts_when_candidate_named_does_count_only_that_candidate(
     candidate_index: int, expected: VerdictCounts
 ):
     metrics: Metrics = {
-        "decode/time": metric_for(
-            [
-                CandidateSpec(verdict="improved", delta=-10),
-                CandidateSpec(verdict="regressed", delta=8),
-            ]
-        ),
+        "decode/time": metric_for([
+            CandidateSpec(verdict="improved", delta=-10),
+            CandidateSpec(verdict="regressed", delta=8),
+        ]),
     }
 
     assert count_verdicts(metrics, candidate_index) == expected
@@ -461,12 +456,10 @@ def test_select_highlights_when_equal_magnitude_does_keep_declaration_order():
 
 def test_select_highlights_when_selected_does_carry_metric_and_candidate_slice():
     metrics: Metrics = {
-        "slower/time": metric_for(
-            [
-                CandidateSpec(verdict="improved", delta=-10),
-                CandidateSpec(verdict="regressed", delta=8),
-            ]
-        ),
+        "slower/time": metric_for([
+            CandidateSpec(verdict="improved", delta=-10),
+            CandidateSpec(verdict="regressed", delta=8),
+        ]),
     }
 
     highlights = select_highlights(metrics, 1)
@@ -488,18 +481,14 @@ def test_select_highlights_when_multiple_candidates_does_rank_each_by_its_own_ve
     candidate_index: int, expected: list[str]
 ):
     metrics: Metrics = {
-        "a/time": metric_for(
-            [
-                CandidateSpec(verdict="improved", delta=-4),
-                CandidateSpec(verdict="regressed", delta=3),
-            ]
-        ),
-        "b/time": metric_for(
-            [
-                CandidateSpec(verdict="regressed", delta=6),
-                CandidateSpec(verdict="no-signal", delta=0.2),
-            ]
-        ),
+        "a/time": metric_for([
+            CandidateSpec(verdict="improved", delta=-4),
+            CandidateSpec(verdict="regressed", delta=3),
+        ]),
+        "b/time": metric_for([
+            CandidateSpec(verdict="regressed", delta=6),
+            CandidateSpec(verdict="no-signal", delta=0.2),
+        ]),
     }
 
     highlights = select_highlights(metrics, candidate_index)
@@ -680,7 +669,6 @@ SAMPLE_SHORTAGE_HINT_PLAIN = (
 
 
 def _verbose_lines(metrics: Metrics) -> list[str]:
-    """The verbose method lines, with no hint contribution."""
     return [
         line
         for line in footer_lines(metrics, verbose=True, command="compare")
@@ -689,7 +677,6 @@ def _verbose_lines(metrics: Metrics) -> list[str]:
 
 
 def _band_lines_for(metrics: Metrics) -> list[str]:
-    """The plain noise-band fallback lines, in the order they were emitted."""
     return [
         _plain(line) for line in _verbose_lines(metrics) if _plain(line).startswith("noise band")
     ]

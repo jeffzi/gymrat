@@ -704,7 +704,6 @@ def _mixed_band_result() -> ComparisonResult:
 
 
 def test_render_report_when_mixing_banded_exact_and_nan_delta_does_align_verdict_fields():
-    """Mixed band/exact/NaN-delta rows align their verdict fields to the same columns."""
     report = render_report(_mixed_band_result())
 
     banded_cell = cells_of(line_starting_with(report, "banded/time"))[-1]
@@ -725,7 +724,6 @@ def test_render_report_when_mixing_banded_exact_and_nan_delta_does_align_verdict
 def test_render_report_when_mixing_banded_exact_and_nan_delta_does_match_styled_and_plain(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Styled and plain verdict cells have identical visible text for every row type."""
     plain_report = render_report(_mixed_band_result())
 
     monkeypatch.setenv("FORCE_COLOR", "1")

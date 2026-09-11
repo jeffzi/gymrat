@@ -21,6 +21,13 @@ def coerce_integer(value: object) -> object:
 
     Folding ``5.0`` to ``5`` lets it pass; every other value is passed through for
     the model to accept or reject.
+
+    Args:
+        value: The value to coerce.
+
+    Returns:
+        The coerced ``int`` when *value* is an integral float, otherwise *value*
+        unchanged.
     """
     if isinstance(value, float) and value.is_integer():
         return int(value)
@@ -33,6 +40,9 @@ def _needs_quoting(part: str) -> bool:
     An empty part would vanish into a bare dot; a part carrying a dot, a quote,
     or whitespace would read as a deeper path (or a truncated one) than the
     writer actually named.
+
+    Returns:
+        Whether the part needs quoting to survive a round-trip.
     """
     return part == "" or any(char in '."' or char.isspace() for char in part)
 
@@ -43,6 +53,12 @@ def describe_key(loc: tuple[str, ...]) -> str:
     Parts that would be misread bare are quoted with :func:`json.dumps`, which
     also escapes the quotes, backslashes, and line terminators a part may carry
     so the rendered path stays on one line.
+
+    Args:
+        loc: The error location parts to join.
+
+    Returns:
+        The dot-joined key path.
     """
     return ".".join(json.dumps(part) if _needs_quoting(part) else part for part in loc)
 
@@ -52,6 +68,12 @@ def drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:
 
     When a parent and its child both fail, only the more specific child error is
     worth reporting; the parent prefix is redundant noise.
+
+    Args:
+        errors: The pydantic error details to filter.
+
+    Returns:
+        The errors with prefix-only entries removed.
     """
     locs = [error["loc"] for error in errors]
     return [

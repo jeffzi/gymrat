@@ -1,8 +1,9 @@
 """Message-to-event mapping for the Claude Agent SDK driver.
 
-Extracted from :mod:`gymrat.supervisor.claude` so the session lifecycle and
-the message vocabulary live in separate modules. This module imports nothing
-from the SDK — duck-typed attribute access handles both real and fake messages.
+This module owns the message vocabulary only; session-lifecycle concerns
+(connect, stream, interrupt, send, end) belong in
+:mod:`gymrat.supervisor.claude`. This module imports nothing from the SDK —
+duck-typed attribute access handles both real and fake messages.
 """
 
 import json
@@ -10,7 +11,7 @@ from collections.abc import Mapping
 from math import ceil
 from typing import Literal
 
-from gymrat.session.clock import now_ms
+from gymrat.session.clock import now_ms, now_ns
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     ModelPhaseEvent,
@@ -59,6 +60,13 @@ def detect_origin(message: object) -> Literal["agent", "injected"]:
     whose ``kind`` is ``"human"`` (a human-initiated turn is still the
     agent's response). Any other ``kind`` — e.g. ``"task-notification"`` —
     means the turn was injected into the conversation.
+
+    Args:
+        message: The result message to classify.
+
+    Returns:
+        ``"agent"`` for human-initiated or origin-less turns, ``"injected"``
+        otherwise.
     """
     origin = getattr(message, "origin", None)
     if origin is None:
@@ -70,7 +78,17 @@ def detect_origin(message: object) -> Literal["agent", "injected"]:
 
 
 def result_outcome_from(message: object, subtype: str, cost_usd: float) -> SessionOutcome:
-    """Classify a settled error result message."""
+    """Classify a settled error result message.
+
+    Args:
+        message: The SDK message whose ``.result`` attribute supplies the
+            outcome text.  Accessed via ``getattr`` — any object is accepted.
+        subtype: Fallback label used when ``.result`` is not a string.
+        cost_usd: Cumulative cost to record on the outcome.
+
+    Returns:
+        A ``SessionOutcome`` with ``reason="error"`` and the resolved message.
+    """
     result_text = getattr(message, "result", None)
     return SessionOutcome(
         reason="error",
@@ -80,7 +98,15 @@ def result_outcome_from(message: object, subtype: str, cost_usd: float) -> Sessi
 
 
 def read_cost(message: object) -> float | None:
-    """Extract cumulative cost from a message, or ``None`` when absent or zero."""
+    """Extract cumulative cost from a message, or ``None`` when absent or zero.
+
+    Args:
+        message: The SDK message whose ``.total_cost_usd`` attribute is read
+            via ``getattr``.  Any object is accepted.
+
+    Returns:
+        The cost as a float when present and positive, ``None`` otherwise.
+    """
     cost = getattr(message, "total_cost_usd", None)
     if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost > 0:
         return float(cost)
@@ -113,7 +139,13 @@ class MessageMapper:
         self._last_top_level_text = ""
 
     def map_stream_event(self, event: dict[str, object], parent: str | None) -> None:
-        """Dispatch a raw SDK stream event to the appropriate handler."""
+        """Dispatch a raw SDK stream event to the appropriate handler.
+
+        Args:
+            event: A raw SDK stream event dict keyed by ``"type"``.
+            parent: The tool-use ID of the enclosing tool call, or ``None``
+                for top-level content.
+        """
         event_type = event.get("type")
         if event_type == "content_block_start":
             content_block = event.get("content_block")
@@ -131,7 +163,13 @@ class MessageMapper:
             self._emit_phase("turn_end", parent)
 
     def map_blocks(self, content: list[object], parent: str | None) -> None:
-        """Map settled content blocks (text, tool-use, tool-result) to events."""
+        """Map settled content blocks (text, tool-use, tool-result) to events.
+
+        Args:
+            content: The settled content blocks from a message response.
+            parent: The tool-use ID of the enclosing tool call, or ``None``
+                for top-level content.
+        """
         for block in content:
             self._map_block(block, parent)
 
@@ -140,7 +178,7 @@ class MessageMapper:
     ) -> None:
         self._observer(
             ModelPhaseEvent(
-                timestamp=now_ms(), phase=phase, tool_name=tool_name, parent_tool_use_id=parent
+                at=now_ns(), phase=phase, tool_name=tool_name, parent_tool_use_id=parent
             )
         )
 
@@ -151,7 +189,7 @@ class MessageMapper:
             stream = self._thinking_streams.setdefault(parent, _ThinkingStream())
             self._observer(
                 ThinkingUpdateEvent(
-                    timestamp=now_ms(),
+                    at=now_ns(),
                     estimated_tokens=stream.estimated_tokens,
                     delta=0,
                     parent_tool_use_id=parent,
@@ -172,7 +210,7 @@ class MessageMapper:
         stream.chars_since_emit = 0
         self._observer(
             ThinkingUpdateEvent(
-                timestamp=now_ms(),
+                at=now_ns(),
                 estimated_tokens=stream.estimated_tokens,
                 delta=delta,
                 parent_tool_use_id=parent,
@@ -196,9 +234,7 @@ class MessageMapper:
         if isinstance(text, str):
             if parent is None:
                 self._last_top_level_text = text
-            self._observer(
-                TextDeltaEvent(timestamp=now_ms(), chunk=text, parent_tool_use_id=parent)
-            )
+            self._observer(TextDeltaEvent(at=now_ns(), chunk=text, parent_tool_use_id=parent))
             return
 
         if hasattr(block, "thinking"):
@@ -212,7 +248,7 @@ class MessageMapper:
             tool_input = getattr(block, "input", None)
             self._observer(
                 ToolStartEvent(
-                    timestamp=now_ms(),
+                    at=now_ns(),
                     tool_use_id=block_id,
                     tool_name=name,
                     input=tool_input,
@@ -233,7 +269,7 @@ class MessageMapper:
             result = _stringify_result(getattr(block, "content", None))
             self._observer(
                 ToolEndEvent(
-                    timestamp=now_ms(),
+                    at=now_ns(),
                     tool_use_id=tool_use_id,
                     tool_name=self._tool_names.get(tool_use_id, "unknown"),
                     duration_ms=duration_ms,

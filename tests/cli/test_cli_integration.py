@@ -63,7 +63,7 @@ def test_cli_when_rival_lock_held_does_exit_two_naming_holder_without_benching(
     (Path(repo) / "bench.sh").write_text(_EMIT_ONE, encoding="utf-8")
     _git(repo, "add", "bench.sh")
     _git(repo, "commit", "-m", "add bench")
-    lock_path = str(lockfile_path(repo_root(repo)))
+    lock_path = lockfile_path(repo_root(repo))
     blocker = hold_lock(
         lock_path,
         holder={"pid": os.getpid(), "command": "measure", "at": "2026-01-01T00:00:00.000Z"},

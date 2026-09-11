@@ -43,6 +43,12 @@ def display_class(verdict: MetricVerdict) -> DisplayClass:
     anywhere ``usable_n`` sits between zero and :data:`MIN_PERMUTATION_N`
     some pairs did differ, so that reads ``within-noise``. An exact
     no-signal always reads ``within-noise``.
+
+    Args:
+        verdict: The metric verdict to classify.
+
+    Returns:
+        The display class the verdict presents as in the report.
     """
     if verdict.method != "exact" and verdict.n < MIN_PERMUTATION_N:
         return "inconclusive"
@@ -52,14 +58,6 @@ def display_class(verdict: MetricVerdict) -> DisplayClass:
 
 
 def _no_signal_class(verdict: MetricVerdict) -> DisplayClass:
-    """The display class a no-signal verdict reads as, by the method that produced it.
-
-    The method union is discriminated exhaustively so a new method fails to
-    type-check here until it decides what its no-signal reads as. A band
-    verdict measured identical when every pair tied (``usable_n == 0`` — the
-    caller has already ruled out a pair count below :data:`MIN_PERMUTATION_N`);
-    every other no-signal — band or otherwise — reads within noise.
-    """
     match verdict.method:
         case "band":
             return "identical" if verdict.usable_n == 0 else "within-noise"
@@ -98,6 +96,9 @@ VERDICT_GLOSSES: dict[DisplayClass, str] = {
     "inconclusive": "inconclusive",
 }
 
-QUIET_VERDICTS: frozenset[DisplayClass] = frozenset(
-    {"within-noise", "identical", "inconclusive", "unstable"}
-)
+QUIET_VERDICTS: frozenset[DisplayClass] = frozenset({
+    "within-noise",
+    "identical",
+    "inconclusive",
+    "unstable",
+})

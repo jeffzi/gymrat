@@ -105,7 +105,6 @@ def test_table_region_when_flat_body_with_groups_does_emit_group_headers_and_cas
 
 
 def test_table_region_when_flat_body_has_ungrouped_rows_does_trail_after_groups():
-    """Single-segment names (no ``/`` in the path) render after grouped rows."""
     region = table_region(render_report(_grouped_flat_result()))
 
     group_member_indices = [
@@ -126,7 +125,6 @@ def test_table_region_when_flat_body_has_ungrouped_rows_does_trail_after_groups(
 
 
 def test_table_region_when_flat_body_with_multiple_groups_does_preserve_first_appearance_order():
-    """Group headers appear in the order of their first member's emission."""
     geomean = geomean_of(-2, 4)
     result = create_comparison_result(
         metrics={
@@ -188,7 +186,6 @@ def test_table_region_when_flat_body_with_multiple_groups_does_preserve_first_ap
 
 
 def test_table_region_when_flat_body_with_deeper_path_does_use_full_prefix_as_group():
-    """A metric name ``node/access/get_1field#time`` groups under ``node/access``."""
     geomean = geomean_of(-3.2, 2)
     result = create_comparison_result(
         metrics={

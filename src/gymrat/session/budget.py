@@ -45,7 +45,7 @@ twice a baseline-only run."""
 class Budget:
     """Immutable snapshot of a session time budget.
 
-    Fields:
+    Attributes:
         started_at_ms: Epoch milliseconds when the budget was created.
         max_minutes: Total minutes the session may run.
         deadline_ms: Epoch milliseconds at which the budget expires.
@@ -67,6 +67,10 @@ def write_budget(root: str, budget: Budget) -> None:
 
     Writes to a temporary file in the same directory, then renames so a
     concurrent reader never sees a half-written file.
+
+    Args:
+        root: Repository root under which the budget file lives.
+        budget: The budget snapshot to write.
     """
     target = Path(budget_path(root))
     with tempfile.NamedTemporaryFile(
@@ -94,6 +98,14 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
     Returns ``None`` when the file is absent, contains invalid JSON, has an
     unrecognized version, its deadline has passed, or the supervise lock for
     *root* is not held.
+
+    Args:
+        root: Repository root under which the budget file lives.
+        now_ms: Current epoch milliseconds, compared against the budget's
+            deadline.
+
+    Returns:
+        The validated budget, or ``None`` when any liveness condition fails.
     """
     path = Path(budget_path(root))
     try:
@@ -148,6 +160,12 @@ def estimate_iterate_duration(
     2. Failing that, the newest ``BaselineRecord`` carrying a ``duration_ms``
        is doubled (an iterate measures both baseline and experiment).
     3. With neither, returns ``None`` (unknown).
+
+    Args:
+        records: Session log records to scan, oldest-first.
+
+    Returns:
+        The estimate, or ``None`` when no record carries a duration.
     """
     for record in reversed(records):
         if isinstance(record, IterationRecord) and record.duration_ms is not None:

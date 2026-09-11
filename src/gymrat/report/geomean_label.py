@@ -32,6 +32,12 @@ def _delta_of(value: float) -> str:
 
     The aggregate figures carry a bare ratio rather than an :class:`Effect`, so
     they reuse :func:`format_delta` through this adapter.
+
+    Args:
+        value: The raw ratio to format, such as ``2.2`` for ``+2.2%``.
+
+    Returns:
+        The signed delta string such as ``"+2.2%"`` or ``"0.0%"``.
     """
     return format_delta(Effect(value=value, unit="percent"))
 
@@ -42,6 +48,12 @@ def geomean_label(n: int) -> str:
     A table with one candidate names the count here, which frees its cells of
     everything but the aggregate itself. An empty geomean has no count to name
     and takes :data:`GEOMEAN_LABEL` alone.
+
+    Args:
+        n: The count of metrics behind the aggregate figure.
+
+    Returns:
+        The label with the metric count, or the bare label when ``n`` is zero.
     """
     return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({pluralize(n, 'stable metric')})"
 
@@ -56,6 +68,12 @@ def _geomean_provenance(geomean: GeomeanResult) -> str:
 
     ``(n)`` when every scope metric stands behind the figure, ``(n/m)`` when
     exclusions thinned them.
+
+    Args:
+        geomean: The scope's aggregate result.
+
+    Returns:
+        ``"(n)"`` or ``"(n/m)"`` when exclusions reduced the count.
     """
     total = geomean.n + len(geomean.excluded)
     return f"({geomean.n})" if total == geomean.n else f"({geomean.n}/{total})"
@@ -108,6 +126,12 @@ def _is_quiet_row(outcomes: Sequence[DisplayClass | None]) -> bool:
     """Whether every defined display class in a row is a quiet one.
 
     A row with no verdicts at all is left alone rather than counted as quiet.
+
+    Args:
+        outcomes: The display class of each metric behind the row, in order.
+
+    Returns:
+        Whether every defined outcome is quiet, and at least one is defined.
     """
     defined = [outcome for outcome in outcomes if outcome is not None]
     return len(defined) > 0 and all(outcome in QUIET_VERDICTS for outcome in defined)

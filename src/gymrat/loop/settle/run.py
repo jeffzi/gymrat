@@ -26,7 +26,7 @@ from gymrat.loop.settle.checks import (
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
 from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
-from gymrat.session.clock import now_iso
+from gymrat.session.clock import now_ns
 from gymrat.session.records import (
     IterationRecord,
     KeepChecks,
@@ -112,6 +112,14 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
 
     Every gate phrases its refusal as markup and none of them renders it, so the
     color choice is resolved once for the whole report however the keep settled.
+
+    Args:
+        root: The repository root.
+        config: The bench-less configuration governing the keep's checks.
+        options: What the caller hands the keep beyond its configuration.
+
+    Returns:
+        The keep result with the report still in markup form.
     """
     required = require_open_session(root, "settling an edit")
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
@@ -168,6 +176,15 @@ async def _keep_clean_worktree(context: _KeepContext, *, baseline_position: str)
     Either nothing was measured (the agent never edited the tree) or the work is
     already committed and only the baseline advance is outstanding, in which case
     the commit already made is gated and picked up rather than repeated.
+
+    Args:
+        context: The keep context carrying the worktree, config, and iteration.
+        baseline_position: The commit the experiment worktree is expected to be
+            at when there is nothing new to commit.
+
+    Returns:
+        The keep result — blocked if the worktree has nothing new, or gated
+        against the standing commit.
     """
     head = worktree_head(context.experiment_dir)
 
@@ -199,6 +216,13 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
     of them produced the commit: ``commit`` is called only once the checks have
     passed, and it either makes the commit from the worktree's uncommitted work or
     hands back the one already standing at HEAD.
+
+    Args:
+        context: The keep context carrying the worktree, config, and iteration.
+        commit: Produces the commit SHA to keep, given the commit message.
+
+    Returns:
+        The keep result — committed if the checks passed, blocked otherwise.
     """
     checks = await run_checks(context.config, context.experiment_dir)
     if checks is not None and not checks.passed:
@@ -247,7 +271,7 @@ def _commit_keep(
     record = KeepRecord(
         type="keep",
         seq=context.iteration.seq,
-        at=now_iso(),
+        at=now_ns(),
         status="committed",
         checks=checks,
         commit=commit,
@@ -281,7 +305,7 @@ def _blocked_keep(
     record = KeepRecord(
         type="keep",
         seq=seq,
-        at=now_iso(),
+        at=now_ns(),
         status="blocked",
         checks=checks,
         reason=reason,

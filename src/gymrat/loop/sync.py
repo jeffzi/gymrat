@@ -56,6 +56,9 @@ def _dirty_entries(directory: str) -> list[_DirtyEntry]:
     NUL-delimited output avoids the C-quoting that ``--porcelain`` applies to
     non-ASCII and whitespace-containing paths, so every path is the literal
     filesystem name.
+
+    Returns:
+        The list of dirty entries parsed from git status output.
     """
     raw = run_git(["status", "-z", "--untracked-files=all"], directory)
     entries: list[_DirtyEntry] = []
@@ -104,6 +107,12 @@ def _copy_entry(src: Path, dst: Path) -> None:
 def sync_to_experiment(root: str) -> SyncResult:
     """Apply uncommitted changes from the main tree onto the experiment worktree.
 
+    Args:
+        root: The repository root containing the session.
+
+    Returns:
+        The sync result listing the files that were copied or deleted.
+
     Raises:
         GymratError: When no session is open, when the experiment worktree has
             uncommitted changes that overlap with the files to sync, when the
@@ -133,7 +142,9 @@ def sync_to_experiment(root: str) -> SyncResult:
     if conflicts:
         listed = ", ".join(sorted(conflicts))
         message = f"Cannot sync — the experiment worktree has uncommitted changes in: {listed}"
-        raise GymratError(message, hint="Settle or revert the experiment worktree first.")
+        raise GymratError(
+            message, hint="Settle or revert the experiment worktree first.", reason="dirty-worktree"
+        )
 
     for entry in main_entries:
         src = Path(root) / entry.path

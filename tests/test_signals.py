@@ -31,12 +31,9 @@ class _ProcessExitedError(Exception):
 
 @pytest.fixture(autouse=True)
 def _reset_registry() -> Iterator[None]:
-    """Keep module-global registry state isolated between tests.
-
-    Saves the signal dispositions for every termination signal before the test,
-    and restores them after — so a Ctrl-C during the suite reaches pytest's own
-    handler instead of the gymrat handler installed by the test.
-    """
+    """Keep module-global registry state isolated between tests."""
+    # Saves the signal dispositions so a Ctrl-C during the suite reaches pytest's
+    # own handler instead of the gymrat handler installed by the test.
     saved = {sig: signal.getsignal(sig) for sig in signals.TERMINATION_SIGNALS}
     yield
     signals.reset()
@@ -46,14 +43,11 @@ def _reset_registry() -> Iterator[None]:
 
 @pytest.fixture
 def raise_signal(monkeypatch: pytest.MonkeyPatch) -> RaiseSignal:
-    """Stub the exit seam and return a helper that invokes an installed handler.
-
-    Emitting a real signal would take the test runner down, so the helper fetches
-    the handler the module registered via ``signal.getsignal`` and calls it
-    directly with ``(signal_number, frame)``. With the exit seam stubbed to raise, the
-    handler unwinds exactly where the real one would exit, and the helper reports
-    the code it would have exited with.
-    """
+    """Stub the exit seam and return a helper that invokes an installed handler."""
+    # Emitting a real signal would take the test runner down, so the helper
+    # fetches the handler via signal.getsignal and calls it directly. With
+    # the exit seam stubbed to raise, the handler unwinds exactly where the
+    # real one would exit, and the helper reports the exit code.
 
     def fake_exit(code: int) -> None:
         raise _ProcessExitedError(code)
@@ -71,6 +65,11 @@ def raise_signal(monkeypatch: pytest.MonkeyPatch) -> RaiseSignal:
         pytest.fail("handler returned instead of exiting")
 
     return _raise
+
+
+# ---------------------------------------------------------------------------
+# Cleanup ordering and exit codes
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
@@ -164,6 +163,11 @@ def test_install_termination_cleanup_when_second_signal_arrives_during_cleanup_d
     assert code == 128 + signal.SIGINT
 
 
+# ---------------------------------------------------------------------------
+# Handler installation and idempotency
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize("signal_number", _TERMINATION_SIGNALS, ids=_signal_id)
 def test_install_termination_cleanup_when_cycled_repeatedly_does_keep_exactly_one_handler(
     signal_number: int,
@@ -203,6 +207,11 @@ def test_install_termination_cleanup_when_called_again_does_keep_same_handler_pe
     assert signal.getsignal(signal_number) is first_handler
 
 
+# ---------------------------------------------------------------------------
+# TERMINATION_SIGNALS
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize(
     "signal_number",
     [signal.SIGINT, signal.SIGTERM],
@@ -217,6 +226,11 @@ def test_termination_signals_when_on_any_platform_does_contain_required_signal(
 @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="SIGHUP is POSIX-only")
 def test_termination_signals_when_on_posix_does_contain_sighup():
     assert signal.SIGHUP in signals.TERMINATION_SIGNALS
+
+
+# ---------------------------------------------------------------------------
+# Deferring termination signals
+# ---------------------------------------------------------------------------
 
 
 def test_install_termination_cleanup_when_sighup_undefined_does_register_only_available_signals(
@@ -234,11 +248,6 @@ def test_install_termination_cleanup_when_sighup_undefined_does_register_only_av
     uninstall()
 
 
-# ---------------------------------------------------------------------------
-# reset — deferral state cleanup
-# ---------------------------------------------------------------------------
-
-
 def test_reset_when_called_during_deferral_does_handle_next_signal_immediately(
     raise_signal: RaiseSignal,
 ):
@@ -250,11 +259,6 @@ def test_reset_when_called_during_deferral_does_handle_next_signal_immediately(
         code = raise_signal(signal.SIGINT)
 
     assert code == 128 + signal.SIGINT
-
-
-# ---------------------------------------------------------------------------
-# deferring_termination_signals — mask failure safety
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(

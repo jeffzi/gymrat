@@ -57,7 +57,11 @@ _RUNBOOK_STUB = """# Optimization Runbook
 
 @dataclass(frozen=True, slots=True)
 class ScaffoldRequest:
-    """User choices that drive the scaffold: bench command, runbook, and skill."""
+    """User choices that drive the scaffold.
+
+    ``bench`` is required only when the config must be written; ``runbook``
+    and ``install_skill`` gate whether those artifacts are created.
+    """
 
     bench: str | None = None
     runbook: bool = True
@@ -87,6 +91,13 @@ def _serialize_config(config: dict[str, object]) -> str:
     ``json.dumps`` escapes the bench value — every JSON basic-string escape is a
     valid TOML basic-string escape, so the result round-trips through any TOML
     parser.
+
+    Args:
+        config: The scaffold config dict, with a ``"bench"`` key and an
+            optional ``"runbook"`` key.
+
+    Returns:
+        The TOML string with a trailing newline.
     """
     lines = [f"bench = {json.dumps(config['bench'])}"]
     if "runbook" in config:
@@ -129,7 +140,6 @@ def _write_skill(base_dir: Path, content: str) -> ScaffoldArtifact:
 
 
 def _prepare_config(request: ScaffoldRequest) -> str:
-    """Validate the requested config and render it as TOML."""
     config_dict: dict[str, object] = {"bench": request.bench}
     if request.runbook:
         config_dict["runbook"] = DEFAULT_RUNBOOK_PATH
@@ -142,6 +152,12 @@ def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
 
     A crash or permission error mid-write never leaves a truncated
     ``gymrat.toml`` — the temp file is cleaned up on failure.
+
+    Returns:
+        The scaffold artifact describing the written config file.
+
+    Raises:
+        GymratError: When the file cannot be written.
     """
     full_path = base_dir / CONFIG_FILENAME
     tmp_path: str | None = None
@@ -166,6 +182,14 @@ def _path_blocked(base_dir: Path, relative: str) -> bool:
     Symlinks (including dangling ones) are always blocked — writing through a
     symlink would place the content at a location the user did not choose.
     Directories are blocked because they cannot be opened as regular files.
+
+    Args:
+        base_dir: The base directory ``relative`` is resolved against.
+        relative: The path, relative to ``base_dir``, to check.
+
+    Returns:
+        ``True`` when a symlink, directory, or other non-regular file exists at
+        the path.
     """
     full = base_dir / relative
     if full.is_symlink():
@@ -174,7 +198,6 @@ def _path_blocked(base_dir: Path, relative: str) -> bool:
 
 
 def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
-    """Collect artifact paths that are blocked by a non-regular file."""
     blocked: list[str] = []
     if _path_blocked(base_dir, CONFIG_FILENAME):
         blocked.append(CONFIG_FILENAME)
@@ -188,18 +211,23 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
 def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
     """Write the config, runbook stub, and skill file for ``base_dir``.
 
-    Returns a :class:`ScaffoldResult` describing each artifact. An existing
-    ``gymrat.toml`` is reported as ``exists`` and left byte-identical; the
-    remaining artifacts are still created, which makes a re-run the way to
-    restore a deleted runbook or skill.
+    An existing ``gymrat.toml`` is reported as ``exists`` and left
+    byte-identical; the remaining artifacts are still created, which makes a
+    re-run the way to restore a deleted runbook or skill. In every failure
+    case no partial scaffold is left behind.
 
-    Raises :class:`GymratError` when:
+    Args:
+        base_dir: The project root to scaffold into.
+        request: Which artifacts to create and the bench command to embed in
+            the config.
 
-    - The config fails validation or the bundled skill cannot be read.
-    - A non-regular file (directory, symlink) occupies an artifact path.
-    - A filesystem error (permission denied, read-only FS) prevents writing.
+    Returns:
+        A :class:`ScaffoldResult` describing each artifact.
 
-    In every failure case no partial scaffold is left behind.
+    Raises:
+        GymratError: When the config fails validation, the bundled skill cannot
+            be read, a non-regular file (directory, symlink) occupies an artifact
+            path, or a filesystem error prevents writing.
     """
     base_dir = Path(base_dir)
     config_path = base_dir / CONFIG_FILENAME

@@ -33,6 +33,12 @@ class ProgressSnapshot:
 
     The dashboard computes ETAs from ``passes_completed`` / ``passes_total``
     and ``last_pass_duration_ms``; this snapshot carries no ETA itself.
+
+    Attributes:
+        passes_completed: How many passes have finished in the current phase.
+        passes_total: Total passes expected across all targets and rounds.
+        last_pass_duration_ms: Wall-clock time of the most recently finished
+            pass, in milliseconds.
     """
 
     passes_completed: int
@@ -45,6 +51,10 @@ def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
 
     Writes to a temporary file in the same directory, then renames so a
     concurrent reader never sees a half-written file.
+
+    Args:
+        root: Repository root under which the progress sidecar lives.
+        snapshot: The progress state to write.
     """
     target = Path(progress_path(root))
     with tempfile.NamedTemporaryFile(
@@ -72,6 +82,12 @@ def read_progress(root: str) -> ProgressSnapshot | None:
     Returns ``None`` when the file is absent, contains invalid JSON, does not
     match the snapshot schema, or is stale (mtime older than
     ``STALENESS_BOUND_SECONDS``).
+
+    Args:
+        root: Repository root under which the progress sidecar lives.
+
+    Returns:
+        The snapshot, or ``None`` when any validity condition fails.
     """
     path = Path(progress_path(root))
     try:
@@ -140,5 +156,12 @@ def create_sidecar_writer(root: str) -> ProgressCallback:
     The callback tracks accumulated state from ``PassStarted`` and
     ``PassFinished`` events and writes a ``ProgressSnapshot`` on each.
     Other event types are silently ignored (no write).
+
+    Args:
+        root: Repository root under which the progress sidecar is written.
+
+    Returns:
+        A callback that accumulates pass state and writes a snapshot on each
+        ``PassStarted`` or ``PassFinished`` event.
     """
     return _SidecarWriter(root)

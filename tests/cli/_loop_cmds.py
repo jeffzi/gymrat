@@ -10,10 +10,12 @@ from pathlib import Path
 import tomli_w
 from typer.testing import CliRunner
 
+from gymrat.session import CommandRecord, read_records, session_jsonl_path
 from tests._ansi import SGR_RE, strip_ansi
 
 __all__ = [
     "always_tty",
+    "last_command_record",
     "make_discard_repo",
     "make_stop_repo",
     "never_tty",
@@ -61,6 +63,19 @@ def make_stop_repo(repo: str) -> str:
     start_with(repo, (iteration(1), committed_keep(1)))
     write_config(repo)
     return repo
+
+
+def last_command_record(root: str) -> CommandRecord:
+    """Read the session log and return the last ``CommandRecord``.
+
+    Raises ``AssertionError`` when the log contains no command record.
+    """
+    records = read_records(session_jsonl_path(root))
+    for record in reversed(records):
+        if isinstance(record, CommandRecord):
+            return record
+    msg = "no CommandRecord found in session log"
+    raise AssertionError(msg)
 
 
 def write_config(root: str, **extra: object) -> None:

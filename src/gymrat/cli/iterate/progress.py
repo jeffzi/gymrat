@@ -59,7 +59,31 @@ logger = logging.getLogger(__name__)
 
 
 class IterateRenderer(LiveDisplayMixin):
-    """Single-use progress renderer for ``gymrat iterate``."""
+    """Single-use progress renderer for ``gymrat iterate``.
+
+    Args:
+        mode: Display mode — ``"live"`` for a rich interactive checklist,
+            ``"plain"`` for timestamped milestone lines.
+        console: The Rich console to render into.
+        seq: The 1-based iteration sequence number, shown in the header.
+        session_id: Displayed in the header for identification.
+        sample_count: Total passes per target — used to size progress bars and
+            compute ETAs.
+        metric_count: Number of metrics the judge evaluates, shown in the judge
+            hint.
+        primary_metric: Name of the primary metric, shown in the judge hint and
+            in the judge detail line.
+        verbose: When ``True`` the live display is not transient — frames
+            persist after the renderer stops.
+        clock: Monotonic clock returning seconds, injected for testing. When
+            ``None`` the renderer skips elapsed-time and ETA display.
+        checks_cmd: The shell command the ``record`` phase mentions will run at
+            ``gymrat keep``. ``None`` omits the note.
+        has_before_hook: Whether a before-hook node is included in the
+            checklist.
+        has_after_hook: Whether the record node's hint mentions a subsequent
+            after hook.
+    """
 
     def __init__(  # noqa: PLR0913, PLR0917 -- one parameter per renderer concern
         self,
@@ -242,7 +266,7 @@ class IterateRenderer(LiveDisplayMixin):
     # -----------------------------------------------------------------------
 
     def report(self, event: ProgressEvent) -> None:
-        """Dispatch ``event`` to its handler."""
+        """Record the event's timestamp, then route it to the matching handler."""
         self._track_timestamp(event.at_ms)
         self._handlers[type(event)](event)
 

@@ -176,12 +176,6 @@ def _separator() -> str:
 
 
 def _format_primary_delta(delta_pct: float | None) -> str:
-    """A primary figure's move as a leading-space signed percentage, or nothing.
-
-    Blank is what the table already shows for a ratio with no value, so the two
-    agree: a reader is shown no percentage rather than one they could read a
-    direction into.
-    """
     if delta_pct is None:
         return ""
     return f" {format_delta(Effect(value=delta_pct, unit='percent'))}"
@@ -251,9 +245,10 @@ def format_verdict_block(
     # The delta renders blank when the ratio had no value, so the parts are
     # joined rather than interpolated: a blank between a space and the separator
     # would read as a gap.
-    verdict_line = _separator().join(
-        [f"primary:{_format_primary_delta(primary.delta_pct)}", f"verdict: {verdict}"]
-    )
+    verdict_line = _separator().join([
+        f"primary:{_format_primary_delta(primary.delta_pct)}",
+        f"verdict: {verdict}",
+    ])
     lines = [_format_rerun_line(rerun) for rerun in reruns]
     lines.append(verdict_line)
     if target_reached and outcome != "regressed":
@@ -288,6 +283,15 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
     wrapping a percent effect; a named metric combines that verdict with its own
     direction — a ``higher`` metric improves on the opposite sign, and never on a
     delta of exactly zero.
+
+    Args:
+        metrics: The run's metric comparisons, used to look up the primary's
+            direction when it names a metric rather than the geomean.
+        primary: The one figure the iteration is read on.
+
+    Returns:
+        Whether the primary figure moved in the direction its metric calls an
+        improvement.
     """
     if primary.delta_pct is None:
         return False
@@ -445,13 +449,11 @@ def format_status_header(session: SessionRecord) -> list[str]:
     """
     baseline = format_baseline_ref(session.baseline)
     return [
-        _separator().join(
-            [
-                markup(f"session {session.session_id}", "bold"),
-                f"baseline {escape(baseline)}",
-                f"adapter {escape(session.config.adapter)}",
-            ]
-        ),
+        _separator().join([
+            markup(f"session {session.session_id}", "bold"),
+            f"baseline {escape(baseline)}",
+            f"adapter {escape(session.config.adapter)}",
+        ]),
         f"branch {escape(session.branch)}",
         f"experiment worktree {escape(session.worktrees.experiment)}",
         f"baseline worktree {escape(session.worktrees.baseline)}",
@@ -463,6 +465,12 @@ def format_status_settle(settle: SettleState) -> str:
 
     A settling record that settled no iteration — a keep refused for want of a
     measurement — stands on a line of its own, and this is all that line says.
+
+    Args:
+        settle: The settling record to describe.
+
+    Returns:
+        A short phrase such as ``"kept a1b2c3d"`` or ``"discarded"``.
     """
     match settle:
         case SettleKept():
@@ -482,23 +490,22 @@ def format_status_iteration(iteration: StatusIteration) -> str:
 
     The glyph carries the outcome's own color, so a session's course is legible
     down the left of the report before a word of it is read.
+
+    Args:
+        iteration: The iteration record to describe.
+
+    Returns:
+        The iteration as a single rich-markup line.
     """
     glyph = markup(get_glyph(OUTCOME_GLYPHS[iteration.outcome]), _OUTCOME_STYLES[iteration.outcome])
-    return _separator().join(
-        [
-            f"iteration {iteration.seq}",
-            f"{glyph}{_format_primary_delta(iteration.delta_pct)}",
-            format_status_settle(iteration.settle),
-        ]
-    )
+    return _separator().join([
+        f"iteration {iteration.seq}",
+        f"{glyph}{_format_primary_delta(iteration.delta_pct)}",
+        format_status_settle(iteration.settle),
+    ])
 
 
 def _metric_medians(samples: Sequence[SampleRound]) -> list[tuple[str, float]]:
-    """The median each metric measured across ``samples``, in the order rounds first named them.
-
-    A metric is averaged only over the rounds that reported it, so a metric a
-    late round dropped keeps the median of the rounds that carried it.
-    """
     readings: dict[str, list[float]] = {}
     for round_ in samples:
         for name, value in round_.items():
@@ -512,6 +519,12 @@ def format_status_baseline(record: BaselineRecord) -> str:
     The log stores every round the measurement took, so the medians are computed
     here rather than stored — a later statistics change re-reads the same records
     instead of invalidating them.
+
+    Args:
+        record: The recorded baseline measurement to describe.
+
+    Returns:
+        A separator-joined markup line naming the baseline and its medians.
     """
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
@@ -540,33 +553,29 @@ def format_status_footer(summary: StatusSummary) -> list[str]:
 
     The stop line is left out when nothing is configured rather than reported as
     unlimited: a loop the agent stops when it likes has no state to state.
+
+    Args:
+        summary: The status summary to render the footer from.
+
+    Returns:
+        The totals line, and the stop-progress line when configured.
     """
-    totals = _separator().join(
-        [
-            pluralize(summary.iteration_count, "iteration"),
-            f"{summary.keep_count} kept",
-            f"{summary.discard_count} discarded",
-        ]
-    )
+    totals = _separator().join([
+        pluralize(summary.iteration_count, "iteration"),
+        f"{summary.keep_count} kept",
+        f"{summary.discard_count} discarded",
+    ])
     stop = _format_stop_state(summary)
     return [totals] if stop is None else [totals, stop]
 
 
 def first_line(message: str) -> str:
-    """The first line of a stop message, discarding the rest.
-
-    Shared by every renderer of a stop message, so a multi-line message
-    truncates the same way everywhere it is shown.
-    """
+    """The first line of a stop message, discarding the rest."""
     return message.split("\n", maxsplit=1)[0]
 
 
 def format_status_stop(message: str) -> str:
-    """The line a stopped session renders: the word and the first line of its message.
-
-    Multi-line messages are truncated to the first line, so the status report
-    stays one line per record.
-    """
+    """The line a stopped session renders: the word and the first line of its message."""
     return _separator().join([markup("stopped", "bold"), escape(first_line(message))])
 
 
@@ -576,14 +585,18 @@ def format_status_finalized(finalized: FinalizeRecord) -> str:
     It sits under the totals rather than in the header because closing the
     session is the last thing that happened to it, and the branch and commit it
     names are what the reader goes to next — everything above them is history.
+
+    Args:
+        finalized: The finalize record to describe.
+
+    Returns:
+        A single rich-markup line naming the branch and short commit.
     """
-    return _separator().join(
-        [
-            markup("finalized", "bold"),
-            f"branch {escape(finalized.branch)}",
-            f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",
-        ]
-    )
+    return _separator().join([
+        markup("finalized", "bold"),
+        f"branch {escape(finalized.branch)}",
+        f"commit {finalized.commit[:SHORT_SHA_LENGTH]}",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +611,13 @@ def format_start_summary(result: StartResult, runbook: str | None) -> str:
     its history instead. The rows name the branch, the baseline, and both
     worktrees, their labels padded to a common width. A configured runbook and an
     archived predecessor each add a trailing row when present.
+
+    Args:
+        result: The outcome of starting or resuming the session.
+        runbook: The configured runbook path, or ``None`` when absent.
+
+    Returns:
+        The rendered summary with a headline and padded rows.
     """
     session = result.session
     state = result.state

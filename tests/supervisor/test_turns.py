@@ -28,10 +28,12 @@ from gymrat.supervisor.turns import (
     Reply,
     WaitForLock,
     classify,
+    outcome_record_count,
 )
 from tests.cli.supervise._fixtures import session_state
 from tests.session.records._fixtures import (
     blocked_keep,
+    command_record,
     committed_keep,
     discard_record,
     finalize_record,
@@ -66,10 +68,10 @@ def _turn_end(
     budget_exhausted: bool = False,
     text: str = "done",
     origin: Literal["agent", "injected"] = "agent",
-    timestamp: int = 5000,
+    at: int = 5_000_000_000_000,
 ) -> TurnEndEvent:
     return TurnEndEvent(
-        timestamp=timestamp,
+        at=at,
         text=text,
         cost_usd=cost_usd,
         origin=origin,
@@ -187,7 +189,6 @@ def test_wait_for_lock_when_constructed_does_be_a_decision():
 
 
 def test_classify_when_stop_condition_met_via_benchless_config_does_end_finished():
-    """stop_condition reads only config.stop; a BenchlessConfig suffices."""
     config = _benchless_config(stop=StopConfig(max_iterations=2))
     state = session_state(iteration_count=2)
     guards = _guards()
@@ -284,10 +285,6 @@ def test_classify_when_cost_exceeds_max_usd_does_end_spend_cap():
 
 
 def test_classify_when_budget_exhausted_but_ends_on_stop_does_end_finished():
-    """Rule 1 (finished) fires before rule 2 (budget).
-
-    A budget-exhausted turn whose log ends on a stop record reads End("finished").
-    """
     config = _benchless_config()
     state = session_state(ends_on_stop=True)
     guards = _guards()
@@ -325,7 +322,6 @@ def test_classify_when_lock_held_does_return_wait_for_lock():
 
 
 def test_classify_when_lock_held_does_not_mutate_guard_counters():
-    """Every guard counter and the record-count baseline stay exactly as they were."""
     config = _benchless_config()
     state = session_state()
     guards = _guards(replies_sent=5, no_progress_count=1, last_record_count=3)
@@ -401,7 +397,6 @@ def test_classify_when_consecutive_discards_reach_limit_does_end_consecutive_dis
 
 
 def test_classify_when_committed_keep_between_discards_does_reset_streak():
-    """A committed keep resets the consecutive-discard counter."""
     records: list[SessionLogRecord] = [
         discard_record(seq=1),
         discard_record(seq=2),
@@ -418,7 +413,6 @@ def test_classify_when_committed_keep_between_discards_does_reset_streak():
 
 
 def test_classify_when_iteration_and_hook_records_between_discards_does_not_break_streak():
-    """Iteration and hook records between discards do not break the run."""
     records: list[SessionLogRecord] = [
         discard_record(seq=1),
         iteration_record(seq=2),
@@ -437,10 +431,6 @@ def test_classify_when_iteration_and_hook_records_between_discards_does_not_brea
 
 
 def test_classify_when_blocked_keep_between_discards_does_not_reset_streak():
-    """Five discards with a blocked keep interleaved still trips the guard.
-
-    Only a committed keep resets the counter.
-    """
     records: list[SessionLogRecord] = [
         discard_record(seq=1),
         discard_record(seq=2),
@@ -514,7 +504,6 @@ def test_classify_when_new_records_appended_does_reset_no_progress():
 
 
 def test_classify_when_record_count_grows_does_move_baseline():
-    """The record-count baseline moves to the current count on every non-WaitForLock."""
     config = _benchless_config()
     state = session_state()
     guards = _guards(last_record_count=0)
@@ -532,13 +521,6 @@ def test_classify_when_record_count_grows_does_move_baseline():
 
 
 def test_classify_when_first_turn_plus_three_stale_replies_does_end_no_progress_on_fourth():
-    """Four turns with no new records: first is free, next three trip the guard.
-
-    Turn 1: first classification (replies_sent=0, no-progress not counted)
-    Turn 2: no new records, no_progress=1
-    Turn 3: no new records, no_progress=2
-    Turn 4: no new records, no_progress=3 -> End("no-progress")
-    """
     config = _benchless_config()
     state = session_state()
     guards = _guards()
@@ -586,7 +568,6 @@ def test_classify_when_first_turn_plus_three_stale_replies_does_end_no_progress_
 
 
 def test_classify_when_record_appended_mid_sequence_does_reset_no_progress_counter():
-    """A turn end that appended one record of any type resets the counter."""
     config = _benchless_config()
     state = session_state()
     guards = _guards()
@@ -765,3 +746,161 @@ def test_classify_when_turn_text_and_origin_vary_does_produce_same_decision_type
         results.append(result)
 
     assert type(results[0]) is type(results[1])
+
+
+# ---------------------------------------------------------------------------
+# behavior 9: no-progress guard counts outcome records only
+# ---------------------------------------------------------------------------
+
+
+def test_outcome_record_count_when_no_command_records_does_count_all():
+    records: list[SessionLogRecord] = [
+        iteration_record(),
+        discard_record(seq=1),
+        hook_record(),
+    ]
+
+    assert outcome_record_count(records) == 3
+
+
+def test_outcome_record_count_when_only_command_records_does_return_zero():
+    records: list[SessionLogRecord] = [
+        command_record(),
+        command_record(seq=4),
+    ]
+
+    assert outcome_record_count(records) == 0
+
+
+def test_outcome_record_count_when_mixed_records_does_exclude_command_records():
+    records: list[SessionLogRecord] = [
+        iteration_record(),
+        command_record(),
+        discard_record(seq=1),
+        command_record(seq=4),
+        stop_record(),
+    ]
+
+    assert outcome_record_count(records) == 3
+
+
+def test_classify_when_only_command_records_appended_does_increment_no_progress():
+    config = _benchless_config()
+    state = session_state()
+    guards = _guards(replies_sent=1, no_progress_count=0, last_record_count=0)
+    records: list[SessionLogRecord] = [command_record()]
+
+    _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+    )
+
+    assert guards.no_progress_count == 1
+
+
+def test_classify_when_non_command_record_with_commands_does_reset_no_progress():
+    config = _benchless_config()
+    state = session_state()
+    guards = _guards(replies_sent=1, no_progress_count=2, last_record_count=0)
+    records: list[SessionLogRecord] = [command_record(), iteration_record(), command_record(seq=4)]
+
+    _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+    )
+
+    assert guards.no_progress_count == 0
+
+
+def test_classify_when_command_only_turns_reach_limit_does_end_no_progress():
+    config = _benchless_config()
+    state = session_state()
+    guards = _guards()
+    records: list[SessionLogRecord] = []
+
+    result1 = _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+    )
+    assert isinstance(result1, Reply)
+
+    records.append(command_record())
+    result2 = _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+        now_ms=1000.0,
+    )
+    assert isinstance(result2, Reply)
+
+    records.append(command_record(seq=4))
+    result3 = _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+        now_ms=2000.0,
+    )
+    assert isinstance(result3, Reply)
+
+    records.append(command_record(seq=5))
+    result4 = _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+        now_ms=3000.0,
+    )
+    assert isinstance(result4, End)
+    assert result4.reason == "no-progress"
+
+
+def test_classify_when_baseline_moves_with_outcome_count_does_track_non_command_records():
+    config = _benchless_config()
+    state = session_state()
+    guards = _guards(last_record_count=0)
+    records: list[SessionLogRecord] = [
+        iteration_record(),
+        command_record(),
+        iteration_record(seq=2),
+    ]
+
+    _classify(
+        config=config,
+        state=state,
+        records=records,
+        guards=guards,
+        turn=_turn_end(),
+    )
+
+    assert guards.last_record_count == 2
+
+
+def test_classify_when_command_records_interleaved_with_discards_does_not_break_streak():
+    records: list[SessionLogRecord] = [
+        discard_record(seq=1),
+        command_record(),
+        discard_record(seq=2),
+        discard_record(seq=3),
+        command_record(seq=4),
+        discard_record(seq=4),
+        discard_record(seq=5),
+    ]
+
+    result = _classify_discards(records)
+
+    assert isinstance(result, End)
+    assert result.reason == "consecutive-discards"
