@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from gymrat.session import clock as _clock
 from gymrat.telemetry.attributes import (
     GEN_AI_MODEL,
     GEN_AI_PROVIDER,
@@ -37,7 +36,6 @@ class TracingState:
     active: bool = False
     session_span: Span | None = None
     run_span: Span | None = None
-    run_start_ms: float = 0.0
 
 
 def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the session run
@@ -136,14 +134,13 @@ def finalize_tracing(
     """End the run and session spans, set final attributes, and flush."""
     from gymrat.telemetry.provider import flush_tracing  # noqa: PLC0415
 
-    elapsed_ms = _clock.now_ms() - state.run_start_ms
     run_span = state.run_span
     if result is not None and run_span is not None:
         run_span.set_attribute(RUN_COST_USD, result.cost_usd)
         run_span.set_attribute(RUN_ENDED_BY, result.ended_by)
         if result.end_reason is not None:
             run_span.set_attribute(RUN_END_REASON, result.end_reason)
-        run_span.set_attribute(RUN_DURATION_MS, elapsed_ms)
+        run_span.set_attribute(RUN_DURATION_MS, result.duration_ms)
         if result.outcome.reason == "error":
             from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
 

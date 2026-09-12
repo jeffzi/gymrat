@@ -319,7 +319,6 @@ def _run_session(ctx: _SessionContext) -> None:
         prompt=ctx.session_prompt(),
         reporter_observer=reporter.observer,
     )
-    tracing.run_start_ms = now_ms()
 
     context = SupervisedSession(
         root=ctx.root,
