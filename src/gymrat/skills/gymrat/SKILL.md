@@ -5,7 +5,8 @@ description: >-
   benchmarking of refs or branches with no session open.
 when_to_use: >-
   Also use when running gymrat start, gymrat iterate, gymrat keep, gymrat discard, gymrat stop,
-  gymrat finalize, gymrat status, gymrat supervise, gymrat sync, gymrat measure, or gymrat compare;
+  gymrat finalize, gymrat status, gymrat supervise, gymrat sync, gymrat measure, gymrat probe, or
+  gymrat compare;
   when a repo has a gymrat.toml; when asked to optimize a benchmark toward a target or budget,
   or to probe an edit
   before spending an iteration; or on errors like "has not been settled", "Keep refused", or "Stop
@@ -72,8 +73,9 @@ gymrat discard                                # revert the experiment worktree
 ```
 
 `keep` refuses when nothing has been measured, when the measured iteration left nothing to commit
-(no edit was made), when a gating metric regressed, when the iteration was NO-SIGNAL or REGRESSED,
-or when `checks` fails. Refusals exit 1.
+(no edit was made), when a gating metric's regression stands (`gating-regression`, which
+`--allow-unimproved` never bypasses), or when the iteration otherwise did not improve
+(`not-improved`), or when `checks` fails. Refusals exit 1.
 
 After a checks failure, fix and re-run `gymrat keep`. After a gating-regression refusal, `keep`
 stays blocked — run `iterate` or `discard`. After a not-improved refusal, either `discard` the
@@ -203,8 +205,8 @@ Levers, in order of leverage:
   NO-SIGNAL at 3 samples means nothing. 6 is the knife edge: one tied pair drops the run to the
   band while a verdict still prints, so on metrics that repeat readings (integer counts, exact
   metrics) use more and read the method with `--verbose`. On `measure`, below 6 one slow run swings
-  the spread past most real effects. Use the flag; never edit `samples` in `gymrat.toml`
-  mid-session.
+  the spread past most real effects. When raising the count on `measure` or `compare`, pass
+  `--samples`; never edit `samples` in `gymrat.toml` mid-session.
 - **`filter` in `gymrat.toml`** is a bench command template carrying a `{names}` placeholder. It
   scopes **confirmation reruns and `gymrat probe`**: the rerun benches just the regressed metric
   names substituted into `{names}`, and a named `probe` benches just those names. Without it, the
@@ -236,13 +238,13 @@ experiment worktree has conflicting uncommitted changes.
 
 ## Reading the clock
 
-`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, and `measure` print a time-left line when
-a wall-clock cap is active. Read it after every one of them and plan from it — it is your only
-clock. Never estimate elapsed time yourself. `iterate` refuses on its own when the remaining time is
-shorter than the estimated iteration duration; treat that refusal as the answer and report what the
-probes measured. `measure` and `compare` warn on stderr when their estimated duration outlasts the
-remaining time — the command still runs and exits 0, so read its result, then launch no further
-measurement and report what the probes measured.
+`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, `measure`, and `probe` print a time-left
+line when a wall-clock cap is active. Read it after every one of them and plan from it — it is your
+only clock. Never estimate elapsed time yourself. `iterate` refuses on its own when the remaining
+time is shorter than the estimated iteration duration; treat that refusal as the answer and report
+what the probes measured. `measure` and `compare` warn on stderr when their estimated duration
+outlasts the remaining time — the command still runs and exits 0, so read its result, then launch no
+further measurement and report what the probes measured.
 
 ## Loop discipline
 

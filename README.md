@@ -58,18 +58,18 @@ Select one with `--adapter` or in the config file.
 
 ## Commands
 
-| Command                             | What it does                                                                                      |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook                                      |
-| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline                                                   |
-| `gymrat measure [target]`           | Measure a single revision or directory on its own                                                 |
-| `gymrat probe [names…]`             | Bench the experiment worktree and print each metric's delta against the baseline; records nothing |
-| `gymrat doctor`                     | Check the project setup and report problems                                                       |
-| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                                                     |
-| `gymrat stop -m "<report>"`         | Record a closing report in the session log (the session stays open)                               |
-| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree                                     |
-| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps                                     |
-| `gymrat export [session-log]`       | Replay a finished session's spans to an OpenTelemetry collector                                   |
+| Command                             | What it does                                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook                                                         |
+| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline                                                                      |
+| `gymrat measure [target]`           | Measure a single revision or directory on its own                                                                    |
+| `gymrat probe [names…]`             | Bench the session's experiment worktree and print each metric's delta against the recorded baseline; records nothing |
+| `gymrat doctor`                     | Check the project setup and report problems                                                                          |
+| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                                                                        |
+| `gymrat stop -m "<report>"`         | Record a closing report in the session log (the session stays open)                                                  |
+| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree                                                        |
+| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps                                                        |
+| `gymrat export [session-log]`       | Replay a finished session's spans to an OpenTelemetry collector                                                      |
 
 Targets are git refs or directories, optionally labeled: `gymrat compare old=main new=perf/simd`.
 Every command takes `-h` for its full options.
@@ -149,8 +149,8 @@ Both the agent backend and the supervisor enforce `--max-usd`.
 session). The wall-clock cap starts once the baseline is recorded, so a run may take the cap plus
 the baseline's duration.
 
-`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, and `measure` print a time-left line so
-the agent can plan around the wall-clock cap.
+`iterate`, `keep`, `discard`, `status`, `sync`, `compare`, `measure`, and `probe` print a time-left
+line so the agent can plan around the wall-clock cap.
 
 ### Hooks
 
@@ -209,8 +209,8 @@ The principles behind these choices, and what gymrat deliberately is not, are in
 ## Machine-readable output
 
 Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `stop`,
-`status`) accepts `--format json` for structured output. Text output is for humans and may change
-between releases. `start`, `sync`, `finalize`, `export`, and `supervise` are text-only.
+`status`, `probe`) accepts `--format json` for structured output. Text output is for humans and may
+change between releases. `start`, `sync`, `finalize`, `export`, and `supervise` are text-only.
 
 Log records use snake_case keys, `at` timestamps are integer nanoseconds since the Unix epoch,
 and the schema is additive-only from the first published release.
