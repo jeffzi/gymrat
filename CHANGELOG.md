@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `gymrat probe`, which benches the experiment worktree at 6 samples — scoped through the
+  `filter` template when metric names are given — and prints each metric's median as a signed
+  delta against the newest baseline record, recording nothing.
+
 ### Changed
 
 - Append a baseline record from the kept samples when `keep` commits, so the recorded reference

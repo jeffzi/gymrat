@@ -70,6 +70,8 @@ HookStage = Literal["before", "after"]
 #: - ``bad-branch``        — start (the branch is invalid)
 #: - ``branch-exists``     — start (the branch already exists)
 #: - ``fail-on``           — iterate (the fail-on condition fired)
+#: - ``no-filter``         — probe (names given with no filter template configured)
+#: - ``no-baseline``       — probe (the session has no baseline record)
 #: - ``error``             — any command (an unexpected error)
 CommandReason = Literal[
     "stop-condition",
@@ -92,5 +94,7 @@ CommandReason = Literal[
     "bad-branch",
     "branch-exists",
     "fail-on",
+    "no-filter",
+    "no-baseline",
     "error",
 ]

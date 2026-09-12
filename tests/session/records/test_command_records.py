@@ -3,7 +3,7 @@ from typing import get_args
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session import parse_record, record_to_wire
+from gymrat.session import CommandReason, parse_record, record_to_wire
 from tests.session.records.test_records import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
@@ -198,35 +198,46 @@ def test_parse_record_when_type_unknown_does_list_command_in_known_types():
 # CommandReason — vocabulary
 # ---------------------------------------------------------------------------
 
+#: Every reason a command record may carry, as the session log documents them.
+COMMAND_REASONS = (
+    "stop-condition",
+    "budget-exceeded",
+    "unsettled",
+    "gating-block",
+    "already-stopped",
+    "no-session",
+    "finalized",
+    "nothing-measured",
+    "gating-regression",
+    "nothing-to-commit",
+    "checks-failed",
+    "not-improved",
+    "nothing-to-discard",
+    "stale-session",
+    "nothing-kept",
+    "dirty-worktree",
+    "unkept-commits",
+    "bad-branch",
+    "branch-exists",
+    "fail-on",
+    "no-filter",
+    "no-baseline",
+    "error",
+)
+
 
 def test_command_reason_when_imported_does_accept_all_defined_values():
-    from gymrat.session import CommandReason
-
-    expected = {
-        "stop-condition",
-        "budget-exceeded",
-        "unsettled",
-        "gating-block",
-        "already-stopped",
-        "no-session",
-        "finalized",
-        "nothing-measured",
-        "gating-regression",
-        "nothing-to-commit",
-        "checks-failed",
-        "not-improved",
-        "nothing-to-discard",
-        "stale-session",
-        "nothing-kept",
-        "dirty-worktree",
-        "unkept-commits",
-        "bad-branch",
-        "branch-exists",
-        "fail-on",
-        "error",
-    }
     actual = set(get_args(CommandReason))
-    assert actual == expected
+
+    assert actual == set(COMMAND_REASONS)
+
+
+@pytest.mark.parametrize("reason", COMMAND_REASONS)
+def test_parse_record_when_command_reason_unknown_does_list_every_accepted_reason(reason: str):
+    with pytest.raises(GymratError) as exc:
+        parse_record(patching(COMMAND_RECORD, {"reason": "bored"}))
+
+    assert reason in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

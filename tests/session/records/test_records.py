@@ -348,6 +348,14 @@ def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
         pytest.param(COMMAND_RECORD, id="command"),
         pytest.param(COMMAND_RECORD_SUCCESS, id="command-success-no-reason"),
         pytest.param(COMMAND_RECORD_WITH_TRACEPARENT, id="command-with-traceparent"),
+        pytest.param(
+            patching(COMMAND_RECORD, {"name": "probe", "reason": "no-filter"}),
+            id="command-probe-no-filter",
+        ),
+        pytest.param(
+            patching(COMMAND_RECORD, {"name": "probe", "reason": "no-baseline"}),
+            id="command-probe-no-baseline",
+        ),
     ],
 )
 def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[str, object]):

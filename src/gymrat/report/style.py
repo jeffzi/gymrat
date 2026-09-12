@@ -212,6 +212,11 @@ def markup(text: str, style: str) -> str:
     return f"[{style}]{escape(text)}[/]"
 
 
+def join_header_parts(parts: Sequence[str]) -> str:
+    """Join report header parts with the dimmed :data:`SCOPE_SEPARATOR` every header shares."""
+    return f" {markup(SCOPE_SEPARATOR, 'dim')} ".join(parts)
+
+
 def highlight_inline_code(text: str) -> str:
     """Replace every ``` `...` ``` span in ``text`` with its content styled blue.
 

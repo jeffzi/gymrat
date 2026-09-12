@@ -1,9 +1,10 @@
 """Tests for the JSON report document builders.
 
-These cover the compare document (``render_json``) and the measure document
-(``render_measure_json``), including
-their schema shapes, per-metric and per-candidate serialization, worktree
-sections, non-finite handling, and the no-ANSI guarantee under forced color.
+These cover the compare document (``render_json``), the measure document
+(``render_measure_json``), and the probe document (``render_probe_json``),
+including their schema shapes, per-metric and per-candidate serialization,
+worktree sections, non-finite handling, and the no-ANSI guarantee under forced
+color.
 """
 
 from __future__ import annotations
@@ -14,7 +15,8 @@ import re
 import pytest
 
 from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
-from gymrat.report import render_json, render_measure_json
+from gymrat.report import render_json, render_measure_json, render_probe_json
+from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
@@ -36,6 +38,8 @@ from tests.report._inputs import (
     n_way_metric,
     other_kind,
     permutation_metric,
+    probe_metric,
+    probe_result,
     single_sample_result,
     two_kind_measurement,
 )
@@ -751,3 +755,136 @@ def test_render_measure_json_when_nesting_fields_does_indent_two_spaces_per_leve
     assert re.match(r'^ {2}"schema_version": 1,$', lines[1])
     assert re.match(r'^ {2}"worktrees": \{$', lines[worktrees_line])
     assert re.match(r'^ {4}"removed": 1,$', lines[worktrees_line + 1])
+
+
+# ---------------------------------------------------------------------------
+# render_probe_json — schema shape
+# ---------------------------------------------------------------------------
+
+
+def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
+    doc = json.loads(render_probe_json(probe_result(metrics=[probe_metric()])))
+
+    assert doc["schema_version"] == 1
+    assert doc["label"] == "experiment"
+    assert doc["adapter"] == "mitata"
+
+
+def test_render_probe_json_when_top_level_keys_does_order_them_canonically():
+    doc = json.loads(render_probe_json(probe_result(metrics=[probe_metric()])))
+
+    assert list(doc.keys()) == [
+        "schema_version",
+        "label",
+        "samples",
+        "adapter",
+        "scoped",
+        "names",
+        "metrics",
+    ]
+
+
+def test_render_probe_json_when_scoped_does_report_the_scope_and_sample_count():
+    result = probe_result(scoped=True, names=("total_ms", "decode"), samples=3)
+
+    doc = json.loads(render_probe_json(result))
+
+    assert doc["scoped"] is True
+    assert doc["names"] == ["total_ms", "decode"]
+    assert doc["samples"] == 3
+
+
+def test_render_probe_json_when_unscoped_does_report_an_empty_name_list():
+    doc = json.loads(render_probe_json(probe_result()))
+
+    assert doc["scoped"] is False
+    assert doc["names"] == []
+
+
+# ---------------------------------------------------------------------------
+# render_probe_json — metric entries
+# ---------------------------------------------------------------------------
+
+
+def test_render_probe_json_when_metric_paired_does_carry_snake_case_measurement_fields():
+    result = probe_result(
+        metrics=[
+            probe_metric(
+                "decode/time",
+                median=90.0,
+                spread=2.0,
+                reference_median=100.0,
+                delta_pct=-10.0,
+                unit="ns",
+            )
+        ]
+    )
+
+    doc = json.loads(render_probe_json(result))
+
+    assert doc["metrics"]["decode/time"] == {
+        "median": 90.0,
+        "spread": 2.0,
+        "reference_median": 100.0,
+        "delta_pct": -10.0,
+    }
+
+
+def test_render_probe_json_when_metric_field_absent_does_render_null():
+    result = probe_result(
+        metrics=[
+            probe_metric(
+                "alloc_bytes", median=None, spread=None, reference_median=None, delta_pct=None
+            )
+        ]
+    )
+
+    doc = json.loads(render_probe_json(result))
+
+    assert doc["metrics"]["alloc_bytes"] == {
+        "median": None,
+        "spread": None,
+        "reference_median": None,
+        "delta_pct": None,
+    }
+
+
+def test_render_probe_json_when_several_metrics_does_key_each_by_name_in_result_order():
+    result = probe_result(metrics=[probe_metric("total_ms"), probe_metric("alloc_bytes")])
+
+    doc = json.loads(render_probe_json(result))
+
+    assert list(doc["metrics"]) == ["total_ms", "alloc_bytes"]
+
+
+# ---------------------------------------------------------------------------
+# render_probe_json — budget
+# ---------------------------------------------------------------------------
+
+
+def test_render_probe_json_when_budget_given_does_add_a_top_level_budget_object():
+    doc = json.loads(
+        render_probe_json(
+            probe_result(), budget=BudgetSummary(cap_minutes=30, remaining_seconds=900)
+        )
+    )
+
+    assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
+
+
+def test_render_probe_json_when_no_budget_does_omit_the_budget_key():
+    assert "budget" not in json.loads(render_probe_json(probe_result(), budget=None))
+
+
+# ---------------------------------------------------------------------------
+# render_probe_json — JSON validity and ANSI
+# ---------------------------------------------------------------------------
+
+
+def test_render_probe_json_when_environment_forces_color_does_emit_no_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = probe_result(metrics=[probe_metric("decode/time", unit="ns")])
+
+    assert not _ANSI_ESCAPE.search(render_probe_json(result))

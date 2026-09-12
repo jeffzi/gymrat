@@ -136,6 +136,8 @@
             "bad-branch",
             "branch-exists",
             "fail-on",
+            "no-filter",
+            "no-baseline",
             "error"
           ],
           "title": "Reason",

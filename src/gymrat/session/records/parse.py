@@ -111,7 +111,7 @@ _COMMAND_REASON = (
     '"gating-regression", "nothing-to-commit", "checks-failed", "not-improved", '
     '"nothing-to-discard", "stale-session", "nothing-kept", '
     '"dirty-worktree", "unkept-commits", "bad-branch", "branch-exists", '
-    '"fail-on" or "error"'
+    '"fail-on", "no-filter", "no-baseline" or "error"'
 )
 
 _PHRASES: dict[tuple[str, ...], str] = {

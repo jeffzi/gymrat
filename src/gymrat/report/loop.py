@@ -47,7 +47,6 @@ if TYPE_CHECKING:
         FinalizeRecord,
         SessionRecord,
     )
-    from gymrat.session.records import SampleRound
     from gymrat.session.schema import KeepReason
 
 # ---------------------------------------------------------------------------
@@ -516,12 +515,24 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     ])
 
 
-def _metric_medians(samples: Sequence[SampleRound]) -> list[tuple[str, float]]:
+def baseline_medians(record: BaselineRecord) -> dict[str, float]:
+    """The median each metric of a recorded baseline came to over its rounds.
+
+    A round that omits a metric contributes nothing to that metric's median
+    rather than a zero, and a metric no round reported has no entry at all.
+
+    Args:
+        record: The recorded baseline measurement to summarize.
+
+    Returns:
+        Each reported metric name mapped to its median, in the order the rounds
+        first named them.
+    """
     readings: dict[str, list[float]] = {}
-    for round_ in samples:
+    for round_ in record.samples:
         for name, value in round_.items():
             readings.setdefault(name, []).append(value)
-    return [(name, compute_median(values)) for name, values in readings.items()]
+    return {name: compute_median(values) for name, values in readings.items()}
 
 
 def format_status_baseline(record: BaselineRecord) -> str:
@@ -539,7 +550,8 @@ def format_status_baseline(record: BaselineRecord) -> str:
     """
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
-        f"{escape(name)} {format_value(median)}" for name, median in _metric_medians(record.samples)
+        f"{escape(name)} {format_value(median)}"
+        for name, median in baseline_medians(record).items()
     )
     return _separator().join(parts)
 

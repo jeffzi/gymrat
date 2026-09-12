@@ -33,6 +33,7 @@ from gymrat.report.loop import (
     SettleUnsettled,
     StatusIteration,
     StatusSummary,
+    baseline_medians,
     derive_outcome,
     format_loop_header,
     format_status_baseline,
@@ -49,6 +50,8 @@ from tests.report._inputs import permutation_metric, styles_at
 from tests.session.records._fixtures import SESSION_ID, finalize_record, session_record
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from gymrat.model import Direction
     from gymrat.report.loop import LoopOutcome, SettleState
     from gymrat.report.types import MetricComparison, MetricComparisons
@@ -350,20 +353,69 @@ def test_format_status_iteration_when_colored_does_paint_the_glyph(
 
 
 # ---------------------------------------------------------------------------
+# baseline_medians
+# ---------------------------------------------------------------------------
+
+
+def _baseline_record(samples: tuple[Mapping[str, float], ...]) -> BaselineRecord:
+    """A baseline record labeled ``main`` over ``samples``."""
+    return BaselineRecord(
+        type="baseline", at=1_786_198_530_000_000_000, label="main", samples=samples
+    )
+
+
+@pytest.mark.parametrize(
+    ("samples", "expected"),
+    [
+        pytest.param(({"total_ms": 15200},), {"total_ms": 15200}, id="single-round"),
+        pytest.param(
+            ({"total_ms": 15200}, {"total_ms": 15184}),
+            {"total_ms": 15192},
+            id="even-rounds-average-the-middle-pair",
+        ),
+        pytest.param(
+            ({"total_ms": 100}, {"total_ms": 300}, {"total_ms": 260}),
+            {"total_ms": 260},
+            id="odd-rounds-take-the-middle",
+        ),
+        pytest.param(
+            ({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}),
+            {"total_ms": 200, "alloc_bytes": 40},
+            id="metric-absent-from-a-round-medians-the-rounds-that-have-it",
+        ),
+    ],
+)
+def test_baseline_medians_when_given_record_does_median_each_metric_over_its_rounds(
+    samples: tuple[Mapping[str, float], ...], expected: dict[str, float]
+):
+    medians = baseline_medians(_baseline_record(samples))
+
+    assert medians == expected
+
+
+# ---------------------------------------------------------------------------
 # format_status_baseline
 # ---------------------------------------------------------------------------
 
 
+def test_format_status_baseline_when_given_record_does_render_the_baseline_medians():
+    record = _baseline_record((
+        {"total_ms": 100, "alloc_bytes": 40},
+        {"total_ms": 300},
+        {"total_ms": 260},
+    ))
+
+    line = _plain(format_status_baseline(record))
+
+    rendered = " · ".join(f"{name} {value:g}" for name, value in baseline_medians(record).items())
+    assert line == f"baseline main · {rendered}"
+
+
 def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric():
-    record = BaselineRecord(
-        type="baseline",
-        at=1_786_198_530_000_000_000,
-        label="main",
-        samples=(
-            {"total_ms": 15200, "alloc_bytes": 1500},
-            {"total_ms": 15184, "alloc_bytes": 1540},
-        ),
-    )
+    record = _baseline_record((
+        {"total_ms": 15200, "alloc_bytes": 1500},
+        {"total_ms": 15184, "alloc_bytes": 1540},
+    ))
 
     line = _plain(format_status_baseline(record))
 
@@ -371,12 +423,7 @@ def test_format_status_baseline_when_given_samples_does_state_label_and_median_p
 
 
 def test_format_status_baseline_when_a_round_omits_a_metric_does_median_over_rounds_that_reported_it():
-    record = BaselineRecord(
-        type="baseline",
-        at=1_786_198_530_000_000_000,
-        label="main",
-        samples=({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}),
-    )
+    record = _baseline_record(({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}))
 
     line = _plain(format_status_baseline(record))
 
@@ -483,12 +530,7 @@ def test_format_status_header_when_worktree_path_contains_brackets_does_render_t
 
 
 def test_format_status_baseline_when_metric_name_contains_brackets_does_render_them_literally():
-    record = BaselineRecord(
-        type="baseline",
-        at=1_786_198_530_000_000_000,
-        label="main",
-        samples=({"total[ms]": 15200},),
-    )
+    record = _baseline_record(({"total[ms]": 15200},))
 
     line = _plain(format_status_baseline(record))
 

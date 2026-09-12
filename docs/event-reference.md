@@ -238,7 +238,7 @@ A CLI command invocation: name, arguments, exit code, and optional reason.
 | `name` | string | required | CLI command name. |
 | `args` | object | required | Arguments the command was invoked with. |
 | `exit_code` | `0` \| `1` \| `2` | required | Process-style exit code: 0 success, 1 or 2 failure. |
-| `reason` | `"stop-condition"` \| `"budget-exceeded"` \| `"unsettled"` \| `"gating-block"` \| `"already-stopped"` \| `"no-session"` \| `"finalized"` \| `"nothing-measured"` \| `"gating-regression"` \| `"nothing-to-commit"` \| `"checks-failed"` \| `"not-improved"` \| `"nothing-to-discard"` \| `"stale-session"` \| `"nothing-kept"` \| `"dirty-worktree"` \| `"unkept-commits"` \| `"bad-branch"` \| `"branch-exists"` \| `"fail-on"` \| `"error"` | optional | Why the command exited non-zero, when it did. |
+| `reason` | `"stop-condition"` \| `"budget-exceeded"` \| `"unsettled"` \| `"gating-block"` \| `"already-stopped"` \| `"no-session"` \| `"finalized"` \| `"nothing-measured"` \| `"gating-regression"` \| `"nothing-to-commit"` \| `"checks-failed"` \| `"not-improved"` \| `"nothing-to-discard"` \| `"stale-session"` \| `"nothing-kept"` \| `"dirty-worktree"` \| `"unkept-commits"` \| `"bad-branch"` \| `"branch-exists"` \| `"fail-on"` \| `"no-filter"` \| `"no-baseline"` \| `"error"` | optional | Why the command exited non-zero, when it did. |
 | `duration_ms` | integer | required | Wall-clock milliseconds the command took. |
 | `traceparent` | string | optional | W3C Trace Context traceparent header for distributed tracing. |
 

@@ -58,17 +58,18 @@ Select one with `--adapter` or in the config file.
 
 ## Commands
 
-| Command                             | What it does                                                        |
-| ----------------------------------- | ------------------------------------------------------------------- |
-| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook        |
-| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline                     |
-| `gymrat measure [target]`           | Measure a single revision or directory on its own                   |
-| `gymrat doctor`                     | Check the project setup and report problems                         |
-| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                       |
-| `gymrat stop -m "<report>"`         | Record a closing report in the session log (the session stays open) |
-| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree       |
-| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps       |
-| `gymrat export [session-log]`       | Replay a finished session's spans to an OpenTelemetry collector     |
+| Command                             | What it does                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `gymrat init`                       | Scaffold a `gymrat.toml`, an agent skill file, and a runbook                                      |
+| `gymrat compare <baseline> <cand>…` | Judge one or more candidates against a baseline                                                   |
+| `gymrat measure [target]`           | Measure a single revision or directory on its own                                                 |
+| `gymrat probe [names…]`             | Bench the experiment worktree and print each metric's delta against the baseline; records nothing |
+| `gymrat doctor`                     | Check the project setup and report problems                                                       |
+| `gymrat start` … `gymrat finalize`  | The optimization loop (below)                                                                     |
+| `gymrat stop -m "<report>"`         | Record a closing report in the session log (the session stays open)                               |
+| `gymrat sync`                       | Copy uncommitted main-tree edits into the experiment worktree                                     |
+| `gymrat supervise "<prompt>"`       | Run a supervised agent session with wall-clock and spend caps                                     |
+| `gymrat export [session-log]`       | Replay a finished session's spans to an OpenTelemetry collector                                   |
 
 Targets are git refs or directories, optionally labeled: `gymrat compare old=main new=perf/simd`.
 Every command takes `-h` for its full options.
@@ -84,6 +85,7 @@ prepare = "npm ci && npm run build" # run once per revision before sampling
 adapter = "metric-lines" # or "mitata"
 samples = 10 # paired samples per target
 timeout_seconds = 1800 # per bench invocation
+filter = "npm run bench -- --filter {names}" # scopes confirmation reruns and `gymrat probe`
 primary = "geomean" # or a metric name
 
 [metrics."decode#time"]
@@ -92,6 +94,10 @@ direction = "lower" # per-metric overrides: direction, gating, exact
 
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.
+
+`gymrat probe` is the one exception. Its sample count comes from `--samples` or its own 6-sample
+default; it ignores `GYMRAT_SAMPLES` and the configured `samples`. A probe is a spot check, so a
+session tuned for 10-sample measurements should not make every spot check cost a full measurement.
 
 The optional `[supervise]` table pins settings for `gymrat supervise` sessions:
 
@@ -112,6 +118,7 @@ experiment worktree:
 ```console
 gymrat start main          # pin the baseline and open the session
 # ...edit code in the experiment worktree...
+gymrat probe decode#time   # bench the edit alone and print its delta; records nothing
 gymrat iterate             # measure the edit against the baseline
 gymrat keep -m "vectorize decode loop"   # commit it if it improved and checks pass
 gymrat keep --allow-unimproved           # ...or commit an unimproved iteration anyway

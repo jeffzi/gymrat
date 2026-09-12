@@ -156,25 +156,24 @@ metric — appends an iteration record, spends one `stop.max_iterations` slot, r
 leaves the session unsettled: the next `iterate` is refused until `keep` or `discard` settles it,
 and `discard` reverts the edit.
 
-**Default loop: probe with `measure`, verify with one `iterate`.**
+**Default loop: probe with `gymrat probe`, verify with one `iterate`.**
 
 - **Probe.**
 
   ```sh
-  gymrat measure .gymrat/worktrees/experiment --bench "<scoped cmd>" --samples 6
+  gymrat probe <names>
   ```
 
-  Benches the experiment worktree alone — `samples` runs on one side — with the bench command
-  narrowed to the benchmarks the edit targets. It records nothing and touches no session state,
-  so the session stays settled.
+  Benches the experiment worktree alone at 6 samples, scoped through the `filter` template in
+  `gymrat.toml` to the metrics the edit targets, and prints each metric's median as a signed delta
+  against the newest baseline record — the one `keep` advances (`gymrat status` shows it). It
+  records nothing and touches no session state, so the session stays settled. With no names it
+  benches the whole configured `bench`.
 
-  - **Always pass `--bench`.** Without it a probe runs the full suite and costs a whole
-    measurement side. When the runbook gives no scoped command, derive one from the bench
-    harness's own filtering before the first probe. Read the primary metric only when the scoped
-    command emits it under its full-bench name. With a `geomean` primary, a scoped geomean is a
-    different number: read the individual metrics the edit targets instead.
-  - **Read the median against the reference.** That is the newest baseline record, which `keep`
-    advances (`gymrat status` shows it).
+  - **Name the metrics the edit targets.** An unscoped probe runs the full suite and costs a whole
+    measurement side. Read the primary metric only when the scoped run emits it under its
+    full-bench name. With a `geomean` primary, a scoped geomean is a different number: read the
+    individual metrics the edit targets instead.
   - **A probe answers "did the number move?"**, not "is it significant?" — that is what the
     final `iterate` is for.
   - **A rejected edit** is reworked in place or reverted with `gymrat discard`. On an unmeasured
@@ -198,23 +197,25 @@ and `discard` reverts the edit.
 
 Levers, in order of leverage:
 
-- **`--samples 6` on probes, never below.** The significance test needs 6 differing pairs, and 6
-  is the smallest count that can reach significance at all, so below 6 a `compare` verdict falls
-  back to a coarse noise band and a NO-SIGNAL at 3 samples means nothing. 6 is the knife edge: one
-  tied pair drops the run to the band while a verdict still prints, so on metrics that repeat
-  readings (integer counts, exact metrics) use more and read the method with `--verbose`. On
-  `measure`, below 6 one slow run swings the spread past most real effects. Use the flag; never
-  edit `samples` in `gymrat.toml` mid-session.
+- **6 samples on probes, never below.** `probe` defaults to 6, so leave `--samples` off; never
+  pass fewer. The significance test needs 6 differing pairs, and 6 is the smallest count that can
+  reach significance at all, so below 6 a `compare` verdict falls back to a coarse noise band and a
+  NO-SIGNAL at 3 samples means nothing. 6 is the knife edge: one tied pair drops the run to the
+  band while a verdict still prints, so on metrics that repeat readings (integer counts, exact
+  metrics) use more and read the method with `--verbose`. On `measure`, below 6 one slow run swings
+  the spread past most real effects. Use the flag; never edit `samples` in `gymrat.toml`
+  mid-session.
 - **`filter` in `gymrat.toml`** is a bench command template carrying a `{names}` placeholder. It
-  scopes **confirmation reruns only**: the rerun benches just the regressed metric names substituted
-  into `{names}`. Without it, the whole bench re-runs to confirm. It never narrows the first
+  scopes **confirmation reruns and `gymrat probe`**: the rerun benches just the regressed metric
+  names substituted into `{names}`, and a named `probe` benches just those names. Without it, the
+  whole bench re-runs to confirm and a named probe is refused. It never narrows the first
   measurement pass.
 - **Batch related edits** into one iteration. Probe each, `iterate` once. A full measurement per
   micro-edit burns the session budget on measurement, not optimization.
 
 ## Machine-readable output
 
-`measure`, `compare`, `iterate`, `keep`, `discard`, `stop`, `status`, and `doctor` accept
+`measure`, `probe`, `compare`, `iterate`, `keep`, `discard`, `stop`, `status`, and `doctor` accept
 `--format json`. Keys are snake_case; timestamps are integer nanoseconds since the epoch under the
 field `at`.
 When driving the loop programmatically, always pass `--format json`. The JSON contract is
@@ -270,8 +271,8 @@ measurement and report what the probes measured.
 
 | Excuse                                                           | Reality                                                                                                                             |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| "The full suite is a safer probe"                                | It costs a whole measurement side to answer what a scoped `--bench` answers.                                                        |
-| "This probe is close enough; `iterate` is faster than reprobing" | `iterate` costs 2 × a probe, spends a `max_iterations` slot, and leaves the session unsettled. Reprobe with a tighter `--bench`.    |
+| "The full suite is a safer probe"                                | It costs a whole measurement side to answer what `gymrat probe <names>` answers.                                                    |
+| "This probe is close enough; `iterate` is faster than reprobing" | `iterate` costs 2 × a probe, spends a `max_iterations` slot, and leaves the session unsettled. Reprobe with tighter names.          |
 | "`--samples 3` is enough to see the direction"                   | Below 6 the verdict is a noise band; a NO-SIGNAL at 3 means nothing.                                                                |
 | "The cap is close, but `iterate` might just make it"             | A measurement the cap kills records nothing. Report what the probes measured.                                                       |
 | "Two NO-SIGNALs; the target is unreachable"                      | Report only after sustained NO-SIGNAL, and only when no configured stop condition is still unfired.                                 |
@@ -283,7 +284,7 @@ measurement and report what the probes measured.
 ## Red flags — stop and re-read the rule
 
 - About to pass `--bench` or `--samples` to `iterate`.
-- About to run `measure` on the experiment worktree without `--bench`.
+- About to probe with `measure` instead of `gymrat probe`.
 - About to run a second `iterate` before `keep` or `discard`.
 - About to launch `gymrat supervise` while this text is in your system prompt.
 - Drafting a stop report while a configured stop condition has not fired.

@@ -19,6 +19,7 @@ from gymrat.cli.export_cmd import export_command
 from gymrat.cli.init_cmd import init_command
 from gymrat.cli.loop_cmds import discard, finalize, iterate, keep, start, status, stop, sync
 from gymrat.cli.measure_cmd import measure
+from gymrat.cli.probe_cmd import probe
 from gymrat.cli.shared import BUGS_URL, DebugOption, set_debug_mode
 from gymrat.cli.supervise import supervise_command
 from gymrat.report.style import format_hint
@@ -53,6 +54,12 @@ Examples:
   • gymrat measure --bench "npm run bench"
   • gymrat measure release=v2.0.0 --bench "npm run bench" --adapter mitata
   • gymrat measure main --bench "npm run bench" --record"""
+
+_PROBE_EPILOGUE = """
+Examples:
+  • gymrat probe
+  • gymrat probe --samples 10
+  • gymrat probe decode/time --format json"""
 
 
 def _version_callback(*, value: bool) -> None:
@@ -94,6 +101,7 @@ def _root(*, debug: DebugOption = False, version: _VersionOption = False) -> Non
 app.command("init")(init_command)
 app.command("compare", epilog=_COMPARE_EPILOGUE)(compare)
 app.command("measure", epilog=_MEASURE_EPILOGUE)(measure)
+app.command("probe", epilog=_PROBE_EPILOGUE)(probe)
 app.command("doctor")(doctor_command)
 app.command("start")(start)
 app.command("iterate")(iterate)

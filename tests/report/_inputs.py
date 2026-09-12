@@ -1,8 +1,8 @@
 """Shared comparison/verdict builders for the report formatting tests.
 
 Re-export shim: the implementations live in ``_verdicts``, ``_comparisons``,
-``_measurements``, and ``_assertions``; this module re-exports them all so
-existing importers keep working unchanged.
+``_measurements``, ``_probes``, and ``_assertions``; this module re-exports them
+all so existing importers keep working unchanged.
 """
 
 from gymrat.report.types import MetricComparison, MetricComparisons
@@ -47,6 +47,10 @@ from tests.report._measurements import (
     create_measurement_result,
     measured_metric,
     two_kind_measurement,
+)
+from tests.report._probes import (
+    probe_metric,
+    probe_result,
 )
 from tests.report._verdicts import (
     CandidateSpec,
@@ -100,6 +104,8 @@ __all__ = [
     "other_kind",
     "permutation_metric",
     "permutation_verdict",
+    "probe_metric",
+    "probe_result",
     "separator_offsets",
     "separator_styles",
     "single_sample_result",
