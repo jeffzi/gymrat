@@ -11,20 +11,19 @@ this file. It is gitignored for personal, machine-specific preferences and never
 entrypoints; never bypass them by calling scripts, tools, or `python` directly — the task and prek
 layers manage the virtualenv, file selection, and flags.
 
-- `task install` — sync the project and dev dependencies from the lockfile (`uv sync --locked`),
-  then install the prek hooks.
-- `task test` — `uv run pytest` (append args after `--`, e.g. `task test -- -k name`; passing args
-  disables coverage, since a subset run would fail the global coverage threshold).
+- `task install` — sync the project and dev dependencies from the lockfile, then install the prek
+  hooks.
+- `task test` — run the test suite (append args after `--`, e.g. `task test -- -k name`; passing
+  args disables coverage, since a subset run would fail the global coverage threshold).
 - `task test:matrix` — run the suite on every supported Python version.
-- `task check` — `uv run prek run -a` (all hooks). Run before committing.
+- `task check` — run every prek hook over all tracked and untracked files. Hooks that can fix
+  (Ruff, dprint, markdownlint) rewrite files in place. Run before committing.
 - To run a single hook: `uv run prek run <hook-id>` (e.g. `uv run prek run check-max-lines`). Hook
   IDs are in `.pre-commit-config.yaml`.
 - `uvx pymaxlines --show-sizes` — print a code-line breakdown of every file (largest first) instead
   of checking limits. Pass paths to scope it: `uvx pymaxlines --show-sizes src/heavy_module.py`.
   Use it to find the biggest files and functions before deciding where to split. Counts exclude
   blanks, comments, and docstrings — matching what the `check-max-lines` hook enforces.
-- `task check:fix` — auto-fix everything that supports it: `uv run ruff check --fix`,
-  `uv run ruff format`, `dprint fmt`, markdownlint (`uv run prek run -a markdownlint-cli2`).
 - `task schemas` — regenerate `schemas/` and `docs/event-reference.md` from the pydantic record and
   event models. Run it after any change to a model field or docstring and commit the output; the
   drift test in `tests/event_docs/test_drift.py` fails on stale artifacts.
