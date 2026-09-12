@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 import typer
 
-from gymrat.cli.iterate import IterateRenderer
+from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.lock import GATE_EXIT_CODE
 from gymrat.cli.shared import (
     AdapterOption,

@@ -10,6 +10,7 @@ live in :mod:`.rows`.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console, Group, RenderableType
@@ -43,10 +44,19 @@ if TYPE_CHECKING:
 
     from rich.progress import Progress, TaskID
 
-    from gymrat.cli.iterate.state import NodeState
+    from gymrat.cli.iterate.state import NodeState, PhaseCounters
     from gymrat.cli.progress import _ClockColumn
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PhaseView:
+    """The bar, clock column, and task id backing one sampling phase's row."""
+
+    bar: Progress | None = None
+    clock_col: _ClockColumn | None = None
+    task_id: TaskID | None = None
 
 
 class IterateRenderer(LiveDisplayMixin):
@@ -115,12 +125,8 @@ class IterateRenderer(LiveDisplayMixin):
         self._uninstall_cleanup: Callable[[], None] = lambda: None
 
         self._spinners: dict[str, Spinner] = {}
-        self._pass_bar: Progress | None = None
-        self._confirm_bar: Progress | None = None
-        self._pass_clock_col: _ClockColumn | None = None
-        self._confirm_clock_col: _ClockColumn | None = None
-        self._pass_task_id: TaskID | None = None
-        self._confirm_task_id: TaskID | None = None
+        self._pass_view = _PhaseView()
+        self._confirm_view = _PhaseView()
 
         self._compact_progress: Progress | None = None
         self._compact_clock_col: _ClockColumn | None = None
@@ -137,8 +143,10 @@ class IterateRenderer(LiveDisplayMixin):
                 self._console, clock=self._clock
             )
         else:
-            self._pass_bar, self._pass_clock_col = passes_progress(self._console, clock=self._clock)
-            self._confirm_bar, self._confirm_clock_col = passes_progress(
+            self._pass_view.bar, self._pass_view.clock_col = passes_progress(
+                self._console, clock=self._clock
+            )
+            self._confirm_view.bar, self._confirm_view.clock_col = passes_progress(
                 self._console, clock=self._clock
             )
 
@@ -206,11 +214,15 @@ class IterateRenderer(LiveDisplayMixin):
         return spinner
 
     def _bar_for(self, node: NodeState) -> Progress | None:
+        view = self._view_for(node)
+        return view.bar if view is not None else None
+
+    def _view_for(self, node: NodeState) -> _PhaseView | None:
         nodes = self._state.nodes
         if node is nodes.passes:
-            return self._pass_bar
+            return self._pass_view
         if node is nodes.confirm:
-            return self._confirm_bar
+            return self._confirm_view
         return None
 
     def _running_elapsed_ms(self, node: NodeState) -> float | None:
@@ -263,7 +275,7 @@ class IterateRenderer(LiveDisplayMixin):
 
     def _sync_pass_started(self, event: PassStarted) -> None:
         is_confirm = event.phase == "confirm"
-        completed = self._phase_completed(is_confirm=is_confirm)
+        completed = self._counters(is_confirm=is_confirm).eta.completed
 
         if self._compact and self._compact_progress is not None:
             if self._compact_task_id is None:
@@ -278,32 +290,27 @@ class IterateRenderer(LiveDisplayMixin):
                 )
             return
 
-        bar = self._confirm_bar if is_confirm else self._pass_bar
-        if bar is None:
+        view = self._confirm_view if is_confirm else self._pass_view
+        if view.bar is None:
             return
-        task_id = self._confirm_task_id if is_confirm else self._pass_task_id
-        if task_id is not None:
-            bar.update(task_id, target=event.label)
+        if view.task_id is not None:
+            view.bar.update(view.task_id, target=event.label)
             return
 
-        task_id = bar.add_task(
+        view.task_id = view.bar.add_task(
             "confirming" if is_confirm else "sampling",
             total=self._state.total,
             target=event.label,
         )
-        if is_confirm:
-            self._confirm_task_id = task_id
-        else:
-            self._pass_task_id = task_id
 
     def _sync_pass_finished(self, event: PassFinished) -> None:
         is_confirm = event.phase == "confirm"
-        counters = self._state.confirm_phase if is_confirm else self._state.pass_phase
+        counters = self._counters(is_confirm=is_confirm)
 
         eta_ms = counters.eta.eta_ms
         if eta_ms is not None:
-            phase_col = self._confirm_clock_col if is_confirm else self._pass_clock_col
-            for column in (phase_col, self._compact_clock_col):
+            view = self._confirm_view if is_confirm else self._pass_view
+            for column in (view.clock_col, self._compact_clock_col):
                 if column is not None:
                     column.set_eta(eta_ms)
 
@@ -314,10 +321,9 @@ class IterateRenderer(LiveDisplayMixin):
             if self._compact_progress is not None and self._compact_task_id is not None:
                 self._compact_progress.update(self._compact_task_id, completed=completed)
             return
-        bar = self._confirm_bar if is_confirm else self._pass_bar
-        task_id = self._confirm_task_id if is_confirm else self._pass_task_id
-        if bar is not None and task_id is not None:
-            bar.update(task_id, completed=completed)
+        view = self._confirm_view if is_confirm else self._pass_view
+        if view.bar is not None and view.task_id is not None:
+            view.bar.update(view.task_id, completed=completed)
 
     def _start_confirm_task(self) -> None:
         """Swap the compact bar over to the confirm run, or open the confirm row's bar."""
@@ -331,14 +337,13 @@ class IterateRenderer(LiveDisplayMixin):
                 self._compact_clock_col.set_eta(0)
             return
 
-        if self._confirm_bar is not None and self._confirm_task_id is None:
-            self._confirm_task_id = self._confirm_bar.add_task(
+        if self._confirm_view.bar is not None and self._confirm_view.task_id is None:
+            self._confirm_view.task_id = self._confirm_view.bar.add_task(
                 "confirming", total=self._state.total, note=self._state.nodes.confirm.note
             )
 
-    def _phase_completed(self, *, is_confirm: bool) -> int:
-        counters = self._state.confirm_phase if is_confirm else self._state.pass_phase
-        return counters.eta.completed
+    def _counters(self, *, is_confirm: bool) -> PhaseCounters:
+        return self._state.confirm_phase if is_confirm else self._state.pass_phase
 
     def stop(self) -> None:
         """Stop the renderer and clean up any live display."""
