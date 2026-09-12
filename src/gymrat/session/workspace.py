@@ -16,7 +16,7 @@ from typing import Annotated
 from pydantic import Field
 
 from gymrat.errors import GymratError, stderr_text_of
-from gymrat.git import SHORT_SHA_LENGTH, repository_lookup_error, run_git, try_git
+from gymrat.git import SHORT_SHA_LENGTH, git_common_dir, run_git, try_git
 from gymrat.session.paths import (
     SESSION_DIR_NAME,
     baseline_worktree_dir,
@@ -137,7 +137,7 @@ def ensure_git_exclude(root: str) -> None:
     Raises:
         GymratError: When ``root`` is not a git repository.
     """
-    exclude_file = Path(_git_common_dir(root)) / "info" / "exclude"
+    exclude_file = Path(git_common_dir(root)) / "info" / "exclude"
     line = f"{SESSION_DIR_NAME}/"
     try:
         existing = exclude_file.read_text(encoding="utf-8")
@@ -511,30 +511,6 @@ def remove_worktrees(root: str, worktrees: Worktrees) -> list[str]:
 # ---------------------------------------------------------------------------
 # Git plumbing
 # ---------------------------------------------------------------------------
-
-
-def _git_common_dir(root: str) -> str:
-    """Absolute path of the repository's shared git directory.
-
-    ``info/exclude`` lives in the common directory, so a linked worktree — whose
-    ``.git`` is a file pointing elsewhere — excludes through the same file the
-    main checkout uses. git prints the path relative to the working directory
-    when it sits inside it, hence the resolve against ``root``.
-
-    Returns:
-        The resolved absolute path.
-
-    Raises:
-        GymratError: When ``root`` is not inside a git repository.
-    """
-    try:
-        printed = run_git(["rev-parse", "--git-common-dir"], root).strip()
-    except (subprocess.SubprocessError, OSError) as error:
-        err = repository_lookup_error(root, error)
-        raise err from error
-    # An absolute path git prints (a linked worktree's common dir) stands on its
-    # own; a relative one (``.git`` in the main checkout) resolves against root.
-    return str(Path(root, printed))
 
 
 def _is_directory(directory: str) -> bool:

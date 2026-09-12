@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from gymrat.errors import GymratError, stderr_text_of
 from gymrat.signals import deferring_termination_signals
@@ -151,3 +152,33 @@ def repository_lookup_error(directory: str, cause: object) -> GymratError:
         )
 
     return GymratError(f"Cannot determine the git repository at {directory}: {diagnostics}")
+
+
+def git_common_dir(root: str) -> str:
+    """Absolute path of the shared git directory backing ``root``.
+
+    Everything a repository shares across its worktrees — ``info/exclude``, the
+    object store, the worktree registry — lives in the common directory, so a
+    linked worktree, whose ``.git`` is a file pointing elsewhere, reaches the
+    same files the main checkout uses.
+
+    Args:
+        root: Directory the lookup runs from. Any directory inside the
+            repository answers with the same common directory.
+
+    Returns:
+        The resolved absolute path. git prints the path relative to the working
+        directory when it sits inside it, hence the resolve against ``root``.
+
+    Raises:
+        GymratError: When ``root`` is not inside a git repository, or git
+            otherwise declines to answer.
+    """
+    try:
+        printed = run_git(["rev-parse", "--git-common-dir"], root).strip()
+    except (subprocess.SubprocessError, OSError) as error:
+        err = repository_lookup_error(root, error)
+        raise err from error
+    # An absolute path git prints (a linked worktree's common dir) stands on its
+    # own; a relative one (``.git`` in the main checkout) resolves against root.
+    return str(Path(root, printed))

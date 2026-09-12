@@ -29,6 +29,7 @@ from gymrat.session.paths import (
     supervise_lockfile_path,
     supervisor_log_name,
 )
+from tests._git import run_git
 
 SESSION_ID = "20260808-141530-a3f2"
 
@@ -81,6 +82,75 @@ def test_repo_root_when_directory_not_in_repo_does_raise_gymrat_error():
             repo_root(outside)
     finally:
         shutil.rmtree(outside, ignore_errors=True)
+
+
+def _add_worktree(repo: str, relative: str) -> str:
+    """Register a linked worktree of ``repo`` at ``relative``, as ``gymrat start`` does."""
+    directory = Path(repo, relative)
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    run_git(["worktree", "add", "--detach", str(directory), "HEAD"], repo)
+    return str(directory)
+
+
+# Where a session command's working directory can sit inside a worktree gymrat
+# owns: the worktree itself, or any directory below it.
+GYMRAT_WORKTREE_PROBES = [
+    pytest.param("experiment", "", id="experiment-top"),
+    pytest.param("baseline", "", id="baseline-top"),
+    pytest.param("experiment", "packages/core", id="below-experiment"),
+]
+
+
+@pytest.mark.parametrize(("worktree_name", "below"), GYMRAT_WORKTREE_PROBES)
+def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_repository(
+    create_scratch_repo: Callable[[], str], worktree_name: str, below: str
+):
+    repo = create_scratch_repo()
+    worktree = _add_worktree(repo, f".gymrat/worktrees/{worktree_name}")
+    probe = Path(worktree, below)
+    probe.mkdir(parents=True, exist_ok=True)
+
+    root = repo_root(str(probe))
+
+    assert root == repo_root(repo)
+
+
+def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_the_owning_repository(
+    create_scratch_repo: Callable[[], str], tmp_path: Path
+):
+    repo = create_scratch_repo()
+    _add_worktree(repo, ".gymrat/worktrees/experiment")
+    alias = tmp_path / "repo-alias"
+    alias.symlink_to(repo)
+
+    root = repo_root(str(alias / ".gymrat" / "worktrees" / "experiment"))
+
+    assert root == repo_root(str(alias))
+
+
+def test_repo_root_when_probed_in_a_worktree_outside_the_gymrat_dir_does_return_that_worktree(
+    create_scratch_repo: Callable[[], str],
+):
+    repo = create_scratch_repo()
+    worktree = _add_worktree(repo, "hand-made")
+
+    root = repo_root(worktree)
+
+    assert os.path.normpath(root) == os.path.normpath(worktree)
+
+
+def test_repo_root_when_foreign_worktree_sits_in_gymrat_dir_does_return_that_worktree(
+    create_scratch_repo: Callable[[], str],
+):
+    host = create_scratch_repo()
+    foreign = create_scratch_repo()
+    target = str(Path(host) / ".gymrat" / "worktrees" / "impostor")
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    run_git(["worktree", "add", "--detach", target, "HEAD"], foreign)
+
+    root = repo_root(target)
+
+    assert os.path.normpath(root) == os.path.normpath(target)
 
 
 # ---------------------------------------------------------------------------
