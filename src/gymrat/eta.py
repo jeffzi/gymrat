@@ -28,21 +28,20 @@ class SamplingEta:
     """Remaining-time estimate built from the average of finished passes.
 
     Attributes:
-        completed: Passes finished so far.
-        finish_count: Finished passes whose duration was sampled.
+        completed: Passes finished so far; every one of them contributed a
+            sample to ``total_time_ms``.
         total_time_ms: Sum of the sampled durations, in milliseconds.
         total: Passes the run expects in all.
     """
 
     completed: int
-    finish_count: int
     total_time_ms: float
     total: int
 
     @classmethod
     def start(cls, total: int) -> Self:
         """Return the estimate for a run of ``total`` passes that has not started."""
-        return cls(completed=0, finish_count=0, total_time_ms=0.0, total=total)
+        return cls(completed=0, total_time_ms=0.0, total=total)
 
     @property
     def eta_ms(self) -> float | None:
@@ -53,9 +52,9 @@ class SamplingEta:
             remain, or None while no pass has finished and once nothing remains.
         """
         remaining = self.total - self.completed
-        if remaining <= 0 or self.finish_count == 0:
+        if remaining <= 0 or self.completed == 0:
             return None
-        return (self.total_time_ms / self.finish_count) * remaining
+        return (self.total_time_ms / self.completed) * remaining
 
     def advanced(self, duration_ms: float) -> Self:
         """Return a copy that counts one more finished pass.
@@ -69,7 +68,6 @@ class SamplingEta:
         return replace(
             self,
             completed=self.completed + 1,
-            finish_count=self.finish_count + 1,
             total_time_ms=self.total_time_ms + duration_ms,
         )
 

@@ -10,7 +10,7 @@ reproducible and testable without a console.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from gymrat.eta import SamplingEta, format_duration
 from gymrat.plural import pluralize
@@ -30,7 +30,7 @@ from gymrat.progress_events import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
 TARGETS_PER_ROUND = 2
 """Passes one sampling round runs: one against the baseline, one against the candidate."""
@@ -151,7 +151,6 @@ class IterateState:
             which the prepare row accumulates from.
         run_start_ms: Timestamp of the first event seen, or ``None`` before one
             arrives. Plain-mode timestamps are relative to it.
-        total: Passes the iteration expects in all.
         primary_metric: Name of the metric the judge gates on.
         checks_cmd: The shell command the record row mentions, or ``None``.
     """
@@ -161,9 +160,13 @@ class IterateState:
     confirm_phase: PhaseCounters
     prepare_current_start_ms: float
     run_start_ms: float | None
-    total: int
     primary_metric: str
     checks_cmd: str | None
+
+    @property
+    def total(self) -> int:
+        """Passes each sampling phase expects in all, as the measure estimate counts them."""
+        return self.pass_phase.eta.total
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +262,6 @@ def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the stat
         confirm_phase=PhaseCounters(eta=SamplingEta.start(total)),
         prepare_current_start_ms=0.0,
         run_start_ms=None,
-        total=total,
         primary_metric=primary_metric,
         checks_cmd=checks_cmd,
     )
@@ -270,7 +272,9 @@ def initial_state(  # noqa: PLR0913 -- one parameter per iteration fact the stat
 # ---------------------------------------------------------------------------
 
 
-def advance(state: IterateState, event: ProgressEvent) -> IterateState:
+def advance(  # noqa: C901 -- flat match over the event union
+    state: IterateState, event: ProgressEvent
+) -> IterateState:
     """Fold one progress event into a new state.
 
     Args:
@@ -281,12 +285,34 @@ def advance(state: IterateState, event: ProgressEvent) -> IterateState:
     Returns:
         The state after the event — an equal state when the event changes
         nothing, such as an after-stage hook the checklist does not show.
-
-    Raises:
-        KeyError: If no transition is registered for the event's type.
     """
     anchored = state if state.run_start_ms is not None else replace(state, run_start_ms=event.at_ms)
-    return _TRANSITIONS[type(event)](anchored, event)
+    match event:
+        case HookStarted():
+            advanced = _hook_started(anchored, event)
+        case HookFinished():
+            advanced = _hook_finished(anchored, event)
+        case PrepareStarted():
+            advanced = _prepare_started(anchored, event)
+        case PrepareFinished():
+            advanced = _prepare_finished(anchored, event)
+        case PassStarted():
+            advanced = _pass_started(anchored, event)
+        case PassFinished():
+            advanced = _pass_finished(anchored, event)
+        case JudgeStarted():
+            advanced = _judge_started(anchored, event)
+        case JudgeFinished():
+            advanced = _judge_finished(anchored, event)
+        case ConfirmStarted():
+            advanced = _confirm_started(anchored, event)
+        case ConfirmFinished():
+            advanced = _confirm_finished(anchored, event)
+        case IterationRecorded():
+            advanced = _iteration_recorded(anchored, event)
+        case _:  # pragma: no cover - exhaustive over the event union
+            assert_never(event)
+    return advanced
 
 
 def _hook_started(state: IterateState, event: HookStarted) -> IterateState:
@@ -401,22 +427,6 @@ def _confirm_finished(state: IterateState, event: ConfirmFinished) -> IterateSta
 def _iteration_recorded(state: IterateState, event: IterationRecorded) -> IterateState:
     done = replace(state.nodes.record, status="done", detail=_record_detail(state, event.outcome))
     return replace(state, nodes=replace(state.nodes, record=done))
-
-
-_TRANSITIONS: dict[type[ProgressEvent], Callable[..., IterateState]] = {
-    HookStarted: _hook_started,
-    HookFinished: _hook_finished,
-    PrepareStarted: _prepare_started,
-    PrepareFinished: _prepare_finished,
-    PassStarted: _pass_started,
-    PassFinished: _pass_finished,
-    JudgeStarted: _judge_started,
-    JudgeFinished: _judge_finished,
-    ConfirmStarted: _confirm_started,
-    ConfirmFinished: _confirm_finished,
-    IterationRecorded: _iteration_recorded,
-}
-"""Every event the checklist reacts to, mapped to the transition it runs."""
 
 
 def _confirm_detail(state: IterateState, *, reproduced: bool) -> str:

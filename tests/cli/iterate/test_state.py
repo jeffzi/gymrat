@@ -8,14 +8,13 @@ deterministic without a clock.
 
 from __future__ import annotations
 
-import ast
-import inspect
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.iterate import state as state_module
 from gymrat.cli.iterate.state import (
     IterateState,
     JudgeDetail,
@@ -77,16 +76,6 @@ def _apply(state: IterateState, *events: ProgressEvent) -> IterateState:
     return state
 
 
-def _imported_roots(source: str) -> set[str]:
-    roots: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            roots.add(node.module.split(".")[0])
-    return roots
-
-
 _INITIAL = _state()
 
 # A single round against two targets: the phase total is two passes.
@@ -101,16 +90,27 @@ _LAST_PASS_FINISHED = _pass_finished(1, 1, target_count=2, label="experiment", a
 # ---------------------------------------------------------------------------
 
 
-def test_state_module_when_parsed_does_import_nothing_from_rich():
-    roots = _imported_roots(inspect.getsource(state_module))
+def test_state_module_when_imported_in_a_fresh_interpreter_does_not_load_rich():
+    probe = """
+import sys
+import gymrat.cli.iterate.state
+loaded = sorted(name for name in sys.modules if name == "rich" or name.startswith("rich."))
+if loaded:
+    print(f"importing the iterate state model pulled in rich: {loaded}", file=sys.stderr)
+    sys.exit(1)
+"""
 
-    assert "rich" not in roots
+    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
     ("record", "attribute", "value"),
     [
-        pytest.param(_INITIAL, "total", 4, id="iterate-state"),
+        pytest.param(_INITIAL, "primary_metric", "throughput", id="iterate-state"),
         pytest.param(_INITIAL.nodes.prepare, "status", "done", id="node-state"),
         pytest.param(_INITIAL.pass_phase, "start_ms", 5.0, id="phase-counters"),
     ],
@@ -181,9 +181,7 @@ def test_advance_when_pass_finishes_does_advance_pass_phase_eta():
 
     result = advance(state, _FIRST_PASS_FINISHED)
 
-    assert result.pass_phase.eta == SamplingEta(
-        completed=1, finish_count=1, total_time_ms=10000, total=2
-    )
+    assert result.pass_phase.eta == SamplingEta(completed=1, total_time_ms=10000, total=2)
 
 
 def test_advance_when_final_pass_finishes_does_complete_passes_row():

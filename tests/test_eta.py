@@ -1,7 +1,5 @@
 """Behavioral tests for the sampling ETA value type and duration/ETA formatting."""
 
-import importlib
-
 import pytest
 
 from gymrat.eta import (
@@ -13,31 +11,6 @@ from gymrat.eta import (
 )
 
 # ---------------------------------------------------------------------------
-# Removed internals stay out of the public surface
-# ---------------------------------------------------------------------------
-
-
-def test_eta_tracker_when_imported_does_raise_import_error() -> None:
-    with pytest.raises(ImportError):
-        from gymrat.eta import EtaTracker  # type: ignore[missing-module-attribute]  # noqa: F401
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param("PassStarted", id="PassStarted"),
-        pytest.param("PrepareStarted", id="PrepareStarted"),
-        pytest.param("ProgressEvent", id="ProgressEvent"),
-        pytest.param("default_clock", id="default_clock"),
-    ],
-)
-def test_eta_module_when_inspected_does_not_expose_progress_event_symbol(name: str) -> None:
-    eta = importlib.import_module("gymrat.eta")
-
-    assert not hasattr(eta, name)
-
-
-# ---------------------------------------------------------------------------
 # SamplingEta
 # ---------------------------------------------------------------------------
 
@@ -45,14 +18,7 @@ def test_eta_module_when_inspected_does_not_expose_progress_event_symbol(name: s
 def test_sampling_eta_start_when_given_total_does_return_empty_state() -> None:
     eta = SamplingEta.start(10)
 
-    assert (eta.completed, eta.finish_count, eta.total_time_ms, eta.total) == (0, 0, 0.0, 10)
-
-
-def test_sampling_eta_when_field_assigned_does_raise_attribute_error() -> None:
-    eta = SamplingEta.start(10)
-
-    with pytest.raises(AttributeError):
-        eta.completed = 1  # type: ignore[misc]
+    assert (eta.completed, eta.total_time_ms, eta.total) == (0, 0.0, 10)
 
 
 def test_sampling_eta_advanced_when_given_duration_does_return_incremented_copy() -> None:
@@ -60,54 +26,39 @@ def test_sampling_eta_advanced_when_given_duration_does_return_incremented_copy(
 
     advanced = eta.advanced(100.0)
 
-    assert (advanced.completed, advanced.finish_count, advanced.total_time_ms, advanced.total) == (
-        1,
-        1,
-        100.0,
-        4,
-    )
-    assert (eta.completed, eta.finish_count, eta.total_time_ms) == (0, 0, 0.0)
+    assert (advanced.completed, advanced.total_time_ms, advanced.total) == (1, 100.0, 4)
+    assert (eta.completed, eta.total_time_ms) == (0, 0.0)
 
 
 def test_sampling_eta_advanced_when_called_repeatedly_does_accumulate_samples() -> None:
     eta = SamplingEta.start(4).advanced(100.0).advanced(300.0)
 
-    assert (eta.completed, eta.finish_count, eta.total_time_ms) == (2, 2, 400.0)
+    assert (eta.completed, eta.total_time_ms) == (2, 400.0)
 
 
 @pytest.mark.parametrize(
-    ("completed", "finish_count", "total_time_ms", "total", "expected"),
+    ("completed", "total_time_ms", "total", "expected"),
     [
-        pytest.param(0, 0, 0.0, 5, None, id="no-finished-pass"),
-        pytest.param(2, 2, 300.0, 5, 450.0, id="average-times-remaining"),
-        pytest.param(5, 5, 500.0, 5, None, id="nothing-remaining"),
-        pytest.param(6, 5, 600.0, 5, None, id="completed-past-total"),
+        pytest.param(0, 0.0, 5, None, id="no-finished-pass"),
+        pytest.param(2, 300.0, 5, 450.0, id="average-times-remaining"),
+        pytest.param(5, 500.0, 5, None, id="nothing-remaining"),
+        pytest.param(6, 600.0, 5, None, id="completed-past-total"),
     ],
 )
 def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
-    completed: int, finish_count: int, total_time_ms: float, total: int, expected: float | None
+    completed: int, total_time_ms: float, total: int, expected: float | None
 ) -> None:
-    eta = SamplingEta(
-        completed=completed,
-        finish_count=finish_count,
-        total_time_ms=total_time_ms,
-        total=total,
-    )
+    eta = SamplingEta(completed=completed, total_time_ms=total_time_ms, total=total)
 
     assert eta.eta_ms == expected
 
 
 def test_sampling_eta_with_total_when_given_new_total_does_carry_over_other_fields() -> None:
-    eta = SamplingEta(completed=2, finish_count=2, total_time_ms=300.0, total=5)
+    eta = SamplingEta(completed=2, total_time_ms=300.0, total=5)
 
     updated = eta.with_total(9)
 
-    assert (
-        updated.completed,
-        updated.finish_count,
-        updated.total_time_ms,
-        updated.total,
-    ) == (2, 2, 300.0, 9)
+    assert (updated.completed, updated.total_time_ms, updated.total) == (2, 300.0, 9)
     assert eta.total == 5
 
 

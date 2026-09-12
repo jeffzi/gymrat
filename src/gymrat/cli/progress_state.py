@@ -31,15 +31,30 @@ __all__ = ["ProgressState", "advance", "plain_line"]
 class ProgressState:
     """Everything the progress display needs to paint a frame.
 
-    ``total`` is ``0`` while the pass count is still unknown, which happens when
-    no ``--samples`` flag pinned it up front; the first ``PassStarted`` fills it
-    in. ``run_start_ms`` and ``run_end_ms`` are ``None`` until the first event
-    arrives.
+    Attributes:
+        target_count: How many targets (baseline plus candidates) the run covers.
+        sample_count: Samples per target, or ``None`` when the total is only
+            discovered at runtime from ``PassStarted.total_rounds``.
+        prepare_start_ms: Timestamp the current prepare step began.
+        pass_start_ms: Timestamp the current pass began.
+        run_start_ms: Timestamp of the first event seen, or ``None`` until the
+            first event arrives.
+        run_end_ms: Timestamp of the most recent event, or ``None`` until the
+            first event arrives.
+        eta: Finished-pass samples and the remaining-time estimate they make.
+            Its ``total`` is ``0`` while the pass count is still unknown, which
+            happens when no ``--samples`` flag pinned it up front; the first
+            ``PassStarted`` fills it in.
+        prepare_visible: Whether the prepare row is shown. Cleared on
+            ``PrepareFinished`` even though the run is still in progress; it
+            tracks row visibility, not whether the prepare phase is done.
+        pass_visible: Whether the pass row is shown.
+        current_target: Label of the in-flight target shown on whichever row
+            is currently visible, or ``""`` before one is set.
     """
 
     target_count: int
     sample_count: int | None = None
-    total: int = 0
     prepare_start_ms: float = 0.0
     pass_start_ms: float = 0.0
     run_start_ms: float | None = None
@@ -65,16 +80,19 @@ class ProgressState:
         return cls(
             target_count=target_count,
             sample_count=sample_count,
-            total=total,
             eta=SamplingEta.start(total),
         )
+
+    @property
+    def total(self) -> int:
+        """Passes the run expects in all, as the estimate counts them."""
+        return self.eta.total
 
 
 def _pass_started(state: ProgressState, event: PassStarted) -> ProgressState:
     total = state.total or event.total_rounds * event.target_count
     return replace(
         state,
-        total=total,
         eta=state.eta.with_total(total),
         pass_start_ms=event.at_ms,
         pass_visible=True,

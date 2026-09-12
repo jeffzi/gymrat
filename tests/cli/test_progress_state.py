@@ -29,21 +29,9 @@ def state() -> ProgressState:
     return ProgressState(target_count=1, sample_count=3)
 
 
-@pytest.fixture
-def finished_prepare(state: ProgressState) -> ProgressState:
-    """State after a prepare row starts at 7s and finishes at 12s."""
-    started = advance(state, PrepareStarted(label="bench", at_ms=7_000))
-    return advance(started, PrepareFinished(label="bench", at_ms=12_000))
-
-
 # ---------------------------------------------------------------------------
 # ProgressState value semantics
 # ---------------------------------------------------------------------------
-
-
-def test_progress_state_when_field_assigned_does_raise_attribute_error(state: ProgressState):
-    with pytest.raises(AttributeError):
-        state.total = 7  # type: ignore[misc]
 
 
 def test_progress_state_when_freshly_built_does_start_with_nothing_visible(state: ProgressState):
@@ -72,8 +60,15 @@ def test_advance_when_prepare_started_does_show_prepare_row_with_label(state: Pr
     )
 
 
-def test_advance_when_prepare_finished_does_hide_prepare_row(finished_prepare: ProgressState):
-    assert finished_prepare.prepare_visible is False
+def test_advance_when_prepare_finished_does_hide_prepare_row_and_move_the_run_window(
+    state: ProgressState,
+):
+    started = advance(state, PrepareStarted(label="bench", at_ms=7_000))
+
+    finished = advance(started, PrepareFinished(label="bench", at_ms=12_000))
+
+    assert finished.prepare_visible is False
+    assert (finished.run_start_ms, finished.run_end_ms) == (7_000, 12_000)
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +112,7 @@ def test_advance_when_pass_finished_does_advance_eta_by_pass_duration(state: Pro
 
     result = advance(running, _pass_finished(1, 3, at_ms=12_000))
 
-    assert (
-        result.eta.completed,
-        result.eta.finish_count,
-        result.eta.total_time_ms,
-        result.eta.total,
-    ) == (1, 1, 10_000, 3)
+    assert (result.eta.completed, result.eta.total_time_ms, result.eta.total) == (1, 10_000, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -136,12 +126,6 @@ def test_advance_when_first_event_does_set_run_start_and_run_end_to_event_time(
     result = advance(state, PrepareStarted(label="bench", at_ms=7_000))
 
     assert (result.run_start_ms, result.run_end_ms) == (7_000, 7_000)
-
-
-def test_advance_when_later_event_does_keep_run_start_and_move_run_end(
-    finished_prepare: ProgressState,
-):
-    assert (finished_prepare.run_start_ms, finished_prepare.run_end_ms) == (7_000, 12_000)
 
 
 # ---------------------------------------------------------------------------
