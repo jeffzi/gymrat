@@ -27,6 +27,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
@@ -36,7 +37,7 @@ from gymrat.errors import GymratError
 from gymrat.eta import MS_PER_SECOND
 from gymrat.session.clock import now_iso
 
-__all__ = ["acquire_lock", "is_held"]
+__all__ = ["LockContentionError", "LockHolder", "acquire_lock", "is_held", "read_holder"]
 
 type ReleaseLock = Callable[[], None]
 """Gives up an acquired lock. Calling it more than once is harmless."""
@@ -54,6 +55,25 @@ LOCK_ACQUIRE_POLL_MS: int = 100
 
 LOCK_ACQUIRE_RETRIES: int = 3
 """Total attempts before declaring contention."""
+
+
+@dataclass(frozen=True, slots=True)
+class LockHolder:
+    """The process a holder record names, as stamped by :func:`acquire_lock`.
+
+    Attributes:
+        pid: Process ID of the run that took the lock.
+        command: Name of the command that took the lock.
+        at: ISO-8601 timestamp of when the lock was taken.
+    """
+
+    pid: int
+    command: str
+    at: str
+
+
+class LockContentionError(GymratError):
+    """Another run already holds the single-flight repository lock."""
 
 
 def _os_lock_file(lock_path: str) -> str:
@@ -96,6 +116,37 @@ def is_held(lock_path: Path) -> bool:
     else:
         probe.release()
         return False
+
+
+def read_holder(lock_path: str) -> LockHolder | None:
+    """Report the holder record :func:`acquire_lock` stamped at ``lock_path``.
+
+    Reporting only, never liveness: the record is read straight off disk without
+    touching the OS lock or the publish lock, so a record left behind by an exited
+    holder is still returned. Pair it with :func:`is_held` to tell a live holder
+    from a stale record.
+
+    Args:
+        lock_path: Path to the holder-record file to read.
+
+    Returns:
+        The recorded holder, or ``None`` when the file is absent, empty,
+        truncated, or otherwise not a holder record.
+    """
+    try:
+        record = json.loads(Path(lock_path).read_text(encoding="utf-8"))
+        pid = record["pid"]
+        command = record["command"]
+        at = record["at"]
+    except (OSError, TypeError, ValueError, KeyError):
+        return None
+
+    # JSON maps `true` to a bool, and bool is an int subclass — an isinstance
+    # check alone would accept it as a PID.
+    if type(pid) is not int or type(command) is not str or type(at) is not str:
+        return None
+
+    return LockHolder(pid=pid, command=command, at=at)
 
 
 def _acquire_publish_lock(pub_lock_path: str) -> tuple[FileLock, bool]:
@@ -168,9 +219,10 @@ def acquire_lock(lock_path: str, command: str) -> ReleaseLock:
         An idempotent callable that releases the lock.
 
     Raises:
-        GymratError: When another process (or the same process) already holds
-            the lock, or when the lock file or its sibling publish lock file
-            cannot be opened due to permissions.
+        LockContentionError: When another process (or the same process) already
+            holds the lock.
+        GymratError: When the lock file or its sibling publish lock file cannot
+            be opened due to permissions.
     """
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -217,19 +269,16 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
         lock_path: Path to the contended holder-record file to read.
 
     Raises:
-        GymratError: Always — with holder details when available.
+        LockContentionError: Always — with holder details when available.
     """
-    try:
-        content = Path(lock_path).read_text(encoding="utf-8")
-        holder = json.loads(content)
-        pid = holder["pid"]
-        command = holder["command"]
-        at = holder["at"]
-        message = f"Lock held by PID {pid} ({command}, started {at})"
-    except (OSError, ValueError, KeyError, UnicodeDecodeError):
-        message = f"Lock at {lock_path} is held by another process."
+    holder = read_holder(lock_path)
+    message = (
+        f"Lock at {lock_path} is held by another process."
+        if holder is None
+        else f"Lock held by PID {holder.pid} ({holder.command}, started {holder.at})"
+    )
 
-    raise GymratError(message, hint=_LIVE_HOLDER_HINT)
+    raise LockContentionError(message, hint=_LIVE_HOLDER_HINT)
 
 
 def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:

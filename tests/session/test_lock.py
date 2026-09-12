@@ -21,7 +21,15 @@ from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
 from gymrat.errors import GymratError
-from gymrat.session.lock import _os_lock_file, _publish_lock_file, acquire_lock, is_held
+from gymrat.session.lock import (
+    LockContentionError,
+    LockHolder,
+    _os_lock_file,
+    _publish_lock_file,
+    acquire_lock,
+    is_held,
+    read_holder,
+)
 from tests.conftest import hold_lock
 
 # ---------------------------------------------------------------------------
@@ -52,7 +60,7 @@ def _cleanup_temp_dirs() -> Iterator[None]:
         shutil.rmtree(_temp_dirs.pop(), ignore_errors=True)
 
 
-def read_holder(lock_path: str) -> dict[str, object]:
+def read_holder_json(lock_path: str) -> dict[str, object]:
     """Parse the JSON holder record stamped into the lock file."""
     return json.loads(Path(lock_path).read_text(encoding="utf-8"))
 
@@ -113,7 +121,7 @@ def test_acquire_lock_when_free_does_return_release_and_stamp_holder_json():
     release = acquire_lock(lock_path, "compare")
 
     assert callable(release)
-    assert_holder_record(read_holder(lock_path))
+    assert_holder_record(read_holder_json(lock_path))
     release()
 
 
@@ -196,7 +204,7 @@ def test_acquire_lock_when_released_then_reacquired_does_succeed():
 
     release2 = acquire_lock(lock_path, "measure")
 
-    assert_holder_record(read_holder(lock_path), command="measure")
+    assert_holder_record(read_holder_json(lock_path), command="measure")
     release2()
 
 
@@ -241,7 +249,7 @@ def test_acquire_lock_when_previous_holder_released_does_succeed():
     release = acquire_lock(lock_path, "compare")
 
     assert callable(release)
-    assert_holder_record(read_holder(lock_path))
+    assert_holder_record(read_holder_json(lock_path))
     release()
 
 
@@ -279,12 +287,12 @@ def test_release_when_internal_error_does_warn_on_stderr(
 def test_release_when_called_does_not_delete_lock_file():
     lock_path = fresh_lock_path()
     release = acquire_lock(lock_path, "compare")
-    holder_before = read_holder(lock_path)
+    holder_before = read_holder_json(lock_path)
 
     release()
 
     assert Path(lock_path).exists()
-    assert read_holder(lock_path) == holder_before
+    assert read_holder_json(lock_path) == holder_before
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +377,7 @@ def test_acquire_lock_when_publish_lock_times_out_does_still_acquire(
     release = acquire_lock(lock_path, "compare")
 
     assert callable(release)
-    assert_holder_record(read_holder(lock_path))
+    assert_holder_record(read_holder_json(lock_path))
     release()
 
 
@@ -466,7 +474,7 @@ def test_is_held_when_probed_does_not_read_or_write_holder_record():
     try:
         is_held(Path(lock_path))
 
-        assert read_holder(lock_path) == holder
+        assert read_holder_json(lock_path) == holder
     finally:
         blocker.release()
 
@@ -481,3 +489,118 @@ def test_is_held_when_permission_error_does_return_false(
     result = is_held(Path(lock_path))
 
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# read_holder — holder record reporting
+# ---------------------------------------------------------------------------
+
+
+def test_read_holder_when_lock_acquired_does_return_pid_command_and_time():
+    lock_path = fresh_lock_path()
+    release = acquire_lock(lock_path, "compare")
+
+    try:
+        holder = read_holder(lock_path)
+    finally:
+        release()
+
+    assert holder is not None
+    assert holder.pid == os.getpid()
+    assert holder.command == "compare"
+    assert AT_PATTERN.match(holder.at)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b'{"pid":42,"comm', id="truncated-json"),
+        pytest.param(b"\x80\x81\x82", id="non-utf8"),
+        pytest.param(b'["pid", "command", "at"]', id="not-an-object"),
+        pytest.param(b'{"pid":42,"command":"measure"}', id="missing-at"),
+        pytest.param(
+            b'{"pid":"forty-two","command":"measure","at":"2026-01-01T00:00:00.000Z"}',
+            id="pid-not-an-integer",
+        ),
+    ],
+)
+def test_read_holder_when_record_unreadable_does_return_none(content: bytes | None):
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    if content is not None:
+        Path(lock_path).write_bytes(content)
+
+    holder = read_holder(lock_path)
+
+    assert holder is None
+
+
+def test_read_holder_when_holder_released_does_still_return_record():
+    lock_path = fresh_lock_path()
+    record: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
+    blocker = hold_lock(lock_path, holder=record)
+    blocker.release()
+
+    holder = read_holder(lock_path)
+
+    assert holder == LockHolder(pid=99999, command="measure", at=FIXED_AT)
+
+
+def test_read_holder_when_called_does_not_create_lock_files():
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    record: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_AT}
+    Path(lock_path).write_text(json.dumps(record), encoding="utf-8")
+
+    read_holder(lock_path)
+
+    assert not Path(_os_lock_file(lock_path)).exists()
+    assert not Path(_publish_lock_file(lock_path)).exists()
+
+
+# ---------------------------------------------------------------------------
+# LockContentionError — contention is distinguishable from other failures
+# ---------------------------------------------------------------------------
+
+
+def test_acquire_lock_when_held_does_raise_lock_contention_error():
+    lock_path = fresh_lock_path()
+    blocker = hold_lock(lock_path)
+
+    try:
+        with pytest.raises(LockContentionError):
+            acquire_lock(lock_path, "compare")
+    finally:
+        blocker.release()
+
+
+def test_acquire_lock_when_held_with_unreadable_record_does_raise_contention_generically():
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    blocker = FileLock(_os_lock_file(lock_path), timeout=0)
+    blocker.acquire()
+    Path(lock_path).write_bytes(b"")
+
+    try:
+        with pytest.raises(LockContentionError) as caught:
+            acquire_lock(lock_path, "compare")
+
+        assert "held by another process" in str(caught.value).lower()
+    finally:
+        blocker.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.open seam")
+def test_acquire_lock_when_permission_error_does_not_raise_lock_contention_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lock_path = fresh_lock_path()
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    refuse_open(monkeypatch, _os_lock_file(lock_path))
+
+    with pytest.raises(GymratError) as caught:
+        acquire_lock(lock_path, "compare")
+
+    assert not isinstance(caught.value, LockContentionError)

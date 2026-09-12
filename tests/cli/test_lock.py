@@ -1079,3 +1079,110 @@ async def test_with_repo_lock_when_span_emission_raises_does_release_lock(
 
     assert span_called, "_emit_command_span was not reached"
     assert released, "release() was never called"
+
+
+# ---------------------------------------------------------------------------
+# with_repo_lock — explicit root
+# ---------------------------------------------------------------------------
+
+
+def _lock_is_held(lock_path: str) -> bool:
+    """Probe the OS lock behind ``lock_path`` without blocking, releasing it if free."""
+    probe = FileLock(_os_lock_file(lock_path), timeout=0)
+    try:
+        probe.acquire()
+    except Timeout:
+        return True
+    probe.release()
+    return False
+
+
+@pytest.fixture
+def plain_directory(tmp_path: Path) -> Iterator[str]:
+    """A directory that is not a git repository, with its lock files removed on teardown."""
+    directory = tmp_path / "plain"
+    directory.mkdir()
+    yield str(directory)
+    lock_path = lockfile_path(str(directory))
+    Path(lock_path).unlink(missing_ok=True)
+    Path(_os_lock_file(lock_path)).unlink(missing_ok=True)
+
+
+async def test_with_repo_lock_when_root_given_does_lock_that_repo_and_not_the_cwd_repo(
+    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    cwd_repo = create_scratch_repo()
+    target_repo = create_scratch_repo()
+    monkeypatch.chdir(cwd_repo)
+    held: dict[str, bool] = {}
+
+    async def body(trace: CommandTrace) -> str:
+        held["target"] = _lock_is_held(lockfile_path(target_repo))
+        held["cwd"] = _lock_is_held(lockfile_path(cwd_repo))
+        return "ran"
+
+    result = await with_repo_lock("compare", body, root=target_repo)
+
+    assert result == "ran"
+    assert held == {"target": True, "cwd": False}
+
+
+async def test_with_repo_lock_when_root_given_does_repair_that_repos_torn_session_log(
+    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    cwd_repo = create_scratch_repo()
+    target_repo = create_scratch_repo()
+    monkeypatch.chdir(cwd_repo)
+    write_session_log(target_repo, session_record())
+    jsonl_path = Path(session_jsonl_path(target_repo))
+    intact_log = _read_bytes(jsonl_path)
+    tear_final_line(jsonl_path)
+    seen: dict[str, bytes] = {}
+
+    async def body(trace: CommandTrace) -> str:
+        seen["log"] = _read_bytes(jsonl_path)
+        return "ran"
+
+    result = await with_repo_lock("compare", body, root=target_repo)
+
+    assert result == "ran"
+    assert seen["log"] == intact_log
+
+
+async def test_with_repo_lock_when_root_given_does_append_command_record_to_that_repos_log(
+    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+):
+    cwd_repo = create_scratch_repo()
+    target_repo = create_scratch_repo()
+    monkeypatch.chdir(cwd_repo)
+    monkeypatch.delenv("TRACEPARENT", raising=False)
+    cwd_header = session_record()
+    write_session_log(cwd_repo, cwd_header)
+    write_session_log(target_repo, session_record())
+
+    async def body(trace: CommandTrace) -> str:
+        return "ok"
+
+    await with_repo_lock("measure", body, args={"samples": 5}, root=target_repo)
+
+    cmd = read_records(session_jsonl_path(target_repo))[-1]
+    assert isinstance(cmd, CommandRecord)
+    assert cmd.name == "measure"
+    assert cmd.args == {"samples": 5}
+    assert read_records(session_jsonl_path(cwd_repo)) == [cwd_header]
+
+
+async def test_with_repo_lock_when_root_is_not_a_repository_does_still_hold_its_lock(
+    plain_directory: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
+    held: dict[str, bool] = {}
+
+    async def body(trace: CommandTrace) -> str:
+        held["target"] = _lock_is_held(lockfile_path(plain_directory))
+        return "ran"
+
+    result = await with_repo_lock("compare", body, root=plain_directory)
+
+    assert result == "ran"
+    assert held["target"] is True
