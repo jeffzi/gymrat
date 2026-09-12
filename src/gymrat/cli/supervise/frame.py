@@ -33,6 +33,7 @@ from gymrat.cli.supervise.state import (
     Thinking,
     Waiting,
 )
+from gymrat.cli.supervise.text import format_cost, loop_segments
 from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
 from gymrat.paths import abbreviate_home
@@ -41,16 +42,19 @@ from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.budget import minutes_to_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rich.console import RenderableType
 
+    from gymrat.cli.supervise.reducer import ReporterState
     from gymrat.cli.supervise.state import (
         FinishedTool,
         Liveness,
         NestedPhase,
         ReadSessionResult,
-        ReporterCtx,
         TrackedTool,
     )
+    from gymrat.cli.supervise.text import LoopStyle
     from gymrat.session.progress_file import ProgressSnapshot
 
 # Bounds for the tool-name column: floor prevents jitter across short names
@@ -58,25 +62,21 @@ if TYPE_CHECKING:
 _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
 
-#: Shown in place of the loop summary before any session data has been read.
-NO_SESSION_TEXT = "no session yet"
+#: Theme style for each loop-summary style role; ``None`` leaves the run unstyled.
+_LOOP_STYLES: dict[LoopStyle, str | None] = {
+    "alert": STYLE_ALERT,
+    "count": STYLE_COUNT,
+    "done": STYLE_DONE,
+    "meta": STYLE_META,
+    "pending": STYLE_PENDING,
+    "plain": None,
+    "regressed": STYLE_REGRESSED,
+}
 
 
 # ---------------------------------------------------------------------------
 # Time and cost formatting
 # ---------------------------------------------------------------------------
-
-
-def format_cost(usd: float) -> str:
-    """Format a USD amount as a two-decimal dollar string."""
-    return f"${usd:.2f}"
-
-
-def _format_iter_label(count: int, max_iterations: int | None) -> str:
-    if max_iterations is not None:
-        # The noun agrees with the cap, so the capped form stays plural at any count.
-        return f"{count}/{max_iterations} iterations"
-    return f"{count} iteration" if count == 1 else f"{count} iterations"
 
 
 def _format_time_label(elapsed_ms: int, max_minutes: float) -> str:
@@ -128,22 +128,11 @@ def _build_cost_text(cost_usd: float | None, max_usd: float | None) -> Text:
 # ---------------------------------------------------------------------------
 
 
-def _outcome_style(outcome: str) -> str:
-    if outcome in ("improved", "kept"):
-        return STYLE_DONE
-    if outcome == "regressed":
-        return STYLE_REGRESSED
-    return STYLE_META
-
-
-def _iter_label_text(count: int, max_iterations: int | None) -> Text:
-    text = Text()
-    text.append(_format_iter_label(count, max_iterations), style=STYLE_COUNT)
-    return text
-
-
 def build_loop_text(session_result: ReadSessionResult | None, max_iterations: int | None) -> Text:
     """Build the iteration-progress summary shown in the supervise frame.
+
+    The content comes from :func:`loop_segments`, the same source the reducer's
+    plain-mode line reads, so the styled and unstyled forms always agree.
 
     Args:
         session_result: The latest session read, or ``None`` when the session
@@ -156,40 +145,9 @@ def build_loop_text(session_result: ReadSessionResult | None, max_iterations: in
         no session exists, a baseline-only note, a finalized marker, or a
         kept/discarded/last-delta summary for an in-progress run.
     """
-    if session_result is None:
-        return Text(NO_SESSION_TEXT, style=STYLE_PENDING)
-
-    state = session_result.state
-
-    if state.finalized is not None:
-        text = _iter_label_text(state.iteration_count, max_iterations)
-        text.append(" · finalized", style=STYLE_DONE)
-        return text
-
-    if session_result.has_baseline and state.iteration_count == 0:
-        return Text("baseline recorded · no iterations yet")
-
-    if state.iteration_count == 0:
-        return Text(NO_SESSION_TEXT, style=STYLE_PENDING)
-
-    text = _iter_label_text(state.iteration_count, max_iterations)
-    text.append(" · ")
-    text.append(f"{state.keep_count} kept", style=STYLE_DONE)
-    text.append(" · ")
-    text.append(f"{state.discard_count} discarded", style=STYLE_META)
-
-    last = state.last_iteration
-    if last is not None:
-        delta_pct = last.primary.delta_pct
-        delta = "—" if delta_pct is None else format_delta(Effect(value=delta_pct, unit="percent"))
-        style = _outcome_style(last.outcome)
-        text.append(" · last ")
-        text.append(delta, style=style)
-        text.append(" ")
-        text.append(last.outcome, style=style)
-        if state.unsettled:
-            text.append(", unsettled", style=STYLE_ALERT)
-
+    text = Text()
+    for segment in loop_segments(session_result, max_iterations):
+        text.append(segment.text, style=_LOOP_STYLES[segment.style])
     return text
 
 
@@ -198,6 +156,10 @@ def build_best_text(session_result: ReadSessionResult | None) -> Text | None:
 
     The label is styled by each caller — dim inside the dashboard frame, plain in
     the closing summary — so it is not baked into the shared content.
+
+    Args:
+        session_result: The session's results, or ``None`` when no session has run
+            yet — in which case this function returns ``None``.
 
     Returns:
         The styled ``Text``, or ``None`` when no best iteration exists.
@@ -323,37 +285,41 @@ def _build_iterate_nest(
     return text
 
 
-def _build_summary_table(ctx: ReporterCtx, elapsed_ms: int) -> Table:
+def _build_summary_table(state: ReporterState, elapsed_ms: int) -> Table:
     summary = Table.grid(padding=(0, 1))
     summary.add_column()
-    summary.add_row(_build_time_bar(elapsed_ms, ctx.max_minutes))
-    summary.add_row(_build_cost_text(ctx.cost_usd, ctx.max_usd))
+    summary.add_row(_build_time_bar(elapsed_ms, state.max_minutes))
+    summary.add_row(_build_cost_text(state.cost_usd, state.max_usd))
 
     loop_row = Text("loop   ", style=STYLE_META)
-    loop_row.append_text(build_loop_text(ctx.session_result, ctx.max_iterations))
+    loop_row.append_text(build_loop_text(state.session_result, state.max_iterations))
     summary.add_row(loop_row)
 
-    best_text = build_best_text(ctx.session_result)
+    best_text = build_best_text(state.session_result)
     if best_text is not None:
         best_row = Text("best ", style=STYLE_META)
         best_row.append_text(best_text)
         summary.add_row(best_row)
 
-    if ctx.last_decision is not None:
+    if state.last_decision is not None:
         turns_row = Text("turns  ", style=STYLE_META)
-        turns_row.append(ctx.last_decision)
+        turns_row.append(state.last_decision)
         summary.add_row(turns_row)
 
     return summary
 
 
-def _tool_name_column_width(ctx: ReporterCtx) -> int:
+def _tool_name_column_width(state: ReporterState) -> int:
     """Widest tool name among finished tools and the in-flight one, clamped to bounds."""
-    tool_names = [t.tool_name for t in ctx.finished_tools]
-    if isinstance(ctx.liveness, InFlight):
-        tool_names.append(ctx.liveness.tool_name)
+    tool_names = [t.tool_name for t in state.finished_tools]
+    if isinstance(state.liveness, InFlight):
+        tool_names.append(state.liveness.tool_name)
     raw = max((len(n) for n in tool_names), default=_MIN_TOOL_NAME_WIDTH)
     return max(_MIN_TOOL_NAME_WIDTH, min(raw, _MAX_TOOL_NAME_WIDTH))
+
+
+def _nested_activity(state: ReporterState, tool_use_id: str) -> NestedTool | NestedPhase | None:
+    return next((activity for key, activity in state.nested if key == tool_use_id), None)
 
 
 def _build_nested_activity_line(activity: NestedTool | NestedPhase, now: int) -> Text:
@@ -374,33 +340,42 @@ def _build_nested_activity_line(activity: NestedTool | NestedPhase, now: int) ->
     return Text(content, style=STYLE_META, no_wrap=True, overflow="ellipsis")
 
 
-def _build_liveness_table(ctx: ReporterCtx, now: int, *, tool_col: int) -> Table:
+def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf renderers
+    state: ReporterState,
+    now: int,
+    tz: tzinfo | None,
+    *,
+    tool_col: int,
+    no_color: bool,
+    idle_warn_ms: int,
+    read_progress: Callable[[str], ProgressSnapshot | None],
+) -> Table:
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
     liveness_text = _build_liveness_text(
-        ctx.liveness,
+        state.liveness,
         now,
-        ctx.tz,
+        tz,
         tool_col=tool_col,
-        no_color=ctx.no_color,
-        idle_warn_ms=ctx.idle_warn_ms,
+        no_color=no_color,
+        idle_warn_ms=idle_warn_ms,
     )
     if liveness_text is not None:
         liveness_table.add_row(liveness_text)
 
-    if isinstance(ctx.liveness, InFlight):
-        if _is_iterate_tool(ctx.liveness):
-            sidecar = ctx.read_progress_fn(ctx.root)
-            nest_text = _build_iterate_nest(sidecar, now, ctx.liveness.since)
+    if isinstance(state.liveness, InFlight):
+        if _is_iterate_tool(state.liveness):
+            sidecar = read_progress(state.root)
+            nest_text = _build_iterate_nest(sidecar, now, state.liveness.since)
             if nest_text is not None:
                 liveness_table.add_row(Text(f"  {nest_text}", style=STYLE_META))
 
-        nested = ctx.nested.get(ctx.liveness.tool_use_id)
+        nested = _nested_activity(state, state.liveness.tool_use_id)
         if nested is not None:
             liveness_table.add_row(_build_nested_activity_line(nested, now))
 
-    for tool in reversed(ctx.finished_tools):
-        liveness_table.add_row(_build_finished_tool_line(tool, ctx.tz, tool_col=tool_col))
+    for tool in reversed(state.finished_tools):
+        liveness_table.add_row(_build_finished_tool_line(tool, tz, tool_col=tool_col))
 
     return liveness_table
 
@@ -411,19 +386,19 @@ def _append_meta_field(text: Text, label: str, value: str) -> None:
     text.append(f" {value}")
 
 
-def _build_title(ctx: ReporterCtx) -> Text:
+def _build_title(state: ReporterState) -> Text:
     title = Text()
     title.append("supervise", style=STYLE_LABEL)
-    if ctx.label:
-        title.append(f" {ctx.label}", style=STYLE_LABEL)
-    if ctx.session_id:
-        _append_meta_field(title, "session", ctx.session_id)
-    if ctx.branch:
-        _append_meta_field(title, "branch", ctx.branch)
-    if ctx.model:
-        _append_meta_field(title, "model", ctx.model)
-    if ctx.effort:
-        _append_meta_field(title, "effort", ctx.effort)
+    if state.label:
+        title.append(f" {state.label}", style=STYLE_LABEL)
+    if state.session_id:
+        _append_meta_field(title, "session", state.session_id)
+    if state.branch:
+        _append_meta_field(title, "branch", state.branch)
+    if state.model:
+        _append_meta_field(title, "model", state.model)
+    if state.effort:
+        _append_meta_field(title, "effort", state.effort)
     return title
 
 
@@ -434,20 +409,53 @@ def log_path_text(log_path: str) -> Text:
     return Text(display, style=f"link {uri}")
 
 
-def build_frame(ctx: ReporterCtx) -> RenderableType:
-    """Assemble the supervise dashboard panel from the current reporter context."""
-    now = ctx.now()
-    elapsed = now - ctx.launch_timestamp if ctx.launch_timestamp is not None else 0
-    tool_col = _tool_name_column_width(ctx)
+def build_frame(  # noqa: PLR0913 -- view knobs the shell owns, passed explicitly
+    state: ReporterState,
+    now: int,
+    *,
+    tz: tzinfo | None,
+    no_color: bool,
+    idle_warn_ms: int,
+    read_progress: Callable[[str], ProgressSnapshot | None],
+) -> RenderableType:
+    """Assemble the supervise dashboard panel from the current reporter state.
+
+    Args:
+        state: The dashboard state to render.
+        now: Current wall-clock time in milliseconds, used for every elapsed
+            duration in the frame.
+        tz: Timezone for wall-clock timestamps; ``None`` uses the local zone.
+        no_color: Whether to drop the styles that carry no information without
+            color.
+        idle_warn_ms: Milliseconds of inactivity before the waiting line
+            escalates to alert styling.
+        read_progress: Reader for the iterate progress sidecar, keyed by project
+            root.
+
+    Returns:
+        The dashboard panel, preceded by a log-path line when one is configured.
+    """
+    elapsed = now - state.launch_timestamp if state.launch_timestamp is not None else 0
+    tool_col = _tool_name_column_width(state)
 
     body = Table.grid(padding=(0, 0))
     body.add_column()
-    body.add_row(_build_summary_table(ctx, elapsed))
-    body.add_row(_build_liveness_table(ctx, now, tool_col=tool_col))
+    body.add_row(_build_summary_table(state, elapsed))
+    body.add_row(
+        _build_liveness_table(
+            state,
+            now,
+            tz,
+            tool_col=tool_col,
+            no_color=no_color,
+            idle_warn_ms=idle_warn_ms,
+            read_progress=read_progress,
+        )
+    )
 
-    panel = Panel(body, title=_build_title(ctx), title_align="left", border_style=STYLE_META)
-    if not ctx.log_path:
+    panel = Panel(body, title=_build_title(state), title_align="left", border_style=STYLE_META)
+    if not state.log_path:
         return panel
     log_line = Text("log: ")
-    log_line.append_text(log_path_text(ctx.log_path))
+    log_line.append_text(log_path_text(state.log_path))
     return Group(log_line, panel)

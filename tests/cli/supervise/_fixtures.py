@@ -54,6 +54,7 @@ from tests.session.records._fixtures import AT, finalize_record, iteration_recor
 
 __all__ = [
     "FRAME_WIDTH",
+    "LIVE_CLASS_PATH",
     "Clock",
     "PlainCapture",
     "ReporterKit",
@@ -483,6 +484,9 @@ def fire_launch_and_bash_start(observer: SessionObserver) -> None:
 
 # Fixed width for all golden-snapshot tests so frames are stable.
 FRAME_WIDTH = 100
+
+#: Patch target for the ``Live`` the live-mode reporter drives.
+LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
 
 
 class ReporterKit(NamedTuple):

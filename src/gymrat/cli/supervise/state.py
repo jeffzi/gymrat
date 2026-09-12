@@ -7,14 +7,13 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import asyncio
-    from collections import deque
     from collections.abc import Callable
     from datetime import tzinfo
 
     from rich.console import RenderableType
     from rich.live import Live
 
-    from gymrat.config import Effort
+    from gymrat.cli.supervise.reducer import ReporterState
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import CapAction, CapType, SessionObserver
@@ -27,13 +26,25 @@ IDLE_WARN_MS = 30_000
 class ReadSessionResult:
     """The folded session state plus whether a baseline has been recorded.
 
-    The ``best_*`` fields track the committed-keep iteration with the best
-    primary delta.  ``make_default_read`` computes them from the session
-    records; injected test readers set them directly.
-
-    ``stop_message`` holds the newest stop record's message only while the
-    folded log ends on a stop; it is ``None`` once any iteration, keep,
-    discard, or finalize record supersedes it.
+    Attributes:
+        state: The folded session state as of the last read.
+        has_baseline: Whether a baseline record has been recorded for the session.
+        best_delta_pct: The best primary delta, in percent, among committed-keep
+            iterations. ``None`` when no keep has been committed.
+            ``make_default_read`` computes it from the session records;
+            injected test readers set it directly.
+        best_seq: The sequence number of the committed-keep iteration with the
+            best primary delta. ``None`` under the same condition as
+            ``best_delta_pct``, and set alongside it.
+        primary_label: The kind or name of the primary metric for the best
+            committed-keep iteration. ``None`` under the same condition as
+            ``best_delta_pct``, and set alongside it.
+        baseline_sha: The commit sha of the session's baseline. ``None`` when
+            no baseline record has been recorded; set from the session log by
+            ``make_default_read``.
+        stop_message: The newest stop record's message. Holds a value only
+            while the folded log ends on a stop; ``None`` once any iteration,
+            keep, discard, or finalize record supersedes it.
     """
 
     state: SessionState
@@ -173,39 +184,23 @@ type NestedActivity = NestedTool | NestedPhase
 
 @dataclass(slots=True)
 class ReporterCtx:
-    """Mutable state shared by the event handlers."""
+    """The terminal, clock, and I/O handles the reporter shell owns.
 
+    Everything the dashboard renders lives in ``state``, which the shell
+    replaces after each event.  Only the shell writes to this object; the
+    reducer never sees it.
+    """
+
+    state: ReporterState
     now: Callable[[], int]
     read_session_fn: Callable[[], ReadSessionResult]
     read_progress_fn: Callable[[str], ProgressSnapshot | None]
-    root: str
-    max_minutes: float
-    max_usd: float | None
-    max_iterations: int | None
-    is_plain: bool
-    label: str
-    session_id: str
-    branch: str
-    in_flight_tools: dict[str, TrackedTool]
-    finished_tools: deque[FinishedTool]
-    launch_timestamp: int | None
-    cost_usd: float | None
-    session_result: ReadSessionResult | None
-    liveness: Liveness
-    last_loop_text: str
     plain_write_fn: Callable[[str], None]
-    tz: tzinfo | None
     warn_fn: Callable[[str], None]
     live: Live | None
-    nested: dict[str, NestedActivity]
-    nested_tool_ids: dict[str, str]
+    tz: tzinfo | None
     no_color: bool
-    log_path: str
-    last_agent_text: str | None
-    turn_count: int
-    last_decision: str | None
-    model: str | None
-    effort: Effort | None
+    is_plain: bool
     idle_warn_ms: int
     refresh_ms: int
     tick_task: asyncio.Task[None] | None = None

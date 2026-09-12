@@ -21,7 +21,7 @@ from gymrat.cli.loop_cmds import discard, finalize, iterate, keep, start, status
 from gymrat.cli.measure_cmd import measure
 from gymrat.cli.probe_cmd import probe
 from gymrat.cli.shared import BUGS_URL, DebugOption, set_debug_mode
-from gymrat.cli.supervise import supervise_command
+from gymrat.cli.supervise.cmd import supervise_command
 from gymrat.report.style import format_hint
 
 _DOCS_URL = "https://github.com/jeffzi/gymrat#readme"
