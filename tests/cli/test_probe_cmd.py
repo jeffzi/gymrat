@@ -129,6 +129,7 @@ def test_probe_command_when_no_names_given_does_bench_the_whole_bench_at_the_pro
     assert only_call(measure).samples == PROBE_DEFAULT_SAMPLES
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX quoting only")
 @pytest.mark.usefixtures("probe_repo")
 def test_probe_command_when_names_and_samples_given_does_scope_the_bench_to_them(
     measure: MeasureRecorder,
