@@ -232,12 +232,12 @@ def test_command_reason_when_imported_does_accept_all_defined_values():
     assert actual == set(COMMAND_REASONS)
 
 
-@pytest.mark.parametrize("reason", COMMAND_REASONS)
-def test_parse_record_when_command_reason_unknown_does_list_every_accepted_reason(reason: str):
+def test_parse_record_when_command_reason_unknown_does_list_every_accepted_reason():
     with pytest.raises(GymratError) as exc:
         parse_record(patching(COMMAND_RECORD, {"reason": "bored"}))
 
-    assert reason in str(exc.value)
+    missing = [reason for reason in COMMAND_REASONS if reason not in str(exc.value)]
+    assert not missing
 
 
 # ---------------------------------------------------------------------------

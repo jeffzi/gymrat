@@ -17,7 +17,6 @@ from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import ReportOptions
 from tests.report._inputs import (
     cells_of,
-    delta_cell,
     line_containing,
     line_starting_with,
     probe_metric,
@@ -28,6 +27,7 @@ from tests.report._inputs import (
 )
 
 if TYPE_CHECKING:
+    from gymrat.loop.probe import ProbeMetric
     from gymrat.model import Direction
 
 # ---------------------------------------------------------------------------
@@ -43,18 +43,29 @@ def test_render_probe_report_when_rendering_header_does_name_target_samples_adap
     assert "gymrat probe · experiment · 6 samples · adapter: mitata" in strip_ansi(output)
 
 
-def test_render_probe_report_when_scoped_does_name_the_scoped_metrics_in_the_header():
-    result = probe_result(scoped=True, names=("total_ms", "decode large payload"))
+@pytest.mark.parametrize(
+    ("scoped", "names", "suffix"),
+    [
+        pytest.param(
+            True,
+            ("total_ms", "decode large payload"),
+            "· scoped: total_ms, decode large payload",
+            id="scoped",
+        ),
+        pytest.param(False, (), None, id="not-scoped"),
+    ],
+)
+def test_render_probe_report_when_scope_varies_does_reflect_scope_in_the_header(
+    scoped: bool, names: tuple[str, ...], suffix: str | None
+):
+    result = probe_result(scoped=scoped, names=names)
 
     header = line_containing(render_probe_report(result), "gymrat probe")
 
-    assert strip_ansi(header).endswith("· scoped: total_ms, decode large payload")
-
-
-def test_render_probe_report_when_not_scoped_does_leave_the_scope_out_of_the_header():
-    header = line_containing(render_probe_report(probe_result()), "gymrat probe")
-
-    assert "scoped" not in strip_ansi(header)
+    if suffix is None:
+        assert "scoped" not in strip_ansi(header)
+    else:
+        assert strip_ansi(header).endswith(suffix)
 
 
 # ---------------------------------------------------------------------------
@@ -62,9 +73,10 @@ def test_render_probe_report_when_not_scoped_does_leave_the_scope_out_of_the_hea
 # ---------------------------------------------------------------------------
 
 
-def test_render_probe_report_when_metric_paired_does_state_median_reference_and_delta():
-    result = probe_result(
-        metrics=[
+@pytest.mark.parametrize(
+    ("metric", "cells"),
+    [
+        pytest.param(
             probe_metric(
                 "decode/time",
                 median=90.0,
@@ -72,33 +84,23 @@ def test_render_probe_report_when_metric_paired_does_state_median_reference_and_
                 reference_median=100.0,
                 delta_pct=-10.0,
                 unit="ns",
-            )
-        ]
-    )
-
-    row = line_starting_with(strip_ansi(render_probe_report(result)), "decode/time")
-
-    assert [cell.strip() for cell in cells_of(row)] == [
-        "decode/time",
-        "90ns ± 2%",
-        "100ns",
-        "-10.0%",
-    ]
-
-
-def test_render_probe_report_when_metric_slower_than_the_baseline_does_sign_the_delta():
-    result = probe_result(
-        metrics=[probe_metric("decode/time", median=125.0, reference_median=100.0, delta_pct=25.0)]
-    )
-
-    row = line_starting_with(strip_ansi(render_probe_report(result)), "decode/time")
-
-    assert delta_cell(row).strip() == "+25.0%"
-
-
-def test_render_probe_report_when_metric_has_no_reference_does_say_so_in_the_delta_column():
-    result = probe_result(
-        metrics=[
+            ),
+            ["decode/time", "90ns ± 2%", "100ns", "-10.0%"],
+            id="faster-than-the-baseline",
+        ),
+        pytest.param(
+            probe_metric(
+                "decode/time",
+                median=125.0,
+                spread=2.0,
+                reference_median=100.0,
+                delta_pct=25.0,
+                unit="ns",
+            ),
+            ["decode/time", "125ns ± 2%", "100ns", "+25.0%"],
+            id="slower-than-the-baseline-signs-the-delta",
+        ),
+        pytest.param(
             probe_metric(
                 "alloc_bytes",
                 median=50.0,
@@ -106,18 +108,20 @@ def test_render_probe_report_when_metric_has_no_reference_does_say_so_in_the_del
                 reference_median=None,
                 delta_pct=None,
                 unit="bytes",
-            )
-        ]
-    )
+            ),
+            ["alloc_bytes", "50B ± 1%", "", "no reference"],
+            id="no-reference-says-so-in-the-delta-column",
+        ),
+    ],
+)
+def test_render_probe_report_when_metric_rendered_does_state_median_reference_and_delta(
+    metric: ProbeMetric, cells: list[str]
+):
+    result = probe_result(metrics=[metric])
 
-    row = line_starting_with(strip_ansi(render_probe_report(result)), "alloc_bytes")
+    row = line_starting_with(strip_ansi(render_probe_report(result)), metric.name)
 
-    assert [cell.strip() for cell in cells_of(row)] == [
-        "alloc_bytes",
-        "50B ± 1%",
-        "",
-        "no reference",
-    ]
+    assert [cell.strip() for cell in cells_of(row)] == cells
 
 
 def test_render_probe_report_when_several_metrics_does_keep_them_in_result_order():
@@ -152,8 +156,8 @@ def test_render_probe_report_when_rendering_does_carry_no_verdict_geomean_or_sig
     assert "highlights" not in output
     assert "permutation" not in output
     assert "noise" not in output
-    for glyph in "✓✗≈~?":
-        assert glyph not in output, f"verdict glyph {glyph!r} should not appear"
+    present = [glyph for glyph in "✓✗≈~?" if glyph in output]
+    assert not present, f"verdict glyphs should not appear: {present!r}"
 
 
 # ---------------------------------------------------------------------------

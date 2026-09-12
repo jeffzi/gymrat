@@ -678,14 +678,18 @@ def test_parse_record_when_keep_reason_unknown_does_list_every_accepted_reason()
         parse_record(patching(BLOCKED_KEEP_RECORD, {"reason": "bored"}))
 
     msg = str(exc.value)
-    for reason in (
-        "checks-failed",
-        "gating-regression",
-        "nothing-measured",
-        "nothing-to-commit",
-        "not-improved",
-    ):
-        assert reason in msg
+    missing = [
+        reason
+        for reason in (
+            "checks-failed",
+            "gating-regression",
+            "nothing-measured",
+            "nothing-to-commit",
+            "not-improved",
+        )
+        if reason not in msg
+    ]
+    assert not missing
 
 
 def test_parse_record_when_type_unknown_does_name_it_and_list_known_types():

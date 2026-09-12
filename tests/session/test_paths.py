@@ -112,7 +112,7 @@ def test_repo_root_when_probed_inside_a_gymrat_worktree_does_return_the_owning_r
 
     root = repo_root(str(probe))
 
-    assert root == repo_root(repo)
+    assert os.path.normpath(root) == os.path.normpath(repo)
 
 
 def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_the_owning_repository(
@@ -125,7 +125,7 @@ def test_repo_root_when_gymrat_worktree_reached_through_a_symlink_does_return_th
 
     root = repo_root(str(alias / ".gymrat" / "worktrees" / "experiment"))
 
-    assert root == repo_root(str(alias))
+    assert os.path.normpath(root) == os.path.normpath(repo)
 
 
 def test_repo_root_when_probed_in_a_worktree_outside_the_gymrat_dir_does_return_that_worktree(

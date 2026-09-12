@@ -25,29 +25,26 @@ from gymrat.errors import GymratError
 from gymrat.loop.iterate.confirm import scoped_bench
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.sampling import TargetSpec
-from gymrat.session import (
-    BaselineRecord,
-    experiment_worktree_dir,
-    read_records,
-    session_jsonl_path,
-)
+from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
 from gymrat.session.paths import progress_path
+from tests.loop._probe import (
+    BASELINE_SAMPLES,
+    baseline_of,
+    install_measure,
+    measurement,
+    only_call,
+)
 from tests.loop.settle._fixtures import checks_config, start_with
-from tests.report._inputs import create_measurement_result, measured_metric
-from tests.session.records._fixtures import AT, finalize_record
+from tests.report._inputs import measured_metric
+from tests.session.records._fixtures import finalize_record
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.measure import MeasureOptions
-    from gymrat.report.types import MeasurementResult, MetricMeasurement
     from gymrat.session import SessionLogRecord
 
 #: The rerun template a consumer configures when their bench can be narrowed.
 FILTER = "npm run bench -- --filter {names}"
-
-#: The rounds the recorded baseline reports, whose ``total_ms`` median is 100.
-BASELINE_SAMPLES: tuple[dict[str, float], ...] = ({"total_ms": 98.0}, {"total_ms": 102.0})
 
 #: The sample count a probe requests and the count it should end up taking:
 #: unset falls back to the probe default, an explicit count always wins.
@@ -60,53 +57,6 @@ SAMPLE_COUNTS = [
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def baseline_of(samples: tuple[dict[str, float], ...] = BASELINE_SAMPLES) -> BaselineRecord:
-    """A recorded baseline of the experiment worktree over ``samples``."""
-    return BaselineRecord(type="baseline", at=AT, label="experiment", samples=samples)
-
-
-def measurement(metrics: dict[str, MetricMeasurement] | None = None) -> MeasurementResult:
-    """A measurement of the experiment worktree, reporting ``total_ms`` at 90 by default."""
-    return create_measurement_result(
-        label="experiment",
-        metrics=metrics
-        if metrics is not None
-        else {"total_ms": measured_metric(median=90.0, spread=2.0, short_name="total_ms")},
-    )
-
-
-class MeasureRecorder:
-    """A stand-in for the measurement engine that records every call it answers.
-
-    The engine is the one boundary a probe crosses into the consumer's bench
-    script, so it is replaced wholesale: the recorder hands back a canned
-    :class:`MeasurementResult` and keeps the options it was called with, which is
-    how a test reads the target, bench command, and sample count a probe asked
-    for.
-    """
-
-    def __init__(self, result: MeasurementResult) -> None:
-        self.result = result
-        self.calls: list[MeasureOptions] = []
-
-    async def __call__(self, options: MeasureOptions) -> MeasurementResult:
-        self.calls.append(options)
-        return self.result
-
-
-def install_measure(monkeypatch: pytest.MonkeyPatch, result: MeasurementResult) -> MeasureRecorder:
-    """Replace ``gymrat.measure.measure`` with a recorder answering ``result``."""
-    recorder = MeasureRecorder(result)
-    monkeypatch.setattr("gymrat.measure.measure", recorder)
-    return recorder
-
-
-def only_call(recorder: MeasureRecorder) -> MeasureOptions:
-    """The options of the single measure call ``recorder`` answered."""
-    assert len(recorder.calls) == 1, f"expected one measure call, got {len(recorder.calls)}"
-    return recorder.calls[0]
 
 
 @pytest.fixture
@@ -224,23 +174,11 @@ async def test_probe_session_when_sampling_does_take_the_count_from_options_neve
     start_with(repo, (baseline_of(),))
     recorder = install_measure(monkeypatch, measurement())
 
-    await probe_session(repo, checks_config(samples=10), ProbeOptions(samples=requested))
-
-    assert only_call(recorder).samples == expected
-    assert PROBE_DEFAULT_SAMPLES == 6
-
-
-@pytest.mark.parametrize(("requested", "expected"), SAMPLE_COUNTS)
-async def test_probe_session_when_run_completes_does_report_the_run_it_measured(
-    repo: str, monkeypatch: pytest.MonkeyPatch, requested: int | None, expected: int
-):
-    start_with(repo, (baseline_of(),))
-    install_measure(monkeypatch, measurement())
-
     result = await probe_session(
         repo, checks_config(adapter="mitata", samples=10), ProbeOptions(samples=requested)
     )
 
+    assert only_call(recorder).samples == expected
     assert result.samples == expected
     assert result.label == "experiment"
     assert result.adapter == "mitata"

@@ -790,7 +790,7 @@ def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
     assert bool(SGR_RE.search(result.stdout)) is expect_ansi
 
 
-def test_keep_command_documents_allow_unimproved_in_its_help():
+def test_keep_command_when_help_requested_does_document_allow_unimproved():
     help_text = help_output("keep")
 
     assert "--allow-unimproved" in help_text
@@ -813,19 +813,6 @@ def test_keep_command_when_outcome_not_improved_does_exit_one_refusing_with_both
     assert (record.status, record.reason) == ("blocked", "not-improved")
     assert "Keep refused: the iteration was no-signal, not improved." in strip_ansi(result.stdout)
     assert "pass --allow-unimproved to keep it anyway" in strip_ansi(result.stdout)
-
-
-def test_keep_command_when_not_improved_does_record_command_trace_without_the_flag(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (unimproved(1, "regressed"),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    write_config(repo, checks=CHECKS)
-
-    result = runner.invoke(app, ["keep"])
-
-    assert result.exit_code == 1
     cmd = last_command_record(repo)
     assert cmd.exit_code == 1
     assert cmd.reason == "not-improved"

@@ -537,18 +537,6 @@ async def test_keep_session_when_outcome_not_improved_does_block_before_checks(
     assert head_of(worktree) == experiment_before
     assert status_of(worktree) != ""
     assert head_of(baseline_worktree_dir(repo)) == baseline_before
-
-
-@pytest.mark.parametrize("outcome", UNIMPROVED)
-async def test_keep_session_when_outcome_not_improved_does_report_the_outcome_and_both_ways_out(
-    repo: str, monkeypatch: pytest.MonkeyPatch, outcome: Outcome
-):
-    start_with(repo, (unimproved(1, outcome),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-
-    result = await keep_session(repo, checks_config())
-
     assert f"Keep refused: the iteration was {outcome}, not improved." in result.report
     assert "discard it, or pass --allow-unimproved to keep it anyway." in result.report
 

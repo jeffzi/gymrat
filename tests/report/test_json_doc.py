@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -43,6 +44,9 @@ from tests.report._inputs import (
     single_sample_result,
     two_kind_measurement,
 )
+
+if TYPE_CHECKING:
+    from gymrat.loop.probe import ProbeResult
 
 _ANSI_ESCAPE = re.compile("\x1b\\[")
 
@@ -768,11 +772,6 @@ def test_render_probe_json_when_rendered_does_use_schema_version_1_shape():
     assert doc["schema_version"] == 1
     assert doc["label"] == "experiment"
     assert doc["adapter"] == "mitata"
-
-
-def test_render_probe_json_when_top_level_keys_does_order_them_canonically():
-    doc = json.loads(render_probe_json(probe_result(metrics=[probe_metric()])))
-
     assert list(doc.keys()) == [
         "schema_version",
         "label",
@@ -784,21 +783,27 @@ def test_render_probe_json_when_top_level_keys_does_order_them_canonically():
     ]
 
 
-def test_render_probe_json_when_scoped_does_report_the_scope_and_sample_count():
-    result = probe_result(scoped=True, names=("total_ms", "decode"), samples=3)
-
+@pytest.mark.parametrize(
+    ("result", "scoped", "names", "samples"),
+    [
+        pytest.param(
+            probe_result(scoped=True, names=("total_ms", "decode"), samples=3),
+            True,
+            ["total_ms", "decode"],
+            3,
+            id="scoped",
+        ),
+        pytest.param(probe_result(), False, [], 6, id="unscoped"),
+    ],
+)
+def test_render_probe_json_when_scope_varies_does_report_the_scope_and_names(
+    result: ProbeResult, scoped: bool, names: list[str], samples: int
+):
     doc = json.loads(render_probe_json(result))
 
-    assert doc["scoped"] is True
-    assert doc["names"] == ["total_ms", "decode"]
-    assert doc["samples"] == 3
-
-
-def test_render_probe_json_when_unscoped_does_report_an_empty_name_list():
-    doc = json.loads(render_probe_json(probe_result()))
-
-    assert doc["scoped"] is False
-    assert doc["names"] == []
+    assert doc["scoped"] is scoped
+    assert doc["names"] == names
+    assert doc["samples"] == samples
 
 
 # ---------------------------------------------------------------------------
@@ -806,15 +811,28 @@ def test_render_probe_json_when_unscoped_does_report_an_empty_name_list():
 # ---------------------------------------------------------------------------
 
 
-def test_render_probe_json_when_metric_paired_does_carry_snake_case_measurement_fields():
+@pytest.mark.parametrize(
+    ("name", "median", "spread", "reference_median", "delta_pct"),
+    [
+        pytest.param("decode/time", 90.0, 2.0, 100.0, -10.0, id="metric-paired"),
+        pytest.param("alloc_bytes", None, None, None, None, id="metric-field-absent"),
+    ],
+)
+def test_render_probe_json_when_metric_rendered_does_carry_snake_case_measurement_fields(
+    name: str,
+    median: float | None,
+    spread: float | None,
+    reference_median: float | None,
+    delta_pct: float | None,
+):
     result = probe_result(
         metrics=[
             probe_metric(
-                "decode/time",
-                median=90.0,
-                spread=2.0,
-                reference_median=100.0,
-                delta_pct=-10.0,
+                name,
+                median=median,
+                spread=spread,
+                reference_median=reference_median,
+                delta_pct=delta_pct,
                 unit="ns",
             )
         ]
@@ -822,30 +840,11 @@ def test_render_probe_json_when_metric_paired_does_carry_snake_case_measurement_
 
     doc = json.loads(render_probe_json(result))
 
-    assert doc["metrics"]["decode/time"] == {
-        "median": 90.0,
-        "spread": 2.0,
-        "reference_median": 100.0,
-        "delta_pct": -10.0,
-    }
-
-
-def test_render_probe_json_when_metric_field_absent_does_render_null():
-    result = probe_result(
-        metrics=[
-            probe_metric(
-                "alloc_bytes", median=None, spread=None, reference_median=None, delta_pct=None
-            )
-        ]
-    )
-
-    doc = json.loads(render_probe_json(result))
-
-    assert doc["metrics"]["alloc_bytes"] == {
-        "median": None,
-        "spread": None,
-        "reference_median": None,
-        "delta_pct": None,
+    assert doc["metrics"][name] == {
+        "median": median,
+        "spread": spread,
+        "reference_median": reference_median,
+        "delta_pct": delta_pct,
     }
 
 
@@ -862,18 +861,22 @@ def test_render_probe_json_when_several_metrics_does_key_each_by_name_in_result_
 # ---------------------------------------------------------------------------
 
 
-def test_render_probe_json_when_budget_given_does_add_a_top_level_budget_object():
-    doc = json.loads(
-        render_probe_json(
-            probe_result(), budget=BudgetSummary(cap_minutes=30, remaining_seconds=900)
-        )
-    )
+@pytest.mark.parametrize(
+    "budget",
+    [
+        pytest.param(BudgetSummary(cap_minutes=30, remaining_seconds=900), id="budget-given"),
+        pytest.param(None, id="no-budget"),
+    ],
+)
+def test_render_probe_json_when_budget_varies_does_reflect_the_budget_key(
+    budget: BudgetSummary | None,
+):
+    doc = json.loads(render_probe_json(probe_result(), budget=budget))
 
-    assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
-
-
-def test_render_probe_json_when_no_budget_does_omit_the_budget_key():
-    assert "budget" not in json.loads(render_probe_json(probe_result(), budget=None))
+    if budget is None:
+        assert "budget" not in doc
+    else:
+        assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
 
 
 # ---------------------------------------------------------------------------

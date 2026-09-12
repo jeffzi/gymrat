@@ -398,19 +398,6 @@ def test_baseline_medians_when_given_record_does_median_each_metric_over_its_rou
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_baseline_when_given_record_does_render_the_baseline_medians():
-    record = _baseline_record((
-        {"total_ms": 100, "alloc_bytes": 40},
-        {"total_ms": 300},
-        {"total_ms": 260},
-    ))
-
-    line = _plain(format_status_baseline(record))
-
-    rendered = " · ".join(f"{name} {value:g}" for name, value in baseline_medians(record).items())
-    assert line == f"baseline main · {rendered}"
-
-
 def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric():
     record = _baseline_record((
         {"total_ms": 15200, "alloc_bytes": 1500},
