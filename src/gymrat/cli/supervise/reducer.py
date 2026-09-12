@@ -154,12 +154,13 @@ class ReporterState:
 # ---------------------------------------------------------------------------
 
 
-def _get[V](pairs: tuple[tuple[str, V], ...], key: str) -> V | None:
+def pair_value[V](pairs: tuple[tuple[str, V], ...], key: str) -> V | None:
+    """Return the value paired with `key`, or None if `key` is not present."""
     return next((value for name, value in pairs if name == key), None)
 
 
 def _set[V](pairs: tuple[tuple[str, V], ...], key: str, value: V) -> tuple[tuple[str, V], ...]:
-    if _get(pairs, key) is None:
+    if pair_value(pairs, key) is None:
         return (*pairs, (key, value))
     # Overwriting keeps the original position, matching dict assignment: the
     # tool-end fallback relies on the last pair being the newest tool.
@@ -190,7 +191,7 @@ def wants_session_refresh(state: ReporterState, event: SessionEvent) -> bool:
         case LaunchEvent():
             return True
         case ToolEndEvent() if event.parent_tool_use_id is None:
-            tracked = _get(state.in_flight_tools, event.tool_use_id)
+            tracked = pair_value(state.in_flight_tools, event.tool_use_id)
             return tracked is None or tracked.tool_name == _SESSION_WRITING_TOOL
         case _:
             return False
@@ -260,7 +261,7 @@ def _tool_start(state: ReporterState, event: ToolStartEvent) -> ReporterState:
     at_ms = _ms(event.at)
     parent_id = event.parent_tool_use_id
     if parent_id is not None:
-        if _get(state.in_flight_tools, parent_id) is None:
+        if pair_value(state.in_flight_tools, parent_id) is None:
             return state
         nested = _set(
             state.nested,
@@ -290,11 +291,11 @@ def _tool_start(state: ReporterState, event: ToolStartEvent) -> ReporterState:
 
 
 def _nested_tool_end(state: ReporterState, event: ToolEndEvent) -> ReporterState:
-    parent_id = _get(state.nested_tool_ids, event.tool_use_id)
+    parent_id = pair_value(state.nested_tool_ids, event.tool_use_id)
     if parent_id is None:
         return state
     nested = state.nested
-    if isinstance(_get(nested, parent_id), NestedTool):
+    if isinstance(pair_value(nested, parent_id), NestedTool):
         nested = _drop(nested, parent_id)
     return replace(
         state, nested=nested, nested_tool_ids=_drop(state.nested_tool_ids, event.tool_use_id)
@@ -314,7 +315,7 @@ def _tool_end(
     if event.parent_tool_use_id is not None:
         return _nested_tool_end(state, event)
 
-    tracked = _get(state.in_flight_tools, event.tool_use_id)
+    tracked = pair_value(state.in_flight_tools, event.tool_use_id)
     in_flight = _drop(state.in_flight_tools, event.tool_use_id)
     finished = (
         *state.finished_tools,
@@ -342,10 +343,11 @@ def _tool_end(
     )
     if not wants_session_refresh(state, event):
         return ended
+    resolved_session_result = session_result if session_result is not None else state.session_result
     return replace(
         ended,
-        session_result=session_result,
-        last_loop_text=_next_loop_text(state, session_result),
+        session_result=resolved_session_result,
+        last_loop_text=_next_loop_text(state, resolved_session_result),
     )
 
 
@@ -361,11 +363,11 @@ def _thinking_update(state: ReporterState, event: ThinkingUpdateEvent) -> Report
 def _nested_model_phase(
     state: ReporterState, event: ModelPhaseEvent, parent_id: str, at_ms: int
 ) -> ReporterState:
-    if _get(state.in_flight_tools, parent_id) is None:
+    if pair_value(state.in_flight_tools, parent_id) is None:
         return state
     if event.phase == "turn_end":
         return replace(state, nested=_drop(state.nested, parent_id))
-    if isinstance(_get(state.nested, parent_id), NestedTool):
+    if isinstance(pair_value(state.nested, parent_id), NestedTool):
         return state
     tool_name = event.tool_name if event.phase == "tool_input" else None
     phase = NestedPhase(phase=event.phase, since=at_ms, tool_name=tool_name)

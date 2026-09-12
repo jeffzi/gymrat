@@ -23,6 +23,7 @@ from gymrat.cli.style import (
     STYLE_REGRESSED,
     STYLE_RUNNING,
 )
+from gymrat.cli.supervise.reducer import pair_value
 from gymrat.cli.supervise.state import (
     Capped,
     Composing,
@@ -318,10 +319,6 @@ def _tool_name_column_width(state: ReporterState) -> int:
     return max(_MIN_TOOL_NAME_WIDTH, min(raw, _MAX_TOOL_NAME_WIDTH))
 
 
-def _nested_activity(state: ReporterState, tool_use_id: str) -> NestedTool | NestedPhase | None:
-    return next((activity for key, activity in state.nested if key == tool_use_id), None)
-
-
 def _build_nested_activity_line(activity: NestedTool | NestedPhase, now: int) -> Text:
     """Build a dim ``↳`` line for nested subagent activity."""
     elapsed = format_duration(now - activity.since)
@@ -370,7 +367,7 @@ def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf rende
             if nest_text is not None:
                 liveness_table.add_row(Text(f"  {nest_text}", style=STYLE_META))
 
-        nested = _nested_activity(state, state.liveness.tool_use_id)
+        nested = pair_value(state.nested, state.liveness.tool_use_id)
         if nested is not None:
             liveness_table.add_row(_build_nested_activity_line(nested, now))
 
