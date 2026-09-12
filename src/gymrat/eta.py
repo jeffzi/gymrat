@@ -6,15 +6,76 @@ elapsed time and floors to whole seconds while always keeping a zero remainder
 seconds, clamps to at least one second, and drops a zero remainder (``"~1m
 left"``); :func:`format_clock` renders the media-player clock a progress bar
 ticks through (``"07:45"``, ``"1:07:45"``).
+
+:class:`SamplingEta` is the shared estimate those formatters render: a pure
+value that accumulates finished-pass durations and divides them over the work
+that is left.
 """
 
 import math
+from dataclasses import dataclass, replace
+from typing import Self
 
 #: Shared by every module that converts between milliseconds and clock tiers,
 #: so the conversion factors are declared once.
 SECONDS_PER_MINUTE = 60
 SECONDS_PER_HOUR = 3600
 MS_PER_SECOND = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class SamplingEta:
+    """Remaining-time estimate built from the average of finished passes.
+
+    Attributes:
+        completed: Passes finished so far.
+        finish_count: Finished passes whose duration was sampled.
+        total_time_ms: Sum of the sampled durations, in milliseconds.
+        total: Passes the run expects in all.
+    """
+
+    completed: int
+    finish_count: int
+    total_time_ms: float
+    total: int
+
+    @classmethod
+    def start(cls, total: int) -> Self:
+        """Return the estimate for a run of ``total`` passes that has not started."""
+        return cls(completed=0, finish_count=0, total_time_ms=0.0, total=total)
+
+    @property
+    def eta_ms(self) -> float | None:
+        """Milliseconds of work left, or None when no estimate can be made.
+
+        Returns:
+            The average finished-pass duration multiplied by the passes that
+            remain, or None while no pass has finished and once nothing remains.
+        """
+        remaining = self.total - self.completed
+        if remaining <= 0 or self.finish_count == 0:
+            return None
+        return (self.total_time_ms / self.finish_count) * remaining
+
+    def advanced(self, duration_ms: float) -> Self:
+        """Return a copy that counts one more finished pass.
+
+        Args:
+            duration_ms: Duration of the pass that just finished, in milliseconds.
+
+        Returns:
+            A new estimate; this one is left unchanged.
+        """
+        return replace(
+            self,
+            completed=self.completed + 1,
+            finish_count=self.finish_count + 1,
+            total_time_ms=self.total_time_ms + duration_ms,
+        )
+
+    def with_total(self, total: int) -> Self:
+        """Return a copy that expects ``total`` passes, keeping the samples taken so far."""
+        return replace(self, total=total)
 
 
 def _hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
