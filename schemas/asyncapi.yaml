@@ -1,7 +1,7 @@
 asyncapi: 3.0.0
 info:
   title: gymrat logs
-  version: 0.17.0
+  version: 0.18.0
   description: 'gymrat writes two append-only JSONL log files during a session: the session log (.gymrat/session.jsonl)
     records high-level session lifecycle events, and the supervisor log (.gymrat/supervisor-<ms>.jsonl)
     captures fine-grained agent activity. Both files are strictly append-only; each line is a self-contained
