@@ -36,8 +36,8 @@ from tests.loop.settle._fixtures import (
     git,
     head_of,
     iteration,
-    last_record_of,
     nothing_measured_block,
+    settling_record_of,
     start_with,
     status_of,
     undefined_delta,
@@ -85,7 +85,7 @@ def test_discard_session_when_unsettled_edit_does_append_discard_naming_iteratio
 
     assert result.record is not None
     assert_settling_record(result.record, discard_record(1))
-    assert last_record_of(repo) == result.record
+    assert settling_record_of(repo) == result.record
     assert result.at == result.record.at
 
 
@@ -104,7 +104,7 @@ def test_discard_session_when_worktree_clean_does_record_discard_anyway(repo: st
 
     result = discard_session(repo)
 
-    assert last_record_of(repo) == result.record
+    assert settling_record_of(repo) == result.record
 
 
 def test_discard_session_when_gating_block_stands_does_throw_away_the_edit(repo: str):

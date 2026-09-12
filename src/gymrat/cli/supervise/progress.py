@@ -1,6 +1,9 @@
 """Progress reporter for a supervised optimization run.
 
-Event dispatching lives in :mod:`gymrat.cli.supervise.handlers`.
+This module is the shell around :mod:`gymrat.cli.supervise.reducer`: it owns the
+terminal, the clock, and the session read, and holds the reducer state.  Every
+event goes through :func:`handle_event`, which reads the session when the reducer
+asks for it, replaces the state, and renders the result.
 """
 
 from __future__ import annotations
@@ -9,20 +12,23 @@ import asyncio
 import contextlib
 import logging
 import sys
-from collections import deque
 from typing import TYPE_CHECKING, Literal
 
 from rich.live import Live
 
 from gymrat.cli.console import stderr_console
 from gymrat.cli.supervise.frame import build_frame
-from gymrat.cli.supervise.handlers import handle_event, render_live
+from gymrat.cli.supervise.reducer import (
+    ReporterState,
+    advance,
+    plain_line,
+    wants_session_refresh,
+)
 from gymrat.cli.supervise.session_read import make_default_read
 from gymrat.cli.supervise.state import (
     IDLE_WARN_MS,
     ReadSessionResult,
     ReporterCtx,
-    Starting,
     SuperviseReporter,
 )
 from gymrat.eta import MS_PER_SECOND
@@ -33,12 +39,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import tzinfo
 
+    from rich.console import RenderableType
+
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.supervisor.events import SessionEvent
 
 _tick_logger = logging.getLogger(__name__)
-
-_MAX_FINISHED_TOOLS = 3
 
 REFRESH_MS = 1000
 """Default Live dashboard refresh interval in milliseconds."""
@@ -90,40 +97,94 @@ def _new_ctx(  # noqa: PLR0913 - one field per reporter knob
     refresh_ms: int,
 ) -> ReporterCtx:
     return ReporterCtx(
+        state=ReporterState(
+            root=root,
+            max_minutes=max_minutes,
+            max_usd=max_usd,
+            max_iterations=max_iterations,
+            label=label,
+            session_id=session_id,
+            branch=branch,
+            model=model,
+            effort=effort,
+            log_path=log_path,
+        ),
         now=now,
         read_session_fn=read_session,
         read_progress_fn=read_progress,
-        root=root,
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        max_iterations=max_iterations,
-        is_plain=is_plain,
-        label=label,
-        session_id=session_id,
-        branch=branch,
-        in_flight_tools={},
-        finished_tools=deque(maxlen=_MAX_FINISHED_TOOLS),
-        launch_timestamp=None,
-        cost_usd=None,
-        session_result=None,
-        liveness=Starting(),
-        last_loop_text="",
-        tz=tz,
         plain_write_fn=plain_write,
         warn_fn=plain_write,
         live=None,
-        nested={},
-        nested_tool_ids={},
+        tz=tz,
         no_color=no_color,
-        log_path=log_path,
-        last_agent_text=None,
-        turn_count=0,
-        last_decision=None,
-        model=model,
-        effort=effort,
+        is_plain=is_plain,
         idle_warn_ms=idle_warn_ms,
         refresh_ms=refresh_ms,
     )
+
+
+# ---------------------------------------------------------------------------
+# Rendering and event dispatch
+# ---------------------------------------------------------------------------
+
+
+def _frame(ctx: ReporterCtx) -> RenderableType:
+    return build_frame(
+        ctx.state,
+        ctx.now(),
+        tz=ctx.tz,
+        no_color=ctx.no_color,
+        idle_warn_ms=ctx.idle_warn_ms,
+        read_progress=ctx.read_progress_fn,
+    )
+
+
+def render_live(ctx: ReporterCtx) -> None:
+    """Push one explicit frame refresh to the Live display.
+
+    In plain mode or when no Live exists, this is a no-op.
+
+    Args:
+        ctx: The reporter shell supplying the Live instance and the state to
+            render.
+    """
+    if ctx.is_plain or ctx.live is None:
+        return
+    ctx.live.update(_frame(ctx), refresh=True)
+
+
+def _read_session(ctx: ReporterCtx) -> ReadSessionResult | None:
+    try:
+        return ctx.read_session_fn()
+    except Exception as exc:
+        _tick_logger.exception("session read failed")
+        ctx.warn_fn(f"session read failed: {exc}")
+        return None
+
+
+def handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
+    """Fold one session event into the reporter state and render the result.
+
+    When the reducer hands back the state it was given — a text delta or a tool
+    progress ping changes nothing — live mode skips the repaint, since the only
+    part of the frame that could have moved is elapsed time and :func:`_tick`
+    already keeps that current.
+
+    Args:
+        ctx: The reporter shell whose state is replaced with the reduced one.
+        event: The incoming session event.
+    """
+    session = _read_session(ctx) if wants_session_refresh(ctx.state, event) else None
+    before = ctx.state
+    ctx.state = advance(before, event, session)
+
+    if not ctx.is_plain:
+        if ctx.state is not before:
+            render_live(ctx)
+        return
+    line = plain_line(before, ctx.state, event)
+    if line is not None:
+        ctx.plain_write_fn(line)
 
 
 async def _tick(ctx: ReporterCtx) -> None:
@@ -274,7 +335,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
             transient=True,
         )
         ctx.live.start()
-        ctx.live.update(build_frame(ctx), refresh=True)
+        ctx.live.update(_frame(ctx), refresh=True)
 
     warn = _make_warn(ctx)
     ctx.warn_fn = warn
@@ -282,8 +343,8 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         observer=lambda event: handle_event(ctx, event),
         start=lambda: _start_tick(ctx),
         stop=lambda: _stop_tick_and_live(ctx),
-        frame=lambda: build_frame(ctx),
+        frame=lambda: _frame(ctx),
         warn=warn,
-        session_result=lambda: ctx.session_result,
-        final_text=lambda: ctx.last_agent_text,
+        session_result=lambda: ctx.state.session_result,
+        final_text=lambda: ctx.state.last_agent_text,
     )

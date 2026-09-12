@@ -40,6 +40,7 @@ KeepReason = Literal[
     "gating-regression",
     "nothing-measured",
     "nothing-to-commit",
+    "not-improved",
 ]
 
 #: Which side of an iteration a hook ran on.
@@ -60,6 +61,7 @@ HookStage = Literal["before", "after"]
 #: - ``gating-regression`` — keep (gating regression blocked the keep)
 #: - ``nothing-to-commit`` — keep (nothing to commit)
 #: - ``checks-failed``     — keep (configured checks failed)
+#: - ``not-improved``      — keep (the iteration was not improved)
 #: - ``nothing-to-discard`` — discard (nothing to discard)
 #: - ``stale-session``     — discard / keep (the session is stale)
 #: - ``nothing-kept``      — finalize (no kept iterations)
@@ -68,6 +70,8 @@ HookStage = Literal["before", "after"]
 #: - ``bad-branch``        — start (the branch is invalid)
 #: - ``branch-exists``     — start (the branch already exists)
 #: - ``fail-on``           — iterate (the fail-on condition fired)
+#: - ``no-filter``         — probe (names given with no filter template configured)
+#: - ``no-baseline``       — probe (the session has no baseline record)
 #: - ``error``             — any command (an unexpected error)
 CommandReason = Literal[
     "stop-condition",
@@ -81,6 +85,7 @@ CommandReason = Literal[
     "gating-regression",
     "nothing-to-commit",
     "checks-failed",
+    "not-improved",
     "nothing-to-discard",
     "stale-session",
     "nothing-kept",
@@ -89,5 +94,7 @@ CommandReason = Literal[
     "bad-branch",
     "branch-exists",
     "fail-on",
+    "no-filter",
+    "no-baseline",
     "error",
 ]

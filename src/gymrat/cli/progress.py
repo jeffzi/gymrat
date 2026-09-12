@@ -5,6 +5,10 @@ and a sampling bar with an elapsed-over-total clock. The prepare row is removed
 once prepare finishes, so the display never grows past those two rows. Plain
 mode (non-TTY) prints timestamped milestone lines without ANSI escape codes.
 
+This module is the shell: it owns the terminal, the ``rich`` objects, and the
+live/plain branch. Every decision about what to show lives in the pure reducer
+:mod:`gymrat.cli.progress_state`.
+
 Glyphs, verb forms, and timer colors follow the conventions in
 :mod:`gymrat.cli.style`.
 """
@@ -15,6 +19,8 @@ from typing import TYPE_CHECKING, Literal, override
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from gymrat.progress_events import ProgressEvent
 
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
@@ -33,6 +39,7 @@ from rich.progress import (
 from rich.table import Column
 from rich.text import Text
 
+from gymrat.cli.progress_state import ProgressState, advance, plain_line
 from gymrat.cli.style import (
     COMPACT_HEIGHT_THRESHOLD,
     LIVE_REFRESH_PER_SECOND,
@@ -45,13 +52,6 @@ from gymrat.cli.style import (
     LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
-from gymrat.progress_events import (
-    PassFinished,
-    PassStarted,
-    PrepareFinished,
-    PrepareStarted,
-    ProgressEvent,
-)
 from gymrat.signals import install_termination_cleanup
 
 
@@ -126,6 +126,33 @@ class _PhaseColumn(ProgressColumn):
         return text
 
 
+def _clocked_progress(
+    console: Console,
+    clock: Callable[[], float] | None,
+    *columns: ProgressColumn,
+) -> tuple[Progress, _ClockColumn]:
+    """Build a ``Progress`` from ``columns`` plus a trailing clock column.
+
+    Args:
+        console: The console the progress bar renders to.
+        clock: Optional time source injected for testing; ``None`` defaults to
+            ``time.monotonic``.
+        columns: The columns to show before the clock column.
+
+    Returns:
+        The ``Progress`` and its ``_ClockColumn``.
+    """
+    clock_col = _ClockColumn()
+    progress = Progress(
+        *columns,
+        clock_col,
+        console=console,
+        auto_refresh=False,
+        get_time=clock,
+    )
+    return progress, clock_col
+
+
 def compact_progress(
     console: Console, *, clock: Callable[[], float] | None = None
 ) -> tuple[Progress, _ClockColumn]:
@@ -142,19 +169,15 @@ def compact_progress(
     Returns:
         The ``Progress`` and its ``_ClockColumn``.
     """
-    clock_col = _ClockColumn()
-    progress = Progress(
+    return _clocked_progress(
+        console,
+        clock,
         SpinnerColumn(SPINNER_NAME),
         TextColumn("{task.description}", style=STYLE_VERB),
         BarColumn(),
         TaskProgressColumn(),
         _TargetColumn(),
-        clock_col,
-        console=console,
-        auto_refresh=False,
-        get_time=clock,
     )
-    return progress, clock_col
 
 
 def passes_progress(
@@ -173,18 +196,14 @@ def passes_progress(
     Returns:
         The ``Progress`` and its ``_ClockColumn``.
     """
-    clock_col = _ClockColumn()
-    progress = Progress(
+    return _clocked_progress(
+        console,
+        clock,
         SpinnerColumn(SPINNER_NAME),
         _PhaseColumn(),
         BarColumn(),
         MofNCompleteColumn(),
-        clock_col,
-        console=console,
-        auto_refresh=False,
-        get_time=clock,
     )
-    return progress, clock_col
 
 
 class ProgressReporter(LiveDisplayMixin):
@@ -219,22 +238,14 @@ class ProgressReporter(LiveDisplayMixin):
         target_labels: list[str] | None = None,
     ) -> None:
         self._console = console
-        self._target_count = target_count
-        self._sample_count = sample_count
-        self._total = (sample_count or 0) * target_count
-        self._clock = clock
         self._command = command
         self._target_labels = target_labels or []
+        self._state = ProgressState.start(target_count=target_count, sample_count=sample_count)
 
-        self._completed = 0
-        self._prepare_start_ms = 0.0
-        self._pass_start_ms = 0.0
-        self._total_pass_time_ms = 0.0
-        self._pass_finish_count = 0
-        self._run_start_ms: float | None = None
-        self._run_end_ms: float | None = None
-
-        self._is_live = mode == "live" and console.width > 0
+        # Read only by ``report``; ``__init__`` branches on the local so the
+        # live/plain split stays in exactly one place.
+        is_live = mode == "live" and console.width > 0
+        self._is_live = is_live
         self._live: Live | None = None
         self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None
@@ -245,7 +256,7 @@ class ProgressReporter(LiveDisplayMixin):
         self._stopped = False
         self._uninstall_cleanup: Callable[[], None] = lambda: None
 
-        if self._is_live:
+        if is_live:
             self._init_live(console, clock)
 
     def _init_live(self, console: Console, clock: Callable[[], float] | None) -> None:
@@ -284,8 +295,9 @@ class ProgressReporter(LiveDisplayMixin):
             return None
         header = Text()
         header.append(self._command, style=STYLE_LABEL)
+        sample_count = self._state.sample_count
         label_str = ", ".join(self._target_labels) if self._target_labels else ""
-        sample_str = f"{self._sample_count} samples" if self._sample_count is not None else ""
+        sample_str = f"{sample_count} samples" if sample_count is not None else ""
         dim_parts = [p for p in (label_str, sample_str) if p]
         if dim_parts:
             header.append(" ")
@@ -294,7 +306,7 @@ class ProgressReporter(LiveDisplayMixin):
 
     def _target_field(self, label: str) -> str:
         """The label a row shows for ``label``, empty when there is only one target."""
-        return label if self._target_count > 1 else ""
+        return label if self._state.target_count > 1 else ""
 
     def frame(self) -> Group:
         """Return the renderable the live display paints from."""
@@ -311,100 +323,60 @@ class ProgressReporter(LiveDisplayMixin):
         return Group(*parts)
 
     def report(self, event: ProgressEvent) -> None:
-        """Dispatch ``event`` to the matching handler; ignore unrelated types."""
-        if not isinstance(event, PrepareStarted | PrepareFinished | PassStarted | PassFinished):
+        """Fold ``event`` into the run state and paint the result; ignore unrelated types."""
+        before = self._state
+        after = advance(before, event)
+        # The reducer hands back the identical state for events the display has
+        # nothing to say about.
+        if after is before:
+            return
+        self._state = after
+
+        if self._is_live:
+            self._sync_live(after)
             return
 
-        self._track_timestamp(event.at_ms)
+        line = plain_line(before, after, event)
+        if line is not None:
+            ts = format_timestamp(event.at_ms, after.run_start_ms)
+            self._console.print(f"{ts} {line}", highlight=False, markup=False)
 
-        match event:
-            case PrepareStarted():
-                self._on_prepare_started(event)
-            case PrepareFinished():
-                self._on_prepare_finished(event)
-            case PassStarted():
-                self._on_pass_started(event)
-            case PassFinished():
-                self._on_pass_finished(event)
+    def _sync_live(self, state: ProgressState) -> None:
+        self._sync_prepare_row(state)
+        self._sync_pass_row(state)
+        eta_ms = state.eta.eta_ms
+        if eta_ms is not None and self._clock_column is not None:
+            self._clock_column.set_eta(eta_ms)
+        self._refresh_live()
 
-    def _track_timestamp(self, at_ms: float) -> None:
-        if self._run_start_ms is None:
-            self._run_start_ms = at_ms
-        self._run_end_ms = at_ms
-
-    def _on_prepare_started(self, event: PrepareStarted) -> None:
-        self._prepare_start_ms = event.at_ms
-        if self._is_live and self._prepare_progress is not None:
-            self._prepare_task_id = self._prepare_progress.add_task(
-                "preparing", target=self._target_field(event.label)
-            )
-            self._refresh_live()
-
-    def _on_prepare_finished(self, event: PrepareFinished) -> None:
-        elapsed_ms = event.at_ms - self._prepare_start_ms
-
-        if not self._is_live:
-            elapsed = format_duration(elapsed_ms)
-            self._print_plain(event.at_ms, f"prepared {event.label} ({elapsed})")
+    def _sync_prepare_row(self, state: ProgressState) -> None:
+        if self._prepare_progress is None:
             return
-
-        # The prepare row has nothing left to say once sampling starts, so it
-        # leaves the display rather than lingering as a completed row.
-        if self._prepare_progress is not None and self._prepare_task_id is not None:
+        if state.prepare_visible:
+            if self._prepare_task_id is None:
+                self._prepare_task_id = self._prepare_progress.add_task(
+                    "preparing", target=self._target_field(state.current_target)
+                )
+        elif self._prepare_task_id is not None:
+            # The prepare row has nothing left to say once sampling starts, so it
+            # leaves the display rather than lingering as a completed row.
             self._prepare_progress.remove_task(self._prepare_task_id)
             self._prepare_task_id = None
-        self._refresh_live()
 
-    def _on_pass_started(self, event: PassStarted) -> None:
-        self._pass_start_ms = event.at_ms
-
-        if self._total == 0 and self._sample_count is None:
-            self._total = event.total_rounds * self._target_count
-
-        if not self._is_live or self._pass_progress is None:
+    def _sync_pass_row(self, state: ProgressState) -> None:
+        if self._pass_progress is None or not state.pass_visible:
             return
-
-        target = self._target_field(event.label)
+        target = self._target_field(state.current_target)
         if self._pass_task_id is None:
             self._pass_task_id = self._pass_progress.add_task(
-                "sampling", total=self._total, target=target
+                "sampling", total=state.total, target=target
             )
-        self._pass_progress.update(self._pass_task_id, target=target, completed=self._completed)
-
-        self._refresh_live()
-
-    def _on_pass_finished(self, event: PassFinished) -> None:
-        duration_ms = event.at_ms - self._pass_start_ms
-        self._total_pass_time_ms += duration_ms
-        self._completed += 1
-        self._pass_finish_count += 1
-
-        remaining = self._total - self._completed
-        if remaining > 0:
-            avg_ms = self._total_pass_time_ms / self._pass_finish_count
-            eta_ms = avg_ms * remaining
-            if self._clock_column is not None:
-                self._clock_column.set_eta(eta_ms)
-
-        if self._is_live and self._pass_progress is not None and self._pass_task_id is not None:
-            self._pass_progress.update(self._pass_task_id, completed=self._completed)
-            self._refresh_live()
-        elif not self._is_live:
-            self._print_plain(
-                event.at_ms,
-                (
-                    f"pass {event.round}/{event.total_rounds}"
-                    f" · {event.label}"
-                    f" ({format_duration(duration_ms)})"
-                ),
-            )
-
-    def _print_plain(self, at_ms: float, message: str) -> None:
-        ts = self._format_timestamp(at_ms)
-        self._console.print(f"{ts} {message}", highlight=False, markup=False)
-
-    def _format_timestamp(self, at_ms: float) -> str:
-        return format_timestamp(at_ms, self._run_start_ms)
+        self._pass_progress.update(
+            self._pass_task_id,
+            total=state.total,
+            target=target,
+            completed=state.eta.completed,
+        )
 
     def warn(self, message: str) -> None:
         """Surface a warning without disturbing any active live display."""
@@ -423,12 +395,13 @@ class ProgressReporter(LiveDisplayMixin):
 
     def _print_summary(self) -> None:
         """Print the run's timing; the report right below carries everything else."""
+        state = self._state
         elapsed_ms = (
             0.0
-            if self._run_start_ms is None or self._run_end_ms is None
-            else self._run_end_ms - self._run_start_ms
+            if state.run_start_ms is None or state.run_end_ms is None
+            else state.run_end_ms - state.run_start_ms
         )
-        verb = "compared" if self._target_count > 1 else "measured"
+        verb = "compared" if state.target_count > 1 else "measured"
 
         summary = Text()
         summary.append(f"{verb} in ", style=STYLE_META)

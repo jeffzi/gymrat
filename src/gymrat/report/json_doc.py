@@ -1,4 +1,4 @@
-"""JSON report document builders for the compare, measure, and loop commands.
+"""JSON report document builders for the compare, measure, probe, and loop commands.
 
 Each builder assembles a plain nested structure keyed in snake_case and
 serializes it with a two-space indent. None takes presentation options, so the
@@ -24,6 +24,7 @@ from gymrat.verdict import infer_group
 
 if TYPE_CHECKING:
     from gymrat.loop.iterate import IterateResult
+    from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.loop.settle import DiscardResult, KeepResult
     from gymrat.loop.status import StatusData
     from gymrat.model import GeomeanResult, MetricVerdict
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
 
 _COMPARE_SCHEMA_VERSION = 2
 _MEASURE_SCHEMA_VERSION = 1
+_PROBE_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +117,47 @@ def render_measure_json(result: MeasurementResult, *, budget: BudgetSummary | No
         "worktrees": _serialize_worktrees(result),
     }
     return _render(document, budget)
+
+
+# ---------------------------------------------------------------------------
+# Probe serialization
+# ---------------------------------------------------------------------------
+
+
+def render_probe_json(result: ProbeResult, *, budget: BudgetSummary | None = None) -> str:
+    """Serialize a probe result as JSON.
+
+    The document carries no verdicts or aggregates: a probe is one unpaired run
+    against a recorded baseline, so it states each metric's measurement, the
+    baseline's median, and the gap between them.
+
+    Args:
+        result: The probe to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
+
+    Returns:
+        The document as a two-space-indented JSON string.
+    """
+    document: dict[str, object] = {
+        "schema_version": _PROBE_SCHEMA_VERSION,
+        "label": result.label,
+        "samples": result.samples,
+        "adapter": result.adapter,
+        "scoped": result.scoped,
+        "names": list(result.names),
+        "metrics": {metric.name: _serialize_probe_metric(metric) for metric in result.metrics},
+    }
+    return _render(document, budget)
+
+
+def _serialize_probe_metric(metric: ProbeMetric) -> dict[str, object]:
+    """One probed metric: what it measured, what the baseline holds, and the gap."""
+    return {
+        "median": metric.median,
+        "spread": metric.spread,
+        "reference_median": metric.reference_median,
+        "delta_pct": metric.delta_pct,
+    }
 
 
 def _serialize_metric(

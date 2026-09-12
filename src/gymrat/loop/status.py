@@ -43,14 +43,26 @@ if TYPE_CHECKING:
     from gymrat.config import BenchlessConfig
     from gymrat.report.loop import SettleState
     from gymrat.session import SessionLogRecord
+    from gymrat.session.schema import Outcome
 
 
-def _settle_state_of(record: KeepRecord | DiscardRecord) -> SettleState:
-    """What a single settling record says became of the iteration it settles."""
+def _settle_state_of(
+    record: KeepRecord | DiscardRecord, outcome: Outcome | None = None
+) -> SettleState:
+    """What a single settling record says became of the iteration it settles.
+
+    Args:
+        record: The keep or discard record to read.
+        outcome: The outcome of the iteration this record settles, or ``None`` when
+            it settles none.
+
+    Returns:
+        The settle state the record states.
+    """
     if isinstance(record, DiscardRecord):
         return SettleDiscarded()
     if record.status == "committed":
-        return SettleKept(commit=record.commit)
+        return SettleKept(commit=record.commit, outcome=outcome)
     return SettleKeepBlocked(reason=record.reason)
 
 
@@ -60,6 +72,7 @@ class _PendingIteration:
 
     position: int
     seq: int
+    outcome: Outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,9 +120,8 @@ def _apply_settle_record(
         The gating block still standing after this record is processed, or
         ``None`` when no block remains.
     """
-    settle = _settle_state_of(record)
-
     if pending is not None and pending.seq == record.seq:
+        settle = _settle_state_of(record, pending.outcome)
         if last_block is not None and last_block.iteration_position == pending.position:
             states[last_block.block_position] = last_block.block_state
         states[pending.position] = settle
@@ -120,6 +132,8 @@ def _apply_settle_record(
                 block_state=settle,
             )
         return None
+
+    settle = _settle_state_of(record)
 
     if isinstance(record, DiscardRecord) and last_block is not None:
         states[last_block.iteration_position] = settle
@@ -159,7 +173,7 @@ def _settle_states(records: Sequence[SessionLogRecord]) -> dict[int, SettleState
 
     for position, record in enumerate(records):
         if isinstance(record, IterationRecord):
-            pending = _PendingIteration(position=position, seq=record.seq)
+            pending = _PendingIteration(position=position, seq=record.seq, outcome=record.outcome)
             last_block = None
         elif isinstance(record, (KeepRecord, DiscardRecord)):
             last_block = _apply_settle_record(states, pending, last_block, position, record)

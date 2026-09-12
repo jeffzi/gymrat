@@ -32,7 +32,7 @@ from tests.loop.settle._fixtures import (
     git,
     head_of,
     iteration,
-    last_record_of,
+    settling_record_of,
     start_with,
 )
 from tests.session.records._fixtures import (
@@ -78,7 +78,7 @@ def test_stop_session_when_open_does_append_a_stop_record_and_return_a_report(
 
     result = stop_session(repo, "switched to a different approach\nsecond line")
 
-    record = last_record_of(repo)
+    record = settling_record_of(repo)
     assert isinstance(record, StopRecord)
     assert record.message == "switched to a different approach\nsecond line"
     assert isinstance(record.at, int)

@@ -47,7 +47,6 @@ if TYPE_CHECKING:
         FinalizeRecord,
         SessionRecord,
     )
-    from gymrat.session.records import SampleRound
     from gymrat.session.schema import KeepReason
 
 # ---------------------------------------------------------------------------
@@ -341,9 +340,14 @@ class SettleKept:
     Attributes:
         commit: The commit the keep made, or ``None`` while it is not yet known —
             a keep can be recorded before its squash commit exists.
+        outcome: The outcome of the iteration that was kept, or ``None`` when the
+            keep settled no iteration the caller could read an outcome from. An
+            outcome other than ``"improved"`` is named in the rendered line, so a
+            keep that overrode the outcome gate is visible in the history.
     """
 
     commit: str | None = None
+    outcome: LoopOutcome | None = None
     kind: Literal["kept"] = "kept"
 
 
@@ -466,6 +470,9 @@ def format_status_settle(settle: SettleState) -> str:
     A settling record that settled no iteration — a keep refused for want of a
     measurement — stands on a line of its own, and this is all that line says.
 
+    A keep of an iteration that was not improved names the outcome it overrode, so
+    a reader can tell it apart from a keep the loop's own measurement earned.
+
     Args:
         settle: The settling record to describe.
 
@@ -474,7 +481,10 @@ def format_status_settle(settle: SettleState) -> str:
     """
     match settle:
         case SettleKept():
-            return "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
+            kept = "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
+            if settle.outcome is not None and settle.outcome != "improved":
+                return f"{kept} ({settle.outcome})"
+            return kept
         case SettleDiscarded():
             return "discarded"
         case SettleUnsettled():
@@ -505,12 +515,24 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     ])
 
 
-def _metric_medians(samples: Sequence[SampleRound]) -> list[tuple[str, float]]:
+def baseline_medians(record: BaselineRecord) -> dict[str, float]:
+    """The median each metric of a recorded baseline came to over its rounds.
+
+    A round that omits a metric contributes nothing to that metric's median
+    rather than a zero, and a metric no round reported has no entry at all.
+
+    Args:
+        record: The recorded baseline measurement to summarize.
+
+    Returns:
+        Each reported metric name mapped to its median, in the order the rounds
+        first named them.
+    """
     readings: dict[str, list[float]] = {}
-    for round_ in samples:
+    for round_ in record.samples:
         for name, value in round_.items():
             readings.setdefault(name, []).append(value)
-    return [(name, compute_median(values)) for name, values in readings.items()]
+    return {name: compute_median(values) for name, values in readings.items()}
 
 
 def format_status_baseline(record: BaselineRecord) -> str:
@@ -528,7 +550,8 @@ def format_status_baseline(record: BaselineRecord) -> str:
     """
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
-        f"{escape(name)} {format_value(median)}" for name, median in _metric_medians(record.samples)
+        f"{escape(name)} {format_value(median)}"
+        for name, median in baseline_medians(record).items()
     )
     return _separator().join(parts)
 

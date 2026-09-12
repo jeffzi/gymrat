@@ -30,6 +30,13 @@ from tests.cli._loop_cmds import (
     write_config,
 )
 from tests.loop.iterate._fixtures import resolved_config
+from tests.loop.settle._fixtures import (
+    CHECKS,
+    checks_pass,
+    edit_experiment,
+    start_with,
+    unimproved,
+)
 from tests.session.records._fixtures import (
     AT,
     COMMIT,
@@ -134,6 +141,38 @@ def test_keep_command_when_format_json_does_include_stable_key_names(
     doc = json.loads(result.stdout)
     assert {"status", "reason", "checks", "commit", "message"} <= doc.keys()
     assert {"configured", "passed", "stdout_bytes", "stderr_bytes"} <= doc["checks"].keys()
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_exit", "expected_fields"),
+    [
+        pytest.param([], 1, {"status": "blocked", "reason": "not-improved"}, id="refused"),
+        pytest.param(
+            ["--allow-unimproved"],
+            0,
+            {"status": "committed", "reason": None},
+            id="overridden",
+        ),
+    ],
+)
+def test_keep_command_when_format_json_and_iteration_unimproved_does_keep_its_key_set(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    expected_exit: int,
+    expected_fields: dict[str, str | None],
+):
+    start_with(repo, (unimproved(1, "no-signal"),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep", *flags, "--format", "json"])
+
+    assert result.exit_code == expected_exit
+    doc = json.loads(result.stdout)
+    assert doc.keys() == {"status", "reason", "checks", "commit", "message"}
+    assert {key: doc[key] for key in expected_fields} == expected_fields
 
 
 def test_keep_command_when_format_text_does_produce_plain_report(

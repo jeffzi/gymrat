@@ -26,6 +26,9 @@ from gymrat.progress_events import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from gymrat.config import ResolvedConfig
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
     from gymrat.session import PairedSamples
 
@@ -101,12 +104,7 @@ async def confirm_regressions(
         return None
 
     filtered_tuple = tuple(filtered)
-    names = " ".join(_shell_quote(name) for name in filtered)
-    bench = (
-        ctx.config.bench
-        if ctx.config.filter is None
-        else ctx.config.filter.replace(FILTER_PLACEHOLDER, names)
-    )
+    bench = scoped_bench(ctx.config, filtered)
     emit_progress(
         ctx.options.on_progress,
         ConfirmStarted(
@@ -169,7 +167,27 @@ def apply_confirmation(
     return settled
 
 
-def _shell_quote(value: str) -> str:
+def scoped_bench(config: ResolvedConfig, names: Sequence[str]) -> str:
+    """The bench command narrowed to ``names``, or the whole bench when it cannot be.
+
+    Args:
+        config: The run configuration, carrying the bench command and the
+            optional ``filter`` template.
+        names: The metric names to narrow the bench to. An empty sequence
+            narrows nothing.
+
+    Returns:
+        The ``filter`` template with its placeholder replaced by the shell-quoted
+        names joined by single spaces, or ``config.bench`` when there are no
+        names to scope to or no template to scope with.
+    """
+    if not names or config.filter is None:
+        return config.bench
+    quoted = " ".join(shell_quote_name(name) for name in names)
+    return config.filter.replace(FILTER_PLACEHOLDER, quoted)
+
+
+def shell_quote_name(value: str) -> str:
     """``value`` as a single shell-safe word, platform-aware.
 
     Metric names are the bench's to choose, and mitata's ``sort(n=1000)/time``

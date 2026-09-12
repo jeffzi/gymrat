@@ -40,6 +40,7 @@ from gymrat.report.style import (
     RENDER_WIDTH,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
+    join_header_parts,
     markup,
     render_lines,
     truncate_labels,
@@ -66,9 +67,6 @@ if TYPE_CHECKING:
 # one shared instance is safe as a default argument.
 _DEFAULT_OPTIONS = ReportOptions()
 
-# The `·` separator every report header joins its parts with, dimmed in color.
-_HEADER_SEPARATOR = "·"
-
 # Gap between the longest highlighted metric name and the delta that follows it.
 _HIGHLIGHT_NAME_GUTTER = 2
 
@@ -79,11 +77,6 @@ _HIGHLIGHTS_HEADING = "highlights"
 
 # The glyph flagging a gate the run's own `--fail-on` conditions would trip.
 _GATE_TRIP_GLYPH = "⚑"
-
-
-def _join_header_parts(parts: list[str]) -> str:
-    """Join header parts with the dimmed ``·`` separator every report header shares."""
-    return f" {markup(_HEADER_SEPARATOR, 'dim')} ".join(parts)
 
 
 def _render_line(text: str, *, color: bool | None) -> str:
@@ -146,7 +139,7 @@ def _compare_header(display: ComparisonResult) -> str:
     candidate_names = ", ".join(
         markup(candidate.label, VARIANT_NAME_STYLE) for candidate in display.candidates
     )
-    return _join_header_parts([
+    return join_header_parts([
         markup("gymrat compare", "bold"),
         f"baseline {markup(display.baseline_label, VARIANT_NAME_STYLE)} ↔ {candidate_names}",
         escape(paired_samples(display.samples)),
@@ -466,7 +459,7 @@ def render_measure_report(
     """
     color = options.color
     label = truncate_labels([result.label])[0]
-    header = _join_header_parts([
+    header = join_header_parts([
         markup("gymrat measure", "bold"),
         markup(label, VARIANT_NAME_STYLE),
         escape(pluralize(result.samples, "sample")),

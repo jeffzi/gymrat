@@ -6,7 +6,7 @@ one line per written file.
 
 import sys
 
-from gymrat.cli.shared import TOOL_FAILURE_EXIT_CODE
+from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
 from gymrat.errors import GymratError, hint_of
 from gymrat.event_docs import write_all
 from gymrat.session.paths import repo_root

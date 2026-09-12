@@ -19,9 +19,9 @@ from gymrat.cli.style import (
 from gymrat.cli.supervise.frame import (
     build_best_text,
     build_loop_text,
-    format_cost,
     log_path_text,
 )
+from gymrat.cli.supervise.text import format_cost
 from gymrat.eta import format_duration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 
@@ -165,11 +165,3 @@ def build_summary(
     rows.append(_summary_row("loop", build_loop_text(session_result, None)))
     rows.append(_summary_row("log", log_path_text(log_path)))
     return Text("\n").join(rows)
-
-
-def format_caps(max_minutes: float, max_usd: float | None) -> str:
-    """Format "caps {minutes}m" alone, or with ", {cost}" appended when a spend cap is set."""
-    caps_parts = [f"{max_minutes:g}m"]
-    if max_usd is not None:
-        caps_parts.append(format_cost(max_usd))
-    return f"caps {', '.join(caps_parts)}"

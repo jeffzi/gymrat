@@ -14,8 +14,8 @@ from typing import Annotated, assert_never
 import typer
 
 from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
+from gymrat.cli.lock import GATE_EXIT_CODE
 from gymrat.cli.shared import (
-    GATE_EXIT_CODE,
     AdapterOption,
     BenchOption,
     ColorOption,

@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from rich.markup import escape
 
 from gymrat.config import BenchlessConfig
+from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.settle.checks import (
     ChecksRun,
     gating_refusal,
@@ -28,6 +29,7 @@ from gymrat.report.format import format_delta
 from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
 from gymrat.session.clock import now_ns
 from gymrat.session.records import (
+    BaselineRecord,
     IterationRecord,
     KeepChecks,
     KeepRecord,
@@ -50,9 +52,14 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class KeepOptions:
-    """What a caller can hand a keep beyond its configuration."""
+    """What a caller can hand a keep beyond its configuration.
+
+    ``allow_unimproved`` defaults to refusing: an automated caller that passes no
+    options keeps only what the loop measured as an improvement.
+    """
 
     message: str | None = None
+    allow_unimproved: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +155,20 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
             reason="gating-regression",
             checks=KeepChecks(configured=configured),
             report=gating_refusal(iteration),
+        )
+
+    # After the gating gate, so a confirmed regression keeps reading as one, and
+    # before the checks run, so a refused keep never spends the consumer's suite.
+    if iteration.outcome != "improved" and not options.allow_unimproved:
+        return _blocked_keep(
+            jsonl_path=jsonl_path,
+            seq=iteration.seq,
+            reason="not-improved",
+            checks=KeepChecks(configured=configured),
+            report=(
+                f"Keep refused: the iteration was {iteration.outcome}, not improved.\n"
+                + format_hint("discard it, or pass --allow-unimproved to keep it anyway.")
+            ),
         )
 
     experiment_dir = session.worktrees.experiment
@@ -282,6 +303,19 @@ def _commit_keep(
     # sampling a baseline the log says it has already left behind.
     advance_baseline(context.baseline_dir, commit)
     append_record(context.jsonl_path, record)
+    # Bookkeeping, so it follows the settlement: the kept commit is the baseline
+    # from here on, and the iteration already measured it. Nothing is benched.
+    # A failure between the two appends leaves a committed keep whose baseline
+    # record is missing, which readers tolerate by falling back to the older one.
+    append_record(
+        context.jsonl_path,
+        BaselineRecord(
+            type="baseline",
+            at=now_ns(),
+            label=commit[:SHORT_SHA_LENGTH],
+            samples=context.iteration.samples.experiment,
+        ),
+    )
 
     return KeepResult(
         record=record,

@@ -1,7 +1,1 @@
-"""The ``gymrat iterate`` progress subpackage: renderer and row helpers."""
-
-from gymrat.cli.iterate.progress import IterateRenderer
-
-__all__ = [
-    "IterateRenderer",
-]
+"""The ``gymrat iterate`` progress subpackage: pure state model, renderer, and row helpers."""

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `gymrat probe` to spot-check the experiment worktree against the recorded baseline without
+  touching session state.
+
+### Changed
+
+- Append a baseline record from the kept samples when `keep` commits, so the recorded reference
+  advances with the session.
+- Refuse `keep` on an iteration that did not improve unless `--allow-unimproved` is passed.
+
+### Fixed
+
+- Find the session when a command runs from inside a session worktree.
+
 ## [0.17.0] - 2026-09-11
 
 ### Added

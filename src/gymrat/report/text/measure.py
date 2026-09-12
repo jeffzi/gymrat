@@ -10,34 +10,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from rich.cells import cell_len
 from rich.markup import escape
 
 from gymrat.report.format import format_metric_cell_parts
 from gymrat.report.sections import plan_sections
 from gymrat.report.style import VARIANT_NAME_STYLE, markup
 from gymrat.report.table import (
-    METRIC_COLUMN_MIN,
-    VALUE_COLUMN_MIN,
-    GroupLine,
-    HeaderLine,
-    MetricLine,
-    aggregate_label_lengths,
-    compute_column_width,
+    build_cell_dispatcher,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
-    join_value_cell,
-    plan_body,
+    plan_table_skeleton,
     render_body,
-    section_annotation,
-    value_widths,
-    widest_header_label,
 )
 
 if TYPE_CHECKING:
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.table import BodyLine
     from gymrat.report.types import MeasurementResult
 
 
@@ -75,42 +63,16 @@ def render_measure_table(
             value=format_metric_cell_parts(metric.median, metric.spread, metric.meta.unit),
         ),
     )
-    value_fields = value_widths([row.value for row in layout.ordered])
+    skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
+    widths = [skeleton.metric_width, skeleton.value_width]
 
-    body: list[BodyLine[_MeasureRow, object]] = plan_body(
-        layout,
-        None,
-        lambda section: section_annotation(section, result.config_kinds),
+    def metric_cells(row: _MeasureRow) -> tuple[str, str]:
+        return escape(skeleton.name_cell(row)), escape(skeleton.value_cell(row))
+
+    to_cells = build_cell_dispatcher(
+        header=lambda title: (header_metric_cell(title), markup(label, VARIANT_NAME_STYLE)),
+        group=lambda group_label: (group_metric_cell(group_label), ""),
+        metric=metric_cells,
     )
-    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
 
-    def value_cell(row: _MeasureRow) -> str:
-        return join_value_cell(row.value, value_fields)
-
-    def name_cell(row: _MeasureRow) -> str:
-        return row.label if grouped else row.name
-
-    widths = [
-        compute_column_width(
-            cell_len(widest_header_label(body)),
-            [cell_len(name_cell(row)) for row in layout.ordered] + aggregate_label_lengths(body),
-            METRIC_COLUMN_MIN,
-        ),
-        compute_column_width(
-            cell_len(label),
-            [cell_len(value_cell(row)) for row in layout.ordered],
-            VALUE_COLUMN_MIN,
-        ),
-    ]
-
-    def to_cells(line: BodyLine[_MeasureRow, object]) -> tuple[str, ...]:
-        if isinstance(line, HeaderLine):
-            return (header_metric_cell(line.title), markup(label, VARIANT_NAME_STYLE))
-        if isinstance(line, GroupLine):
-            return (group_metric_cell(line.label), "")
-        if isinstance(line, MetricLine):
-            return (escape(name_cell(line.row)), escape(value_cell(line.row)))
-        msg = f"unexpected body line {line!r}"
-        raise AssertionError(msg)
-
-    return render_body(body, widths, to_cells, color=color)
+    return render_body(skeleton.body, widths, to_cells, color=color)

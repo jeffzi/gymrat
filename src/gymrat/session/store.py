@@ -20,6 +20,7 @@ must not already be finalized.
 
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
@@ -41,6 +42,7 @@ from gymrat.session.records import (
     parse_record,
     record_to_wire,
 )
+from gymrat.session.schema import KeepReason
 
 __all__ = [
     "RequiredSession",
@@ -48,6 +50,7 @@ __all__ = [
     "append_record",
     "fold_session",
     "last_kept_position",
+    "latest_baseline",
     "read_records",
     "recover_torn_tail",
     "require_open_session",
@@ -323,6 +326,22 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     return records
 
 
+def latest_baseline(records: Sequence[SessionLogRecord]) -> BaselineRecord | None:
+    """The newest baseline measurement in ``records``, in file order.
+
+    Baselines reach the log from two places — a ``measure --record`` run and the
+    bookkeeping a committed keep appends — and both are eligible: the newest one
+    is where the session now stands, whichever wrote it.
+
+    Args:
+        records: The session records to scan, in file order.
+
+    Returns:
+        The last baseline record in file order, or ``None`` when there is none.
+    """
+    return next((r for r in reversed(records) if isinstance(r, BaselineRecord)), None)
+
+
 @dataclass(slots=True)
 class _FoldState:
     """The mutable accumulator :func:`fold_session` folds records into.
@@ -363,6 +382,11 @@ def _fold_iteration(
     target_reached[record.seq] = record.target_reached
 
 
+#: Reasons a blocked keep leaves the iteration unsettled: the agent can fix the
+#: failing checks, or pass ``--allow-unimproved``, and keep the same edit.
+_RETRYABLE_KEEP_REASONS: frozenset[KeepReason] = frozenset({"checks-failed", "not-improved"})
+
+
 def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRecord) -> None:
     acc.last_seq = max(acc.last_seq, record.seq)
     # A "nothing-measured" refusal commits and settles nothing, so it leaves the
@@ -381,9 +405,13 @@ def _fold_keep(acc: _FoldState, target_reached: dict[int, bool], record: KeepRec
         acc.target_reached_and_kept = target_reached.get(record.seq, False)
         if record.commit is not None:
             acc.last_kept_commit = record.commit
-    elif record.reason is not None and record.reason != "checks-failed" and not nothing_measured:
-        # A blocked keep settles the iteration — except "checks-failed" (fix and
-        # retry) and an absent reason (nothing says the edit is beyond recovery).
+    elif (
+        record.reason is not None
+        and record.reason not in _RETRYABLE_KEEP_REASONS
+        and not nothing_measured
+    ):
+        # A blocked keep settles the iteration — except a retryable reason and an
+        # absent reason (nothing says the edit is beyond recovery).
         acc.unsettled = False
     if not nothing_measured:
         acc.ends_on_gating_block = (

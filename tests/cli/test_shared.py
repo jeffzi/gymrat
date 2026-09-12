@@ -16,11 +16,10 @@ import typer
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli import shared
+from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.progress import ProgressReporter
 from gymrat.cli.shared import (
     BUGS_URL,
-    GATE_EXIT_CODE,
-    TOOL_FAILURE_EXIT_CODE,
     CompareFlags,
     MeasureFlags,
     SharedFlags,

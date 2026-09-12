@@ -2,23 +2,28 @@
 
 Tests for the ``Live`` construction contract (``auto_refresh=False``,
 ``transient=True``, mounted via ``start()``), the explicit ``refresh=True`` on
-every ``update`` call, ``_stop_live`` suppression scope, and the tick task
-lifecycle including its error-handling path.
+every ``update`` call, the skipped repaint for events that leave state unchanged,
+``_stop_live`` suppression scope, and the tick task lifecycle including its
+error-handling path.
 """
 
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gymrat.supervisor.events import TextDeltaEvent, ToolProgressEvent
 from tests.cli.supervise._fixtures import (
+    LIVE_CLASS_PATH,
     fire_launch,
     make_reporter,
 )
 
-LIVE_CLASS_PATH = "gymrat.cli.supervise.progress.Live"
+if TYPE_CHECKING:
+    from gymrat.supervisor.events import SessionEvent
 
 
 async def _wait_for_call(mock: MagicMock, *, timeout_s: float = 1) -> None:
@@ -89,6 +94,28 @@ def test_render_when_event_fires_in_live_mode_does_call_update_with_refresh():
         mock_live.update.assert_called()
         _, update_kwargs = mock_live.update.call_args
         assert update_kwargs.get("refresh") is True
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(TextDeltaEvent(at=2_000_000_000, chunk="hello"), id="text-delta"),
+        pytest.param(
+            ToolProgressEvent(at=2_000_000_000, tool_use_id="tp-1", elapsed_ms=500),
+            id="tool-progress",
+        ),
+    ],
+)
+def test_render_when_event_leaves_state_unchanged_does_not_repaint_live(event: SessionEvent):
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        live = mock_live_cls.return_value
+        kit = make_reporter(mode="live")
+        fire_launch(kit.reporter.observer, 1000)
+        painted = live.update.call_count
+
+        kit.reporter.observer(event)
+
+        assert live.update.call_count == painted
 
 
 def test_render_when_plain_mode_does_not_create_live():

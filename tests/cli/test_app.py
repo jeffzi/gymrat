@@ -74,6 +74,7 @@ def test_app_when_help_does_show_description():
     assert "Performance comparison tool for benchmarks" in out
     assert "compare" in out
     assert "measure" in out
+    assert "probe" in out
     assert "stop" in out
 
 
