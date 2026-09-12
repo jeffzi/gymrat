@@ -12,8 +12,8 @@ from pathlib import Path
 
 import typer
 
+from gymrat.cli.lock import GATE_EXIT_CODE
 from gymrat.cli.shared import (
-    GATE_EXIT_CODE,
     AdapterOption,
     BenchOption,
     ColorOption,

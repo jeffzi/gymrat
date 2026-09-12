@@ -18,9 +18,8 @@ import typer
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.shared import (
-    GATE_EXIT_CODE,
-    TOOL_FAILURE_EXIT_CODE,
     ColorOption,
     DebugOption,
     apply_color_override,

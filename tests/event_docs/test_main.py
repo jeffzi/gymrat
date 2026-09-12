@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gymrat.cli.shared import TOOL_FAILURE_EXIT_CODE
+from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
 from gymrat.errors import GymratError
 from gymrat.event_docs.__main__ import main
 
