@@ -241,6 +241,16 @@ def _iteration(duration_ms: float | None = None, *, seq: int = 1) -> IterationRe
             DurationEstimate(duration_ms=600_000, source="iteration", source_duration_ms=600_000),
             id="newest-iteration-lacks-duration-uses-earlier",
         ),
+        pytest.param(
+            [_baseline(duration_ms=420_000), _iteration(duration_ms=840_000), _baseline()],
+            DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
+            id="a-keep-appended-baseline-times-nothing-and-is-skipped",
+        ),
+        pytest.param(
+            [_baseline(duration_ms=420_000), _baseline()],
+            DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
+            id="newest-baseline-lacks-duration-uses-earlier",
+        ),
     ],
 )
 def test_estimate_iterate_duration_when_records_vary_does_prefer_newest_iteration_duration_over_baseline(

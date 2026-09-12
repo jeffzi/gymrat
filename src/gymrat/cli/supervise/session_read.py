@@ -11,13 +11,12 @@ from typing import TYPE_CHECKING
 from gymrat.cli.supervise.state import ReadSessionResult
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import (
-    BaselineRecord,
     IterationRecord,
     KeepRecord,
     SessionRecord,
     StopRecord,
 )
-from gymrat.session.store import fold_session, read_records
+from gymrat.session.store import fold_session, latest_baseline, read_records
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,7 +58,7 @@ def make_default_read(root: str) -> Callable[[], ReadSessionResult]:
     def _read() -> ReadSessionResult:
         records = read_records(session_jsonl_path(root))
         state = fold_session(records)
-        has_baseline = any(isinstance(r, BaselineRecord) for r in records)
+        has_baseline = latest_baseline(records) is not None
 
         committed_seqs = {
             r.seq for r in records if isinstance(r, KeepRecord) and r.status == "committed"

@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from gymrat.errors import GymratError, hint_of
+from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.session import (
     BaselineRecord,
     HookRecord,
@@ -35,6 +36,7 @@ from gymrat.session.store import (
     SessionState,
     append_record,
     fold_session,
+    latest_baseline,
     read_records,
     require_open_session,
     require_session,
@@ -72,6 +74,15 @@ BASELINE: BaselineRecord = BaselineRecord(
     samples=({"total_ms": 15200}, {"total_ms": 15184}),
 )
 
+# The baseline a keep appends from the samples the kept iteration already
+# measured: labelled with the kept commit's short sha and timing nothing.
+KEPT_BASELINE: BaselineRecord = BaselineRecord(
+    type="baseline",
+    at=AT + 5_000,
+    label=COMMIT[:SHORT_SHA_LENGTH],
+    samples=({"total_ms": 14100}, {"total_ms": 14088}),
+)
+
 HOOK: HookRecord = hook_record()
 
 
@@ -95,6 +106,11 @@ def _gating_block(seq: int) -> KeepRecord:
 def _nothing_measured_block(seq: int) -> KeepRecord:
     """The keep a retry refuses when nothing was measured since the last settle."""
     return blocked_keep(seq, reason="nothing-measured", checks=KeepChecks(configured=True))
+
+
+def _not_improved_block(seq: int) -> KeepRecord:
+    """The keep the outcome gate refused, numbered with the iteration it refused."""
+    return blocked_keep(seq, reason="not-improved", checks=KeepChecks(configured=True))
 
 
 ITERATION_1 = _iteration(1, target_reached=False)
@@ -557,6 +573,7 @@ def test_fold_session_when_records_replayed_does_produce_the_summarized_state(
         pytest.param(blocked_keep(1), 0, True, id="checks-failed"),
         pytest.param(blocked_keep(1, reason=None), 0, True, id="reason-absent"),
         pytest.param(_nothing_measured_block(2), 0, True, id="nothing-measured"),
+        pytest.param(_not_improved_block(1), 0, True, id="not-improved"),
         pytest.param(_gating_block(1), 0, False, id="gating-regression"),
     ],
 )
@@ -624,6 +641,11 @@ def test_fold_session_when_keep_blocked_does_set_keep_count_and_unsettled(
             [SESSION, ITERATION_1],
             False,
             id="an-iteration-nobody-has-settled",
+        ),
+        pytest.param(
+            [SESSION, ITERATION_1, _not_improved_block(1)],
+            False,
+            id="a-log-ending-on-the-keep-the-outcome-gate-refused",
         ),
     ],
 )
@@ -733,6 +755,19 @@ def test_fold_session_when_stop_appended_does_not_change_counts_or_seq():
 
 
 # ---------------------------------------------------------------------------
+# fold_session — a keep-appended baseline is transparent
+# ---------------------------------------------------------------------------
+
+
+def test_fold_session_when_a_keep_appended_a_baseline_does_leave_state_unchanged():
+    expected = fold_session([SESSION, ITERATION_1, committed_keep(1)])
+
+    state = fold_session([SESSION, ITERATION_1, committed_keep(1), KEPT_BASELINE])
+
+    assert state == expected
+
+
+# ---------------------------------------------------------------------------
 # fold_session — CommandRecord is transparent
 # ---------------------------------------------------------------------------
 
@@ -762,6 +797,37 @@ def test_fold_session_when_command_record_appended_does_leave_state_unchanged(
     with_command = [*base_records, command_record()]
 
     assert fold_session(with_command) == expected
+
+
+# ---------------------------------------------------------------------------
+# latest_baseline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("records", "expected"),
+    [
+        pytest.param([], None, id="an-empty-log"),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1)], None, id="a-log-holding-no-baseline"
+        ),
+        pytest.param([SESSION, BASELINE, ITERATION_1], BASELINE, id="a-baseline-measure-recorded"),
+        pytest.param(
+            [SESSION, ITERATION_1, committed_keep(1), KEPT_BASELINE],
+            KEPT_BASELINE,
+            id="a-baseline-a-keep-appended",
+        ),
+        pytest.param(
+            [SESSION, BASELINE, ITERATION_1, committed_keep(1), KEPT_BASELINE],
+            KEPT_BASELINE,
+            id="two-baselines-takes-the-newest-in-file-order",
+        ),
+    ],
+)
+def test_latest_baseline_when_records_scanned_does_return_the_newest_baseline(
+    records: list[SessionLogRecord], expected: BaselineRecord | None
+):
+    assert latest_baseline(records) == expected
 
 
 # ---------------------------------------------------------------------------

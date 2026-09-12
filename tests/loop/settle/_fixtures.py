@@ -27,6 +27,7 @@ from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.loop.start import start_session
 from gymrat.session import (
+    BaselineRecord,
     CommandRecord,
     Confirm,
     DiscardRecord,
@@ -42,6 +43,7 @@ from gymrat.session import (
     read_records,
     session_jsonl_path,
 )
+from gymrat.session.schema import Outcome
 from tests.session.records._fixtures import blocked_keep, iteration_record
 
 CHECKS = "npm test"
@@ -185,13 +187,18 @@ def checks_fail(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     )
 
 
-def last_record_of(root: str) -> SessionLogRecord:
-    """The last non-command record in ``root``'s log, failing when the log holds none."""
+def settling_record_of(root: str) -> SessionLogRecord:
+    """The last record in ``root``'s log that settles state, failing when the log holds none.
+
+    Command traces and the baseline record a committed ``keep`` appends are
+    bookkeeping that trails the settlement, so both are skipped: a caller asking
+    for the settling record wants the keep, discard, stop, or finalize itself.
+    """
     records = read_records(session_jsonl_path(root))
     for record in reversed(records):
-        if not isinstance(record, CommandRecord):
+        if not isinstance(record, CommandRecord | BaselineRecord):
             return record
-    msg = f"expected a non-command record in {session_jsonl_path(root)}"
+    msg = f"expected a settling record in {session_jsonl_path(root)}"
     raise AssertionError(msg)
 
 
@@ -216,6 +223,29 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only .git
 
 #: The paired rerun samples a filtered bench reports when it only emits ``total_ms``.
 RERUN_SAMPLES = PairedSamples(experiment=({"total_ms": 14_120},), baseline=({"total_ms": 15_170},))
+
+#: Three experiment rounds over two metrics whose medians are neither the first
+#: nor the last round: ``total_ms`` reads 14_200 and ``alloc_bytes`` reads 2_048.
+KEPT_ROUNDS: tuple[dict[str, float], ...] = (
+    {"total_ms": 14_300, "alloc_bytes": 2_100},
+    {"total_ms": 14_100, "alloc_bytes": 2_048},
+    {"total_ms": 14_200, "alloc_bytes": 2_000},
+)
+
+#: The per-metric medians of ``KEPT_ROUNDS`` as ``status`` renders them, in the
+#: order the rounds report the metrics.
+KEPT_MEDIANS_LINE = "total_ms 14200 · alloc_bytes 2048"
+
+
+def measured_rounds(seq: int) -> IterationRecord:
+    """An improved iteration numbered ``seq`` measured over ``KEPT_ROUNDS``."""
+    return iteration(
+        seq,
+        samples=PairedSamples(
+            experiment=KEPT_ROUNDS,
+            baseline=({"total_ms": 15_200, "alloc_bytes": 2_400},),
+        ),
+    )
 
 
 def metric(**overrides: object) -> MetricVerdict:
@@ -253,6 +283,22 @@ def confirmed_regression(seq: int) -> IterationRecord:
     )
 
 
+def unimproved(seq: int, outcome: Outcome) -> IterationRecord:
+    """An iteration numbered ``seq`` that read as ``no-signal`` or ``regressed``.
+
+    The regressed shape carries an unconfirmed permutation verdict, so the gating
+    gate lets it through and the outcome gate is the only one that can refuse it.
+    """
+    no_signal = outcome == "no-signal"
+    delta_pct = 0.1 if no_signal else 9.4
+    return iteration(
+        seq,
+        metrics={"total_ms": metric(delta_pct=delta_pct, verdict=outcome)},
+        primary=IterationPrimary(kind="geomean", delta_pct=delta_pct),
+        outcome=outcome,
+    )
+
+
 def unmeasured_regression(seq: int) -> IterationRecord:
     """An iteration whose gating ``alloc_bytes`` regressed then went missing from the rerun."""
     return iteration(
@@ -275,6 +321,11 @@ def unmeasured_regression(seq: int) -> IterationRecord:
 def gating_block(seq: int) -> KeepRecord:
     """The keep a gating regression refused, numbered with the iteration it refused."""
     return blocked_keep(seq, reason="gating-regression", checks=KeepChecks(configured=True))
+
+
+def not_improved_block(seq: int) -> KeepRecord:
+    """The keep the outcome gate refused, numbered with the iteration it refused."""
+    return blocked_keep(seq, reason="not-improved", checks=KeepChecks(configured=True))
 
 
 def nothing_to_commit_block(seq: int) -> KeepRecord:

@@ -25,6 +25,7 @@ import pytest
 
 from gymrat.cli import loop_cmds
 from gymrat.cli.app import app
+from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.session import (
@@ -53,15 +54,18 @@ from tests.cli._loop_cmds import (
 from tests.loop.iterate._fixtures import resolved_config
 from tests.loop.settle._fixtures import (
     CHECKS,
+    KEPT_MEDIANS_LINE,
     checks_fail,
     checks_pass,
     edit_experiment,
     git,
     head_of,
     iteration,
-    last_record_of,
+    measured_rounds,
+    settling_record_of,
     start_with,
     status_of,
+    unimproved,
 )
 from tests.session.records._fixtures import (
     SESSION_ID,
@@ -452,7 +456,7 @@ def test_finalize_command_records_and_reports_the_branch(
     result = runner.invoke(app, ["finalize", *args])
 
     assert result.exit_code == 0
-    record = last_record_of(repo)
+    record = settling_record_of(repo)
     assert isinstance(record, FinalizeRecord)
     assert record.branch == final_branch
     assert final_branch in result.stdout
@@ -464,7 +468,7 @@ def test_finalize_command_commits_the_message_it_was_given(repo: str):
     result = runner.invoke(app, ["finalize", "-m", "squash the tuning session"])
 
     assert result.exit_code == 0
-    record = last_record_of(repo)
+    record = settling_record_of(repo)
     assert isinstance(record, FinalizeRecord)
     assert record.message == "squash the tuning session"
 
@@ -540,6 +544,21 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     base_dir = recorder.calls[0][1]
     assert base_dir is not None
     assert Path(base_dir) == Path(root)
+
+
+def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    header = _open_session_with_one_keep(repo)
+    write_config(repo)
+    monkeypatch.chdir(experiment_worktree_dir(repo))
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    text = strip_ansi(result.stdout)
+    assert f"session {header.session_id}" in text
+    assert "1 kept" in text
 
 
 # ---------------------------------------------------------------------------
@@ -632,10 +651,27 @@ def test_keep_command_when_checks_pass_does_commit_and_print_the_short_commit(
     result = runner.invoke(app, ["keep", "-m", "cache the regex"])
 
     assert result.exit_code == 0
-    record = last_record_of(repo)
+    record = settling_record_of(repo)
     assert isinstance(record, KeepRecord)
     assert record.status == "committed"
     assert head_of(experiment_worktree_dir(repo))[:7] in result.stdout
+
+
+def test_keep_command_when_committed_does_add_the_kept_baseline_to_the_status_history(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (measured_rounds(1),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+    assert runner.invoke(app, ["keep"]).exit_code == 0
+    short_sha = head_of(experiment_worktree_dir(repo))[:SHORT_SHA_LENGTH]
+
+    result = runner.invoke(app, ["status"])
+
+    history = [line for line in strip_ansi(result.stdout).splitlines() if line.strip()]
+    assert history[-2] == f"baseline {short_sha} · {KEPT_MEDIANS_LINE}"
+    assert history[-1] == "1 iteration · 1 kept · 0 discarded"
 
 
 def test_keep_command_when_committed_does_record_command_trace_with_seq_and_exit_zero(
@@ -716,7 +752,7 @@ def test_keep_command_when_nothing_to_commit_does_exit_one_recording_the_block(
     result = runner.invoke(app, ["keep"])
 
     assert result.exit_code == 1
-    record = last_record_of(repo)
+    record = settling_record_of(repo)
     assert isinstance(record, KeepRecord)
     assert record.status == "blocked"
     assert record.reason == "nothing-to-commit"
@@ -754,6 +790,67 @@ def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
     assert bool(SGR_RE.search(result.stdout)) is expect_ansi
 
 
+def test_keep_command_documents_allow_unimproved_in_its_help():
+    help_text = help_output("keep")
+
+    assert "--allow-unimproved" in help_text
+    assert "keep the edit even when the iteration was not improved" in help_text
+
+
+def test_keep_command_when_outcome_not_improved_does_exit_one_refusing_with_both_ways_out(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (unimproved(1, "no-signal"),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    record = settling_record_of(repo)
+    assert isinstance(record, KeepRecord)
+    assert (record.status, record.reason) == ("blocked", "not-improved")
+    assert "Keep refused: the iteration was no-signal, not improved." in strip_ansi(result.stdout)
+    assert "pass --allow-unimproved to keep it anyway" in strip_ansi(result.stdout)
+
+
+def test_keep_command_when_not_improved_does_record_command_trace_without_the_flag(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (unimproved(1, "regressed"),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep"])
+
+    assert result.exit_code == 1
+    cmd = last_command_record(repo)
+    assert cmd.exit_code == 1
+    assert cmd.reason == "not-improved"
+    assert "allow_unimproved" not in cmd.args
+
+
+def test_keep_command_when_allow_unimproved_does_commit_and_record_the_flag_in_args(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (unimproved(1, "no-signal"),))
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    write_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["keep", "--allow-unimproved"])
+
+    assert result.exit_code == 0
+    record = settling_record_of(repo)
+    assert isinstance(record, KeepRecord)
+    assert record.status == "committed"
+    cmd = last_command_record(repo)
+    assert cmd.args["allow_unimproved"] is True
+    assert cmd.reason is None
+
+
 def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -765,7 +862,7 @@ def test_keep_command_when_checks_fail_does_exit_one_recording_the_block(
     result = runner.invoke(app, ["keep"])
 
     assert result.exit_code == 1
-    record = last_record_of(repo)
+    record = settling_record_of(repo)
     assert isinstance(record, KeepRecord)
     assert record.status == "blocked"
     assert record.reason == "checks-failed"
@@ -827,7 +924,7 @@ def test_discard_command_when_run_does_clean_the_worktree_and_record_the_discard
 
     assert result.exit_code == 0
     assert status_of(experiment_worktree_dir(repo)) == ""
-    assert last_record_of(repo).type == "discard"
+    assert settling_record_of(repo).type == "discard"
     assert re.search(r"discard", result.stdout, re.IGNORECASE)
 
 

@@ -332,6 +332,13 @@ def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
             ),
             id="keep-blocked-nothing-to-commit",
         ),
+        pytest.param(
+            patching(
+                BLOCKED_KEEP_RECORD,
+                {"seq": 1, "reason": "not-improved", "checks": {"configured": True}},
+            ),
+            id="keep-blocked-not-improved",
+        ),
         pytest.param(DISCARD_RECORD, id="discard"),
         pytest.param(HOOK_RECORD, id="hook"),
         pytest.param(patching(HOOK_RECORD, {"stderr_bytes": 42}), id="hook-with-stderr-bytes"),
@@ -656,6 +663,21 @@ def test_parse_record_when_field_invalid_does_name_field(value: object, field: s
 def test_parse_record_when_value_has_no_recognized_type_does_raise(value: object):
     with pytest.raises(GymratError):
         parse_record(value)
+
+
+def test_parse_record_when_keep_reason_unknown_does_list_every_accepted_reason():
+    with pytest.raises(GymratError) as exc:
+        parse_record(patching(BLOCKED_KEEP_RECORD, {"reason": "bored"}))
+
+    msg = str(exc.value)
+    for reason in (
+        "checks-failed",
+        "gating-regression",
+        "nothing-measured",
+        "nothing-to-commit",
+        "not-improved",
+    ):
+        assert reason in msg
 
 
 def test_parse_record_when_type_unknown_does_name_it_and_list_known_types():

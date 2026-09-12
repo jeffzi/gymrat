@@ -17,9 +17,8 @@ when_to_use: >-
 Covers the full session lifecycle: start, iterate, settle, finalize. Violating the letter of these
 rules is violating their spirit — there are no technicalities.
 
-Every command runs from the repository root. Never `cd` into a worktree: from inside
-`.gymrat/worktrees/*` gymrat takes the worktree for the repository and every session command fails
-with "No session". Reach a worktree through `git -C <path>` or a path argument instead.
+Every command runs from the repository root. Never `cd` into a worktree. Reach a worktree through
+`git -C <path>` or a path argument instead.
 
 `bench` must be resolvable — from `gymrat.toml` or `--bench`. `gymrat.toml` is where `checks`,
 `filter`, `primary`, `runbook`, `stop`, and `hooks` live. `adapter` defaults to `metric-lines`;
@@ -45,7 +44,7 @@ gymrat measure --record .gymrat/worktrees/baseline
 ```
 
 Appends a baseline record with every metric's samples to the session log. Do this once, before
-the first edit. It is the reference every probe (below) reads against until the first `keep`.
+the first edit. Every probe (below) reads against the newest baseline record, which `keep` advances.
 
 ### 3. The iteration cycle
 
@@ -73,11 +72,13 @@ gymrat discard                                # revert the experiment worktree
 ```
 
 `keep` refuses when nothing has been measured, when the measured iteration left nothing to commit
-(no edit was made), when a gating metric regressed, or when `checks` fails. Refusals exit 1.
+(no edit was made), when a gating metric regressed, when the iteration was NO-SIGNAL or REGRESSED,
+or when `checks` fails. Refusals exit 1.
 
 After a checks failure, fix and re-run `gymrat keep`. After a gating-regression refusal, `keep`
-stays blocked — run `iterate` or `discard`. A nothing-to-commit refusal settles the iteration:
-edit the worktree, then run `gymrat iterate` — not `keep` again.
+stays blocked — run `iterate` or `discard`. After a not-improved refusal, either `discard` the
+iteration or run `gymrat keep --allow-unimproved` to keep it anyway. A nothing-to-commit refusal
+settles the iteration: edit the worktree, then run `gymrat iterate` — not `keep` again.
 
 **One iteration at a time.** Each must be settled before the next `iterate`.
 
@@ -88,8 +89,7 @@ gymrat status
 ```
 
 Text output shows the runbook path, the baseline medians, one line per iteration with its verdict
-and delta, and whether the last iteration is unsettled. It does not carry the experiment column of
-a kept `iterate` report — note that when it prints. `--format json` carries counts only: no
+and delta, and whether the last iteration is unsettled. `--format json` carries counts only: no
 runbook path, no per-iteration history. Run it after every settle and after any interrupted
 command.
 
@@ -173,9 +173,8 @@ and `discard` reverts the edit.
     harness's own filtering before the first probe. Read the primary metric only when the scoped
     command emits it under its full-bench name. With a `geomean` primary, a scoped geomean is a
     different number: read the individual metrics the edit targets instead.
-  - **Read the median against the reference.** Before the first `keep`, that is the recorded
-    baseline (`gymrat status` shows it). After a `keep`, it is the experiment column of the kept
-    `iterate` report, or re-record with `gymrat measure --record .gymrat/worktrees/baseline`.
+  - **Read the median against the reference.** That is the newest baseline record, which `keep`
+    advances (`gymrat status` shows it).
   - **A probe answers "did the number move?"**, not "is it significant?" — that is what the
     final `iterate` is for.
   - **A rejected edit** is reworked in place or reverted with `gymrat discard`. On an unmeasured
@@ -276,8 +275,8 @@ measurement and report what the probes measured.
 | "`--samples 3` is enough to see the direction"                   | Below 6 the verdict is a noise band; a NO-SIGNAL at 3 means nothing.                                                                |
 | "The cap is close, but `iterate` might just make it"             | A measurement the cap kills records nothing. Report what the probes measured.                                                       |
 | "Two NO-SIGNALs; the target is unreachable"                      | Report only after sustained NO-SIGNAL, and only when no configured stop condition is still unfired.                                 |
-| "NO-SIGNAL, but the code is cleaner, so keep it"                 | NO-SIGNAL means no measurable effect. `keep` needs IMPROVED.                                                                        |
-| "A quick `cd` into the worktree to look around"                  | The cwd sticks; every gymrat command after it reports "No session". Use `git -C`.                                                   |
+| "NO-SIGNAL, but the code is cleaner, so keep it"                 | `keep` refuses it. `--allow-unimproved` is for a stepping stone the runbook names, never for taste.                                 |
+| "A quick `cd` into the worktree to look around"                  | The cwd sticks, and a relative `measure` or `compare` target then reads the worktree. Use `git -C`.                                 |
 | "I'll rework the edit on top of the failed one"                  | Discard first; reworking without discarding conflates the changes.                                                                  |
 | "I'll ask before touching an unmeasured edit"                    | In supervised mode, nobody answers. Measure the edit with `iterate` or revert it with `gymrat discard`; never leave it for a human. |
 

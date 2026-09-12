@@ -341,9 +341,14 @@ class SettleKept:
     Attributes:
         commit: The commit the keep made, or ``None`` while it is not yet known —
             a keep can be recorded before its squash commit exists.
+        outcome: The outcome of the iteration that was kept, or ``None`` when the
+            keep settled no iteration the caller could read an outcome from. An
+            outcome other than ``"improved"`` is named in the rendered line, so a
+            keep that overrode the outcome gate is visible in the history.
     """
 
     commit: str | None = None
+    outcome: LoopOutcome | None = None
     kind: Literal["kept"] = "kept"
 
 
@@ -466,6 +471,9 @@ def format_status_settle(settle: SettleState) -> str:
     A settling record that settled no iteration — a keep refused for want of a
     measurement — stands on a line of its own, and this is all that line says.
 
+    A keep of an iteration that was not improved names the outcome it overrode, so
+    a reader can tell it apart from a keep the loop's own measurement earned.
+
     Args:
         settle: The settling record to describe.
 
@@ -474,7 +482,10 @@ def format_status_settle(settle: SettleState) -> str:
     """
     match settle:
         case SettleKept():
-            return "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
+            kept = "kept" if settle.commit is None else f"kept {settle.commit[:SHORT_SHA_LENGTH]}"
+            if settle.outcome is not None and settle.outcome != "improved":
+                return f"{kept} ({settle.outcome})"
+            return kept
         case SettleDiscarded():
             return "discarded"
         case SettleUnsettled():

@@ -40,6 +40,7 @@ KeepReason = Literal[
     "gating-regression",
     "nothing-measured",
     "nothing-to-commit",
+    "not-improved",
 ]
 
 #: Which side of an iteration a hook ran on.
@@ -60,6 +61,7 @@ HookStage = Literal["before", "after"]
 #: - ``gating-regression`` — keep (gating regression blocked the keep)
 #: - ``nothing-to-commit`` — keep (nothing to commit)
 #: - ``checks-failed``     — keep (configured checks failed)
+#: - ``not-improved``      — keep (the iteration was not improved)
 #: - ``nothing-to-discard`` — discard (nothing to discard)
 #: - ``stale-session``     — discard / keep (the session is stale)
 #: - ``nothing-kept``      — finalize (no kept iterations)
@@ -81,6 +83,7 @@ CommandReason = Literal[
     "gating-regression",
     "nothing-to-commit",
     "checks-failed",
+    "not-improved",
     "nothing-to-discard",
     "stale-session",
     "nothing-kept",

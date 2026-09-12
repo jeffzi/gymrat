@@ -22,6 +22,7 @@ from rich.markup import escape
 
 from gymrat.adapters.types import AdapterError
 from gymrat.cli.lock import (
+    TOOL_FAILURE_EXIT_CODE,
     CommandTrace,
     config_trace_args,
     with_repo_lock,
@@ -62,12 +63,6 @@ __all__ = ["CommandTrace", "config_trace_args", "with_repo_lock"]
 # ---------------------------------------------------------------------------
 
 BUGS_URL = "https://github.com/jeffzi/gymrat/issues"
-
-# The exit code of a gate trip: a run that did what it was asked and said no.
-GATE_EXIT_CODE = 1
-
-# The exit code of a tool failure, the convention every unhandled error exits on.
-TOOL_FAILURE_EXIT_CODE = 2
 
 _POSITIVE_INTEGER_RE = re.compile(r"\d+")
 _POSITIVE_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
@@ -515,6 +510,13 @@ BranchOption = Annotated[
     typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
 ]
 ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
+AllowUnimprovedOption = Annotated[
+    bool,
+    typer.Option(
+        "--allow-unimproved",
+        help="keep the edit even when the iteration was not improved",
+    ),
+]
 VerboseOption = Annotated[
     bool, typer.Option("--verbose", "-v", help="keep the progress tree visible after the run")
 ]

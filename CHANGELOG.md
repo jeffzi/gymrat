@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Append a baseline record from the kept samples when `keep` commits, so the recorded reference
+  advances with the session.
+- Refuse `keep` on a NO-SIGNAL or REGRESSED iteration unless `--allow-unimproved` is passed.
+
+### Fixed
+
+- Find the session when a command runs from inside a session worktree.
+
 ## [0.17.0] - 2026-09-11
 
 ### Added

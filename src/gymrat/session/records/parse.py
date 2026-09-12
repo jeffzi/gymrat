@@ -99,13 +99,16 @@ _METHOD = '"permutation", "band" or "exact"'
 _KIND = '"geomean" or "metric"'
 _OUTCOME = '"improved", "regressed" or "no-signal"'
 _STATUS = '"committed" or "blocked"'
-_REASON = '"checks-failed", "gating-regression", "nothing-measured" or "nothing-to-commit"'
+_REASON = (
+    '"checks-failed", "gating-regression", "nothing-measured", "nothing-to-commit" '
+    'or "not-improved"'
+)
 _STAGE = '"before" or "after"'
 _EXIT_CODE = "0, 1 or 2"
 _COMMAND_REASON = (
     'one of "stop-condition", "budget-exceeded", "unsettled", "gating-block", '
     '"already-stopped", "no-session", "finalized", "nothing-measured", '
-    '"gating-regression", "nothing-to-commit", "checks-failed", '
+    '"gating-regression", "nothing-to-commit", "checks-failed", "not-improved", '
     '"nothing-to-discard", "stale-session", "nothing-kept", '
     '"dirty-worktree", "unkept-commits", "bad-branch", "branch-exists", '
     '"fail-on" or "error"'

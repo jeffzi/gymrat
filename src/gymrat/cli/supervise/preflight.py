@@ -32,7 +32,6 @@ from gymrat.plural import pluralize
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import TargetSpec
 from gymrat.session import (
-    BaselineRecord,
     SessionLogRecord,
     append_record,
     baseline_worktree_dir,
@@ -47,7 +46,7 @@ from gymrat.session.budget import (
 )
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import experiment_worktree_dir, lockfile_path
-from gymrat.session.store import fold_session, last_kept_position
+from gymrat.session.store import fold_session, last_kept_position, latest_baseline
 from gymrat.session.workspace import changed_file_count
 
 if TYPE_CHECKING:
@@ -59,10 +58,6 @@ _BASELINE_LABEL = ".gymrat/worktrees/baseline"
 
 def _read_records(root: str) -> list[SessionLogRecord]:
     return read_records(session_jsonl_path(root))
-
-
-def _has_baseline(records: list[SessionLogRecord]) -> bool:
-    return any(isinstance(r, BaselineRecord) for r in records)
 
 
 def run_preflight(
@@ -180,7 +175,7 @@ def _baseline_step(
 
     The caller holds the repository lock for the full session-through-feasibility span.
     """
-    if _has_baseline(_read_records(root)):
+    if latest_baseline(_read_records(root)) is not None:
         return
 
     worktree_dir = baseline_worktree_dir(root)

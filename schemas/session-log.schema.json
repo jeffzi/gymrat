@@ -127,6 +127,7 @@
             "gating-regression",
             "nothing-to-commit",
             "checks-failed",
+            "not-improved",
             "nothing-to-discard",
             "stale-session",
             "nothing-kept",
@@ -552,7 +553,8 @@
             "checks-failed",
             "gating-regression",
             "nothing-measured",
-            "nothing-to-commit"
+            "nothing-to-commit",
+            "not-improved"
           ],
           "title": "Reason",
           "type": "string"

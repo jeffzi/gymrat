@@ -324,6 +324,61 @@ def test_status_session_when_a_gating_block_was_superseded_by_a_discard_does_ren
     ]
 
 
+@pytest.mark.parametrize(
+    ("outcome", "delta_pct", "line"),
+    [
+        pytest.param(
+            "no-signal",
+            0.1,
+            "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
+            id="no-signal",
+        ),
+        pytest.param(
+            "regressed",
+            9.4,
+            "iteration 1 · ✗ +9.4% · kept b1b2b3b (regressed)",
+            id="regressed",
+        ),
+    ],
+)
+def test_status_session_when_an_unimproved_iteration_was_kept_does_name_the_outcome(
+    tmp_path: Path, outcome: Outcome, delta_pct: float, line: str
+):
+    root = str(tmp_path)
+    write_session_log(
+        root,
+        _session(root),
+        (_iteration(1, delta_pct, outcome), committed_keep(1, commit=_KEEP_COMMIT)),
+    )
+
+    report = status_session(root, _config())
+
+    assert _body_lines(report) == [line, "1 iteration · 1 kept · 0 discarded"]
+
+
+def test_status_session_when_a_not_improved_keep_was_later_resettled_does_render_both(
+    tmp_path: Path,
+):
+    root = str(tmp_path)
+    write_session_log(
+        root,
+        _session(root),
+        (
+            _iteration(1, 0.1, "no-signal"),
+            blocked_keep(1, reason="not-improved", checks=KeepChecks(configured=True)),
+            committed_keep(1, commit=_KEEP_COMMIT),
+        ),
+    )
+
+    report = status_session(root, _config())
+
+    assert _body_lines(report) == [
+        "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
+        "keep-blocked (not-improved)",
+        "1 iteration · 1 kept · 0 discarded",
+    ]
+
+
 def test_status_session_when_a_checks_failed_keep_was_later_resettled_does_render_both(
     tmp_path: Path,
 ):

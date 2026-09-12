@@ -214,6 +214,7 @@ def test_command_reason_when_imported_does_accept_all_defined_values():
         "gating-regression",
         "nothing-to-commit",
         "checks-failed",
+        "not-improved",
         "nothing-to-discard",
         "stale-session",
         "nothing-kept",

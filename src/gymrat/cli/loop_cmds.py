@@ -19,9 +19,10 @@ if TYPE_CHECKING:
 import typer
 
 from gymrat.cli.iterate import IterateRenderer
+from gymrat.cli.lock import GATE_EXIT_CODE
 from gymrat.cli.shared import (
-    GATE_EXIT_CODE,
     AdapterOption,
+    AllowUnimprovedOption,
     BenchOption,
     BranchOption,
     ColorOption,
@@ -270,6 +271,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
     message: MessageOption = None,
+    allow_unimproved: AllowUnimprovedOption = False,
     format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
     debug: DebugOption = False,
 ) -> None:
@@ -290,6 +292,8 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
     keep_args: dict[str, object] = config_trace_args(flags)
     if message is not None:
         keep_args["message"] = message
+    if allow_unimproved:
+        keep_args["allow_unimproved"] = True
 
     async def run() -> None:
         async def body(trace: CommandTrace) -> KeepResult:
@@ -297,7 +301,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
             keep_result = await keep_session(
                 root,
                 resolve_benchless_config(flags, root),
-                KeepOptions(message=message),
+                KeepOptions(message=message, allow_unimproved=allow_unimproved),
                 color=resolved_color,
             )
             trace.seq = keep_result.record.seq

@@ -113,13 +113,17 @@ experiment worktree:
 gymrat start main          # pin the baseline and open the session
 # ...edit code in the experiment worktree...
 gymrat iterate             # measure the edit against the baseline
-gymrat keep -m "vectorize decode loop"   # commit it if checks pass
+gymrat keep -m "vectorize decode loop"   # commit it if it improved and checks pass
+gymrat keep --allow-unimproved           # ...or commit an unimproved iteration anyway
 gymrat discard             # ...or revert the worktree to its last commit
 gymrat status              # session history so far
 gymrat sync                # copy uncommitted main-tree edits into the worktree
 gymrat stop -m "done"      # record a closing report in the session log
 gymrat finalize            # squash kept iterations into one commit and close
 ```
+
+A committed `keep` advances the recorded baseline to the kept iteration's samples, so the next
+iteration measures against what was just kept.
 
 Every command run inside a session appends a `command` record to `.gymrat/session.jsonl` with its
 arguments, exit code, refusal reason, and duration; `status` takes the repository lock briefly to

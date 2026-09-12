@@ -162,15 +162,17 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
 
     assert exit_codes == [0, 0, 0, 0, 0, 0]
 
-    # The log holds the session, the baseline, both iterations, the keep, and
-    # the discard in exact order (command records interleaved by the seam are
-    # filtered out — they are verified by their own tests).
+    # The log holds the session, the starting baseline, both iterations, the keep
+    # with the baseline it appends, and the discard in exact order (command
+    # records interleaved by the seam are filtered out — they are verified by
+    # their own tests).
     domain_types = [record.type for record in records if record.type != "command"]
     assert domain_types == [
         "session",
         "baseline",
         "iteration",
         "keep",
+        "baseline",
         "iteration",
         "discard",
     ]
