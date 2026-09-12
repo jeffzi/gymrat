@@ -31,6 +31,18 @@ Config keys (all optional unless noted):
     Milliseconds to wait before each emitted line.
 ``exit_code``
     Process exit status (default ``0``).
+``exit_immediately``
+    In ``script`` mode, hard-exit right after the outcome line, skipping
+    interpreter shutdown so the driver sees the outcome while the child is
+    already exiting.
+``spawn_grandchild``
+    In ``script`` mode, spawn a grandchild sleeper detached from the protocol
+    pipes before emitting anything, and add its PID to the report as
+    ``grandchild`` so a test can check teardown killed the process group.
+``linger_after_outcome``
+    In ``script`` mode, keep running after the outcome line instead of exiting,
+    never reading stdin so its EOF goes unnoticed, and add the process PID to
+    the report as ``pid`` so a test can check teardown had to kill it.
 """
 
 import json
@@ -42,6 +54,7 @@ from pathlib import Path
 from typing import cast
 
 _GRANDCHILD_SLEEP_SECONDS = 30
+_LINGER_SECONDS = 30
 
 
 def _writeln(text: str) -> None:
@@ -96,13 +109,34 @@ def _wait_for_command(command_type: str) -> dict[str, object] | None:
             return parsed
 
 
+def _spawn_grandchild(stdio: int | None) -> int:
+    grandchild = subprocess.Popen(  # noqa: S603 - fixed argv spawning a local sleeper for the tree-kill tests
+        [sys.executable, "-c", f"import time; time.sleep({_GRANDCHILD_SLEEP_SECONDS})"],
+        stdin=stdio,
+        stdout=stdio,
+        stderr=stdio,
+    )
+    return grandchild.pid
+
+
 def _run_script(config: dict[str, object], start_line: str) -> int:
-    _write_report(config, _base_report(start_line))
+    report = _base_report(start_line)
+    if config.get("spawn_grandchild"):
+        # Detached from the pipes so the driver still sees stdout EOF when the
+        # leader exits, leaving the grandchild as the group's only live member.
+        report["grandchild"] = _spawn_grandchild(subprocess.DEVNULL)
+    if config.get("linger_after_outcome"):
+        report["pid"] = os.getpid()
+    _write_report(config, report)
     _write_stderr(config)
     _emit_lines(config)
     outcome = config.get("outcome")
     if outcome is not None:
         _writeln(json.dumps(outcome))
+    if config.get("exit_immediately"):
+        os._exit(_exit_code(config))
+    if config.get("linger_after_outcome"):
+        time.sleep(_LINGER_SECONDS)
     return _exit_code(config)
 
 
@@ -145,10 +179,8 @@ def _run_await_message(config: dict[str, object], start_line: str) -> int:
 
 def _run_sleep_forever(config: dict[str, object]) -> int:
     _emit_lines(config)
-    grandchild = subprocess.Popen(  # noqa: S603 - fixed argv spawning a local sleeper for the tree-kill test
-        [sys.executable, "-c", f"import time; time.sleep({_GRANDCHILD_SLEEP_SECONDS})"]
-    )
-    _write_report(config, {"pid": os.getpid(), "grandchild": grandchild.pid})
+    grandchild = _spawn_grandchild(None)
+    _write_report(config, {"pid": os.getpid(), "grandchild": grandchild})
     time.sleep(_GRANDCHILD_SLEEP_SECONDS)
     return 0
 

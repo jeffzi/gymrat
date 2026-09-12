@@ -12,8 +12,12 @@ on process-group tree-kill.
 """
 
 import asyncio
+import contextlib
 import json
+import os
+import signal
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +45,17 @@ pytestmark = [
 
 _DOUBLE = str(Path(__file__).parent / "_stdio_double.py")
 
+# Sessions run back to back to hit the window where the child has written its
+# outcome but is still exiting; a single run slips past it most of the time.
+_RACE_SESSIONS = 20
+
+_KILLPG_FAILED = "killpg failed"
+
+# Upper bound on outcome-to-settle time for a child still running after its
+# outcome: teardown kills it at once, so the bound only leaves margin for a
+# loaded machine.
+_PROMPT_TEARDOWN_S = 0.4
+
 
 def double_argv(config: dict[str, Any]) -> list[str]:
     """Return argv in the positional order the double's ``sys.argv`` parser expects."""
@@ -65,6 +80,22 @@ async def wait_for_event(
 def resolved(path: str | Path) -> Path:
     """Resolve symlinks so a path compares equal to a spawned child's ``cwd``."""
     return Path(path).resolve()
+
+
+@pytest.fixture
+def stray_process_ids() -> Iterator[list[int]]:
+    """Collect PIDs a test spawned and SIGKILL any still alive on teardown."""
+    process_ids: list[int] = []
+    yield process_ids
+
+    for pid in process_ids:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def killpg_warnings(recorded: pytest.WarningsRecorder) -> list[str]:
+    """Return the messages of recorded warnings about a failed group kill."""
+    return [str(w.message) for w in recorded if _KILLPG_FAILED in str(w.message)]
 
 
 async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> dict[str, Any]:
@@ -400,6 +431,110 @@ async def test_stdio_driver_when_abort_fires_does_settle_interrupted(
     assert outcome == SessionOutcome(reason="interrupted", cost_usd=0.4)
     await wait_until_dead(int(processes["pid"]))
     await wait_until_dead(int(processes["grandchild"]))
+
+
+# ---------------------------------------------------------------------------
+# Teardown of the child's process group
+# ---------------------------------------------------------------------------
+
+
+async def test_stdio_driver_when_child_exits_after_outcome_does_not_warn_about_killpg(
+    tmp_path: Path,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    config = {
+        "mode": "script",
+        "exit_immediately": True,
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
+    }
+    driver = create_stdio_driver(double_argv(config))
+
+    # Repeating the session is the scenario: each run is one more chance for
+    # teardown to land while the child is still exiting after its outcome line.
+    for _ in range(_RACE_SESSIONS):
+        await asyncio.wait_for(
+            driver.start(make_prompt(cwd=str(tmp_path)), collecting_observer().observer).outcome,
+            _TEST_TIMEOUT_S,
+        )
+
+    assert killpg_warnings(recwarn) == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        pytest.param(
+            {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
+            id="leader-exits-after-outcome",
+        ),
+        pytest.param(None, id="leader-exits-without-outcome"),
+    ],
+)
+async def test_stdio_driver_when_grandchild_outlives_leader_does_kill_grandchild(
+    tmp_path: Path,
+    stray_process_ids: list[int],
+    outcome: dict[str, Any] | None,
+) -> None:
+    report = tmp_path / "report.json"
+    config = {
+        "mode": "script",
+        "report_path": str(report),
+        "spawn_grandchild": True,
+        "outcome": outcome,
+    }
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+    grandchild = int((await read_report(report))["grandchild"])
+    stray_process_ids.append(grandchild)
+
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+    await wait_until_dead(grandchild)
+
+
+async def test_stdio_driver_when_child_lingers_after_outcome_does_kill_it_promptly(
+    tmp_path: Path,
+    stray_process_ids: list[int],
+) -> None:
+    report = tmp_path / "report.json"
+    config = {
+        "mode": "script",
+        "report_path": str(report),
+        "linger_after_outcome": True,
+        "lines": [
+            {
+                "json": {
+                    "type": "usage_update",
+                    "at": 1_000_000_000,
+                    "cost_usd": 0.1,
+                    "settled": False,
+                }
+            }
+        ],
+        "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.1},
+    }
+    loop = asyncio.get_running_loop()
+    # The usage line is written right before the outcome line, so its arrival
+    # time stands in for the moment the driver receives the outcome.
+    usage_seen_at: list[float] = []
+
+    def observer(event: SessionEvent) -> None:
+        if isinstance(event, UsageUpdateEvent):
+            usage_seen_at.append(loop.time())
+
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), observer
+    )
+    child = int((await read_report(report))["pid"])
+    stray_process_ids.append(child)
+
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    settled_at = loop.time()
+
+    assert outcome.reason == "completed"
+    assert settled_at - usage_seen_at[0] < _PROMPT_TEARDOWN_S
+    await wait_until_dead(child)
 
 
 # ---------------------------------------------------------------------------

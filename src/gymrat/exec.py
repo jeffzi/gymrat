@@ -11,7 +11,7 @@ background descendant is still captured. A run is bounded three ways:
   :class:`ExecResult`.
 
 Timeout and abort snapshot whatever has been captured so far and kill the whole
-process group, so a grandchild the shell left running is reaped too. Every
+process group, so a grandchild the shell left running is killed too. Every
 returned value is a frozen dataclass, so a caller cannot mutate one run's result
 into a landmine for the next.
 """
@@ -35,13 +35,16 @@ OUTPUT_CAP = 64 * 1024 * 1024
 READ_CHUNK = 65536
 """Bytes requested per pipe read."""
 
+_CANCEL_REAP_TIMEOUT_S = 2.0
+"""Seconds an interrupted run waits for its killed child to be reaped before giving up."""
+
 _live_process_groups: set[int] = set()
 """Process-group leader PIDs of bench children currently alive under :func:`exec`.
 
 A PID is present only for the child's lifetime: it is added once the spawn
 succeeds and removed on every settle path (normal, abort, timeout, reader
-error). :func:`kill_live_process_groups` reads it to tear down surviving groups
-on the signal path before a worktree sweep runs.
+error, cancellation). :func:`kill_live_process_groups` reads it to tear down
+surviving groups on the signal path before a worktree sweep runs.
 """
 
 
@@ -57,8 +60,9 @@ def kill_live_process_groups() -> None:
     Iterates a snapshot so a run settling on another task can deregister its PID
     mid-sweep without disturbing the loop. :func:`kill_process_group` already
     tolerates an already-dead group and warns on other failures; the extra guard
-    keeps an unexpected ``OSError`` from escaping into the signal-path cleanup
-    that calls this.
+    keeps any other unexpected exception (for example a warning escalated to an
+    error by a warnings filter) from escaping into the signal-path cleanup that
+    calls this.
     """
     for pid in list(_live_process_groups):
         with contextlib.suppress(Exception):
@@ -172,31 +176,93 @@ def _exit_code(returncode: int | None) -> int:
     return returncode
 
 
-def _terminate(proc: asyncio.subprocess.Process) -> None:
+def _terminate(proc: asyncio.subprocess.Process) -> bool:
     """Tear down a run that will not settle on its own.
 
     Killing the process group stops the child and any descendant it left
     running; dropping the stdio pipes then releases the reader tasks still
     waiting on EOF, so the run can be snapshotted without awaiting a natural
     end of stream.
+
+    Args:
+        proc: The child whose process group to kill.
+
+    Returns:
+        Whether the group kill was refused and deferred, as
+        :func:`kill_process_group` reports it.
     """
-    kill_process_group(proc.pid)
+    refused = kill_process_group(proc.pid, defer_refusal=True)
     _close_pipes(proc)
+    return refused
+
+
+async def _terminate_and_reap(
+    proc: asyncio.subprocess.Process,
+    *,
+    reap_timeout: float | None = None,
+) -> None:
+    """Tear down a run that will not settle on its own, then reap the child.
+
+    A group that refused the kill because its members were all still exiting is
+    signaled once more after the reap, which stays silent when the group is gone
+    and warns only when the refusal is genuine. When the reap does not land
+    within ``reap_timeout``, the group is signaled again anyway, so a refusal
+    that outlasts the wait still warns.
+
+    Args:
+        proc: The child whose process group to kill and reap.
+        reap_timeout: Seconds to wait for the reap, or ``None`` to wait until it
+            lands.
+    """
+    refused = _terminate(proc)
+    if reap_timeout is None:
+        await proc.wait()
+    else:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), reap_timeout)
+    if refused:
+        kill_process_group(proc.pid)
+
+
+async def _terminate_reap_and_drain(
+    proc: asyncio.subprocess.Process,
+    stdout_task: asyncio.Task[None],
+    stderr_task: asyncio.Task[None],
+) -> None:
+    """Terminate and reap the child, then await the readers it just fed EOF.
+
+    Both settle paths that abandon the normal wait -- a reader error and a
+    timeout/abort -- need the same sequence: kill and reap first, then let the
+    readers, unblocked by the pipe close, finish before the outcome is built.
+    """
+    await _terminate_and_reap(proc)
+    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
 
 def _close_pipes(proc: asyncio.subprocess.Process) -> None:
     """Close the child's stdio pipes so a surviving descendant cannot grow buffers.
 
-    Closing the transport drops the read ends, and feeding EOF to each reader
-    settles them deterministically for a snapshot taken without waiting for the
-    natural end of stream.
+    Closing the pipe transports drops the read ends, and feeding EOF to each
+    reader settles them deterministically for a snapshot taken without waiting
+    for the natural end of stream.
+
+    Only the pipe transports are closed, never the subprocess transport itself:
+    closing that before the exit is recorded polls the child, reaping it behind
+    asyncio's child watcher, which then logs an unknown child and reports
+    returncode 255. asyncio closes the subprocess transport once the exit lands.
+
+    Args:
+        proc: The child whose stdio pipes to close.
     """
     # asyncio.subprocess.Process exposes no public accessor for its pipe
     # transports; reaching the undocumented transport via getattr is the only way
     # to drop the read ends before the child is reaped.
     transport = getattr(proc, "_transport", None)
     if transport is not None:
-        transport.close()
+        for fd in (0, 1, 2):
+            pipe = transport.get_pipe_transport(fd)
+            if pipe is not None:
+                pipe.close()
     for reader in (proc.stdout, proc.stderr):
         if reader is not None and not reader.at_eof():
             reader.feed_eof()
@@ -324,16 +390,12 @@ async def _settle(
         if normal_task in done:
             reader_error = normal_task.exception()
             if reader_error is not None:
-                _terminate(proc)
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-                await proc.wait()
+                await _terminate_reap_and_drain(proc, stdout_task, stderr_task)
                 stderr_buf.append_failure(str(reader_error))
                 return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
             return _build_result(stdout_buf, stderr_buf, _exit_code(proc.returncode))
 
-        _terminate(proc)
-        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-        await proc.wait()
+        await _terminate_reap_and_drain(proc, stdout_task, stderr_task)
         if abort_task is not None and abort_task in done:
             return _build_result(stdout_buf, stderr_buf, FAILURE_EXIT_CODE)
         if options.timeout_ms is not None:
@@ -380,6 +442,8 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
     try:
         return await _settle(proc, options, OutputBuffer(), OutputBuffer())
     finally:
-        if proc.returncode is None:
-            _terminate(proc)
-        _live_process_groups.discard(proc.pid)
+        try:
+            if proc.returncode is None:
+                await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
+        finally:
+            _live_process_groups.discard(proc.pid)
