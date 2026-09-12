@@ -33,19 +33,22 @@ from gymrat.cli.supervise.state import (
     Waiting,
 )
 from gymrat.session import IterationPrimary
-from gymrat.session.store import SessionState
 from gymrat.supervisor.events import (
-    CapEvent,
     CompactionEvent,
-    FollowUpEvent,
-    LaunchEvent,
-    ModelPhaseEvent,
     TextDeltaEvent,
-    ThinkingUpdateEvent,
-    ToolEndEvent,
-    ToolStartEvent,
-    TurnEndEvent,
-    UsageUpdateEvent,
+)
+from tests.cli.supervise._fixtures import (
+    _NS_PER_MS,
+    cap_event,
+    empty_session_state,
+    follow_up_event,
+    launch_event,
+    model_phase_event,
+    thinking_event,
+    tool_end_event,
+    tool_start_event,
+    turn_end_event,
+    usage_event,
 )
 from tests.event_docs._imports import modules_imported_by
 from tests.session.records._fixtures import iteration_record
@@ -53,10 +56,8 @@ from tests.session.records._fixtures import iteration_record
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.supervisor.events import CapAction, CapType, SessionEvent
-
-# Converts a test's millisecond vocabulary to the ``at`` field's nanosecond unit.
-_NS_PER_MS = 1_000_000
+    from gymrat.session.store import SessionState
+    from gymrat.supervisor.events import SessionEvent
 
 # Milliseconds the shared tool-start builders stamp, so the matching end
 # builder can derive a duration against it.
@@ -85,28 +86,10 @@ def make_state(**changes: Any) -> ReporterState:
     return replace(base, **changes)
 
 
-def empty_session() -> SessionState:
-    """A session that has opened but measured nothing yet."""
-    return SessionState(
-        session=None,
-        iteration_count=0,
-        last_iteration=None,
-        unsettled=False,
-        keep_count=0,
-        discard_count=0,
-        target_reached_and_kept=False,
-        last_seq=0,
-        last_kept_commit=None,
-        ends_on_gating_block=False,
-        ends_on_stop=False,
-        finalized=None,
-    )
-
-
 def loop_session() -> SessionState:
     """A session with two iterations, one kept and one discarded, last regressed."""
     return replace(
-        empty_session(),
+        empty_session_state(),
         iteration_count=2,
         keep_count=1,
         discard_count=1,
@@ -123,130 +106,8 @@ def read_result(
 ) -> ReadSessionResult:
     """A session read result wrapping *state*, defaulting to the empty session."""
     return ReadSessionResult(
-        state=state if state is not None else empty_session(), has_baseline=has_baseline
+        state=state if state is not None else empty_session_state(), has_baseline=has_baseline
     )
-
-
-def launch_event(
-    at_ms: int = 1000, *, max_minutes: float = 60, max_usd: float | None = None
-) -> LaunchEvent:
-    """A launch event stamped at *at_ms* milliseconds."""
-    return LaunchEvent(
-        at=at_ms * _NS_PER_MS,
-        schema_version=1,
-        head_sha="abc123",
-        dirty=False,
-        max_minutes=max_minutes,
-        max_usd=max_usd,
-        model=None,
-        runbook_path="/path/to/runbook.md",
-        kickoff_summary="test kickoff",
-        session_id="20260813-125044-34ec",
-    )
-
-
-def tool_start_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = _TOOL_START_MS,
-    *,
-    input_summary: str = "...",
-    parent_tool_use_id: str | None = None,
-) -> ToolStartEvent:
-    """A tool-start event for *tool_name* stamped at *at_ms* milliseconds."""
-    return ToolStartEvent(
-        at=at_ms * _NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        input={},
-        input_summary=input_summary,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def tool_end_event(
-    tool_name: str,
-    tool_use_id: str,
-    at_ms: int = 3000,
-    *,
-    result: str = "ok",
-    started_at_ms: int = _TOOL_START_MS,
-    parent_tool_use_id: str | None = None,
-) -> ToolEndEvent:
-    """A tool-end event whose duration is measured from *started_at_ms*."""
-    return ToolEndEvent(
-        at=at_ms * _NS_PER_MS,
-        tool_use_id=tool_use_id,
-        tool_name=tool_name,
-        duration_ms=at_ms - started_at_ms,
-        result=result,
-        result_summary=result,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
-    """A usage update carrying the given cumulative cost."""
-    return UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd)
-
-
-def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
-    """A cap event signaling that *cap* has fired."""
-    return CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action)
-
-
-def thinking_event(
-    at_ms: int, *, estimated_tokens: int = 100, parent_tool_use_id: str | None = None
-) -> ThinkingUpdateEvent:
-    """A thinking update carrying the given cumulative token estimate."""
-    return ThinkingUpdateEvent(
-        at=at_ms * _NS_PER_MS,
-        estimated_tokens=estimated_tokens,
-        delta=10,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def model_phase_event(
-    at_ms: int,
-    phase: str,
-    *,
-    tool_name: str | None = None,
-    parent_tool_use_id: str | None = None,
-) -> ModelPhaseEvent:
-    """A model-phase event; *parent_tool_use_id* scopes it to a nested tool."""
-    return ModelPhaseEvent(
-        at=at_ms * _NS_PER_MS,
-        phase=phase,  # type: ignore[arg-type]
-        tool_name=tool_name,
-        parent_tool_use_id=parent_tool_use_id,
-    )
-
-
-def turn_end_event(
-    at_ms: int = 2000,
-    *,
-    text: str = "Turn summary.",
-    origin: Literal["agent", "injected"] = "agent",
-) -> TurnEndEvent:
-    """A turn-end event attributed to *origin*."""
-    return TurnEndEvent(
-        at=at_ms * _NS_PER_MS,
-        text=text,
-        cost_usd=0.01,
-        origin=origin,
-        budget_exhausted=False,
-    )
-
-
-def follow_up_event(
-    at_ms: int = 3000,
-    *,
-    action: Literal["replied", "waiting", "ended"] = "replied",
-    reason: str | None = None,
-) -> FollowUpEvent:
-    """A follow-up event carrying the supervisor's decision for the turn."""
-    return FollowUpEvent(at=at_ms * _NS_PER_MS, action=action, reason=reason, text=None)
 
 
 def capped_state() -> ReporterState:
@@ -289,14 +150,18 @@ def emit(
 # ---------------------------------------------------------------------------
 
 
-def test_advance_when_applied_twice_does_return_equal_states_and_leave_the_input_alone():
+def test_advance_when_applied_twice_to_same_input_does_return_equal_states():
     before = make_state()
     event = tool_start_event("Bash", "bash-1", 2000)
 
-    first = advance(before, event, None)
-    second = advance(before, event, None)
+    assert advance(before, event, None) == advance(before, event, None)
 
-    assert first == second
+
+def test_advance_when_applied_does_leave_input_state_unchanged():
+    before = make_state()
+
+    advance(before, tool_start_event("Bash", "bash-1", 2000), None)
+
     assert before == make_state()
 
 

@@ -59,6 +59,7 @@ __all__ = [
     "PlainCapture",
     "ReporterKit",
     "baseline_record",
+    "cap_event",
     "empty_session_state",
     "finalize_record",
     "fire_cap",
@@ -73,17 +74,25 @@ __all__ = [
     "fire_tool_start",
     "fire_turn_end",
     "fire_usage_update",
+    "follow_up_event",
+    "launch_event",
     "make_iteration",
     "make_plain_reporter",
     "make_read_session",
     "make_reporter",
     "make_supervision_result",
+    "model_phase_event",
     "render_frame",
     "seed_session_with_baseline",
     "seed_session_with_iteration",
     "session_state",
     "session_state_three_iterations",
     "start_open_session",
+    "thinking_event",
+    "tool_end_event",
+    "tool_start_event",
+    "turn_end_event",
+    "usage_event",
 ]
 
 
@@ -283,6 +292,27 @@ _DEFAULT_TOOL_START_TS = 2000
 _NS_PER_MS = 1_000_000
 
 
+def launch_event(
+    at_ms: int = 1000,
+    *,
+    max_minutes: float = 60,
+    max_usd: float | None = None,
+) -> LaunchEvent:
+    """A ``LaunchEvent`` stamped at *at_ms* milliseconds, with sensible cap and model defaults."""
+    return LaunchEvent(
+        at=at_ms * _NS_PER_MS,
+        schema_version=1,
+        head_sha="abc123",
+        dirty=False,
+        max_minutes=max_minutes,
+        max_usd=max_usd,
+        model=None,
+        runbook_path="/path/to/runbook.md",
+        kickoff_summary="test kickoff",
+        session_id="20260813-125044-34ec",
+    )
+
+
 def fire_launch(
     observer: SessionObserver,
     at_ms: int = 1000,
@@ -296,19 +326,25 @@ def fire_launch(
     ``at=at_ms * _NS_PER_MS`` (nanoseconds) so the dashboard's ingestion
     boundary (``event.at // 1_000_000``) recovers the same millisecond value.
     """
-    observer(
-        LaunchEvent(
-            at=at_ms * _NS_PER_MS,
-            schema_version=1,
-            head_sha="abc123",
-            dirty=False,
-            max_minutes=max_minutes,
-            max_usd=max_usd,
-            model=None,
-            runbook_path="/path/to/runbook.md",
-            kickoff_summary="test kickoff",
-            session_id="20260813-125044-34ec",
-        )
+    observer(launch_event(at_ms, max_minutes=max_minutes, max_usd=max_usd))
+
+
+def tool_start_event(
+    tool_name: str,
+    tool_use_id: str,
+    at_ms: int = _DEFAULT_TOOL_START_TS,
+    *,
+    input_summary: str = "...",
+    parent_tool_use_id: str | None = None,
+) -> ToolStartEvent:
+    """A ``ToolStartEvent`` for *tool_name* stamped at *at_ms* milliseconds."""
+    return ToolStartEvent(
+        at=at_ms * _NS_PER_MS,
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        input={},
+        input_summary=input_summary,
+        parent_tool_use_id=parent_tool_use_id,
     )
 
 
@@ -323,14 +359,35 @@ def fire_tool_start(
 ) -> None:
     """Publish a ``ToolStartEvent`` at the default start timestamp used by ``fire_tool_end``."""
     observer(
-        ToolStartEvent(
-            at=at_ms * _NS_PER_MS,
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            input={},
+        tool_start_event(
+            tool_name,
+            tool_use_id,
+            at_ms,
             input_summary=input_summary,
             parent_tool_use_id=parent_tool_use_id,
         )
+    )
+
+
+def tool_end_event(
+    tool_name: str,
+    tool_use_id: str,
+    at_ms: int = 3000,
+    *,
+    result: str = "ok",
+    result_summary: str = "ok",
+    started_at_ms: int = _DEFAULT_TOOL_START_TS,
+    parent_tool_use_id: str | None = None,
+) -> ToolEndEvent:
+    """A ``ToolEndEvent`` whose duration is measured from *started_at_ms*."""
+    return ToolEndEvent(
+        at=at_ms * _NS_PER_MS,
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
+        duration_ms=at_ms - started_at_ms,
+        result=result,
+        result_summary=result_summary,
+        parent_tool_use_id=parent_tool_use_id,
     )
 
 
@@ -346,11 +403,10 @@ def fire_tool_end(
 ) -> None:
     """Publish a ``ToolEndEvent`` with duration measured from the default start timestamp."""
     observer(
-        ToolEndEvent(
-            at=at_ms * _NS_PER_MS,
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            duration_ms=at_ms - _DEFAULT_TOOL_START_TS,
+        tool_end_event(
+            tool_name,
+            tool_use_id,
+            at_ms,
             result=result,
             result_summary=result_summary,
             parent_tool_use_id=parent_tool_use_id,
@@ -358,9 +414,19 @@ def fire_tool_end(
     )
 
 
+def usage_event(cost_usd: float, at_ms: int = 4000) -> UsageUpdateEvent:
+    """A ``UsageUpdateEvent`` carrying the given cumulative cost."""
+    return UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd)
+
+
 def fire_usage_update(observer: SessionObserver, cost_usd: float, at_ms: int = 4000) -> None:
     """Publish a ``UsageUpdateEvent`` carrying the given cumulative cost."""
-    observer(UsageUpdateEvent(at=at_ms * _NS_PER_MS, cost_usd=cost_usd))
+    observer(usage_event(cost_usd, at_ms))
+
+
+def cap_event(cap: CapType, at_ms: int = 5000, *, action: CapAction = "interrupting") -> CapEvent:
+    """A ``CapEvent`` signaling that *cap* has fired."""
+    return CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action)
 
 
 def fire_cap(
@@ -371,12 +437,28 @@ def fire_cap(
     action: CapAction = "interrupting",
 ) -> None:
     """Publish a ``CapEvent`` signaling that the given cap has fired."""
-    observer(CapEvent(at=at_ms * _NS_PER_MS, cap=cap, action=action))
+    observer(cap_event(cap, at_ms, action=action))
 
 
 def fire_compaction(observer: SessionObserver, at_ms: int = 5000) -> None:
     """Publish a ``CompactionEvent`` marking a context-window compaction."""
     observer(CompactionEvent(at=at_ms * _NS_PER_MS))
+
+
+def model_phase_event(
+    at_ms: int,
+    phase: str,
+    *,
+    tool_name: str | None = None,
+    parent_tool_use_id: str | None = None,
+) -> ModelPhaseEvent:
+    """A ``ModelPhaseEvent``; *parent_tool_use_id* scopes it to a nested tool."""
+    return ModelPhaseEvent(
+        at=at_ms * _NS_PER_MS,
+        phase=phase,  # type: ignore[arg-type]
+        tool_name=tool_name,
+        parent_tool_use_id=parent_tool_use_id,
+    )
 
 
 def fire_model_phase(
@@ -389,12 +471,23 @@ def fire_model_phase(
 ) -> None:
     """Publish a ``ModelPhaseEvent``; ``tool_name``/``parent_tool_use_id`` scope it to a nested tool."""
     observer(
-        ModelPhaseEvent(
-            at=at_ms * _NS_PER_MS,
-            phase=phase,  # type: ignore[arg-type]
-            tool_name=tool_name,
-            parent_tool_use_id=parent_tool_use_id,
-        )
+        model_phase_event(at_ms, phase, tool_name=tool_name, parent_tool_use_id=parent_tool_use_id)
+    )
+
+
+def thinking_event(
+    at_ms: int,
+    *,
+    estimated_tokens: int = 100,
+    delta: int = 10,
+    parent_tool_use_id: str | None = None,
+) -> ThinkingUpdateEvent:
+    """A ``ThinkingUpdateEvent`` carrying the given cumulative token estimate."""
+    return ThinkingUpdateEvent(
+        at=at_ms * _NS_PER_MS,
+        estimated_tokens=estimated_tokens,
+        delta=delta,
+        parent_tool_use_id=parent_tool_use_id,
     )
 
 
@@ -408,12 +501,30 @@ def fire_thinking_update(
 ) -> None:
     """Publish a ``ThinkingUpdateEvent`` with the given token estimate and delta."""
     observer(
-        ThinkingUpdateEvent(
-            at=at_ms * _NS_PER_MS,
+        thinking_event(
+            at_ms,
             estimated_tokens=estimated_tokens,
             delta=delta,
             parent_tool_use_id=parent_tool_use_id,
         )
+    )
+
+
+def turn_end_event(
+    at_ms: int = 5000,
+    *,
+    text: str = "Turn summary.",
+    cost_usd: float = 0.01,
+    origin: Literal["agent", "injected"] = "agent",
+    budget_exhausted: bool = False,
+) -> TurnEndEvent:
+    """A ``TurnEndEvent`` attributed to *origin*."""
+    return TurnEndEvent(
+        at=at_ms * _NS_PER_MS,
+        text=text,
+        cost_usd=cost_usd,
+        origin=origin,
+        budget_exhausted=budget_exhausted,
     )
 
 
@@ -428,14 +539,21 @@ def fire_turn_end(
 ) -> None:
     """Publish a ``TurnEndEvent``; ``budget_exhausted`` gates the cap-triggered path."""
     observer(
-        TurnEndEvent(
-            at=at_ms * _NS_PER_MS,
-            text=text,
-            cost_usd=cost_usd,
-            origin=origin,
-            budget_exhausted=budget_exhausted,
+        turn_end_event(
+            at_ms, text=text, cost_usd=cost_usd, origin=origin, budget_exhausted=budget_exhausted
         )
     )
+
+
+def follow_up_event(
+    at_ms: int = 6000,
+    *,
+    action: Literal["replied", "waiting", "ended"] = "replied",
+    reason: str | None = None,
+    text: str | None = None,
+) -> FollowUpEvent:
+    """A ``FollowUpEvent`` carrying the supervisor's decision for the turn."""
+    return FollowUpEvent(at=at_ms * _NS_PER_MS, action=action, reason=reason, text=text)
 
 
 def fire_follow_up(
@@ -447,14 +565,7 @@ def fire_follow_up(
     text: str | None = None,
 ) -> None:
     """Publish a ``FollowUpEvent`` with the given follow-up action."""
-    observer(
-        FollowUpEvent(
-            at=at_ms * _NS_PER_MS,
-            action=action,
-            reason=reason,
-            text=text,
-        )
-    )
+    observer(follow_up_event(at_ms, action=action, reason=reason, text=text))
 
 
 def fire_launch_and_bash_cycle(observer: SessionObserver) -> None:
