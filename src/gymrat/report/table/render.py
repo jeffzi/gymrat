@@ -17,7 +17,7 @@ the tests pin; only the grid around the cells is rich's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Protocol, assert_never
 
 from rich import box
 from rich.cells import cell_len
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from gymrat.config import KindEntry
+    from gymrat.report.format import MetricCellParts
     from gymrat.report.sections import SectionLayout, SectionPlan
 
 
@@ -285,6 +286,143 @@ def section_annotation[Metric](
 
 
 # ---------------------------------------------------------------------------
+# Table skeleton
+# ---------------------------------------------------------------------------
+
+
+class NamedRow(Protocol):
+    """A table row exposing the ungrouped name and the grouped, indented label."""
+
+    @property
+    def name(self) -> str:
+        """The metric's bare name, shown when the table has nothing to group under it."""
+
+    @property
+    def label(self) -> str:
+        """The metric's section label, indented under its group."""
+
+
+@dataclass(frozen=True, slots=True)
+class TableSkeleton[Row]:
+    """The body, grouping flag, name/value cells, and widths a measurement and probe table share.
+
+    Attributes:
+        body: The planned body lines, ready for :func:`render_body`.
+        grouped: Whether a row's name cell shows its indented label rather than
+            its bare name — true once a section holds more than one group, or the
+            run spans more than one kind.
+        name_cell: The metric-column cell for one row.
+        value_cell: The value-column cell for one row.
+        metric_width: The metric column's settled width.
+        value_width: The value column's settled width.
+    """
+
+    body: list[BodyLine[Row, object]]
+    grouped: bool
+    name_cell: Callable[[Row], str]
+    value_cell: Callable[[Row], str]
+    metric_width: int
+    value_width: int
+
+
+def plan_table_skeleton[Row: NamedRow](
+    layout: SectionLayout[Row],
+    config_kinds: Mapping[str, KindEntry] | None,
+    value_of: Callable[[Row], MetricCellParts],
+    label: str,
+) -> TableSkeleton[Row]:
+    """The shared skeleton a measurement and a probe table both build their columns on.
+
+    Both tables plan the same body, decide grouping the same way, and size their
+    metric and value columns identically; a probe table appends a reference and a
+    delta column of its own on top of what this returns.
+
+    Args:
+        layout: The sectioned rows to plan a body for.
+        config_kinds: The run's configured kinds, threaded through to
+            :func:`section_annotation`, or ``None`` where the table states no kind
+            metadata (the probe table).
+        value_of: Reads a row's value cell parts.
+        label: The value column's header, sizing the value column.
+
+    Returns:
+        The planned body, the grouping flag, the name and value cell builders, and
+        the metric and value column widths.
+    """
+    value_fields = value_widths([value_of(row) for row in layout.ordered])
+
+    body: list[BodyLine[Row, object]] = plan_body(
+        layout,
+        None,
+        lambda section: section_annotation(section, config_kinds),
+    )
+    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
+
+    def name_cell(row: Row) -> str:
+        return row.label if grouped else row.name
+
+    def value_cell(row: Row) -> str:
+        return join_value_cell(value_of(row), value_fields)
+
+    metric_width = compute_column_width(
+        cell_len(widest_header_label(body)),
+        [cell_len(name_cell(row)) for row in layout.ordered] + aggregate_label_lengths(body),
+        METRIC_COLUMN_MIN,
+    )
+    value_width = compute_column_width(
+        cell_len(label),
+        [cell_len(value_cell(row)) for row in layout.ordered],
+        VALUE_COLUMN_MIN,
+    )
+    return TableSkeleton(
+        body=body,
+        grouped=grouped,
+        name_cell=name_cell,
+        value_cell=value_cell,
+        metric_width=metric_width,
+        value_width=value_width,
+    )
+
+
+def build_cell_dispatcher[Row, Cell](
+    header: Callable[[str | None], tuple[str, ...]],
+    group: Callable[[str], tuple[str, ...]],
+    metric: Callable[[Row], tuple[str, ...]],
+) -> Callable[[BodyLine[Row, Cell]], tuple[str, ...]]:
+    """A ``to_cells`` callable dispatching a header, group, or metric line to its cells.
+
+    Both tables' ``to_cells`` differ only in how many columns each line states;
+    the header/group/metric dispatch itself is identical, including the
+    ``AssertionError`` any other line would otherwise reach — neither a
+    measurement nor a probe table's body ever plans one.
+
+    Args:
+        header: Builds a header row's cells from its section title.
+        group: Builds a group row's cells from its label.
+        metric: Builds a metric row's cells from its row.
+
+    Returns:
+        The dispatching ``to_cells`` callable.
+
+    Raises:
+        AssertionError: The line is a ``BlankLine``, ``RuleLine``, ``BorderLine``,
+            ``TitleLine``, or ``AggregateLine``.
+    """
+
+    def to_cells(line: BodyLine[Row, Cell]) -> tuple[str, ...]:
+        if isinstance(line, HeaderLine):
+            return header(line.title)
+        if isinstance(line, GroupLine):
+            return group(line.label)
+        if isinstance(line, MetricLine):
+            return metric(line.row)
+        msg = f"unexpected body line {line!r}"
+        raise AssertionError(msg)
+
+    return to_cells
+
+
+# ---------------------------------------------------------------------------
 # Rendering engine
 # ---------------------------------------------------------------------------
 
@@ -399,10 +537,13 @@ __all__ = [
     "GroupLine",
     "HeaderLine",
     "MetricLine",
+    "NamedRow",
+    "TableSkeleton",
     "ValueWidths",
     "VerdictParts",
     "VerdictWidths",
     "aggregate_label_lengths",
+    "build_cell_dispatcher",
     "compute_column_width",
     "geomean_column_cell",
     "group_metric_cell",
@@ -411,6 +552,7 @@ __all__ = [
     "join_value_cell",
     "join_verdict_cell",
     "plan_body",
+    "plan_table_skeleton",
     "render_body",
     "section_annotation",
     "style_verdict_cell",

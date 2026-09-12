@@ -30,34 +30,24 @@ from gymrat.report.style import (
     truncate_labels,
 )
 from gymrat.report.table import (
-    METRIC_COLUMN_MIN,
     VALUE_COLUMN_MIN,
     VERDICT_COLUMN_MIN,
-    GroupLine,
-    HeaderLine,
-    MetricLine,
-    aggregate_label_lengths,
+    build_cell_dispatcher,
     compute_column_width,
     group_metric_cell,
     header_metric_cell,
     indented_section_label,
     join_value_cell,
-    plan_body,
+    plan_table_skeleton,
     render_body,
-    section_annotation,
     value_widths,
-    widest_header_label,
 )
 from gymrat.report.types import ReportOptions
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.model import Direction
     from gymrat.report.format import MetricCellParts
-    from gymrat.report.sections import SectionLayout
-    from gymrat.report.table import BodyLine
 
 # The default presentation flags: detect color, no header override. Immutable, so
 # one shared instance is safe as a default argument.
@@ -88,15 +78,6 @@ class _ProbeRow:
     reference: MetricCellParts
     delta: str
     delta_style: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _ProbeCells:
-    """The row-to-cell-text callables the probe table's width and body passes share."""
-
-    name: Callable[[_ProbeRow], str]
-    value: Callable[[_ProbeRow], str]
-    reference: Callable[[_ProbeRow], str]
 
 
 def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> str | None:
@@ -152,27 +133,24 @@ def _probe_header(result: ProbeResult, label: str) -> str:
     return join_header_parts(parts)
 
 
-def _probe_column_widths(
-    layout: SectionLayout[_ProbeRow],
-    body: list[BodyLine[_ProbeRow, object]],
-    label: str,
-    cells: _ProbeCells,
-) -> list[int]:
-    """The metric, value, baseline, and delta column widths for the probe table."""
-    return [
-        compute_column_width(
-            cell_len(widest_header_label(body)),
-            [cell_len(cells.name(row)) for row in layout.ordered] + aggregate_label_lengths(body),
-            METRIC_COLUMN_MIN,
-        ),
-        compute_column_width(
-            cell_len(label),
-            [cell_len(cells.value(row)) for row in layout.ordered],
-            VALUE_COLUMN_MIN,
-        ),
+def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) -> list[str]:
+    """Render the metric rows: measured value, baseline value, and the delta between them."""
+    layout = plan_sections(
+        {metric.name: metric for metric in result.metrics},
+        _probe_row,
+    )
+    skeleton = plan_table_skeleton(layout, None, lambda row: row.value, label)
+    reference_fields = value_widths([row.reference for row in layout.ordered])
+
+    def reference_cell(row: _ProbeRow) -> str:
+        return join_value_cell(row.reference, reference_fields)
+
+    widths = [
+        skeleton.metric_width,
+        skeleton.value_width,
         compute_column_width(
             cell_len(_REFERENCE_COLUMN_HEADER),
-            [cell_len(cells.reference(row)) for row in layout.ordered],
+            [cell_len(reference_cell(row)) for row in layout.ordered],
             VALUE_COLUMN_MIN,
         ),
         compute_column_width(
@@ -182,59 +160,29 @@ def _probe_column_widths(
         ),
     ]
 
-
-def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) -> list[str]:
-    """Render the metric rows: measured value, baseline value, and the delta between them."""
-    layout = plan_sections(
-        {metric.name: metric for metric in result.metrics},
-        _probe_row,
-    )
-    value_fields = value_widths([row.value for row in layout.ordered])
-    reference_fields = value_widths([row.reference for row in layout.ordered])
-
-    body: list[BodyLine[_ProbeRow, object]] = plan_body(
-        layout,
-        None,
-        lambda section: section_annotation(section, None),
-    )
-    grouped = len(layout.sections) > 1 or any(isinstance(line, GroupLine) for line in body)
-
-    def name_cell(row: _ProbeRow) -> str:
-        return row.label if grouped else row.name
-
-    def value_cell(row: _ProbeRow) -> str:
-        return join_value_cell(row.value, value_fields)
-
-    def reference_cell(row: _ProbeRow) -> str:
-        return join_value_cell(row.reference, reference_fields)
-
-    cells = _ProbeCells(name=name_cell, value=value_cell, reference=reference_cell)
-    widths = _probe_column_widths(layout, body, label, cells)
-
     def delta_cell(row: _ProbeRow) -> str:
         return escape(row.delta) if row.delta_style is None else markup(row.delta, row.delta_style)
 
-    def to_cells(line: BodyLine[_ProbeRow, object]) -> tuple[str, ...]:
-        if isinstance(line, HeaderLine):
-            return (
-                header_metric_cell(line.title),
-                markup(label, VARIANT_NAME_STYLE),
-                escape(_REFERENCE_COLUMN_HEADER),
-                escape(_DELTA_COLUMN_HEADER),
-            )
-        if isinstance(line, GroupLine):
-            return (group_metric_cell(line.label), "", "", "")
-        if isinstance(line, MetricLine):
-            return (
-                escape(name_cell(line.row)),
-                escape(value_cell(line.row)),
-                escape(reference_cell(line.row)),
-                delta_cell(line.row),
-            )
-        msg = f"unexpected body line {line!r}"
-        raise AssertionError(msg)
+    def metric_cells(row: _ProbeRow) -> tuple[str, str, str, str]:
+        return (
+            escape(skeleton.name_cell(row)),
+            escape(skeleton.value_cell(row)),
+            escape(reference_cell(row)),
+            delta_cell(row),
+        )
 
-    return render_body(body, widths, to_cells, color=color)
+    to_cells = build_cell_dispatcher(
+        header=lambda title: (
+            header_metric_cell(title),
+            markup(label, VARIANT_NAME_STYLE),
+            escape(_REFERENCE_COLUMN_HEADER),
+            escape(_DELTA_COLUMN_HEADER),
+        ),
+        group=lambda group_label: (group_metric_cell(group_label), "", "", ""),
+        metric=metric_cells,
+    )
+
+    return render_body(skeleton.body, widths, to_cells, color=color)
 
 
 def render_probe_report(result: ProbeResult, options: ReportOptions = _DEFAULT_OPTIONS) -> str:
