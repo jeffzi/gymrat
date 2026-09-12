@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 PROBE_DEFAULT_SAMPLES = 6
 
 #: The label a probe's target carries, naming the worktree it benched.
-_EXPERIMENT_LABEL = "experiment"
+EXPERIMENT_LABEL = "experiment"
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,11 +187,11 @@ async def probe_session(
         on_progress=options.on_progress,
         warn=options.warn,
     )
-    target = TargetSpec(label=_EXPERIMENT_LABEL, target=required.session.worktrees.experiment)
+    target = TargetSpec(label=EXPERIMENT_LABEL, target=required.session.worktrees.experiment)
     result, _ = await measure_baseline(target, run_options)
 
     references = baseline_medians(baseline)
-    metrics = []
+    metrics: list[ProbeMetric] = []
     for name, metric in result.metrics.items():
         reference = references.get(name)
         metrics.append(
@@ -205,7 +205,7 @@ async def probe_session(
             )
         )
     return ProbeResult(
-        label=_EXPERIMENT_LABEL,
+        label=EXPERIMENT_LABEL,
         samples=samples,
         adapter=config.adapter,
         metrics=tuple(metrics),

@@ -36,7 +36,7 @@ from gymrat.cli.shared import (
     with_repo_lock,
 )
 from gymrat.config import resolve_config
-from gymrat.loop.probe import ProbeOptions, ProbeResult, probe_session
+from gymrat.loop.probe import EXPERIMENT_LABEL, ProbeOptions, ProbeResult, probe_session
 from gymrat.report import render_probe_json, render_probe_report
 from gymrat.report.types import ReportOptions
 from gymrat.session.paths import repo_root
@@ -49,12 +49,9 @@ _NamesArgument = Annotated[
     ),
 ]
 
-#: The display label of the worktree a probe benches, as the progress header names it.
-_EXPERIMENT_LABEL = "experiment"
-
 
 async def _probe_body(flags: SharedFlags, names: list[str]) -> ProbeResult:
-    progress = begin_run(flags, 1, command="probe", target_labels=[_EXPERIMENT_LABEL])
+    progress = begin_run(flags, 1, command="probe", target_labels=[EXPERIMENT_LABEL])
     try:
         root = repo_root()
         resolved = resolve_config(flags, root)
