@@ -24,10 +24,12 @@ from gymrat.supervisor.turns import (
     NO_PROGRESS_LIMIT,
     Decision,
     End,
+    EndCondition,
     GuardState,
     Reply,
     WaitForLock,
     classify,
+    detect_end_condition,
     outcome_record_count,
 )
 from tests.cli.supervise._fixtures import session_state
@@ -904,3 +906,138 @@ def test_classify_when_command_records_interleaved_with_discards_does_not_break_
 
     assert isinstance(result, End)
     assert result.reason == "consecutive-discards"
+
+
+# ---------------------------------------------------------------------------
+# behavior 10: detect_end_condition
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cursor", [pytest.param(None, id="no-cursor"), pytest.param(0, id="cursor")]
+)
+def test_detect_end_condition_when_stop_condition_met_does_report_stop_condition(
+    cursor: int | None,
+):
+    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    state = session_state(iteration_count=2)
+    records: list[SessionLogRecord] = [iteration_record(seq=1), iteration_record(seq=2)]
+
+    result = detect_end_condition(config, records, state, cursor=cursor, check_stop=True)
+
+    assert result == (
+        EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)"),
+        2,
+    )
+
+
+def test_detect_end_condition_when_state_is_met_but_records_are_not_does_use_state():
+    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    state = session_state(iteration_count=2)
+
+    result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
+
+    assert result == (
+        EndCondition(ended_by="stop-condition", reason="max iterations (2 of 2)"),
+        0,
+    )
+
+
+def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
+    config = _benchless_config(stop=StopConfig(max_iterations=2))
+    state = session_state(iteration_count=2)
+    records: list[SessionLogRecord] = [iteration_record(seq=1), iteration_record(seq=2)]
+
+    result = detect_end_condition(config, records, state, cursor=0, check_stop=False)
+
+    assert result == (None, 2)
+
+
+@pytest.mark.parametrize(
+    ("records", "reason"),
+    [
+        pytest.param(
+            [
+                hook_record(stage="before", seq=2, exit_code=3, stdout_bytes=80, stderr_bytes=12),
+                iteration_record(seq=2),
+                hook_record(stage="after", seq=2),
+            ],
+            "before hook failed on iteration 2: exit 3 (stdout 80 B, stderr 12 B)",
+            id="non-zero-exit-two-back-from-tail",
+        ),
+        pytest.param(
+            [
+                command_record(),
+                hook_record(stage="after", seq=4, exit_code=1, timed_out=True, stderr_bytes=None),
+            ],
+            "after hook failed on iteration 4: timed out (stdout 80 B, stderr ? B)",
+            id="timed-out-without-stderr-count",
+        ),
+        pytest.param(
+            [
+                hook_record(stage="after", seq=2, exit_code=5, stderr_bytes=1),
+                iteration_record(seq=3),
+                hook_record(stage="after", seq=3, exit_code=6, stderr_bytes=2),
+            ],
+            "after hook failed on iteration 2: exit 5 (stdout 80 B, stderr 1 B)",
+            id="earliest-of-several-failures",
+        ),
+    ],
+)
+def test_detect_end_condition_when_hook_failed_after_cursor_does_report_hook_failure(
+    records: list[SessionLogRecord], reason: str
+):
+    result = detect_end_condition(
+        _benchless_config(), records, session_state(), cursor=0, check_stop=True
+    )
+
+    assert result == (EndCondition(ended_by="hook-failure", reason=reason), len(records))
+
+
+@pytest.mark.parametrize(
+    ("records", "cursor"),
+    [
+        pytest.param(
+            [hook_record(seq=1), command_record(), iteration_record(seq=1)],
+            0,
+            id="clean-hooks",
+        ),
+        pytest.param(
+            [hook_record(seq=1, exit_code=1), iteration_record(seq=1)],
+            1,
+            id="failure-before-cursor",
+        ),
+        pytest.param(
+            [hook_record(seq=1, exit_code=1), iteration_record(seq=1)],
+            None,
+            id="no-cursor",
+        ),
+    ],
+)
+def test_detect_end_condition_when_no_failure_in_scan_and_no_stop_does_report_nothing(
+    records: list[SessionLogRecord], cursor: int | None
+):
+    result = detect_end_condition(
+        _benchless_config(), records, session_state(), cursor=cursor, check_stop=True
+    )
+
+    assert result == (None, len(records))
+
+
+def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_failure():
+    config = _benchless_config(stop=StopConfig(max_iterations=1))
+    state = session_state(iteration_count=1)
+    records: list[SessionLogRecord] = [
+        iteration_record(seq=1),
+        hook_record(stage="after", seq=1, exit_code=2, stderr_bytes=0),
+    ]
+
+    result = detect_end_condition(config, records, state, cursor=0, check_stop=True)
+
+    assert result == (
+        EndCondition(
+            ended_by="hook-failure",
+            reason="after hook failed on iteration 1: exit 2 (stdout 80 B, stderr 0 B)",
+        ),
+        2,
+    )

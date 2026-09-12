@@ -242,7 +242,7 @@ def _report_result(
             exit_with_error(GymratError(result.outcome.message))
         raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
 
-    if result.ended_by != "session":
+    if result.ended_by not in ("session", "stop-condition"):
         raise typer.Exit(GATE_EXIT_CODE)
 
 

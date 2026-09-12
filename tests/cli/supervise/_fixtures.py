@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
+from io import StringIO
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
@@ -15,7 +16,11 @@ if TYPE_CHECKING:
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
+    from gymrat.supervisor.supervise import EndedBy
 
+from rich.console import Console, RenderableType
+
+from gymrat.cli.style import CLI_THEME
 from gymrat.cli.supervise.progress import (
     REFRESH_MS,
     ReadSessionResult,
@@ -82,6 +87,7 @@ __all__ = [
     "make_reporter",
     "make_supervision_result",
     "model_phase_event",
+    "render_colored",
     "render_frame",
     "seed_session_with_baseline",
     "seed_session_with_iteration",
@@ -253,7 +259,7 @@ def make_read_session(
 def make_supervision_result(
     *,
     reason: Literal["completed", "error", "interrupted"] = "completed",
-    ended_by: Literal["session", "spend-cap", "wall-clock", "guard"] = "session",
+    ended_by: EndedBy = "session",
     duration_ms: int = 60_000,
     cost_usd: float = 0.05,
     message: str | None = None,
@@ -261,8 +267,17 @@ def make_supervision_result(
 ) -> SupervisionResult:
     """Build a default-completed supervision result.
 
-    ``cost_usd`` is duplicated onto both the ``outcome`` and the top-level
-    result, mirroring the shape ``supervise`` returns.
+    Args:
+        reason: Outcome reason recorded on the ``SessionOutcome``.
+        ended_by: Value recorded on ``SupervisionResult.ended_by``.
+        duration_ms: Value recorded on ``SupervisionResult.duration_ms``.
+        cost_usd: Duplicated onto both the ``outcome`` and the top-level
+            result, mirroring the shape ``supervise`` returns.
+        message: Value recorded on ``SessionOutcome.message``.
+        end_reason: Value recorded on ``SupervisionResult.end_reason``.
+
+    Returns:
+        A ``SupervisionResult`` built from the given arguments.
     """
     outcome = SessionOutcome(reason=reason, cost_usd=cost_usd, message=message)
     return SupervisionResult(
@@ -711,3 +726,20 @@ def make_plain_reporter(
         tz=tz,
     )
     return PlainCapture(kit, writes)
+
+
+def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
+    """Render ``renderable`` through a sealed console with standard color."""
+    buf = StringIO()
+    console = Console(
+        file=buf,
+        width=width,
+        force_terminal=True,
+        no_color=False,
+        color_system="standard",
+        legacy_windows=False,
+        _environ={},
+        theme=CLI_THEME,
+    )
+    console.print(renderable)
+    return buf.getvalue()

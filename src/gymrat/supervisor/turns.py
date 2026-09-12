@@ -18,13 +18,14 @@ from typing import TYPE_CHECKING
 
 from gymrat.eta import format_duration
 from gymrat.loop.iterate.run import stop_condition
-from gymrat.session.records.models import CommandRecord, DiscardRecord, KeepRecord
+from gymrat.session.records.models import CommandRecord, DiscardRecord, HookRecord, KeepRecord
 
 if TYPE_CHECKING:
     from gymrat.config import BenchlessConfig
     from gymrat.session import SessionLogRecord
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import TurnEndEvent
+    from gymrat.supervisor.supervise import EndedBy
 
 FOLLOW_UP_CEILING = 100
 """Maximum follow-up replies before the classifier ends the session."""
@@ -82,6 +83,67 @@ class WaitForLock(Decision):
     """Another process holds the lock; wait without updating counters."""
 
 
+_STOP_MESSAGE_PREFIX = "Stop condition met:"
+
+
+@dataclass(frozen=True, slots=True)
+class EndCondition:
+    """A condition read off the session log that ends supervision."""
+
+    ended_by: EndedBy
+    reason: str
+
+
+def _hook_failure_reason(record: HookRecord) -> str:
+    failure = "timed out" if record.timed_out else f"exit {record.exit_code}"
+    stderr = "?" if record.stderr_bytes is None else record.stderr_bytes
+    return (
+        f"{record.stage} hook failed on iteration {record.seq}: {failure} "
+        f"(stdout {record.stdout_bytes} B, stderr {stderr} B)"
+    )
+
+
+def detect_end_condition(
+    config: BenchlessConfig,
+    records: list[SessionLogRecord],
+    state: SessionState,
+    *,
+    cursor: int | None,
+    check_stop: bool,
+) -> tuple[EndCondition | None, int]:
+    """Find the condition in the session log that ends supervision, if any.
+
+    A failed or timed-out hook record at or past *cursor* wins over a met stop
+    condition. Hooks are scanned from the cursor rather than the tail because
+    ``iterate`` appends a before-hook, the iteration, then an after-hook, so a
+    failed before-hook sits two records back.
+
+    Args:
+        config: The session's Benchless configuration, read for stop conditions.
+        records: The raw session log records, command records included.
+        state: The session state already folded from *records*.
+        cursor: The index of the first record not yet scanned for hook
+            failures, or ``None`` to scan no hook records.
+        check_stop: Whether a met stop condition is reported.
+
+    Returns:
+        The end condition, or ``None`` when nothing ends supervision, paired
+        with the cursor for the next call.
+    """
+    next_cursor = len(records)
+
+    if cursor is not None:
+        for record in records[cursor:]:
+            if isinstance(record, HookRecord) and (record.exit_code != 0 or record.timed_out):
+                return EndCondition("hook-failure", _hook_failure_reason(record)), next_cursor
+
+    if check_stop and (stop := stop_condition(config, state)) is not None:
+        reason = str(stop).removeprefix(_STOP_MESSAGE_PREFIX).strip()
+        return EndCondition("stop-condition", reason), next_cursor
+
+    return None, next_cursor
+
+
 def outcome_record_count(records: list[SessionLogRecord]) -> int:
     """Count records that are not command records.
 
@@ -136,6 +198,11 @@ def _consecutive_discard_count(
         elif isinstance(record, KeepRecord) and record.status == "committed":
             break
     return count
+
+
+def spend_cap_reached(turn: TurnEndEvent, max_usd: float | None) -> bool:
+    """Return whether ``turn`` exhausted the session budget or reached ``max_usd``."""
+    return turn.budget_exhausted or (max_usd is not None and turn.cost_usd >= max_usd)
 
 
 def _format_reply(
@@ -198,7 +265,7 @@ def classify(  # noqa: PLR0913, PLR0911 - one parameter per classification input
     ):
         return End(reason="finished")
 
-    if turn.budget_exhausted or (max_usd is not None and turn.cost_usd >= max_usd):
+    if spend_cap_reached(turn, max_usd):
         return End(reason="spend-cap")
 
     # Freeze all counters while the lock is held.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from rich.text import Text
 
@@ -33,22 +33,40 @@ if TYPE_CHECKING:
 _SUMMARY_LABEL_WIDTH = 6
 """The label column of the summary rows, wide enough for "agent"."""
 
-_CAP_LABELS: dict[str, str] = {"wall-clock": "wall-clock cap", "spend-cap": "spend cap"}
-
 
 def _build_outcome_text(result: SupervisionResult) -> Text:
-    """The glyph-led headline: how the run ended, then its duration and cost."""
+    """The glyph-led headline: how the run ended, then its duration and cost.
+
+    A run stopped by a stop condition or a hook failure names the condition's
+    summary after ``stopped:``.
+
+    Args:
+        result: The supervision outcome whose ``outcome.reason`` and ``ended_by``
+            select the headline.
+
+    Returns:
+        The styled headline ``Text``.
+    """
     text = Text()
-    if _completed_on_its_own(result):
-        text.append(f"{GLYPH_DONE} completed", style=STYLE_DONE)
-    elif result.outcome.reason == "error":
+    reason = result.end_reason or "unknown"
+    if result.outcome.reason == "error":
         text.append(f"{GLYPH_ERROR} error", style=STYLE_REGRESSED)
-    elif result.ended_by == "guard":
-        reason = result.end_reason or "unknown"
-        text.append(f"{GLYPH_ALERT} stopped by guard: {reason}", style=STYLE_ALERT)
     else:
-        cap = _CAP_LABELS[result.ended_by]
-        text.append(f"{GLYPH_ALERT} interrupted by {cap}", style=STYLE_ALERT)
+        match result.ended_by:
+            case "stop-condition":
+                text.append(f"{GLYPH_DONE} stopped: {reason}", style=STYLE_DONE)
+            case "hook-failure":
+                text.append(f"{GLYPH_ALERT} stopped: {reason}", style=STYLE_ALERT)
+            case "session":
+                text.append(f"{GLYPH_DONE} completed", style=STYLE_DONE)
+            case "guard":
+                text.append(f"{GLYPH_ALERT} stopped by guard: {reason}", style=STYLE_ALERT)
+            case "wall-clock":
+                text.append(f"{GLYPH_ALERT} interrupted by wall-clock cap", style=STYLE_ALERT)
+            case "spend-cap":
+                text.append(f"{GLYPH_ALERT} interrupted by spend cap", style=STYLE_ALERT)
+            case _:
+                assert_never(result.ended_by)
     text.append(" · ", style=STYLE_META)
     text.append(format_duration(result.duration_ms))
     text.append(" · ", style=STYLE_META)
@@ -129,10 +147,11 @@ def build_summary(
     dashboard's best and loop renderables, so the last thing printed reads like
     the frame it replaces, and end with where the event log landed.
 
-    When the session ended on its own (not by a cap or error) and the agent
-    produced text, an ``agent`` row appears after the headline showing the
-    session's stop message when the log ends on one, otherwise the agent's
-    last text block, with paragraph breaks preserved.
+    When the session ended on its own, by a stop condition, or by a guard (not by
+    a cap, a hook failure, or an error) and the agent produced text, an ``agent``
+    row appears after the headline showing the session's stop message when the
+    log ends on one, otherwise the agent's last text block, with paragraph
+    breaks preserved.
 
     ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
 
@@ -151,7 +170,7 @@ def build_summary(
         The assembled ``Text`` block for the closing summary.
     """
     rows = [_build_outcome_text(result)]
-    if _completed_on_its_own(result) or result.ended_by == "guard":
+    if _completed_on_its_own(result) or result.ended_by in ("guard", "stop-condition"):
         agent_text = _resolve_agent_text(session_result, final_text)
         if agent_text is not None:
             rows.append(_build_agent_row(agent_text))

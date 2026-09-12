@@ -1,27 +1,30 @@
-"""Tests for the Rich renderables the supervise command builds.
+"""Tests for the Rich renderables of the supervise dashboard frame.
 
 The dashboard-styling tests verify that the TUI renders with appropriate colors
 and styles instead of plain white text: they render ``reporter.frame()`` through
 a color-enabled console and check for ANSI escape codes on specific content
-lines.  The closing-summary tests pin the text and styling of the four-line
-block ``gymrat supervise`` prints when a run ends.
+lines.
 """
 
 from __future__ import annotations
 
-from io import StringIO
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from rich.console import Console, RenderableType
 from rich.panel import Panel
 
-from gymrat.cli.style import CLI_THEME
-from gymrat.cli.supervise.summary import SessionLabels, build_summary
-from gymrat.supervisor.events import SUMMARY_MAX_CHARS
-from tests._ansi import SGR_RE, strip_sgr
-from tests._rich import frame_text
+from tests._ansi import (
+    SGR_BLUE,
+    SGR_BOLD,
+    SGR_CYAN,
+    SGR_DIM,
+    SGR_GREEN,
+    SGR_RED,
+    SGR_YELLOW,
+    assert_has_sgr,
+    has_sgr,
+    strip_sgr,
+)
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     IDLE_WARN_MS,
@@ -38,48 +41,20 @@ from tests.cli.supervise._fixtures import (
     make_iteration,
     make_read_session,
     make_reporter,
-    make_supervision_result,
+    render_colored,
     render_frame,
     session_state,
     session_state_three_iterations,
 )
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.progress import ReadSessionResult, SuperviseReporter
+    from gymrat.cli.supervise.progress import SuperviseReporter
     from gymrat.config import Effort
-    from gymrat.supervisor import SessionEndReason
-    from gymrat.supervisor.supervise import EndedBy
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-# Standard ANSI SGR parameter codes
-_SGR_BOLD = 1
-_SGR_DIM = 2
-_SGR_RED = 31
-_SGR_GREEN = 32
-_SGR_YELLOW = 33
-_SGR_BLUE = 34
-_SGR_CYAN = 36
-
-
-def _render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render *renderable* through a sealed console with standard color."""
-    buf = StringIO()
-    console = Console(
-        file=buf,
-        width=width,
-        force_terminal=True,
-        no_color=False,
-        color_system="standard",
-        legacy_windows=False,
-        _environ={},
-        theme=CLI_THEME,
-    )
-    console.print(renderable)
-    return buf.getvalue()
 
 
 def _render_content_colored(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
@@ -90,24 +65,12 @@ def _render_content_colored(reporter: SuperviseReporter, *, width: int = FRAME_W
     """
     panel = reporter.frame()
     assert isinstance(panel, Panel)
-    return _render_colored(panel.renderable, width=width)
+    return render_colored(panel.renderable, width=width)
 
 
 def _lines_containing(output: str, needle: str) -> list[str]:
     """Return raw (styled) lines whose plain-text content contains *needle*."""
     return [line for line in output.splitlines() if needle in strip_sgr(line)]
-
-
-def _has_sgr(text: str, code: int) -> bool:
-    """True when *text* contains an ANSI SGR sequence with parameter *code*."""
-    target = str(code)
-    return any(target in match.group(1).split(";") for match in SGR_RE.finditer(text))
-
-
-def _assert_has_sgr(lines: list[str], code: int) -> None:
-    """Assert *lines* is non-empty and at least one line carries SGR *code*."""
-    assert lines
-    assert any(_has_sgr(line, code) for line in lines)
 
 
 def _line_after(frame: str, needle: str) -> str:
@@ -164,11 +127,11 @@ def test_panel_title_when_label_present_does_style_supervise_and_label_with_labe
 
     panel = kit.reporter.frame()
     assert isinstance(panel, Panel)
-    colored = _render_colored(panel)
+    colored = render_colored(panel)
     title_line = colored.splitlines()[0]
 
-    _assert_has_sgr([title_line], _SGR_BOLD)
-    _assert_has_sgr([title_line], _SGR_BLUE)
+    assert_has_sgr([title_line], SGR_BOLD)
+    assert_has_sgr([title_line], SGR_BLUE)
 
 
 def test_panel_title_when_connector_present_does_dim_the_connector_word():
@@ -181,10 +144,10 @@ def test_panel_title_when_connector_present_does_dim_the_connector_word():
 
     panel = kit.reporter.frame()
     assert isinstance(panel, Panel)
-    colored = _render_colored(panel)
+    colored = render_colored(panel)
     title_line = colored.splitlines()[0]
 
-    _assert_has_sgr([title_line], _SGR_DIM)
+    assert_has_sgr([title_line], SGR_DIM)
 
 
 # ---------------------------------------------------------------------------
@@ -221,14 +184,14 @@ def test_loop_iter_count_when_rendered_with_color_does_emit_bold_styling():
     colored = _render_content_colored(kit.reporter)
     loop_lines = _lines_containing(colored, "iter")
 
-    _assert_has_sgr(loop_lines, _SGR_BOLD)
+    assert_has_sgr(loop_lines, SGR_BOLD)
 
 
 @pytest.mark.parametrize(
     ("outcome", "delta_pct", "expected_sgr"),
     [
-        pytest.param("regressed", 3.2, _SGR_RED, id="regressed-red"),
-        pytest.param("improved", -3.2, _SGR_GREEN, id="improved-green"),
+        pytest.param("regressed", 3.2, SGR_RED, id="regressed-red"),
+        pytest.param("improved", -3.2, SGR_GREEN, id="improved-green"),
     ],
 )
 def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
@@ -246,7 +209,7 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
     colored = _render_content_colored(kit.reporter)
     outcome_lines = _lines_containing(colored, outcome)
 
-    _assert_has_sgr(outcome_lines, expected_sgr)
+    assert_has_sgr(outcome_lines, expected_sgr)
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +220,8 @@ def test_loop_outcome_when_rendered_with_color_does_emit_expected_styling(
 @pytest.mark.parametrize(
     ("delta_pct", "expected_sgr"),
     [
-        pytest.param(-6.8, _SGR_GREEN, id="negative-delta-green"),
-        pytest.param(3.5, _SGR_RED, id="positive-delta-red"),
+        pytest.param(-6.8, SGR_GREEN, id="negative-delta-green"),
+        pytest.param(3.5, SGR_RED, id="positive-delta-red"),
     ],
 )
 def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
@@ -284,7 +247,7 @@ def test_best_delta_when_rendered_with_color_does_emit_sign_dependent_styling(
     colored = _render_content_colored(kit.reporter)
     best_lines = _lines_containing(colored, "best")
 
-    _assert_has_sgr(best_lines, expected_sgr)
+    assert_has_sgr(best_lines, expected_sgr)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +262,7 @@ def test_liveness_starting_when_rendered_with_color_does_emit_dim_styling():
     colored = _render_content_colored(kit.reporter)
     starting_lines = _lines_containing(colored, "starting")
 
-    _assert_has_sgr(starting_lines, _SGR_DIM)
+    assert_has_sgr(starting_lines, SGR_DIM)
 
 
 def test_liveness_inflight_when_rendered_with_color_does_not_emit_special_styling():
@@ -313,9 +276,9 @@ def test_liveness_inflight_when_rendered_with_color_does_not_emit_special_stylin
     bash_lines = _lines_containing(colored, "Bash")
 
     assert bash_lines
-    assert not any(_has_sgr(line, _SGR_BOLD) for line in bash_lines)
-    assert not any(_has_sgr(line, _SGR_DIM) for line in bash_lines)
-    assert not any(_has_sgr(line, _SGR_CYAN) for line in bash_lines)
+    assert not any(has_sgr(line, SGR_BOLD) for line in bash_lines)
+    assert not any(has_sgr(line, SGR_DIM) for line in bash_lines)
+    assert not any(has_sgr(line, SGR_CYAN) for line in bash_lines)
 
 
 def test_liveness_inflight_when_rendered_does_match_finished_tool_column_layout():
@@ -346,7 +309,7 @@ def test_liveness_responding_when_rendered_with_color_does_emit_dim_styling():
     colored = _render_content_colored(kit.reporter)
     responding_lines = _lines_containing(colored, "responding")
 
-    _assert_has_sgr(responding_lines, _SGR_DIM)
+    assert_has_sgr(responding_lines, SGR_DIM)
 
 
 def test_liveness_composing_when_rendered_with_color_does_emit_dim_styling():
@@ -357,7 +320,7 @@ def test_liveness_composing_when_rendered_with_color_does_emit_dim_styling():
     colored = _render_content_colored(kit.reporter)
     preparing_lines = _lines_containing(colored, "preparing")
 
-    _assert_has_sgr(preparing_lines, _SGR_DIM)
+    assert_has_sgr(preparing_lines, SGR_DIM)
 
 
 def test_liveness_waiting_when_below_threshold_rendered_with_color_does_emit_dim_styling():
@@ -367,7 +330,7 @@ def test_liveness_waiting_when_below_threshold_rendered_with_color_does_emit_dim
     colored = _render_content_colored(kit.reporter)
     waiting_lines = _lines_containing(colored, "waiting")
 
-    _assert_has_sgr(waiting_lines, _SGR_DIM)
+    assert_has_sgr(waiting_lines, SGR_DIM)
 
 
 def test_liveness_waiting_when_above_threshold_rendered_with_color_does_emit_yellow_styling():
@@ -377,7 +340,7 @@ def test_liveness_waiting_when_above_threshold_rendered_with_color_does_emit_yel
     colored = _render_content_colored(kit.reporter)
     no_output_lines = _lines_containing(colored, "no output")
 
-    _assert_has_sgr(no_output_lines, _SGR_YELLOW)
+    assert_has_sgr(no_output_lines, SGR_YELLOW)
 
 
 @pytest.mark.parametrize(
@@ -430,7 +393,7 @@ def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
     colored = _render_content_colored(kit.reporter)
     cap_lines = _lines_containing(colored, "interrupting")
 
-    _assert_has_sgr(cap_lines, _SGR_YELLOW)
+    assert_has_sgr(cap_lines, SGR_YELLOW)
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +450,7 @@ def test_finished_tool_line_does_emit_dim_styling():
     colored = _render_content_colored(kit.reporter)
     finished_lines = _lines_containing(colored, "archetype")
 
-    _assert_has_sgr(finished_lines, _SGR_DIM)
+    assert_has_sgr(finished_lines, SGR_DIM)
 
 
 def test_finished_tool_line_when_failed_does_emit_dim_red_styling():
@@ -501,8 +464,8 @@ def test_finished_tool_line_when_failed_does_emit_dim_red_styling():
     colored = _render_content_colored(kit.reporter)
     edit_lines = _lines_containing(colored, "Edit")
 
-    _assert_has_sgr(edit_lines, _SGR_RED)
-    _assert_has_sgr(edit_lines, _SGR_DIM)
+    assert_has_sgr(edit_lines, SGR_RED)
+    assert_has_sgr(edit_lines, SGR_DIM)
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +572,7 @@ def test_nested_tool_when_rendered_with_color_does_emit_dim_styling():
     colored = _render_content_colored(kit.reporter)
     nested_lines = _lines_containing(colored, "config.ts")
 
-    _assert_has_sgr(nested_lines, _SGR_DIM)
+    assert_has_sgr(nested_lines, SGR_DIM)
 
 
 # ---------------------------------------------------------------------------
@@ -688,342 +651,6 @@ def test_frame_when_any_state_does_never_contain_idle():
 
 
 # ---------------------------------------------------------------------------
-# closing summary
-# ---------------------------------------------------------------------------
-
-_LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
-_LOG_ROW = f"  log     {_LOG_PATH}"
-
-
-def _session_result(*, with_best: bool) -> ReadSessionResult:
-    """A three-iteration session, with or without a best-iteration record."""
-    state = session_state_three_iterations(-4.2, "improved", seq=3)
-    if not with_best:
-        return make_read_session(state, has_baseline=True)()
-    return make_read_session(
-        state,
-        has_baseline=True,
-        best_delta_pct=-4.2,
-        best_seq=3,
-        primary_label="wall_time",
-        baseline_sha="a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
-    )()
-
-
-def test_summary_when_run_has_a_best_iteration_does_render_headline_best_loop_and_log():
-    summary = build_summary(
-        make_supervision_result(reason="interrupted", ended_by="wall-clock", cost_usd=0.16),
-        log_path=_LOG_PATH,
-        session_result=_session_result(with_best=True),
-    )
-
-    assert frame_text(summary, width=FRAME_WIDTH) == (
-        "! interrupted by wall-clock cap · 1m 0s · $0.16\n"
-        "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
-        "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
-        f"{_LOG_ROW}"
-    )
-
-
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected"),
-    [
-        pytest.param("completed", "session", "✓ completed · 1m 0s · $0.05", id="session-end"),
-        pytest.param(
-            "interrupted",
-            "wall-clock",
-            "! interrupted by wall-clock cap · 1m 0s · $0.05",
-            id="wall-clock-cap",
-        ),
-        pytest.param(
-            "interrupted",
-            "spend-cap",
-            "! interrupted by spend cap · 1m 0s · $0.05",
-            id="spend-cap",
-        ),
-        pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
-    ],
-)
-def test_summary_headline_when_run_ends_does_name_the_outcome_duration_and_cost(
-    reason: str, ended_by: str, expected: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
-        log_path=_LOG_PATH,
-        session_result=None,
-    )
-
-    assert frame_text(summary, width=FRAME_WIDTH).splitlines()[0] == expected
-
-
-@pytest.mark.parametrize(
-    ("session_result", "expected_loop"),
-    [
-        pytest.param(None, "  loop    no session yet", id="no-session"),
-        pytest.param(
-            _session_result(with_best=False),
-            "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved",
-            id="no-best-iteration",
-        ),
-    ],
-)
-def test_summary_when_no_best_delta_does_omit_the_best_row(
-    session_result: ReadSessionResult | None, expected_loop: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
-    )
-
-    assert frame_text(summary, width=FRAME_WIDTH) == (
-        f"✓ completed · 1m 0s · $0.05\n{expected_loop}\n{_LOG_ROW}"
-    )
-
-
-@pytest.mark.parametrize(
-    ("session_result", "expected_loop"),
-    [
-        pytest.param(
-            make_read_session(session_state(), has_baseline=True)(),
-            "  loop    baseline recorded · no iterations yet",
-            id="zero-iterations",
-        ),
-        pytest.param(
-            make_read_session(
-                session_state(
-                    iteration_count=1,
-                    keep_count=1,
-                    discard_count=0,
-                    last_iteration=make_iteration(-4.2, "improved"),
-                ),
-                has_baseline=True,
-            )(),
-            "  loop    1 iteration · 1 kept · 0 discarded · last -4.2% improved",
-            id="one-iteration",
-        ),
-    ],
-)
-def test_summary_loop_row_when_iteration_count_varies_does_name_the_count_as_a_noun(
-    session_result: ReadSessionResult, expected_loop: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=session_result
-    )
-
-    assert frame_text(summary, width=FRAME_WIDTH).splitlines()[1] == expected_loop
-
-
-def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():
-    log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
-
-    summary = build_summary(make_supervision_result(), log_path=log_path, session_result=None)
-
-    assert (
-        frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
-        == "  log     ~/.gymrat/supervisor-1.jsonl"
-    )
-
-
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected_sgr"),
-    [
-        pytest.param("completed", "session", _SGR_GREEN, id="completed-green"),
-        pytest.param("interrupted", "wall-clock", _SGR_YELLOW, id="capped-yellow"),
-        pytest.param("error", "session", _SGR_RED, id="error-red"),
-    ],
-)
-def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
-    reason: str, ended_by: str, expected_sgr: int
-) -> None:
-    summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),  # type: ignore[arg-type]
-        log_path=_LOG_PATH,
-        session_result=None,
-    )
-
-    colored = _render_colored(summary)
-
-    _assert_has_sgr(colored.splitlines()[:1], expected_sgr)
-
-
-def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled():
-    summary = build_summary(make_supervision_result(), log_path=_LOG_PATH, session_result=None)
-
-    colored = _render_colored(summary)
-
-    assert "\x1b[" not in colored.splitlines()[-1]
-
-
-# ---------------------------------------------------------------------------
-# closing summary — agent row
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected_headline"),
-    [
-        pytest.param(
-            "interrupted",
-            "wall-clock",
-            "! interrupted by wall-clock cap · 1m 0s · $0.05",
-            id="wall-clock-cap",
-        ),
-        pytest.param("error", "session", "✗ error · 1m 0s · $0.05", id="error"),
-    ],
-)
-def test_summary_when_cap_or_error_ended_does_not_show_agent_row(
-    reason: SessionEndReason, ended_by: EndedBy, expected_headline: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(reason=reason, ended_by=ended_by),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text="Some final text.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "  agent" not in text
-    assert text == f"{expected_headline}\n  loop    no session yet\n{_LOG_ROW}"
-
-
-@pytest.mark.parametrize(
-    ("final_text", "expected_lines"),
-    [
-        pytest.param(
-            "The task is complete.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   The task is complete.",
-                "  loop    no session yet",
-                _LOG_ROW,
-            ],
-            id="single-line",
-        ),
-        pytest.param(
-            "First paragraph.\n\nSecond paragraph.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   First paragraph.",
-                "",
-                "          Second paragraph.",
-                "  loop    no session yet",
-                _LOG_ROW,
-            ],
-            id="paragraph-break",
-        ),
-        pytest.param(
-            "Line one.\nLine two.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   Line one.",
-                "          Line two.",
-                "  loop    no session yet",
-                _LOG_ROW,
-            ],
-            id="single-newline",
-        ),
-    ],
-)
-def test_summary_when_final_text_multiline_does_indent_continuation_under_content(
-    final_text: str, expected_lines: list[str]
-) -> None:
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=final_text,
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert text.splitlines() == expected_lines
-
-
-# ---------------------------------------------------------------------------
-# closing summary — agent row clipping
-# ---------------------------------------------------------------------------
-
-
-def test_summary_agent_row_when_text_at_threshold_does_render_unchanged():
-    short_text = "x" * SUMMARY_MAX_CHARS
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=short_text,
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH + 200)
-    agent_line = next(line for line in text.splitlines() if "agent" in line)
-
-    assert agent_line == f"  agent   {short_text}"
-    assert "(full message in log)" not in text
-
-
-def test_summary_agent_row_when_text_exceeds_threshold_does_clip_with_ellipsis_and_log_note():
-    long_text = "a" * (SUMMARY_MAX_CHARS + 50)
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=long_text,
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH + 200)
-    agent_lines = [line for line in text.splitlines() if "agent" in line]
-
-    assert len(agent_lines) == 1
-    agent_line = agent_lines[0]
-    assert "…" in agent_line
-    assert "(full message in log)" in agent_line
-    assert len(agent_line) < len(f"  agent   {long_text}")
-
-
-def test_summary_agent_row_when_text_below_threshold_does_not_append_log_note():
-    short_text = "Short status message."
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text=short_text,
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "(full message in log)" not in text
-    assert any("Short status message." in line for line in text.splitlines())
-
-
-# ---------------------------------------------------------------------------
-# closing summary — agent row stop-message preference
-# ---------------------------------------------------------------------------
-
-
-def test_summary_agent_row_when_stop_message_present_does_show_stop_message() -> None:
-    session_result = make_read_session(
-        session_state(),
-        has_baseline=True,
-        stop_message="Target reached, stopping.",
-    )()
-
-    summary = build_summary(
-        make_supervision_result(reason="completed", ended_by="session"),
-        log_path=_LOG_PATH,
-        session_result=session_result,
-        final_text="Some other final text.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-    agent_line = next(line for line in text.splitlines() if "agent" in line)
-
-    assert agent_line == "  agent   Target reached, stopping."
-    assert "Some other final text." not in text
-
-
-# ---------------------------------------------------------------------------
 # dashboard title — model and effort display
 # ---------------------------------------------------------------------------
 
@@ -1051,78 +678,3 @@ def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
     frame = render_frame(kit.reporter)
 
     assert _panel_title_text(frame) == expected_title
-
-
-# ---------------------------------------------------------------------------
-# closing summary — model and effort display
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("labels", "expected_line"),
-    [
-        pytest.param(SessionLabels(model="opus"), "  model   opus", id="model-only"),
-        pytest.param(SessionLabels(effort="high"), "  effort  high", id="effort-only"),
-    ],
-)
-def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
-    labels: SessionLabels, expected_line: str
-) -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=labels
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert expected_line in text.splitlines()
-
-
-def test_summary_when_no_labels_does_omit_model_and_effort_rows() -> None:
-    summary = build_summary(
-        make_supervision_result(), log_path=_LOG_PATH, session_result=None, labels=SessionLabels()
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "model" not in text.lower()
-    assert "effort" not in text.lower()
-
-
-# ---------------------------------------------------------------------------
-# closing summary — guard-ended session
-# ---------------------------------------------------------------------------
-
-
-def test_summary_headline_when_guard_ended_does_show_stopped_by_guard_with_reason() -> None:
-    summary = build_summary(
-        make_supervision_result(
-            reason="interrupted",
-            ended_by="guard",
-            end_reason="safety limit reached",
-        ),
-        log_path=_LOG_PATH,
-        session_result=None,
-    )
-
-    headline = frame_text(summary, width=FRAME_WIDTH).splitlines()[0]
-
-    assert "stopped by guard" in headline
-    assert "safety limit reached" in headline
-
-
-def test_summary_when_guard_ended_does_show_agent_row() -> None:
-    summary = build_summary(
-        make_supervision_result(
-            reason="interrupted",
-            ended_by="guard",
-            end_reason="safety limit reached",
-        ),
-        log_path=_LOG_PATH,
-        session_result=None,
-        final_text="I was working on the optimization.",
-    )
-
-    text = frame_text(summary, width=FRAME_WIDTH)
-
-    assert "  agent" in text
-    assert "I was working on the optimization." in text

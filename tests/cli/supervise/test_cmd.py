@@ -43,6 +43,7 @@ from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import SessionPrompt, SupervisionResult, create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
+from gymrat.supervisor.supervise import EndedBy
 from tests._ansi import strip_ansi
 from tests.cli._loop_cmds import make_discard_repo
 from tests.cli.supervise._fixtures import (
@@ -1109,6 +1110,42 @@ def test_supervise_when_guard_ended_does_exit_one_with_guard_headline(
     headline = result.stdout.splitlines()[0]
     assert "stopped by guard" in headline
     assert "safety limit reached" in headline
+
+
+# ---------------------------------------------------------------------------
+# stop-condition and hook-failure endings — exit code
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ended_by", "end_reason", "expected_exit"),
+    [
+        pytest.param("stop-condition", "max iterations (2 of 2)", 0, id="stop-condition"),
+        pytest.param(
+            "hook-failure",
+            "after hook failed on iteration 2: exit 1 (stdout 80 B, stderr 5 B)",
+            1,
+            id="hook-failure",
+        ),
+    ],
+)
+def test_supervise_when_stop_condition_or_hook_failure_ended_does_exit_with_its_code(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    ended_by: EndedBy,
+    end_reason: str,
+    expected_exit: int,
+):
+    _install_seams(
+        monkeypatch,
+        result=make_supervision_result(
+            reason="interrupted", ended_by=ended_by, end_reason=end_reason
+        ),
+    )
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == expected_exit
 
 
 # ---------------------------------------------------------------------------
