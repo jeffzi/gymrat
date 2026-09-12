@@ -12,7 +12,6 @@ where the model does, type ``at`` as integer, and produce the correct
 get it without reaching for private state.
 """
 
-import sys
 from typing import Any, get_args
 
 import pytest
@@ -20,6 +19,7 @@ from pydantic import TypeAdapter
 
 from gymrat.session.records import SessionLogRecord
 from gymrat.supervisor.events import SessionEvent
+from tests.event_docs._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
 # render_json_schemas — envelope and structure
@@ -510,14 +510,8 @@ def test_render_json_schemas_when_called_does_use_minimum_zero_for_opt_non_negat
 
 
 def test_importing_json_schema_when_loaded_does_not_import_unexpected_modules():
-    before = set(sys.modules.keys())
-
-    import gymrat.event_docs.json_schema  # noqa: F401
-
-    after = set(sys.modules.keys())
-    new_modules = after - before
-
     unexpected = {"yaml", "jsonschema", "ruamel", "ruamel.yaml"}
-    leaked = unexpected & new_modules
+
+    leaked = unexpected & modules_imported_by("gymrat.event_docs.json_schema")
 
     assert not leaked, f"importing json_schema pulled in unexpected modules: {leaked}"

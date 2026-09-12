@@ -15,7 +15,6 @@ channel and message type lists.
 
 import importlib.metadata
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ import pytest
 from jsonschema import Draft7Validator
 
 from gymrat.event_docs.json_schema import render_json_schemas
+from tests.event_docs._imports import modules_imported_by
 
 # ---------------------------------------------------------------------------
 # shared helpers
@@ -339,18 +339,9 @@ def test_render_asyncapi_yaml_when_called_does_return_yaml_string():
 
 
 def test_importing_asyncapi_when_loaded_does_not_import_yaml():
-    yaml_was_loaded = "yaml" in sys.modules
-    if yaml_was_loaded:
-        pytest.skip("yaml already imported by another test or fixture")
+    loaded = modules_imported_by("gymrat.event_docs.asyncapi")
 
-    mods_before = set(sys.modules.keys())
-
-    import gymrat.event_docs.asyncapi  # noqa: F401
-
-    mods_after = set(sys.modules.keys())
-    new_mods = mods_after - mods_before
-
-    assert "yaml" not in new_mods, "importing asyncapi module pulled in yaml at import time"
+    assert "yaml" not in loaded, "importing asyncapi pulled in yaml at import time"
 
 
 # ---------------------------------------------------------------------------
