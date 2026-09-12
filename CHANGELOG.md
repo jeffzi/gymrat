@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-12
+
 ### Added
 
 - Add `gymrat probe` to spot-check the experiment worktree against the recorded baseline without
@@ -21,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Find the session when a command runs from inside a session worktree.
+- Keep the supervise dashboard's session result visible after a tool finishes.
+- Report the supervised run's span duration from the run result instead of re-measuring
+  wall-clock time.
 
 ## [0.17.0] - 2026-09-11
 
@@ -313,7 +318,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add structured error reporting for every gymrat failure: a clear message and, where applicable, an
   actionable hint.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/jeffzi/gymrat/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jeffzi/gymrat/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jeffzi/gymrat/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/jeffzi/gymrat/compare/v0.14.0...v0.15.0
