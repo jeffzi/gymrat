@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import asyncio
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.session.store import SessionState
     from gymrat.supervisor.events import CapAction, CapType, SessionObserver
+    from gymrat.supervisor.exit_sequence import ExitPhase
 
 IDLE_WARN_MS = 30_000
 """After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
@@ -65,6 +66,9 @@ class SuperviseReporter:
 
     ``start`` must be called from within a running event loop — it schedules the
     tick task via ``asyncio.create_task``. In plain mode it is a no-op.
+
+    ``exit_phase`` shows the run-end exit sequence's current phase: live mode
+    repaints the frame, plain mode writes the phase line once per phase change.
     """
 
     observer: SessionObserver
@@ -74,6 +78,7 @@ class SuperviseReporter:
     warn: Callable[[str], None]
     session_result: Callable[[], ReadSessionResult | None]
     final_text: Callable[[], str | None]
+    exit_phase: Callable[[ExitPhase], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +141,20 @@ class Capped:
     action: CapAction
 
 
-type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waiting | Capped
+@dataclass(frozen=True, slots=True)
+class Exiting:
+    """The run-end exit sequence entered phase ``kind`` at ``since``.
+
+    ``pid`` is the process holding the repository lock while the sequence waits
+    on it; ``None`` when its holder record cannot be read or while settling.
+    """
+
+    kind: Literal["waiting-lock", "settling"]
+    since: int
+    pid: int | None
+
+
+type Liveness = Starting | InFlight | Thinking | Responding | Composing | Waiting | Capped | Exiting
 """The reporter's current view of what the model or tool is doing."""
 
 

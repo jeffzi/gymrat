@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `--no-finalize` to `gymrat supervise` to leave the session open when the run ends.
+- Settle a supervised session when the run ends: keep or discard the last iteration as the agent
+  would have, finalize when an iteration was kept and nothing needs a person, and record each
+  decision in the event log.
+
+### Changed
+
+- End a supervised run from the supervisor when a stop condition is met or a hook fails, instead of
+  spending a final agent turn.
+
 ## [0.18.0] - 2026-09-12
 
 ### Added

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     _throwing_read,
     fire_cap,
@@ -163,3 +164,31 @@ def test_plain_when_compaction_does_print_context_compacted():
     fire_compaction(plain.observer, 3000)
 
     assert any("context compacted" in w for w in plain.writes)
+
+
+# ---------------------------------------------------------------------------
+# exit phase — plain mode
+# ---------------------------------------------------------------------------
+
+
+def test_plain_exit_phase_when_phase_changes_does_write_each_phase_line():
+    plain = make_plain_reporter()
+    fire_launch(plain.observer, 1000)
+    launched = len(plain.writes)
+
+    plain.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
+    plain.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
+
+    assert plain.writes[launched:] == ["waiting for gymrat (PID 4242)", "settling…"]
+
+
+def test_plain_exit_phase_when_same_phase_repeats_does_write_nothing():
+    plain = make_plain_reporter()
+    fire_launch(plain.observer, 1000)
+    plain.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
+    written = list(plain.writes)
+    plain.kit.clock.now = 5000
+
+    plain.reporter.exit_phase(ExitPhase(kind="waiting-lock", pid=4242))
+
+    assert plain.writes == written

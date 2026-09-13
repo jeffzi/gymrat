@@ -13,6 +13,7 @@ import pytest
 
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
+from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
 from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
 from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
@@ -504,3 +505,59 @@ def test_summary_when_stop_condition_or_hook_failure_ended_does_render_stopped_h
     )
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines() == expected_lines
+
+
+# ---------------------------------------------------------------------------
+# closing summary — exit rows
+# ---------------------------------------------------------------------------
+
+_EXIT_STEPS = (
+    ExitStep(kind="settled", text="kept iteration 3 (-4.2% wall_time)"),
+    ExitStep(kind="nothing", text="session already finalized"),
+)
+_EXIT_ROWS = [
+    "  exit    kept iteration 3 (-4.2% wall_time)",
+    "  exit    session already finalized",
+]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_exit_rows"),
+    [
+        pytest.param(None, _EXIT_ROWS, id="steps-only"),
+        pytest.param(
+            "finalize failed: disk full",
+            [*_EXIT_ROWS, "  exit    error: finalize failed: disk full"],
+            id="steps-then-error",
+        ),
+    ],
+)
+def test_summary_when_exit_report_given_does_render_exit_rows_between_loop_and_log(
+    error: str | None, expected_exit_rows: list[str]
+) -> None:
+    summary = build_summary(
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=None,
+        exit_report=ExitReport(steps=_EXIT_STEPS, error=error),
+    )
+
+    assert frame_text(summary, width=FRAME_WIDTH).splitlines() == [
+        "✓ completed · 1m 0s · $0.05",
+        "  loop    no session yet",
+        *expected_exit_rows,
+        _LOG_ROW,
+    ]
+
+
+def test_summary_exit_error_row_when_rendered_with_color_does_emit_alert_styling() -> None:
+    summary = build_summary(
+        make_supervision_result(),
+        log_path=_LOG_PATH,
+        session_result=None,
+        exit_report=ExitReport(steps=_EXIT_STEPS, error="finalize failed: disk full"),
+    )
+
+    colored = render_colored(summary)
+
+    assert_has_sgr(colored.splitlines()[-2:-1], SGR_YELLOW)

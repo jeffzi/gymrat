@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, assert_never
 from gymrat.cli.supervise.state import (
     Capped,
     Composing,
+    Exiting,
     FinishedTool,
     InFlight,
     NestedPhase,
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     )
     from gymrat.config import Effort
     from gymrat.supervisor.events import SessionEvent
+    from gymrat.supervisor.exit_sequence import ExitPhase
 
 _NS_PER_MS = 1_000_000
 
@@ -184,12 +186,16 @@ def wants_session_refresh(state: ReporterState, event: SessionEvent) -> bool:
         event: The incoming session event.
 
     Returns:
-        ``True`` for a launch and for a top-level tool end that either ran Bash
-        or carries a tool-use id the reporter never saw start.
+        ``True`` for a launch, for a top-level tool end that either ran Bash
+        or carries a tool-use id the reporter never saw start, and for an
+        ``ended`` follow-up during the exit sequence, whose step just kept,
+        discarded, or finalized something in the session.
     """
     match event:
         case LaunchEvent():
             return True
+        case FollowUpEvent(action="ended"):
+            return isinstance(state.liveness, Exiting)
         case ToolEndEvent() if event.parent_tool_use_id is None:
             tracked = pair_value(state.in_flight_tools, event.tool_use_id)
             return tracked is None or tracked.tool_name == _SESSION_WRITING_TOOL
@@ -396,11 +402,23 @@ def _turn_end(state: ReporterState, event: TurnEndEvent) -> ReporterState:
 
 
 def _follow_up_decision(state: ReporterState, event: FollowUpEvent) -> str:
+    if event.action == "ended" and isinstance(state.liveness, Exiting):
+        return f"exit · {event.reason}" if event.reason else "exit"
     if event.action == "ended":
         label = f"ended {event.reason}" if event.reason else "ended"
     else:
         label = _FOLLOW_UP_LABELS.get(event.action, event.action)
     return f"turn {state.turn_count} ended · {label}"
+
+
+def _follow_up(
+    state: ReporterState, event: FollowUpEvent, session_result: ReadSessionResult | None
+) -> ReporterState:
+    decided = replace(state, last_decision=_follow_up_decision(state, event))
+    if not wants_session_refresh(state, event):
+        return decided
+    resolved_session_result = session_result if session_result is not None else state.session_result
+    return replace(decided, session_result=resolved_session_result)
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +468,34 @@ def advance(  # noqa: C901 -- flat match over the event union
         case TurnEndEvent():
             advanced = _turn_end(state, event)
         case FollowUpEvent():
-            advanced = replace(state, last_decision=_follow_up_decision(state, event))
+            advanced = _follow_up(state, event, session)
         case CompactionEvent():
             advanced = replace(state, last_decision="context compacted")
         case _:  # pragma: no cover - exhaustive over the event union
             assert_never(event)
     return advanced
+
+
+def exit_phase(state: ReporterState, phase: ExitPhase, at_ms: int) -> ReporterState:
+    """Show the run-end exit sequence's current phase as the dashboard liveness.
+
+    Pure like :func:`advance`: the caller supplies the clock reading.  Reporting
+    the phase already shown returns *state* itself, so its elapsed time keeps
+    counting from when the phase began and the shell can tell nothing changed.
+
+    Args:
+        state: The state as of just before the phase report.
+        phase: The phase the exit sequence entered.
+        at_ms: Milliseconds timestamp of the phase report.
+
+    Returns:
+        The state showing *phase* since *at_ms*, or *state* itself when it
+        already shows *phase*.
+    """
+    current = state.liveness
+    if isinstance(current, Exiting) and (current.kind, current.pid) == (phase.kind, phase.pid):
+        return state
+    return replace(state, liveness=Exiting(kind=phase.kind, since=at_ms, pid=phase.pid))
 
 
 def plain_line(before: ReporterState, after: ReporterState, event: SessionEvent) -> str | None:

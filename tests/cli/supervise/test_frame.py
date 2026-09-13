@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.panel import Panel
 
+from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._ansi import (
     SGR_BLUE,
     SGR_BOLD,
@@ -383,6 +384,28 @@ def test_liveness_waiting_when_above_threshold_color_off_does_not_emit_sgr():
 
     assert no_output_lines
     assert not any("\x1b[" in line for line in no_output_lines)
+
+
+@pytest.mark.parametrize(
+    ("phase", "needle"),
+    [
+        pytest.param(
+            ExitPhase(kind="waiting-lock", pid=4242), "waiting for gymrat", id="waiting-lock"
+        ),
+        pytest.param(ExitPhase(kind="settling", pid=None), "settling", id="settling"),
+    ],
+)
+def test_liveness_exiting_when_rendered_with_color_does_emit_dim_styling(
+    phase: ExitPhase, needle: str
+):
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.reporter.exit_phase(phase)
+
+    colored = _render_content_colored(kit.reporter)
+    exiting_lines = _lines_containing(colored, needle)
+
+    assert_has_sgr(exiting_lines, SGR_DIM)
 
 
 def test_liveness_capped_when_rendered_with_color_does_emit_yellow_styling():
