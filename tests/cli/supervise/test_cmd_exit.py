@@ -270,10 +270,18 @@ def test_supervise_when_exit_sequence_reports_steps_does_print_them_as_exit_rows
     ]
 
 
+@pytest.mark.parametrize(
+    ("exit_report", "expected_exit"),
+    [
+        pytest.param(ExitReport(steps=()), 0, id="clean"),
+        pytest.param(ExitReport(steps=(), error=_EXIT_ERROR), 2, id="error-without-event"),
+    ],
+)
 def test_supervise_when_exit_sequence_changes_the_session_does_summarize_the_session_it_left(
-    repo: str, monkeypatch: pytest.MonkeyPatch
+    repo: str, monkeypatch: pytest.MonkeyPatch, exit_report: ExitReport, expected_exit: int
 ):
     seams = _install_seams(monkeypatch)
+    seams.exit_report = exit_report
     settled = ReadSessionResult(
         state=session_state_three_iterations(-4.2, "improved", seq=3), has_baseline=True
     )
@@ -285,6 +293,7 @@ def test_supervise_when_exit_sequence_changes_the_session_does_summarize_the_ses
 
     result = _run("optimize it", "--max-minutes", "10")
 
+    assert result.exit_code == expected_exit
     assert "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved" in result.stdout
 
 

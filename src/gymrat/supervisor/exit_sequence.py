@@ -6,15 +6,22 @@ close. The sequence waits out any ``gymrat`` command still holding the repositor
 lock, takes the lock itself, and records one step per decision — the wording a
 caller renders verbatim as its summary rows.
 
-It never raises: a step that fails ends the sequence with the message on the
-report, next to the steps that completed before it. Every step also lands on the
-supervisor event log as a ``FollowUpEvent``, so the log replays the sequence in
-the order it was decided.
+It never raises: one error boundary covers everything from the first lock probe
+to the last decision — the wait, the skip the wait can end in, and the steps
+taken under the lock — so a failure anywhere in it, including one raised by the
+caller's own progress or event sink, ends the sequence with the message on the
+report, next to the steps that completed before it.
+
+Every step also lands on the supervisor event log as a ``FollowUpEvent``, so the
+log replays the sequence in the order it was decided; a sequence that failed adds
+one closing event naming the failure, after the events of the steps that
+completed.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -42,6 +49,8 @@ EXIT_LOCK_POLL_MS = 1000
 _SKIP_TEXT = "exit sequence skipped: gymrat is still running (PID {pid})"
 
 _CAP_NOTE = " — expected after a cap trip: the agent's last command outlives the cap"
+
+_FAILED_TEXT = "exit sequence failed: {message}"
 
 #: The run endings whose skip line closes on :data:`_CAP_NOTE`: a cap cuts the
 #: agent off mid-command, so the command it was running is expected to outlive it
@@ -101,6 +110,23 @@ def _skip_step(lock_path: str, ended_by: EndedBy) -> ExitStep:
     return ExitStep(kind="skipped", text=text + (_CAP_NOTE if ended_by in _CAP_ENDS else ""))
 
 
+def _emit_failure(log: SessionObserver, message: str) -> None:
+    """Emit the event closing a failed sequence, tolerating an observer that is down.
+
+    Goes straight to ``log`` rather than through the step recorder, because a step
+    would render as a second summary row next to the ``exit  error`` one the report
+    already produces.
+
+    Args:
+        log: Observer the closing ``FollowUpEvent`` is emitted to.
+        message: The failure the event's reason names.
+    """
+    # The emit is the last act of the error boundary: an observer that raises here
+    # would turn the boundary back into the raise it exists to prevent.
+    with contextlib.suppress(Exception):
+        log(FollowUpEvent(at=now_ns(), action="ended", reason=_FAILED_TEXT.format(message=message)))
+
+
 async def _still_held(
     probe: Callable[[], bool], *, started_ms: float, poll_ms: int, bound_ms: int
 ) -> bool:
@@ -146,15 +172,19 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
     at the wait bound — or taken again before the sequence could — skips the whole
     sequence rather than fighting the run that holds it.
 
-    Nothing propagates to the caller: a failed step ends the sequence and its
-    message lands on the report.
+    Nothing propagates to the caller. One error boundary covers the lock wait, the
+    skip either the wait or the contention path can end in, and every step taken
+    under the lock, so a failure anywhere there — including one raised by
+    ``progress`` or ``log`` — ends the sequence with its message on the report and
+    one closing ``FollowUpEvent`` naming it.
 
     Args:
         context: The supervised session to settle.
         ended_by: What ended the run; only the skip wording reads it.
         finalize: Whether the session may be closed once nothing needs a person.
         progress: Called as the sequence enters each phase.
-        log: Observer every decision is emitted to as a ``FollowUpEvent``.
+        log: Observer every decision is emitted to as a ``FollowUpEvent``, plus one
+            closing event when the sequence fails.
         warn: Where a keep's hint about a missing checks command goes, so it
             never reaches stderr while a dashboard is live.
         lock_poll_ms: How long to wait between probes of a held lock.
@@ -174,13 +204,6 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
         steps.append(step)
         log(FollowUpEvent(at=now_ns(), action="ended", reason=step.text))
 
-    started_ms = monotonic_ms()
-    if probe():
-        progress(_waiting_phase(context.lock_path))
-        if await _still_held(probe, started_ms=started_ms, poll_ms=lock_poll_ms, bound_ms=bound_ms):
-            record(_skip_step(context.lock_path, ended_by))
-            return ExitReport(steps=tuple(steps))
-
     async def body(trace: CommandTrace) -> None:
         progress(ExitPhase(kind="settling", pid=None))
         state = fold_session(read_records(session_jsonl_path(context.root)))
@@ -192,10 +215,23 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
         if not steps:
             record(ExitStep(kind="nothing", text="nothing to settle"))
 
+    started_ms = monotonic_ms()
     try:
-        await with_repo_lock("supervise", body, args={"stage": "exit"}, root=context.root)
-    except LockContentionError:
-        record(_skip_step(context.lock_path, ended_by))
+        held = probe()
+        if held:
+            progress(_waiting_phase(context.lock_path))
+            held = await _still_held(
+                probe, started_ms=started_ms, poll_ms=lock_poll_ms, bound_ms=bound_ms
+            )
+        if held:
+            record(_skip_step(context.lock_path, ended_by))
+        else:
+            try:
+                await with_repo_lock("supervise", body, args={"stage": "exit"}, root=context.root)
+            except LockContentionError:
+                record(_skip_step(context.lock_path, ended_by))
     except Exception as error:  # noqa: BLE001 -- the report is the caller's error channel
-        return ExitReport(steps=tuple(steps), error=str(error))
+        message = str(error)
+        _emit_failure(log, message)
+        return ExitReport(steps=tuple(steps), error=message)
     return ExitReport(steps=tuple(steps))

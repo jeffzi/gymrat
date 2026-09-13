@@ -85,7 +85,7 @@ if TYPE_CHECKING:
 
     from gymrat.session.schema import Outcome
     from gymrat.supervisor.context import SupervisedSession
-    from gymrat.supervisor.events import SessionEvent
+    from gymrat.supervisor.events import SessionEvent, SessionObserver
     from gymrat.supervisor.supervise import EndedBy
     from tests.loop.settle._fixtures import ExecRecorder
 
@@ -161,8 +161,25 @@ async def run_sequence(
     lock_poll_ms: int = 1,
     lock_wait_ms: int | None = 0,
     is_lock_held: Callable[[], bool] | None = None,
+    log: SessionObserver | None = None,
+    progress: Callable[[ExitPhase], None] | None = None,
 ) -> ExitRun:
-    """Run the exit sequence over ``context``, collecting its progress, events, and warnings."""
+    """Run the exit sequence over ``context``, collecting its progress, events, and warnings.
+
+    Args:
+        context: The supervised session the sequence closes out.
+        ended_by: What ended the run, as ``run_exit_sequence`` takes it.
+        finalize: Whether the sequence may finalize the session.
+        lock_poll_ms: How often the lock probe is retried while waiting.
+        lock_wait_ms: How long the lock wait is bound to, or None for the config bound.
+        is_lock_held: Lock probe override, or None to use the real one.
+        log: Observer override, or None to collect events into the returned run.
+        progress: Progress sink override, or None to collect phases into the returned run.
+
+    Returns:
+        The report paired with the phases, events, and warnings the run produced.
+        A sink override silences the matching list, which stays empty.
+    """
     phases: list[ExitPhase] = []
     warnings: list[str] = []
     events, observer = collecting_observer()
@@ -170,8 +187,8 @@ async def run_sequence(
         context,
         ended_by=ended_by,
         finalize=finalize,
-        progress=phases.append,
-        log=observer,
+        progress=phases.append if progress is None else progress,
+        log=observer if log is None else log,
         warn=warnings.append,
         lock_poll_ms=lock_poll_ms,
         lock_wait_ms=lock_wait_ms,
@@ -990,6 +1007,37 @@ async def test_run_exit_sequence_when_the_lock_is_held_does_emit_the_skip_as_a_f
 # the error boundary
 # ---------------------------------------------------------------------------
 
+#: What a dead sink raises, so the report it lands in can be checked for it.
+BOOM = "the sink is down"
+
+#: The prefix the closing event's reason carries when the sequence failed.
+FAILED_PREFIX = "exit sequence failed: "
+
+
+def _raising_observer(_event: SessionEvent) -> None:
+    """An observer that fails on every event it is handed."""
+    raise RuntimeError(BOOM)
+
+
+def _raising_progress(_phase: ExitPhase) -> None:
+    """A progress sink that fails on every phase it is handed."""
+    raise RuntimeError(BOOM)
+
+
+class FailsOnNthEvent:
+    """An observer that collects every event it is handed except the ``nth``, which it fails on."""
+
+    def __init__(self, nth: int) -> None:
+        self.events: list[SessionEvent] = []
+        self.calls = 0
+        self._nth = nth
+
+    def __call__(self, event: SessionEvent) -> None:
+        self.calls += 1
+        if self.calls == self._nth:
+            raise RuntimeError(BOOM)
+        self.events.append(event)
+
 
 async def test_run_exit_sequence_when_a_step_raises_does_report_the_error_without_raising(
     repo: str,
@@ -1016,3 +1064,82 @@ async def test_run_exit_sequence_when_a_step_raises_does_record_exit_two_on_the_
     recorded = json.loads(last_line)
     assert recorded["name"] == "supervise"
     assert recorded["exit_code"] == 2
+
+
+@pytest.mark.parametrize(
+    ("log", "progress"),
+    [
+        pytest.param(_raising_observer, None, id="skip-event"),
+        pytest.param(None, _raising_progress, id="waiting-progress"),
+    ],
+)
+async def test_run_exit_sequence_when_a_sink_raises_during_the_wait_does_report_the_error(
+    repo: str,
+    log: SessionObserver | None,
+    progress: Callable[[ExitPhase], None] | None,
+):
+    start_with(repo)
+
+    run = await run_sequence(_context(repo), is_lock_held=HeldProbe(), log=log, progress=progress)
+
+    assert run.report.error is not None
+    assert BOOM in run.report.error
+
+
+async def test_run_exit_sequence_when_the_skip_event_raises_after_contention_does_report_the_error(
+    repo: str, hold_repo_lock: Callable[[str], str]
+):
+    start_with(repo)
+    hold_repo_lock(repo)
+
+    run = await run_sequence(_context(repo), is_lock_held=lambda: False, log=_raising_observer)
+
+    assert run.report.error is not None
+    assert BOOM in run.report.error
+
+
+async def test_run_exit_sequence_when_a_step_raises_does_emit_one_closing_follow_up_event(
+    repo: str,
+):
+    start_with(repo)
+    _make_log_unreadable(repo)
+
+    run = await run_sequence(_context(repo))
+
+    emitted = follow_up_events(run.events)
+    assert run.report.error is not None
+    assert [(event.action, event.reason) for event in emitted] == [
+        ("ended", FAILED_PREFIX + run.report.error)
+    ]
+
+
+async def test_run_exit_sequence_when_a_later_step_raises_does_close_after_the_steps_it_took(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    _improved_iteration(repo)
+    checks_pass(monkeypatch)
+    kept = ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)")
+    observer = FailsOnNthEvent(2)
+
+    run = await run_sequence(_context(repo, checks=CHECKS), finalize=False, log=observer)
+
+    assert run.report.error is not None
+    assert BOOM in run.report.error
+    assert run.report.steps == (kept, NOT_FINALIZED_STEP)
+    assert [(event.action, event.reason) for event in follow_up_events(observer.events)] == [
+        ("ended", kept.text),
+        ("ended", FAILED_PREFIX + run.report.error),
+    ]
+
+
+async def test_run_exit_sequence_when_the_closing_event_raises_does_still_report_the_step_error(
+    repo: str,
+):
+    start_with(repo)
+    jsonl_path = _make_log_unreadable(repo)
+
+    run = await run_sequence(_context(repo), log=_raising_observer)
+
+    assert run.report.error is not None
+    assert jsonl_path in run.report.error

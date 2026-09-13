@@ -121,6 +121,10 @@ class _Seams:
     to ``observed_events``, ``exit_phases``, and ``warnings``. The fake exit
     sequence returns ``exit_report`` after calling ``exit_hook`` (when set) with
     its recorded call, so a test can act from inside the sequence.
+    ``session_result`` is what the reporter's session reader returns right now:
+    the reporter shows it at construction and again only after
+    ``refresh_session``, so a change made later reaches the summary only
+    through a refresh.
     """
 
     def __init__(self) -> None:
@@ -246,13 +250,19 @@ def _install_seams(
 
     def fake_reporter(**kwargs: object) -> SimpleNamespace:
         seams.reporter_calls.append(kwargs)
+        shown = SimpleNamespace(session=seams.session_result)
+
+        def refresh_session() -> None:
+            shown.session = seams.session_result
+
         return SimpleNamespace(
             observer=seams.observer,
             start=seams.reporter_start,
             stop=seams.reporter_stop,
             exit_phase=seams.exit_phases.append,
             warn=seams.warnings.append,
-            session_result=lambda: seams.session_result,
+            refresh_session=refresh_session,
+            session_result=lambda: shown.session,
             final_text=lambda: seams.final_text,
         )
 

@@ -320,6 +320,9 @@ async def _start_and_supervise(
         log=combine_observers(create_event_log_writer(ctx.log_path), observer),
         warn=reporter.warn,
     )
+    # A step that writes the session log and then fails emits no event, so the
+    # reporter would otherwise summarize the session as it was before that step.
+    reporter.refresh_session()
     return result, exit_report
 
 

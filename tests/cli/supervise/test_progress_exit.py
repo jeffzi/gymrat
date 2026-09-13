@@ -8,6 +8,8 @@ Plain-mode phase lines live in ``test_progress_plain.py``.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
 from gymrat.cli.supervise.state import ReadSessionResult
@@ -109,3 +111,37 @@ def test_session_result_when_follow_up_ends_does_reread_only_while_exiting(
     fire_follow_up(observer, 8000, action="ended", reason="keep")
 
     assert kit.reporter.session_result() == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "reread", "expected", "expected_writes"),
+    [
+        pytest.param("live", _KEPT, _KEPT, [], id="rereads-live"),
+        pytest.param("plain", _KEPT, _KEPT, [], id="rereads-plain"),
+        pytest.param("live", None, _EMPTY, [], id="reread-fails-keeps-previous-live"),
+        pytest.param(
+            "plain",
+            None,
+            _EMPTY,
+            ["session read failed: session file unreadable"],
+            id="reread-fails-keeps-previous-and-warns-plain",
+        ),
+    ],
+)
+def test_refresh_session_when_called_does_reread_the_session_and_warn_only_on_a_failed_read(
+    mode: Literal["live", "plain"],
+    reread: ReadSessionResult | None,
+    expected: ReadSessionResult,
+    expected_writes: list[str],
+):
+    reader = SwitchableRead(_EMPTY)
+    writes: list[str] = []
+    kit = make_reporter(mode=mode, read_session=reader, plain_write=writes.append)
+    fire_launch(kit.reporter.observer, 1000)
+    writes.clear()
+    reader.result = reread
+
+    kit.reporter.refresh_session()
+
+    assert kit.reporter.session_result() == expected
+    assert writes == expected_writes

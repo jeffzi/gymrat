@@ -155,8 +155,9 @@ command has finished, nothing needs a person's decision, and at least one iterat
 run ends with a settled session and a squash branch. An iteration whose checks failed, whose
 worktree changed after measuring, or whose hook failed stays in the worktree for you, as do
 unmeasured edits, and the summary names them. Pass `--no-finalize` to leave the session open.
-Settling may run past the wall-clock cap by up to twice `timeout_seconds`: once waiting for a gymrat
-command that is still running, once for the checks.
+Settling may run past the wall-clock cap by about twice `timeout_seconds`: once waiting for a gymrat
+command that is still running, once for the checks, plus the git work of keeping, discarding, or
+finalizing, which has no timeout.
 
 `iterate`, `keep`, `discard`, `status`, `sync`, `compare`, `measure`, and `probe` print a time-left
 line so the agent can plan around the wall-clock cap.

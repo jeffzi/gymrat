@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 from rich.live import Live
@@ -190,6 +191,14 @@ def handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
         ctx.plain_write_fn(line)
 
 
+def _refresh_session(ctx: ReporterCtx) -> None:
+    session = _read_session(ctx)
+    if session is None:
+        return
+    ctx.state = replace(ctx.state, session_result=session)
+    render_live(ctx)
+
+
 def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
     before = ctx.state
     ctx.state = exit_phase(before, phase, ctx.now())
@@ -364,4 +373,5 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         session_result=lambda: ctx.state.session_result,
         final_text=lambda: ctx.state.last_agent_text,
         exit_phase=lambda phase: _report_exit_phase(ctx, phase),
+        refresh_session=lambda: _refresh_session(ctx),
     )

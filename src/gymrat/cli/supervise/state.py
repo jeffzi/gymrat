@@ -69,6 +69,12 @@ class SuperviseReporter:
 
     ``exit_phase`` shows the run-end exit sequence's current phase: live mode
     repaints the frame, plain mode writes the phase line once per phase change.
+
+    ``refresh_session`` re-reads the session so ``session_result`` reflects
+    writes that no event announced, such as an exit-sequence step that failed after
+    writing to the session log. A successful re-read writes no plain line; a
+    failed read keeps the previous result and warns, as the event-driven
+    re-read does.
     """
 
     observer: SessionObserver
@@ -79,6 +85,7 @@ class SuperviseReporter:
     session_result: Callable[[], ReadSessionResult | None]
     final_text: Callable[[], str | None]
     exit_phase: Callable[[ExitPhase], None]
+    refresh_session: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
