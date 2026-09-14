@@ -61,6 +61,8 @@ _CANCEL_SETTLE_S = 5.0
 # asyncio logs this when a child it waits on was reaped by someone else.
 _UNKNOWN_CHILD = "Unknown child process"
 
+_os_waitid: Callable[..., object] | None = getattr(os, "waitid", None)
+
 
 def read_pid(pid_path: Path) -> int | None:
     """Read a pid a shell wrote with ``echo $$ >`` / ``echo $! >``.
@@ -137,8 +139,14 @@ def pidfd_available() -> bool:
 class HeldReaper:
     """Stand-in for the ``os`` module asyncio's child watcher uses, holding back its blocking reap.
 
-    Every attribute but ``waitpid`` forwards to the real ``os`` module. A blocking
-    ``waitpid(pid, 0)`` first waits until ``release`` is set or ``hold_s`` passes.
+    Every attribute but ``waitpid`` and ``waitid`` forwards to the real ``os``
+    module.  A blocking ``waitpid(pid, 0)`` or ``waitid(P_PID, …)`` first waits
+    until ``release`` is set or ``hold_s`` passes.
+
+    CPython 3.14.7+ changed ``_ThreadedChildWatcher._do_waitpid`` to call
+    ``os.waitid(P_PID, pid, WEXITED | WNOWAIT)`` before scheduling the actual
+    reap on the event-loop thread.  Without intercepting ``waitid``, the hold
+    never fires and the reap completes before the test can cancel the task.
     """
 
     release: threading.Event
@@ -151,6 +159,22 @@ class HeldReaper:
         if options == 0:
             self.release.wait(self.hold_s)
         return os.waitpid(pid, options)
+
+    if _os_waitid is not None:
+        _P_PID: int = getattr(os, "P_PID", 0)
+
+        def waitid(
+            self,
+            id_type: int,
+            id_val: int,
+            options: int,
+            /,
+        ) -> object:
+            """Hold a blocking ``waitid`` the same way ``waitpid`` is held."""
+            if id_type == self._P_PID:
+                self.release.wait(self.hold_s)
+            assert _os_waitid is not None
+            return _os_waitid(id_type, id_val, options)
 
 
 type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
