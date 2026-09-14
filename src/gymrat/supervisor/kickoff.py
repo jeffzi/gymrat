@@ -20,6 +20,51 @@ DEFAULT_KICKOFF = (
 )
 
 
+_CLOCK_RULE = (
+    "This session has a wall-clock cap. The `keep`, `discard`, `status`, `sync`, `compare`, "
+    "and `measure` Bash commands print a time-left line; the `iterate` and `probe` tools "
+    "return the same clock as `budget.remaining_seconds` in their JSON document. Read the "
+    "time left after every one of them and plan from it. Never estimate elapsed time "
+    "yourself. A measurement the cap kills records nothing."
+)
+"""How the agent reads the session's remaining time, in both the command and tool forms."""
+
+_CONTRACT = (
+    "No human reads the turns of this session. Ask-first rules resolve to deciding "
+    "from the runbook — the runbook is the authority. When the work is done, run "
+    '`gymrat stop -m "<report>"` and only then end the turn. The supervisor replies '
+    "after every turn and the session continues, so ending a turn never waits for "
+    "anything. Never run a gymrat command in the background."
+)
+"""What an unattended session may decide on its own, and how it signals it is done."""
+
+_TOOLS = (
+    "Use the `probe` and `iterate` tools instead of running `gymrat probe` or "
+    "`gymrat iterate` through Bash. The `measure`, `compare`, `keep`, `discard`, "
+    "`status`, and `stop` commands stay Bash commands. A tool call runs in the "
+    "foreground and returns the command's JSON document."
+)
+"""Which actions reach gymrat as in-process tools and which stay Bash commands."""
+
+
+def _read_runbook(path: str) -> str:
+    """Read the runbook at ``path``, mapping every read failure to a ``GymratError``."""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as err:
+        message = f"Runbook is not valid UTF-8: {path}"
+        hint = "Re-save the runbook as UTF-8 or remove non-UTF-8 bytes."
+        raise GymratError(message, hint=hint) from err
+    except FileNotFoundError as err:
+        message = f"Runbook not found at {path}."
+        hint = "Verify the file exists at the path configured for `runbook` in gymrat.toml."
+        raise GymratError(message, hint=hint) from err
+    except OSError as err:
+        message = f"Cannot read runbook at {path}."
+        hint = "Check file permissions and ensure the path is a regular file."
+        raise GymratError(message, hint=hint) from err
+
+
 @dataclass(frozen=True, slots=True)
 class KickoffResult:
     """The prompt additions a supervised session starts from."""
@@ -65,40 +110,14 @@ def compose_kickoff(
         )
         raise GymratError(message, hint=hint)
 
-    try:
-        runbook_content = Path(config.runbook).read_text(encoding="utf-8")
-    except UnicodeDecodeError as err:
-        message = f"Runbook is not valid UTF-8: {config.runbook}"
-        hint = "Re-save the runbook as UTF-8 or remove non-UTF-8 bytes."
-        raise GymratError(message, hint=hint) from err
-    except FileNotFoundError as err:
-        message = f"Runbook not found at {config.runbook}."
-        hint = "Verify the file exists at the path configured for `runbook` in gymrat.toml."
-        raise GymratError(message, hint=hint) from err
-    except OSError as err:
-        message = f"Cannot read runbook at {config.runbook}."
-        hint = "Check file permissions and ensure the path is a regular file."
-        raise GymratError(message, hint=hint) from err
-
-    clock_rule = (
-        "This session has a wall-clock cap. `iterate`, `keep`, `discard`, `status`, `sync`, "
-        "`compare`, and `measure` print the time left — plan from that line. Never estimate "
-        "elapsed time yourself. A measurement the cap kills records nothing."
-    )
-
-    contract = (
-        "No human reads the turns of this session. Ask-first rules resolve to deciding "
-        "from the runbook — the runbook is the authority. When the work is done, run "
-        '`gymrat stop -m "<report>"` and only then end the turn. The supervisor replies '
-        "after every turn and the session continues, so ending a turn never waits for "
-        "anything. Never run a gymrat command in the background."
-    )
+    runbook_content = _read_runbook(config.runbook)
 
     system_prompt_append = (
         f"{skill_content}\n\n"
         "**The gymrat skill is already loaded above. Do not call `Skill(gymrat)`.**\n\n"
-        f"{clock_rule}\n\n"
-        f"{contract}\n\n"
+        f"{_CONTRACT}\n\n"
+        f"{_TOOLS}\n\n"
+        f"{_CLOCK_RULE}\n\n"
         f"## Runbook: {config.runbook}\n\n{runbook_content}"
     )
 

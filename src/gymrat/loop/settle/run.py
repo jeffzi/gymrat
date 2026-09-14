@@ -150,8 +150,7 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
             report=(
                 "Keep refused: nothing has been measured since the last keep or discard.\n"
                 + format_hint(
-                    "run `gymrat iterate` first — an unmeasured commit is one the loop "
-                    "cannot account for."
+                    "run `iterate` first — an unmeasured commit is one the loop cannot account for."
                 )
             ),
         )
@@ -226,9 +225,7 @@ async def _keep_clean_worktree(context: _KeepContext, *, baseline_position: str)
             checks=KeepChecks(configured=context.config.checks is not None),
             report=(
                 "Keep refused: the experiment worktree has nothing to commit.\n"
-                + format_hint(
-                    "edit the code in the experiment worktree, then run `gymrat iterate` again."
-                )
+                + format_hint("edit the code in the experiment worktree, then run `iterate` again.")
             ),
         )
 
@@ -284,7 +281,7 @@ def _checks_failed_keep(jsonl_path: str, seq: int, checks: ChecksRun) -> KeepRes
         ),
         report=(
             f"Keep refused: the checks command failed.\n\n{escape(checks.output)}\n"
-            + format_hint("fix the failures and run `gymrat keep` again.")
+            + format_hint("fix the failures and run `keep` again.")
         ),
     )
 

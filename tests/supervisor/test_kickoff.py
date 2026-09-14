@@ -62,6 +62,11 @@ def _compose_with_skill_text(
     return compose_kickoff(config, experiment_worktree=experiment_worktree)
 
 
+def _assert_precedes_runbook_heading(append_lower: str, marker: str) -> None:
+    """Assert ``marker`` appears in ``append_lower`` before the ``## runbook:`` heading."""
+    assert append_lower.index(marker) < append_lower.index("## runbook:")
+
+
 # ---------------------------------------------------------------------------
 # compose_kickoff — bundled skill
 # ---------------------------------------------------------------------------
@@ -219,14 +224,40 @@ def test_compose_kickoff_when_happy_path_does_include_clock_rule_in_append(
 ):
     result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
-    append = result.system_prompt_append.lower()
-    assert "wall-clock" in append
-    assert "time left" in append
-    assert "never estimate" in append
-    assert "records nothing" in append
-    records_nothing_pos = append.index("records nothing")
-    runbook_pos = append.index("## runbook:")
-    assert records_nothing_pos < runbook_pos
+    append_lower = result.system_prompt_append.lower()
+    assert "wall-clock" in append_lower
+    assert "time left" in append_lower
+    assert "never estimate" in append_lower
+    assert "records nothing" in append_lower
+    _assert_precedes_runbook_heading(append_lower, "records nothing")
+
+
+def _clock_rule_paragraph(append: str) -> str:
+    """The append paragraph carrying the wall-clock reading rule."""
+    return next(p for p in append.split("\n\n") if "never estimate" in p.lower())
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        pytest.param("bash", id="command-form"),
+        pytest.param("time-left", id="command-prints-time-left"),
+        pytest.param("`iterate`", id="iterate-tool"),
+        pytest.param("`probe`", id="probe-tool"),
+        pytest.param("budget.remaining_seconds", id="tool-json-field"),
+        pytest.param("json", id="tool-form"),
+    ],
+)
+def test_compose_kickoff_when_happy_path_does_state_both_clock_forms_in_the_clock_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phrase: str,
+):
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    clock_rule = _clock_rule_paragraph(result.system_prompt_append).lower()
+
+    assert phrase in clock_rule
 
 
 @pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
@@ -317,11 +348,8 @@ def test_compose_kickoff_when_happy_path_does_place_contract_before_runbook(
 ) -> None:
     result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
 
-    append = result.system_prompt_append
-    append_lower = append.lower()
-    contract_pos = append_lower.index("gymrat stop")
-    runbook_pos = append_lower.index("## runbook:")
-    assert contract_pos < runbook_pos
+    append_lower = result.system_prompt_append.lower()
+    _assert_precedes_runbook_heading(append_lower, "gymrat stop")
 
 
 def test_compose_kickoff_when_happy_path_does_state_turn_ending_never_waits(
@@ -355,3 +383,64 @@ def test_compose_kickoff_when_happy_path_does_omit_usd_and_dollar_from_authored_
     authored = append.replace(skill_text, "").lower()
     for forbidden in ("usd", "spend", "$"):
         assert forbidden not in authored, f"Code-authored text must not contain {forbidden!r}"
+
+
+# ---------------------------------------------------------------------------
+# compose_kickoff — tools paragraph in system-prompt append
+# ---------------------------------------------------------------------------
+
+
+def _tools_paragraph_index(paragraphs: list[str]) -> int:
+    """Index of the append paragraph that introduces the ``probe`` tool."""
+    return next(i for i, paragraph in enumerate(paragraphs) if "`probe`" in paragraph)
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "`probe`",
+        "`iterate`",
+        "bash",
+        "`measure`",
+        "`compare`",
+        "`keep`",
+        "`discard`",
+        "`status`",
+        "`stop`",
+        "foreground",
+        "json document",
+    ],
+)
+def test_compose_kickoff_when_happy_path_does_state_phrase_in_tools_paragraph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phrase: str,
+) -> None:
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    paragraphs = result.system_prompt_append.split("\n\n")
+    tools_paragraph = paragraphs[_tools_paragraph_index(paragraphs)]
+    assert phrase in tools_paragraph.lower()
+
+
+def test_compose_kickoff_when_happy_path_does_place_tools_paragraph_between_contract_and_runbook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    paragraphs = result.system_prompt_append.split("\n\n")
+    contract_index = next(i for i, p in enumerate(paragraphs) if "gymrat stop" in p)
+    runbook_index = next(i for i, p in enumerate(paragraphs) if p.startswith("## Runbook:"))
+    assert contract_index < _tools_paragraph_index(paragraphs) < runbook_index
+
+
+def test_compose_kickoff_when_happy_path_does_not_mention_tools_in_kickoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
+
+    kickoff_lower = result.kickoff.lower()
+    assert "tool" not in kickoff_lower
+    assert "`probe`" not in kickoff_lower

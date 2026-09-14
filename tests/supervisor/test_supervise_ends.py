@@ -165,12 +165,12 @@ def _log_size(root: str) -> int:
     return _log_path(root).stat().st_size
 
 
-def _tool_end(tool_use_id: str = "t1") -> EmitStep:
+def _tool_end(tool_use_id: str = "t1", tool_name: str = "Bash") -> EmitStep:
     return EmitStep(
         emit=ToolEndEvent(
             at=now_ns(),
             tool_use_id=tool_use_id,
-            tool_name="Bash",
+            tool_name=tool_name,
             duration_ms=10,
             result="ok",
             result_summary="ok",
@@ -309,36 +309,60 @@ def test_ended_by_when_inspected_does_list_every_ending():
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _DetectionCase:
+    """Records landing before a tool end, the end that follows them, and the ending they earn."""
+
+    appended: tuple[SessionLogRecord, ...]
+    stop: StopConfig | None
+    tool_name: str
+    ended_by: str
+    reason: str
+
+
 @pytest.mark.parametrize(
-    ("appended", "stop", "ended_by", "reason"),
+    "case",
     [
-        pytest.param((_FAILED_HOOK,), None, "hook-failure", _FAILED_HOOK_REASON, id="hook-failure"),
         pytest.param(
-            (iteration_record(seq=1),),
-            StopConfig(max_iterations=1),
-            "stop-condition",
-            "max iterations (1 of 1)",
-            id="stop-condition-met-during-run",
+            _DetectionCase(
+                appended=(_FAILED_HOOK,),
+                stop=None,
+                tool_name="Bash",
+                ended_by="hook-failure",
+                reason=_FAILED_HOOK_REASON,
+            ),
+            id="hook-failure-after-a-bash-end",
+        ),
+        pytest.param(
+            _DetectionCase(
+                appended=(iteration_record(seq=1),),
+                stop=StopConfig(max_iterations=1),
+                tool_name="mcp__gymrat__iterate",
+                ended_by="stop-condition",
+                reason="max iterations (1 of 1)",
+            ),
+            id="stop-condition-met-during-run-after-an-iterate-tool-end",
         ),
     ],
 )
 async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after_that_tool_end(
     root: str,
-    appended: tuple[SessionLogRecord, ...],
-    stop: StopConfig | None,
-    ended_by: str,
-    reason: str,
+    case: _DetectionCase,
 ):
-    driver = create_mock_driver([_append(root, *appended), _tool_end(), _blocked_step()])
+    driver = create_mock_driver([
+        _append(root, *case.appended),
+        _tool_end(tool_name=case.tool_name),
+        _blocked_step(),
+    ])
 
-    result = await _supervise(root, driver, config=_config(stop))
+    result = await _supervise(root, driver, config=_config(case.stop))
 
     markers = _event_log_markers(root)
     ended = _ended_markers(markers)
-    assert result.ended_by == ended_by
-    assert result.end_reason == reason
+    assert result.ended_by == case.ended_by
+    assert result.end_reason == case.reason
     assert result.outcome.reason == "interrupted"
-    assert ended == [f"follow_up:ended:{reason}"]
+    assert ended == [f"follow_up:ended:{case.reason}"]
     assert markers.index(ended[0]) > markers.index("tool_end:t1")
 
 

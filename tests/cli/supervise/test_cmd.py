@@ -29,9 +29,14 @@ from typer.testing import CliRunner, Result
 
 from gymrat.cli.app import app
 from gymrat.cli.shared import write_and_flush
-from gymrat.cli.supervise.progress import ReadSessionResult, create_supervise_reporter
+from gymrat.cli.supervise.progress import (
+    ReadSessionResult,
+    SuperviseReporter,
+    create_supervise_reporter,
+)
 from gymrat.config import ResolvedConfig, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
+from gymrat.exec import kill_live_process_groups
 from gymrat.loop.start import StartResult
 from gymrat.session import Worktrees, append_record
 from gymrat.session.paths import (
@@ -42,7 +47,13 @@ from gymrat.session.paths import (
 )
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import SessionPrompt, SupervisionResult, create_claude_driver
+from gymrat.supervisor import (
+    SessionPrompt,
+    SupervisionResult,
+    ToolsFactory,
+    create_claude_driver,
+    gymrat_tools_factory,
+)
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from tests._ansi import strip_ansi
@@ -71,6 +82,9 @@ _LOCK_AT = "2026-01-01T00:00:00.000Z"
 _CAP_MINUTES = 10
 _CAP_MS = _CAP_MINUTES * 60_000
 
+# The message the budget-initialization seam fails with when a test makes it explode.
+_BUDGET_FAILURE = "budget write failed"
+
 
 @pytest.fixture(autouse=True)
 def _isolate_tracing_provider() -> Iterator[None]:
@@ -88,26 +102,15 @@ def _isolate_tracing_provider() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def _real_reporter_start() -> Callable[[], None]:
-    """The production reporter's real ``start`` closure, used only as an autospec source.
+def _real_reporter() -> SuperviseReporter:
+    """The production reporter, built only as an autospec source for ``start``/``stop``.
 
-    ``SuperviseReporter.start`` is a nested closure with no importable name, so it
-    can't be targeted directly by ``create_autospec``. Building a real (side-effect-free,
-    plain-mode) reporter and taking its ``start`` attribute gives ``create_autospec``
-    the actual production callable to bind against.
+    ``SuperviseReporter.start`` and ``.stop`` are nested closures with no importable
+    name, so they can't be targeted directly by ``create_autospec``. Building a real
+    (side-effect-free, plain-mode) reporter and taking its attributes gives
+    ``create_autospec`` the actual production callables to bind against.
     """
-    return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain").start
-
-
-def _real_reporter_stop() -> Callable[[], None]:
-    """The production reporter's real ``stop`` closure, used only as an autospec source.
-
-    ``SuperviseReporter.stop`` is a nested closure with no importable name, so it
-    can't be targeted directly by ``create_autospec``. Building a real (side-effect-free,
-    plain-mode) reporter and taking its ``stop`` attribute gives ``create_autospec``
-    the actual production callable to bind against.
-    """
-    return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain").stop
+    return create_supervise_reporter(root="/tmp/repo", max_minutes=1.0, mode="plain")
 
 
 class _Seams:
@@ -138,8 +141,9 @@ class _Seams:
         self.exit_calls: list[dict[str, Any]] = []
         self.session_result: ReadSessionResult | None = None
         self.final_text: str | None = None
-        self.reporter_start = create_autospec(_real_reporter_start(), name="reporter.start")
-        self.reporter_stop = create_autospec(_real_reporter_stop(), name="reporter.stop")
+        real_reporter = _real_reporter()
+        self.reporter_start = create_autospec(real_reporter.start, name="reporter.start")
+        self.reporter_stop = create_autospec(real_reporter.stop, name="reporter.stop")
         self.ensure_git_exclude = create_autospec(ensure_git_exclude, name="ensure_git_exclude")
         self.create_driver = create_autospec(
             create_claude_driver, name="create_claude_driver", return_value=self.driver
@@ -282,6 +286,36 @@ def _install_seams(
         "gymrat.cli.supervise.cmd.install_termination_cleanup", seams.install_cleanup
     )
     return seams
+
+
+class _CleanupRegistry:
+    """The termination cleanups a command run has installed and not yet uninstalled.
+
+    ``install_termination_cleanup`` hands back an uninstall callable, so recording
+    both halves gives the live set at any moment: read it from inside a seam to see
+    what the session armed, and read it after the run to see what it left behind.
+    """
+
+    def __init__(self) -> None:
+        self._live: list[Callable[[], None]] = []
+
+    def install(self, cleanup: Callable[[], None]) -> Callable[[], None]:
+        self._live.append(cleanup)
+
+        def uninstall() -> None:
+            self._live = [live for live in self._live if live is not cleanup]
+
+        return uninstall
+
+    def live(self) -> list[Callable[[], None]]:
+        return list(self._live)
+
+
+def _track_cleanups(monkeypatch: pytest.MonkeyPatch) -> _CleanupRegistry:
+    """Swap the command's cleanup installer for a registry a test can read at any point."""
+    registry = _CleanupRegistry()
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.install_termination_cleanup", registry.install)
+    return registry
 
 
 def _run(*args: str) -> Result:
@@ -667,7 +701,7 @@ def test_supervise_when_run_does_pass_the_claude_driver_to_supervise(
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    seams.create_driver.assert_called_once_with()
+    seams.create_driver.assert_called_once()
     assert seams.supervise_calls[0]["driver"] is seams.driver
 
 
@@ -860,6 +894,44 @@ def test_supervise_when_run_does_register_a_termination_cleanup(
     registered()
 
     assert seams.reporter_stop.called
+
+
+def test_supervise_when_session_runs_does_arm_the_kill_cleanup_only_for_its_duration(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+    registry = _track_cleanups(monkeypatch)
+    armed_during_run: list[bool] = []
+
+    async def probing_supervise(*args: object, **kwargs: object) -> SupervisionResult:
+        seams.record_supervise_call(args, kwargs)
+        armed_during_run.append(any(live is kill_live_process_groups for live in registry.live()))
+        return make_supervision_result()
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise", probing_supervise)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert armed_during_run == [True]
+    assert registry.live() == []
+
+
+def test_supervise_when_budget_init_raises_does_uninstall_the_reporter_cleanup(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _install_seams(monkeypatch)
+    registry = _track_cleanups(monkeypatch)
+
+    def exploding_write_budget(*_args: object) -> None:
+        raise GymratError(_BUDGET_FAILURE)
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.write_budget", exploding_write_budget)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 2
+    assert registry.live() == []
 
 
 # ---------------------------------------------------------------------------
@@ -1062,3 +1134,32 @@ def test_supervise_when_max_usd_given_does_pass_it_as_max_budget_usd_on_prompt(
     prompt = seams.supervise_calls[0]["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.max_budget_usd == 5.0
+
+
+# ---------------------------------------------------------------------------
+# tools factory wiring
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_run_does_pass_gymrat_tools_factory_to_driver(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+    factory_roots: list[str] = []
+    real_factory = gymrat_tools_factory
+
+    def _recording_factory(root: str) -> ToolsFactory:
+        factory_roots.append(root)
+        return real_factory(root)
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.gymrat_tools_factory", _recording_factory)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert [Path(root).resolve() for root in factory_roots] == [Path(repo).resolve()]
+    call_kwargs = seams.create_driver.call_args.kwargs
+    tools = call_kwargs.get("tools")
+    assert callable(tools), "create_claude_driver must receive a tools callable"
+    server_config: dict[str, Any] = tools(asyncio.Event(), {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
+    assert server_config["name"] == "gymrat"

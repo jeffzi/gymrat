@@ -318,9 +318,11 @@ def test_discard_session_when_nothing_measured_and_clean_does_refuse(
     start_with(repo, history)
     before = len(read_records(session_jsonl_path(repo)))
 
-    with pytest.raises(GymratError, match="Discard refused"):
+    with pytest.raises(GymratError) as excinfo:
         discard_session(repo)
 
+    assert "Discard refused" in str(excinfo.value)
+    assert excinfo.value.hint == "Run iterate to measure an edit before settling it."
     assert len(read_records(session_jsonl_path(repo))) == before
 
 

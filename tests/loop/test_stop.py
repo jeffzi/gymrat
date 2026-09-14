@@ -188,9 +188,7 @@ def test_stop_session_when_already_stopped_does_refuse_with_hint(repo: str):
     error = capture_error(lambda: stop_session(repo, "stop again"))
 
     assert "already stopped" in str(error).lower()
-    assert error.hint is not None
-    assert "iterate" in error.hint.lower()
-    assert _mentions_keep_or_discard(error.hint)
+    assert error.hint == "Run iterate, keep, or discard to continue."
     assert _record_count(repo) == before
 
 

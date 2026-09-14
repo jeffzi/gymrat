@@ -220,6 +220,7 @@ async def test_start_when_command_timeout_ms_given_does_set_timeout_env_vars():
     assert env["CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS"] == "300000"
     assert env["CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS"] == "300000"
     assert env["CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS"] == ""
+    assert env["MCP_TOOL_TIMEOUT"] == "300000"
 
 
 async def test_start_when_command_timeout_ms_absent_does_omit_timeout_env_vars():
@@ -231,6 +232,7 @@ async def test_start_when_command_timeout_ms_absent_does_omit_timeout_env_vars()
     assert "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS" not in env
     assert "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS" not in env
     assert "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS" not in env
+    assert "MCP_TOOL_TIMEOUT" not in env
 
 
 @pytest.mark.parametrize(

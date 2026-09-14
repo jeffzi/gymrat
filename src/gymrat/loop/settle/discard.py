@@ -120,10 +120,7 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
     return DiscardResult(
         record=record,
         at=at,
-        report=(
-            f"Discarded iteration {reverted_seq}: the experiment worktree is back at "
-            f"{target[:SHORT_SHA_LENGTH]}"
-        ),
+        report=f"Discarded iteration {reverted_seq}: {_reverted_to(target)}",
     )
 
 
@@ -137,7 +134,7 @@ def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardR
         )
         raise GymratError(
             nothing_message,
-            hint="Run gymrat iterate to measure an edit before settling it.",
+            hint="Run iterate to measure an edit before settling it.",
             reason="nothing-to-discard",
         )
 
@@ -146,11 +143,13 @@ def _discard_unmeasured(session: SessionRecord, state: SessionState) -> DiscardR
     return DiscardResult(
         record=None,
         at=now_ns(),
-        report=(
-            f"Reverted {pluralize(n_changed, 'unmeasured edit')}: "
-            f"the experiment worktree is back at {target[:SHORT_SHA_LENGTH]}"
-        ),
+        report=f"Reverted {pluralize(n_changed, 'unmeasured edit')}: {_reverted_to(target)}",
     )
+
+
+def _reverted_to(target: str) -> str:
+    """The report clause naming where the experiment worktree landed."""
+    return f"the experiment worktree is back at {target[:SHORT_SHA_LENGTH]}"
 
 
 def _revert_target(

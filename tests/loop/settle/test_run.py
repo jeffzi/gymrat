@@ -764,6 +764,11 @@ async def test_keep_session_when_second_refusal_does_number_past_the_first(
 # ---------------------------------------------------------------------------
 
 
+def _hint_line(report: str, action: str) -> str:
+    """The report line naming ``action``, with ANSI styling stripped."""
+    return next(line for line in map(strip_ansi, report.split("\n")) if action in line)
+
+
 def _nothing_measured(repo: str) -> None:
     """An edited experiment with no iteration measured behind it."""
     start_with(repo, ())
@@ -810,7 +815,7 @@ def _unimproved_iteration(repo: str) -> None:
         pytest.param(_unimproved_iteration, checks_pass, id="not-improved"),
     ],
 )
-async def test_keep_session_when_refusing_does_close_on_a_hint_carrying_no_label(
+async def test_keep_session_when_refusing_does_close_on_an_unlabeled_hint_naming_bare_actions(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     arrange: Callable[[str], None],
@@ -823,9 +828,10 @@ async def test_keep_session_when_refusing_does_close_on_a_hint_carrying_no_label
 
     assert "Hint" not in result.report
     assert "`" not in result.report
+    assert "gymrat " not in result.report
 
 
-async def test_keep_session_when_nothing_to_commit_does_name_iterate_not_keep_in_the_hint(
+async def test_keep_session_when_nothing_to_commit_does_name_bare_iterate_not_keep_in_the_hint(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _nothing_to_commit(repo)
@@ -833,11 +839,12 @@ async def test_keep_session_when_nothing_to_commit_does_name_iterate_not_keep_in
 
     result = await keep_session(repo, checks_config())
 
-    assert "gymrat iterate" in result.report
-    assert "gymrat keep" not in result.report
+    hint = _hint_line(result.report, "iterate")
+    assert "gymrat" not in hint
+    assert "keep" not in hint
 
 
-async def test_keep_session_when_nothing_measured_does_name_iterate_in_bare_prose(
+async def test_keep_session_when_nothing_measured_does_name_bare_iterate_in_bare_prose(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     _nothing_measured(repo)
@@ -845,7 +852,7 @@ async def test_keep_session_when_nothing_measured_does_name_iterate_in_bare_pros
 
     result = await keep_session(repo, checks_config())
 
-    assert "run gymrat iterate first" in result.report
+    assert "run iterate first" in result.report
 
 
 async def test_keep_session_when_colored_does_dim_the_hint_and_paint_the_command(
@@ -856,7 +863,7 @@ async def test_keep_session_when_colored_does_dim_the_hint_and_paint_the_command
 
     result = await keep_session(repo, checks_config(), color=True)
 
-    hint = next(line for line in result.report.split("\n") if "gymrat iterate" in strip_ansi(line))
+    hint = next(line for line in result.report.split("\n") if "iterate" in strip_ansi(line))
     assert hint.startswith("\x1b[2m")
     assert any("34" in run.split(";") for run in SGR_RE.findall(hint))
 

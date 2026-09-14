@@ -88,3 +88,32 @@ def test_read_bundled_skill_when_resource_lookup_fails_does_raise_gymrat_error(
         read_bundled_skill()
 
     _assert_reinstall_error(caught.value, zipfile.BadZipFile)
+
+
+# ---------------------------------------------------------------------------
+# Loop discipline — stop condition rule
+# ---------------------------------------------------------------------------
+
+
+def _never_stop_early_rule() -> str:
+    """The 'Loop discipline' list item forbidding a stop before a stop condition fires."""
+    section = read_bundled_skill().partition("## Loop discipline")[2].partition("\n## ")[0]
+    return next(item for item in section.split("\n\n") if "never stop before" in item.lower())
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        pytest.param("`iterate`", id="names-the-action"),
+        pytest.param("exits 1", id="command-exit-code"),
+        pytest.param("tool", id="tool-form"),
+        pytest.param("stopped: true", id="tool-stopped-field"),
+        pytest.param("reason", id="tool-reason-field"),
+    ],
+)
+def test_read_bundled_skill_when_stop_condition_rule_read_does_state_both_command_and_tool_forms(
+    phrase: str,
+):
+    rule = _never_stop_early_rule()
+
+    assert phrase in rule

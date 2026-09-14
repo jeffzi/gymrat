@@ -75,7 +75,7 @@ def stop_session(root: str, message: str) -> StopResult:
         msg = "Already stopped"
         raise GymratError(
             msg,
-            hint="Run gymrat iterate, keep, or discard to continue.",
+            hint="Run iterate, keep, or discard to continue.",
             reason="already-stopped",
         )
 

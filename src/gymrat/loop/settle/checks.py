@@ -192,7 +192,7 @@ def gating_refusal(iteration: IterationRecord) -> str:
         The refusal message as markup, including a hint for the agent.
     """
     refusal = f"Keep refused: iteration {iteration.seq} regressed a gating metric."
-    settle_hint = "fix the regression and run `gymrat iterate` again, or run `gymrat discard`"
+    settle_hint = "fix the regression and run `iterate` again, or run `discard`"
 
     unmeasured = _unmeasured_gating_regressions(iteration)
     if not unmeasured:

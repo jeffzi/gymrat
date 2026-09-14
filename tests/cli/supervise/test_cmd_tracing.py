@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -17,16 +18,20 @@ if TYPE_CHECKING:
 import pytest
 
 from gymrat.cli.shared import write_and_flush
+from gymrat.cli.supervise import span_lifecycle
 from gymrat.config import SuperviseConfig
 from gymrat.errors import GymratError
+from gymrat.session.paths import budget_path
 from gymrat.supervisor import SessionPrompt, SupervisionResult
 from tests.cli.supervise._fixtures import make_supervision_result
 from tests.cli.supervise.test_cmd import (
     _CAP_MINUTES,
     _config,
+    _err_text,
     _install_seams,
     _run,
     _Seams,
+    _track_cleanups,
 )
 from tests.session.records._fixtures import SESSION_ID
 
@@ -332,3 +337,50 @@ def test_supervise_when_tracing_disabled_does_not_set_traceparent_on_prompt(
     prompt = seams.supervise_calls[0]["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.traceparent is None
+
+
+# ---------------------------------------------------------------------------
+# tracing setup failure — the session unwinds what it already armed
+# ---------------------------------------------------------------------------
+
+_TRACING_FAILURE = "tracing exporter unreachable"
+
+
+def _exploding_setup_tracing(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+    """Stand in for the tracing setup the session run performs, failing the way a bad exporter does."""
+    raise GymratError(_TRACING_FAILURE)
+
+
+def test_supervise_when_tracing_setup_raises_does_exit_two_naming_the_error(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _tracing_seams(monkeypatch)
+    monkeypatch.setattr(span_lifecycle, "setup_tracing", _exploding_setup_tracing)
+
+    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    assert result.exit_code == 2
+    assert _TRACING_FAILURE in _err_text(result)
+
+
+def test_supervise_when_tracing_setup_raises_does_remove_the_budget_file(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _tracing_seams(monkeypatch)
+    monkeypatch.setattr(span_lifecycle, "setup_tracing", _exploding_setup_tracing)
+
+    _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    assert not Path(budget_path(repo)).exists()
+
+
+def test_supervise_when_tracing_setup_raises_does_uninstall_every_termination_cleanup(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _tracing_seams(monkeypatch)
+    registry = _track_cleanups(monkeypatch)
+    monkeypatch.setattr(span_lifecycle, "setup_tracing", _exploding_setup_tracing)
+
+    _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
+
+    assert registry.live() == []

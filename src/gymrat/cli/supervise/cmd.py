@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -92,6 +93,7 @@ from gymrat.supervisor import (
     compose_kickoff,
     create_claude_driver,
     create_event_log_writer,
+    gymrat_tools_factory,
     supervise,
 )
 from gymrat.supervisor.event_log import probe_event_log_path
@@ -228,15 +230,15 @@ def _report_result(
 def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], None]]:
     """Create, persist, and arm cleanup for the session time budget.
 
-    The callback removes the budget file and uninstalls the termination hook.
-
     Args:
         root: Session root directory.
         max_minutes: Maximum session duration in minutes.
 
     Returns:
-        A ``(deadline_ms, cleanup)`` pair: the absolute deadline and a callback
-        that tears down the budget file and termination hook.
+        A ``(deadline_ms, release)`` pair: the absolute deadline and a callback
+        that removes the budget file and uninstalls the termination hook. The
+        callback is idempotent, so the run's own teardown and the unwind of a
+        session whose setup failed can both call it without clearing twice.
     """
     started_at_ms = now_ms()
     deadline_ms = started_at_ms + minutes_to_ms(max_minutes)
@@ -248,7 +250,17 @@ def _init_budget(root: str, max_minutes: float) -> tuple[float, Callable[[], Non
     Path(session_dir(root)).mkdir(parents=True, exist_ok=True)
     write_budget(root, budget)
     uninstall = install_termination_cleanup(lambda: clear_budget(root))
-    return deadline_ms, uninstall
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        clear_budget(root)
+        uninstall()
+
+    return deadline_ms, release
 
 
 def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> SuperviseReporter:
@@ -278,6 +290,28 @@ def _supervised_session(ctx: _SessionContext, deadline_ms: float) -> SupervisedS
     )
 
 
+async def _supervise_then_release(
+    pending: Coroutine[object, object, SupervisionResult],
+    release_budget: Callable[[], None],
+) -> SupervisionResult:
+    """Await the supervisor, releasing the budget the moment it stops.
+
+    Args:
+        pending: The supervisor run.
+        release_budget: Removes the budget file and its termination cleanup.
+
+    Returns:
+        What the supervisor returned.
+
+    Raises:
+        Exception: Whatever the supervisor raised, unchanged.
+    """
+    try:
+        return await pending
+    finally:
+        release_budget()
+
+
 async def _start_and_supervise(
     reporter: SuperviseReporter,
     pending: Coroutine[object, object, SupervisionResult],
@@ -288,15 +322,14 @@ async def _start_and_supervise(
 ) -> tuple[SupervisionResult, ExitReport]:
     """Run the supervisor, then the exit sequence, inside one running loop.
 
-    The budget file is removed as soon as the supervisor stops, whether it
-    returned or raised, so the exit sequence never runs under a live budget.
     The exit sequence runs only when the supervisor returned; its phases and
     warnings go through the still-running reporter, and its decisions land in
     the same event log and observer the supervisor wrote to.
 
     Args:
         reporter: The dashboard, started before the supervisor is awaited.
-        pending: The supervisor run.
+        pending: The supervisor run, which releases the budget when it stops so
+            the exit sequence never runs under a live budget.
         ctx: The session run's context.
         context: The supervised session the supervisor and exit sequence share.
         observer: The observer the supervisor was handed.
@@ -307,11 +340,8 @@ async def _start_and_supervise(
     Raises:
         Exception: Whatever the supervisor raised, unchanged.
     """
-    try:
-        reporter.start()
-        result = await pending
-    finally:
-        clear_budget(ctx.root)
+    reporter.start()
+    result = await pending
     exit_report = await run_exit_sequence(
         context,
         ended_by=result.ended_by,
@@ -327,67 +357,76 @@ async def _start_and_supervise(
 
 
 def _run_session(ctx: _SessionContext) -> None:
-    """Drive the supervised session, reporting progress and stopping it cleanly."""
-    driver = create_claude_driver()
-    mode = resolve_render_mode()
-    reporter = _create_reporter(ctx, mode)
-    uninstall_reporter_cleanup = install_termination_cleanup(reporter.stop)
-    deadline_ms, uninstall_budget_cleanup = _init_budget(ctx.root, ctx.max_minutes)
-    # A signal mid-exit-sequence exits the process before the loop can cancel
-    # the checks command it is running, so its process group is killed here.
-    uninstall_kill_cleanup = install_termination_cleanup(kill_live_process_groups)
-    if mode == "plain":
-        write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
+    """Drive the supervised session, reporting progress and stopping it cleanly.
 
+    Everything the session arms — the reporter-stop cleanup, the budget file and
+    its cleanup, the process-group kill cleanup — is released before this
+    returns, including when the setup between arming them and starting the
+    supervisor fails, so a failed run leaves nothing registered behind.
+    """
     from gymrat.cli.supervise.span_lifecycle import finalize_tracing, setup_tracing  # noqa: PLC0415
 
-    prompt, observer, tracing = setup_tracing(
-        session_id=ctx.launch.session_id,
-        branch=ctx.branch,
-        launch_at=ctx.launch.at,
-        head_sha=ctx.launch.head_sha,
-        max_minutes=ctx.max_minutes,
-        max_usd=ctx.max_usd,
-        effort=ctx.effort,
-        model=ctx.model,
-        prompt=ctx.session_prompt(),
-        reporter_observer=reporter.observer,
-    )
+    driver = create_claude_driver(tools=gymrat_tools_factory(ctx.root))
+    mode = resolve_render_mode()
+    reporter = _create_reporter(ctx, mode)
 
-    context = _supervised_session(ctx, deadline_ms)
-    result: SupervisionResult | None = None
-    try:
+    with ExitStack() as armed:
+        armed.callback(install_termination_cleanup(reporter.stop))
+        deadline_ms, release_budget = _init_budget(ctx.root, ctx.max_minutes)
+        armed.callback(release_budget)
+        # A signal mid-exit-sequence exits the process before the loop can cancel
+        # the checks command it is running, so its process group is killed here.
+        armed.callback(install_termination_cleanup(kill_live_process_groups))
+        if mode == "plain":
+            write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
+
+        prompt, observer, tracing = setup_tracing(
+            session_id=ctx.launch.session_id,
+            branch=ctx.branch,
+            launch_at=ctx.launch.at,
+            head_sha=ctx.launch.head_sha,
+            max_minutes=ctx.max_minutes,
+            max_usd=ctx.max_usd,
+            effort=ctx.effort,
+            model=ctx.model,
+            prompt=ctx.session_prompt(),
+            reporter_observer=reporter.observer,
+        )
+
+        context = _supervised_session(ctx, deadline_ms)
+        result: SupervisionResult | None = None
         try:
-            result, exit_report = asyncio.run(
-                _start_and_supervise(
-                    reporter,
-                    supervise(
-                        driver=driver,
-                        prompt=prompt,
+            try:
+                result, exit_report = asyncio.run(
+                    _start_and_supervise(
+                        reporter,
+                        _supervise_then_release(
+                            supervise(
+                                driver=driver,
+                                prompt=prompt,
+                                context=context,
+                                launch=ctx.launch,
+                                observer=observer,
+                            ),
+                            release_budget,
+                        ),
+                        ctx=ctx,
                         context=context,
-                        launch=ctx.launch,
                         observer=observer,
-                    ),
-                    ctx=ctx,
-                    context=context,
-                    observer=observer,
+                    )
                 )
+            finally:
+                reporter.stop()
+            _report_result(
+                result,
+                ctx=ctx,
+                session_result=reporter.session_result(),
+                final_text=reporter.final_text(),
+                exit_report=exit_report,
             )
         finally:
-            reporter.stop()
-            uninstall_reporter_cleanup()
-            uninstall_budget_cleanup()
-            uninstall_kill_cleanup()
-        _report_result(
-            result,
-            ctx=ctx,
-            session_result=reporter.session_result(),
-            final_text=reporter.final_text(),
-            exit_report=exit_report,
-        )
-    finally:
-        if tracing.active:
-            finalize_tracing(tracing, result)
+            if tracing.active:
+                finalize_tracing(tracing, result)
 
 
 # ---------------------------------------------------------------------------
