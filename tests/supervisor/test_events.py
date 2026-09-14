@@ -16,6 +16,8 @@ import pytest
 from pydantic import ValidationError
 
 from gymrat.supervisor.events import (
+    ITERATE_TOOL,
+    PROBE_TOOL,
     SUMMARY_MAX_CHARS,
     CapEvent,
     CompactionEvent,
@@ -851,6 +853,80 @@ def test_summarize_input_when_skill_tool_does_extract_skill_and_args(
     tool_name: str, tool_input: dict[str, object], expected: str
 ):
     assert summarize_input(tool_input, tool_name=tool_name) == expected
+
+
+# ---------------------------------------------------------------------------
+# summarize_input — gymrat MCP tools
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        pytest.param({}, id="no-payload"),
+        pytest.param({"some": "data"}, id="with-payload"),
+    ],
+)
+def test_summarize_input_when_iterate_tool_does_return_gymrat_iterate(
+    tool_input: dict[str, object],
+):
+    result = summarize_input(tool_input, tool_name=ITERATE_TOOL)
+
+    assert result == "gymrat iterate"
+
+
+@pytest.mark.parametrize(
+    ("tool_input", "expected"),
+    [
+        pytest.param(
+            {"names": ["bench", "squat"], "samples": 6},
+            "gymrat probe bench squat --samples 6",
+            id="names-and-samples",
+        ),
+        pytest.param(
+            {"names": ["bench"]},
+            "gymrat probe bench",
+            id="single-name-no-samples",
+        ),
+        pytest.param(
+            {},
+            "gymrat probe",
+            id="empty-dict",
+        ),
+        pytest.param(
+            {"names": "not-a-list"},
+            "gymrat probe",
+            id="names-not-a-list-dropped",
+        ),
+        pytest.param(
+            {"names": [1, 2]},
+            "gymrat probe",
+            id="names-not-strings-dropped",
+        ),
+        pytest.param(
+            {"names": ["a"], "samples": "five"},
+            "gymrat probe a",
+            id="samples-not-int-dropped",
+        ),
+    ],
+)
+def test_summarize_input_when_probe_tool_does_build_cli_summary(
+    tool_input: dict[str, object], expected: str
+):
+    result = summarize_input(tool_input, tool_name=PROBE_TOOL)
+
+    assert result == expected
+
+
+def test_summarize_input_when_probe_names_long_does_truncate_via_length_cap():
+    long_names = [f"exercise_{i}" for i in range(100)]
+    tool_input: dict[str, object] = {"names": long_names}
+
+    result = summarize_input(tool_input, tool_name=PROBE_TOOL)
+
+    assert len(result) <= SUMMARY_MAX_CHARS + 1  # +1 for the ellipsis character
+    assert result.startswith("gymrat probe exercise_0")
+    assert result.endswith("…")
 
 
 @pytest.mark.parametrize(

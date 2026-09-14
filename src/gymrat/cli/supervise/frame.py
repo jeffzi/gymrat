@@ -42,6 +42,7 @@ from gymrat.paths import abbreviate_home
 from gymrat.report.format import format_delta
 from gymrat.report.loop import SHORT_SHA_LENGTH
 from gymrat.session.budget import minutes_to_ms
+from gymrat.supervisor.events import ITERATE_SUMMARY, ITERATE_TOOL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -93,7 +94,9 @@ def _format_time_label(elapsed_ms: int, max_minutes: float) -> str:
 
 
 def _is_iterate_tool(tool: TrackedTool | InFlight) -> bool:
-    return tool.tool_name == "Bash" and "gymrat iterate" in tool.input_summary
+    if tool.tool_name == ITERATE_TOOL:
+        return True
+    return tool.tool_name == "Bash" and ITERATE_SUMMARY in tool.input_summary
 
 
 def _format_wall_clock(epoch_ms: int, tz: tzinfo | None) -> str:
@@ -342,6 +345,22 @@ def _build_nested_activity_line(activity: NestedTool | NestedPhase, now: int) ->
     return Text(content, style=STYLE_META, no_wrap=True, overflow="ellipsis")
 
 
+def _build_iterate_nest_row(
+    liveness: InFlight,
+    now: int,
+    root: str,
+    read_progress: Callable[[str], ProgressSnapshot | None],
+) -> Text | None:
+    """The iterate-progress row for an in-flight ``gymrat iterate`` call, or ``None``."""
+    if not _is_iterate_tool(liveness):
+        return None
+    sidecar = read_progress(root)
+    nest_text = _build_iterate_nest(sidecar, now, liveness.since)
+    if nest_text is None:
+        return None
+    return Text(f"  {nest_text}", style=STYLE_META)
+
+
 def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf renderers
     state: ReporterState,
     now: int,
@@ -366,11 +385,9 @@ def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf rende
         liveness_table.add_row(liveness_text)
 
     if isinstance(state.liveness, InFlight):
-        if _is_iterate_tool(state.liveness):
-            sidecar = read_progress(state.root)
-            nest_text = _build_iterate_nest(sidecar, now, state.liveness.since)
-            if nest_text is not None:
-                liveness_table.add_row(Text(f"  {nest_text}", style=STYLE_META))
+        nest_row = _build_iterate_nest_row(state.liveness, now, state.root, read_progress)
+        if nest_row is not None:
+            liveness_table.add_row(nest_row)
 
         nested = pair_value(state.nested, state.liveness.tool_use_id)
         if nested is not None:

@@ -72,10 +72,6 @@ _MAX_FINISHED_TOOLS = 3
 
 _FOLLOW_UP_LABELS: dict[str, str] = {"replied": "replied", "waiting": "waiting for gymrat"}
 
-#: Tool whose completion is worth a session re-read: only gymrat sub-commands
-#: run through it, and they are what write session records.
-_SESSION_WRITING_TOOL = "Bash"
-
 
 def _ms(at_ns: int) -> int:
     """Convert an event's nanosecond timestamp to whole milliseconds."""
@@ -186,19 +182,18 @@ def wants_session_refresh(state: ReporterState, event: SessionEvent) -> bool:
         event: The incoming session event.
 
     Returns:
-        ``True`` for a launch, for a top-level tool end that either ran Bash
-        or carries a tool-use id the reporter never saw start, and for an
-        ``ended`` follow-up during the exit sequence, whose step just kept,
-        discarded, or finalized something in the session.
+        ``True`` for a launch, for any tool end (top-level or nested, any
+        tool name), and for an ``ended`` follow-up during the exit sequence,
+        whose step just kept, discarded, or finalized something in the
+        session.
     """
     match event:
         case LaunchEvent():
             return True
         case FollowUpEvent(action="ended"):
             return isinstance(state.liveness, Exiting)
-        case ToolEndEvent() if event.parent_tool_use_id is None:
-            tracked = pair_value(state.in_flight_tools, event.tool_use_id)
-            return tracked is None or tracked.tool_name == _SESSION_WRITING_TOOL
+        case ToolEndEvent():
+            return True
         case _:
             return False
 
@@ -315,11 +310,36 @@ def _next_loop_text(state: ReporterState, session_result: ReadSessionResult | No
     return plain
 
 
+def _resolve_session_result(
+    state: ReporterState, session_result: ReadSessionResult | None
+) -> ReadSessionResult | None:
+    """The session result to fold in: the fresh read, or *state*'s prior one when unread."""
+    return session_result if session_result is not None else state.session_result
+
+
+def _apply_session_refresh(
+    state: ReporterState,
+    ended: ReporterState,
+    event: ToolEndEvent,
+    session_result: ReadSessionResult | None,
+) -> ReporterState:
+    """Fold a fresh session read into *ended* when the event warrants it."""
+    if not wants_session_refresh(state, event):
+        return ended
+    resolved = _resolve_session_result(state, session_result)
+    return replace(
+        ended,
+        session_result=resolved,
+        last_loop_text=_next_loop_text(state, resolved),
+    )
+
+
 def _tool_end(
     state: ReporterState, event: ToolEndEvent, session_result: ReadSessionResult | None
 ) -> ReporterState:
     if event.parent_tool_use_id is not None:
-        return _nested_tool_end(state, event)
+        ended = _nested_tool_end(state, event)
+        return _apply_session_refresh(state, ended, event, session_result)
 
     tracked = pair_value(state.in_flight_tools, event.tool_use_id)
     in_flight = _drop(state.in_flight_tools, event.tool_use_id)
@@ -347,14 +367,7 @@ def _tool_end(
         finished_tools=finished[-_MAX_FINISHED_TOOLS:],
         liveness=liveness,
     )
-    if not wants_session_refresh(state, event):
-        return ended
-    resolved_session_result = session_result if session_result is not None else state.session_result
-    return replace(
-        ended,
-        session_result=resolved_session_result,
-        last_loop_text=_next_loop_text(state, resolved_session_result),
-    )
+    return _apply_session_refresh(state, ended, event, session_result)
 
 
 def _thinking_update(state: ReporterState, event: ThinkingUpdateEvent) -> ReporterState:
@@ -417,8 +430,7 @@ def _follow_up(
     decided = replace(state, last_decision=_follow_up_decision(state, event))
     if not wants_session_refresh(state, event):
         return decided
-    resolved_session_result = session_result if session_result is not None else state.session_result
-    return replace(decided, session_result=resolved_session_result)
+    return replace(decided, session_result=_resolve_session_result(state, session_result))
 
 
 # ---------------------------------------------------------------------------
