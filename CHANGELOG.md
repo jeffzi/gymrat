@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running measurement with the run.
 - Run the CLI with `python -m gymrat`.
 
+### Fixed
+
+- The dashboard's session rows refresh after every tool end, so a gymrat command run inside a
+  subagent shows at once.
+
 ## [0.19.0] - 2026-09-14
 
 ### Added

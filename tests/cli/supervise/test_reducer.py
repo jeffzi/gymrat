@@ -599,11 +599,21 @@ def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed
         pytest.param(launch_event(1000), True, id="launch"),
         pytest.param(tool_end_event("Bash", "bash-1", 3000), True, id="top-level-bash"),
         pytest.param(tool_end_event("Read", "untracked", 3000), True, id="untracked-tool"),
-        pytest.param(tool_end_event("Read", "read-1", 3000), False, id="tracked-non-bash"),
+        pytest.param(tool_end_event("Read", "read-1", 3000), True, id="tracked-non-bash"),
         pytest.param(
             tool_end_event("Bash", "bash-1", 3000, parent_tool_use_id="bash-1"),
-            False,
+            True,
             id="nested-bash",
+        ),
+        pytest.param(
+            tool_end_event("mcp__gymrat__iterate", "mcp-1", 3000),
+            True,
+            id="top-level-mcp-iterate",
+        ),
+        pytest.param(
+            tool_end_event("Read", "nested-read", 3000, parent_tool_use_id="bash-1"),
+            True,
+            id="nested-read",
         ),
         pytest.param(usage_event(1.0), False, id="usage-update"),
         pytest.param(tool_start_event("Bash", "bash-2", 2000), False, id="tool-start"),

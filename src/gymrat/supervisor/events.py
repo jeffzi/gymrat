@@ -34,6 +34,14 @@ from gymrat.paths import abbreviate_home
 # Maximum code-point length for a session-event summary before it is truncated.
 SUMMARY_MAX_CHARS = 200
 
+# MCP tool names the SDK prefixes onto gymrat's own tool host.
+ITERATE_TOOL = "mcp__gymrat__iterate"
+PROBE_TOOL = "mcp__gymrat__probe"
+
+# Input summary for an iterate call, shared with frame._is_iterate_tool's match
+# against a Bash-invoked `gymrat iterate`.
+ITERATE_SUMMARY = "gymrat iterate"
+
 # json.dumps separators for the wire's no-padding compact form: `{"key":"value"}`.
 _COMPACT_JSON_SEPARATORS = (",", ":")
 
@@ -446,23 +454,55 @@ def _extract_tool_summary(
     if path_key is not None:
         path = input_dict.get(path_key)
         return _render_path(path, supervised_root) if isinstance(path, str) else None
+    return _extract_non_path_summary(input_dict, tool_name)
 
+
+def _extract_non_path_summary(
+    input_dict: dict[str, object],
+    tool_name: str,
+) -> str | None:
+    """Summarize tools that don't use a file-path key."""
     if tool_name == "Bash":
         command = input_dict.get("command")
         return command if isinstance(command, str) else None
-
     if tool_name in ("Agent", "Task"):
         description = input_dict.get("description")
-        if not isinstance(description, str):
-            return None
-        agent_type = input_dict.get("subagent_type") or input_dict.get("type")
-        prefix = f"{agent_type}: " if isinstance(agent_type, str) else ""
-        return f"{prefix}{description}"
-
-    if tool_name == "Skill":
+        if isinstance(description, str):
+            agent_type = input_dict.get("subagent_type") or input_dict.get("type")
+            prefix = f"{agent_type}: " if isinstance(agent_type, str) else ""
+            return f"{prefix}{description}"
+    elif tool_name == "Skill":
         skill = input_dict.get("skill")
         if isinstance(skill, str):
             args = input_dict.get("args")
             return f"{skill} {args}" if isinstance(args, str) else skill
-
+    elif tool_name == ITERATE_TOOL:
+        return ITERATE_SUMMARY
+    elif tool_name == PROBE_TOOL:
+        return _summarize_probe(input_dict)
     return None
+
+
+def _summarize_probe(input_dict: dict[str, object]) -> str:
+    """Build a CLI-style summary for a gymrat probe tool call.
+
+    Malformed fields (``names`` not a list of strings, ``samples`` not an int)
+    are silently dropped rather than raised on.
+
+    Args:
+        input_dict: The raw tool input dict.
+
+    Returns:
+        A ``gymrat probe [names...] [--samples N]`` summary string.
+    """
+    parts: list[str] = ["gymrat", "probe"]
+
+    names = input_dict.get("names")
+    if isinstance(names, list) and all(isinstance(n, str) for n in names):
+        parts.extend(names)
+
+    samples = input_dict.get("samples")
+    if isinstance(samples, int) and not isinstance(samples, bool):
+        parts.append(f"--samples {samples}")
+
+    return " ".join(parts)

@@ -422,7 +422,7 @@ class CountingRead:
         return ReadSessionResult(state=empty_session_state(), has_baseline=False)
 
 
-def test_reread_when_bash_tool_ends_does_reread_unlike_non_bash():
+def test_reread_when_any_tool_ends_does_reread():
     counting = CountingRead()
     kit = make_reporter(read_session=counting)
     observer = kit.reporter.observer
@@ -436,8 +436,8 @@ def test_reread_when_bash_tool_ends_does_reread_unlike_non_bash():
     fire_tool_end(observer, "Bash", "bash-1", 5000)
     after_bash = counting.count
 
-    assert after_read == after_launch
-    assert after_bash > after_launch
+    assert after_read > after_launch
+    assert after_bash > after_read
 
 
 def test_reread_when_tool_end_has_unknown_id_does_reread():
@@ -986,7 +986,7 @@ def test_liveness_when_nested_event_has_no_matching_parent_does_ignore():
 
 
 # ---------------------------------------------------------------------------
-# liveness — nested iterate sidecar
+# liveness — iterate sidecar
 # ---------------------------------------------------------------------------
 
 

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.panel import Panel
 
+from gymrat.cli.supervise.state import ReadSessionResult
+from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._ansi import (
     SGR_BLUE,
@@ -701,3 +703,153 @@ def test_panel_title_when_model_or_effort_in_force_does_show_labelled_value(
     frame = render_frame(kit.reporter)
 
     assert _panel_title_text(frame) == expected_title
+
+
+# ---------------------------------------------------------------------------
+# MCP iterate tool detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_use_id", "passes_completed", "passes_total", "last_pass_duration_ms"),
+    [
+        pytest.param("mcp__gymrat__iterate", "mcp-1", 4, 8, 120_000.0, id="mcp-tool-name"),
+        pytest.param("Bash", "bash-1", 3, 6, 100_000.0, id="bash-tool-name"),
+    ],
+)
+def test_liveness_when_iterate_tool_has_sidecar_does_show_passes_nest(
+    tool_name: str,
+    tool_use_id: str,
+    passes_completed: int,
+    passes_total: int,
+    last_pass_duration_ms: float,
+):
+    sidecar = ProgressSnapshot(
+        passes_completed=passes_completed,
+        passes_total=passes_total,
+        last_pass_duration_ms=last_pass_duration_ms,
+    )
+
+    def fake_read_progress(_root: str) -> ProgressSnapshot | None:
+        return sidecar
+
+    kit = make_reporter(read_progress=fake_read_progress)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(
+        kit.reporter.observer,
+        tool_name,
+        tool_use_id,
+        2000,
+        input_summary="gymrat iterate",
+    )
+    kit.clock.now = 2000 + 10 * 60 * 1000
+
+    frame = render_frame(kit.reporter)
+
+    assert f"{passes_completed}/{passes_total}" in frame
+    passes_line = _line_after(frame, tool_name)
+    assert "passes" in passes_line
+
+
+def test_liveness_when_mcp_probe_tool_in_flight_does_show_summary_not_nest():
+    kit = make_reporter()
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(
+        kit.reporter.observer,
+        "mcp__gymrat__probe",
+        "mcp-2",
+        2000,
+        input_summary="gymrat probe a b",
+    )
+    kit.clock.now = 5000
+
+    frame = render_frame(kit.reporter)
+
+    assert "mcp__gymrat__probe" in frame
+    assert "gymrat probe a b" in frame
+    assert "↳" not in frame
+
+
+def test_liveness_when_non_iterate_mcp_tool_in_flight_does_not_show_sidecar():
+    sidecar = ProgressSnapshot(
+        passes_completed=4,
+        passes_total=8,
+        last_pass_duration_ms=120_000.0,
+    )
+
+    def fake_read_progress(_root: str) -> ProgressSnapshot | None:
+        return sidecar
+
+    kit = make_reporter(read_progress=fake_read_progress)
+    fire_launch(kit.reporter.observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(
+        kit.reporter.observer,
+        "mcp__gymrat__probe",
+        "mcp-2",
+        2000,
+        input_summary="gymrat probe a b",
+    )
+    kit.clock.now = 5000
+
+    frame = render_frame(kit.reporter)
+
+    assert "4/8" not in frame
+
+
+# ---------------------------------------------------------------------------
+# nested tool end triggers session refresh through reporter
+# ---------------------------------------------------------------------------
+
+
+def test_nested_tool_end_when_session_changes_does_reflect_new_state_in_frame():
+    initial_state = session_state(iteration_count=0)
+    updated_state = session_state(
+        iteration_count=2,
+        keep_count=1,
+        discard_count=1,
+        last_iteration=make_iteration(-3.0, "improved"),
+    )
+
+    call_count = 0
+
+    def switching_read_session() -> ReadSessionResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 1:
+            return ReadSessionResult(state=initial_state, has_baseline=True)
+        return ReadSessionResult(state=updated_state, has_baseline=True)
+
+    kit = make_reporter(
+        max_iterations=20,
+        read_session=switching_read_session,
+    )
+    observer = kit.reporter.observer
+
+    fire_launch(observer, 1000)
+    kit.clock.now = 2000
+    fire_tool_start(observer, "Bash", "agent-1", 2000, input_summary="run agent")
+    kit.clock.now = 3000
+    fire_tool_start(
+        observer,
+        "Read",
+        "nested-read-1",
+        3000,
+        parent_tool_use_id="agent-1",
+        input_summary="src/config.ts",
+    )
+    kit.clock.now = 4000
+    fire_tool_end(
+        observer,
+        "Read",
+        "nested-read-1",
+        4000,
+        parent_tool_use_id="agent-1",
+    )
+
+    frame = render_frame(kit.reporter)
+
+    assert "2/20" in frame
+    assert "improved" in frame
