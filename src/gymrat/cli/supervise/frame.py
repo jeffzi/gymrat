@@ -27,6 +27,7 @@ from gymrat.cli.supervise.reducer import pair_value
 from gymrat.cli.supervise.state import (
     Capped,
     Composing,
+    Exiting,
     InFlight,
     NestedTool,
     Responding,
@@ -34,7 +35,7 @@ from gymrat.cli.supervise.state import (
     Thinking,
     Waiting,
 )
-from gymrat.cli.supervise.text import format_cost, loop_segments
+from gymrat.cli.supervise.text import exit_phase_text, format_cost, loop_segments
 from gymrat.eta import MS_PER_SECOND, format_duration, format_eta
 from gymrat.model import Effect
 from gymrat.paths import abbreviate_home
@@ -209,6 +210,14 @@ def _build_waiting_text(
     return Text(f"no output for {format_duration(ago)} {label}", style=style)
 
 
+def _pending_label(liveness: Responding | Composing | Exiting) -> str:
+    if isinstance(liveness, Composing):
+        return f"preparing {liveness.tool_name}"
+    if isinstance(liveness, Exiting):
+        return exit_phase_text(liveness)
+    return "responding"
+
+
 def _build_liveness_text(  # noqa: PLR0913 -- ctx fields threaded to leaf renderers
     liveness: Liveness,
     now: int,
@@ -232,14 +241,10 @@ def _build_liveness_text(  # noqa: PLR0913 -- ctx fields threaded to leaf render
             text = Text(no_wrap=True, overflow="ellipsis")
             text.append(f"  thinking  ~{tokens:,} tokens  {elapsed}", style=STYLE_PENDING)
             return text
-        case Responding(since=since) | Composing(since=since):
+        case Responding(since=since) | Composing(since=since) | Exiting(since=since):
             elapsed = format_duration(now - since)
-            if isinstance(liveness, Composing):
-                label = f"preparing {liveness.tool_name}"
-            else:
-                label = "responding"
             style = _style_unless_no_color(STYLE_PENDING, no_color=no_color)
-            return Text(f"  {label}  {elapsed}", style=style)
+            return Text(f"  {_pending_label(liveness)}  {elapsed}", style=style)
         case Waiting():
             return _build_waiting_text(
                 liveness,

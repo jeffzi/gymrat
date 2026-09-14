@@ -16,6 +16,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gymrat.supervisor.events import TextDeltaEvent, ToolProgressEvent
+from gymrat.supervisor.exit_sequence import ExitPhase
+from tests._ansi import strip_ansi
+from tests._rich import console_output, sealed_console
 from tests.cli.supervise._fixtures import (
     LIVE_CLASS_PATH,
     fire_launch,
@@ -116,6 +119,34 @@ def test_render_when_event_leaves_state_unchanged_does_not_repaint_live(event: S
         kit.reporter.observer(event)
 
         assert live.update.call_count == painted
+
+
+def test_exit_phase_when_live_mode_does_repaint_live():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        live = mock_live_cls.return_value
+        kit = make_reporter(mode="live")
+        fire_launch(kit.reporter.observer, 1000)
+        painted = live.update.call_count
+
+        kit.reporter.exit_phase(ExitPhase(kind="settling", pid=None))
+
+        assert live.update.call_count > painted
+
+
+# ---------------------------------------------------------------------------
+# warn — live mode prints messages verbatim
+# ---------------------------------------------------------------------------
+
+
+def test_warn_when_live_message_contains_brackets_does_print_it_verbatim():
+    with patch(LIVE_CLASS_PATH, autospec=True) as mock_live_cls:
+        console = sealed_console()
+        mock_live_cls.return_value.console = console
+        kit = make_reporter(mode="live")
+
+        kit.reporter.warn("missing [banana] key")
+
+        assert "missing [banana] key" in strip_ansi(console_output(console))
 
 
 def test_render_when_plain_mode_does_not_create_live():

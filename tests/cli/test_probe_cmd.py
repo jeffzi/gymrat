@@ -33,7 +33,7 @@ from tests._cli import ENTRY, no_color_env
 from tests._git import git
 from tests._process_helpers import is_alive
 from tests.cli._budget import install_budget, install_tight_budget
-from tests.cli._loop_cmds import last_command_record, plain_lines, write_config
+from tests.cli._session import last_command_record, plain_lines, write_config
 from tests.conftest import hold_lock
 from tests.loop._probe import MeasureRecorder, baseline_of, install_measure, measurement, only_call
 from tests.loop.settle._fixtures import start_with
@@ -445,7 +445,11 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
     git(repo, "add", "bench.sh", "gymrat.toml")
     git(repo, "commit", "-m", "bench harness")
     subprocess.run(  # noqa: S603
-        [*ENTRY, "start", "main"], cwd=repo, env=no_color_env(), capture_output=True, check=True
+        [*ENTRY, "start", "--baseline", "main"],
+        cwd=repo,
+        env=no_color_env(),
+        capture_output=True,
+        check=True,
     )
     append_record(session_jsonl_path(repo), baseline_of())
 

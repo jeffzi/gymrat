@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from filelock import FileLock
 
-from gymrat.cli.shared import set_stderr_color_override
+from gymrat.cli.shared import set_color_override
 from gymrat.session.clock import now_iso
 from gymrat.session.lock import _os_lock_file
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
@@ -96,11 +96,11 @@ def _clear_gymrat_env() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_stderr_color() -> Iterator[None]:
-    """Reset the stderr color override before and after every test."""
-    set_stderr_color_override(None)
+def _reset_color() -> Iterator[None]:
+    """Reset the color override before and after every test."""
+    set_color_override(None)
     yield
-    set_stderr_color_override(None)
+    set_color_override(None)
 
 
 def _init_scratch_repo() -> str:

@@ -16,12 +16,14 @@ import pytest
 from gymrat.cli.supervise.reducer import (
     ReporterState,
     advance,
+    exit_phase,
     plain_line,
     wants_session_refresh,
 )
 from gymrat.cli.supervise.state import (
     Capped,
     Composing,
+    Exiting,
     FinishedTool,
     InFlight,
     NestedTool,
@@ -37,6 +39,7 @@ from gymrat.supervisor.events import (
     CompactionEvent,
     TextDeltaEvent,
 )
+from gymrat.supervisor.exit_sequence import ExitPhase
 from tests.cli.supervise._fixtures import (
     _NS_PER_MS,
     cap_event,
@@ -133,6 +136,16 @@ def started(
 def bash_in_flight_state() -> ReporterState:
     """A state with a top-level Bash call in flight since 1500 ms."""
     return started("Bash", "bash-1", 1500)
+
+
+def exiting_state() -> ReporterState:
+    """A state whose run-end exit sequence has been settling since 7000 ms."""
+    return exit_phase(make_state(), ExitPhase(kind="settling", pid=None), 7000)
+
+
+def waiting_state() -> ReporterState:
+    """A state waiting on the agent since 2000 ms."""
+    return make_state(liveness=Waiting(since=2000))
 
 
 def emit(
@@ -509,6 +522,73 @@ def test_advance_when_text_delta_arrives_does_not_change_state():
 
 
 # ---------------------------------------------------------------------------
+# exit_phase — run-end exit sequence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "pid"),
+    [
+        pytest.param("waiting-lock", 4242, id="waiting-lock"),
+        pytest.param("waiting-lock", None, id="waiting-lock-unknown-pid"),
+        pytest.param("settling", None, id="settling"),
+    ],
+)
+def test_exit_phase_when_applied_does_show_the_exiting_liveness_since_the_timestamp(
+    kind: Literal["waiting-lock", "settling"], pid: int | None
+):
+    after = exit_phase(make_state(), ExitPhase(kind=kind, pid=pid), 7000)
+
+    assert after.liveness == Exiting(kind=kind, since=7000, pid=pid)
+
+
+def test_exit_phase_when_applied_twice_to_same_input_does_return_equal_states():
+    before = make_state()
+    phase = ExitPhase(kind="waiting-lock", pid=4242)
+
+    assert exit_phase(before, phase, 7000) == exit_phase(before, phase, 7000)
+
+
+def test_exit_phase_when_same_phase_repeats_does_return_the_state_unchanged():
+    before = exiting_state()
+
+    after = exit_phase(before, ExitPhase(kind="settling", pid=None), 9000)
+
+    assert after is before
+
+
+def test_exit_phase_when_lock_holder_changes_does_restart_the_timestamp():
+    before = exit_phase(make_state(), ExitPhase(kind="waiting-lock", pid=4242), 7000)
+
+    after = exit_phase(before, ExitPhase(kind="waiting-lock", pid=5151), 9000)
+
+    assert after.liveness == Exiting(kind="waiting-lock", since=9000, pid=5151)
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        pytest.param("discard", "exit · discard", id="with-reason"),
+        pytest.param("", "exit", id="empty-reason"),
+    ],
+)
+def test_advance_when_ended_follow_up_arrives_while_exiting_does_record_the_exit_step(
+    reason: str, expected: str
+):
+    after = advance(exiting_state(), follow_up_event(8000, action="ended", reason=reason), None)
+
+    assert after.last_decision == expected
+
+
+def test_advance_when_ended_follow_up_arrives_while_exiting_does_take_the_passed_session():
+    session = read_result(loop_session(), has_baseline=True)
+
+    after = advance(exiting_state(), follow_up_event(8000, action="ended", reason="keep"), session)
+
+    assert after.session_result is session
+
+
+# ---------------------------------------------------------------------------
 # wants_session_refresh
 # ---------------------------------------------------------------------------
 
@@ -534,6 +614,25 @@ def test_wants_session_refresh_when_event_arrives_does_match_the_reread_contract
 ):
     state = started("Bash", "bash-1")
     state = started("Read", "read-1", base=state)
+
+    assert wants_session_refresh(state, event) is expected
+
+
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        pytest.param(exiting_state, True, id="exiting"),
+        pytest.param(waiting_state, False, id="waiting"),
+        pytest.param(make_state, False, id="starting"),
+        pytest.param(lambda: started("Bash", "bash-1"), False, id="in-flight"),
+        pytest.param(capped_state, False, id="capped"),
+    ],
+)
+def test_wants_session_refresh_when_ended_follow_up_arrives_does_reread_only_while_exiting(
+    make: Callable[[], ReporterState], expected: bool
+):
+    state = make()
+    event = follow_up_event(8000, action="ended", reason="keep")
 
     assert wants_session_refresh(state, event) is expected
 

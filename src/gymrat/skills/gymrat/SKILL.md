@@ -33,7 +33,7 @@ Load the per-repo runbook before your first edit. `gymrat start` prints the path
 ### 1. Start the session
 
 ```sh
-gymrat start [ref]       # ref defaults to HEAD
+gymrat start [--baseline <ref>]   # defaults to HEAD
 ```
 
 Pins the baseline and creates two worktrees: experiment (where you edit) and baseline (read-only).
@@ -102,7 +102,7 @@ gymrat stop -m "<report>"
 ```
 
 Appends a closing report to the session log as a durable record — the session stays open.
-`finalize` is still required to close it.
+`finalize` is still required to close it (under supervise, the supervisor handles that on exit).
 
 ### 6. Close the session
 
@@ -112,7 +112,8 @@ gymrat finalize [-m "squash message"] [--branch <name>]
 
 Collapses kept iterations into one squash commit on a new branch (default `<session-branch>-final`).
 The squash commit is the deliverable. Requires every iteration settled, at least one keep, and a
-clean experiment worktree. A finalized session refuses all mutating commands.
+clean experiment worktree. A finalized session refuses all mutating commands. Under supervise, the
+supervisor decides whether to finalize on exit, so never run `finalize` yourself.
 
 ### Supervised mode
 
@@ -121,7 +122,7 @@ on its own instead of you running them by hand.
 
 ```sh
 gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] \
-  [--baseline <ref>] [--force] [--log <path>] [--model <name>]
+  [--baseline <ref>] [--force] [--log <path>] [--model <name>] [--no-finalize]
 ```
 
 Launches an agent to drive the session loop autonomously. Requires `runbook` in `gymrat.toml` and
@@ -142,9 +143,16 @@ the same repository, and the supervise lock does not stop it.
 **In supervised mode (this text in your system prompt), no human reads your turns.** Ending a turn
 early is recoverable but wasteful — the supervisor replies with a reminder to re-read the session
 and continue, so the run does not end on an early turn. The session ends on `gymrat stop`, a stop
-condition, a cap, or a guard (follow-up ceiling, no-progress, consecutive-discard). Never end a turn
-with a question, a request for a decision, or an offer of alternatives: nobody answers. Decide from
-the runbook and continue. The only turn you should end is the one after `gymrat stop -m "<report>"`.
+condition, a failed hook, a cap, or a guard (follow-up ceiling, no-progress, consecutive-discard).
+Never end a turn with a question, a request for a decision, or an offer of alternatives: nobody
+answers. Decide from the runbook and continue. The only turn you should end is the one after
+`gymrat stop -m "<report>"`.
+
+**The supervisor ends the run and closes the session.** When a hook fails or a stop condition is
+met, the supervisor ends the run itself. When the run ends, it settles the last iteration unless a
+person must decide (a failed hook, failed checks, a tree changed after measuring), then runs
+`finalize` when at least one iteration was kept, nothing is left for a person, and `--no-finalize`
+was not passed. Never run `finalize` under supervise.
 
 **Never run a gymrat command in the background.** The command must run in the foreground with no
 timeout — the supervisor raises the command's timeout ceiling to match the run's wall-clock cap. A
@@ -222,8 +230,8 @@ Levers, in order of leverage:
 field `at`.
 When driving the loop programmatically, always pass `--format json`. The JSON contract is
 additive-only from the first published release (no renames or removals without a breaking change);
-the text report may change between releases. `start`, `finalize`, and `sync` are text-only: their
-outputs are one-shot summaries agents don't parse.
+the text report may change between releases. `start`, `finalize`, and `sync` now accept
+`--format json` too; `export` and `supervise` remain text-only.
 
 ## Syncing main-tree edits
 
@@ -252,14 +260,14 @@ further measurement and report what the probes measured.
    configured, keep iterating until `iterate` exits 1 naming the condition. Without `stop`, the
    runbook's goal is the criterion. Report and stop when a target proves unreachable after sustained
    NO-SIGNAL. Record the closing report with `gymrat stop -m "<report>"` so it survives in the
-   session log; under supervise, `gymrat stop` is the last command before the final turn.
+   session log. Under supervise, the supervisor ends the run as soon as a stop condition is met;
+   otherwise `gymrat stop` is the last command before the final turn.
    `gymrat stop` refuses (exit 2) while an iteration is unsettled, while a gating-regression block
    stands, or when the log already ends on a stop; settle with `keep` or `discard` first.
 
-2. **When a hook fails, report the failure and stop the loop.** Hooks cannot fail the loop, so a
-   silently-ignored failure reaches `keep` unnoticed. Unsupervised: pause for the user to decide.
-   Supervised (no human reads your turns): discard the affected iteration if one is unsettled, then
-   end with a report naming the hook and its output.
+2. **When a hook fails outside supervise, report the failure and pause for the user to decide.**
+   `iterate` succeeds even when a hook fails, so a silently-ignored failure reaches `keep` unnoticed.
+   Under supervise, the supervisor ends the run on a failed hook.
 
 3. **Never run concurrent sessions.** Every command that runs the bench — `measure` and `compare`
    included — or mutates the session holds a per-repository lock, and a second gymrat process
@@ -294,12 +302,14 @@ further measurement and report what the probes measured.
 
 ## Exit codes
 
-| Code    | Meaning                                                                                |
-| ------- | -------------------------------------------------------------------------------------- |
-| 0       | Success (report produced, no gate tripped)                                             |
-| 1       | Gate tripped: `keep` refused, `iterate` hit stop condition, `supervise` cap fired      |
-| 2       | Operational error: no session, finalized session, lock contention, bad config, timeout |
-| 128 + N | Killed by signal N (e.g. 130 after Ctrl-C); cleanup ran before exiting                 |
+| Code    | Meaning                                                                                                                                                                                       |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0       | Success (report produced, no gate tripped)                                                                                                                                                    |
+| 1       | Gate tripped: `keep` refused, `iterate` hit stop condition, `supervise` ended on a cap (wall-clock, spend), a guard (follow-up ceiling, no progress, consecutive discards), or a hook failure |
+| 2       | Operational error: no session, finalized session, lock contention, bad config, timeout                                                                                                        |
+| 128 + N | Killed by signal N (e.g. 130 after Ctrl-C); cleanup ran before exiting                                                                                                                        |
 
-Exit 1 is information: read the output. Exit 2 is a real error: diagnose before retrying. An exit
-above 128 means the run was interrupted. The iteration may be unsettled; check `gymrat status`.
+Exit 1 is information: read the output. A `supervise` run that ends on its stop condition exits 0,
+the same as one whose session finished on its own. Exit 2 is a real error: diagnose before
+retrying. An exit above 128 means the run was interrupted. The iteration may be unsettled; check
+`gymrat status`.

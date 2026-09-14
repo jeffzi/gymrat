@@ -25,6 +25,7 @@ from gymrat.cli.shared import (
     DebugOption,
     FormatOption,
     OutputFormat,
+    PositionalParamType,
     PrepareOption,
     ReportRenderers,
     SamplesOption,
@@ -36,7 +37,6 @@ from gymrat.cli.shared import (
     config_trace_args,
     emit_report,
     parse_fail_on,
-    parse_positional,
     run_cli,
     run_options_of,
     warn_duration_over_budget,
@@ -56,7 +56,7 @@ from gymrat.sampling import TargetSpec
 _BaselineArgument = Annotated[
     TargetSpec,
     typer.Argument(
-        parser=parse_positional,
+        click_type=PositionalParamType(),
         metavar="BASELINE",
         help="[label=]<ref|dir> to measure against",
     ),
@@ -64,19 +64,21 @@ _BaselineArgument = Annotated[
 _CandidatesArgument = Annotated[
     list[TargetSpec],
     typer.Argument(
-        parser=parse_positional,
+        click_type=PositionalParamType(),
         metavar="CANDIDATES...",
         help="[label=]<ref|dir>, each judged against the baseline",
     ),
 ]
 _VerboseOption = Annotated[
-    bool, typer.Option("--verbose", help="name the statistical method behind each verdict")
+    bool,
+    typer.Option("--verbose", "-v", help="name the statistical method behind each verdict"),
 ]
 _FailOnOption = Annotated[
     list[FailOnCondition] | None,
     typer.Option(
         "--fail-on",
         parser=parse_fail_on,
+        metavar="<condition>",
         help='exit 1 when a condition trips (repeatable: "regressed", "geomean:<pct>")',
     ),
 ]

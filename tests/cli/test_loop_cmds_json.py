@@ -1,10 +1,11 @@
-"""JSON contract tests for keep, discard, stop, and status ``--format json``.
+"""JSON contract tests for keep, discard, stop, status, start, finalize, sync ``--format json``.
 
 Budget-key tests verify that a live budget inserts a ``budget`` object into
 every JSON document, and that no budget means no key.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -17,12 +18,15 @@ from gymrat.session import (
     KeepChecks,
     KeepRecord,
     SessionLogRecord,
+    SessionRecord,
     StopRecord,
     append_record,
+    experiment_worktree_dir,
+    read_records,
     session_jsonl_path,
 )
 from tests.cli._budget import install_budget
-from tests.cli._loop_cmds import (
+from tests.cli._session import (
     make_discard_repo,
     make_stop_repo,
     never_tty,
@@ -34,6 +38,8 @@ from tests.loop.settle._fixtures import (
     CHECKS,
     checks_pass,
     edit_experiment,
+    git,
+    head_of,
     start_with,
     unimproved,
 )
@@ -503,6 +509,340 @@ def test_stop_command_when_format_json_and_no_budget_does_omit_budget_key(
     stop_repo: str,
 ):
     result = runner.invoke(app, ["stop", "-m", "done", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+# ---------------------------------------------------------------------------
+# start --format json
+# ---------------------------------------------------------------------------
+
+
+def _stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> object:
+    """Pin what ``start`` reads by replacing its ``resolve_config`` with a fixed config."""
+    config = resolved_config(**overrides)
+
+    def fake(*_a: object, **_k: object) -> object:
+        return config
+
+    monkeypatch.setattr("gymrat.cli.session_cmds.resolve_config", fake)
+    return config
+
+
+def test_start_command_when_format_json_and_fresh_does_emit_structured_json(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "session_id" in doc
+    assert doc["branch"].startswith("gymrat/")
+    assert doc["baseline"]["ref"] == "main"
+    assert isinstance(doc["baseline"]["sha"], str)
+    assert isinstance(doc["worktrees"], dict)
+    assert doc["resumed"] is False
+    assert doc["iteration_count"] == 0
+    assert doc["keep_count"] == 0
+    assert doc["runbook"] is None
+    assert doc["archived"] is None
+
+
+def test_start_command_when_format_json_and_resumed_does_set_resumed_true_with_counts(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_session(repo, "main", resolved_config())
+    append_record(session_jsonl_path(repo), iteration_record(seq=1))
+    append_record(session_jsonl_path(repo), committed_keep(1))
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["resumed"] is True
+    assert doc["iteration_count"] == 1
+    assert doc["keep_count"] == 1
+
+
+def test_start_command_when_format_json_and_archived_does_include_archived_session_id(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    header = _open_session_with_one_keep(repo)
+    from gymrat.loop.finalize import finalize_session
+
+    finalize_session(repo)
+    closed_id = header.session_id
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["archived"]["session_id"] == closed_id
+    assert isinstance(doc["archived"]["path"], str)
+    assert doc["resumed"] is False
+
+
+def test_start_command_when_format_json_and_runbook_configured_does_include_runbook(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch, runbook=".claude/skills/ecstatic-bench/SKILL.md")
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["runbook"] == ".claude/skills/ecstatic-bench/SKILL.md"
+
+
+def test_start_command_when_format_json_does_include_stable_key_names(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert {
+        "session_id",
+        "branch",
+        "baseline",
+        "worktrees",
+        "resumed",
+        "iteration_count",
+        "keep_count",
+        "runbook",
+        "archived",
+    } <= doc.keys()
+
+
+def test_start_command_when_format_text_does_produce_same_output_as_default(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "text"])
+
+    assert result.exit_code == 0
+    assert "Started session" in result.stdout or "Resumed session" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# finalize --format json
+# ---------------------------------------------------------------------------
+
+
+def _open_session_with_one_keep(repo: str) -> SessionRecord:
+    """Open a session, commit and log one kept iteration, and return the session header."""
+    start_session(repo, "main", resolved_config())
+    worktree = experiment_worktree_dir(repo)
+    (Path(worktree) / "step.txt").write_text("cache the regex\n", encoding="utf-8")
+    git(["add", "-A"], worktree)
+    git(["commit", "-m", "cache the regex"], worktree)
+    commit = head_of(worktree)
+    append_record(session_jsonl_path(repo), iteration_record(seq=1))
+    append_record(session_jsonl_path(repo), committed_keep(1, commit=commit))
+    header = read_records(session_jsonl_path(repo))[0]
+    assert isinstance(header, SessionRecord)
+    return header
+
+
+def test_finalize_command_when_format_json_does_emit_structured_json(
+    repo: str,
+):
+    _open_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "branch" in doc
+    assert doc["branch"].endswith("-final")
+    assert "commit" in doc
+    assert isinstance(doc["commit"], str)
+    assert len(doc["commit"]) == 40
+    assert "message" in doc
+    assert "at" in doc
+    assert isinstance(doc["at"], int)
+
+
+def test_finalize_command_when_format_json_and_message_given_does_include_message(
+    repo: str,
+):
+    _open_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize", "-m", "squash the tuning session", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["message"] == "squash the tuning session"
+
+
+def test_finalize_command_when_format_json_does_include_stable_key_names(
+    repo: str,
+):
+    _open_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert {"branch", "commit", "message", "at"} <= doc.keys()
+
+
+def test_finalize_command_when_format_text_does_produce_same_output_as_default(
+    repo: str,
+):
+    _open_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize", "--format", "text"])
+
+    assert result.exit_code == 0
+    assert "Finalized" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# sync --format json
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sync_repo(repo: str) -> str:
+    """A repository with an open session, ready for sync tests."""
+    start_session(repo, "main", resolved_config())
+    return repo
+
+
+def test_sync_command_when_format_json_and_files_synced_does_emit_files_array(
+    sync_repo: str,
+):
+    root = Path(sync_repo)
+    (root / "extra.py").write_text("# new\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["sync", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert isinstance(doc["files"], list)
+    assert len(doc["files"]) > 0
+    assert "extra.py" in doc["files"]
+
+
+def test_sync_command_when_format_json_and_nothing_to_sync_does_emit_empty_files_array(
+    sync_repo: str,
+):
+    result = runner.invoke(app, ["sync", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["files"] == []
+
+
+def test_sync_command_when_format_json_does_include_stable_key_names(
+    sync_repo: str,
+):
+    result = runner.invoke(app, ["sync", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "files" in doc
+
+
+def test_sync_command_when_format_text_does_produce_identical_output(
+    sync_repo: str,
+):
+    result_text = runner.invoke(app, ["sync", "--format", "text"])
+    result_default = runner.invoke(app, ["sync"])
+
+    assert result_text.exit_code == 0
+    assert result_default.exit_code == 0
+    assert result_text.stdout == result_default.stdout
+
+
+# ---------------------------------------------------------------------------
+# budget key — start, finalize, sync JSON output
+# ---------------------------------------------------------------------------
+
+
+def test_start_command_when_format_json_and_budget_active_does_include_budget_object(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+    Path(repo, ".gymrat").mkdir(exist_ok=True)
+    install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
+
+
+def test_start_command_when_format_json_and_no_budget_does_omit_budget_key(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_resolve_config(monkeypatch)
+
+    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+def test_finalize_command_when_format_json_and_budget_active_does_include_budget_object(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _open_session_with_one_keep(repo)
+    install_budget(repo, monkeypatch)
+
+    result = runner.invoke(app, ["finalize", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
+
+
+def test_finalize_command_when_format_json_and_no_budget_does_omit_budget_key(
+    repo: str,
+):
+    _open_session_with_one_keep(repo)
+
+    result = runner.invoke(app, ["finalize", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" not in doc
+
+
+def test_sync_command_when_format_json_and_budget_active_does_include_budget_object(
+    sync_repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    install_budget(sync_repo, monkeypatch)
+
+    result = runner.invoke(app, ["sync", "--format", "json"])
+
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "budget" in doc
+    assert doc["budget"]["cap_minutes"] == 30
+    assert isinstance(doc["budget"]["remaining_seconds"], int)
+
+
+def test_sync_command_when_format_json_and_no_budget_does_omit_budget_key(
+    sync_repo: str,
+):
+    result = runner.invoke(app, ["sync", "--format", "json"])
 
     assert result.exit_code == 0
     doc = json.loads(result.stdout)

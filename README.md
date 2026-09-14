@@ -116,7 +116,7 @@ For iterating on performance work, gymrat manages a session with a pinned baseli
 experiment worktree:
 
 ```console
-gymrat start main          # pin the baseline and open the session
+gymrat start --baseline main   # pin the baseline and open the session
 # ...edit code in the experiment worktree...
 gymrat probe decode#time   # bench the edit alone and print its delta; records nothing
 gymrat iterate             # measure the edit against the baseline
@@ -139,7 +139,7 @@ record itself.
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs that loop under an AI
 agent. The runbook scaffolded by `init` describes the goal and constraints. The session continues
 across an early turn end — the supervisor replies and the run ends on `gymrat stop`, a stop
-condition, a cap, or a guard. Three guards protect against runaway loops: the
+condition, a failed hook, a cap, or a guard. Three guards protect against runaway loops: the
 follow-up ceiling (100 replies), the no-progress limit (3 consecutive turns
 with no improvement), and the consecutive-discard limit (5 discards in a row).
 Both the agent backend and the supervisor enforce `--max-usd`.
@@ -148,6 +148,16 @@ Both the agent backend and the supervisor enforce `--max-usd`.
 `--baseline <ref>` pins the session to a specific ref (default HEAD; ignored when resuming an open
 session). The wall-clock cap starts once the baseline is recorded, so a run may take the cap plus
 the baseline's duration.
+
+When the run ends, `supervise` settles the session before it prints the summary. It keeps an
+improved iteration whose checks pass and discards one that did not improve. When the last gymrat
+command has finished, nothing needs a person's decision, and at least one iteration was kept, the
+run ends with a settled session and a squash branch. An iteration whose checks failed, whose
+worktree changed after measuring, or whose hook failed stays in the worktree for you, as do
+unmeasured edits, and the summary names them. Pass `--no-finalize` to leave the session open.
+Settling may run past the wall-clock cap by about twice `timeout_seconds`: once waiting for a gymrat
+command that is still running, once for the checks, plus the git work of keeping, discarding, or
+finalizing, which has no timeout.
 
 `iterate`, `keep`, `discard`, `status`, `sync`, `compare`, `measure`, and `probe` print a time-left
 line so the agent can plan around the wall-clock cap.
@@ -184,7 +194,9 @@ stdin:
 A `before` hook gets the previous iteration's record in `last_iteration`, or `null` on the first
 iteration. An `after` hook gets the record gymrat just appended for this `seq`.
 
-gymrat reports a hook's non-zero exit in the iteration output; the iteration still succeeds.
+gymrat reports a hook's non-zero exit in the iteration output; the iteration still succeeds. Under
+`supervise`, a failed hook ends the run and leaves the iteration it bracketed for a person to keep or
+discard.
 gymrat kills a hook that runs longer than 30 seconds.
 
 An after hook must not modify the experiment worktree: gymrat captures the worktree's contents when
@@ -208,9 +220,9 @@ The principles behind these choices, and what gymrat deliberately is not, are in
 
 ## Machine-readable output
 
-Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `stop`,
-`status`, `probe`) accepts `--format json` for structured output. Text output is for humans and may
-change between releases. `start`, `sync`, `finalize`, `export`, and `supervise` are text-only.
+Every comparison, measurement, and session-lifecycle command (`iterate`, `keep`, `discard`, `stop`,
+`status`, `probe`, `start`, `finalize`, `sync`) accepts `--format json` for structured output. Text
+output is for humans and may change between releases. `export` and `supervise` are text-only.
 
 Log records use snake_case keys, `at` timestamps are integer nanoseconds since the Unix epoch,
 and the schema is additive-only from the first published release.
@@ -219,6 +231,12 @@ The session and supervisor log formats are documented in the
 [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md), with JSON
 Schema and AsyncAPI files in
 [`schemas/`](https://github.com/jeffzi/gymrat/tree/main/schemas).
+
+## Color control
+
+`--color` / `--no-color` can be placed before or after any subcommand. A subcommand flag beats the
+root flag. Without either, `FORCE_COLOR` forces styling, `NO_COLOR` suppresses it, and otherwise
+the stream's TTY status decides.
 
 ## Monitoring
 

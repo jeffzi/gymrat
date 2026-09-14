@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Accept `--color` / `--no-color` before or after any subcommand; a subcommand flag beats the root
+  flag.
+- Accept `--format json` on `start`, `finalize`, and `sync`.
+- Accept `-v` as a short form on `compare` and `-b` on `init`.
+- Add `--no-finalize` to `gymrat supervise` to leave the session open when the run ends.
+- Settle a supervised session when the run ends: keep or discard the last iteration as the agent
+  would have, finalize when an iteration was kept and nothing needs a person, and record each
+  decision in the event log.
+
+### Changed
+
+- `start` takes `--baseline <ref>` instead of a positional argument.
+- `status` drops the bench-run flags (`--bench`, `--prepare`, `--adapter`, `--samples`, `--timeout`)
+  and `keep` keeps only `--timeout` of them.
+- Help text shows value-type placeholders (`<int>`, `<condition>`, `[SESSION_LOG]`) instead of
+  parser function names.
+- End a supervised run from the supervisor when a stop condition is met or a hook fails, instead of
+  spending a final agent turn.
+
 ## [0.18.0] - 2026-09-12
 
 ### Added
