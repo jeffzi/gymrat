@@ -34,6 +34,17 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+def _run_probe(probe: str) -> subprocess.CompletedProcess[str]:
+    """Run ``probe`` as a fresh interpreter subprocess and return its result."""
+    return subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_child_env(),
+    )
+
+
 def test_importing_package_when_loaded_does_not_import_scipy_or_numpy():
     probe = """
 import sys
@@ -58,13 +69,7 @@ if heavy:
     sys.exit(1)
 """
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=_child_env(),
-    )
+    result = _run_probe(probe)
 
     assert result.returncode == 0, result.stderr
 
@@ -93,12 +98,36 @@ if bodies:
     sys.exit(1)
 """
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, interpreter is sys.executable
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=_child_env(),
-    )
+    result = _run_probe(probe)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_main_module_when_rendering_help_does_not_import_scipy_or_numpy():
+    probe = """
+import sys
+import gymrat.__main__  # noqa: F401 -- exercise the module's top-level imports
+from gymrat.cli.app import app
+from typer.testing import CliRunner
+result = CliRunner().invoke(app, ["--help"])
+if result.exit_code != 0:
+    print(f'--help failed: {result.output}', file=sys.stderr)
+    sys.exit(1)
+heavy = sorted(
+    name
+    for name in sys.modules
+    if name in {'scipy', 'numpy', 'claude_agent_sdk', 'opentelemetry'}
+    or name.startswith(('scipy.', 'numpy.', 'claude_agent_sdk.', 'opentelemetry.'))
+)
+bodies = [name for name in ('gymrat.compare', 'gymrat.measure') if name in sys.modules]
+if heavy:
+    print(f'module entry pulled heavy modules: {heavy}', file=sys.stderr)
+    sys.exit(1)
+if bodies:
+    print(f'module entry pulled command bodies: {bodies}', file=sys.stderr)
+    sys.exit(1)
+"""
+
+    result = _run_probe(probe)
 
     assert result.returncode == 0, result.stderr

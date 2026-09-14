@@ -1,9 +1,11 @@
-"""Run shell commands as asyncio subprocesses with bounded, decoded capture.
+"""Run commands as asyncio subprocesses with bounded, decoded capture.
 
-``exec`` spawns a command through the shell, captures stdout and stderr
-separately as decoded text plus raw byte counts, and settles when the child's
-stdio pipes close — not merely when the shell exits, so output flushed by a
-background descendant is still captured. A run is bounded three ways:
+``exec`` spawns a command through the shell; ``exec_argv`` runs an executable
+directly with an argument vector and no shell interpretation.  Both capture
+stdout and stderr separately as decoded text plus raw byte counts, and settle
+when the child's stdio pipes close — not merely when the child exits, so output
+flushed by a background descendant is still captured. A run is bounded three
+ways:
 
 - a per-stream 64 MiB text cap (byte counts keep counting past it),
 - an optional timeout that resolves an :class:`ExecTimeoutError` value, and
@@ -11,7 +13,7 @@ background descendant is still captured. A run is bounded three ways:
   :class:`ExecResult`.
 
 Timeout and abort snapshot whatever has been captured so far and kill the whole
-process group, so a grandchild the shell left running is killed too. Every
+process group, so a grandchild the child left running is killed too. Every
 returned value is a frozen dataclass, so a caller cannot mutate one run's result
 into a landmine for the next.
 """
@@ -21,7 +23,9 @@ import codecs
 import contextlib
 import signal as _signal_module
 import sys
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from gymrat.process_group import kill_process_group
 from gymrat.signals import TERMINATION_SIGNALS, deferring_termination_signals, pthread_sigmask
@@ -71,7 +75,7 @@ def kill_live_process_groups() -> None:
 
 @dataclass(frozen=True, slots=True)
 class ExecOptions:
-    """Inputs for a single :func:`exec` run.
+    """Inputs for a single :func:`exec` or :func:`exec_argv` run.
 
     Attributes:
         cwd: Working directory the command runs in.
@@ -79,12 +83,16 @@ class ExecOptions:
         abort: Event that, once set, kills the run and resolves a failed result.
         stdin: Text delivered to the command's standard input, then closed;
             ``None`` gives an immediately closed (EOF) input.
+        env: Environment variables for the child process. When set, the child
+            sees exactly this mapping; when ``None``, it inherits the parent's
+            environment.
     """
 
     cwd: str
     timeout_ms: int | None = None
     abort: asyncio.Event | None = None
     stdin: str | None = None
+    env: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,22 +345,43 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
-async def _spawn(command: str, options: ExecOptions) -> asyncio.subprocess.Process | ExecResult:
-    """Spawn the command, registering its process group. Returns ExecResult on failure."""
-    # Mask termination signals across the spawn + registration pair so a
-    # signal delivered between the two still finds the child in the live
-    # registry when the deferred handler fires kill_live_process_groups.
+def _subprocess_kwargs(options: ExecOptions) -> dict[str, Any]:
+    """Common keyword arguments for both subprocess creation functions."""
+    posix = sys.platform != "win32"
+    kwargs: dict[str, Any] = {
+        "cwd": options.cwd,
+        "stdin": asyncio.subprocess.PIPE,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "start_new_session": posix,
+        "preexec_fn": _child_reset_signal_mask if posix else None,
+    }
+    if options.env is not None:
+        kwargs["env"] = dict(options.env)
+    return kwargs
+
+
+async def _spawn(
+    create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
+) -> asyncio.subprocess.Process | ExecResult:
+    """Spawn a child via ``create_child``, registering its process group.
+
+    Masks termination signals across the spawn-and-register pair so a signal
+    delivered between them still finds the child in the live registry when the
+    deferred handler fires :func:`kill_live_process_groups`.
+
+    Args:
+        create_child: No-arg callable returning the subprocess creation
+            awaitable (``create_subprocess_shell`` or
+            ``create_subprocess_exec``).
+
+    Returns:
+        The spawned process, or an :class:`ExecResult` with exit code 1 when
+        the spawn itself fails.
+    """
     try:
         with deferring_termination_signals():
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                cwd=options.cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=sys.platform != "win32",
-                preexec_fn=_child_reset_signal_mask if sys.platform != "win32" else None,
-            )
+            proc = await create_child()
             _live_process_groups.add(proc.pid)
     except OSError as error:
         stderr = f"{error}\n"
@@ -415,6 +444,43 @@ async def _settle(
         await _cancel_all(pending)
 
 
+async def _run(
+    create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
+    options: ExecOptions,
+) -> ExecResult | ExecTimeoutError:
+    """Shared entry point: spawn via ``create_child``, then settle.
+
+    Both :func:`exec` (shell) and :func:`exec_argv` (direct) delegate here
+    after building their creation callable, so the abort short-circuit, settle
+    loop, and teardown are written once.
+
+    Args:
+        create_child: No-arg callable returning the subprocess creation
+            awaitable.
+        options: Spawn, timeout, and abort settings for the run.
+
+    Returns:
+        An :class:`ExecResult` on completion (including failures), or an
+        :class:`ExecTimeoutError` when the timeout is exceeded.
+    """
+    if options.abort is not None and options.abort.is_set():
+        return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
+
+    spawn_result = await _spawn(create_child)
+    if isinstance(spawn_result, ExecResult):
+        return spawn_result
+    proc = spawn_result
+
+    try:
+        return await _settle(proc, options, OutputBuffer(), OutputBuffer())
+    finally:
+        try:
+            if proc.returncode is None:
+                await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
+        finally:
+            _live_process_groups.discard(proc.pid)
+
+
 async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001 -- names the subprocess executor `exec`
     """Run ``command`` through the shell and capture its output.
 
@@ -431,19 +497,30 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
         An :class:`ExecResult` on completion (including failures), or an
         :class:`ExecTimeoutError` when the timeout is exceeded.
     """
-    if options.abort is not None and options.abort.is_set():
-        return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
+    kwargs = _subprocess_kwargs(options)
+    return await _run(
+        lambda: asyncio.create_subprocess_shell(command, **kwargs),
+        options,
+    )
 
-    spawn_result = await _spawn(command, options)
-    if isinstance(spawn_result, ExecResult):
-        return spawn_result
-    proc = spawn_result
 
-    try:
-        return await _settle(proc, options, OutputBuffer(), OutputBuffer())
-    finally:
-        try:
-            if proc.returncode is None:
-                await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
-        finally:
-            _live_process_groups.discard(proc.pid)
+async def exec_argv(argv: Sequence[str], options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    """Run ``argv[0]`` with the remaining items as arguments, no shell.
+
+    Identical to :func:`exec` in every respect except the child is spawned
+    directly: arguments containing spaces, ``$HOME``, pipes, or quotes reach
+    the child as exactly one ``sys.argv`` entry with those characters intact.
+
+    Args:
+        argv: The program and its arguments. ``argv[0]`` is the executable.
+        options: Spawn, timeout, and abort settings for the run.
+
+    Returns:
+        An :class:`ExecResult` on completion (including failures), or an
+        :class:`ExecTimeoutError` when the timeout is exceeded.
+    """
+    kwargs = _subprocess_kwargs(options)
+    return await _run(
+        lambda: asyncio.create_subprocess_exec(*argv, **kwargs),
+        options,
+    )

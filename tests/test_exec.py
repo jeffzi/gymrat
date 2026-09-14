@@ -268,12 +268,14 @@ def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
         timeout_ms: int | None = None,
         abort: asyncio.Event | None = None,
         stdin: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecOptions:
         return ExecOptions(
             cwd=str(tmp_path),
             timeout_ms=timeout_ms,
             abort=abort,
             stdin=stdin,
+            env=env,
         )
 
     return _make
@@ -313,6 +315,18 @@ def held_reaper(monkeypatch: pytest.MonkeyPatch) -> Iterator[HeldReaper]:
     monkeypatch.setattr("asyncio.unix_events.os", reaper)
     yield reaper
     reaper.release.set()
+
+
+@pytest.fixture
+def kill_attempts(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Replace ``kill_process_group`` with a spy that records each pid."""
+    attempted: list[int] = []
+
+    def record(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record)
+    return attempted
 
 
 @pytest.mark.parametrize(
@@ -948,20 +962,14 @@ async def test_exec_when_stream_read_fails_does_deregister_group(
 async def test_exec_when_completes_normally_does_deregister_group(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
+    kill_attempts: list[int],
 ) -> None:
     await run_exec("echo hello", make_opts())
     proc = spawned_processes[-1]
 
-    attempted: list[int] = []
-
-    def record(pid: int, *_a: object, **_k: object) -> None:
-        attempted.append(pid)
-
-    monkeypatch.setattr(exec_mod, "kill_process_group", record)
     exec_mod.kill_live_process_groups()
 
-    assert proc.pid not in attempted
+    assert proc.pid not in kill_attempts
 
 
 async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_descendants(
@@ -983,18 +991,11 @@ async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_des
 
 
 def test_kill_live_process_groups_when_registry_empty_does_not_kill_anything(
-    monkeypatch: pytest.MonkeyPatch,
+    kill_attempts: list[int],
 ) -> None:
-    attempted: list[int] = []
-
-    def record(pid: int, *_a: object, **_k: object) -> None:
-        attempted.append(pid)
-
-    monkeypatch.setattr(exec_mod, "kill_process_group", record)
-
     exec_mod.kill_live_process_groups()
 
-    assert attempted == []
+    assert kill_attempts == []
 
 
 @pytest.mark.parametrize(
@@ -1085,3 +1086,47 @@ def test_output_buffer_when_many_small_appends_does_accumulate_all_chunks() -> N
 
     expected = "".join(f"chunk-{i}\n" for i in range(1000))
     assert buf.text == expected
+
+
+# ---------------------------------------------------------------------------
+# env option (shell form)
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_when_env_set_does_use_exact_mapping(
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    result = await run_exec("echo $CUSTOM_VAR", make_opts(env={"CUSTOM_VAR": "custom_value"}))
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "custom_value"
+
+
+async def test_exec_when_env_set_does_exclude_parent_vars(
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GYMRAT_TEST_MARKER", "should_not_appear")
+
+    result = await run_exec(
+        'echo "${GYMRAT_TEST_MARKER:-absent}"',
+        make_opts(env={"PATH": os.environ.get("PATH", "/usr/bin")}),
+    )
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "absent"
+
+
+async def test_exec_when_env_none_does_inherit_parent_env(
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GYMRAT_TEST_MARKER", "inherited")
+
+    result = await run_exec("echo $GYMRAT_TEST_MARKER", make_opts(env=None))
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "inherited"
