@@ -141,6 +141,10 @@ async def test_supervise_when_wall_clock_fires_after_reply_sent_does_call_interr
         CostStep(cost_usd=0.01, delay_ms=2_000),
     ])
 
+    # The deadline must be late enough that the settle task (settle_window_ms=0,
+    # but still performs file I/O) completes before the wall clock fires, yet
+    # early enough to fire during the CostStep's 2-second delay.  60 ms was too
+    # tight on Windows runners; 500 ms gives ample headroom.
     result = await _supervise_wall_clock(
         driver,
         make_prompt(cwd=root),
@@ -149,6 +153,7 @@ async def test_supervise_when_wall_clock_fires_after_reply_sent_does_call_interr
             log_path=str(tmp_path / "events.jsonl"),
             lock_path=lock_path,
             max_minutes=_WALL_CLOCK_MAX_MINUTES,
+            deadline_ms=now_ms() + 500,
         ),
         launch=make_launch(max_minutes=_WALL_CLOCK_MAX_MINUTES),
         observer=probe.observer,
