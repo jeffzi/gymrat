@@ -248,6 +248,17 @@ def assert_taskkill_invoked(calls: list[list[str]]) -> None:
     assert "/T" in calls[0]
 
 
+async def start_abortable_run(
+    make_opts: Callable[..., ExecOptions],
+    spawned_processes: list[asyncio.subprocess.Process],
+) -> tuple[ExecTask, asyncio.Event]:
+    """Start ``sleep 0.5`` under a fresh abort event and wait for its child to spawn."""
+    abort = asyncio.Event()
+    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
+    await wait_for_spawned(spawned_processes)
+    return task, abort
+
+
 def expected_result(stdout: str, stderr: str, exit_code: int) -> ExecResult:
     """Build an expected ``ExecResult`` with byte counts derived from the strings."""
     return ExecResult(
@@ -268,12 +279,14 @@ def make_opts(tmp_path: Path) -> Callable[..., ExecOptions]:
         timeout_ms: int | None = None,
         abort: asyncio.Event | None = None,
         stdin: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecOptions:
         return ExecOptions(
             cwd=str(tmp_path),
             timeout_ms=timeout_ms,
             abort=abort,
             stdin=stdin,
+            env=env,
         )
 
     return _make
@@ -313,6 +326,18 @@ def held_reaper(monkeypatch: pytest.MonkeyPatch) -> Iterator[HeldReaper]:
     monkeypatch.setattr("asyncio.unix_events.os", reaper)
     yield reaper
     reaper.release.set()
+
+
+@pytest.fixture
+def kill_attempts(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Replace ``kill_process_group`` with a spy that records each pid."""
+    attempted: list[int] = []
+
+    def record(pid: int, *_a: object, **_k: object) -> None:
+        attempted.append(pid)
+
+    monkeypatch.setattr(exec_mod, "kill_process_group", record)
+    return attempted
 
 
 @pytest.mark.parametrize(
@@ -433,6 +458,34 @@ async def test_exec_when_cwd_is_a_file_does_resolve_with_failure_on_stderr(tmp_p
     assert "Not a directory" in result.stderr
     assert result.stderr.endswith("\n")
     assert result.stderr_bytes == len(result.stderr.encode())
+    assert exec_mod._live_process_groups == set()
+
+
+@pytest.mark.parametrize(
+    ("command", "cwd", "env"),
+    [
+        pytest.param("echo a\x00b", None, None, id="nul-in-command"),
+        pytest.param("echo hello", "nu\x00l", None, id="nul-in-cwd"),
+        pytest.param("echo hello", None, {"VAR": "a\x00b"}, id="nul-in-env-value"),
+    ],
+)
+async def test_exec_when_spawn_argument_holds_nul_does_resolve_with_error_on_stderr(
+    tmp_path: Path,
+    command: str,
+    cwd: str | None,
+    env: dict[str, str] | None,
+) -> None:
+    opts = ExecOptions(cwd=str(tmp_path) if cwd is None else cwd, env=env)
+
+    result = await run_exec(command, opts)
+
+    assert isinstance(result, ExecResult)
+    assert result.stdout == ""
+    assert result.exit_code == 1
+    assert "embedded null byte" in result.stderr
+    assert result.stderr.endswith("\n")
+    assert result.stderr_bytes == len(result.stderr.encode())
+    assert exec_mod._live_process_groups == set()
 
 
 async def test_exec_when_timeout_exceeded_does_return_timeout_error(
@@ -677,9 +730,7 @@ async def test_exec_when_win32_taskkill_reports_gone_does_stay_silent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = stub_taskkill(monkeypatch, returncode=128)
-    abort = asyncio.Event()
-    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
-    await wait_for_spawned(spawned_processes)
+    task, abort = await start_abortable_run(make_opts, spawned_processes)
 
     # Redirect only the kill-time platform read, after the POSIX spawn.
     monkeypatch.setattr(sys, "platform", "win32")
@@ -698,9 +749,7 @@ async def test_exec_when_win32_taskkill_fails_otherwise_does_warn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = stub_taskkill(monkeypatch, returncode=5)
-    abort = asyncio.Event()
-    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
-    await wait_for_spawned(spawned_processes)
+    task, abort = await start_abortable_run(make_opts, spawned_processes)
 
     monkeypatch.setattr(sys, "platform", "win32")
     # exec runs as a separate task, so it cannot process the abort until the
@@ -725,9 +774,7 @@ async def test_exec_when_win32_taskkill_launch_raises_oserror_does_warn_not_rais
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(subprocess, "run", raise_oserror)
-    abort = asyncio.Event()
-    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
-    await wait_for_spawned(spawned_processes)
+    task, abort = await start_abortable_run(make_opts, spawned_processes)
 
     monkeypatch.setattr(sys, "platform", "win32")
     abort.set()
@@ -743,9 +790,7 @@ async def test_exec_when_killpg_fails_otherwise_does_warn_not_raise(
     def raise_eperm(group_pid: int, sig: int) -> None:
         raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
 
-    abort = asyncio.Event()
-    task = asyncio.create_task(run_exec("sleep 0.5", make_opts(abort=abort)))
-    await wait_for_spawned(spawned_processes)
+    task, abort = await start_abortable_run(make_opts, spawned_processes)
 
     monkeypatch.setattr(os, "killpg", raise_eperm)
     # exec runs as a separate task, so it cannot process the abort until the
@@ -948,20 +993,14 @@ async def test_exec_when_stream_read_fails_does_deregister_group(
 async def test_exec_when_completes_normally_does_deregister_group(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
+    kill_attempts: list[int],
 ) -> None:
     await run_exec("echo hello", make_opts())
     proc = spawned_processes[-1]
 
-    attempted: list[int] = []
-
-    def record(pid: int, *_a: object, **_k: object) -> None:
-        attempted.append(pid)
-
-    monkeypatch.setattr(exec_mod, "kill_process_group", record)
     exec_mod.kill_live_process_groups()
 
-    assert proc.pid not in attempted
+    assert proc.pid not in kill_attempts
 
 
 async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_descendants(
@@ -983,18 +1022,11 @@ async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_des
 
 
 def test_kill_live_process_groups_when_registry_empty_does_not_kill_anything(
-    monkeypatch: pytest.MonkeyPatch,
+    kill_attempts: list[int],
 ) -> None:
-    attempted: list[int] = []
-
-    def record(pid: int, *_a: object, **_k: object) -> None:
-        attempted.append(pid)
-
-    monkeypatch.setattr(exec_mod, "kill_process_group", record)
-
     exec_mod.kill_live_process_groups()
 
-    assert attempted == []
+    assert kill_attempts == []
 
 
 @pytest.mark.parametrize(
@@ -1069,6 +1101,7 @@ async def test_exec_when_cancelled_does_kill_child_before_dropping_from_registry
 
     await wait_until_dead(proc.pid, timeout_s=3.0)
     assert not is_alive(proc.pid)
+    assert proc.pid not in exec_mod._live_process_groups
 
 
 # ---------------------------------------------------------------------------
@@ -1085,3 +1118,47 @@ def test_output_buffer_when_many_small_appends_does_accumulate_all_chunks() -> N
 
     expected = "".join(f"chunk-{i}\n" for i in range(1000))
     assert buf.text == expected
+
+
+# ---------------------------------------------------------------------------
+# env option (shell form)
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_when_env_set_does_use_exact_mapping(
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    result = await run_exec("echo $CUSTOM_VAR", make_opts(env={"CUSTOM_VAR": "custom_value"}))
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "custom_value"
+
+
+async def test_exec_when_env_set_does_exclude_parent_vars(
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GYMRAT_TEST_MARKER", "should_not_appear")
+
+    result = await run_exec(
+        'echo "${GYMRAT_TEST_MARKER:-absent}"',
+        make_opts(env={"PATH": os.environ.get("PATH", "/usr/bin")}),
+    )
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "absent"
+
+
+async def test_exec_when_env_none_does_inherit_parent_env(
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GYMRAT_TEST_MARKER", "inherited")
+
+    result = await run_exec("echo $GYMRAT_TEST_MARKER", make_opts(env=None))
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "inherited"

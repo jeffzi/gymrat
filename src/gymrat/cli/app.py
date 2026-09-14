@@ -128,8 +128,14 @@ app.command("export")(export_command)
 
 
 def main() -> None:
-    """Console-script entry: run the assembled app."""
-    app()
+    """Console-script entry: run the assembled app.
+
+    ``prog_name`` is pinned so usage lines read ``gymrat`` no matter how the
+    process was launched — the installed script, ``python -m gymrat``, or
+    ``python -m gymrat.cli.app`` — since click would otherwise derive it from
+    ``sys.argv[0]``.
+    """
+    app(prog_name="gymrat")
 
 
 if __name__ == "__main__":

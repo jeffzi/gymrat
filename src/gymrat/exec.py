@@ -1,19 +1,22 @@
-"""Run shell commands as asyncio subprocesses with bounded, decoded capture.
+"""Run commands as asyncio subprocesses with bounded, decoded capture.
 
-``exec`` spawns a command through the shell, captures stdout and stderr
-separately as decoded text plus raw byte counts, and settles when the child's
-stdio pipes close — not merely when the shell exits, so output flushed by a
-background descendant is still captured. A run is bounded three ways:
+``exec`` spawns a command through the shell; ``exec_argv`` runs an executable
+directly with an argument vector and no shell interpretation.  Both capture
+stdout and stderr separately as decoded text plus raw byte counts, and settle
+when the child's stdio pipes close — not merely when the child exits, so output
+flushed by a background descendant is still captured. A run is bounded three
+ways:
 
 - a per-stream 64 MiB text cap (byte counts keep counting past it),
 - an optional timeout that resolves an :class:`ExecTimeoutError` value, and
 - an optional abort :class:`asyncio.Event` that resolves a failed
   :class:`ExecResult`.
 
-Timeout and abort snapshot whatever has been captured so far and kill the whole
-process group, so a grandchild the shell left running is killed too. Every
-returned value is a frozen dataclass, so a caller cannot mutate one run's result
-into a landmine for the next.
+Timeout and abort snapshot whatever has been captured so far and stop the whole
+process tree — asked first, killed if it does not go — so a grandchild the child
+left running, or a bench the child started in a session of its own, dies with
+the run instead of outliving it. Every returned value is a frozen dataclass, so
+a caller cannot mutate one run's result into a landmine for the next.
 """
 
 import asyncio
@@ -21,9 +24,18 @@ import codecs
 import contextlib
 import signal as _signal_module
 import sys
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-from gymrat.process_group import kill_process_group
+from gymrat.process_group import (
+    TERMINATE_GRACE_S,
+    attach_process_group,
+    kill_process_group,
+    release_process_group,
+    terminate_process_group,
+    wait_for_process_group_exit,
+)
 from gymrat.signals import TERMINATION_SIGNALS, deferring_termination_signals, pthread_sigmask
 
 FAILURE_EXIT_CODE = 1
@@ -37,6 +49,9 @@ READ_CHUNK = 65536
 
 _CANCEL_REAP_TIMEOUT_S = 2.0
 """Seconds an interrupted run waits for its killed child to be reaped before giving up."""
+
+_FINAL_OUTPUT_GRACE_S = 0.1
+"""Seconds a child that stopped on request gets to have its last output read to EOF."""
 
 _live_process_groups: set[int] = set()
 """Process-group leader PIDs of bench children currently alive under :func:`exec`.
@@ -55,23 +70,36 @@ def _child_reset_signal_mask() -> None:
 
 
 def kill_live_process_groups() -> None:
-    """Kill every process group with a live bench child, never raising.
+    """Stop every process tree with a live bench child, never raising.
+
+    Every tree is asked to stop first, then the sweep waits out a single shared
+    grace, then the stragglers are killed: a child that is itself a gymrat run
+    needs that window to tear down the bench it started, and batching the
+    request keeps the wait one grace long however many children are live. The
+    caller is a signal handler with no event loop left to await on, so the wait
+    blocks.
 
     Iterates a snapshot so a run settling on another task can deregister its PID
-    mid-sweep without disturbing the loop. :func:`kill_process_group` already
-    tolerates an already-dead group and warns on other failures; the extra guard
+    mid-sweep without disturbing the loop. The process-group calls already
+    tolerate an already-dead tree and warn on other failures; the extra guard
     keeps any other unexpected exception (for example a warning escalated to an
     error by a warnings filter) from escaping into the signal-path cleanup that
     calls this.
     """
-    for pid in list(_live_process_groups):
+    leaders = list(_live_process_groups)
+    for pid in leaders:
+        with contextlib.suppress(Exception):
+            terminate_process_group(pid)
+    with contextlib.suppress(Exception):
+        wait_for_process_group_exit(leaders, TERMINATE_GRACE_S)
+    for pid in leaders:
         with contextlib.suppress(Exception):
             kill_process_group(pid)
 
 
 @dataclass(frozen=True, slots=True)
 class ExecOptions:
-    """Inputs for a single :func:`exec` run.
+    """Inputs for a single :func:`exec` or :func:`exec_argv` run.
 
     Attributes:
         cwd: Working directory the command runs in.
@@ -79,12 +107,16 @@ class ExecOptions:
         abort: Event that, once set, kills the run and resolves a failed result.
         stdin: Text delivered to the command's standard input, then closed;
             ``None`` gives an immediately closed (EOF) input.
+        env: Environment variables for the child process. When set, the child
+            sees exactly this mapping; when ``None``, it inherits the parent's
+            environment.
     """
 
     cwd: str
     timeout_ms: int | None = None
     abort: asyncio.Event | None = None
     stdin: str | None = None
+    env: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,50 +208,56 @@ def _exit_code(returncode: int | None) -> int:
     return returncode
 
 
-def _terminate(proc: asyncio.subprocess.Process) -> bool:
-    """Tear down a run that will not settle on its own.
-
-    Killing the process group stops the child and any descendant it left
-    running; dropping the stdio pipes then releases the reader tasks still
-    waiting on EOF, so the run can be snapshotted without awaiting a natural
-    end of stream.
-
-    Args:
-        proc: The child whose process group to kill.
-
-    Returns:
-        Whether the group kill was refused and deferred, as
-        :func:`kill_process_group` reports it.
-    """
-    refused = kill_process_group(proc.pid, defer_refusal=True)
-    _close_pipes(proc)
-    return refused
+async def _wait_for_exit(proc: asyncio.subprocess.Process, grace_s: float) -> bool:
+    """Wait up to ``grace_s`` seconds for the child to exit, reporting whether it did."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(proc.wait(), grace_s)
+    return proc.returncode is not None
 
 
 async def _terminate_and_reap(
     proc: asyncio.subprocess.Process,
     *,
+    readers: tuple[asyncio.Task[None], asyncio.Task[None]] | None = None,
     reap_timeout: float | None = None,
 ) -> None:
     """Tear down a run that will not settle on its own, then reap the child.
 
-    A group that refused the kill because its members were all still exiting is
+    The tree is first asked to stop and given :data:`TERMINATE_GRACE_S` to act
+    on the request, so a child that runs cleanup of its own — killing benches it
+    started in sessions this process cannot reach, writing a last diagnostic —
+    gets to finish. Whatever is still standing afterwards is killed, which also
+    covers a descendant that ignored the request. Dropping the stdio pipes then
+    releases the reader tasks still waiting on EOF, so the run can be
+    snapshotted without awaiting a natural end of stream.
+
+    A group that refused a signal because its members were all still exiting is
     signaled once more after the reap, which stays silent when the group is gone
     and warns only when the refusal is genuine. When the reap does not land
     within ``reap_timeout``, the group is signaled again anyway, so a refusal
     that outlasts the wait still warns.
 
     Args:
-        proc: The child whose process group to kill and reap.
+        proc: The child whose process tree to stop and reap.
+        readers: The stdout and stderr reader tasks, when the caller still owns
+            them. A child that stopped on request has closed its write ends, so
+            the readers reach a real EOF on their own; closing the pipes before
+            they do would drop the output the child flushed on its way out.
         reap_timeout: Seconds to wait for the reap, or ``None`` to wait until it
             lands.
     """
-    refused = _terminate(proc)
-    if reap_timeout is None:
-        await proc.wait()
-    else:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(proc.wait(), reap_timeout)
+    refused = terminate_process_group(proc.pid, defer_refusal=True)
+    exited = await _wait_for_exit(proc, TERMINATE_GRACE_S)
+    if exited and readers is not None:
+        await asyncio.wait(readers, timeout=_FINAL_OUTPUT_GRACE_S)
+    refused = kill_process_group(proc.pid, defer_refusal=True) or refused
+    _close_pipes(proc)
+    if not exited:
+        if reap_timeout is None:
+            await proc.wait()
+        else:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), reap_timeout)
     if refused:
         kill_process_group(proc.pid)
 
@@ -232,10 +270,10 @@ async def _terminate_reap_and_drain(
     """Terminate and reap the child, then await the readers it just fed EOF.
 
     Both settle paths that abandon the normal wait -- a reader error and a
-    timeout/abort -- need the same sequence: kill and reap first, then let the
+    timeout/abort -- need the same sequence: stop and reap first, then let the
     readers, unblocked by the pipe close, finish before the outcome is built.
     """
-    await _terminate_and_reap(proc)
+    await _terminate_and_reap(proc, readers=(stdout_task, stderr_task))
     await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
 
@@ -337,26 +375,58 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
-async def _spawn(command: str, options: ExecOptions) -> asyncio.subprocess.Process | ExecResult:
-    """Spawn the command, registering its process group. Returns ExecResult on failure."""
-    # Mask termination signals across the spawn + registration pair so a
-    # signal delivered between the two still finds the child in the live
-    # registry when the deferred handler fires kill_live_process_groups.
+def _subprocess_kwargs(options: ExecOptions) -> dict[str, Any]:
+    """Common keyword arguments for both subprocess creation functions."""
+    posix = sys.platform != "win32"
+    kwargs: dict[str, Any] = {
+        "cwd": options.cwd,
+        "stdin": asyncio.subprocess.PIPE,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "start_new_session": posix,
+        "preexec_fn": _child_reset_signal_mask if posix else None,
+    }
+    if options.env is not None:
+        kwargs["env"] = dict(options.env)
+    return kwargs
+
+
+def _spawn_failure(message: str) -> ExecResult:
+    """Build the failed :class:`ExecResult` a spawn error resolves to."""
+    stderr = f"{message}\n"
+    return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
+
+
+async def _spawn(
+    create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
+) -> asyncio.subprocess.Process | ExecResult:
+    """Spawn a child via ``create_child``, registering and containing its process group.
+
+    Masks termination signals across the spawn-and-register pair so a signal
+    delivered between them still finds the child in the live registry when the
+    deferred handler fires :func:`kill_live_process_groups`. Containment
+    (:func:`attach_process_group`) happens in the same masked block, as early as
+    the child can be reached.
+
+    Args:
+        create_child: No-arg callable returning the subprocess creation
+            awaitable (``create_subprocess_shell`` or
+            ``create_subprocess_exec``).
+
+    Returns:
+        The spawned process, or an :class:`ExecResult` with exit code 1 when
+        the spawn itself fails.
+    """
     try:
         with deferring_termination_signals():
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                cwd=options.cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=sys.platform != "win32",
-                preexec_fn=_child_reset_signal_mask if sys.platform != "win32" else None,
-            )
+            proc = await create_child()
             _live_process_groups.add(proc.pid)
-    except OSError as error:
-        stderr = f"{error}\n"
-        return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
+            attach_process_group(proc.pid)
+    except (OSError, ValueError) as error:
+        # ValueError covers what CPython rejects while marshalling the spawn
+        # arguments, before any fork: a NUL byte in an argument, in cwd, or in
+        # an env value, and an env name containing "=".
+        return _spawn_failure(str(error))
     return proc
 
 
@@ -415,6 +485,44 @@ async def _settle(
         await _cancel_all(pending)
 
 
+async def _run(
+    create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
+    options: ExecOptions,
+) -> ExecResult | ExecTimeoutError:
+    """Shared entry point: spawn via ``create_child``, then settle.
+
+    Both :func:`exec` (shell) and :func:`exec_argv` (direct) delegate here
+    after building their creation callable, so the abort short-circuit, settle
+    loop, and teardown are written once.
+
+    Args:
+        create_child: No-arg callable returning the subprocess creation
+            awaitable.
+        options: Spawn, timeout, and abort settings for the run.
+
+    Returns:
+        An :class:`ExecResult` on completion (including failures), or an
+        :class:`ExecTimeoutError` when the timeout is exceeded.
+    """
+    if options.abort is not None and options.abort.is_set():
+        return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
+
+    spawn_result = await _spawn(create_child)
+    if isinstance(spawn_result, ExecResult):
+        return spawn_result
+    proc = spawn_result
+
+    try:
+        return await _settle(proc, options, OutputBuffer(), OutputBuffer())
+    finally:
+        try:
+            if proc.returncode is None:
+                await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
+        finally:
+            _live_process_groups.discard(proc.pid)
+            release_process_group(proc.pid)
+
+
 async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001 -- names the subprocess executor `exec`
     """Run ``command`` through the shell and capture its output.
 
@@ -431,19 +539,32 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
         An :class:`ExecResult` on completion (including failures), or an
         :class:`ExecTimeoutError` when the timeout is exceeded.
     """
-    if options.abort is not None and options.abort.is_set():
-        return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
+    kwargs = _subprocess_kwargs(options)
+    return await _run(
+        lambda: asyncio.create_subprocess_shell(command, **kwargs),
+        options,
+    )
 
-    spawn_result = await _spawn(command, options)
-    if isinstance(spawn_result, ExecResult):
-        return spawn_result
-    proc = spawn_result
 
-    try:
-        return await _settle(proc, options, OutputBuffer(), OutputBuffer())
-    finally:
-        try:
-            if proc.returncode is None:
-                await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
-        finally:
-            _live_process_groups.discard(proc.pid)
+async def exec_argv(argv: Sequence[str], options: ExecOptions) -> ExecResult | ExecTimeoutError:
+    """Run ``argv[0]`` with the remaining items as arguments, no shell.
+
+    Identical to :func:`exec` in every respect except the child is spawned
+    directly: arguments containing spaces, ``$HOME``, pipes, or quotes reach
+    the child as exactly one ``sys.argv`` entry with those characters intact.
+
+    Args:
+        argv: The program and its arguments. ``argv[0]`` is the executable.
+        options: Spawn, timeout, and abort settings for the run.
+
+    Returns:
+        An :class:`ExecResult` on completion (including failures), or an
+        :class:`ExecTimeoutError` when the timeout is exceeded.
+    """
+    if not argv:
+        return _spawn_failure("argv is empty: no program to run")
+    kwargs = _subprocess_kwargs(options)
+    return await _run(
+        lambda: asyncio.create_subprocess_exec(*argv, **kwargs),
+        options,
+    )
