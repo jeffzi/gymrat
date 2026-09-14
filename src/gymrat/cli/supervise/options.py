@@ -43,17 +43,6 @@ ForceOption = Annotated[
         help="launch even when the cap cannot fit one iteration or a stop condition is already met",
     ),
 ]
-BaselineOption = Annotated[
-    str | None,
-    typer.Option(
-        "--baseline",
-        metavar="<ref>",
-        help=(
-            "git ref that pins a freshly opened session; "
-            "defaults to HEAD and is ignored when a session is resumed"
-        ),
-    ),
-]
 NoFinalizeOption = Annotated[
     bool,
     typer.Option("--no-finalize", help="leave the session open instead of finalizing it on exit"),

@@ -32,7 +32,7 @@ from gymrat.session import (
     session_jsonl_path,
 )
 from tests.cli._budget import install_budget, install_tight_budget
-from tests.cli._loop_cmds import last_command_record
+from tests.cli._session import last_command_record
 from tests.report._inputs import create_measurement_result
 from tests.session.records._fixtures import (
     finalize_record,

@@ -83,7 +83,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     log_path = Path(repo) / "supervisor-events.jsonl"
 
     async def start() -> None:
-        _run_gymrat(["start", "main"], repo)
+        _run_gymrat(["start", "--baseline", "main"], repo)
 
     async def iterate() -> None:
         _tune_experiment(repo, TUNED_LATENCY)

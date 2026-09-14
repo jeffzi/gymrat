@@ -116,7 +116,7 @@ For iterating on performance work, gymrat manages a session with a pinned baseli
 experiment worktree:
 
 ```console
-gymrat start main          # pin the baseline and open the session
+gymrat start --baseline main   # pin the baseline and open the session
 # ...edit code in the experiment worktree...
 gymrat probe decode#time   # bench the edit alone and print its delta; records nothing
 gymrat iterate             # measure the edit against the baseline
@@ -220,9 +220,9 @@ The principles behind these choices, and what gymrat deliberately is not, are in
 
 ## Machine-readable output
 
-Every comparison, measurement, and session-loop command (`iterate`, `keep`, `discard`, `stop`,
-`status`, `probe`) accepts `--format json` for structured output. Text output is for humans and may
-change between releases. `start`, `sync`, `finalize`, `export`, and `supervise` are text-only.
+Every comparison, measurement, and session-lifecycle command (`iterate`, `keep`, `discard`, `stop`,
+`status`, `probe`, `start`, `finalize`, `sync`) accepts `--format json` for structured output. Text
+output is for humans and may change between releases. `export` and `supervise` are text-only.
 
 Log records use snake_case keys, `at` timestamps are integer nanoseconds since the Unix epoch,
 and the schema is additive-only from the first published release.
@@ -231,6 +231,12 @@ The session and supervisor log formats are documented in the
 [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md), with JSON
 Schema and AsyncAPI files in
 [`schemas/`](https://github.com/jeffzi/gymrat/tree/main/schemas).
+
+## Color control
+
+`--color` / `--no-color` can be placed before or after any subcommand. A subcommand flag beats the
+root flag. Without either, `FORCE_COLOR` forces styling, `NO_COLOR` suppresses it, and otherwise
+the stream's TTY status decides.
 
 ## Monitoring
 

@@ -10,13 +10,22 @@ from typing import Annotated
 
 import typer
 
-from gymrat.cli.shared import DebugOption, apply_debug, exit_with_error, write_and_flush
+from gymrat.cli.shared import (
+    ColorOption,
+    DebugOption,
+    apply_color_override,
+    apply_debug,
+    exit_with_error,
+    write_and_flush,
+)
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.records.models import SessionRecord
 from gymrat.session.records.parse import parse_record
 
-SessionLogArg = Annotated[str | None, typer.Argument(help="path to session.jsonl")]
+SessionLogArg = Annotated[
+    str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
+]
 EndpointOption = Annotated[str | None, typer.Option("--endpoint", help="OTLP HTTP endpoint URL")]
 
 _SDK_MISSING = "OpenTelemetry SDK not available. Install with: pip install 'gymrat[otel]'"
@@ -96,10 +105,12 @@ def _session_header(session_path: Path) -> SessionRecord | None:
 def export_command(
     session_log: SessionLogArg = None,
     endpoint: EndpointOption = None,
+    color: ColorOption = None,
     debug: DebugOption = False,  # noqa: FBT002 -- 1:1 pass-through of the --debug flag
 ) -> None:
     """Export a finished session's spans to an OpenTelemetry collector."""
     apply_debug(debug)
+    apply_color_override(color)
 
     try:
         _export(session_log, endpoint)

@@ -1,4 +1,4 @@
-"""The optimization-loop subcommands: start, iterate, keep, discard, finalize, stop, status, sync.
+"""The optimization-loop subcommands: iterate, keep, discard, status.
 
 Each command resolves configuration at the repository root and holds the
 single-flight lock for the duration. ``discard`` prompts before taking the lock
@@ -11,10 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import TYPE_CHECKING, Annotated
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from typing import Annotated
 
 import typer
 
@@ -24,14 +21,12 @@ from gymrat.cli.shared import (
     AdapterOption,
     AllowUnimprovedOption,
     BenchOption,
-    BranchOption,
     ColorOption,
     CommandTrace,
     ConfigOption,
     DebugOption,
     ForceOption,
     FormatOption,
-    MessageOption,
     OutputFormat,
     PrepareOption,
     SamplesOption,
@@ -50,92 +45,25 @@ from gymrat.cli.shared import (
     run_with_signal_abort,
     with_repo_lock,
     write_and_flush,
+    write_budget_report,
 )
 from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
 from gymrat.confirm import confirm_action
-from gymrat.loop.finalize import FinalizeOptions, FinalizeResult, finalize_session
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
-from gymrat.loop.start import StartResult, start_session
 from gymrat.loop.status import status_data, status_session
-from gymrat.loop.stop import StopResult, stop_session
-from gymrat.loop.sync import SyncResult, sync_to_experiment
-from gymrat.plural import pluralize
 from gymrat.progress_events import create_fan_out
 from gymrat.report.json_doc import (
-    BudgetSummary,
     render_discard_json,
     render_iterate_json,
     render_iterate_stop_json,
     render_keep_json,
     render_status_json,
-    render_stop_json,
 )
-from gymrat.report.loop import format_start_summary
 from gymrat.session.paths import repo_root
 from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
 from gymrat.signals import install_termination_cleanup
-
-
-def _write_budget_report(
-    root: str,
-    *,
-    use_json: bool,
-    render_json: Callable[[BudgetSummary | None], str],
-    text_report: str,
-) -> None:
-    """Render the JSON or text report from a single budget read, then write it once."""
-    trailer, summary = budget_snapshot(root)
-    report = render_json(summary) if use_json else text_report + trailer
-    write_and_flush(sys.stdout, report + "\n")
-
-
-# ---------------------------------------------------------------------------
-# Start
-# ---------------------------------------------------------------------------
-
-
-def start(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
-    ref: str | None = typer.Argument(
-        default=None, metavar="[REF]", help="ref the baseline is pinned to; defaults to HEAD"
-    ),
-    *,
-    bench: BenchOption = None,
-    prepare: PrepareOption = None,
-    adapter: AdapterOption = None,
-    samples: SamplesOption = None,
-    timeout: TimeoutOption = None,
-    config: ConfigOption = None,
-    debug: DebugOption = False,
-) -> None:
-    """Create or resume this repository's optimization session."""
-    apply_debug(debug)
-
-    flags = CliFlags(
-        bench=bench,
-        prepare=prepare,
-        adapter=adapter,
-        samples=samples,
-        timeout=timeout,
-        config=config,
-    )
-
-    start_args: dict[str, object] = config_trace_args(flags)
-    if ref is not None:
-        start_args["ref"] = ref
-
-    async def run() -> None:
-        async def body(_trace: CommandTrace) -> tuple[StartResult, str | None]:
-            root = repo_root()
-            resolved = resolve_config(flags, root)
-            return start_session(root, ref, resolved), resolved.runbook
-
-        result, runbook = await with_repo_lock("start", body, args=start_args)
-        write_and_flush(sys.stdout, format_start_summary(result, runbook) + "\n")
-
-    run_cli(run)
-
 
 # ---------------------------------------------------------------------------
 # Iterate
@@ -206,14 +134,14 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
     config: ConfigOption = None,
     color: ColorOption = None,
     verbose: VerboseOption = False,
-    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
+    output_format: FormatOption = OutputFormat.text,
     debug: DebugOption = False,
 ) -> None:
     """Measure the session's experiment worktree against its baseline."""
     apply_debug(debug)
     color_override = apply_color_override(color)
 
-    use_json = format == OutputFormat.json
+    use_json = output_format == OutputFormat.json
     resolved_color = resolve_stream_color(color_override, sys.stdout)
     flags = CliFlags(
         bench=bench,
@@ -247,7 +175,7 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             if trailer:
                 write_and_flush(sys.stderr, trailer.lstrip("\n") + "\n")
             exit_with_error(error, GATE_EXIT_CODE)
-        _write_budget_report(
+        write_budget_report(
             root,
             use_json=use_json,
             render_json=lambda summary: render_iterate_json(result, budget=summary),
@@ -262,32 +190,26 @@ def iterate(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 # ---------------------------------------------------------------------------
 
 
-def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
+def keep(  # noqa: PLR0913 -- one parameter per CLI flag
     *,
-    bench: BenchOption = None,
-    prepare: PrepareOption = None,
-    adapter: AdapterOption = None,
-    samples: SamplesOption = None,
     timeout: TimeoutOption = None,
     config: ConfigOption = None,
-    message: MessageOption = None,
+    message: Annotated[
+        str | None,
+        typer.Option("--message", "-m", help="commit message for the kept edit"),
+    ] = None,
     allow_unimproved: AllowUnimprovedOption = False,
-    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
+    output_format: FormatOption = OutputFormat.text,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Commit the session's measured edit once its checks pass."""
     apply_debug(debug)
+    color_override = apply_color_override(color)
 
-    use_json = format == OutputFormat.json
-    resolved_color = resolve_stream_color(None, sys.stdout)
-    flags = CliFlags(
-        bench=bench,
-        prepare=prepare,
-        adapter=adapter,
-        samples=samples,
-        timeout=timeout,
-        config=config,
-    )
+    use_json = output_format == OutputFormat.json
+    resolved_color = resolve_stream_color(color_override, sys.stdout)
+    flags = CliFlags(config=config, timeout=timeout)
 
     keep_args: dict[str, object] = config_trace_args(flags)
     if message is not None:
@@ -312,7 +234,7 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
 
         result = await with_repo_lock("keep", body, args=keep_args)
         root = repo_root()
-        _write_budget_report(
+        write_budget_report(
             root,
             use_json=use_json,
             render_json=lambda summary: render_keep_json(result, budget=summary),
@@ -332,13 +254,15 @@ def keep(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared o
 def discard(
     *,
     force: ForceOption = False,
-    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
+    output_format: FormatOption = OutputFormat.text,
+    color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Revert the session's experiment worktree to its last commit."""
     apply_debug(debug)
+    apply_color_override(color)
 
-    use_json = format == OutputFormat.json
+    use_json = output_format == OutputFormat.json
 
     async def run() -> None:
         root = repo_root()
@@ -362,84 +286,10 @@ def discard(
             return discard_result
 
         result = await with_repo_lock("discard", body, args={"force": force})
-        _write_budget_report(
+        write_budget_report(
             root,
             use_json=use_json,
             render_json=lambda summary: render_discard_json(result, budget=summary),
-            text_report=result.report,
-        )
-
-    run_cli(run)
-
-
-# ---------------------------------------------------------------------------
-# Finalize
-# ---------------------------------------------------------------------------
-
-
-def finalize(
-    *,
-    message: MessageOption = None,
-    branch: BranchOption = None,
-    debug: DebugOption = False,
-) -> None:
-    """Collapse the session's kept iterations into one commit and close it."""
-    apply_debug(debug)
-
-    finalize_args: dict[str, object] = {}
-    if branch is not None:
-        finalize_args["branch"] = branch
-    if message is not None:
-        finalize_args["message"] = message
-
-    async def run() -> None:
-        async def body(_trace: CommandTrace) -> FinalizeResult:
-            return finalize_session(repo_root(), FinalizeOptions(message=message, branch=branch))
-
-        result = await with_repo_lock("finalize", body, args=finalize_args)
-        write_and_flush(sys.stdout, result.report + "\n")
-
-    run_cli(run)
-
-
-# ---------------------------------------------------------------------------
-# Stop
-# ---------------------------------------------------------------------------
-
-
-_StopMessageOption = Annotated[
-    str,
-    typer.Option("--message", "-m", help="why the session is being stopped"),
-]
-
-
-def stop(
-    *,
-    message: _StopMessageOption,
-    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
-    debug: DebugOption = False,
-) -> None:
-    """Record a stop in the session log without reverting or committing."""
-    apply_debug(debug)
-    if not message.strip():
-        msg = "message must not be empty"
-        raise typer.BadParameter(msg)
-
-    use_json = format == OutputFormat.json
-
-    async def run() -> None:
-        root = repo_root()
-
-        async def body(_trace: CommandTrace) -> StopResult:
-            return stop_session(root, message)
-
-        result = await with_repo_lock("stop", body)
-        _write_budget_report(
-            root,
-            use_json=use_json,
-            render_json=lambda summary: render_stop_json(
-                at=result.record.at, message=result.record.message, budget=summary
-            ),
             text_report=result.report,
         )
 
@@ -451,15 +301,10 @@ def stop(
 # ---------------------------------------------------------------------------
 
 
-def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
+def status(
     *,
-    bench: BenchOption = None,
-    prepare: PrepareOption = None,
-    adapter: AdapterOption = None,
-    samples: SamplesOption = None,
-    timeout: TimeoutOption = None,
     config: ConfigOption = None,
-    format: FormatOption = OutputFormat.text,  # noqa: A002 -- shadows builtin to match the CLI flag name
+    output_format: FormatOption = OutputFormat.text,
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
@@ -467,16 +312,9 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
     apply_debug(debug)
     color_override = apply_color_override(color)
 
-    use_json = format == OutputFormat.json
+    use_json = output_format == OutputFormat.json
     resolved_color = resolve_stream_color(color_override, sys.stdout)
-    flags = CliFlags(
-        bench=bench,
-        prepare=prepare,
-        adapter=adapter,
-        samples=samples,
-        timeout=timeout,
-        config=config,
-    )
+    flags = CliFlags(config=config)
 
     async def run() -> None:
         async def body(_trace: CommandTrace) -> str:
@@ -492,30 +330,5 @@ def status(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared
         report = await with_repo_lock("status", body)
         with broken_pipe_guard():
             write_and_flush(sys.stdout, report + "\n")
-
-    run_cli(run)
-
-
-# ---------------------------------------------------------------------------
-# Sync
-# ---------------------------------------------------------------------------
-
-
-def sync(*, debug: DebugOption = False) -> None:
-    """Sync uncommitted main-tree changes into the experiment worktree."""
-    apply_debug(debug)
-
-    async def run() -> None:
-        async def body(_trace: CommandTrace) -> SyncResult:
-            return sync_to_experiment(repo_root())
-
-        result = await with_repo_lock("sync", body)
-        if not result.files:
-            summary = "nothing to sync"
-        else:
-            header = f"Synced {pluralize(len(result.files), 'file')} to experiment worktree:"
-            summary = "\n".join([header, *(f"  {f}" for f in result.files)])
-        trailer, _ = budget_snapshot(repo_root())
-        write_and_flush(sys.stdout, summary + trailer + "\n")
 
     run_cli(run)

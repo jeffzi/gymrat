@@ -35,12 +35,14 @@ from gymrat.cli.shared import (
     resolve_render_mode,
     run_cli,
     run_with_signal_abort,
+    set_color_override,
     set_debug_mode,
-    set_stderr_color_override,
     write_and_flush,
+    write_budget_report,
 )
 from gymrat.config import MAX_TIMEOUT_SECONDS
 from gymrat.errors import GymratError
+from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
 from tests._streams import FakeStream as _FakeStream
@@ -96,11 +98,11 @@ def _force_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_stderr_color_override():
+def _reset_color_override():
     """Reset the module-level color override between tests so xdist workers don't leak state."""
-    set_stderr_color_override(None)
+    set_color_override(None)
     yield
-    set_stderr_color_override(None)
+    set_color_override(None)
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +199,9 @@ def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
     monkeypatch.setenv("TERM", "xterm-256color")
     _clear_color_env(monkeypatch)
 
-    set_stderr_color_override(False)
+    set_color_override(False)
     result = format_cli_error(ValueError("boom"))
-    set_stderr_color_override(None)
+    set_color_override(None)
 
     assert "\x1b[" not in result
 
@@ -698,3 +700,113 @@ def test_exit_with_error_honors_debug_mode_for_the_stack(monkeypatch: pytest.Mon
 def test_shared_when_stop_target_removed_does_not_export_helpers():
     assert not hasattr(shared, "parse_stop_target_value")
     assert not hasattr(shared, "_STOP_TARGET_RE")
+
+
+# ---------------------------------------------------------------------------
+# write_budget_report
+# ---------------------------------------------------------------------------
+
+
+def _budget_active(root: str) -> tuple[str, BudgetSummary]:
+    """Stub returning an active budget snapshot."""
+    return "\n⏱ 29m left of 30m", BudgetSummary(cap_minutes=30, remaining_seconds=1740)
+
+
+def _budget_inactive(root: str) -> tuple[str, None]:
+    """Stub returning no budget."""
+    return "", None
+
+
+def test_write_budget_report_when_json_and_budget_active_does_write_json_with_budget(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(shared, "budget_snapshot", _budget_active)
+
+    def render_json(s: BudgetSummary | None) -> str:
+        import json
+
+        doc: dict[str, object] = {"metric": "ops/s"}
+        if s is not None:
+            doc["budget"] = {
+                "cap_minutes": s.cap_minutes,
+                "remaining_seconds": s.remaining_seconds,
+            }
+        return json.dumps(doc)
+
+    write_budget_report(
+        "/fake/root",
+        use_json=True,
+        render_json=render_json,
+        text_report="ignored text",
+    )
+
+    import json
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["budget"] == {"cap_minutes": 30, "remaining_seconds": 1740}
+
+
+def test_write_budget_report_when_json_and_no_budget_does_write_json_without_budget(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(shared, "budget_snapshot", _budget_inactive)
+
+    def render_json(s: BudgetSummary | None) -> str:
+        import json
+
+        doc: dict[str, object] = {"metric": "ops/s"}
+        if s is not None:
+            doc["budget"] = {
+                "cap_minutes": s.cap_minutes,
+                "remaining_seconds": s.remaining_seconds,
+            }
+        return json.dumps(doc)
+
+    write_budget_report(
+        "/fake/root",
+        use_json=True,
+        render_json=render_json,
+        text_report="ignored text",
+    )
+
+    import json
+
+    out = json.loads(capsys.readouterr().out)
+    assert "budget" not in out
+
+
+def _noop_json(_s: BudgetSummary | None) -> str:
+    """A no-op JSON renderer for text-mode tests."""
+    return ""
+
+
+def test_write_budget_report_when_text_and_budget_active_does_write_report_with_trailer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(shared, "budget_snapshot", _budget_active)
+
+    write_budget_report(
+        "/fake/root",
+        use_json=False,
+        render_json=_noop_json,
+        text_report="benchmark results here",
+    )
+
+    out = capsys.readouterr().out
+    assert out == "benchmark results here\n⏱ 29m left of 30m\n"
+
+
+def test_write_budget_report_when_text_and_no_budget_does_write_report_without_trailer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(shared, "budget_snapshot", _budget_inactive)
+
+    write_budget_report(
+        "/fake/root",
+        use_json=False,
+        render_json=_noop_json,
+        text_report="benchmark results here",
+    )
+
+    out = capsys.readouterr().out
+    assert out == "benchmark results here\n"

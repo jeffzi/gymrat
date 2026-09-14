@@ -46,7 +46,7 @@ from gymrat.supervisor import SessionPrompt, SupervisionResult, create_claude_dr
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from tests._ansi import strip_ansi
-from tests.cli._loop_cmds import make_discard_repo
+from tests.cli._session import make_discard_repo
 from tests.cli.supervise._fixtures import (
     empty_session_state,
     make_supervision_result,

@@ -76,6 +76,13 @@ def test_init_when_help_does_list_new_flags(flag: str):
     assert flag in help_output("init")
 
 
+def test_init_when_help_does_show_bench_short_form():
+    out = help_output("init")
+
+    assert "--bench" in out
+    assert re.search(r"(?<!\w)-b(?!\w)", out)
+
+
 @pytest.mark.parametrize("flag", OLD_WIZARD_FLAGS)
 def test_init_when_help_does_not_list_old_wizard_flags(flag: str):
     assert flag not in help_output("init")
@@ -107,6 +114,14 @@ def test_init_when_old_flag_given_does_reject_it(flag: str):
 # ---------------------------------------------------------------------------
 # missing --bench
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("non_repo_cwd")
+def test_init_when_short_bench_flag_does_scaffold_same_as_long_form(non_repo_cwd: Path):
+    result = runner.invoke(app, ["init", "-b", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert (non_repo_cwd / "gymrat.toml").exists()
 
 
 @pytest.mark.usefixtures("non_repo_cwd")

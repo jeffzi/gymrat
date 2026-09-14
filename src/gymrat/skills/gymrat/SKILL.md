@@ -33,7 +33,7 @@ Load the per-repo runbook before your first edit. `gymrat start` prints the path
 ### 1. Start the session
 
 ```sh
-gymrat start [ref]       # ref defaults to HEAD
+gymrat start [--baseline <ref>]   # defaults to HEAD
 ```
 
 Pins the baseline and creates two worktrees: experiment (where you edit) and baseline (read-only).
@@ -230,8 +230,8 @@ Levers, in order of leverage:
 field `at`.
 When driving the loop programmatically, always pass `--format json`. The JSON contract is
 additive-only from the first published release (no renames or removals without a breaking change);
-the text report may change between releases. `start`, `finalize`, and `sync` are text-only: their
-outputs are one-shot summaries agents don't parse.
+the text report may change between releases. `start`, `finalize`, and `sync` now accept
+`--format json` too; `export` and `supervise` remain text-only.
 
 ## Syncing main-tree edits
 

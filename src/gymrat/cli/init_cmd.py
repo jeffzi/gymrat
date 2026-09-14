@@ -19,6 +19,7 @@ import typer
 from rich.markup import escape
 
 from gymrat.cli.shared import (
+    BenchOption,
     ColorOption,
     DebugOption,
     apply_color_override,
@@ -38,7 +39,6 @@ from gymrat.init.scaffold import (
 )
 from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
 
-_BenchOption = Annotated[str | None, typer.Option("--bench", help="bench command")]
 _NoRunbookOption = Annotated[bool, typer.Option("--no-runbook", help="skip the runbook")]
 _NoSkillOption = Annotated[bool, typer.Option("--no-skill", help="skip the skill file")]
 
@@ -70,7 +70,7 @@ def _format_summary(result: ScaffoldResult, base_dir: str, *, color: bool | None
 
 def init_command(
     *,
-    bench: _BenchOption = None,
+    bench: BenchOption = None,
     no_runbook: _NoRunbookOption = False,
     no_skill: _NoSkillOption = False,
     color: ColorOption = None,

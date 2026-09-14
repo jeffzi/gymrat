@@ -9,20 +9,30 @@ color.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.loop.finalize import FinalizeResult
+from gymrat.loop.start import StartResult
+from gymrat.loop.sync import SyncResult
 from gymrat.model import Effect, Exclusion, MetricUnit, PermutationVerdict
 from gymrat.report import render_json, render_measure_json, render_probe_json
-from gymrat.report.json_doc import BudgetSummary
+from gymrat.report.json_doc import (
+    BudgetSummary,
+    render_finalize_json,
+    render_start_json,
+    render_sync_json,
+)
 from gymrat.report.types import (
     CandidateMetric,
     ComparisonResult,
     MetricComparison,
 )
+from gymrat.session import SessionState
 from gymrat.targets import WorktreeRemovalFailure
 from gymrat.verdict import GroupAggregate, KindAggregate
 from tests.report._inputs import (
@@ -43,6 +53,10 @@ from tests.report._inputs import (
     probe_result,
     single_sample_result,
     two_kind_measurement,
+)
+from tests.session.records._fixtures import (
+    finalize_record,
+    session_record,
 )
 
 if TYPE_CHECKING:
@@ -891,3 +905,227 @@ def test_render_probe_json_when_environment_forces_color_does_emit_no_ansi(
     result = probe_result(metrics=[probe_metric("decode/time", unit="ns")])
 
     assert not _ANSI_ESCAPE.search(render_probe_json(result))
+
+
+# ---------------------------------------------------------------------------
+# helpers — start / finalize / sync
+# ---------------------------------------------------------------------------
+
+
+def _empty_session_state() -> SessionState:
+    """A session that has opened but measured nothing yet."""
+    return SessionState(
+        session=None,
+        iteration_count=0,
+        last_iteration=None,
+        unsettled=False,
+        keep_count=0,
+        discard_count=0,
+        target_reached_and_kept=False,
+        last_seq=0,
+        last_kept_commit=None,
+        ends_on_gating_block=False,
+        ends_on_stop=False,
+        finalized=None,
+    )
+
+
+def _fresh_start() -> StartResult:
+    """A brand-new session (not resumed, nothing archived)."""
+    return StartResult(
+        session=session_record(),
+        state=_empty_session_state(),
+        resumed=False,
+    )
+
+
+def _resumed_start(*, iteration_count: int = 3, keep_count: int = 2) -> StartResult:
+    """A resumed session with prior iteration and keep counts."""
+    state = _empty_session_state()
+    return StartResult(
+        session=session_record(),
+        state=dataclasses.replace(state, iteration_count=iteration_count, keep_count=keep_count),
+        resumed=True,
+    )
+
+
+def _archived_start() -> StartResult:
+    """A session that archived a finalized predecessor."""
+    return StartResult(
+        session=session_record(),
+        state=_empty_session_state(),
+        resumed=False,
+        archived="20260701-120000-beef",
+        archived_path="/repo/.gymrat/archive/20260701-120000-beef",
+    )
+
+
+# ---------------------------------------------------------------------------
+# render_start_json — fresh start
+# ---------------------------------------------------------------------------
+
+
+def test_render_start_json_when_fresh_does_produce_expected_keys():
+    result = _fresh_start()
+
+    doc = json.loads(render_start_json(result))
+
+    assert doc["session_id"] == result.session.session_id
+    assert doc["branch"] == result.session.branch
+    assert doc["baseline"] == {
+        "ref": result.session.baseline.ref,
+        "sha": result.session.baseline.sha,
+    }
+    assert doc["worktrees"] == {
+        "experiment": result.session.worktrees.experiment,
+        "baseline": result.session.worktrees.baseline,
+    }
+    assert doc["resumed"] is False
+    assert doc["iteration_count"] == 0
+    assert doc["keep_count"] == 0
+    assert doc["runbook"] is None
+    assert doc["archived"] is None
+
+
+def test_render_start_json_when_fresh_and_no_budget_does_omit_budget_key():
+    doc = json.loads(render_start_json(_fresh_start()))
+
+    assert "budget" not in doc
+
+
+# ---------------------------------------------------------------------------
+# render_start_json — resumed start
+# ---------------------------------------------------------------------------
+
+
+def test_render_start_json_when_resumed_does_carry_counts_and_flag():
+    result = _resumed_start(iteration_count=5, keep_count=3)
+
+    doc = json.loads(render_start_json(result))
+
+    assert doc["resumed"] is True
+    assert doc["iteration_count"] == 5
+    assert doc["keep_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# render_start_json — archived start
+# ---------------------------------------------------------------------------
+
+
+def test_render_start_json_when_archived_does_include_archived_object():
+    result = _archived_start()
+
+    doc = json.loads(render_start_json(result))
+
+    assert doc["archived"] == {
+        "session_id": "20260701-120000-beef",
+        "path": "/repo/.gymrat/archive/20260701-120000-beef",
+    }
+
+
+# ---------------------------------------------------------------------------
+# render_start_json — runbook and budget
+# ---------------------------------------------------------------------------
+
+
+def test_render_start_json_when_runbook_provided_does_include_runbook():
+    doc = json.loads(render_start_json(_fresh_start(), runbook="my-runbook.yml"))
+
+    assert doc["runbook"] == "my-runbook.yml"
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [
+        pytest.param(BudgetSummary(cap_minutes=30, remaining_seconds=900), id="budget-given"),
+        pytest.param(None, id="no-budget"),
+    ],
+)
+def test_render_start_json_when_budget_varies_does_reflect_the_budget_key(
+    budget: BudgetSummary | None,
+):
+    doc = json.loads(render_start_json(_fresh_start(), budget=budget))
+
+    if budget is None:
+        assert "budget" not in doc
+    else:
+        assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}
+
+
+# ---------------------------------------------------------------------------
+# render_finalize_json — schema shape
+# ---------------------------------------------------------------------------
+
+
+def test_render_finalize_json_when_rendered_does_produce_expected_keys():
+    record = finalize_record()
+    result = FinalizeResult(record=record, report="final report text")
+
+    doc = json.loads(render_finalize_json(result))
+
+    assert doc["branch"] == record.branch
+    assert doc["commit"] == record.commit
+    assert doc["message"] == record.message
+    assert doc["at"] == record.at
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [
+        pytest.param(BudgetSummary(cap_minutes=60, remaining_seconds=0), id="budget-given"),
+        pytest.param(None, id="no-budget"),
+    ],
+)
+def test_render_finalize_json_when_budget_varies_does_reflect_the_budget_key(
+    budget: BudgetSummary | None,
+):
+    result = FinalizeResult(record=finalize_record(), report="report")
+
+    doc = json.loads(render_finalize_json(result, budget=budget))
+
+    if budget is None:
+        assert "budget" not in doc
+    else:
+        assert doc["budget"] == {"cap_minutes": 60, "remaining_seconds": 0}
+
+
+# ---------------------------------------------------------------------------
+# render_sync_json — schema shape
+# ---------------------------------------------------------------------------
+
+
+def test_render_sync_json_when_files_synced_does_list_them():
+    result = SyncResult(files=("src/main.py", "src/lib.py"))
+
+    doc = json.loads(render_sync_json(result))
+
+    assert doc["files"] == ["src/main.py", "src/lib.py"]
+
+
+def test_render_sync_json_when_no_files_does_produce_empty_list():
+    result = SyncResult(files=())
+
+    doc = json.loads(render_sync_json(result))
+
+    assert doc["files"] == []
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [
+        pytest.param(BudgetSummary(cap_minutes=10, remaining_seconds=300), id="budget-given"),
+        pytest.param(None, id="no-budget"),
+    ],
+)
+def test_render_sync_json_when_budget_varies_does_reflect_the_budget_key(
+    budget: BudgetSummary | None,
+):
+    result = SyncResult(files=("a.py",))
+
+    doc = json.loads(render_sync_json(result, budget=budget))
+
+    if budget is None:
+        assert "budget" not in doc
+    else:
+        assert doc["budget"] == {"cap_minutes": 10, "remaining_seconds": 300}

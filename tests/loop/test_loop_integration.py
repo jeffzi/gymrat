@@ -137,7 +137,7 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     commit_project(repo, samples=SAMPLES)
 
     exit_codes: list[int] = [
-        _run_cli(repo, "start", "main").returncode,
+        _run_cli(repo, "start", "--baseline", "main").returncode,
         _run_cli(repo, "measure", "main", "--record").returncode,
     ]
     _tune_experiment(repo, KEPT_LATENCY)
@@ -224,7 +224,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
     repo = create_scratch_repo()
     commit_project(repo, samples=SAMPLES, gate_file=gate_file)
 
-    assert _run_cli(repo, "start", "main").returncode == 0
+    assert _run_cli(repo, "start", "--baseline", "main").returncode == 0
     _tune_experiment(repo, KEPT_LATENCY)
 
     lock_path = lockfile_path(repo)

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.shared import (
+    BaselineOption,
     ColorOption,
     DebugOption,
     apply_color_override,
@@ -35,7 +36,6 @@ from gymrat.cli.shared import (
 )
 from gymrat.cli.supervise.options import (
     AllowDirtyOption,
-    BaselineOption,
     EffortOption,
     ForceOption,
     LogOption,
