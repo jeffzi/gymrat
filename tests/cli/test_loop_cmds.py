@@ -1,4 +1,4 @@
-"""Command-level tests for start, status, keep, discard, finalize, stop, sync, and subdirectory resolution.
+"""Command-level tests for iterate, keep, discard, status, and subdirectory resolution.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
@@ -29,10 +29,8 @@ from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.start import start_session
 from gymrat.session import (
-    FinalizeRecord,
     KeepRecord,
     SessionRecord,
-    StopRecord,
     append_record,
     experiment_worktree_dir,
     read_records,
@@ -40,12 +38,10 @@ from gymrat.session import (
 )
 from tests._ansi import SGR_RE
 from tests.cli._budget import install_budget
-from tests.cli._help import help_output
-from tests.cli._loop_cmds import (
+from tests.cli._session import (
     always_tty,
     last_command_record,
     make_discard_repo,
-    make_stop_repo,
     never_tty,
     runner,
     strip_ansi,
@@ -74,9 +70,6 @@ from tests.session.records._fixtures import (
     session_record,
     write_session_log,
 )
-
-#: The runbook path a session's config points an agent at, when it has one.
-_RUNBOOK_PATH = ".claude/skills/ecstatic-bench/SKILL.md"
 
 
 class _ConfirmRecorder:
@@ -121,22 +114,6 @@ def _record_lock_names(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return lock_names
 
 
-# ---------------------------------------------------------------------------
-# the start command
-# ---------------------------------------------------------------------------
-
-
-def _stub_resolve_config(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> object:
-    """Pin what ``start`` reads by replacing its ``resolve_config`` with a fixed config."""
-    config = resolved_config(**overrides)
-
-    def fake(*_a: object, **_k: object) -> object:
-        return config
-
-    monkeypatch.setattr("gymrat.cli.loop_cmds.resolve_config", fake)
-    return config
-
-
 def _open_session_with_one_keep(root: str) -> SessionRecord:
     """Open a session, commit and log one kept iteration, and return the session header."""
     start_session(root, "main", resolved_config())
@@ -159,106 +136,28 @@ def _close_session_with_one_keep(root: str) -> str:
     return header.session_id
 
 
-def test_start_command_when_run_does_create_a_session_and_report_its_branch(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "main"])
-
-    assert result.exit_code == 0
-    header = read_records(session_jsonl_path(repo))[0]
-    assert isinstance(header, SessionRecord)
-    assert header.branch in result.stdout
-
-
-def test_start_command_when_reopening_after_finalize_does_name_the_archived_session(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    closed_id = _close_session_with_one_keep(repo)
-    _stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "main"])
-
-    assert result.exit_code == 0
-    assert re.search(r"archived", result.stdout, re.IGNORECASE)
-    assert closed_id in result.stdout
-
-
-@pytest.mark.parametrize("resumed", [False, True])
-def test_start_command_when_runbook_configured_does_include_a_runbook_row(
-    repo: str, monkeypatch: pytest.MonkeyPatch, resumed: bool
-):
-    if resumed:
-        start_session(repo, "main", resolved_config())
-    _stub_resolve_config(monkeypatch, runbook=_RUNBOOK_PATH)
-
-    result = runner.invoke(app, ["start", "main"])
-
-    assert result.exit_code == 0
-    assert f"runbook: {_RUNBOOK_PATH} — read it before your first edit" in result.stdout
-
-
-def test_start_command_when_runbook_absent_does_omit_the_runbook_row(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "main"])
-
-    assert result.exit_code == 0
-    assert "runbook" not in result.stdout
-
-
-def test_start_command_when_run_does_record_command_trace_with_ref_and_exit_zero(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "main"])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert cmd.name == "start"
-    assert cmd.args == {"ref": "main"}
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-
-
-def test_start_command_when_config_overrides_given_does_record_them_in_args(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "main", "--bench", "sh run.sh", "--samples", "5"])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert cmd.name == "start"
-    assert cmd.args["ref"] == "main"
-    assert cmd.args["bench"] == "sh run.sh"
-    assert cmd.args["samples"] == 5
-
-
-@pytest.mark.parametrize("resumed", [False, True])
-def test_start_command_when_run_does_include_edit_here_line_with_sync_hint(
-    repo: str, monkeypatch: pytest.MonkeyPatch, resumed: bool
-):
-    if resumed:
-        start_session(repo, "main", resolved_config())
-    _stub_resolve_config(monkeypatch)
-
-    result = runner.invoke(app, ["start", "main"])
-
-    assert result.exit_code == 0
-    exp_dir = experiment_worktree_dir(repo)
-    assert f"edit in {exp_dir}" in result.stdout
-    assert "gymrat sync" in result.stdout
-
-
 # ---------------------------------------------------------------------------
 # the status command
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--bench", "x"),
+        ("--prepare", "x"),
+        ("--adapter", "x"),
+        ("--samples", "3"),
+        ("--timeout", "30"),
+    ],
+)
+def test_status_command_when_given_a_bench_run_flag_does_exit_two_with_usage_error(
+    flag: str, value: str
+) -> None:
+    result = runner.invoke(app, ["status", flag, value])
+
+    assert result.exit_code == 2
+    assert "No such option" in result.stderr
 
 
 def test_status_command_when_run_does_render_the_session_on_stdout(repo: str):
@@ -349,6 +248,21 @@ def test_status_command_when_stdout_broken_pipe_does_exit_zero(
     assert result.exit_code == 0
 
 
+def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    header = _open_session_with_one_keep(repo)
+    write_config(repo)
+    monkeypatch.chdir(experiment_worktree_dir(repo))
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    text = strip_ansi(result.stdout)
+    assert f"session {header.session_id}" in text
+    assert "1 kept" in text
+
+
 # ---------------------------------------------------------------------------
 # the discard command
 # ---------------------------------------------------------------------------
@@ -361,6 +275,8 @@ def discard_repo(repo: str) -> str:
 
 
 def test_discard_command_documents_force_in_its_help():
+    from tests.cli._help import help_output
+
     assert "--force" in help_output("discard")
 
 
@@ -421,95 +337,6 @@ def test_discard_command_when_stdin_not_tty_does_skip_the_prompt(
 
 
 # ---------------------------------------------------------------------------
-# the finalize command
-# ---------------------------------------------------------------------------
-
-
-def _session_with_one_keep(root: str) -> str:
-    """Open a session with one kept commit on it, and return its branch."""
-    return _open_session_with_one_keep(root).branch
-
-
-def test_finalize_command_documents_its_flags_and_default_branch_in_help():
-    out = help_output("finalize")
-
-    assert "--message" in out
-    assert "--branch" in out
-    assert "-final" in out
-
-
-@pytest.mark.parametrize(
-    ("args", "named"),
-    [
-        pytest.param(
-            ["--branch", "perf/regex-cache"], "perf/regex-cache", id="branch-the-caller-named"
-        ),
-        pytest.param([], None, id="session-branch-final-by-default"),
-    ],
-)
-def test_finalize_command_records_and_reports_the_branch(
-    repo: str, args: list[str], named: str | None
-):
-    branch = _session_with_one_keep(repo)
-    final_branch = named if named is not None else f"{branch}-final"
-
-    result = runner.invoke(app, ["finalize", *args])
-
-    assert result.exit_code == 0
-    record = settling_record_of(repo)
-    assert isinstance(record, FinalizeRecord)
-    assert record.branch == final_branch
-    assert final_branch in result.stdout
-
-
-def test_finalize_command_commits_the_message_it_was_given(repo: str):
-    _session_with_one_keep(repo)
-
-    result = runner.invoke(app, ["finalize", "-m", "squash the tuning session"])
-
-    assert result.exit_code == 0
-    record = settling_record_of(repo)
-    assert isinstance(record, FinalizeRecord)
-    assert record.message == "squash the tuning session"
-
-
-def test_finalize_command_when_run_does_record_command_trace_with_branch_and_message(
-    repo: str,
-):
-    _session_with_one_keep(repo)
-
-    result = runner.invoke(app, ["finalize", "--branch", "perf/regex", "-m", "squash the session"])
-
-    assert result.exit_code == 0
-    cmd = last_command_record(repo)
-    assert cmd.name == "finalize"
-    assert cmd.args == {"branch": "perf/regex", "message": "squash the session"}
-    assert cmd.exit_code == 0
-    assert cmd.reason is None
-
-
-def test_finalize_command_when_finalized_does_record_command_trace_with_exit_two(
-    repo: str,
-):
-    _close_session_with_one_keep(repo)
-
-    result = runner.invoke(app, ["finalize"])
-
-    assert result.exit_code == 2
-    cmd = last_command_record(repo)
-    assert cmd.name == "finalize"
-    assert cmd.exit_code == 2
-    assert cmd.reason == "finalized"
-
-
-def test_finalize_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):
-    result = runner.invoke(app, ["finalize"])
-
-    assert result.exit_code == 2
-    assert "gymrat start" in result.stderr
-
-
-# ---------------------------------------------------------------------------
 # the loop commands, run from a subdirectory of the repository
 # ---------------------------------------------------------------------------
 
@@ -517,7 +344,6 @@ def test_finalize_command_when_no_session_does_exit_two_with_a_start_hint(repo: 
 @pytest.mark.parametrize(
     ("args", "resolver_name"),
     [
-        pytest.param(["start", "main"], "resolve_config", id="start"),
         pytest.param(["iterate"], "resolve_config", id="iterate"),
         pytest.param(["keep"], "resolve_benchless_config", id="keep"),
         pytest.param(["status"], "resolve_benchless_config", id="status"),
@@ -536,8 +362,6 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     recorder = _ResolverRecorder(resolved_config())
     monkeypatch.setattr(f"gymrat.cli.loop_cmds.{resolver_name}", recorder)
 
-    # Whether the command then finds the session it needs is beside the point;
-    # where it looked the configuration up is what is under test.
     runner.invoke(app, args)
 
     assert recorder.calls
@@ -546,98 +370,27 @@ def test_loop_command_when_run_from_subdirectory_does_resolve_config_at_repo_roo
     assert Path(base_dir) == Path(root)
 
 
-def test_status_command_when_run_inside_the_experiment_worktree_does_render_the_session(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    header = _open_session_with_one_keep(repo)
-    write_config(repo)
-    monkeypatch.chdir(experiment_worktree_dir(repo))
-
-    result = runner.invoke(app, ["status"])
-
-    assert result.exit_code == 0
-    text = strip_ansi(result.stdout)
-    assert f"session {header.session_id}" in text
-    assert "1 kept" in text
-
-
-# ---------------------------------------------------------------------------
-# the sync command
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def sync_repo(repo: str) -> str:
-    """A repository with an open session, ready for sync tests."""
-    start_session(repo, "main", resolved_config())
-    return repo
-
-
-def test_sync_command_when_registered_does_appear_in_the_app_commands():
-    assert "sync" in help_output("sync").lower()
-
-
-def test_sync_command_when_changes_exist_does_print_synced_file_count_and_names(
-    sync_repo: str,
-):
-    root = Path(sync_repo)
-    (root / "extra.py").write_text("# new\n", encoding="utf-8")
-    (root / "README.md").write_text("# updated\n", encoding="utf-8")
-
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 0
-    assert "2 files" in result.stdout
-    assert "extra.py" in result.stdout
-    assert "README.md" in result.stdout
-
-
-def test_sync_command_when_nothing_to_sync_does_print_nothing_to_sync(
-    sync_repo: str,
-):
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 0
-    assert "nothing to sync" in result.stdout
-
-
-def test_sync_command_when_run_does_take_the_repo_lock(
-    sync_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    lock_names = _record_lock_names(monkeypatch)
-
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 0
-    assert "sync" in lock_names
-
-
-def test_sync_command_when_finalized_does_record_command_trace_with_exit_two(
-    repo: str,
-):
-    _close_session_with_one_keep(repo)
-
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 2
-    cmd = last_command_record(repo)
-    assert cmd.name == "sync"
-    assert cmd.exit_code == 2
-    assert cmd.reason == "finalized"
-
-
-def test_sync_command_when_no_session_does_exit_two_with_a_start_hint(
-    repo: str,
-):
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 2
-    assert "gymrat start" in result.stderr
-
-
 # ---------------------------------------------------------------------------
 # the keep command
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--bench", "x"),
+        ("--prepare", "x"),
+        ("--adapter", "x"),
+        ("--samples", "3"),
+    ],
+)
+def test_keep_command_when_given_a_bench_run_flag_does_exit_two_with_usage_error(
+    flag: str, value: str
+) -> None:
+    result = runner.invoke(app, ["keep", flag, value])
+
+    assert result.exit_code == 2
+    assert "No such option" in result.stderr
 
 
 def test_keep_command_when_checks_pass_does_commit_and_print_the_short_commit(
@@ -791,10 +544,20 @@ def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
 
 
 def test_keep_command_when_help_requested_does_document_allow_unimproved():
+    from tests.cli._help import help_output
+
     help_text = help_output("keep")
 
     assert "--allow-unimproved" in help_text
     assert "keep the edit even when the iteration was not improved" in help_text
+
+
+def test_keep_command_when_help_does_describe_message_as_commit_message_for_kept_edit():
+    from tests.cli._help import help_output
+
+    help_text = help_output("keep")
+
+    assert "commit message for the kept edit" in help_text
 
 
 def test_keep_command_when_outcome_not_improved_does_exit_one_refusing_with_both_ways_out(
@@ -1001,159 +764,49 @@ def test_discard_command_when_budget_active_does_end_text_with_time_left_line(
     assert re.search(r"left of 30m", text)
 
 
-def test_sync_command_when_budget_active_does_end_text_with_time_left_line(
-    sync_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    install_budget(sync_repo, monkeypatch)
-
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 0
-    text = strip_ansi(result.stdout)
-    assert re.search(r"left of 30m", text)
+# ---------------------------------------------------------------------------
+# --color / --no-color on keep and discard
+# ---------------------------------------------------------------------------
 
 
-def test_sync_command_when_no_budget_does_omit_time_left_line(
-    sync_repo: str,
-):
-    result = runner.invoke(app, ["sync"])
-
-    assert result.exit_code == 0
-    assert "left of" not in result.stdout
-
-
-def test_start_command_when_budget_active_does_not_include_time_left_line(
+def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _stub_resolve_config(monkeypatch)
-    # start creates the session dir itself, but write_budget needs it
-    Path(repo, ".gymrat").mkdir(exist_ok=True)
-    install_budget(repo, monkeypatch)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    start_with(repo, (iteration(1),))
+    write_config(repo, checks=CHECKS)
 
-    result = runner.invoke(app, ["start", "main"])
+    result = runner.invoke(app, ["keep", "--no-color"])
 
-    assert result.exit_code == 0
-    assert "left of" not in result.stdout
+    assert result.exit_code == 1
+    assert not SGR_RE.search(result.stdout)
 
 
-def test_finalize_command_when_budget_active_does_not_include_time_left_line(
+def test_keep_command_when_color_does_force_ansi_on_stdout_report(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    _session_with_one_keep(repo)
-    install_budget(repo, monkeypatch)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    start_with(repo, (iteration(1),))
+    write_config(repo, checks=CHECKS)
 
-    result = runner.invoke(app, ["finalize"])
+    result = runner.invoke(app, ["keep", "--color"])
 
-    assert result.exit_code == 0
-    assert "left of" not in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# the stop command
-# ---------------------------------------------------------------------------
+    assert result.exit_code == 1
+    assert SGR_RE.search(result.stdout)
 
 
-@pytest.fixture
-def stop_repo(repo: str) -> str:
-    """A repository with a settled, configured session ready for the stop command."""
-    return make_stop_repo(repo)
-
-
-def test_stop_command_when_message_given_does_print_stopped_and_append_a_stop_record(
-    stop_repo: str,
+def test_discard_command_when_no_color_does_strip_ansi_from_stderr_error(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    result = runner.invoke(app, ["stop", "-m", "switched to a different approach"])
-
-    assert result.exit_code == 0
-    text = strip_ansi(result.stdout)
-    assert "Stopped" in text
-    assert "switched to a different approach" in text
-    records = read_records(session_jsonl_path(stop_repo))
-    stop_records = [r for r in records if isinstance(r, StopRecord)]
-    assert len(stop_records) == 1
-    assert stop_records[0].message == "switched to a different approach"
-
-
-def test_stop_command_when_message_flag_does_accept_both_forms(stop_repo: str):
-    result = runner.invoke(app, ["stop", "--message", "done"])
-
-    assert result.exit_code == 0
-
-
-def test_stop_command_when_no_message_does_exit_two_naming_the_option(
-    stop_repo: str,
-):
-    result = runner.invoke(app, ["stop"])
-
-    assert result.exit_code == 2
-    assert "message" in (result.stderr + result.stdout).lower()
-
-
-def test_stop_command_when_blank_message_does_exit_two_naming_the_option(
-    stop_repo: str,
-):
-    result = runner.invoke(app, ["stop", "-m", "   "])
-
-    assert result.exit_code == 2
-    assert "message" in (result.stderr + result.stdout).lower()
-
-
-def test_stop_command_when_finalized_does_record_command_trace_with_exit_two(
-    repo: str,
-):
-    _close_session_with_one_keep(repo)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    start_with(repo, (iteration(1),))
+    edit_experiment(repo)
     write_config(repo)
 
-    result = runner.invoke(app, ["stop", "-m", "done"])
-
-    assert result.exit_code == 2
-    cmd = last_command_record(repo)
-    assert cmd.name == "stop"
-    assert cmd.exit_code == 2
-    assert cmd.reason == "finalized"
-
-
-def test_stop_command_when_no_session_does_exit_two_with_a_start_hint(repo: str):
-    write_config(repo)
-
-    result = runner.invoke(app, ["stop", "-m", "done"])
-
-    assert result.exit_code == 2
-    assert "gymrat start" in result.stderr
-
-
-def test_stop_command_when_run_does_take_the_repo_lock(
-    stop_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    lock_names = _record_lock_names(monkeypatch)
-
-    result = runner.invoke(app, ["stop", "-m", "done"])
+    result = runner.invoke(app, ["discard", "--no-color"])
 
     assert result.exit_code == 0
-    assert "stop" in lock_names
-
-
-# ---------------------------------------------------------------------------
-# budget time-left line — stop text output
-# ---------------------------------------------------------------------------
-
-
-def test_stop_command_when_budget_active_does_end_text_with_time_left_line(
-    stop_repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    install_budget(stop_repo, monkeypatch)
-
-    result = runner.invoke(app, ["stop", "-m", "done"])
-
-    assert result.exit_code == 0
-    text = strip_ansi(result.stdout)
-    assert re.search(r"left of 30m", text)
-
-
-def test_stop_command_when_no_budget_does_omit_time_left_line(
-    stop_repo: str,
-):
-    result = runner.invoke(app, ["stop", "-m", "done"])
-
-    assert result.exit_code == 0
-    assert "left of" not in result.stdout
+    assert not SGR_RE.search(result.stdout)

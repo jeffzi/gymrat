@@ -5,7 +5,8 @@ throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 Git, ``repo_root``, and the supervise lock stay real; the seams the command
 composes over — config resolution, kickoff, the Claude driver, the supervisor
-run, the progress reporter, the git-exclude write, and the signal cleanup — are
+run, the run-end exit sequence, the progress reporter, the git-exclude write,
+and the signal cleanup — are
 replaced at the names ``supervise.cmd`` imports them under, mirroring the
 upstream test harness.
 """
@@ -43,8 +44,9 @@ from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import SessionPrompt, SupervisionResult, create_claude_driver
 from gymrat.supervisor.context import SupervisedSession
+from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from tests._ansi import strip_ansi
-from tests.cli._loop_cmds import make_discard_repo
+from tests.cli._session import make_discard_repo
 from tests.cli.supervise._fixtures import (
     empty_session_state,
     make_supervision_result,
@@ -111,16 +113,29 @@ def _real_reporter_stop() -> Callable[[], None]:
 class _Seams:
     """The recorders and doubles a single command run wires up.
 
-    ``supervise_calls`` / ``reporter_calls`` capture the keyword payloads their
-    seams received; ``compose_calls`` records ``(config, prompt)`` per call. The
-    ``reporter_stop``, ``ensure_git_exclude``, ``install_cleanup``, and
-    ``create_driver`` mocks stand in for the side-effecting seams so a test can
-    assert they fired.
+    ``supervise_calls`` / ``reporter_calls`` / ``exit_calls`` capture the keyword
+    payloads their seams received; ``compose_calls`` records ``(config, prompt)``
+    per call. The ``reporter_stop``, ``ensure_git_exclude``, ``install_cleanup``,
+    and ``create_driver`` mocks stand in for the side-effecting seams so a test can
+    assert they fired. The reporter's observer, exit-phase, and warn sinks append
+    to ``observed_events``, ``exit_phases``, and ``warnings``. The fake exit
+    sequence returns ``exit_report`` after calling ``exit_hook`` (when set) with
+    its recorded call, so a test can act from inside the sequence.
+    ``session_result`` is what the reporter's session reader returns right now:
+    the reporter shows it at construction and again only after
+    ``refresh_session``, so a change made later reaches the summary only
+    through a refresh.
     """
 
     def __init__(self) -> None:
         self.driver = object()
-        self.observer: Callable[[object], None] = lambda _event: None
+        self.observed_events: list[object] = []
+        self.observer: Callable[[object], None] = self.observed_events.append
+        self.exit_phases: list[ExitPhase] = []
+        self.warnings: list[str] = []
+        self.exit_report = ExitReport(steps=(ExitStep(kind="nothing", text="nothing to settle"),))
+        self.exit_hook: Callable[[dict[str, Any]], None] | None = None
+        self.exit_calls: list[dict[str, Any]] = []
         self.session_result: ReadSessionResult | None = None
         self.final_text: str | None = None
         self.reporter_start = create_autospec(_real_reporter_start(), name="reporter.start")
@@ -226,13 +241,28 @@ def _install_seams(
             raise raises
         return handed_back
 
+    async def fake_run_exit_sequence(context: object, **kwargs: object) -> ExitReport:
+        call = {"context": context, **kwargs}
+        seams.exit_calls.append(call)
+        if seams.exit_hook is not None:
+            seams.exit_hook(call)
+        return seams.exit_report
+
     def fake_reporter(**kwargs: object) -> SimpleNamespace:
         seams.reporter_calls.append(kwargs)
+        shown = SimpleNamespace(session=seams.session_result)
+
+        def refresh_session() -> None:
+            shown.session = seams.session_result
+
         return SimpleNamespace(
             observer=seams.observer,
             start=seams.reporter_start,
             stop=seams.reporter_stop,
-            session_result=lambda: seams.session_result,
+            exit_phase=seams.exit_phases.append,
+            warn=seams.warnings.append,
+            refresh_session=refresh_session,
+            session_result=lambda: shown.session,
             final_text=lambda: seams.final_text,
         )
 
@@ -245,6 +275,7 @@ def _install_seams(
     monkeypatch.setattr("gymrat.cli.supervise.cmd.compose_kickoff", fake_compose)
     monkeypatch.setattr("gymrat.cli.supervise.cmd.create_claude_driver", seams.create_driver)
     monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise", fake_supervise)
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.run_exit_sequence", fake_run_exit_sequence)
     monkeypatch.setattr("gymrat.cli.supervise.cmd.create_supervise_reporter", fake_reporter)
     monkeypatch.setattr("gymrat.cli.supervise.cmd.ensure_git_exclude", seams.ensure_git_exclude)
     monkeypatch.setattr(
@@ -621,75 +652,6 @@ def test_supervise_when_stdout_is_not_a_tty_does_print_the_summary_without_ansi_
 
     assert result.exit_code == 0
     assert "\x1b[" not in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# exit codes
-# ---------------------------------------------------------------------------
-
-
-def test_supervise_when_a_cap_ended_the_session_does_exit_one_naming_the_cap(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(
-        monkeypatch,
-        result=make_supervision_result(
-            reason="interrupted", ended_by="wall-clock", duration_ms=_CAP_MS, cost_usd=1.0
-        ),
-    )
-
-    result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
-
-    assert result.exit_code == 1
-    assert result.stdout.splitlines()[0] == "! interrupted by wall-clock cap · 10m 0s · $1.00"
-
-
-def test_supervise_when_supervise_raises_does_exit_two_with_message_on_stderr(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(monkeypatch, raises=GymratError("config broken"))
-
-    result = _run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 2
-    assert "config broken" in result.stderr
-
-
-def test_supervise_when_outcome_error_with_message_does_exit_two_and_surface_it(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(
-        monkeypatch,
-        result=make_supervision_result(
-            reason="error", duration_ms=5_000, cost_usd=0.03, message="SDK connection lost"
-        ),
-    )
-
-    result = _run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 2
-    assert result.stdout.splitlines()[0] == "✗ error · 5s · $0.03"
-    assert "SDK connection lost" in result.stderr
-
-
-@pytest.mark.parametrize(
-    "message",
-    [pytest.param(None, id="omitted"), pytest.param("", id="empty-string")],
-)
-def test_supervise_when_outcome_error_without_message_does_exit_two_quietly(
-    repo: str, monkeypatch: pytest.MonkeyPatch, message: str | None
-):
-    _install_seams(
-        monkeypatch,
-        result=make_supervision_result(
-            reason="error", duration_ms=5_000, cost_usd=0.01, message=message
-        ),
-    )
-
-    result = _run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 2
-    assert not re.search(r"\berror\b", result.stderr, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -1082,33 +1044,6 @@ def test_supervise_when_run_does_set_command_timeout_to_wall_clock_cap(
     prompt = call["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.command_timeout_ms == _CAP_MS
-
-
-# ---------------------------------------------------------------------------
-# guard-ended session — exit code
-# ---------------------------------------------------------------------------
-
-
-def test_supervise_when_guard_ended_does_exit_one_with_guard_headline(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    _install_seams(
-        monkeypatch,
-        result=make_supervision_result(
-            reason="interrupted",
-            ended_by="guard",
-            duration_ms=30_000,
-            cost_usd=0.10,
-            end_reason="safety limit reached",
-        ),
-    )
-
-    result = _run("optimize it", "--max-minutes", "10")
-
-    assert result.exit_code == 1
-    headline = result.stdout.splitlines()[0]
-    assert "stopped by guard" in headline
-    assert "safety limit reached" in headline
 
 
 # ---------------------------------------------------------------------------

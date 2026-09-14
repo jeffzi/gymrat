@@ -1,8 +1,10 @@
 """The ``gymrat supervise`` command: a supervised agent session under caps.
 
 Guards against a dirty working tree, takes the supervise lock, resolves the JSONL
-event log, and hands a driver, reporter, and kickoff to the supervisor. The agent
-SDK is imported lazily inside the driver so ``gymrat --help`` stays fast.
+event log, and hands a driver, reporter, and kickoff to the supervisor. Every run
+the supervisor returns from then passes through the exit sequence, which settles
+and (unless ``--no-finalize``) finalizes the session before the summary prints.
+The agent SDK is imported lazily inside the driver so ``gymrat --help`` stays fast.
 """
 
 from __future__ import annotations
@@ -11,25 +13,38 @@ import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 import typer
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from gymrat.supervisor.events import SessionObserver
+
 from gymrat.cli.lock import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.shared import (
+    BaselineOption,
     ColorOption,
     DebugOption,
     apply_color_override,
     apply_debug,
     exit_with_error,
-    parse_max_minutes,
-    parse_positive_number,
     resolve_render_mode,
     resolve_stream_color,
     write_and_flush,
+)
+from gymrat.cli.supervise.options import (
+    AllowDirtyOption,
+    EffortOption,
+    ForceOption,
+    LogOption,
+    MaxMinutesOption,
+    MaxUsdOption,
+    ModelOption,
+    NoFinalizeOption,
+    Options,
+    PromptArgument,
 )
 from gymrat.cli.supervise.preflight import doctor_gate, run_preflight, validate_experiment_worktree
 from gymrat.cli.supervise.progress import (
@@ -39,8 +54,6 @@ from gymrat.cli.supervise.progress import (
 )
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
 from gymrat.config import (
-    EFFORT_LEVELS,
-    EFFORT_PHRASE,
     CliFlags,
     Effort,
     ResolvedConfig,
@@ -48,6 +61,7 @@ from gymrat.config import (
     resolve_config,
 )
 from gymrat.errors import GymratError
+from gymrat.exec import kill_live_process_groups
 from gymrat.git import run_git
 from gymrat.paths import abbreviate_home
 from gymrat.plural import pluralize
@@ -74,74 +88,15 @@ from gymrat.supervisor import (
     SessionPrompt,
     SupervisedSession,
     SupervisionResult,
+    combine_observers,
     compose_kickoff,
     create_claude_driver,
+    create_event_log_writer,
     supervise,
 )
 from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
-
-# ---------------------------------------------------------------------------
-# CLI option surface
-# ---------------------------------------------------------------------------
-
-_PromptArgument = Annotated[
-    str | None,
-    typer.Argument(metavar="[PROMPT]", help="optimization prompt for the agent"),
-]
-_MaxMinutesOption = Annotated[
-    float,
-    typer.Option(
-        "--max-minutes",
-        parser=parse_max_minutes,
-        metavar="<float>",
-        help="wall-clock cap in minutes, counted from when the baseline is recorded",
-    ),
-]
-_MaxUsdOption = Annotated[
-    float | None,
-    typer.Option(
-        "--max-usd", parser=parse_positive_number, metavar="<float>", help="spend cap in USD"
-    ),
-]
-_LogOption = Annotated[str | None, typer.Option("--log", help="path for the JSONL event log")]
-_ModelOption = Annotated[
-    str | None, typer.Option("--model", help="model to use for the agent session")
-]
-_AllowDirtyOption = Annotated[
-    bool, typer.Option("--allow-dirty", help="allow launching with uncommitted changes")
-]
-_ForceOption = Annotated[
-    bool,
-    typer.Option(
-        "--force",
-        help="launch even when the cap cannot fit one iteration or a stop condition is already met",
-    ),
-]
-_BaselineOption = Annotated[
-    str | None,
-    typer.Option(
-        "--baseline",
-        metavar="<ref>",
-        help=(
-            "git ref that pins a freshly opened session; "
-            "defaults to HEAD and is ignored when a session is resumed"
-        ),
-    ),
-]
-
-
-def _parse_effort(value: str) -> Effort:
-    if value not in EFFORT_LEVELS:
-        raise typer.BadParameter(EFFORT_PHRASE)
-    return cast("Effort", value)
-
-
-_EffortOption = Annotated[
-    Effort | None,
-    typer.Option("--effort", parser=_parse_effort, metavar="<level>", help="effort level"),
-]
-
+from gymrat.supervisor.exit_sequence import ExitReport, run_exit_sequence
 
 # ---------------------------------------------------------------------------
 # Pre-flight guards
@@ -204,6 +159,7 @@ class _SessionContext:
     effort: Effort | None
     color: bool | None
     branch: str
+    finalize: bool
 
     def session_prompt(self) -> SessionPrompt:
         return SessionPrompt(
@@ -223,7 +179,26 @@ def _report_result(
     ctx: _SessionContext,
     session_result: ReadSessionResult | None,
     final_text: str | None,
+    exit_report: ExitReport,
 ) -> None:
+    """Print the closing summary, then exit with the code the run end maps to.
+
+    A driver error wins (its message goes to stderr), then an exit-sequence error
+    (already shown as the summary's ``exit  error`` row, so nothing more is
+    printed), then how the run ended; a clean end returns normally.
+
+    Args:
+        result: What the supervisor returned.
+        ctx: The session run's context.
+        session_result: The session as the exit sequence left it.
+        final_text: The agent's last message, if any.
+        exit_report: What the exit sequence did.
+
+    Raises:
+        typer.Exit: With the tool-failure code on a driver or exit-sequence
+            error, or the gate code when anything but the session or a stop
+            condition ended the run.
+    """
     summary = render_lines(
         build_summary(
             result,
@@ -231,6 +206,7 @@ def _report_result(
             session_result=session_result,
             final_text=final_text,
             labels=SessionLabels(model=ctx.model, effort=ctx.effort),
+            exit_report=exit_report,
         ),
         color=resolve_stream_color(ctx.color, sys.stdout),
         width=RENDER_WIDTH,
@@ -242,7 +218,10 @@ def _report_result(
             exit_with_error(GymratError(result.outcome.message))
         raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
 
-    if result.ended_by != "session":
+    if exit_report.error is not None:
+        raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
+
+    if result.ended_by not in ("session", "stop-condition"):
         raise typer.Exit(GATE_EXIT_CODE)
 
 
@@ -287,12 +266,64 @@ def _create_reporter(ctx: _SessionContext, mode: Literal["live", "plain"]) -> Su
     )
 
 
+def _supervised_session(ctx: _SessionContext, deadline_ms: float) -> SupervisedSession:
+    return SupervisedSession(
+        root=ctx.root,
+        log_path=ctx.log_path,
+        lock_path=lockfile_path(ctx.root),
+        config=ctx.config,
+        deadline_ms=deadline_ms,
+        max_minutes=ctx.max_minutes,
+        max_usd=ctx.max_usd,
+    )
+
+
 async def _start_and_supervise(
-    reporter: SuperviseReporter, pending: Coroutine[object, object, SupervisionResult]
-) -> SupervisionResult:
-    """Start the reporter tick inside the running loop, then await the supervisor."""
-    reporter.start()
-    return await pending
+    reporter: SuperviseReporter,
+    pending: Coroutine[object, object, SupervisionResult],
+    *,
+    ctx: _SessionContext,
+    context: SupervisedSession,
+    observer: SessionObserver,
+) -> tuple[SupervisionResult, ExitReport]:
+    """Run the supervisor, then the exit sequence, inside one running loop.
+
+    The budget file is removed as soon as the supervisor stops, whether it
+    returned or raised, so the exit sequence never runs under a live budget.
+    The exit sequence runs only when the supervisor returned; its phases and
+    warnings go through the still-running reporter, and its decisions land in
+    the same event log and observer the supervisor wrote to.
+
+    Args:
+        reporter: The dashboard, started before the supervisor is awaited.
+        pending: The supervisor run.
+        ctx: The session run's context.
+        context: The supervised session the supervisor and exit sequence share.
+        observer: The observer the supervisor was handed.
+
+    Returns:
+        What the supervisor returned and what the exit sequence did.
+
+    Raises:
+        Exception: Whatever the supervisor raised, unchanged.
+    """
+    try:
+        reporter.start()
+        result = await pending
+    finally:
+        clear_budget(ctx.root)
+    exit_report = await run_exit_sequence(
+        context,
+        ended_by=result.ended_by,
+        finalize=ctx.finalize,
+        progress=reporter.exit_phase,
+        log=combine_observers(create_event_log_writer(ctx.log_path), observer),
+        warn=reporter.warn,
+    )
+    # A step that writes the session log and then fails emits no event, so the
+    # reporter would otherwise summarize the session as it was before that step.
+    reporter.refresh_session()
+    return result, exit_report
 
 
 def _run_session(ctx: _SessionContext) -> None:
@@ -300,8 +331,11 @@ def _run_session(ctx: _SessionContext) -> None:
     driver = create_claude_driver()
     mode = resolve_render_mode()
     reporter = _create_reporter(ctx, mode)
-    uninstall_cleanup = install_termination_cleanup(reporter.stop)
+    uninstall_reporter_cleanup = install_termination_cleanup(reporter.stop)
     deadline_ms, uninstall_budget_cleanup = _init_budget(ctx.root, ctx.max_minutes)
+    # A signal mid-exit-sequence exits the process before the loop can cancel
+    # the checks command it is running, so its process group is killed here.
+    uninstall_kill_cleanup = install_termination_cleanup(kill_live_process_groups)
     if mode == "plain":
         write_and_flush(sys.stderr, f"log: {abbreviate_home(ctx.log_path)}\n")
 
@@ -320,19 +354,11 @@ def _run_session(ctx: _SessionContext) -> None:
         reporter_observer=reporter.observer,
     )
 
-    context = SupervisedSession(
-        root=ctx.root,
-        log_path=ctx.log_path,
-        lock_path=lockfile_path(ctx.root),
-        config=ctx.config,
-        deadline_ms=deadline_ms,
-        max_minutes=ctx.max_minutes,
-        max_usd=ctx.max_usd,
-    )
+    context = _supervised_session(ctx, deadline_ms)
     result: SupervisionResult | None = None
     try:
         try:
-            result = asyncio.run(
+            result, exit_report = asyncio.run(
                 _start_and_supervise(
                     reporter,
                     supervise(
@@ -342,18 +368,22 @@ def _run_session(ctx: _SessionContext) -> None:
                         launch=ctx.launch,
                         observer=observer,
                     ),
+                    ctx=ctx,
+                    context=context,
+                    observer=observer,
                 )
             )
         finally:
-            clear_budget(ctx.root)
             reporter.stop()
-            uninstall_cleanup()
+            uninstall_reporter_cleanup()
             uninstall_budget_cleanup()
+            uninstall_kill_cleanup()
         _report_result(
             result,
             ctx=ctx,
             session_result=reporter.session_result(),
             final_text=reporter.final_text(),
+            exit_report=exit_report,
         )
     finally:
         if tracing.active:
@@ -365,23 +395,7 @@ def _run_session(ctx: _SessionContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _Options:
-    """The parsed flag surface, gathered so the run helpers take one argument."""
-
-    prompt: str | None
-    max_minutes: float
-    max_usd: float | None
-    log: str | None
-    baseline: str | None
-    model: str | None
-    effort: Effort | None
-    allow_dirty: bool
-    force: bool
-    color: bool | None
-
-
-def _execute(options: _Options) -> None:
+def _execute(options: Options) -> None:
     """Run the full supervised-session pipeline.
 
     Step order: doctor gate, working-tree guard, experiment-worktree guard,
@@ -449,6 +463,7 @@ def _execute(options: _Options) -> None:
                 effort=effort,
                 color=options.color,
                 branch=preflight.session.branch,
+                finalize=options.finalize,
             )
         )
     finally:
@@ -456,23 +471,24 @@ def _execute(options: _Options) -> None:
 
 
 def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the option surface
-    prompt: _PromptArgument = None,
+    prompt: PromptArgument = None,
     *,
-    max_minutes: _MaxMinutesOption,
-    max_usd: _MaxUsdOption = None,
-    log: _LogOption = None,
-    baseline: _BaselineOption = None,
-    model: _ModelOption = None,
-    effort: _EffortOption = None,
-    allow_dirty: _AllowDirtyOption = False,
-    force: _ForceOption = False,
+    max_minutes: MaxMinutesOption,
+    max_usd: MaxUsdOption = None,
+    log: LogOption = None,
+    baseline: BaselineOption = None,
+    model: ModelOption = None,
+    effort: EffortOption = None,
+    allow_dirty: AllowDirtyOption = False,
+    force: ForceOption = False,
+    no_finalize: NoFinalizeOption = False,
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
     """Run a supervised agent session with wall-clock and spend caps."""
     apply_debug(debug)
     apply_color_override(color)
-    options = _Options(
+    options = Options(
         prompt=prompt,
         max_minutes=max_minutes,
         max_usd=max_usd,
@@ -483,6 +499,7 @@ def supervise_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring
         allow_dirty=allow_dirty,
         force=force,
         color=color,
+        finalize=not no_finalize,
     )
     try:
         _execute(options)

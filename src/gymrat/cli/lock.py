@@ -46,6 +46,13 @@ class CommandTrace:
     The seam reads ``gate``, ``reason``, and ``seq`` after the body settles to
     populate the :class:`CommandRecord` it appends.  The body sets them freely;
     they carry no meaning to the seam beyond the exit-code / reason mapping.
+
+    Attributes:
+        args: Extra trace arguments the body contributes to the command record.
+        seq: Sequence number the seam reads after the body settles.
+        gate: Whether the body's outcome gates the exit code, read by the seam
+            after the body settles.
+        reason: The command reason the seam reads after the body settles.
     """
 
     args: dict[str, object] = field(default_factory=dict)
@@ -119,14 +126,20 @@ async def with_repo_lock[T](
     body: Callable[[CommandTrace], Awaitable[T]],
     *,
     args: dict[str, object] | None = None,
+    root: str | None = None,
 ) -> T:
     """Hold the repository's single-flight lock for the length of ``body``.
 
-    Inside a git repository the lock is acquired around ``body`` and released
-    however it settles — including on exception, and always before the caller
-    renders its report. Outside every git repository the answer is to run
-    ``body`` with no lock at all; any other git failure exits without
-    benchmarking rather than running unlocked.
+    The lock is acquired around ``body`` and released however it settles —
+    including on exception, and always before the caller renders its report.
+
+    With no ``root`` the repository is discovered from the process working
+    directory: outside every git repository the answer is to run ``body`` with
+    no lock at all, and any other git failure exits without benchmarking rather
+    than running unlocked. A caller that passes ``root`` has already chosen the
+    repository, so the working directory is never consulted and the unlocked
+    "not a git repository" answer never applies — the lock is taken for that
+    root whether or not it is a repository.
 
     Holding the lock is what makes repairing the session log safe: a torn final
     line can only belong to a writer the previous run left dead, so the tail is
@@ -140,6 +153,8 @@ async def with_repo_lock[T](
         command: The command name recorded in the :class:`CommandRecord`.
         body: The async callable to run under the lock.
         args: Extra trace arguments to include in the command record.
+        root: The repository to lock, record, and repair; ``None`` discovers it
+            from the process working directory.
 
     Returns:
         The value returned by ``body``.
@@ -147,14 +162,15 @@ async def with_repo_lock[T](
     trace = CommandTrace(args=args if args is not None else {})
     start = _clock.monotonic_ms()
 
-    try:
-        root = repo_root()
-    except NotAGitRepositoryError:
-        return await body(trace)
-    except GymratError as error:
-        from gymrat.cli.shared import exit_with_error  # noqa: PLC0415 -- avoids circular import
+    if root is None:
+        try:
+            root = repo_root()
+        except NotAGitRepositoryError:
+            return await body(trace)
+        except GymratError as error:
+            from gymrat.cli.shared import exit_with_error  # noqa: PLC0415 -- avoids circular import
 
-        exit_with_error(error)
+            exit_with_error(error)
 
     jsonl = session_jsonl_path(root)
     session_id, tracing_active = _maybe_configure_tracing(root, jsonl)

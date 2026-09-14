@@ -17,10 +17,11 @@ from gymrat.cli.compare_cmd import compare
 from gymrat.cli.doctor_cmd import doctor_command
 from gymrat.cli.export_cmd import export_command
 from gymrat.cli.init_cmd import init_command
-from gymrat.cli.loop_cmds import discard, finalize, iterate, keep, start, status, stop, sync
+from gymrat.cli.loop_cmds import discard, iterate, keep, status
 from gymrat.cli.measure_cmd import measure
 from gymrat.cli.probe_cmd import probe
-from gymrat.cli.shared import BUGS_URL, DebugOption, set_debug_mode
+from gymrat.cli.session_cmds import finalize, start, stop, sync
+from gymrat.cli.shared import BUGS_URL, ColorOption, DebugOption, set_color_override, set_debug_mode
 from gymrat.cli.supervise.cmd import supervise_command
 from gymrat.report.style import format_hint
 
@@ -34,6 +35,10 @@ Examples:
   • gymrat measure --bench "npm run bench"
   • gymrat doctor --bench "npm run bench"
   • gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5
+  • gymrat start --baseline main
+  • gymrat iterate
+  • gymrat keep -m "cache the regex"
+  • gymrat finalize
 
 {format_hint(f"Docs: `{_DOCS_URL}`")}
 {format_hint(f"Bugs: `{BUGS_URL}`")}"""
@@ -92,9 +97,16 @@ app = typer.Typer(
 
 
 @app.callback()
-def _root(*, debug: DebugOption = False, version: _VersionOption = False) -> None:
-    """Route the shared ``--debug`` flag, tolerated before or after the subcommand."""
+def _root(
+    *,
+    color: ColorOption = None,
+    debug: DebugOption = False,
+    version: _VersionOption = False,
+) -> None:
+    """Route the shared ``--debug`` and ``--color`` flags."""
     _ = version  # consumed eagerly by its callback; declared so --version is a root option
+    if color is not None:
+        set_color_override(color)
     set_debug_mode(debug)
 
 

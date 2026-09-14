@@ -20,10 +20,12 @@ from gymrat.exec import (
 )
 from gymrat.loop.output_limit import limit_output
 from gymrat.report.style import RENDER_WIDTH, color_from_env, format_hint, render_lines
+from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.config import BenchlessConfig
     from gymrat.session.records import IterationRecord, MetricVerdict
+    from gymrat.warn import WarnSink
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +52,31 @@ def _stderr_color() -> bool:
     return declared if declared is not None else sys.stderr.isatty()
 
 
-async def run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun | None:
+def _gate_off_warning(*, color: bool) -> str:
+    """The warning a keep emits when no checks command gates it.
+
+    Args:
+        color: Whether the hint line carries ANSI color escapes.
+
+    Returns:
+        The warning and its hint, without a trailing newline.
+    """
+    hint = render_lines(
+        format_hint(
+            "set `checks` in `gymrat.toml` to the command that must pass before an edit is kept."
+        ),
+        color=color,
+        width=RENDER_WIDTH,
+    )
+    return (
+        "Warning: no checks command is configured, so gymrat keep is committing "
+        f"with the gate off.\n{hint}"
+    )
+
+
+async def run_checks(
+    config: BenchlessConfig, experiment_dir: str, warn: WarnSink | None = None
+) -> ChecksRun | None:
     """Run the configured checks in the experiment worktree.
 
     A timeout counts as a failure with whatever the command managed to write: the
@@ -61,6 +87,10 @@ async def run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun 
     Args:
         config: The resolved config, carrying the checks command and timeout.
         experiment_dir: The experiment worktree to run the checks command in.
+        warn: Where the gate-off warning goes, or ``None`` to write it to stderr.
+            A caller-supplied sink owns its own presentation — a CLI interleaving
+            the warning with a progress line, for one — so it is handed plain
+            text, while the stderr default keeps the color it renders with.
 
     Returns:
         What the command answered, or ``None`` when no checks are configured — in
@@ -68,18 +98,10 @@ async def run_checks(config: BenchlessConfig, experiment_dir: str) -> ChecksRun 
     """
     command = config.checks
     if command is None:
-        hint = render_lines(
-            format_hint(
-                "set `checks` in `gymrat.toml` to the command that must pass before an "
-                "edit is kept."
-            ),
-            color=_stderr_color(),
-            width=RENDER_WIDTH,
-        )
-        sys.stderr.write(
-            "Warning: no checks command is configured, so gymrat keep is committing "
-            f"with the gate off.\n{hint}\n"
-        )
+        if warn is None:
+            warn_to_stderr(_gate_off_warning(color=_stderr_color()))
+        else:
+            warn(_gate_off_warning(color=False))
         return None
 
     result = await exec(

@@ -17,7 +17,14 @@ from gymrat.cli.app import app
 from gymrat.cli.shared import BUGS_URL
 from tests._ansi import SGR_RE, strip_ansi
 from tests.cli._help import help_output
+from tests.cli._session import write_config
 from tests.report._inputs import create_measurement_result
+from tests.session.records._fixtures import (
+    committed_keep,
+    iteration_record,
+    session_record,
+    write_session_log,
+)
 
 runner = CliRunner()
 
@@ -91,6 +98,26 @@ def test_app_when_help_does_show_root_epilogue_examples_and_links():
     assert f"Bugs: {BUGS_URL}" in normalized
 
 
+def test_app_when_help_does_show_manual_loop_examples_after_supervise():
+    out = help_output()
+    lines = out.splitlines()
+
+    supervise_idx = next(i for i, line in enumerate(lines) if "gymrat supervise" in line)
+    after_supervise = "\n".join(lines[supervise_idx + 1 :])
+
+    loop_examples = [
+        "gymrat start --baseline main",
+        "gymrat iterate",
+        "gymrat keep -m",
+        "gymrat finalize",
+    ]
+    prev_pos = -1
+    for example in loop_examples:
+        pos = after_supervise.find(example)
+        assert pos > prev_pos, f"{example!r} not found after supervise line (or out of order)"
+        prev_pos = pos
+
+
 def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -151,3 +178,103 @@ def test_app_when_unknown_command_does_exit_two():
     result = runner.invoke(app, ["banana"])
 
     assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# root --color / --no-color
+# ---------------------------------------------------------------------------
+
+
+def test_app_when_help_does_list_color_and_no_color_root_options():
+    out = help_output()
+
+    tokens = out.split()
+    assert "--color" in tokens
+    assert "--no-color" in tokens
+
+
+def test_app_when_root_no_color_does_strip_ansi_from_status_stdout(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    result = runner.invoke(app, ["--no-color", "status"])
+
+    assert result.exit_code == 0
+    assert not SGR_RE.search(result.stdout)
+
+
+def test_app_when_root_color_does_force_ansi_on_status_stdout(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    result = runner.invoke(app, ["--color", "status"])
+
+    assert result.exit_code == 0
+    assert SGR_RE.search(result.stdout)
+
+
+def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    result = runner.invoke(app, ["--color", "status", "--no-color"])
+
+    assert result.exit_code == 0
+    assert not SGR_RE.search(result.stdout)
+
+
+def test_app_when_subcommand_passes_none_does_not_erase_root_no_color(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
+    write_config(repo)
+
+    result = runner.invoke(app, ["--no-color", "status"])
+
+    assert result.exit_code == 0
+    assert not SGR_RE.search(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# no <parse leak in any command's --help
+# ---------------------------------------------------------------------------
+
+_ALL_COMMANDS = [
+    "init",
+    "compare",
+    "measure",
+    "probe",
+    "doctor",
+    "start",
+    "iterate",
+    "keep",
+    "discard",
+    "finalize",
+    "stop",
+    "status",
+    "sync",
+    "supervise",
+    "export",
+]
+
+
+@pytest.mark.parametrize("command", _ALL_COMMANDS)
+def test_app_when_help_does_not_leak_parse_function_repr(command: str):
+    out = help_output(command)
+
+    assert "<parse" not in out

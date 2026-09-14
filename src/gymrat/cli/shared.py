@@ -15,8 +15,9 @@ import traceback
 from collections.abc import Awaitable, Callable, Coroutine, Generator
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Annotated, Any, Literal, NoReturn, Protocol
+from typing import Annotated, Any, Literal, NoReturn, Protocol, override
 
+import click
 import typer
 from rich.markup import escape
 
@@ -93,19 +94,20 @@ def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the -
     _DebugState.enabled = value
 
 
-class _StderrColorState:
-    """Holds the ``--no-color`` override for stderr error output.
+class _ColorState:
+    """Holds the ``--color`` / ``--no-color`` override for all color surfaces.
 
-    Commands set this at startup so ``_resolve_stderr_color`` reads the flag
-    instead of always deferring to env+TTY detection.
+    The root callback and per-command callbacks write this through
+    :func:`set_color_override` so :func:`resolve_stream_color` and
+    :func:`_resolve_stderr_color` share a single truth.
     """
 
     override: bool | None = None
 
 
-def set_stderr_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 setter for the --no-color flag
-    """Set the module-level color override that ``format_cli_error`` reads."""
-    _StderrColorState.override = override
+def set_color_override(override: bool | None) -> None:  # noqa: FBT001 -- 1:1 setter for the --no-color flag
+    """Set the module-level color override read by every color surface."""
+    _ColorState.override = override
 
 
 def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a command's --debug flag
@@ -144,11 +146,11 @@ def write_and_flush(stream: _WritableStream, data: str) -> None:
 def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa: FBT001 -- the resolved --color/--no-color preference, never a bare literal
     """Resolve whether ``stream`` should carry color.
 
-    One precedence rule, shared by every color surface — the report on stdout,
-    the progress line on stderr, and the error text on stderr — so they never
-    disagree: an explicit ``override`` (the ``--color`` / ``--no-color`` flag)
-    wins; then ``FORCE_COLOR`` (any value but ``0``/``false``/empty); then
-    ``NO_COLOR`` (present, any value); then the stream's own TTY detection.
+    Precedence, shared by every color surface (report on stdout, progress on
+    stderr, error text on stderr): an explicit per-call ``override`` wins; then
+    the module-level ``_ColorState.override`` set by the root or subcommand
+    callback; then ``FORCE_COLOR``; then ``NO_COLOR``; then the stream's TTY
+    status.
 
     Args:
         override: The explicit ``--color`` / ``--no-color`` flag, or ``None``
@@ -160,6 +162,8 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
     """
     if override is not None:
         return override
+    if _ColorState.override is not None:
+        return _ColorState.override
     from_env = color_from_env()
     if from_env is not None:
         return from_env
@@ -168,12 +172,21 @@ def resolve_stream_color(override: bool | None, stream: object) -> bool:  # noqa
 
 def _resolve_stderr_color() -> bool:
     """Whether stderr error output should carry color, per the shared precedence."""
-    return resolve_stream_color(_StderrColorState.override, sys.stderr)
+    return resolve_stream_color(_ColorState.override, sys.stderr)
 
 
 def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 1:1 pass-through of the --color/--no-color flag
-    """Install the color override for stderr and return it for report rendering."""
-    set_stderr_color_override(color)
+    """Install a subcommand's color override and return it for report rendering.
+
+    Only writes when ``color`` is not ``None`` so a subcommand that declares no
+    local ``--color`` flag does not erase a root flag already applied by
+    :func:`set_color_override`.
+
+    Returns:
+        The color override as passed in.
+    """
+    if color is not None:
+        set_color_override(color)
     return color
 
 
@@ -301,6 +314,27 @@ def parse_positional(positional: str) -> TargetSpec:
         raise typer.BadParameter(message)
 
     return TargetSpec(label=label, target=target)
+
+
+class PositionalParamType(click.ParamType[TargetSpec, str]):
+    """Click type for ``[label=]<ref|dir>`` positional arguments.
+
+    Wraps :func:`parse_positional` in a proper :class:`click.ParamType` so the
+    help panel shows ``<ref|dir>`` instead of the parser function repr.
+    """
+
+    name = "<ref|dir>"
+
+    @override
+    def convert(
+        self,
+        value: str | TargetSpec,
+        param: click.Parameter | None,
+        ctx: click.Context | None,
+    ) -> TargetSpec:
+        if isinstance(value, TargetSpec):
+            return value
+        return parse_positional(value)
 
 
 def parse_positive_integer_up_to(max_value: int) -> Callable[[str], int]:
@@ -480,6 +514,7 @@ SamplesOption = Annotated[
         "--samples",
         "-s",
         parser=parse_positive_integer_up_to(MAX_SAFE_INTEGER),
+        metavar="<int>",
         help="paired samples per target",
     ),
 ]
@@ -489,6 +524,7 @@ TimeoutOption = Annotated[
         "--timeout",
         "-t",
         parser=parse_positive_integer_up_to(MAX_TIMEOUT_SECONDS),
+        metavar="<int>",
         help="timeout in seconds",
     ),
 ]
@@ -502,12 +538,20 @@ RecordOption = Annotated[
     bool,
     typer.Option("--record", "-r", help="append the run to the session log as a baseline"),
 ]
-MessageOption = Annotated[
-    str | None, typer.Option("--message", "-m", help="commit message for the settled edit")
-]
 BranchOption = Annotated[
     str | None,
     typer.Option("--branch", help="branch to point at the squash commit (default: <branch>-final)"),
+]
+BaselineOption = Annotated[
+    str | None,
+    typer.Option(
+        "--baseline",
+        metavar="<ref>",
+        help=(
+            "git ref that pins a freshly opened session; "
+            "defaults to HEAD and is ignored when a session is resumed"
+        ),
+    ),
 ]
 ForceOption = Annotated[bool, typer.Option("--force", "-f", help="skip the confirmation prompt")]
 AllowUnimprovedOption = Annotated[
@@ -612,6 +656,28 @@ def budget_snapshot(root: str) -> tuple[str, BudgetSummary | None]:
     if budget is None:
         return "", None
     return "\n" + format_budget_trailer(budget, current), budget_summary_of(budget, current)
+
+
+def write_budget_report(
+    root: str,
+    *,
+    use_json: bool,
+    render_json: Callable[[BudgetSummary | None], str],
+    text_report: str,
+) -> None:
+    """Render the JSON or text report from a single budget read, then write it once.
+
+    Args:
+        root: The repository root whose session budget to read.
+        use_json: When true, delegate to *render_json*; otherwise concatenate
+            *text_report* with the budget trailer.
+        render_json: Callable that turns an optional ``BudgetSummary`` into a
+            complete JSON string.
+        text_report: Pre-rendered text body used in plain-text mode.
+    """
+    trailer, summary = budget_snapshot(root)
+    report = render_json(summary) if use_json else text_report + trailer
+    write_and_flush(sys.stdout, report + "\n")
 
 
 def _repo_root_or_none() -> str | None:

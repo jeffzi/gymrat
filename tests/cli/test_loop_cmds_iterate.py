@@ -24,7 +24,7 @@ from gymrat.session import (
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import ProgressSnapshot, write_progress
 from tests.cli._budget import install_budget
-from tests.cli._loop_cmds import last_command_record, plain_lines, runner, write_config
+from tests.cli._session import last_command_record, plain_lines, runner, write_config
 from tests.loop.iterate._fixtures import (
     baseline_rounds,
     improved_rounds,

@@ -23,10 +23,13 @@ from gymrat.report.types import CandidateMetric
 from gymrat.verdict import infer_group
 
 if TYPE_CHECKING:
+    from gymrat.loop.finalize import FinalizeResult
     from gymrat.loop.iterate import IterateResult
     from gymrat.loop.probe import ProbeMetric, ProbeResult
     from gymrat.loop.settle import DiscardResult, KeepResult
+    from gymrat.loop.start import StartResult
     from gymrat.loop.status import StatusData
+    from gymrat.loop.sync import SyncResult
     from gymrat.model import GeomeanResult, MetricVerdict
     from gymrat.report.tally import VerdictCounts
     from gymrat.report.types import (
@@ -383,6 +386,85 @@ def render_status_json(data: StatusData, *, budget: BudgetSummary | None = None)
         "finalized": data.finalized,
         "stopped": data.stopped,
     }
+    return _render(document, budget)
+
+
+def render_start_json(
+    result: StartResult,
+    *,
+    runbook: str | None = None,
+    budget: BudgetSummary | None = None,
+) -> str:
+    """Session identity, baseline, worktrees, resume state, and optional archive.
+
+    Args:
+        result: The start-session outcome to render.
+        runbook: Resolved runbook path, or ``None`` when not configured.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
+
+    Returns:
+        The document as a two-space-indented JSON string.
+    """
+    session = result.session
+    archived: dict[str, object] | None = None
+    if result.archived is not None:
+        archived = {"session_id": result.archived, "path": result.archived_path}
+    document: dict[str, object] = {
+        "session_id": session.session_id,
+        "branch": session.branch,
+        "baseline": {"ref": session.baseline.ref, "sha": session.baseline.sha},
+        "worktrees": {
+            "experiment": session.worktrees.experiment,
+            "baseline": session.worktrees.baseline,
+        },
+        "resumed": result.resumed,
+        "iteration_count": result.state.iteration_count,
+        "keep_count": result.state.keep_count,
+        "runbook": runbook,
+        "archived": archived,
+    }
+    return _render(document, budget)
+
+
+def render_finalize_json(
+    result: FinalizeResult,
+    *,
+    budget: BudgetSummary | None = None,
+) -> str:
+    """Branch, squash commit, message, and timestamp of the finalize.
+
+    Args:
+        result: The finalize outcome to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
+
+    Returns:
+        The document as a two-space-indented JSON string.
+    """
+    record = result.record
+    document: dict[str, object] = {
+        "branch": record.branch,
+        "commit": record.commit,
+        "message": record.message,
+        "at": record.at,
+    }
+    return _render(document, budget)
+
+
+def render_sync_json(
+    result: SyncResult,
+    *,
+    budget: BudgetSummary | None = None,
+) -> str:
+    """List of files synced to the experiment worktree.
+
+    Args:
+        result: The sync outcome to render.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
+
+    Returns:
+        The document as a two-space-indented JSON string.
+    """
+    document: dict[str, object] = {"files": list(result.files)}
     return _render(document, budget)
 
 

@@ -42,6 +42,7 @@ from gymrat.session.workspace import (
     is_worktree_dirty,
     worktree_head,
 )
+from gymrat.warn import WarnSink
 
 __all__ = [
     "KeepOptions",
@@ -54,12 +55,18 @@ __all__ = [
 class KeepOptions:
     """What a caller can hand a keep beyond its configuration.
 
-    ``allow_unimproved`` defaults to refusing: an automated caller that passes no
-    options keeps only what the loop measured as an improvement.
+    Attributes:
+        message: Message to attach to the keep record.
+        allow_unimproved: Whether to keep a result the loop did not measure as an
+            improvement. Defaults to refusing: an automated caller that passes no
+            options keeps only what the loop measured as an improvement.
+        warn: Sink for the checks gate's warnings. Defaults to ``None``, which
+            leaves those warnings on stderr.
     """
 
     message: str | None = None
     allow_unimproved: bool = False
+    warn: WarnSink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +92,7 @@ class _KeepContext:
     baseline_dir: str
     iteration: IterationRecord
     message: str | None
+    warn: WarnSink | None
 
 
 async def keep_session(
@@ -179,6 +187,7 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
         baseline_dir=session.worktrees.baseline,
         iteration=iteration,
         message=options.message,
+        warn=options.warn,
     )
 
     if not is_worktree_dirty(experiment_dir):
@@ -245,7 +254,7 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
     Returns:
         The keep result — committed if the checks passed, blocked otherwise.
     """
-    checks = await run_checks(context.config, context.experiment_dir)
+    checks = await run_checks(context.config, context.experiment_dir, context.warn)
     if checks is not None and not checks.passed:
         return _checks_failed_keep(context.jsonl_path, context.iteration.seq, checks)
 

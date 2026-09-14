@@ -15,7 +15,8 @@ from gymrat.model import Effect
 from gymrat.report.format import format_delta
 
 if TYPE_CHECKING:
-    from gymrat.cli.supervise.state import ReadSessionResult
+    from gymrat.cli.supervise.state import Exiting, ReadSessionResult
+    from gymrat.supervisor.exit_sequence import ExitPhase
 
 #: Shown in place of the loop summary before any session data has been read.
 NO_SESSION_TEXT = "no session yet"
@@ -42,6 +43,22 @@ def format_caps(max_minutes: float, max_usd: float | None) -> str:
     if max_usd is not None:
         caps_parts.append(format_cost(max_usd))
     return f"caps {', '.join(caps_parts)}"
+
+
+def exit_phase_text(phase: ExitPhase | Exiting) -> str:
+    """The exit-sequence phase line both dashboard modes show, without elapsed time.
+
+    Args:
+        phase: The phase the run-end exit sequence is in.
+
+    Returns:
+        ``settling…`` while settling, otherwise the lock wait naming the holder's
+        PID, or ``PID unknown`` when the holder cannot be read.
+    """
+    if phase.kind == "settling":
+        return "settling…"
+    holder = "unknown" if phase.pid is None else str(phase.pid)
+    return f"waiting for gymrat (PID {holder})"
 
 
 def _iter_label(count: int, max_iterations: int | None) -> str:

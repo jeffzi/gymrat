@@ -233,8 +233,9 @@ class _StdioSession:
     async def _watch_abort(self, abort: asyncio.Event, proc: asyncio.subprocess.Process) -> None:
         await abort.wait()
         # Tree-kill the group so the blocked stdout read unblocks; the resolution
-        # then settles ``interrupted`` because the abort is set.
-        kill_process_group(proc.pid)
+        # then settles ``interrupted`` because the abort is set. A refusal is left
+        # to teardown, which signals the group again once the child is reaped.
+        kill_process_group(proc.pid, defer_refusal=True)
 
     async def _drain(self, reader: asyncio.StreamReader) -> None:
         """Consume the child's stderr to EOF and discard it; it is never relayed.
@@ -251,10 +252,13 @@ class _StdioSession:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-        if proc.returncode is None:
-            kill_process_group(proc.pid)
         if proc.stdin is not None:
             proc.stdin.close()
+        # The kill runs even when the leader is already reaped, because a
+        # grandchild left in the group is still reachable and must die. A group
+        # refusing it because every member is still exiting is signaled again
+        # after the reap, so only a genuine failure warns.
+        refused = kill_process_group(proc.pid, defer_refusal=True)
         try:
             await asyncio.wait_for(proc.wait(), _TEARDOWN_GRACE_SECONDS)
         except TimeoutError:
@@ -264,6 +268,8 @@ class _StdioSession:
                 RuntimeWarning,
                 stacklevel=2,
             )
+        if refused:
+            kill_process_group(proc.pid)
 
 
 class _StdioDriver:

@@ -22,6 +22,7 @@ from gymrat.cli.shared import (
     FormatOption,
     MeasureFlags,
     OutputFormat,
+    PositionalParamType,
     PrepareOption,
     RecordOption,
     ReportRenderers,
@@ -33,7 +34,6 @@ from gymrat.cli.shared import (
     budget_for_report,
     config_trace_args,
     emit_report,
-    parse_positional,
     run_cli,
     run_options_of,
     wants_json,
@@ -52,7 +52,7 @@ from gymrat.session.store import RequiredSession, append_record, require_open_se
 _TargetArgument = Annotated[
     TargetSpec | None,
     typer.Argument(
-        parser=parse_positional,
+        click_type=PositionalParamType(),
         metavar="[TARGET]",
         help="[label=]<ref|dir> to measure; defaults to the current directory",
     ),

@@ -32,7 +32,7 @@ from gymrat.report.types import (
 )
 from gymrat.session import append_record, session_jsonl_path
 from tests.cli._budget import install_budget, install_tight_budget
-from tests.cli._loop_cmds import last_command_record
+from tests.cli._session import last_command_record
 from tests.report._inputs import (
     create_candidate,
     create_comparison_result,
@@ -543,3 +543,60 @@ def test_serialize_fail_on_when_unknown_condition_does_raise() -> None:
 
     with pytest.raises(AssertionError, match="Expected code to be unreachable"):
         _serialize_fail_on((bogus,))
+
+
+# ---------------------------------------------------------------------------
+# help text — meta variables and short forms
+# ---------------------------------------------------------------------------
+
+
+def test_compare_when_help_does_show_samples_with_short_form_and_int_metavar():
+    from tests.cli._help import help_output
+
+    out = help_output("compare")
+
+    assert "--samples" in out
+    assert "-s" in out
+    assert "<int>" in out
+
+
+def test_compare_when_help_does_show_timeout_with_short_form_and_int_metavar():
+    from tests.cli._help import help_output
+
+    out = help_output("compare")
+
+    assert "--timeout" in out
+    assert "-t" in out
+    assert "<int>" in out
+
+
+def test_compare_when_help_does_show_fail_on_with_condition_metavar():
+    from tests.cli._help import help_output
+
+    out = help_output("compare")
+
+    assert "--fail-on" in out
+    assert "<condition>" in out
+
+
+def test_compare_when_help_does_show_verbose_with_short_form():
+    from tests.cli._help import help_output
+
+    out = help_output("compare")
+
+    assert "--verbose" in out
+    assert re.search(r"(?<!\w)-v(?!\w)", out)
+
+
+# ---------------------------------------------------------------------------
+# -v short form works like --verbose
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("_in_non_repo")
+def test_compare_when_short_verbose_flag_does_succeed(monkeypatch: pytest.MonkeyPatch):
+    _stub_compare(monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", "-v"])
+
+    assert result.exit_code == 0

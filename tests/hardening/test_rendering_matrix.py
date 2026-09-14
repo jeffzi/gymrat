@@ -40,7 +40,7 @@ from gymrat.cli.shared import (
     format_cli_error,
     resolve_render_mode,
     resolve_stream_color,
-    set_stderr_color_override,
+    set_color_override,
 )
 from gymrat.doctor.checks import Check, CheckSection, EnvironmentInfo, create_doctor_report
 from gymrat.doctor.render import render_doctor_report
@@ -349,12 +349,12 @@ def test_error_surface_when_stderr_color_override_false_on_tty_does_strip_sgr(
     monkeypatch.setenv("TERM", "xterm-256color")
     _apply_color_env(monkeypatch, None, None)
 
-    set_stderr_color_override(False)
+    set_color_override(False)
 
     result = format_cli_error(ValueError("boom"))
 
     assert "\x1b[" not in result
-    set_stderr_color_override(None)
+    set_color_override(None)
 
 
 def test_progress_surface_when_colorless_does_strip_all_sgr_including_bold(

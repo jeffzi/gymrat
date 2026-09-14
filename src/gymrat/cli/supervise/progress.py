@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 from rich.live import Live
@@ -21,6 +22,7 @@ from gymrat.cli.supervise.frame import build_frame
 from gymrat.cli.supervise.reducer import (
     ReporterState,
     advance,
+    exit_phase,
     plain_line,
     wants_session_refresh,
 )
@@ -31,6 +33,7 @@ from gymrat.cli.supervise.state import (
     ReporterCtx,
     SuperviseReporter,
 )
+from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.eta import MS_PER_SECOND
 from gymrat.session.clock import now_ms
 from gymrat.session.progress_file import read_progress as _default_read_progress
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
     from gymrat.supervisor.events import SessionEvent
+    from gymrat.supervisor.exit_sequence import ExitPhase
 
 _tick_logger = logging.getLogger(__name__)
 
@@ -187,6 +191,25 @@ def handle_event(ctx: ReporterCtx, event: SessionEvent) -> None:
         ctx.plain_write_fn(line)
 
 
+def _refresh_session(ctx: ReporterCtx) -> None:
+    session = _read_session(ctx)
+    if session is None:
+        return
+    ctx.state = replace(ctx.state, session_result=session)
+    render_live(ctx)
+
+
+def _report_exit_phase(ctx: ReporterCtx, phase: ExitPhase) -> None:
+    before = ctx.state
+    ctx.state = exit_phase(before, phase, ctx.now())
+    if ctx.state is before:
+        return
+    if ctx.is_plain:
+        ctx.plain_write_fn(exit_phase_text(phase))
+    else:
+        render_live(ctx)
+
+
 async def _tick(ctx: ReporterCtx) -> None:
     """Periodically refresh the Live display so elapsed time stays current.
 
@@ -243,7 +266,9 @@ def _make_warn(ctx: ReporterCtx) -> Callable[[str], None]:
         if ctx.is_plain:
             ctx.plain_write_fn(message)
         elif ctx.live is not None:
-            ctx.live.console.print(message)
+            # Messages carry arbitrary text (paths, command output); markup would
+            # swallow anything in square brackets.
+            ctx.live.console.print(message, markup=False)
 
     return warn
 
@@ -347,4 +372,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         warn=warn,
         session_result=lambda: ctx.state.session_result,
         final_text=lambda: ctx.state.last_agent_text,
+        exit_phase=lambda phase: _report_exit_phase(ctx, phase),
+        refresh_session=lambda: _refresh_session(ctx),
     )

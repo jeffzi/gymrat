@@ -23,6 +23,7 @@ from gymrat.cli.app import app
 from gymrat.session import session_jsonl_path
 from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import LaunchEvent, TurnEndEvent, to_json_line
+from tests._ansi import SGR_RE
 from tests.cli._help import help_output
 from tests.session.records._fixtures import AT, SESSION_ID, command_record, session_record
 
@@ -182,6 +183,12 @@ def test_export_when_help_does_document_endpoint_and_debug():
 
     assert "--endpoint" in out
     assert "--debug" in out
+
+
+def test_export_when_help_does_show_session_log_positional_metavar():
+    out = help_output("export")
+
+    assert "[SESSION_LOG]" in out
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +454,24 @@ def test_export_when_supervisor_log_session_differs_does_skip_it(
     _, sup_logs = replay_calls[0]
     assert len(sup_logs) == 1  # pyrefly: ignore[bad-argument-type]
     assert "supervisor-001" in sup_logs[0]  # pyrefly: ignore[bad-index]
+
+
+# ---------------------------------------------------------------------------
+# --color / --no-color on export
+# ---------------------------------------------------------------------------
+
+
+def test_export_command_when_no_color_does_strip_ansi_from_stderr_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    missing = str(tmp_path / ".gymrat" / "session.jsonl")
+
+    result = runner.invoke(app, ["export", "--no-color", missing])
+
+    assert result.exit_code == 2
+    assert "No such option" not in result.stderr
+    assert not SGR_RE.search(result.stderr)

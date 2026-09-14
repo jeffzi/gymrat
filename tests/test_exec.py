@@ -16,6 +16,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -38,6 +39,29 @@ from tests._process_helpers import capture_spawns, is_alive, wait_until_dead
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only shell and process groups"
 )
+
+# Runs repeated back to back to hit the window where the timeout fires while the
+# shell is already exiting; a single run slips past it some of the time.
+_RACE_RUNS = 40
+
+_KILLPG_FAILED = "killpg failed"
+
+# How long asyncio's child reaper is held back once it starts waiting on a
+# shell. It outlasts exec's teardown of an exited shell, so the shell is still
+# a zombie nobody has reaped while that teardown runs.
+_REAP_HOLD_S = 1.0
+
+# Timeout for teardown tests: fires well after the shell has exited, well
+# before the held reap is released.
+_TEARDOWN_TIMEOUT_MS = 250
+
+# Upper bound for a cancelled exec to settle when its shell is never reaped.
+_CANCEL_SETTLE_S = 5.0
+
+# asyncio logs this when a child it waits on was reaped by someone else.
+_UNKNOWN_CHILD = "Unknown child process"
+
+_os_waitid: Callable[..., object] | None = getattr(os, "waitid", None)
 
 
 def read_pid(pid_path: Path) -> int | None:
@@ -81,6 +105,111 @@ async def wait_for_spawned(
             raise TimeoutError(msg)
         await asyncio.sleep(0.01)
     return processes[-1]
+
+
+async def wait_for_shell_exit(proc: asyncio.subprocess.Process, timeout_s: float = 3.0) -> None:
+    """Poll until the shell's stdout reaches EOF, which the shell exiting closes.
+
+    The command must not hand stdout to anything that outlives the shell, and
+    the check never reaps the shell itself.
+    """
+    assert proc.stdout is not None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not proc.stdout.at_eof():
+        if loop.time() > deadline:
+            msg = f"shell {proc.pid} never closed its stdout"
+            raise TimeoutError(msg)
+        await asyncio.sleep(0.01)
+
+
+def pidfd_available() -> bool:
+    """True when asyncio reaps children through a pidfd instead of a waitpid thread."""
+    pidfd_open = getattr(os, "pidfd_open", None)
+    if pidfd_open is None:
+        return False
+    try:
+        os.close(pidfd_open(os.getpid()))
+    except OSError:
+        return False
+    return True
+
+
+@dataclasses.dataclass
+class HeldReaper:
+    """Stand-in for the ``os`` module asyncio's child watcher uses, holding back its blocking reap.
+
+    Every attribute but ``waitpid`` and ``waitid`` forwards to the real ``os``
+    module.  A blocking ``waitpid(pid, 0)`` or ``waitid(P_PID, …)`` first waits
+    until ``release`` is set or ``hold_s`` passes.
+
+    CPython 3.14.7+ changed ``_ThreadedChildWatcher._do_waitpid`` to call
+    ``os.waitid(P_PID, pid, WEXITED | WNOWAIT)`` before scheduling the actual
+    reap on the event-loop thread.  Without intercepting ``waitid``, the hold
+    never fires and the reap completes before the test can cancel the task.
+    """
+
+    release: threading.Event
+    hold_s: float
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(os, name)
+
+    def waitpid(self, pid: int, options: int, /) -> tuple[int, int]:
+        if options == 0:
+            self.release.wait(self.hold_s)
+        return os.waitpid(pid, options)
+
+    if _os_waitid is not None:
+        _P_PID: int = getattr(os, "P_PID", 0)
+
+        def waitid(
+            self,
+            id_type: int,
+            id_val: int,
+            options: int,
+            /,
+        ) -> object:
+            """Hold a blocking ``waitid`` the same way ``waitpid`` is held."""
+            if id_type == self._P_PID:
+                self.release.wait(self.hold_s)
+            assert _os_waitid is not None
+            return _os_waitid(id_type, id_val, options)
+
+
+type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
+
+
+def leave_to_timeout(
+    task: ExecTask, proc: asyncio.subprocess.Process, abort: asyncio.Event
+) -> None:
+    """Leave the run alone: its timeout tears it down."""
+
+
+def set_abort(task: ExecTask, proc: asyncio.subprocess.Process, abort: asyncio.Event) -> None:
+    """Tear the run down through its abort event."""
+    abort.set()
+
+
+def fail_stderr_read(
+    task: ExecTask, proc: asyncio.subprocess.Process, abort: asyncio.Event
+) -> None:
+    """Tear the run down by failing the pending stderr read."""
+    assert proc.stderr is not None
+    proc.stderr.set_exception(RuntimeError("stream exploded"))
+
+
+def cancel_task(task: ExecTask, proc: asyncio.subprocess.Process, abort: asyncio.Event) -> None:
+    """Tear the run down by cancelling the exec task."""
+    task.cancel()
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Teardown:
+    """How a teardown test ends a run: an optional timeout plus an action on the running exec."""
+
+    timeout_ms: int | None
+    trigger: Callable[[ExecTask, asyncio.subprocess.Process, asyncio.Event], None]
 
 
 def physical_path(path: Path) -> str:
@@ -173,6 +302,17 @@ def spawned_processes(
 def _isolate_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the module-level live-group registry from bleeding across tests."""
     monkeypatch.setattr(exec_mod, "_live_process_groups", set())
+
+
+@pytest.fixture
+def held_reaper(monkeypatch: pytest.MonkeyPatch) -> Iterator[HeldReaper]:
+    """Hold asyncio's child reap back so an exited shell stays a zombie through exec's teardown."""
+    if pidfd_available():
+        pytest.skip("asyncio reaps through a pidfd here, so there is no waitpid thread to hold")
+    reaper = HeldReaper(release=threading.Event(), hold_s=_REAP_HOLD_S)
+    monkeypatch.setattr("asyncio.unix_events.os", reaper)
+    yield reaper
+    reaper.release.set()
 
 
 @pytest.mark.parametrize(
@@ -613,6 +753,147 @@ async def test_exec_when_killpg_fails_otherwise_does_warn_not_raise(
     abort.set()
     with pytest.warns(RuntimeWarning):
         await asyncio.wait_for(task, 5)
+
+
+async def test_exec_when_timeout_lands_as_child_exits_does_not_warn_about_killpg(
+    make_opts: Callable[..., ExecOptions],
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    # Repeating the run is the scenario: a 2ms timeout on a command that exits at
+    # once keeps landing while the shell is exiting, when its group refuses the kill.
+    for _ in range(_RACE_RUNS):
+        await run_exec("exit 0", make_opts(timeout_ms=2))
+
+    assert [str(w.message) for w in recwarn if _KILLPG_FAILED in str(w.message)] == []
+
+
+# ---------------------------------------------------------------------------
+# teardown after the shell has exited but before asyncio reaps it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "teardown",
+    [
+        pytest.param(Teardown(_TEARDOWN_TIMEOUT_MS, leave_to_timeout), id="timeout"),
+        pytest.param(Teardown(None, set_abort), id="abort"),
+        pytest.param(Teardown(None, fail_stderr_read), id="stream-error"),
+        pytest.param(Teardown(None, cancel_task), id="cancelled"),
+    ],
+)
+async def test_exec_when_torn_down_after_shell_exits_does_leave_reaping_to_asyncio(
+    held_reaper: HeldReaper,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    caplog: pytest.LogCaptureFixture,
+    teardown: Teardown,
+) -> None:
+    # The background sleep holds stderr open, so exec is still running when the
+    # shell exits and the teardown lands on a shell nobody has reaped yet.
+    abort = asyncio.Event()
+    task = asyncio.create_task(
+        run_exec(
+            "sleep 30 >/dev/null & exit 0",
+            make_opts(timeout_ms=teardown.timeout_ms, abort=abort),
+        ),
+    )
+    proc = await wait_for_spawned(spawned_processes)
+    await wait_for_shell_exit(proc)
+
+    teardown.trigger(task, proc, abort)
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    await asyncio.wait_for(proc.wait(), 5)
+
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "asyncio" and _UNKNOWN_CHILD in r.getMessage()
+    ] == []
+
+
+async def test_exec_when_cancelled_after_shell_exits_does_not_warn_about_killpg(
+    held_reaper: HeldReaper,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    task = asyncio.create_task(run_exec("exit 0", make_opts()))
+    proc = await wait_for_spawned(spawned_processes)
+    await wait_for_shell_exit(proc)
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    await asyncio.wait_for(proc.wait(), 5)
+
+    assert [str(w.message) for w in recwarn if _KILLPG_FAILED in str(w.message)] == []
+
+
+async def test_exec_when_cancelled_after_shell_exits_does_kill_live_descendants(
+    tmp_path: Path,
+    held_reaper: HeldReaper,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    task = asyncio.create_task(
+        run_exec("sleep 30 >/dev/null & echo $! > grandchild.pid; exit 0", make_opts()),
+    )
+    proc = await wait_for_spawned(spawned_processes)
+    grandchild = await wait_for_pid(tmp_path / "grandchild.pid")
+    await wait_for_shell_exit(proc)
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+
+    await wait_until_dead(grandchild, timeout_s=3.0)
+    assert not is_alive(grandchild)
+
+
+async def test_exec_when_cancelled_and_killpg_keeps_refusing_does_warn(
+    held_reaper: HeldReaper,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_eperm(group_pid: int, sig: int) -> None:
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    task = asyncio.create_task(run_exec("exit 0", make_opts()))
+    proc = await wait_for_spawned(spawned_processes)
+    await wait_for_shell_exit(proc)
+    monkeypatch.setattr(os, "killpg", raise_eperm)
+
+    task.cancel()
+    with (
+        pytest.warns(RuntimeWarning, match=_KILLPG_FAILED),
+        contextlib.suppress(asyncio.CancelledError),
+    ):
+        await asyncio.wait_for(task, 5)
+
+
+async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly(
+    held_reaper: HeldReaper,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    held_reaper.hold_s = 60.0
+    task = asyncio.create_task(run_exec("exit 0", make_opts()))
+    proc = await wait_for_spawned(spawned_processes)
+    await wait_for_shell_exit(proc)
+
+    task.cancel()
+    # The group still refuses the kill once the reap wait gives up, so that
+    # refusal is warned rather than swallowed.
+    with pytest.warns(RuntimeWarning, match=_KILLPG_FAILED):
+        done, _ = await asyncio.wait({task}, timeout=_CANCEL_SETTLE_S)
+    # Let the held reap finish inside the test, while its loop is still open.
+    held_reaper.release.set()
+    await asyncio.wait_for(proc.wait(), 5)
+
+    assert done == {task}
+    assert task.cancelled()
 
 
 # ---------------------------------------------------------------------------
