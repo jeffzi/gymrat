@@ -7,26 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-14
+
 ### Added
 
-- Accept `--color` / `--no-color` before or after any subcommand; a subcommand flag beats the root
-  flag.
+- Accept `--color` / `--no-color` before or after any subcommand.
 - Accept `--format json` on `start`, `finalize`, and `sync`.
-- Accept `-v` as a short form on `compare` and `-b` on `init`.
-- Add `--no-finalize` to `gymrat supervise` to leave the session open when the run ends.
-- Settle a supervised session when the run ends: keep or discard the last iteration as the agent
-  would have, finalize when an iteration was kept and nothing needs a person, and record each
-  decision in the event log.
+- Accept `-v` for `--verbose` on `compare` and `-b` for `--bench` on `init`.
+- Settle a supervised session when the run ends, unless `--no-finalize` is passed.
 
 ### Changed
 
-- `start` takes `--baseline <ref>` instead of a positional argument.
-- `status` drops the bench-run flags (`--bench`, `--prepare`, `--adapter`, `--samples`, `--timeout`)
-  and `keep` keeps only `--timeout` of them.
-- Help text shows value-type placeholders (`<int>`, `<condition>`, `[SESSION_LOG]`) instead of
-  parser function names.
-- End a supervised run from the supervisor when a stop condition is met or a hook fails, instead of
-  spending a final agent turn.
+- **Breaking:** Take `--baseline <ref>` on `start` instead of a positional argument.
+- End a supervised run as soon as a stop condition is met or a hook fails.
+
+### Removed
+
+- **Breaking:** Drop the bench-run flags (`--bench`, `--prepare`, `--adapter`, `--samples`,
+  `--timeout`) from `status` and all but `--timeout` from `keep`.
 
 ## [0.18.0] - 2026-09-12
 
@@ -107,16 +105,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `supervise --baseline <ref>` to pin a freshly opened session to the given git ref (defaults to
   HEAD; ignored when resuming an existing session).
 - Add `gymrat stop -m "<report>"` to record a closing report in the session log without closing the
-  session; `stop` also accepts `--format json`.
+  session.
+- Accept `--format json` on `stop`.
 - Report whether the session is stopped in `gymrat status`, in both the text report and a new
   `stopped` key in JSON output.
 
 ### Changed
 
-- Refuse to launch `supervise` when a stop condition is already met (exit 2); `--force` downgrades
-  launch refusals to a warning.
-- Open the session and record the baseline in `supervise` before the agent starts; the wall-clock
-  cap starts only once the baseline is recorded.
+- Refuse to launch `supervise` when a stop condition is already met (exit 2).
+- Downgrade launch refusals to a warning when `--force` is passed.
+- Open the session and record the baseline in `supervise` before the agent starts.
 
 ### Fixed
 
@@ -166,8 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Revert unmeasured edits in `gymrat discard` instead of refusing.
 - End supervised sessions when the agent finishes — or would have stopped to ask a question —
-  instead of streaming idle until the wall-clock cap fires, and show the agent's final message in
-  the closing summary.
+  instead of streaming idle until the wall-clock cap fires.
+- Show the agent's final message in the closing summary.
 - Stop firing the spend cap on a supervised session that is already ending on its own.
 - Report the lock holder's process, command, and start time reliably when a `gymrat` command is
   blocked by the repository lock.
@@ -210,7 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Accept `--debug` whether written before or after the subcommand.
 - End the run quietly on a closed output pipe instead of printing a bug-report footer.
 - Read the mitata adapter's report correctly when the bench command prints extra output around the
-  JSON, and warn about unusable entries instead of skipping them silently.
+  JSON.
+- Warn about unusable mitata entries instead of skipping them silently.
 - Keep the session log readable and complete after a crash mid-write.
 - Report a `gymrat.toml` that is not valid UTF-8 as unreadable and an oversized integer in a
   `GYMRAT_*` environment variable as invalid, instead of crashing.
@@ -339,7 +338,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add structured error reporting for every gymrat failure: a clear message and, where applicable, an
   actionable hint.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/jeffzi/gymrat/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jeffzi/gymrat/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/jeffzi/gymrat/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/jeffzi/gymrat/compare/v0.15.0...v0.16.0
