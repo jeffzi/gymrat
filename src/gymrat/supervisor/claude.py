@@ -33,6 +33,7 @@ from gymrat.supervisor.driver import (
     SessionPrompt,
 )
 from gymrat.supervisor.events import CompactionEvent, TurnEndEvent, UsageUpdateEvent
+from gymrat.supervisor.tools import ToolsFactory
 
 
 class ClaudeClient(Protocol):
@@ -89,6 +90,11 @@ def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the pa
     return factory
 
 
+def _traceparent_env(traceparent: str | None) -> dict[str, str]:
+    """The ``GYMRAT_TRACEPARENT`` env entry for *traceparent*, or empty when unset."""
+    return {} if traceparent is None else {"GYMRAT_TRACEPARENT": traceparent}
+
+
 def _build_options(prompt: SessionPrompt) -> dict[str, object]:
     """Assemble the SDK options mapping; the kickoff is sent via ``query`` instead."""
     options: dict[str, object] = {
@@ -106,9 +112,7 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
         options["model"] = prompt.model
     if prompt.effort is not None:
         options["effort"] = prompt.effort
-    env: dict[str, str] = {}
-    if prompt.traceparent is not None:
-        env["GYMRAT_TRACEPARENT"] = prompt.traceparent
+    env: dict[str, str] = _traceparent_env(prompt.traceparent)
     if prompt.command_timeout_ms is not None:
         # Raising the shell timeout ceiling to the wall-clock cap requires setting
         # both the default and max tool-use timeout variables. Automatically moving
@@ -119,6 +123,7 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
         env["CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS"] = timeout_ms
         env["CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS"] = timeout_ms
         env["CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS"] = ""
+        env["MCP_TOOL_TIMEOUT"] = timeout_ms
     if env:
         options["env"] = env
     if prompt.max_budget_usd is not None:
@@ -154,11 +159,13 @@ class _ClaudeSession:
         prompt: SessionPrompt,
         observer: SessionObserver,
         abort: asyncio.Event | None,
+        tools: ToolsFactory | None,
     ) -> None:
         self._client_factory = client_factory
         self._prompt = prompt
         self._observer = observer
         self._abort = abort
+        self._tools = tools
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._cost_usd = 0.0
@@ -246,7 +253,12 @@ class _ClaudeSession:
             await self._teardown()
 
     async def _stream(self, factory: ClientFactory) -> SessionOutcome:
-        client = factory(_build_options(self._prompt))
+        options = _build_options(self._prompt)
+        if self._tools is not None:
+            abort = self._abort if self._abort is not None else asyncio.Event()
+            env = _traceparent_env(self._prompt.traceparent)
+            options["mcp_servers"] = {"gymrat": self._tools(abort, env)}
+        client = factory(options)
         self._client = client
         if self._abort is not None:
             self._abort_task = asyncio.create_task(self._watch_abort(self._abort, client))
@@ -361,8 +373,9 @@ class _ClaudeSession:
 
 
 class _ClaudeDriver:
-    def __init__(self, client_factory: ClientFactory | None) -> None:
+    def __init__(self, client_factory: ClientFactory | None, tools: ToolsFactory | None) -> None:
         self._client_factory = client_factory
+        self._tools = tools
 
     def start(
         self,
@@ -370,10 +383,13 @@ class _ClaudeDriver:
         observer: SessionObserver,
         abort: asyncio.Event | None = None,
     ) -> DriverSession:
-        return _ClaudeSession(self._client_factory, prompt, observer, abort)
+        return _ClaudeSession(self._client_factory, prompt, observer, abort, self._tools)
 
 
-def create_claude_driver(client_factory: ClientFactory | None = None) -> Driver:
+def create_claude_driver(
+    client_factory: ClientFactory | None = None,
+    tools: ToolsFactory | None = None,
+) -> Driver:
     """Build a :class:`Driver` backed by the Claude Agent SDK.
 
     Args:
@@ -381,8 +397,11 @@ def create_claude_driver(client_factory: ClientFactory | None = None) -> Driver:
             mapping. When ``None``, the real SDK is imported lazily inside the
             session's run task and the default factory constructs a
             ``ClaudeSDKClient``.
+        tools: Builds the MCP server config for gymrat tools. Called once per
+            session start with the session's abort event and an env mapping.
+            When ``None``, no ``mcp_servers`` key is added to the options.
 
     Returns:
         A driver whose ``start`` launches one SDK session per call.
     """
-    return _ClaudeDriver(client_factory)
+    return _ClaudeDriver(client_factory, tools)

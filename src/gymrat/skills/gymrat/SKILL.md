@@ -158,6 +158,11 @@ was not passed. Never run `finalize` under supervise.
 timeout — the supervisor raises the command's timeout ceiling to match the run's wall-clock cap. A
 background command runs unobserved, and its output never reaches the session.
 
+**Use the `probe` and `iterate` tools.** Under supervise, `probe` and `iterate` are MCP tools the
+supervisor hosts — use the tool calls instead of running `gymrat probe` or `gymrat iterate` through
+Bash. The `measure`, `compare`, `keep`, `discard`, `status`, and `stop` commands stay Bash commands.
+A tool call runs in the foreground and returns the command's JSON document.
+
 ## Keeping iterations cheap
 
 `iterate` is a committed step, not a look. Every `iterate` benches **both worktrees** fresh at the
@@ -173,6 +178,8 @@ and `discard` reverts the edit.
   ```sh
   gymrat probe <names>
   ```
+
+  Under supervise, call the `probe` tool instead, passing the names as `names`.
 
   Benches the experiment worktree alone at 6 samples, scoped through the `filter` template in
   `gymrat.toml` to the metrics the edit targets, and prints each metric's median as a signed delta
@@ -203,7 +210,8 @@ and `discard` reverts the edit.
   runs the same significance test as `iterate` with no record and no hooks, at 2 × `samples` runs
   on the scoped bench — twice a probe — so it is the exception, not the loop.
 - **Verify.** One `gymrat iterate` — full bench, configured samples — when the edit looks done,
-  immediately before `keep`. Never `keep` off anything else.
+  immediately before `keep`. Never `keep` off anything else. Under supervise, `probe` and `iterate`
+  are tool calls, not Bash commands.
 
 Levers, in order of leverage:
 

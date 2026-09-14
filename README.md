@@ -159,6 +159,10 @@ Settling may run past the wall-clock cap by about twice `timeout_seconds`: once 
 command that is still running, once for the checks, plus the git work of keeping, discarding, or
 finalizing, which has no timeout.
 
+Under `supervise` the agent runs `probe` and `iterate` as MCP tools the supervisor hosts, so a cap,
+a guard, or Ctrl-C stops a running measurement with the run. The `measure`, `compare`, `keep`,
+`discard`, `status`, and `stop` commands stay Bash commands.
+
 `iterate`, `keep`, `discard`, `status`, `sync`, `compare`, `measure`, and `probe` print a time-left
 line so the agent can plan around the wall-clock cap.
 

@@ -42,7 +42,13 @@ from gymrat.session.paths import (
 )
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
-from gymrat.supervisor import SessionPrompt, SupervisionResult, create_claude_driver
+from gymrat.supervisor import (
+    SessionPrompt,
+    SupervisionResult,
+    ToolsFactory,
+    create_claude_driver,
+    gymrat_tools_factory,
+)
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from tests._ansi import strip_ansi
@@ -667,7 +673,7 @@ def test_supervise_when_run_does_pass_the_claude_driver_to_supervise(
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    seams.create_driver.assert_called_once_with()
+    seams.create_driver.assert_called_once()
     assert seams.supervise_calls[0]["driver"] is seams.driver
 
 
@@ -1062,3 +1068,32 @@ def test_supervise_when_max_usd_given_does_pass_it_as_max_budget_usd_on_prompt(
     prompt = seams.supervise_calls[0]["prompt"]
     assert isinstance(prompt, SessionPrompt)
     assert prompt.max_budget_usd == 5.0
+
+
+# ---------------------------------------------------------------------------
+# tools factory wiring
+# ---------------------------------------------------------------------------
+
+
+def test_supervise_when_run_does_pass_gymrat_tools_factory_to_driver(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = _install_seams(monkeypatch)
+    factory_roots: list[str] = []
+    real_factory = gymrat_tools_factory
+
+    def _recording_factory(root: str) -> ToolsFactory:
+        factory_roots.append(root)
+        return real_factory(root)
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.gymrat_tools_factory", _recording_factory)
+
+    result = _run("optimize it", "--max-minutes", "10")
+
+    assert result.exit_code == 0
+    assert [Path(root).resolve() for root in factory_roots] == [Path(repo).resolve()]
+    call_kwargs = seams.create_driver.call_args.kwargs
+    tools = call_kwargs.get("tools")
+    assert callable(tools), "create_claude_driver must receive a tools callable"
+    server_config: dict[str, Any] = tools(asyncio.Event(), {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
+    assert server_config["name"] == "gymrat"

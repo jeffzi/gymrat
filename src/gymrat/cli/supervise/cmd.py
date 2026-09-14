@@ -92,6 +92,7 @@ from gymrat.supervisor import (
     compose_kickoff,
     create_claude_driver,
     create_event_log_writer,
+    gymrat_tools_factory,
     supervise,
 )
 from gymrat.supervisor.event_log import probe_event_log_path
@@ -328,7 +329,7 @@ async def _start_and_supervise(
 
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly."""
-    driver = create_claude_driver()
+    driver = create_claude_driver(tools=gymrat_tools_factory(ctx.root))
     mode = resolve_render_mode()
     reporter = _create_reporter(ctx, mode)
     uninstall_reporter_cleanup = install_termination_cleanup(reporter.stop)

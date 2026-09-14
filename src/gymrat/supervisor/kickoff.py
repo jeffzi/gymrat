@@ -94,11 +94,19 @@ def compose_kickoff(
         "anything. Never run a gymrat command in the background."
     )
 
+    tools = (
+        "Use the `probe` and `iterate` tools instead of running `gymrat probe` or "
+        "`gymrat iterate` through Bash. The `measure`, `compare`, `keep`, `discard`, "
+        "`status`, and `stop` commands stay Bash commands. A tool call runs in the "
+        "foreground and returns the command's JSON document."
+    )
+
     system_prompt_append = (
         f"{skill_content}\n\n"
         "**The gymrat skill is already loaded above. Do not call `Skill(gymrat)`.**\n\n"
         f"{clock_rule}\n\n"
         f"{contract}\n\n"
+        f"{tools}\n\n"
         f"## Runbook: {config.runbook}\n\n{runbook_content}"
     )
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `probe` and `iterate` agent tools under `supervise`, so a cap, a guard, or Ctrl-C stops a
+  running measurement with the run.
+- Run the CLI with `python -m gymrat`.
+
 ## [0.19.0] - 2026-09-14
 
 ### Added

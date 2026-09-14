@@ -38,6 +38,7 @@ from gymrat.supervisor.events import (
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.stdio import create_stdio_driver
 from gymrat.supervisor.supervise import SupervisionResult, supervise
+from gymrat.supervisor.tools import ToolsFactory, create_gymrat_tools, gymrat_tools_factory
 
 __all__ = [
     "SUMMARY_MAX_CHARS",
@@ -65,14 +66,17 @@ __all__ = [
     "ToolEndEvent",
     "ToolProgressEvent",
     "ToolStartEvent",
+    "ToolsFactory",
     "TurnEndEvent",
     "UsageUpdateEvent",
     "combine_observers",
     "compose_kickoff",
     "create_claude_driver",
     "create_event_log_writer",
+    "create_gymrat_tools",
     "create_stdio_driver",
     "event_from_wire",
+    "gymrat_tools_factory",
     "summarize",
     "summarize_input",
     "supervise",
