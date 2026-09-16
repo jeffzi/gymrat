@@ -112,6 +112,16 @@
           "title": "Name",
           "type": "string"
         },
+        "origin": {
+          "default": "cli",
+          "description": "What invoked the command: 'tool' when the supervised agent ran it through the in-process tool host, 'cli' when it was run directly.",
+          "enum": [
+            "cli",
+            "tool"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
         "reason": {
           "default": null,
           "description": "Why the command exited non-zero, when it did.",

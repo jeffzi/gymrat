@@ -36,6 +36,7 @@
     "geteuid",
     "getpgid",
     "getpid",
+    "getppid",
     "gpgsign",
     "gymrat",
     "htmlcov",

@@ -240,6 +240,7 @@ A CLI command invocation: name, arguments, exit code, and optional reason.
 | `exit_code` | `0` \| `1` \| `2` | required | Process-style exit code: 0 success, 1 or 2 failure. |
 | `reason` | `"stop-condition"` \| `"budget-exceeded"` \| `"unsettled"` \| `"gating-block"` \| `"already-stopped"` \| `"no-session"` \| `"finalized"` \| `"nothing-measured"` \| `"gating-regression"` \| `"nothing-to-commit"` \| `"checks-failed"` \| `"not-improved"` \| `"nothing-to-discard"` \| `"stale-session"` \| `"nothing-kept"` \| `"dirty-worktree"` \| `"unkept-commits"` \| `"bad-branch"` \| `"branch-exists"` \| `"fail-on"` \| `"no-filter"` \| `"no-baseline"` \| `"error"` | optional | Why the command exited non-zero, when it did. |
 | `duration_ms` | integer | required | Wall-clock milliseconds the command took. |
+| `origin` | `"cli"` \| `"tool"` | optional | What invoked the command: 'tool' when the supervised agent ran it through the in-process tool host, 'cli' when it was run directly. |
 | `traceparent` | string | optional | W3C Trace Context traceparent header for distributed tracing. |
 
 ## Supervisor Log

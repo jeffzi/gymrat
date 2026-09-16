@@ -127,6 +127,7 @@ COMMAND_RECORD: dict[str, object] = {
     "exit_code": 1,
     "reason": "budget-exceeded",
     "duration_ms": 1840,
+    "origin": "cli",
     "seq": 3,
 }
 
@@ -137,6 +138,7 @@ COMMAND_RECORD_SUCCESS: dict[str, object] = {
     "args": {"message": "cache the regex"},
     "exit_code": 0,
     "duration_ms": 520,
+    "origin": "cli",
     "seq": 1,
 }
 
@@ -148,6 +150,7 @@ COMMAND_RECORD_WITH_TRACEPARENT: dict[str, object] = {
     "exit_code": 2,
     "reason": "error",
     "duration_ms": 100,
+    "origin": "cli",
     "seq": 5,
     "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 }

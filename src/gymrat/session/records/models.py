@@ -34,6 +34,7 @@ from pydantic.json_schema import SkipJsonSchema, WithJsonSchema
 
 from gymrat.pydantic_errors import coerce_integer
 from gymrat.session.schema import (
+    CommandOrigin,
     CommandReason,
     HookStage,
     KeepReason,
@@ -493,6 +494,13 @@ class CommandRecord(_SequencedEnvelope):
         BeforeValidator(_reject_none),
     ] = Field(default=None, description="Why the command exited non-zero, when it did.")
     duration_ms: _NonNegativeInt = Field(description="Wall-clock milliseconds the command took.")
+    origin: CommandOrigin = Field(
+        default="cli",
+        description=(
+            "What invoked the command: 'tool' when the supervised agent ran it through the "
+            "in-process tool host, 'cli' when it was run directly."
+        ),
+    )
     traceparent: _OptStr = Field(
         default=None, description="W3C Trace Context traceparent header for distributed tracing."
     )

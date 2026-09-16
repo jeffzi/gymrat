@@ -70,6 +70,10 @@ _CANCEL_BOUND_S = 2.5
 
 _SUPERVISOR_EXIT_TIMEOUT_S = 30.0
 
+# The job tests fake ``sys.platform``, so a check against the host this suite is
+# really running on has to read the platform recorded before any faking.
+_HOST_IS_WINDOWS = sys.platform == "win32"
+
 # Stand-in win32 handles and pid for the job tests, which never touch a real
 # process: distinct values so a close can be told apart from a job close.
 _JOB_HANDLE = 777
@@ -79,6 +83,17 @@ _CHILD_PID = 4321
 # Grace given to a faked job that never empties, kept far below the real one so
 # the bound is reached in milliseconds.
 _FAKE_JOB_GRACE_S = 0.05
+
+# Hard cap on how often a faked job may be polled for its live process count.
+# The wait sleeps between polls, so any grace admits a poll count of roughly
+# grace / poll period — a handful under ``_FAKE_JOB_GRACE_S``, and fewer still
+# on a slow machine. Only a wait that stopped honouring its deadline reaches
+# this, and it turns that runaway loop into a failure instead of a hung suite.
+_FAKE_JOB_QUERY_CAP = 200
+
+# ``ctypes.WinError`` is bound only on Windows, but the production refusal paths
+# format it into their warning, so the faked platform hands them a stand-in.
+_FAKE_WIN_ERROR = "the host refused the call"
 
 # Win32 ABI values, spelled out here rather than read back from the module under
 # test: a build that set the wrong ones has to fail this, not agree with itself.
@@ -218,6 +233,19 @@ def wait_for_beat(path: Path, timeout_s: float = _BEAT_TIMEOUT_S) -> str:
         time.sleep(_BEAT_PERIOD_S)
 
 
+def still_beating(path: Path) -> bool:
+    """Whether something is writing ``path`` right now, sampled across two beat periods.
+
+    The pid in a heartbeat file outlives the process that wrote it, and Windows
+    hands a freed pid to the next process within milliseconds, so signalling a
+    pid read from a stale file can take down an unrelated process. A file that
+    is still advancing belongs to a live writer, which makes its pid current.
+    """
+    first = read_beat(path)
+    time.sleep(_BEAT_PERIOD_S * 2)
+    return read_beat(path) != first
+
+
 def heartbeat_stopped(path: Path) -> bool:
     """Whether nothing is writing ``path`` any more: two samples a window apart match."""
     first = read_beat(path)
@@ -320,17 +348,6 @@ def run_signalled_supervisor(
     return tool_pid
 
 
-def refuse_job_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make every ``AssignProcessToJobObject`` call fail, as a locked-down host would."""
-    if sys.platform == "win32":
-        import ctypes
-
-        def refuse(*_args: object) -> int:
-            return 0
-
-        monkeypatch.setattr(ctypes.windll.kernel32, "AssignProcessToJobObject", refuse)
-
-
 def leave_to_timeout(task: ExecTask, abort: asyncio.Event) -> None:
     """Leave the run alone: its own timeout tears it down."""
 
@@ -372,6 +389,8 @@ def reap_beats() -> Iterator[list[Path]]:
         yield beats
     finally:
         for path in beats:
+            if not still_beating(path):
+                continue
             pid = beat_pid(path)
             if pid is None:
                 continue
@@ -593,43 +612,6 @@ async def test_exec_argv_when_child_already_exited_does_kill_orphaned_grandchild
     )
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32-only")
-async def test_exec_argv_when_job_assignment_refused_does_warn_and_fall_back_to_taskkill(
-    tmp_path: Path,
-    scripts: dict[str, Path],
-    reap_beats: list[Path],
-    monkeypatch: pytest.MonkeyPatch,
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    beat = tmp_path / "child.beat"
-    reap_beats.append(beat)
-    calls: list[list[str]] = []
-
-    def record_run(args: list[str], *_args: object, **_kwargs: object) -> object:
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0)
-
-    monkeypatch.setattr(subprocess, "run", record_run)
-    refuse_job_assignment(monkeypatch)
-    abort = asyncio.Event()
-    task = asyncio.create_task(
-        exec_argv(
-            [sys.executable, str(scripts["beat"]), str(beat)],
-            ExecOptions(cwd=str(tmp_path), abort=abort),
-        ),
-    )
-    await asyncio.to_thread(wait_for_beat, beat)
-
-    abort.set()
-
-    await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
-    assert len([w for w in recwarn if "assignment refused" in str(w.message)]) == 1
-    assert calls
-    assert calls[0][0] == "taskkill"
-    assert "/F" in calls[0]
-    assert "/T" in calls[0]
-
-
 # ---------------------------------------------------------------------------
 # win32 Job Objects: teardown observed from a POSIX run
 # ---------------------------------------------------------------------------
@@ -646,6 +628,9 @@ class FakeJobs:
 
     active_counts: list[int] = dataclasses.field(default_factory=list)
     final_active: int = 0
+    assignment_granted: bool = True
+    """Whether ``AssignProcessToJobObject`` accepts the child, as a locked-down host would not."""
+
     queried: list[int] = dataclasses.field(default_factory=list)
     closed: list[int] = dataclasses.field(default_factory=list)
     terminated: list[int] = dataclasses.field(default_factory=list)
@@ -670,6 +655,9 @@ def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
     ) -> int:
         active = jobs.active_counts.pop(0) if jobs.active_counts else jobs.final_active
         jobs.queried.append(active)
+        assert len(jobs.queried) <= _FAKE_JOB_QUERY_CAP, (
+            "the wait polled the job past every plausible grace instead of giving up"
+        )
         # The production call passes ``ctypes.byref(struct)``; the struct it
         # reads the count back out of is what ``_obj`` reaches.
         info._obj.ActiveProcesses = active
@@ -702,6 +690,8 @@ def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
         return 1
 
     def assign_process_to_job_object(job: int, process: int) -> int:
+        if not jobs.assignment_granted:
+            return 0
         jobs.assigned.append((job, jobs.opened[process]))
         return 1
 
@@ -726,6 +716,7 @@ def win32_process_group(monkeypatch: pytest.MonkeyPatch, jobs: FakeJobs) -> type
     """
     kernel32 = types.SimpleNamespace(kernel32=fake_kernel32(jobs))
     monkeypatch.setattr(ctypes, "windll", kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "WinError", lambda: OSError(_FAKE_WIN_ERROR), raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
     spec = importlib.util.spec_from_file_location("process_group_win32", process_group.__file__)
     assert spec is not None
@@ -751,6 +742,33 @@ def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_clo
     )
 
 
+def test_terminate_process_group_when_job_assignment_refused_does_warn_and_fall_back_to_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    jobs = FakeJobs(assignment_granted=False)
+    module = win32_process_group(monkeypatch, jobs)
+    argv_calls: list[list[str]] = []
+
+    def record_run(args: list[str], *_args: object, **_kwargs: object) -> object:
+        argv_calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+    module.attach_process_group(_CHILD_PID)
+
+    module.terminate_process_group(_CHILD_PID)
+
+    refusals = [w for w in recwarn if "job assignment refused" in str(w.message)]
+    assert len(refusals) == 1, "a refused assignment has to warn exactly once"
+    assert refusals[0].category is RuntimeWarning
+    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+        "a child that never reached a job was not torn down through taskkill"
+    )
+    assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], "the refused job handle was leaked"
+    assert _CHILD_PID not in module._job_handles
+
+
 async def test_exec_argv_when_run_settles_on_win32_does_job_the_child_then_close_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -761,18 +779,42 @@ async def test_exec_argv_when_run_settles_on_win32_does_job_the_child_then_close
     monkeypatch.setattr(gymrat_exec, "release_process_group", module.release_process_group)
 
     result = await exec_argv(
-        [sys.executable, "-c", "import os; print(os.getpid())"],
+        [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
         ExecOptions(cwd=str(tmp_path)),
     )
 
     assert isinstance(result, ExecResult)
     assert result.exit_code == 0
-    child_pid = int(result.stdout.strip())
-    assert jobs.assigned == [(_JOB_HANDLE, child_pid)], "the spawned child never reached a job"
+    reporting_pid, parent_pid = (int(field) for field in result.stdout.split())
+    # A Windows virtual environment reaches the interpreter through a launcher
+    # that runs it as a child of its own, so there the pid exec spawned is the
+    # reporting process's parent — the job holds both either way. On POSIX the
+    # parent is this test process, which is never the one jobbed.
+    spawned_tree = {reporting_pid, parent_pid} if _HOST_IS_WINDOWS else {reporting_pid}
+    assert [job for job, _ in jobs.assigned] == [_JOB_HANDLE], (
+        "the spawned child never reached a job"
+    )
+    jobbed_pid = jobs.assigned[0][1]
+    assert jobbed_pid in spawned_tree, "a process outside the spawned tree was put in the job"
     assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], (
         "the settled run left the child's job open, so a descendant survives it"
     )
-    assert child_pid not in module._job_handles
+    assert jobbed_pid not in module._job_handles
+
+
+def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs()
+    monkeypatch.delattr(signal, "SIGKILL", raising=False)
+    module = win32_process_group(monkeypatch, jobs)
+    module.attach_process_group(_CHILD_PID)
+
+    module.kill_process_group(_CHILD_PID)
+
+    assert jobs.terminated == [_JOB_HANDLE], (
+        "the kill never reached the job: a host without SIGKILL cannot be asked for one"
+    )
 
 
 def test_terminate_process_group_when_job_still_emptying_does_wait_for_its_last_process(

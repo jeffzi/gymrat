@@ -32,7 +32,7 @@ from gymrat.session.records import (
     parse_record,
     record_to_wire,
 )
-from gymrat.session.schema import CommandReason, KeepReason
+from gymrat.session.schema import CommandOrigin, CommandReason, KeepReason
 from gymrat.session.store import (
     RequiredSession,
     SessionState,
@@ -66,6 +66,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "BaselineRecord",
     "BaselineRef",
+    "CommandOrigin",
     "CommandReason",
     "CommandRecord",
     "Confirm",

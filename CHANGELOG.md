@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `probe` and `iterate` agent tools under `supervise`, so a cap, a guard, or Ctrl-C stops a
   running measurement with the run.
+- Record whether a command ran as an agent tool or from the command line, as `origin` on each
+  session-log command record.
 - Run the CLI with `python -m gymrat`.
 
 ### Fixed

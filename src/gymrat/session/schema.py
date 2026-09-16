@@ -46,6 +46,12 @@ KeepReason = Literal[
 #: Which side of an iteration a hook ran on.
 HookStage = Literal["before", "after"]
 
+#: What invoked a command: a person at a terminal, or the supervisor's tool host.
+#:
+#: - ``cli``  — run directly, by a person or a script
+#: - ``tool`` — run by the supervised agent through the in-process tool host
+CommandOrigin = Literal["cli", "tool"]
+
 #: Why a command exited non-zero.
 #:
 #: Each value is produced by the command named after the dash-prefix:

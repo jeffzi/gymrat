@@ -271,6 +271,7 @@ def _try_append_command_record(  # noqa: PLR0913 -- all six params are distinct 
             exit_code=exit_code,
             reason=reason,
             duration_ms=elapsed_ms,
+            origin="tool" if os.environ.get("GYMRAT_COMMAND_ORIGIN") == "tool" else "cli",
             traceparent=os.environ.get("GYMRAT_TRACEPARENT") or os.environ.get("TRACEPARENT"),
             seq=trace.seq,
         )

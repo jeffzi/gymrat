@@ -42,6 +42,14 @@ _TASKKILL_GONE = 128
 _EXIT_POLL_S = 0.01
 """Seconds between liveness polls while a grace is waited out."""
 
+_KILL_SIGNAL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+"""Signal that kills a POSIX process group outright.
+
+Windows defines no ``SIGKILL``, and its teardown goes through the child's job
+rather than a signal, so the value bound there is never delivered — reading the
+attribute at all is what has to be avoided.
+"""
+
 if sys.platform == "win32":
     import ctypes
     from ctypes import wintypes
@@ -299,7 +307,7 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
         ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
         ``False`` otherwise.
     """
-    return _stop_group(pid, signal.SIGKILL, defer_refusal=defer_refusal)
+    return _stop_group(pid, _KILL_SIGNAL, defer_refusal=defer_refusal)
 
 
 def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> None:
