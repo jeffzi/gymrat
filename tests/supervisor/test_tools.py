@@ -292,6 +292,7 @@ async def test_probe_when_abort_already_set_does_return_killed_without_running_c
             "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
             "gymrat probe failed",
             id="signal-kill",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is POSIX-only"),
         ),
     ],
 )
@@ -310,11 +311,13 @@ async def test_probe_when_child_fails_without_document_does_return_failure_text(
 async def test_probe_when_spawn_fails_does_return_spawn_error(tmp_path: pathlib.Path) -> None:
     missing = tmp_path / "missing-executable"
     host = ToolHost(root=str(tmp_path), abort=None, extra_env={}, argv_prefix=[str(missing)])
+    with pytest.raises(FileNotFoundError) as spawn_failure:
+        await asyncio.create_subprocess_exec(str(missing))
 
     result = await host.probe({})
 
     assert result == {
-        "content": [{"type": "text", "text": f"[Errno 2] No such file or directory: '{missing}'"}],
+        "content": [{"type": "text", "text": str(spawn_failure.value)}],
         "is_error": True,
     }
 

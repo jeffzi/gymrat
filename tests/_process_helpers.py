@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import pathlib
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -17,13 +18,46 @@ def dead_pid() -> int:
     return proc.pid
 
 
+def _is_zombie(pid: int) -> bool:
+    """Whether ``pid`` has exited and is only waiting to be reaped.
+
+    ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
+    its process group looks alive until whoever inherited it calls ``wait``.
+    That reap is scheduled by the kernel, not by the test, so treating a zombie
+    as alive makes every kill assertion race against an unrelated reaper.
+    """
+    if sys.platform == "win32":
+        # Windows has no zombie state: a handle outlives the process, the pid does not.
+        return False
+    if sys.platform == "linux":
+        try:
+            stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return False
+        # The state letter is the first field after the comm field, which is
+        # parenthesized and may itself contain spaces and parentheses.
+        _, _, after_comm = stat.rpartition(")")
+        return after_comm.split()[:1] == ["Z"]
+    state = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
+        ["/bin/ps", "-o", "state=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return state.startswith("Z")
+
+
 def is_alive(pid: int) -> bool:
-    """True while a process with ``pid`` exists."""
+    """True while a process with ``pid`` exists and has not yet exited.
+
+    A zombie counts as dead: it has run its last instruction and only its exit
+    status survives.
+    """
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    return not _is_zombie(pid)
 
 
 async def wait_until_dead(pid: int, timeout_s: float = 5.0) -> None:

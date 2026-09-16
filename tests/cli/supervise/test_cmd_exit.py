@@ -23,7 +23,7 @@ from gymrat.cli.supervise import span_lifecycle
 from gymrat.cli.supervise.progress import ReadSessionResult
 from gymrat.cli.supervise.span_lifecycle import TracingState
 from gymrat.errors import GymratError
-from gymrat.exec import ExecOptions
+from gymrat.exec import ExecOptions, _live_process_groups
 from gymrat.exec import exec as run_exec
 from gymrat.session.paths import budget_path
 from gymrat.supervisor import SupervisionResult, create_event_log_writer, event_from_wire
@@ -490,6 +490,28 @@ async def _wait_for_pid(pid_path: Path) -> int:
     return pid
 
 
+async def _wait_for_registration() -> None:
+    """Poll until ``exec`` has registered the spawned child's process group.
+
+    The shell writes its pid file as soon as it starts, which is one or more
+    event-loop iterations before ``create_subprocess_shell`` resolves in the
+    parent and the group lands in the registry. A cleanup run inside that
+    window finds an empty registry and kills nothing, which looks exactly like
+    a cleanup that did nothing.
+
+    Raises:
+        TimeoutError: If no process group is registered within _KILL_SETTLE_S
+            seconds.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _KILL_SETTLE_S
+    while not _live_process_groups:
+        if loop.time() > deadline:
+            message = "exec never registered a live process group"
+            raise TimeoutError(message)
+        await asyncio.sleep(0.025)
+
+
 async def _child_survives_cleanups(cleanups: list[Callable[[], None]], cwd: Path) -> bool:
     """Spawn a live child through ``exec``, run every cleanup, and report whether it survived.
 
@@ -510,6 +532,7 @@ async def _child_survives_cleanups(cleanups: list[Callable[[], None]], cwd: Path
     )
     try:
         pid = await _wait_for_pid(cwd / "child.pid")
+        await _wait_for_registration()
         for cleanup in cleanups:
             cleanup()
         with contextlib.suppress(AssertionError):
