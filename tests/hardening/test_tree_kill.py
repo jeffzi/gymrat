@@ -859,3 +859,24 @@ def test_release_process_group_when_run_settles_does_close_the_job_and_forget_th
         "the settle path left the job handle open, so a descendant survives it"
     )
     assert _CHILD_PID not in module._job_handles
+
+
+def test_release_process_group_when_job_still_emptying_does_drain_it_before_closing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs(active_counts=[2, 1, 0])
+    module = win32_process_group(monkeypatch, jobs)
+    module.attach_process_group(_CHILD_PID)
+
+    module.release_process_group(_CHILD_PID)
+
+    assert jobs.terminated == [_JOB_HANDLE], (
+        "the release left the job's members to die on their own after the handle closed"
+    )
+    assert jobs.queried == [2, 1, 0], (
+        "the release closed the job handle before its members had reported themselves gone"
+    )
+    assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], (
+        "the drained job handle was leaked instead of closed"
+    )
+    assert _CHILD_PID not in module._job_handles

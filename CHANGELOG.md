@@ -17,8 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The dashboard's session rows refresh after every tool end, so a gymrat command run inside a
+- Refresh the dashboard's session rows after every tool end, so a gymrat command run inside a
   subagent shows at once.
+- Tear a process tree down on Windows, where the absent `SIGKILL` previously aborted every teardown
+  that reached the kill step.
+- Kill Windows job members explicitly before closing the handle, so the process tree is fully gone
+  when the teardown returns instead of dying asynchronously.
 
 ## [0.19.0] - 2026-09-14
 

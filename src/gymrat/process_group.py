@@ -169,9 +169,15 @@ if sys.platform == "win32":
         _job_handles[pid] = job
 
     def _release_job(pid: int) -> None:
-        """Close the job holding ``pid``, which kills whatever is still in it."""
+        """Tear down the job holding ``pid``, returning once nothing is left in it.
+
+        Closing the last handle kills the members asynchronously, so the kill is
+        driven explicitly and waited on instead: a caller that returns from here
+        must be able to treat the whole tree as gone.
+        """
         job = _job_handles.pop(pid, None)
         if job is not None:
+            _terminate_job(job, pid)
             ctypes.windll.kernel32.CloseHandle(job)
 
     def _wait_for_empty_job(job: int) -> None:
