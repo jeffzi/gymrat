@@ -5,7 +5,8 @@ a subdirectory still scaffolds at the root) and the process cwd otherwise; git i
 not required. Re-running over an existing ``gymrat.toml`` leaves that file alone
 and fills in whatever else is missing, so ``--bench`` is only required when
 there is no config yet. ``--no-runbook`` and ``--no-skill`` suppress those
-artifacts. The artifact summary is written to stdout.
+artifacts. The artifact summary is written to stdout. While a supervised run is
+live, the command is refused: scaffolding is not part of the loop.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from gymrat.cli.shared import (
     resolve_stream_color,
     write_and_flush,
 )
+from gymrat.cli.supervised import is_supervised_run_live
 from gymrat.config import CONFIG_FILENAME, find_implicit_base
 from gymrat.errors import GymratError
 from gymrat.init.scaffold import (
@@ -83,6 +85,9 @@ def init_command(
     resolved_color = resolve_stream_color(color_override, sys.stdout)
 
     base_dir = find_implicit_base()
+    # init has no tool form, so a live run refuses it whatever the origin.
+    if is_supervised_run_live(base_dir):
+        exit_with_error(GymratError("a supervised run is live; init is not part of the loop"))
     # An existing config is kept as-is, so its bench command stands in for the flag.
     if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
         exit_with_error(GymratError("Missing --bench flag."))

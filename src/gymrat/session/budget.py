@@ -8,13 +8,14 @@ any condition fails the budget is treated as absent.
 """
 
 import contextlib
-import json
 import os
 import tempfile
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE, format_duration
 from gymrat.session.lock import is_held
@@ -41,9 +42,11 @@ SIDES_PER_ITERATE = 2
 twice a baseline-only run."""
 
 
-@dataclass(frozen=True, slots=True)
-class Budget:
+class Budget(BaseModel):
     """Immutable snapshot of a session time budget.
+
+    Validation is strict: a time field must be a real number and ``version`` an
+    integer, with ``bool`` rejected for both, and unknown fields are refused.
 
     Attributes:
         started_at_ms: Epoch milliseconds when the budget was created.
@@ -51,6 +54,8 @@ class Budget:
         deadline_ms: Epoch milliseconds at which the budget expires.
         version: Schema version for forward compatibility.
     """
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
     started_at_ms: float
     max_minutes: float
@@ -82,7 +87,7 @@ def write_budget(root: str, budget: Budget) -> None:
     ) as tmp_file:
         tmp_path = Path(tmp_file.name)
         try:
-            json.dump(asdict(budget), tmp_file)
+            tmp_file.write(budget.model_dump_json())
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
         except BaseException:
@@ -95,23 +100,21 @@ def write_budget(root: str, budget: Budget) -> None:
 def read_budget(root: str, *, now_ms: float) -> Budget | None:
     """Read and validate the budget file, or return ``None``.
 
-    Returns ``None`` when the file is absent, contains invalid JSON, has an
-    unrecognized version, its deadline has passed, or the supervise lock for
-    *root* is not held.
-
     Args:
         root: Repository root under which the budget file lives.
         now_ms: Current epoch milliseconds, compared against the budget's
             deadline.
 
     Returns:
-        The validated budget, or ``None`` when any liveness condition fails.
+        The validated budget, or ``None`` when the file is absent, contains
+        invalid JSON, is not an object with the expected numeric fields, has
+        an unrecognized version, its deadline has passed, or the supervise
+        lock for *root* is not held.
     """
     path = Path(budget_path(root))
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        budget = Budget(**data)
-    except (json.JSONDecodeError, TypeError, KeyError, OSError, UnicodeDecodeError):
+        budget = Budget.model_validate_json(path.read_text(encoding="utf-8"))
+    except (ValidationError, OSError, UnicodeDecodeError):
         return None
 
     if budget.version != _BUDGET_VERSION:

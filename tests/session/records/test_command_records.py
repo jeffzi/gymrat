@@ -222,6 +222,7 @@ COMMAND_REASONS = (
     "fail-on",
     "no-filter",
     "no-baseline",
+    "supervised-use-tool",
     "error",
 )
 

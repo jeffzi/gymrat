@@ -359,6 +359,10 @@ def test_now_ns_when_called_does_return_nanosecond_epoch_integer():
             patching(COMMAND_RECORD, {"name": "probe", "reason": "no-baseline"}),
             id="command-probe-no-baseline",
         ),
+        pytest.param(
+            patching(COMMAND_RECORD, {"exit_code": 2, "reason": "supervised-use-tool"}),
+            id="command-supervised-use-tool",
+        ),
     ],
 )
 def test_parse_record_when_record_satisfies_schema_does_round_trip(record: dict[str, object]):

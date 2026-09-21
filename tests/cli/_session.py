@@ -20,6 +20,7 @@ __all__ = [
     "make_stop_repo",
     "never_tty",
     "plain_lines",
+    "records_of",
     "runner",
     "strip_ansi",
     "write_config",
@@ -76,6 +77,15 @@ def last_command_record(root: str) -> CommandRecord:
             return record
     msg = "no CommandRecord found in session log"
     raise AssertionError(msg)
+
+
+def records_of(repo: str, *, commands: bool) -> list[object]:
+    """The session-log records that are (or are not) command traces."""
+    return [
+        r
+        for r in read_records(session_jsonl_path(repo))
+        if isinstance(r, CommandRecord) is commands
+    ]
 
 
 def write_config(root: str, **extra: object) -> None:

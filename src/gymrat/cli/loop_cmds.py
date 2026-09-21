@@ -47,6 +47,7 @@ from gymrat.cli.shared import (
     write_and_flush,
     write_budget_report,
 )
+from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.config import CliFlags, resolve_benchless_config, resolve_config
 from gymrat.confirm import confirm_action
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
@@ -79,6 +80,7 @@ async def _iterate_body(
     resolved_color: bool,
 ) -> IterateResult:
     root = repo_root()
+    guard_supervised_origin(root, "iterate")
     resolved = resolve_config(flags, root)
     required = require_open_session(root, "iterate")
 

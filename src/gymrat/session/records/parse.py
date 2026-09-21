@@ -4,7 +4,7 @@ Includes validation-error translation from pydantic errors to problem strings.
 """
 
 import json
-from typing import Annotated
+from typing import Annotated, get_args
 
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
@@ -12,10 +12,21 @@ from pydantic_core import ErrorDetails
 from gymrat.errors import GymratError
 from gymrat.pydantic_errors import describe_key, drop_prefix_errors
 from gymrat.session.records.models import (
+    CommandRecord,
     SessionLogRecord,
     _wire_validation,
 )
-from gymrat.session.schema import SCHEMA_VERSION
+from gymrat.session.schema import (
+    SCHEMA_VERSION,
+    CommandReason,
+    HookStage,
+    KeepReason,
+    KeepStatus,
+    Method,
+    Outcome,
+    PrimaryKind,
+    Verdict,
+)
 
 _SessionLogUnion = TypeAdapter(Annotated[SessionLogRecord, Field(discriminator="type")])
 
@@ -94,25 +105,23 @@ _INT = "an integer"
 _SAMPLE_ROUNDS = "an array of objects mapping metric names to numbers"
 _STRING_ARRAY = "an array of strings"
 _DELTA = "a number or null"
-_VERDICT = '"improved", "regressed", "no-signal" or "unstable"'
-_METHOD = '"permutation", "band" or "exact"'
-_KIND = '"geomean" or "metric"'
-_OUTCOME = '"improved", "regressed" or "no-signal"'
-_STATUS = '"committed" or "blocked"'
-_REASON = (
-    '"checks-failed", "gating-regression", "nothing-measured", "nothing-to-commit" '
-    'or "not-improved"'
-)
-_STAGE = '"before" or "after"'
-_EXIT_CODE = "0, 1 or 2"
-_COMMAND_REASON = (
-    'one of "stop-condition", "budget-exceeded", "unsettled", "gating-block", '
-    '"already-stopped", "no-session", "finalized", "nothing-measured", '
-    '"gating-regression", "nothing-to-commit", "checks-failed", "not-improved", '
-    '"nothing-to-discard", "stale-session", "nothing-kept", '
-    '"dirty-worktree", "unkept-commits", "bad-branch", "branch-exists", '
-    '"fail-on", "no-filter", "no-baseline" or "error"'
-)
+
+
+def _alternatives(literal: object) -> str:
+    """Render a ``Literal``'s values as ``"a", "b" or "c"`` for a problem message."""
+    *head, last = (json.dumps(value) for value in get_args(literal))
+    return f"{', '.join(head)} or {last}" if head else last
+
+
+_VERDICT = _alternatives(Verdict)
+_METHOD = _alternatives(Method)
+_KIND = _alternatives(PrimaryKind)
+_OUTCOME = _alternatives(Outcome)
+_STATUS = _alternatives(KeepStatus)
+_REASON = _alternatives(KeepReason)
+_STAGE = _alternatives(HookStage)
+_EXIT_CODE = _alternatives(CommandRecord.model_fields["exit_code"].annotation)
+_COMMAND_REASON = f"one of {_alternatives(CommandReason)}"
 
 _PHRASES: dict[tuple[str, ...], str] = {
     # session

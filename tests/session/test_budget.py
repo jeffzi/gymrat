@@ -57,6 +57,18 @@ def _make_budget(**overrides: object) -> Budget:
     return Budget(**defaults)  # type: ignore[arg-type]
 
 
+def _budget_json(**overrides: object) -> str:
+    """Serialize a budget JSON payload with sensible defaults, overridable per-field."""
+    defaults: dict[str, object] = {
+        "version": 1,
+        "started_at_ms": 1000.0,
+        "max_minutes": 30,
+        "deadline_ms": 999_999_999.0,
+    }
+    defaults.update(overrides)
+    return json.dumps(defaults)
+
+
 # ---------------------------------------------------------------------------
 # remaining_ms
 # ---------------------------------------------------------------------------
@@ -127,9 +139,21 @@ def test_read_budget_when_file_exists_and_lock_held_and_deadline_ahead_does_retu
         pytest.param(None, id="file-absent"),
         pytest.param("not valid json{{{", id="invalid-json"),
         pytest.param(json.dumps({"unexpected_field": 42}), id="wrong-schema"),
+        pytest.param(json.dumps([1, 2, 3]), id="array-not-object"),
+        pytest.param(json.dumps(42), id="number-not-object"),
+        pytest.param(_budget_json(deadline_ms="soon"), id="deadline-string"),
+        pytest.param(_budget_json(deadline_ms=None), id="deadline-null"),
+        pytest.param(_budget_json(started_at_ms="early"), id="started-at-string"),
+        pytest.param(_budget_json(max_minutes="long"), id="max-minutes-string"),
+        pytest.param(_budget_json(deadline_ms=True), id="deadline-bool"),
+        pytest.param(_budget_json(version=True), id="version-bool"),
+        pytest.param(_budget_json(version=1.0), id="version-float"),
+        pytest.param(_budget_json(extra=1), id="unexpected-field"),
     ],
 )
-def test_read_budget_when_file_unreadable_does_return_none(root: str, raw_content: str | None):
+def test_read_budget_when_file_unreadable_or_invalid_does_return_none(
+    root: str, raw_content: str | None
+):
     if raw_content is not None:
         _budget_file(root).write_text(raw_content, encoding="utf-8")
 

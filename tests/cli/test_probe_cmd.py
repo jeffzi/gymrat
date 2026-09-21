@@ -26,14 +26,24 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES
 from gymrat.progress_events import PrepareFinished, PrepareStarted
-from gymrat.session import append_record, experiment_worktree_dir, session_jsonl_path
-from gymrat.session.paths import lockfile_path, repo_root
+from gymrat.session import (
+    append_record,
+    experiment_worktree_dir,
+    session_jsonl_path,
+)
+from gymrat.session.paths import lockfile_path, progress_path, repo_root
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY, no_color_env
 from tests._git import git
 from tests._process_helpers import is_alive
-from tests.cli._budget import install_budget, install_tight_budget
-from tests.cli._session import last_command_record, plain_lines, write_config
+from tests.cli._budget import (
+    SUPERVISED_HINT,
+    install_budget,
+    install_tight_budget,
+    mark_tool_origin,
+    set_origin,
+)
+from tests.cli._session import last_command_record, plain_lines, records_of, write_config
 from tests.conftest import hold_lock
 from tests.loop._probe import MeasureRecorder, baseline_of, install_measure, measurement, only_call
 from tests.loop.settle._fixtures import start_with
@@ -181,6 +191,7 @@ def test_probe_command_when_budget_state_varies_does_render_time_left_line_accor
 ):
     if install is not None:
         install(probe_repo, monkeypatch)
+        mark_tool_origin(monkeypatch)
 
     result = runner.invoke(app, ["probe"])
 
@@ -239,6 +250,7 @@ def test_probe_command_when_format_json_and_budget_state_varies_does_reflect_bud
 ):
     if install is not None:
         install(probe_repo, monkeypatch)
+        mark_tool_origin(monkeypatch)
 
     result = runner.invoke(app, ["probe", "--format", "json"])
 
@@ -252,7 +264,7 @@ def test_probe_command_when_format_json_and_budget_state_varies_does_reflect_bud
 
 
 # ---------------------------------------------------------------------------
-# duration warnings — the per-side estimate, taken before the lock
+# duration warnings — the per-side estimate
 # ---------------------------------------------------------------------------
 
 
@@ -268,12 +280,52 @@ def test_probe_command_when_budget_tight_does_warn_on_the_halved_estimate(
     probe_repo: str, monkeypatch: pytest.MonkeyPatch, duration_ms: int, warns: bool
 ):
     install_tight_budget(probe_repo, monkeypatch)
+    mark_tool_origin(monkeypatch)
     append_record(session_jsonl_path(probe_repo), iteration_record(duration_ms=duration_ms))
 
     result = runner.invoke(app, ["probe"])
 
     assert result.exit_code == 0
     assert ("warning" in strip_ansi(result.stderr).lower()) is warns
+
+
+# ---------------------------------------------------------------------------
+# refused while a supervised run is live
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def supervised_probe_repo(probe_repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A probe-ready repo under a tight live budget its last iteration outlasts, run from the shell."""
+    install_tight_budget(probe_repo, monkeypatch)
+    append_record(session_jsonl_path(probe_repo), iteration_record(duration_ms=720_000))
+    set_origin(monkeypatch, None)
+    return probe_repo
+
+
+@pytest.mark.parametrize("output_format", ["text", "json"])
+def test_probe_command_when_supervised_run_live_does_refuse_without_running_and_record_it(
+    supervised_probe_repo: str, output_format: str, measure: MeasureRecorder
+):
+    before = records_of(supervised_probe_repo, commands=False)
+
+    result = runner.invoke(app, ["probe", "--format", output_format])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    lines = [line for line in plain_lines(result.stderr) if line.strip()]
+    assert len(lines) == 2
+    assert "a supervised run is live; use the probe tool" in lines[0]
+    assert SUPERVISED_HINT in lines[1]
+    assert measure.calls == []
+    assert records_of(supervised_probe_repo, commands=False) == before
+    assert not Path(progress_path(supervised_probe_repo)).exists()
+    assert len(records_of(supervised_probe_repo, commands=True)) == 1
+    cmd = last_command_record(supervised_probe_repo)
+    assert cmd.name == "probe"
+    assert cmd.exit_code == 2
+    assert cmd.reason == "supervised-use-tool"
+    assert cmd.origin == "cli"
 
 
 # ---------------------------------------------------------------------------

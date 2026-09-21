@@ -189,6 +189,14 @@ def repo(create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture
+def supervise_lock(repo: str) -> Iterator[None]:
+    """Hold the real supervise lock for ``repo`` for the duration of the test."""
+    lock = hold_lock(supervise_lockfile_path(repo), "supervise")
+    yield
+    lock.release()
+
+
+@pytest.fixture
 def list_worktree_dirs() -> Callable[..., list[str]]:
     """Expose the worktree-listing helper to tests."""
     return _list_worktree_dirs

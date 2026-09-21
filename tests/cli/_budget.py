@@ -1,9 +1,9 @@
-"""Shared budget fixtures for the CLI command test files.
+"""Shared budget and command-origin helpers for the CLI command test files.
 
-Builders used by more than one ``test_*_cmd.py`` module to exercise the
-budget time-left line, the JSON budget object, and duration warnings. This is
-test-support code, not a test module: it carries no test functions or pytest
-fixtures of its own.
+Builders used by more than one CLI test module to exercise the budget
+time-left line, the JSON budget object, duration warnings, and the
+supervised-run refusal. This is test-support code, not a test module: it
+carries no test functions or pytest fixtures of its own.
 """
 
 from pathlib import Path
@@ -13,12 +13,19 @@ import pytest
 from gymrat.session.budget import Budget, write_budget
 
 __all__ = [
+    "LIVE_BUDGET",
+    "SUPERVISED_HINT",
     "install_budget",
     "install_tight_budget",
+    "mark_tool_origin",
+    "set_origin",
 ]
 
-#: A 30-minute budget with a far-future deadline so the budget is always live.
-BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
+#: A 30-minute budget whose deadline sits far in the future, so it never expires mid-test.
+LIVE_BUDGET = Budget(started_at_ms=0.0, max_minutes=30, deadline_ms=9_999_999_999_999.0)
+
+#: The hint every supervised-run refusal attaches, pointing the caller at the tool.
+SUPERVISED_HINT = "Call the tool instead of the command."
 
 
 def _install(repo: str, monkeypatch: pytest.MonkeyPatch, budget: Budget) -> None:
@@ -32,7 +39,7 @@ def _install(repo: str, monkeypatch: pytest.MonkeyPatch, budget: Budget) -> None
 
 def install_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Write a live budget file and patch the supervise lock so read_budget succeeds."""
-    _install(repo, monkeypatch, BUDGET)
+    _install(repo, monkeypatch, LIVE_BUDGET)
 
 
 def install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,3 +51,16 @@ def install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     _install(repo, monkeypatch, tight_budget)
     monkeypatch.setattr("gymrat.session.clock.now_ms", lambda: 0.0)
+
+
+def mark_tool_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the command origin the tool host sets, so a live budget allows the command."""
+    set_origin(monkeypatch, "tool")
+
+
+def set_origin(monkeypatch: pytest.MonkeyPatch, origin: str | None) -> None:
+    """Set ``GYMRAT_COMMAND_ORIGIN`` to ``origin``, or clear it when ``origin`` is None."""
+    if origin is None:
+        monkeypatch.delenv("GYMRAT_COMMAND_ORIGIN", raising=False)
+    else:
+        monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", origin)

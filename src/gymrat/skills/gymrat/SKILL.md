@@ -137,8 +137,8 @@ an unsettled iteration with `keep` or `discard`, and measure or `discard` any un
 first.
 
 **Never run `gymrat supervise` yourself.** If this text is in your system prompt, you are the
-supervised agent: a nested launch spawns a second agent, a second cap, and a second bill against
-the same repository, and the supervise lock does not stop it.
+supervised agent. A nested launch on the same repository is refused on the supervise lock and exits
+2.
 
 **In supervised mode (this text in your system prompt), no human reads your turns.** Ending a turn
 early is recoverable but wasteful — the supervisor replies with a reminder to re-read the session
@@ -159,9 +159,11 @@ timeout — the supervisor raises the command's timeout ceiling to match the run
 background command runs unobserved, and its output never reaches the session.
 
 **Use the `probe` and `iterate` tools.** Under supervise, `probe` and `iterate` are MCP tools the
-supervisor hosts — use the tool calls instead of running `gymrat probe` or `gymrat iterate` through
-Bash. The `measure`, `compare`, `keep`, `discard`, `status`, and `stop` commands stay Bash commands.
-A tool call runs in the foreground and returns the command's JSON document.
+supervisor hosts, and the tools are the only form: `gymrat iterate` and `gymrat probe` run through
+Bash are refused and exit 2 while a supervised run is live, because the supervisor cannot stop a
+command it did not start. The `measure`, `compare`, `keep`, `discard`, `status`, and `stop`
+commands stay Bash commands. A tool call runs in the foreground and returns the command's JSON
+document.
 
 ## Keeping iterations cheap
 
@@ -281,8 +283,8 @@ further measurement and report what the probes measured.
 
 3. **Never run concurrent sessions.** Every command that runs the bench — `measure` and `compare`
    included — or mutates the session holds a per-repository lock, and a second gymrat process
-   exits 2. `supervise` holds a separate lock that does not block a nested `supervise`; see
-   Supervised mode.
+   exits 2. `supervise` holds a separate lock, so a nested `supervise` on the same repository is
+   refused and exits 2. See Supervised mode.
 
 4. **Discard decisively.** A NO-SIGNAL or REGRESSED iteration that cannot be salvaged gets discarded
    immediately — reworking without discarding first conflates the changes.

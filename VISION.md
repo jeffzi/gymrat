@@ -49,9 +49,12 @@ it leaves the work in place and blocks the next run until a person decides. It n
 ### 4. Humans and agents, one implementation
 
 A person and an agent drive gymrat through the same commands and the same statistical engine.
-Every mechanism works the same whether a person drives the loop or the supervisor does. Supervised
-mode adds caps and time-left lines; it never changes the verdict a command reaches or the record it
-writes. gymrat detects supervised mode from state on disk, never from a flag or an environment
+A command that runs works the same whether a person drives the loop or the supervisor does.
+Supervised mode adds caps and time-left lines and hosts `probe` and `iterate` as agent tools. While
+a run is live it refuses those commands typed at the command line, because the supervisor cannot
+stop a command it did not start, and it refuses `init`, which is not part of the loop. It never
+changes the verdict a command reaches or the record it writes.
+gymrat detects supervised mode from state on disk, never from a flag or an environment
 variable, so a manual session cannot observe a supervised-mode side effect. No release may make the
 manual loop depend on the supervisor.
 

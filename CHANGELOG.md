@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Refuse `iterate` and `probe` run from the command line, and refuse `init` entirely, while a
+  supervised run is live; use the `probe` and `iterate` agent tools instead.
+
 ## [0.20.0] - 2026-09-19
 
 ### Added

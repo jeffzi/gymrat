@@ -78,6 +78,7 @@ CommandOrigin = Literal["cli", "tool"]
 #: - ``fail-on``           — iterate (the fail-on condition fired)
 #: - ``no-filter``         — probe (names given with no filter template configured)
 #: - ``no-baseline``       — probe (the session has no baseline record)
+#: - ``supervised-use-tool`` — any command typed outside the supervisor during a live supervised run
 #: - ``error``             — any command (an unexpected error)
 CommandReason = Literal[
     "stop-condition",
@@ -102,5 +103,6 @@ CommandReason = Literal[
     "fail-on",
     "no-filter",
     "no-baseline",
+    "supervised-use-tool",
     "error",
 ]

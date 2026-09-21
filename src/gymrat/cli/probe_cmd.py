@@ -1,9 +1,10 @@
 """The ``gymrat probe`` command: a spot check of the session's experiment worktree.
 
-The action warns about an over-budget run before it queues on the lock, holds the
-repository lock for the length of the bench, stops the progress reporter before
-any report or error text, and renders the probe to stdout once the lock is
-released. It never gates the exit code.
+The action holds the repository lock for the length of the bench. Inside the
+lock it refuses a shell-typed probe while a supervised run is live, then warns
+about an over-budget run before the progress reporter starts. It stops the
+progress reporter before any report or error text, and renders the probe to
+stdout once the lock is released. It never gates the exit code.
 
 The bench comes from ``gymrat.toml`` alone — a probe reads the session's own
 configuration rather than taking a one-off bench, so there is no ``--bench``,
@@ -35,6 +36,7 @@ from gymrat.cli.shared import (
     warn_duration_over_budget,
     with_repo_lock,
 )
+from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.config import resolve_config
 from gymrat.loop.probe import EXPERIMENT_LABEL, ProbeOptions, ProbeResult, probe_session
 from gymrat.report import render_probe_json, render_probe_report
@@ -51,9 +53,12 @@ _NamesArgument = Annotated[
 
 
 async def _probe_body(flags: SharedFlags, names: list[str]) -> ProbeResult:
+    root = repo_root()
+    guard_supervised_origin(root, "probe")
+    # Warn before the progress reporter starts, or the warning prints under a live display.
+    warn_duration_over_budget(halve=True)
     progress = begin_run(flags, 1, command="probe", target_labels=[EXPERIMENT_LABEL])
     try:
-        root = repo_root()
         resolved = resolve_config(flags, root)
         # ProbeOptions takes no abort event, so the one handed out here goes
         # unused: the value of the wrapper is its cleanup, which kills the live
@@ -95,7 +100,6 @@ def probe(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared 
     )
 
     async def run() -> None:
-        warn_duration_over_budget(halve=True)
         result = await with_repo_lock(
             "probe",
             lambda _trace: _probe_body(flags, probed),

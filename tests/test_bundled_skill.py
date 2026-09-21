@@ -1,5 +1,6 @@
 import re
 import zipfile
+from collections.abc import Callable
 from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import NoReturn
@@ -97,7 +98,7 @@ def test_read_bundled_skill_when_resource_lookup_fails_does_raise_gymrat_error(
 
 def _never_stop_early_rule() -> str:
     """The 'Loop discipline' list item forbidding a stop before a stop condition fires."""
-    section = read_bundled_skill().partition("## Loop discipline")[2].partition("\n## ")[0]
+    section = _section("## Loop discipline")
     return next(item for item in section.split("\n\n") if "never stop before" in item.lower())
 
 
@@ -117,3 +118,98 @@ def test_read_bundled_skill_when_stop_condition_rule_read_does_state_both_comman
     rule = _never_stop_early_rule()
 
     assert phrase in rule
+
+
+# ---------------------------------------------------------------------------
+# Supervised mode — refused command forms
+# ---------------------------------------------------------------------------
+
+
+def _section(heading: str) -> str:
+    """The skill text under ``heading``, up to the next top-level section."""
+    return read_bundled_skill().partition(heading)[2].partition("\n## ")[0]
+
+
+def _paragraph(section: str, marker: str) -> str:
+    """The paragraph (or list item) of ``section`` containing ``marker``, unwrapped to one line."""
+    paragraphs = (" ".join(item.split()) for item in section.split("\n\n"))
+    return next(item for item in paragraphs if marker in item)
+
+
+def _supervised_mode_paragraph(marker: str) -> str:
+    return _paragraph(_section("### Supervised mode"), marker)
+
+
+def _nested_supervise_paragraph() -> str:
+    return _supervised_mode_paragraph("Never run `gymrat supervise` yourself.")
+
+
+def _concurrent_sessions_rule() -> str:
+    return _paragraph(_section("## Loop discipline"), "Never run concurrent sessions.")
+
+
+NESTED_SUPERVISE_PASSAGES = [
+    pytest.param(_nested_supervise_paragraph, id="supervised-mode"),
+    pytest.param(_concurrent_sessions_rule, id="concurrent-sessions-rule"),
+]
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        pytest.param("`gymrat iterate`", id="names-iterate-command"),
+        pytest.param("`gymrat probe`", id="names-probe-command"),
+        pytest.param("through Bash", id="names-shell-form"),
+        pytest.param("refused", id="command-form-refused"),
+        pytest.param("only form", id="tools-only-form"),
+    ],
+)
+def test_read_bundled_skill_when_tools_paragraph_read_does_state_command_form_refused(
+    phrase: str,
+):
+    paragraph = _supervised_mode_paragraph("Use the `probe` and `iterate` tools.")
+
+    assert phrase in paragraph
+
+
+@pytest.mark.parametrize("passage", NESTED_SUPERVISE_PASSAGES)
+def test_read_bundled_skill_when_nested_supervise_passage_read_does_state_launch_refused(
+    passage: Callable[[], str],
+):
+    text = passage()
+
+    assert "nested" in text
+    assert "refused" in text
+
+
+@pytest.mark.parametrize("passage", NESTED_SUPERVISE_PASSAGES)
+def test_read_bundled_skill_when_read_does_not_say_lock_lets_nested_supervise_through(
+    passage: Callable[[], str],
+):
+    text = passage()
+
+    assert not re.search(r"does not (stop|block)|\blets?\b.*\bthrough\b", text)
+
+
+@pytest.mark.parametrize(
+    ("heading", "phrase"),
+    [
+        pytest.param(
+            "### 3. The iteration cycle",
+            "Never pass `--bench` or `--samples` to `iterate`.",
+            id="iteration-cycle-rule",
+        ),
+        pytest.param(
+            "## Red flags",
+            "About to pass `--bench` or `--samples` to `iterate`.",
+            id="red-flag",
+        ),
+    ],
+)
+def test_read_bundled_skill_when_read_does_keep_iterate_bench_and_samples_rule(
+    heading: str,
+    phrase: str,
+):
+    section = _section(heading)
+
+    assert phrase in section
