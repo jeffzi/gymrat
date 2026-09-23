@@ -70,6 +70,11 @@ _CANCEL_BOUND_S = 2.5
 
 _SUPERVISOR_EXIT_TIMEOUT_S = 30.0
 
+# How long the late-containment test holds the job assignment back. A venv
+# launcher starts its real interpreter within tens of milliseconds, so a full
+# second guarantees the interpreter exists before the launcher joins the job.
+_LATE_ATTACH_DELAY_S = 1.0
+
 # The job tests fake ``sys.platform``, so a check against the host this suite is
 # really running on has to read the platform recorded before any faking.
 _HOST_IS_WINDOWS = sys.platform == "win32"
@@ -100,6 +105,14 @@ _FAKE_WIN_ERROR = "the host refused the call"
 # ``JobObjectExtendedLimitInformation`` and ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.
 _WIN32_EXTENDED_LIMIT_INFORMATION = 9
 _WIN32_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+# ``CREATE_SUSPENDED``: the child exists but runs no instruction until resumed.
+_WIN32_CREATE_SUSPENDED = 0x4
+
+# NTSTATUS codes the faked ``NtResumeProcess`` answers with: ``STATUS_SUCCESS``
+# and the ``STATUS_ACCESS_DENIED`` a locked-down host replies with.
+_NT_STATUS_SUCCESS = 0
+_NT_STATUS_ACCESS_DENIED = 0xC0000022
 
 _BEAT = '''"""Rewrite the file named in argv[1] with this pid and a rising counter."""
 
@@ -612,6 +625,42 @@ async def test_exec_argv_when_child_already_exited_does_kill_orphaned_grandchild
     )
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32-only")
+async def test_exec_argv_when_containment_lands_late_does_kill_descendants_started_before_it(
+    tmp_path: Path,
+    scripts: dict[str, Path],
+    reap_beats: list[Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bench_beat, grandchild_beat = bench_beat_paths(tmp_path, reap_beats)
+    attach = gymrat_exec.attach_process_group
+
+    def attach_late(pid: int) -> None:
+        time.sleep(_LATE_ATTACH_DELAY_S)
+        attach(pid)
+
+    monkeypatch.setattr(gymrat_exec, "attach_process_group", attach_late)
+    abort = asyncio.Event()
+    task = asyncio.create_task(
+        exec_argv(
+            bench_argv(scripts, bench_beat, grandchild_beat),
+            ExecOptions(cwd=str(tmp_path), abort=abort),
+        ),
+    )
+    await asyncio.to_thread(wait_for_beat, bench_beat)
+    await asyncio.to_thread(wait_for_beat, grandchild_beat)
+
+    abort.set()
+
+    await asyncio.wait_for(task, _SETTLE_TIMEOUT_S)
+    assert await asyncio.to_thread(heartbeat_stopped, grandchild_beat), (
+        "a grandchild started before containment landed outlived the run"
+    )
+    assert await asyncio.to_thread(heartbeat_stopped, bench_beat), (
+        "a bench started before containment landed outlived the run"
+    )
+
+
 # ---------------------------------------------------------------------------
 # win32 Job Objects: teardown observed from a POSIX run
 # ---------------------------------------------------------------------------
@@ -631,6 +680,9 @@ class FakeJobs:
     assignment_granted: bool = True
     """Whether ``AssignProcessToJobObject`` accepts the child, as a locked-down host would not."""
 
+    resume_granted: bool = True
+    """Whether ``NtResumeProcess`` accepts the handle, as a locked-down host would not."""
+
     queried: list[int] = dataclasses.field(default_factory=list)
     closed: list[int] = dataclasses.field(default_factory=list)
     terminated: list[int] = dataclasses.field(default_factory=list)
@@ -642,6 +694,9 @@ class FakeJobs:
 
     assigned: list[tuple[int, int]] = dataclasses.field(default_factory=list)
     """Job handle and pid of each successful assignment."""
+
+    resumed: list[int] = dataclasses.field(default_factory=list)
+    """Pid behind the handle of each successful resume."""
 
 
 def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
@@ -706,6 +761,18 @@ def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
     )
 
 
+def fake_ntdll(jobs: FakeJobs) -> types.SimpleNamespace:
+    """An ``ntdll`` stub that resumes the process behind a handle ``jobs`` handed out."""
+
+    def resume_process(process: int) -> int:
+        if not jobs.resume_granted:
+            return _NT_STATUS_ACCESS_DENIED
+        jobs.resumed.append(jobs.opened[process])
+        return _NT_STATUS_SUCCESS
+
+    return types.SimpleNamespace(NtResumeProcess=resume_process)
+
+
 def win32_process_group(monkeypatch: pytest.MonkeyPatch, jobs: FakeJobs) -> types.ModuleType:
     """Load a private copy of ``gymrat.process_group`` with its win32 job path bound.
 
@@ -714,8 +781,8 @@ def win32_process_group(monkeypatch: pytest.MonkeyPatch, jobs: FakeJobs) -> type
     platform faked and ``kernel32`` stubbed. The copy is the test's own; the
     imported module keeps its POSIX bindings.
     """
-    kernel32 = types.SimpleNamespace(kernel32=fake_kernel32(jobs))
-    monkeypatch.setattr(ctypes, "windll", kernel32, raising=False)
+    windll = types.SimpleNamespace(kernel32=fake_kernel32(jobs), ntdll=fake_ntdll(jobs))
+    monkeypatch.setattr(ctypes, "windll", windll, raising=False)
     monkeypatch.setattr(ctypes, "WinError", lambda: OSError(_FAKE_WIN_ERROR), raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
     spec = importlib.util.spec_from_file_location("process_group_win32", process_group.__file__)
@@ -774,16 +841,15 @@ async def test_exec_argv_when_run_settles_on_win32_does_job_the_child_then_close
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     jobs = FakeJobs()
-    module = win32_process_group(monkeypatch, jobs)
-    monkeypatch.setattr(gymrat_exec, "attach_process_group", module.attach_process_group)
-    monkeypatch.setattr(gymrat_exec, "release_process_group", module.release_process_group)
+    group = win32_process_group(monkeypatch, jobs)
+    module = win32_exec(monkeypatch, group)
 
-    result = await exec_argv(
+    result = await module.exec_argv(
         [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
-        ExecOptions(cwd=str(tmp_path)),
+        module.ExecOptions(cwd=str(tmp_path)),
     )
 
-    assert isinstance(result, ExecResult)
+    assert isinstance(result, module.ExecResult)
     assert result.exit_code == 0
     reporting_pid, parent_pid = (int(field) for field in result.stdout.split())
     # A Windows virtual environment reaches the interpreter through a launcher
@@ -796,10 +862,11 @@ async def test_exec_argv_when_run_settles_on_win32_does_job_the_child_then_close
     )
     jobbed_pid = jobs.assigned[0][1]
     assert jobbed_pid in spawned_tree, "a process outside the spawned tree was put in the job"
-    assert jobs.closed == [_PROCESS_HANDLE, _JOB_HANDLE], (
+    assert jobs.resumed == [jobbed_pid], "the contained child was left suspended"
+    assert jobs.closed == [_PROCESS_HANDLE, _PROCESS_HANDLE, _JOB_HANDLE], (
         "the settled run left the child's job open, so a descendant survives it"
     )
-    assert jobbed_pid not in module._job_handles
+    assert jobbed_pid not in group._job_handles
 
 
 def test_kill_process_group_when_host_has_no_sigkill_does_terminate_the_job(
@@ -880,3 +947,152 @@ def test_release_process_group_when_job_still_emptying_does_drain_it_before_clos
         "the drained job handle was leaked instead of closed"
     )
     assert _CHILD_PID not in module._job_handles
+
+
+# ---------------------------------------------------------------------------
+# win32 Job Objects: the child is contained before it runs
+# ---------------------------------------------------------------------------
+
+
+def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> types.ModuleType:
+    """Load a private copy of ``gymrat.exec`` with its win32 creation flags bound.
+
+    The flags a child is created with are decided when the module is imported,
+    so a POSIX run reaches the win32 ones only by executing the module source
+    again with the platform faked — which ``win32_process_group`` has already
+    done for its caller. The copy's process-group seams are rebound to
+    ``group``, the faked-win32 copy of the job code.
+
+    The copy asks for its children suspended, and the faked win32 layer resumes
+    nothing, so a real child created that way would stay suspended for good on
+    a Windows host and be refused outright on a POSIX one. The spawn the copy
+    reaches therefore drops the creation flags, and every child it starts runs
+    from the beginning.
+
+    Args:
+        monkeypatch: Used to rebind the copy's process-group seams and the
+            spawn calls it reaches.
+        group: The faked-win32 ``process_group`` copy the seams are bound to.
+
+    Returns:
+        The private ``gymrat.exec`` copy.
+    """
+    spec = importlib.util.spec_from_file_location("exec_win32", gymrat_exec.__file__)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "attach_process_group", group.attach_process_group)
+    monkeypatch.setattr(module, "release_process_group", group.release_process_group)
+    monkeypatch.setattr(module, "resume_process_group", group.resume_process_group)
+    spawn_exec = asyncio.create_subprocess_exec
+    spawn_shell = asyncio.create_subprocess_shell
+
+    async def exec_running(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        kwargs.pop("creationflags", None)
+        return await spawn_exec(*args, **kwargs)
+
+    async def shell_running(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        kwargs.pop("creationflags", None)
+        return await spawn_shell(command, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_running)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", shell_running)
+    return module
+
+
+def trace_containment(
+    monkeypatch: pytest.MonkeyPatch,
+    module: types.ModuleType,
+) -> list[tuple[str, int]]:
+    """Record every containment step ``module`` takes around a spawn, in order.
+
+    The recorded number is the child's creation flags for the spawn itself and
+    the pid for the seams that follow it, so a test reads both the order of the
+    steps and what each one asked for.
+
+    Args:
+        monkeypatch: Used to wrap the spawn call and the copy's seams.
+        module: The ``gymrat.exec`` copy whose spawn is traced.
+
+    Returns:
+        The list the steps are appended to, in the order they happen.
+    """
+    steps: list[tuple[str, int]] = []
+    spawn = asyncio.create_subprocess_exec
+    attach = module.attach_process_group
+    resume = module.resume_process_group
+
+    async def record_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        steps.append(("spawn", kwargs.get("creationflags", 0)))
+        return await spawn(*args, **kwargs)
+
+    def record_attach(pid: int) -> None:
+        steps.append(("attach", pid))
+        attach(pid)
+
+    def record_resume(pid: int) -> bool:
+        steps.append(("resume", pid))
+        return resume(pid)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
+    monkeypatch.setattr(module, "attach_process_group", record_attach)
+    monkeypatch.setattr(module, "resume_process_group", record_resume)
+    return steps
+
+
+def test_resume_process_group_when_child_is_suspended_does_resume_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs()
+    module = win32_process_group(monkeypatch, jobs)
+
+    resumed = module.resume_process_group(_CHILD_PID)
+
+    assert resumed is True
+    assert jobs.resumed == [_CHILD_PID], "the suspended child was never resumed"
+    assert jobs.closed == [_PROCESS_HANDLE], "the resumed child's handle was leaked"
+
+
+def test_resume_process_group_when_host_refuses_resume_does_warn_and_report_the_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = FakeJobs(resume_granted=False)
+    module = win32_process_group(monkeypatch, jobs)
+
+    with pytest.warns(RuntimeWarning, match="could not resume"):
+        resumed = module.resume_process_group(_CHILD_PID)
+
+    assert resumed is False
+    assert jobs.closed == [_PROCESS_HANDLE], "the refused child's handle was leaked"
+
+
+@pytest.mark.parametrize(
+    "assignment_granted",
+    [pytest.param(True, id="job-granted"), pytest.param(False, id="job-refused")],
+)
+async def test_exec_argv_when_spawning_on_win32_does_suspend_the_child_until_it_is_contained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    assignment_granted: bool,
+) -> None:
+    jobs = FakeJobs(assignment_granted=assignment_granted)
+    group = win32_process_group(monkeypatch, jobs)
+    module = win32_exec(monkeypatch, group)
+    steps = trace_containment(monkeypatch, module)
+
+    result = await module.exec_argv(
+        [sys.executable, "-c", "pass"],
+        module.ExecOptions(cwd=str(tmp_path)),
+    )
+
+    assert result.exit_code == 0, "a contained child never ran to completion"
+    assert [name for name, _ in steps] == ["spawn", "attach", "resume"], (
+        "the child was left to run before it had joined its job"
+    )
+    creation_flags = steps[0][1]
+    assert creation_flags & _WIN32_CREATE_SUSPENDED, (
+        "the child was created running, so it acts before containment lands"
+    )
+    assert jobs.resumed == [steps[2][1]], "the contained child was left suspended"

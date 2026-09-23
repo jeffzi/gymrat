@@ -16,12 +16,14 @@ reaches every descendant. Windows has neither sessions nor a graceful group
 signal: :func:`attach_process_group` puts each child in its own Job Object with
 kill-on-close, so terminating the job takes the whole tree — including a
 descendant whose own parent has already exited — and losing this process
-outright does the same through the closing handle. Assignment happens as soon
-as the child exists, which leaves a window of a few milliseconds in which a
-grandchild spawned by a very fast child would escape the job; ``subprocess``
-closes the child's thread handle, so there is no supported way to create the
-child suspended and close that window. A child that cannot be assigned falls
-back to ``taskkill /T /F``, which walks the parent-child tree instead.
+outright does the same through the closing handle. A child assigned while it is
+already running can spawn a grandchild that never reaches the job, so the win32
+spawn creates the child suspended and :func:`resume_process_group` starts it
+once it is assigned: nothing the child does happens before containment.
+``subprocess`` closes the child's thread handle, which rules out
+``ResumeThread``; the resume therefore goes through ``NtResumeProcess``, which
+takes the process handle. A child that cannot be assigned falls back to
+``taskkill /T /F``, which walks the parent-child tree instead.
 """
 
 import errno
@@ -59,7 +61,9 @@ if sys.platform == "win32":
     _JOB_BASIC_ACCOUNTING_INFORMATION = 1
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_TERMINATE = 0x0001
+    _PROCESS_SUSPEND_RESUME = 0x0800
     _JOB_KILL_EXIT_CODE = 1
+    _NT_STATUS_SUCCESS = 0
 
     class _BasicLimitInformation(ctypes.Structure):
         """Win32 job-object basic limit information."""
@@ -168,6 +172,30 @@ if sys.platform == "win32":
             return
         _job_handles[pid] = job
 
+    def _resume_child(pid: int) -> bool:
+        """Start a child that was created suspended, warning once when that is refused.
+
+        Args:
+            pid: The suspended child's process ID.
+
+        Returns:
+            Whether the child is now running.
+        """
+        kernel32 = ctypes.windll.kernel32
+        inherit_handle = False
+        process = kernel32.OpenProcess(_PROCESS_SUSPEND_RESUME, inherit_handle, pid)
+        if not process:
+            _warn(f"could not resume pid {pid}: opening it was refused: {ctypes.WinError()}")
+            return False
+        try:
+            status = ctypes.windll.ntdll.NtResumeProcess(process)
+        finally:
+            kernel32.CloseHandle(process)
+        if status != _NT_STATUS_SUCCESS:
+            _warn(f"could not resume pid {pid}: NTSTATUS 0x{status & 0xFFFFFFFF:08X}")
+            return False
+        return True
+
     def _release_job(pid: int) -> None:
         """Tear down the job holding ``pid``, returning once nothing is left in it.
 
@@ -211,10 +239,12 @@ if sys.platform == "win32":
     _attach_job_impl: Callable[[int], None] | None = _attach_job
     _release_job_impl: Callable[[int], None] | None = _release_job
     _terminate_job_impl: Callable[[int, int], None] | None = _terminate_job
+    _resume_child_impl: Callable[[int], bool] | None = _resume_child
 else:
     _attach_job_impl: Callable[[int], None] | None = None
     _release_job_impl: Callable[[int], None] | None = None
     _terminate_job_impl: Callable[[int, int], None] | None = None
+    _resume_child_impl: Callable[[int], bool] | None = None
 
 
 _job_handles: dict[int, int] = {}
@@ -244,6 +274,26 @@ def attach_process_group(pid: int) -> None:
     """
     if _attach_job_impl is not None:
         _attach_job_impl(pid)
+
+
+def resume_process_group(pid: int) -> bool:
+    """Start the child ``pid``, which the win32 spawn created suspended.
+
+    POSIX children run from the moment they are spawned, so this reports success
+    there without touching the child. On Windows the child runs no instruction
+    until this lands, which is what keeps anything it spawns inside the job it
+    was just assigned to; a refusal warns once and leaves the child suspended for
+    the caller to kill.
+
+    Args:
+        pid: The freshly spawned child's process ID.
+
+    Returns:
+        Whether the child is running.
+    """
+    if _resume_child_impl is None:
+        return True
+    return _resume_child_impl(pid)
 
 
 def release_process_group(pid: int) -> None:

@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refuse `iterate` and `probe` run from the command line, and refuse `init` entirely, while a
   supervised run is live; use the `probe` and `iterate` agent tools instead.
 
+### Fixed
+
+- Stop a bench's descendants outliving the run on Windows when the bench spawned them before it
+  joined the run's process container.
+
 ## [0.20.0] - 2026-09-19
 
 ### Added

@@ -33,6 +33,7 @@ from gymrat.process_group import (
     attach_process_group,
     kill_process_group,
     release_process_group,
+    resume_process_group,
     terminate_process_group,
     wait_for_process_group_exit,
 )
@@ -52,6 +53,14 @@ _CANCEL_REAP_TIMEOUT_S = 2.0
 
 _FINAL_OUTPUT_GRACE_S = 0.1
 """Seconds a child that stopped on request gets to have its last output read to EOF."""
+
+_CREATE_SUSPENDED: int = 0x4 if sys.platform == "win32" else 0
+"""Win32 ``CREATE_SUSPENDED``: the child exists but runs nothing until resumed.
+
+Zero on POSIX, where ``creationflags`` is rejected outright. The platform is
+read once, when this module is imported, because the flags a spawn accepts are
+fixed by the interpreter's own host and cannot change under a running process.
+"""
 
 _live_process_groups: set[int] = set()
 """Process-group leader PIDs of bench children currently alive under :func:`exec`.
@@ -376,7 +385,18 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
 
 
 def _subprocess_kwargs(options: ExecOptions) -> dict[str, Any]:
-    """Common keyword arguments for both subprocess creation functions."""
+    """Common keyword arguments for both subprocess creation functions.
+
+    The win32 child is created suspended so :func:`_spawn` can contain it before
+    it runs; any further creation flag has to be combined with that one rather
+    than replace it.
+
+    Args:
+        options: Spawn settings for the run.
+
+    Returns:
+        The keyword arguments to hand the subprocess creation function.
+    """
     posix = sys.platform != "win32"
     kwargs: dict[str, Any] = {
         "cwd": options.cwd,
@@ -386,6 +406,8 @@ def _subprocess_kwargs(options: ExecOptions) -> dict[str, Any]:
         "start_new_session": posix,
         "preexec_fn": _child_reset_signal_mask if posix else None,
     }
+    if _CREATE_SUSPENDED:
+        kwargs["creationflags"] = _CREATE_SUSPENDED
     if options.env is not None:
         kwargs["env"] = dict(options.env)
     return kwargs
@@ -397,6 +419,26 @@ def _spawn_failure(message: str) -> ExecResult:
     return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
 
 
+async def _discard_suspended_child(proc: asyncio.subprocess.Process) -> ExecResult:
+    """Kill a child the host refused to resume and resolve the run as a spawn failure.
+
+    On win32 the child is created suspended, so one that never starts would hold
+    the run open with a process that can neither run nor exit on its own.
+
+    Args:
+        proc: The suspended child to kill and reap.
+
+    Returns:
+        The failed :class:`ExecResult` the run resolves to.
+    """
+    try:
+        await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
+    finally:
+        _live_process_groups.discard(proc.pid)
+        release_process_group(proc.pid)
+    return _spawn_failure(f"child process {proc.pid} could not be resumed")
+
+
 async def _spawn(
     create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
 ) -> asyncio.subprocess.Process | ExecResult:
@@ -405,8 +447,9 @@ async def _spawn(
     Masks termination signals across the spawn-and-register pair so a signal
     delivered between them still finds the child in the live registry when the
     deferred handler fires :func:`kill_live_process_groups`. Containment
-    (:func:`attach_process_group`) happens in the same masked block, as early as
-    the child can be reached.
+    (:func:`attach_process_group`) and the resume that lets a win32 child start
+    running happen in the same masked block, in that order: the child reaches
+    its first instruction already inside the container that tears it down.
 
     Args:
         create_child: No-arg callable returning the subprocess creation
@@ -415,18 +458,21 @@ async def _spawn(
 
     Returns:
         The spawned process, or an :class:`ExecResult` with exit code 1 when
-        the spawn itself fails.
+        the spawn itself fails or the child cannot be resumed.
     """
     try:
         with deferring_termination_signals():
             proc = await create_child()
             _live_process_groups.add(proc.pid)
             attach_process_group(proc.pid)
+            resumed = resume_process_group(proc.pid)
     except (OSError, ValueError) as error:
         # ValueError covers what CPython rejects while marshalling the spawn
         # arguments, before any fork: a NUL byte in an argument, in cwd, or in
         # an env value, and an env name containing "=".
         return _spawn_failure(str(error))
+    if not resumed:
+        return await _discard_suspended_child(proc)
     return proc
 
 

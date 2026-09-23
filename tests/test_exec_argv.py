@@ -506,6 +506,26 @@ async def test_exec_argv_when_spawn_argument_holds_nul_does_resolve_with_error_o
     assert exec_mod._live_process_groups == set()
 
 
+async def test_exec_argv_when_child_cannot_be_resumed_does_kill_it_and_fail_the_run(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_resume(_pid: int) -> bool:
+        return False
+
+    monkeypatch.setattr(exec_mod, "resume_process_group", refuse_resume)
+
+    result = await exec_argv([sys.executable, "-c", "import time; time.sleep(30)"], make_opts())
+
+    assert isinstance(result, ExecResult)
+    assert result.stdout == ""
+    assert result.exit_code == 1
+    assert "could not be resumed" in result.stderr
+    await wait_until_dead(spawned_processes[-1].pid)
+    assert exec_mod._live_process_groups == set()
+
+
 async def test_exec_argv_when_argv_empty_does_resolve_with_error_on_stderr(
     tmp_path: Path,
 ) -> None:
