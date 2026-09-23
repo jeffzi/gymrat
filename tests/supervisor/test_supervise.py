@@ -583,7 +583,6 @@ async def test_supervise_when_outcome_rejects_does_propagate_rejection(tmp_path:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.filterwarnings("default::RuntimeWarning")
 async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
     tmp_path: Path,
 ):
@@ -613,7 +612,8 @@ async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
         )
 
     task = asyncio.create_task(run())
-    await asyncio.wait_for(cap_seen.wait(), timeout=2.0)
+    with pytest.warns(RuntimeWarning, match="observer explodes on cap"):
+        await asyncio.wait_for(cap_seen.wait(), timeout=2.0)
 
     captured = wrapper.captured_abort
     assert captured is not None

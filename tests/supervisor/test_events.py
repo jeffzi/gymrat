@@ -733,6 +733,12 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
         ),
         pytest.param("Write", {"file_path": "/a/b.py", "content": "..."}, "/a/b.py", id="write"),
         pytest.param(
+            "MultiEdit",
+            {"file_path": "/a/b.py", "edits": [{"old_string": "x", "new_string": "y"}]},
+            "/a/b.py",
+            id="multi-edit",
+        ),
+        pytest.param(
             "NotebookEdit",
             {"notebook_path": "/a/nb.ipynb"},
             "/a/nb.ipynb",

@@ -371,10 +371,11 @@ def summarize(text: str, max_chars: int = SUMMARY_MAX_CHARS) -> str:
 
 
 # Tool names whose input carries a file path as the primary summary value.
-_FILE_PATH_TOOLS: dict[str, str] = {
+FILE_PATH_TOOLS: dict[str, str] = {
     "Read": "file_path",
     "Edit": "file_path",
     "Write": "file_path",
+    "MultiEdit": "file_path",
     "NotebookEdit": "notebook_path",
 }
 
@@ -450,7 +451,7 @@ def _extract_tool_summary(
     supervised_root: str | None,
 ) -> str | None:
     """Extract a human-readable summary from a tool input dict, or ``None``."""
-    path_key = _FILE_PATH_TOOLS.get(tool_name)
+    path_key = FILE_PATH_TOOLS.get(tool_name)
     if path_key is not None:
         path = input_dict.get(path_key)
         return _render_path(path, supervised_root) if isinstance(path, str) else None

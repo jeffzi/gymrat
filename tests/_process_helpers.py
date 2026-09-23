@@ -18,13 +18,15 @@ def dead_pid() -> int:
     return proc.pid
 
 
-def _is_zombie(pid: int) -> bool:
-    """Whether ``pid`` has exited and is only waiting to be reaped.
+def _has_exited(pid: int) -> bool:
+    """Whether ``pid`` has exited: a zombie waiting to be reaped, or already reaped.
 
     ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
     its process group looks alive until whoever inherited it calls ``wait``.
     That reap is scheduled by the kernel, not by the test, so treating a zombie
-    as alive makes every kill assertion race against an unrelated reaper.
+    as alive makes every kill assertion race against an unrelated reaper. The
+    reap can also land between that probe and this check, so a process whose
+    entry has already vanished counts as exited too.
     """
     if sys.platform == "win32":
         # Windows has no zombie state: a handle outlives the process, the pid does not.
@@ -33,7 +35,7 @@ def _is_zombie(pid: int) -> bool:
         try:
             stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
         except OSError:
-            return False
+            return True
         # The state letter is the first field after the comm field, which is
         # parenthesized and may itself contain spaces and parentheses.
         _, _, after_comm = stat.rpartition(")")
@@ -44,7 +46,7 @@ def _is_zombie(pid: int) -> bool:
         text=True,
         check=False,
     ).stdout.strip()
-    return state.startswith("Z")
+    return not state or state.startswith("Z")
 
 
 def is_alive(pid: int) -> bool:
@@ -57,7 +59,7 @@ def is_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
-    return not _is_zombie(pid)
+    return not _has_exited(pid)
 
 
 async def wait_until_dead(pid: int, timeout_s: float = 5.0) -> None:

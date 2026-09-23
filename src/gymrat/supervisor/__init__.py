@@ -35,6 +35,7 @@ from gymrat.supervisor.events import (
     summarize_input,
     to_json_line,
 )
+from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
 from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
 from gymrat.supervisor.stdio import create_stdio_driver
 from gymrat.supervisor.supervise import SupervisionResult, supervise
@@ -51,6 +52,7 @@ __all__ = [
     "Driver",
     "DriverSession",
     "FollowUpEvent",
+    "HooksFactory",
     "KickoffResult",
     "LaunchEvent",
     "ModelPhaseEvent",
@@ -80,5 +82,6 @@ __all__ = [
     "summarize",
     "summarize_input",
     "supervise",
+    "supervise_hooks_factory",
     "to_json_line",
 ]

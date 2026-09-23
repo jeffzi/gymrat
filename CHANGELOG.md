@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Refuse the supervised agent's file edits outside the experiment worktree and its gymrat commands
+  run in the background.
+
 ### Changed
 
 - Refuse `iterate` and `probe` run from the command line, and refuse `init` entirely, while a

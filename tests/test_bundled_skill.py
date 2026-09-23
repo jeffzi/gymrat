@@ -213,3 +213,61 @@ def test_read_bundled_skill_when_read_does_keep_iterate_bench_and_samples_rule(
     section = _section(heading)
 
     assert phrase in section
+
+
+# ---------------------------------------------------------------------------
+# Supervised mode — refused edits and background commands
+# ---------------------------------------------------------------------------
+
+OUTSIDE_EDIT_MARKER = "**A file edit outside the experiment worktree is refused.**"
+BACKGROUND_MARKER = "**Never run a gymrat command in the background.**"
+
+
+@pytest.mark.parametrize(
+    ("marker", "phrase"),
+    [
+        pytest.param(
+            OUTSIDE_EDIT_MARKER, "Edit, Write, MultiEdit, or NotebookEdit", id="edit-tools"
+        ),
+        pytest.param(
+            OUTSIDE_EDIT_MARKER, "outside the experiment worktree", id="edit-outside-worktree"
+        ),
+        pytest.param(OUTSIDE_EDIT_MARKER, "temporary directories", id="edit-temp-directories"),
+        pytest.param(OUTSIDE_EDIT_MARKER, "names its rule", id="refusal-names-rule"),
+        pytest.param(OUTSIDE_EDIT_MARKER, "change the call", id="fix-changes-call"),
+        pytest.param(OUTSIDE_EDIT_MARKER, "not to retry it", id="fix-is-not-retry"),
+        pytest.param(
+            BACKGROUND_MARKER, "contains `gymrat` is refused", id="background-command-refused"
+        ),
+    ],
+)
+def test_read_bundled_skill_when_supervised_mode_read_does_state_edit_and_background_refusals(
+    marker: str,
+    phrase: str,
+):
+    paragraph = _supervised_mode_paragraph(marker)
+
+    assert phrase in paragraph
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        pytest.param("Under supervise", id="names-supervised-mode"),
+        pytest.param("refused", id="main-tree-edit-refused"),
+        pytest.param("make the change in the experiment worktree", id="edit-in-worktree"),
+        pytest.param("a person's main-tree edits", id="sync-for-person-edits"),
+    ],
+)
+def test_read_bundled_skill_when_sync_section_read_does_state_main_tree_edit_refused(
+    phrase: str,
+):
+    paragraph = _paragraph(_section("## Syncing main-tree edits"), "Under supervise")
+
+    assert phrase in paragraph
+
+
+def test_read_bundled_skill_when_iteration_cycle_read_does_keep_worktree_rule():
+    section = _section("### 3. The iteration cycle")
+
+    assert "Edit code **only in the experiment worktree**" in section

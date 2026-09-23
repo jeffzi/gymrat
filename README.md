@@ -163,6 +163,10 @@ Under `supervise` the agent runs `probe` and `iterate` as MCP tools the supervis
 a guard, or Ctrl-C stops a running measurement with the run. The `measure`, `compare`, `keep`,
 `discard`, `status`, and `stop` commands stay Bash commands.
 
+The agent's file edits stay in the experiment worktree: an edit whose path falls outside it and
+outside the temporary directories is refused, and so is a gymrat command run in the background.
+Each refusal names its rule. A manual session has no such refusals.
+
 `iterate`, `keep`, `discard`, `status`, `sync`, `compare`, `measure`, and `probe` print a time-left
 line so the agent can plan around the wall-clock cap.
 

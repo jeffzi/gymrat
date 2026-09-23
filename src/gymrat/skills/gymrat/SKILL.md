@@ -156,7 +156,13 @@ was not passed. Never run `finalize` under supervise.
 
 **Never run a gymrat command in the background.** The command must run in the foreground with no
 timeout — the supervisor raises the command's timeout ceiling to match the run's wall-clock cap. A
-background command runs unobserved, and its output never reaches the session.
+background command runs unobserved, and its output never reaches the session. Under supervise, a
+Bash command run in the background that contains `gymrat` is refused.
+
+**A file edit outside the experiment worktree is refused.** Under supervise, an Edit, Write,
+MultiEdit, or NotebookEdit call whose path resolves outside the experiment worktree and outside the
+temporary directories is refused. Either refusal names its rule, so the fix is to change the call,
+not to retry it.
 
 **Use the `probe` and `iterate` tools.** Under supervise, `probe` and `iterate` are MCP tools the
 supervisor hosts, and the tools are the only form: `gymrat iterate` and `gymrat probe` run through
@@ -253,6 +259,9 @@ Edits belong in the experiment worktree (`gymrat start` prints the path). When c
 in the main working tree first (e.g. a dependency update), use `gymrat sync` to copy uncommitted
 main-tree changes into the experiment worktree before running `iterate`. `sync` refuses when the
 experiment worktree has conflicting uncommitted changes.
+
+Under supervise, a file edit to the main working tree is refused, so make the change in the
+experiment worktree. `gymrat sync` stays the way to bring a person's main-tree edits across.
 
 ## Reading the clock
 

@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 from gymrat.session.clock import now_ns
@@ -33,6 +34,7 @@ from gymrat.supervisor.driver import (
     SessionPrompt,
 )
 from gymrat.supervisor.events import CompactionEvent, TurnEndEvent, UsageUpdateEvent
+from gymrat.supervisor.hooks import HooksFactory
 from gymrat.supervisor.tools import ToolsFactory
 
 
@@ -143,6 +145,14 @@ async def _disconnect_quietly(client: ClaudeClient) -> None:
         warnings.warn(f"claude client disconnect failed: {err!s}", RuntimeWarning, stacklevel=2)
 
 
+@dataclass(frozen=True, slots=True)
+class _OptionFactories:
+    """Per-session builders whose results are merged into the SDK options."""
+
+    tools: ToolsFactory | None
+    hooks: HooksFactory | None
+
+
 class _ClaudeSession:
     """Runs one SDK session as a task; ``outcome`` settles when the stream ends.
 
@@ -159,13 +169,13 @@ class _ClaudeSession:
         prompt: SessionPrompt,
         observer: SessionObserver,
         abort: asyncio.Event | None,
-        tools: ToolsFactory | None,
+        factories: _OptionFactories,
     ) -> None:
         self._client_factory = client_factory
         self._prompt = prompt
         self._observer = observer
         self._abort = abort
-        self._tools = tools
+        self._factories = factories
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._cost_usd = 0.0
@@ -254,10 +264,14 @@ class _ClaudeSession:
 
     async def _stream(self, factory: ClientFactory) -> SessionOutcome:
         options = _build_options(self._prompt)
-        if self._tools is not None:
+        tools = self._factories.tools
+        if tools is not None:
             abort = self._abort if self._abort is not None else asyncio.Event()
             env = _traceparent_env(self._prompt.traceparent)
-            options["mcp_servers"] = {"gymrat": self._tools(abort, env)}
+            options["mcp_servers"] = {"gymrat": tools(abort, env)}
+        hooks = self._factories.hooks
+        if hooks is not None:
+            options["hooks"] = hooks()
         client = factory(options)
         self._client = client
         if self._abort is not None:
@@ -373,9 +387,9 @@ class _ClaudeSession:
 
 
 class _ClaudeDriver:
-    def __init__(self, client_factory: ClientFactory | None, tools: ToolsFactory | None) -> None:
+    def __init__(self, client_factory: ClientFactory | None, factories: _OptionFactories) -> None:
         self._client_factory = client_factory
-        self._tools = tools
+        self._factories = factories
 
     def start(
         self,
@@ -383,12 +397,13 @@ class _ClaudeDriver:
         observer: SessionObserver,
         abort: asyncio.Event | None = None,
     ) -> DriverSession:
-        return _ClaudeSession(self._client_factory, prompt, observer, abort, self._tools)
+        return _ClaudeSession(self._client_factory, prompt, observer, abort, self._factories)
 
 
 def create_claude_driver(
     client_factory: ClientFactory | None = None,
     tools: ToolsFactory | None = None,
+    hooks: HooksFactory | None = None,
 ) -> Driver:
     """Build a :class:`Driver` backed by the Claude Agent SDK.
 
@@ -400,8 +415,11 @@ def create_claude_driver(
         tools: Builds the MCP server config for gymrat tools. Called once per
             session start with the session's abort event and an env mapping.
             When ``None``, no ``mcp_servers`` key is added to the options.
+        hooks: Builds the SDK hooks mapping. Called once per session start;
+            its result goes under ``hooks`` in the options. When ``None``, no
+            ``hooks`` key is added to the options.
 
     Returns:
         A driver whose ``start`` launches one SDK session per call.
     """
-    return _ClaudeDriver(client_factory, tools)
+    return _ClaudeDriver(client_factory, _OptionFactories(tools=tools, hooks=hooks))

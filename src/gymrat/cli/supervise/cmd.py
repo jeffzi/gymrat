@@ -85,6 +85,7 @@ from gymrat.session.paths import (
 from gymrat.session.workspace import dirty_file_count, ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
+    Driver,
     KickoffResult,
     SessionPrompt,
     SupervisedSession,
@@ -95,6 +96,7 @@ from gymrat.supervisor import (
     create_event_log_writer,
     gymrat_tools_factory,
     supervise,
+    supervise_hooks_factory,
 )
 from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
@@ -356,6 +358,13 @@ async def _start_and_supervise(
     return result, exit_report
 
 
+def _create_driver(root: str) -> Driver:
+    """The Claude driver with gymrat's tools and the worktree-guard hooks for ``root``."""
+    return create_claude_driver(
+        tools=gymrat_tools_factory(root), hooks=supervise_hooks_factory(Path(root))
+    )
+
+
 def _run_session(ctx: _SessionContext) -> None:
     """Drive the supervised session, reporting progress and stopping it cleanly.
 
@@ -366,7 +375,7 @@ def _run_session(ctx: _SessionContext) -> None:
     """
     from gymrat.cli.supervise.span_lifecycle import finalize_tracing, setup_tracing  # noqa: PLC0415
 
-    driver = create_claude_driver(tools=gymrat_tools_factory(ctx.root))
+    driver = _create_driver(ctx.root)
     mode = resolve_render_mode()
     reporter = _create_reporter(ctx, mode)
 

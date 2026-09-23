@@ -48,11 +48,13 @@ from gymrat.session.paths import (
 from gymrat.session.workspace import ensure_git_exclude
 from gymrat.signals import install_termination_cleanup
 from gymrat.supervisor import (
+    HooksFactory,
     SessionPrompt,
     SupervisionResult,
     ToolsFactory,
     create_claude_driver,
     gymrat_tools_factory,
+    supervise_hooks_factory,
 )
 from gymrat.supervisor.context import SupervisedSession
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
@@ -1137,29 +1139,40 @@ def test_supervise_when_max_usd_given_does_pass_it_as_max_budget_usd_on_prompt(
 
 
 # ---------------------------------------------------------------------------
-# tools factory wiring
+# tools and hooks factory wiring
 # ---------------------------------------------------------------------------
 
 
-def test_supervise_when_run_does_pass_gymrat_tools_factory_to_driver(
+def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = _install_seams(monkeypatch)
-    factory_roots: list[str] = []
-    real_factory = gymrat_tools_factory
+    tools_factory_roots: list[str] = []
+    built_hooks: dict[Path, HooksFactory] = {}
+    real_tools_factory = gymrat_tools_factory
+    real_hooks_factory = supervise_hooks_factory
 
-    def _recording_factory(root: str) -> ToolsFactory:
-        factory_roots.append(root)
-        return real_factory(root)
+    def _recording_tools_factory(root: str) -> ToolsFactory:
+        tools_factory_roots.append(root)
+        return real_tools_factory(root)
 
-    monkeypatch.setattr("gymrat.cli.supervise.cmd.gymrat_tools_factory", _recording_factory)
+    def _record_hooks(root: Path) -> HooksFactory:
+        built_hooks[root.resolve()] = real_hooks_factory(root)
+        return built_hooks[root.resolve()]
+
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.gymrat_tools_factory", _recording_tools_factory)
+    monkeypatch.setattr("gymrat.cli.supervise.cmd.supervise_hooks_factory", _record_hooks)
+    (Path(repo) / "docs").mkdir()
+    monkeypatch.chdir(Path(repo) / "docs")
 
     result = _run("optimize it", "--max-minutes", "10")
 
     assert result.exit_code == 0
-    assert [Path(root).resolve() for root in factory_roots] == [Path(repo).resolve()]
+    assert [Path(root).resolve() for root in tools_factory_roots] == [Path(repo).resolve()]
+    assert list(built_hooks) == [Path(repo).resolve()]
     call_kwargs = seams.create_driver.call_args.kwargs
     tools = call_kwargs.get("tools")
     assert callable(tools), "create_claude_driver must receive a tools callable"
     server_config: dict[str, Any] = tools(asyncio.Event(), {})  # type: ignore[assignment]  # McpSdkServerConfig is a TypedDict
     assert server_config["name"] == "gymrat"
+    assert call_kwargs.get("hooks") is built_hooks[Path(repo).resolve()]

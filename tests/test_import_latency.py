@@ -58,6 +58,8 @@ import gymrat.sampling
 import gymrat.targets
 import gymrat.supervisor
 import gymrat.supervisor.tools
+import gymrat.supervisor.hooks
+import gymrat.supervisor.hooks_files
 import gymrat.telemetry
 heavy = sorted(
     name
