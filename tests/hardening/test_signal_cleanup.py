@@ -80,23 +80,6 @@ wait
 _FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
 
 
-def _wait_for_worktree_count(
-    list_worktree_dirs: Callable[..., list[str]], repo: str, count: int, timeout_s: float = 30.0
-) -> None:
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            got = list_worktree_dirs(repo, include_main=False)
-        except subprocess.CalledProcessError:
-            got: list[str] = []
-        if len(got) >= count:
-            return
-        if time.monotonic() > deadline:
-            message = f"expected >= {count} worktrees, saw {got}"
-            raise AssertionError(message)
-        time.sleep(0.05)
-
-
 @pytest.fixture
 def reap_groups() -> Iterator[list[int]]:
     """Track process-group leaders and hard-kill any survivor on teardown."""
@@ -307,6 +290,7 @@ def test_measure_when_signalled_off_a_tty_does_not_emit_terminal_clear_codes(
 def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
     create_scratch_repo: Callable[[], str],
     list_worktree_dirs: Callable[..., list[str]],
+    wait_for_worktrees: Callable[..., list[str]],
     reap_groups: list[int],
 ):
     repo = create_scratch_repo()
@@ -334,9 +318,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
         text=True,
     )
     try:
-        _wait_for_worktree_count(list_worktree_dirs, repo, 2)
-        worktrees = list_worktree_dirs(repo, include_main=False)
-        for wt in worktrees:
+        for wt in wait_for_worktrees(repo, 2):
             pid = _read_pid_file(Path(wt) / "bench.pid")
             if pid is not None:
                 reap_groups.append(pid)
@@ -353,7 +335,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
 
 def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly(
     create_scratch_repo: Callable[[], str],
-    list_worktree_dirs: Callable[..., list[str]],
+    wait_for_worktrees: Callable[..., list[str]],
     reap_groups: list[int],
 ):
     repo = create_scratch_repo()
@@ -370,7 +352,7 @@ def test_compare_when_signalled_twice_during_cleanup_does_exit_promptly(
         text=True,
     )
     try:
-        _wait_for_worktree_count(list_worktree_dirs, repo, 1)
+        wait_for_worktrees(repo, 1)
         proc.send_signal(signal.SIGINT)
         with contextlib.suppress(ProcessLookupError):
             proc.send_signal(signal.SIGINT)

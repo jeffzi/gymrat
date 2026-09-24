@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -157,6 +158,40 @@ def _list_worktree_dirs(repo_dir: str, *, include_main: bool = True) -> list[str
     return dirs
 
 
+def _wait_for_worktrees(repo_dir: str, count: int, timeout_s: float = 30.0) -> list[str]:
+    """Poll until ``repo_dir`` lists at least ``count`` linked worktrees.
+
+    Only for polling while another process is still adding or removing
+    worktrees: ``git worktree list`` reads each registry entry non-atomically
+    and exits 128 when it meets one half-written by a concurrent ``git worktree
+    add`` or half-cleared by a ``remove`` — a file of the entry it expects is
+    not there. Such a read counts as "not there yet". Once no writer runs,
+    call :func:`_list_worktree_dirs` directly so a real failure stays loud.
+
+    Args:
+        repo_dir: The main worktree whose registry is polled.
+        count: The minimum number of linked worktrees to wait for.
+        timeout_s: How long to poll before giving up.
+
+    Returns:
+        The linked worktree directories of the first read that reached ``count``.
+
+    Raises:
+        AssertionError: When ``count`` is not reached within ``timeout_s``.
+    """
+    deadline = time.monotonic() + timeout_s
+    listed: list[str] = []
+    while True:
+        with contextlib.suppress(subprocess.CalledProcessError):
+            listed = _list_worktree_dirs(repo_dir, include_main=False)
+        if len(listed) >= count:
+            return listed
+        if time.monotonic() > deadline:
+            message = f"expected >= {count} worktrees within {timeout_s}s, saw {listed}"
+            raise AssertionError(message)
+        time.sleep(0.05)
+
+
 def _remove_stranded_worktrees(repo_dir: str) -> None:
     """Delete worktree directories a run stranded, keeping temp dirs clean."""
     try:
@@ -212,6 +247,12 @@ def supervise_lock(repo: str) -> Iterator[None]:
 def list_worktree_dirs() -> Callable[..., list[str]]:
     """Expose the worktree-listing helper to tests."""
     return _list_worktree_dirs
+
+
+@pytest.fixture
+def wait_for_worktrees() -> Callable[..., list[str]]:
+    """Expose the race-tolerant worktree poller to tests."""
+    return _wait_for_worktrees
 
 
 @pytest.fixture

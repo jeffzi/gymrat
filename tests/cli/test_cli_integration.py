@@ -10,7 +10,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -125,6 +124,7 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
     expected_code: int,
     create_scratch_repo: Callable[[], str],
     list_worktree_dirs: Callable[..., list[str]],
+    wait_for_worktrees: Callable[..., list[str]],
 ):
     repo = create_scratch_repo()
     (Path(repo) / "bench.sh").write_text(_SLOW_BENCH, encoding="utf-8")
@@ -142,12 +142,7 @@ def test_cli_when_signalled_mid_run_does_exit_128_plus_signal_number_and_sweep_w
         text=True,
     )
     try:
-        deadline = time.monotonic() + 30
-        while not list_worktree_dirs(repo, include_main=False):
-            if time.monotonic() > deadline:
-                proc.kill()
-                pytest.fail("worktree never materialized before the signal")
-            time.sleep(0.05)
+        wait_for_worktrees(repo, 1)
         proc.send_signal(signal_number)
         proc.communicate(timeout=30)
     finally:
