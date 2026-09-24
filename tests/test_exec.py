@@ -32,7 +32,13 @@ from gymrat.exec import (
 )
 from gymrat.exec import exec as run_exec
 from gymrat.signals import TERMINATION_SIGNALS
-from tests._process_helpers import capture_spawns, is_alive, wait_until_dead
+from tests._process_helpers import (
+    capture_spawns,
+    is_alive,
+    killpg_warnings,
+    wait_for_pid_file,
+    wait_until_dead,
+)
 
 # exec drives POSIX process groups (killpg) and sh-only shell syntax; neither
 # works under cmd.exe, so the whole module is POSIX-only.
@@ -43,8 +49,6 @@ pytestmark = pytest.mark.skipif(
 # Runs repeated back to back to hit the window where the timeout fires while the
 # shell is already exiting; a single run slips past it some of the time.
 _RACE_RUNS = 40
-
-_KILLPG_FAILED = "killpg failed"
 
 # How long asyncio's child reaper is held back once it starts waiting on a
 # shell. It outlasts exec's teardown of an exited shell, so the shell is still
@@ -62,34 +66,6 @@ _CANCEL_SETTLE_S = 5.0
 _UNKNOWN_CHILD = "Unknown child process"
 
 _os_waitid: Callable[..., object] | None = getattr(os, "waitid", None)
-
-
-def read_pid(pid_path: Path) -> int | None:
-    """Read a pid a shell wrote with ``echo $$ >`` / ``echo $! >``.
-
-    Returns ``None`` while the write is absent or incomplete: the trailing
-    newline marks the value as fully flushed, so a partial file reads as no pid
-    rather than a truncated one.
-    """
-    try:
-        raw = pid_path.read_text()
-    except FileNotFoundError:
-        return None
-    return int(raw) if raw.endswith("\n") else None
-
-
-async def wait_for_pid(pid_path: Path, timeout_s: float = 3.0) -> int:
-    """Poll ``pid_path`` until it holds a complete, positive pid, then return it."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while True:
-        pid = read_pid(pid_path)
-        if pid is not None and pid > 0:
-            return pid
-        if loop.time() > deadline:
-            msg = f"pid never appeared at {pid_path}"
-            raise TimeoutError(msg)
-        await asyncio.sleep(0.025)
 
 
 async def wait_for_spawned(
@@ -524,7 +500,7 @@ async def test_exec_when_aborted_mid_run_does_kill_whole_group(
     abort = asyncio.Event()
     command = "sleep 30 & echo $! > grandchild.pid; echo $$ > shell.pid; wait"
     task = asyncio.create_task(run_exec(command, make_opts(abort=abort)))
-    grandchild = await wait_for_pid(tmp_path / "grandchild.pid")
+    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
 
     abort.set()
 
@@ -541,7 +517,7 @@ async def test_exec_when_aborted_mid_run_does_settle_as_failed_result(
     task = asyncio.create_task(
         run_exec("echo $$ > shell.pid; sleep 30", make_opts(abort=abort)),
     )
-    await wait_for_pid(tmp_path / "shell.pid")
+    await wait_for_pid_file(tmp_path / "shell.pid")
 
     abort.set()
 
@@ -669,7 +645,7 @@ async def test_exec_when_stream_read_fails_does_kill_whole_group(
         run_exec("sleep 30 & echo $! > grandchild.pid; wait", make_opts()),
     )
     proc = await wait_for_spawned(spawned_processes)
-    grandchild = await wait_for_pid(tmp_path / "grandchild.pid")
+    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
     assert proc.stdout is not None
 
     proc.stdout.set_exception(RuntimeError("stream exploded"))
@@ -809,7 +785,7 @@ async def test_exec_when_timeout_lands_as_child_exits_does_not_warn_about_killpg
     for _ in range(_RACE_RUNS):
         await run_exec("exit 0", make_opts(timeout_ms=2))
 
-    assert [str(w.message) for w in recwarn if _KILLPG_FAILED in str(w.message)] == []
+    assert killpg_warnings(recwarn) == []
 
 
 # ---------------------------------------------------------------------------
@@ -872,7 +848,7 @@ async def test_exec_when_cancelled_after_shell_exits_does_not_warn_about_killpg(
         await asyncio.wait_for(task, 5)
     await asyncio.wait_for(proc.wait(), 5)
 
-    assert [str(w.message) for w in recwarn if _KILLPG_FAILED in str(w.message)] == []
+    assert killpg_warnings(recwarn) == []
 
 
 async def test_exec_when_cancelled_after_shell_exits_does_kill_live_descendants(
@@ -885,7 +861,7 @@ async def test_exec_when_cancelled_after_shell_exits_does_kill_live_descendants(
         run_exec("sleep 30 >/dev/null & echo $! > grandchild.pid; exit 0", make_opts()),
     )
     proc = await wait_for_spawned(spawned_processes)
-    grandchild = await wait_for_pid(tmp_path / "grandchild.pid")
+    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
     await wait_for_shell_exit(proc)
 
     task.cancel()
@@ -896,32 +872,11 @@ async def test_exec_when_cancelled_after_shell_exits_does_kill_live_descendants(
     assert not is_alive(grandchild)
 
 
-async def test_exec_when_cancelled_and_killpg_keeps_refusing_does_warn(
+async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly_without_warning(
     held_reaper: HeldReaper,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raise_eperm(group_pid: int, sig: int) -> None:
-        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
-
-    task = asyncio.create_task(run_exec("exit 0", make_opts()))
-    proc = await wait_for_spawned(spawned_processes)
-    await wait_for_shell_exit(proc)
-    monkeypatch.setattr(os, "killpg", raise_eperm)
-
-    task.cancel()
-    with (
-        pytest.warns(RuntimeWarning, match=_KILLPG_FAILED),
-        contextlib.suppress(asyncio.CancelledError),
-    ):
-        await asyncio.wait_for(task, 5)
-
-
-async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly(
-    held_reaper: HeldReaper,
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
+    recwarn: pytest.WarningsRecorder,
 ) -> None:
     held_reaper.hold_s = 60.0
     task = asyncio.create_task(run_exec("exit 0", make_opts()))
@@ -929,16 +884,16 @@ async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly(
     await wait_for_shell_exit(proc)
 
     task.cancel()
-    # The group still refuses the kill once the reap wait gives up, so that
-    # refusal is warned rather than swallowed.
-    with pytest.warns(RuntimeWarning, match=_KILLPG_FAILED):
-        done, _ = await asyncio.wait({task}, timeout=_CANCEL_SETTLE_S)
+    done, _ = await asyncio.wait({task}, timeout=_CANCEL_SETTLE_S)
     # Let the held reap finish inside the test, while its loop is still open.
     held_reaper.release.set()
     await asyncio.wait_for(proc.wait(), 5)
 
     assert done == {task}
     assert task.cancelled()
+    # The shell not yet reaped is the group's only member, a zombie with nothing
+    # left to stop, so the group refusing the kill is not worth a warning.
+    assert killpg_warnings(recwarn) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1012,7 +967,7 @@ async def test_kill_live_process_groups_when_child_alive_does_kill_group_and_des
         run_exec("sleep 30 & echo $! > grandchild.pid; wait", make_opts()),
     )
     await wait_for_spawned(spawned_processes)
-    grandchild = await wait_for_pid(tmp_path / "grandchild.pid")
+    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
 
     exec_mod.kill_live_process_groups()
 
@@ -1093,7 +1048,7 @@ async def test_exec_when_cancelled_does_kill_child_before_dropping_from_registry
         run_exec("echo $$ > shell.pid; sleep 30", make_opts()),
     )
     proc = await wait_for_spawned(spawned_processes)
-    await wait_for_pid(tmp_path / "shell.pid")
+    await wait_for_pid_file(tmp_path / "shell.pid")
 
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):

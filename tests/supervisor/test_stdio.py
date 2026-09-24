@@ -12,19 +12,22 @@ on process-group tree-kill.
 """
 
 import asyncio
-import contextlib
+import errno
 import json
 import os
 import signal
 import sys
-from collections.abc import Iterator
+import time
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
+from gymrat import exec as gymrat_exec
+from gymrat.process_group import TERMINATE_GRACE_S
 from gymrat.supervisor import create_stdio_driver
-from gymrat.supervisor.driver import SessionOutcome
+from gymrat.supervisor.driver import DriverSession, SessionOutcome
 from gymrat.supervisor.events import (
     SessionEvent,
     TextDeltaEvent,
@@ -33,7 +36,16 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from tests._cli import try_read_report
-from tests._process_helpers import wait_until_dead
+from tests._process_helpers import (
+    SLEEPER_ARGV,
+    ZOMBIE_ONLY_GROUP_SCRIPT,
+    capture_spawns,
+    killpg_warnings,
+    record_registry_sweep,
+    refuse_resume,
+    wait_for_pid_file,
+    wait_until_dead,
+)
 from tests.supervisor._fixtures import collecting_observer, make_prompt
 
 _TEST_TIMEOUT_S = 15.0
@@ -49,12 +61,36 @@ _DOUBLE = str(Path(__file__).parent / "_stdio_double.py")
 # outcome but is still exiting; a single run slips past it most of the time.
 _RACE_SESSIONS = 20
 
-_KILLPG_FAILED = "killpg failed"
-
 # Upper bound on outcome-to-settle time for a child still running after its
 # outcome: teardown kills it at once, so the bound only leaves margin for a
 # loaded machine.
 _PROMPT_TEARDOWN_S = 0.4
+
+# Past the driver's 8 MiB line limit, with no newline, so the read overruns.
+_OVERSIZED_LINE_BYTES = 12_000_000
+
+_USAGE_LINE = {
+    "json": {"type": "usage_update", "at": 1_000_000_000, "cost_usd": 0.4, "settled": False}
+}
+
+# A session child that reports, as its outcome message, the name of the signal
+# its handler caught. argv: ``<pid-report-path> <signal-number>``.
+_SIGNAL_REPORTER = """
+import json, os, signal, sys, time
+from pathlib import Path
+
+def report(signal_number, _frame):
+    name = signal.Signals(signal_number).name
+    outcome = {"type": "outcome", "reason": "completed", "cost_usd": 0.0, "message": name}
+    sys.stdout.write(json.dumps(outcome) + "\\n")
+    sys.stdout.flush()
+    os._exit(0)
+
+signal.signal(int(sys.argv[2]), report)
+sys.stdin.readline()
+Path(sys.argv[1]).write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+time.sleep(30)
+"""
 
 
 def double_argv(config: dict[str, Any]) -> list[str]:
@@ -83,19 +119,28 @@ def resolved(path: str | Path) -> Path:
 
 
 @pytest.fixture
-def stray_process_ids() -> Iterator[list[int]]:
-    """Collect PIDs a test spawned and SIGKILL any still alive on teardown."""
-    process_ids: list[int] = []
-    yield process_ids
-
-    for pid in process_ids:
-        with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+def isolated_live_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start the test with an empty live-process registry, so it holds only this test's children."""
+    monkeypatch.setattr(gymrat_exec, "_live_process_groups", set())
 
 
-def killpg_warnings(recorded: pytest.WarningsRecorder) -> list[str]:
-    """Return the messages of recorded warnings about a failed group kill."""
-    return [str(w.message) for w in recorded if _KILLPG_FAILED in str(w.message)]
+@pytest.fixture
+def termination_signals_deferred() -> Iterator[None]:
+    """Hold SIGINT and SIGTERM blocked in this thread, as a parent deferring them does."""
+    deferred = {signal.SIGINT, signal.SIGTERM}
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, deferred)
+    yield
+    signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+async def abort_session(_session: DriverSession, abort: asyncio.Event) -> None:
+    """Settle the session through its abort event."""
+    abort.set()
+
+
+async def interrupt_session(session: DriverSession, _abort: asyncio.Event) -> None:
+    """Settle the session through an interrupt command."""
+    await session.interrupt()
 
 
 async def read_report(report_path: Path, timeout_s: float = _TEST_TIMEOUT_S) -> dict[str, Any]:
@@ -319,18 +364,31 @@ async def test_stdio_driver_when_child_exits_without_outcome_does_error_with_exi
     assert "7" in outcome.message
 
 
-async def test_stdio_driver_when_child_cannot_spawn_does_settle_error_without_raising(
+@pytest.mark.parametrize(
+    ("argv", "cwd", "expected_fragment"),
+    [
+        pytest.param(None, None, "No such file or directory", id="does-not-exist"),
+        pytest.param([sys.executable, "nu\x00l"], None, "embedded null byte", id="nul-in-argv"),
+        pytest.param(
+            [sys.executable, "-c", "pass"], "nu\x00l", "embedded null byte", id="nul-in-cwd"
+        ),
+    ],
+)
+async def test_stdio_driver_when_spawn_rejected_before_any_process_does_settle_error_with_reason(
     tmp_path: Path,
+    argv: list[str] | None,
+    cwd: str | None,
+    expected_fragment: str,
 ) -> None:
-    argv = [str(tmp_path / "does-not-exist")]
-    session = create_stdio_driver(argv).start(
-        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
-    )
+    if argv is None:
+        argv = [str(tmp_path / "does-not-exist")]
+    prompt = make_prompt(cwd=str(tmp_path) if cwd is None else cwd)
+    session = create_stdio_driver(argv).start(prompt, collecting_observer().observer)
 
     outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
 
     assert outcome.reason == "error"
-    assert outcome.message
+    assert expected_fragment in (outcome.message or "")
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +595,27 @@ async def test_stdio_driver_when_child_lingers_after_outcome_does_kill_it_prompt
     await wait_until_dead(child)
 
 
+async def test_stdio_driver_when_torn_down_leaving_only_a_zombie_in_group_does_not_warn_about_killpg(
+    tmp_path: Path,
+    stray_process_ids: list[int],
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    holder_pid_file = tmp_path / "holder.pid"
+    abort = asyncio.Event()
+    session = create_stdio_driver([
+        sys.executable,
+        "-c",
+        ZOMBIE_ONLY_GROUP_SCRIPT,
+        str(holder_pid_file),
+    ]).start(make_prompt(cwd=str(tmp_path)), collecting_observer().observer, abort)
+    stray_process_ids.append(await wait_for_pid_file(holder_pid_file))
+
+    abort.set()
+
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    assert killpg_warnings(recwarn) == []
+
+
 # ---------------------------------------------------------------------------
 # Turn-end events and running cost
 # ---------------------------------------------------------------------------
@@ -718,3 +797,210 @@ async def test_stdio_driver_when_traceparent_does_include_or_omit_in_start_comma
         assert start_obj["prompt"]["traceparent"] == traceparent
     else:
         assert "traceparent" not in start_obj["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# Live-process registry — a termination signal reaches the session child
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("isolated_live_groups")
+async def test_kill_live_process_groups_when_stdio_session_live_does_kill_child_tree(
+    tmp_path: Path,
+    stray_process_ids: list[int],
+) -> None:
+    report = tmp_path / "child-processes.json"
+    config = {"mode": "sleep_forever", "report_path": str(report)}
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+    processes = await read_report(report)
+    child = int(processes["pid"])
+    grandchild = int(processes["grandchild"])
+    stray_process_ids.extend([child, grandchild])
+
+    gymrat_exec.kill_live_process_groups()
+
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    await wait_until_dead(child)
+    await wait_until_dead(grandchild)
+
+
+@pytest.mark.usefixtures("isolated_live_groups")
+async def test_kill_live_process_groups_when_stdio_child_exits_on_terminate_does_settle_exited_leaders_silently_without_reaping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stray_process_ids: list[int],
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    spawned = capture_spawns(monkeypatch, "create_subprocess_exec")
+    sweep_times: list[float] = []
+    # The zombie leader the sweep trips over only exists until the loop reaps
+    # it, so the race is run several times over.
+    for attempt in range(_RACE_SESSIONS):
+        report = tmp_path / f"child-processes-{attempt}.json"
+        config = {"mode": "sleep_forever", "report_path": str(report)}
+        session = create_stdio_driver(double_argv(config)).start(
+            make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+        )
+        processes = await read_report(report)
+        stray_process_ids.extend([int(processes["pid"]), int(processes["grandchild"])])
+        started = time.monotonic()
+
+        gymrat_exec.kill_live_process_groups()
+
+        sweep_times.append(time.monotonic() - started)
+        await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+
+    assert killpg_warnings(recwarn) == []
+    assert max(sweep_times) < TERMINATE_GRACE_S, "the sweep waited out a grace for exited leaders"
+    assert {proc.returncode for proc in spawned} == {-signal.SIGTERM}, (
+        "the sweep reaped a child before its event loop could collect the exit status"
+    )
+
+
+@pytest.mark.parametrize(
+    ("seam", "error"),
+    [
+        pytest.param(
+            "attach_process_group",
+            RuntimeWarning("containment refused"),
+            id="attach-warning-escalated-to-error",
+        ),
+        pytest.param(
+            "resume_process_group",
+            OSError(errno.EPERM, "containment refused"),
+            id="resume-os-error",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("isolated_live_groups")
+async def test_stdio_driver_when_containment_raises_after_spawn_does_settle_error_after_reaping_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stray_process_ids: list[int],
+    seam: str,
+    error: Exception,
+) -> None:
+    def fail(_pid: int) -> NoReturn:
+        raise error
+
+    spawned = capture_spawns(monkeypatch, "create_subprocess_exec")
+    monkeypatch.setattr(gymrat_exec, seam, fail)
+    session = create_stdio_driver(list(SLEEPER_ARGV)).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    stray_process_ids.extend(proc.pid for proc in spawned)
+
+    assert outcome == SessionOutcome(reason="error", cost_usd=0.0, message=str(error))
+    assert spawned[0].returncode is not None, (
+        "the child left behind by the failed spawn was never reaped"
+    )
+    attempted = record_registry_sweep(monkeypatch)
+    gymrat_exec.kill_live_process_groups()
+    assert attempted == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "resume"),
+    [
+        pytest.param(
+            double_argv({
+                "mode": "script",
+                "outcome": {"type": "outcome", "reason": "completed", "cost_usd": 0.0},
+            }),
+            gymrat_exec.resume_process_group,
+            id="outcome-line",
+        ),
+        pytest.param(
+            double_argv({"mode": "script", "outcome": None, "exit_code": 3}),
+            gymrat_exec.resume_process_group,
+            id="exit-without-outcome",
+        ),
+        pytest.param(
+            [sys.executable, "-c", f"import sys; sys.stdout.write('x' * {_OVERSIZED_LINE_BYTES})"],
+            gymrat_exec.resume_process_group,
+            id="read-limit-error",
+        ),
+        pytest.param(
+            list(SLEEPER_ARGV),
+            refuse_resume,
+            id="resume-refused",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("isolated_live_groups")
+async def test_kill_live_process_groups_when_stdio_session_settled_does_signal_nothing_for_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    resume: Callable[[int], bool],
+) -> None:
+    monkeypatch.setattr(gymrat_exec, "resume_process_group", resume)
+    session = create_stdio_driver(argv).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    attempted = record_registry_sweep(monkeypatch)
+
+    gymrat_exec.kill_live_process_groups()
+
+    assert attempted == [], "a settled session left its child in the live-process registry"
+
+
+@pytest.mark.parametrize(
+    "settle",
+    [
+        pytest.param(abort_session, id="abort"),
+        pytest.param(interrupt_session, id="interrupt"),
+    ],
+)
+@pytest.mark.usefixtures("isolated_live_groups")
+async def test_kill_live_process_groups_when_stdio_session_torn_down_does_signal_nothing_for_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settle: Callable[[DriverSession, asyncio.Event], Awaitable[None]],
+) -> None:
+    abort = asyncio.Event()
+    probe = collecting_observer()
+    config = {"mode": "await_interrupt", "lines": [_USAGE_LINE]}
+    session = create_stdio_driver(double_argv(config)).start(
+        make_prompt(cwd=str(tmp_path)), probe.observer, abort
+    )
+    await wait_for_event(probe.events, UsageUpdateEvent)
+    await settle(session, abort)
+    await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    attempted = record_registry_sweep(monkeypatch)
+
+    gymrat_exec.kill_live_process_groups()
+
+    assert attempted == [], "a torn-down session left its child in the live-process registry"
+
+
+# ---------------------------------------------------------------------------
+# Signal mask — the child is not born with termination signals blocked
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "signal_number",
+    [pytest.param(signal.SIGINT, id="SIGINT"), pytest.param(signal.SIGTERM, id="SIGTERM")],
+)
+@pytest.mark.usefixtures("termination_signals_deferred")
+async def test_stdio_driver_when_spawned_while_signals_deferred_does_leave_them_unblocked_in_child(
+    tmp_path: Path,
+    signal_number: signal.Signals,
+) -> None:
+    report = tmp_path / "report.json"
+    argv = [sys.executable, "-c", _SIGNAL_REPORTER, str(report), str(int(signal_number))]
+    session = create_stdio_driver(argv).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+    child = int((await read_report(report))["pid"])
+
+    os.kill(child, signal_number)
+
+    outcome = await asyncio.wait_for(session.outcome, _TEST_TIMEOUT_S)
+    assert outcome == SessionOutcome(reason="completed", cost_usd=0.0, message=signal_number.name)

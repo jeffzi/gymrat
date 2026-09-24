@@ -41,7 +41,13 @@ if sys.platform != "win32":
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
 from tests._git import git as _git
-from tests._process_helpers import is_alive as _is_alive
+from tests._process_helpers import read_pid_file as _read_pid_file
+from tests._process_helpers import (
+    wait_for_pid_file_blocking as _wait_for_pid_file_blocking,
+)
+from tests._process_helpers import (
+    wait_until_dead_blocking as _wait_until_dead_blocking,
+)
 from tests._rich import screen_lines
 from tests.hardening._bench_helpers import drain as _drain
 from tests.hardening._bench_helpers import write_committed_bench as _write_committed_bench
@@ -57,6 +63,9 @@ _CLEAR_LINE = "\r\x1b[K"
 _PTY_WIDTH = 80
 _PTY_HEIGHT = 24
 
+# Budget for every pid-file and death-wait poll below.
+_SETTLE_TIMEOUT_S = 30.0
+
 # A bench that records its own process-group leader pid and a background
 # grandchild pid, emits one metric, then blocks forever on the grandchild. The
 # sample never completes on its own, so the run is always mid-bench when signalled.
@@ -69,41 +78,6 @@ wait
 """
 
 _FAST_BENCH = "#!/bin/sh\necho 'METRIC x=1'\n"
-
-
-def _read_pid(path: Path) -> int | None:
-    """Read a pid a shell wrote with ``echo $$ >`` / ``echo $! >``.
-
-    Returns ``None`` until the file holds a complete positive integer, so a
-    partial write reads as "no pid yet" rather than a truncated value.
-    """
-    try:
-        raw = path.read_text().strip()
-    except FileNotFoundError:
-        return None
-    return int(raw) if raw.isdigit() else None
-
-
-def _wait_for_pid(path: Path, timeout_s: float = 30.0) -> int:
-    """Poll ``path`` until it holds a complete pid, then return it."""
-    deadline = time.monotonic() + timeout_s
-    while True:
-        pid = _read_pid(path)
-        if pid:
-            return pid
-        if time.monotonic() > deadline:
-            message = f"pid never appeared at {path}"
-            raise AssertionError(message)
-        time.sleep(0.05)
-
-
-def _wait_until_dead(pid: int, timeout_s: float = 30.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while _is_alive(pid):
-        if time.monotonic() > deadline:
-            message = f"process {pid} was still alive after {timeout_s}s"
-            raise AssertionError(message)
-        time.sleep(0.05)
 
 
 def _wait_for_worktree_count(
@@ -165,9 +139,13 @@ def test_measure_when_signalled_mid_bench_does_kill_bench_grandchild_before_exit
         text=True,
     )
     try:
-        bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+        bench_pid = _wait_for_pid_file_blocking(
+            Path(repo) / "bench.pid", timeout_s=_SETTLE_TIMEOUT_S
+        )
         reap_groups.append(bench_pid)
-        grandchild = _wait_for_pid(Path(repo) / "grandchild.pid")
+        grandchild = _wait_for_pid_file_blocking(
+            Path(repo) / "grandchild.pid", timeout_s=_SETTLE_TIMEOUT_S
+        )
         proc.send_signal(signal_number)
         proc.communicate(timeout=30)
     finally:
@@ -176,10 +154,10 @@ def test_measure_when_signalled_mid_bench_does_kill_bench_grandchild_before_exit
             proc.communicate()
 
     assert proc.returncode == expected_code
-    _wait_until_dead(grandchild)
+    _wait_until_dead_blocking(grandchild, timeout_s=_SETTLE_TIMEOUT_S)
     # Polled rather than checked once: a SIGKILLed leader stays visible to
     # ``os.kill(pid, 0)`` as a zombie until its parent reaps it.
-    _wait_until_dead(bench_pid)
+    _wait_until_dead_blocking(bench_pid, timeout_s=_SETTLE_TIMEOUT_S)
 
 
 # ---------------------------------------------------------------------------
@@ -202,13 +180,13 @@ def test_measure_when_prior_run_hard_killed_does_take_over_stale_lock_on_rerun(
         stderr=subprocess.PIPE,
         text=True,
     )
-    bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+    bench_pid = _wait_for_pid_file_blocking(Path(repo) / "bench.pid", timeout_s=_SETTLE_TIMEOUT_S)
     reap_groups.append(bench_pid)
     first.kill()  # SIGKILL runs no cleanup, so the lock is left behind
     first.communicate(timeout=30)
     with contextlib.suppress(ProcessLookupError):
         os.killpg(os.getpgid(bench_pid), signal.SIGKILL)
-    _wait_until_dead(bench_pid)
+    _wait_until_dead_blocking(bench_pid, timeout_s=_SETTLE_TIMEOUT_S)
     # The lock left behind above is now stale; the rerun below must take it over.
 
     (Path(repo) / "bench.sh").write_text(_FAST_BENCH, encoding="utf-8")
@@ -260,7 +238,9 @@ def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
     reader = threading.Thread(target=_drain, args=(master, chunks))
     reader.start()
     try:
-        bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+        bench_pid = _wait_for_pid_file_blocking(
+            Path(repo) / "bench.pid", timeout_s=_SETTLE_TIMEOUT_S
+        )
         reap_groups.append(bench_pid)
         time.sleep(0.75)  # let the status line draw progress before the signal
         proc.send_signal(signal.SIGINT)
@@ -302,7 +282,9 @@ def test_measure_when_signalled_off_a_tty_does_not_emit_terminal_clear_codes(
         text=True,
     )
     try:
-        bench_pid = _wait_for_pid(Path(repo) / "bench.pid")
+        bench_pid = _wait_for_pid_file_blocking(
+            Path(repo) / "bench.pid", timeout_s=_SETTLE_TIMEOUT_S
+        )
         reap_groups.append(bench_pid)
         time.sleep(0.75)
         proc.send_signal(signal.SIGINT)
@@ -355,7 +337,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
         _wait_for_worktree_count(list_worktree_dirs, repo, 2)
         worktrees = list_worktree_dirs(repo, include_main=False)
         for wt in worktrees:
-            pid = _read_pid(Path(wt) / "bench.pid")
+            pid = _read_pid_file(Path(wt) / "bench.pid")
             if pid is not None:
                 reap_groups.append(pid)
         proc.send_signal(signal.SIGINT)

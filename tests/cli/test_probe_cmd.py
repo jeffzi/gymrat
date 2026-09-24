@@ -16,7 +16,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -35,7 +34,10 @@ from gymrat.session.paths import lockfile_path, progress_path, repo_root
 from tests._ansi import strip_ansi
 from tests._cli import ENTRY, no_color_env
 from tests._git import git
-from tests._process_helpers import is_alive
+from tests._process_helpers import (
+    wait_for_pid_file_blocking,
+    wait_until_dead_blocking,
+)
 from tests.cli._budget import (
     SUPERVISED_HINT,
     install_budget,
@@ -465,22 +467,6 @@ sleep 120
 """A bench that records its own pid, emits one metric, then blocks past any test."""
 
 
-def _wait_for_pid(path: Path, timeout_s: float = 60.0) -> int:
-    """Poll ``path`` until the bench has written a complete pid into it."""
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            raw = path.read_text().strip()
-        except FileNotFoundError:
-            raw = ""
-        if raw.isdigit():
-            return int(raw)
-        if time.monotonic() > deadline:
-            message = f"bench pid never appeared at {path}"
-            raise AssertionError(message)
-        time.sleep(0.05)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 @pytest.mark.parametrize(
     ("signal_number", "expected_code"),
@@ -514,7 +500,9 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
         text=True,
     )
     try:
-        bench_pid = _wait_for_pid(Path(experiment_worktree_dir(repo), "bench.pid"))
+        bench_pid = wait_for_pid_file_blocking(
+            Path(experiment_worktree_dir(repo), "bench.pid"), timeout_s=60.0
+        )
         proc.send_signal(signal_number)
         proc.communicate(timeout=60)
     finally:
@@ -523,7 +511,4 @@ def test_probe_command_when_signalled_mid_bench_does_kill_the_bench_and_exit_128
             proc.communicate()
 
     assert proc.returncode == expected_code
-    deadline = time.monotonic() + 30
-    while is_alive(bench_pid):
-        assert time.monotonic() < deadline, f"bench {bench_pid} outlived the CLI"
-        time.sleep(0.05)
+    wait_until_dead_blocking(bench_pid, timeout_s=30.0)

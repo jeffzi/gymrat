@@ -26,9 +26,12 @@ takes the process handle. A child that cannot be assigned falls back to
 ``taskkill /T /F``, which walks the parent-child tree instead.
 """
 
+import ctypes
 import errno
+import functools
 import os
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -44,6 +47,31 @@ _TASKKILL_GONE = 128
 _EXIT_POLL_S = 0.01
 """Seconds between liveness polls while a grace is waited out."""
 
+_DARWIN_PROC_PGRP_MIB = (1, 14, 2)
+"""``CTL_KERN``, ``KERN_PROC``, ``KERN_PROC_PGRP``: the sysctl listing one group's processes.
+
+The group id completes the name. The listing covers zombies too, which is what
+lets a refusal from a group holding nothing but zombies be told apart.
+"""
+
+_DARWIN_KINFO_PROC_SIZE = 648
+"""``sizeof(struct kinfo_proc)``, identical on arm64 and x86_64 macOS."""
+
+_DARWIN_FLAG_AND_STATE = struct.Struct("=iB")
+"""``kp_proc.p_flag`` then ``kp_proc.p_stat``, read from their offset in a ``kinfo_proc``."""
+
+_DARWIN_FLAG_AND_STATE_OFFSET = 32
+"""Offset of ``kp_proc.p_flag`` in a ``kinfo_proc``; ``p_stat`` follows it directly."""
+
+_DARWIN_P_WEXIT = 0x2000
+"""``P_WEXIT``: the process is working on its exit."""
+
+_DARWIN_SZOMB = 5
+"""``SZOMB``: the process has exited and waits for its parent to reap it."""
+
+_DARWIN_LISTING_HEADROOM = 4
+"""Extra ``kinfo_proc`` slots for members that join between the size query and the read."""
+
 _KILL_SIGNAL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
 """Signal that kills a POSIX process group outright.
 
@@ -53,7 +81,6 @@ attribute at all is what has to be avoided.
 """
 
 if sys.platform == "win32":
-    import ctypes
     from ctypes import wintypes
 
     _JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
@@ -348,10 +375,11 @@ def kill_process_group(pid: int, *, defer_refusal: bool = False) -> bool:
     child never made it into one.
 
     macOS refuses the signal with ``EPERM`` while every member of the group is
-    still exiting or is a zombie not yet reaped, which cannot be told apart from
-    a genuine permission failure at that moment. Once the leader is reaped the
-    same signal settles it: the group is gone (silent), a live descendant is
-    killed, or the refusal repeats and is genuine (warned).
+    still exiting or is a zombie not yet reaped. That refusal is silent: the
+    group's members are listed, and a group holding nothing but zombies and
+    exiting processes has nothing left to stop, whether the zombie is the
+    leader or an orphaned descendant waiting for init to reap it. Only a
+    refusal while some member is still running warns.
 
     Args:
         pid: The process ID leading the tree to kill.
@@ -371,9 +399,10 @@ def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> Non
 
     This is the signal path's grace, where there is no event loop to await on: a
     child asked to stop gets this long to tear down benches of its own before it
-    is killed. Windows offers no pid probe that is not itself destructive, and
-    its terminate already waits for the job to empty, so there the wait is a
-    no-op.
+    is killed. A leader that exited counts as gone even though nothing has
+    reaped it yet, so the wait ends as soon as every leader has stopped. Windows
+    offers no pid probe that is not itself destructive, and its terminate
+    already waits for the job to empty, so there the wait is a no-op.
 
     Args:
         leaders: Process IDs of the group leaders to wait for.
@@ -390,7 +419,12 @@ def wait_for_process_group_exit(leaders: Iterable[int], timeout_s: float) -> Non
 
 
 def _leader_alive(pid: int) -> bool:
-    """Whether a process with ``pid`` still exists, counting a zombie nobody has reaped as alive."""
+    """Whether a process with ``pid`` is still running; a zombie awaiting its reap is not."""
+    return _pid_exists(pid) and not _has_exited(pid)
+
+
+def _pid_exists(pid: int) -> bool:
+    """Whether ``pid`` names a process, running or zombie, that ``kill`` can still reach."""
     try:
         os.kill(pid, 0)
     except OSError:
@@ -398,17 +432,170 @@ def _leader_alive(pid: int) -> bool:
     return True
 
 
+def _has_exited(pid: int) -> bool:
+    """Whether ``pid`` has exited, its status collected or not, without collecting it."""
+    if sys.platform != "darwin" or sys.version_info >= (3, 13):
+        try:
+            state = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            # Either not a child of this process, or a child another thread (the
+            # event loop's child watcher) reaped since the caller probed it. Only
+            # the first is still running, and only the first is still there.
+            return not _pid_exists(pid)
+        return state is not None
+    # macOS gains waitid only in Python 3.13. Until then a zombie is the process
+    # kill(pid, 0) still reaches but getpgid no longer finds: the kernel looks
+    # getpgid up among running processes only.
+    try:
+        os.getpgid(pid)
+    except ProcessLookupError:
+        return True
+    return False
+
+
 def _signal_group(pid: int, signal_number: int, *, defer_refusal: bool) -> bool:
-    """Signal the POSIX process group led by ``pid``; report a deferred ``EPERM`` refusal."""
+    """Signal the POSIX process group led by ``pid``, warning only when a live member refuses.
+
+    macOS skips zombies and exiting processes when it signals a group, and
+    answers ``EPERM`` when that leaves nothing to signal. Such a group has no
+    member left to stop, so its refusal is silent whoever the zombie is — the
+    leader not yet reaped, or an orphaned descendant waiting for init to reap it.
+
+    Args:
+        pid: The process ID leading the group.
+        signal_number: The signal to send.
+        defer_refusal: Return instead of warning on an ``EPERM`` refusal.
+
+    Returns:
+        ``True`` when ``defer_refusal`` held back an ``EPERM`` refusal,
+        ``False`` otherwise.
+    """
     try:
         os.killpg(pid, signal_number)
     except ProcessLookupError:
         pass
     except OSError as error:
-        if defer_refusal and error.errno == errno.EPERM:
-            return True
+        if error.errno == errno.EPERM:
+            if defer_refusal:
+                return True
+            if _group_settled(pid):
+                return False
         _warn(f"killpg failed for pid {pid}: {error}")
     return False
+
+
+def _group_settled(group_id: int) -> bool:
+    """Whether the group ``group_id`` has nothing left to stop after an ``EPERM`` refusal.
+
+    Only macOS lists a group's members with their state, and only macOS refuses
+    a group holding nothing but zombies. Linux delivers a group signal to
+    zombies, so a refusal there always comes from a live member.
+
+    Args:
+        group_id: The process group that refused the signal.
+
+    Returns:
+        ``True`` when every member is a zombie or exiting, or the group is
+        confirmed gone; ``False`` whenever a live member cannot be ruled out,
+        including when the listing fails.
+    """
+    return sys.platform == "darwin" and _darwin_group_settled(group_id)
+
+
+def _darwin_group_settled(group_id: int) -> bool:
+    """Whether macOS lists the group ``group_id`` as holding only zombies, or as gone.
+
+    An empty listing means every member vanished since the refusal — a zombie
+    reaped in the meantime — or that the refusal did not come from the kernel
+    at all. A probe tells them apart: the kernel answers ``ESRCH`` for a group
+    that is really gone.
+
+    Kept apart from ``_group_settled`` so type checkers running for another
+    platform still analyze this body instead of treating it as unreachable.
+
+    Args:
+        group_id: The process group that refused the signal.
+
+    Returns:
+        ``True`` when every member is a zombie or exiting, or the group is
+        confirmed gone; ``False`` whenever a live member cannot be ruled out,
+        including when the listing fails.
+    """
+    try:
+        members = _darwin_group_members(group_id)
+    except OSError:
+        return False
+    if members:
+        return all(state == _DARWIN_SZOMB or flag & _DARWIN_P_WEXIT for flag, state in members)
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+@functools.cache
+def _c_library() -> ctypes.CDLL:
+    """This process's C library, with ``sysctl`` typed."""
+    c_library = ctypes.CDLL(None, use_errno=True)
+    c_library.sysctl.argtypes = (
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    )
+    c_library.sysctl.restype = ctypes.c_int
+    return c_library
+
+
+def _sysctl(
+    mib: ctypes.Array[ctypes.c_int], buffer: ctypes.Array[ctypes.c_char] | None, size: int
+) -> int:
+    """Read the sysctl ``mib`` into ``buffer``, or only measure it when ``buffer`` is ``None``.
+
+    Args:
+        mib: The sysctl name.
+        buffer: Where the value is copied, or ``None`` to query its size.
+        size: The capacity of ``buffer``.
+
+    Returns:
+        The number of bytes the value holds, or was copied.
+
+    Raises:
+        OSError: ``sysctl`` failed, including a value outgrowing ``buffer``.
+    """
+    length = ctypes.c_size_t(size)
+    if _c_library().sysctl(mib, len(mib), buffer, ctypes.byref(length), None, 0) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+    return length.value
+
+
+def _darwin_group_members(group_id: int) -> list[tuple[int, int]]:
+    """List the ``(p_flag, p_stat)`` pair of every member of group ``group_id``, zombies included.
+
+    Args:
+        group_id: The process group to list.
+
+    Returns:
+        One pair per member; empty when the group no longer exists.
+
+    Raises:
+        OSError: ``sysctl`` failed, including a group that outgrew its headroom
+            between the size query and the read.
+    """
+    mib = (ctypes.c_int * (len(_DARWIN_PROC_PGRP_MIB) + 1))(*_DARWIN_PROC_PGRP_MIB, group_id)
+    capacity = _sysctl(mib, None, 0) + _DARWIN_LISTING_HEADROOM * _DARWIN_KINFO_PROC_SIZE
+    buffer = ctypes.create_string_buffer(capacity)
+    length = _sysctl(mib, buffer, capacity)
+    return [
+        _DARWIN_FLAG_AND_STATE.unpack_from(buffer, offset + _DARWIN_FLAG_AND_STATE_OFFSET)
+        for offset in range(0, length, _DARWIN_KINFO_PROC_SIZE)
+    ]
 
 
 def _taskkill(pid: int) -> None:

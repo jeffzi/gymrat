@@ -29,7 +29,7 @@ from gymrat.session.paths import budget_path
 from gymrat.supervisor import SupervisionResult, create_event_log_writer, event_from_wire
 from gymrat.supervisor.exit_sequence import ExitPhase, ExitReport, ExitStep
 from gymrat.supervisor.supervise import EndedBy
-from tests._process_helpers import is_alive, wait_until_dead
+from tests._process_helpers import is_alive, wait_for_pid_file, wait_until_dead
 from tests.cli.supervise._fixtures import (
     follow_up_event,
     make_supervision_result,
@@ -459,37 +459,6 @@ def test_supervise_when_run_ended_by_a_condition_does_exit_with_its_code(
 # ---------------------------------------------------------------------------
 
 
-def _read_pid(pid_path: Path) -> int | None:
-    """The pid the shell wrote to ``pid_path``, or ``None`` until the line is complete."""
-    try:
-        raw = pid_path.read_text()
-    except FileNotFoundError:
-        return None
-    return int(raw) if raw.endswith("\n") else None
-
-
-async def _wait_for_pid(pid_path: Path) -> int:
-    """Poll ``pid_path`` until the shell has written a complete pid line, then return it.
-
-    Args:
-        pid_path: Path the shell writes the child's pid to.
-
-    Returns:
-        The pid written by the shell.
-
-    Raises:
-        TimeoutError: If no complete pid line appears within _KILL_SETTLE_S seconds.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _KILL_SETTLE_S
-    while (pid := _read_pid(pid_path)) is None:
-        if loop.time() > deadline:
-            message = f"pid never appeared at {pid_path}"
-            raise TimeoutError(message)
-        await asyncio.sleep(0.025)
-    return pid
-
-
 async def _wait_for_registration() -> None:
     """Poll until ``exec`` has registered the spawned child's process group.
 
@@ -531,7 +500,7 @@ async def _child_survives_cleanups(cleanups: list[Callable[[], None]], cwd: Path
         run_exec("sleep 30 & echo $! > child.pid; wait", ExecOptions(cwd=str(cwd)))
     )
     try:
-        pid = await _wait_for_pid(cwd / "child.pid")
+        pid = await wait_for_pid_file(cwd / "child.pid", timeout_s=_KILL_SETTLE_S)
         await _wait_for_registration()
         for cleanup in cleanups:
             cleanup()

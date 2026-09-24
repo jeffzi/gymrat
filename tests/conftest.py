@@ -10,6 +10,7 @@ The helpers expose a common fixture surface so later worktree and driver
 tests can reuse the same building blocks.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -101,6 +102,17 @@ def _reset_color() -> Iterator[None]:
     set_color_override(None)
     yield
     set_color_override(None)
+
+
+@pytest.fixture
+def stray_process_ids() -> Iterator[list[int]]:
+    """Collect PIDs a test spawned and SIGKILL any still alive on teardown."""
+    process_ids: list[int] = []
+    yield process_ids
+
+    for pid in process_ids:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def _init_scratch_repo() -> str:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import errno
 import json
 import os
 import pathlib
@@ -31,6 +30,7 @@ from gymrat.supervisor.tools import (
     gymrat_tool_definitions,
     gymrat_tools_factory,
 )
+from tests._process_helpers import is_alive
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -481,15 +481,6 @@ async def _wait_for_gate(gate: pathlib.Path, *, timeout: float = 5.0) -> None:  
             raise TimeoutError(msg)
 
 
-def _pid_is_dead(pid: int) -> bool:
-    """Return True when *pid* no longer exists."""
-    try:
-        os.kill(pid, 0)
-    except OSError as exc:
-        return exc.errno == errno.ESRCH
-    return False
-
-
 def _assert_busy(result: dict[str, Any]) -> None:
     """Assert *result* is the error returned when the host is already running a call."""
     assert result["is_error"] is True
@@ -607,7 +598,7 @@ async def test_probe_when_abort_fires_mid_run_does_kill_child_and_return_killed(
     assert result["is_error"] is True
     assert _text_of(result) == "killed by the supervisor"
     assert child_pid not in _live_process_groups
-    assert _pid_is_dead(child_pid)
+    assert not is_alive(child_pid)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
@@ -650,7 +641,7 @@ async def test_probe_when_task_cancelled_mid_run_does_kill_and_reap_child(
     await _cancel_and_await(task)
 
     assert child_pid not in _live_process_groups
-    assert _pid_is_dead(child_pid)
+    assert not is_alive(child_pid)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
@@ -672,7 +663,7 @@ async def test_probe_when_kill_live_process_groups_mid_run_does_kill_child(
     await task
 
     assert child_pid not in _live_process_groups
-    assert _pid_is_dead(child_pid)
+    assert not is_alive(child_pid)
 
 
 # ---------------------------------------------------------------------------

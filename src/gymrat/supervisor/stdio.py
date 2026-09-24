@@ -13,20 +13,22 @@ and the child speak a line-delimited JSON protocol over the child's stdio:
   terminal ``{"type": "outcome", "reason", "cost_usd", "message"?}`` line.
   Its stderr is never relayed.
 
-The child is spawned into its own process group so an abort can tree-kill every
-descendant. The session never raises: a spawn failure, a nonzero exit without an
-outcome, an interrupt, and an abort each settle a :class:`SessionOutcome`.
+The child is spawned through :func:`~gymrat.exec.spawn_contained`, like every
+``exec`` child: into its own POSIX session or win32 job, so an abort or teardown
+tree-kills every descendant, and into the live-process registry, so a
+termination signal stops it even when the event loop never runs again. The
+session never raises: a spawn failure, a nonzero exit without an outcome, an
+interrupt, and an abort each settle a :class:`SessionOutcome`.
 """
 
 import asyncio
 import contextlib
 import json
-import sys
 import warnings
 from collections.abc import Sequence
 from typing import Any, cast, get_args
 
-from gymrat.exec import READ_CHUNK
+from gymrat.exec import READ_CHUNK, SpawnError, release_contained, spawn_contained
 from gymrat.process_group import kill_process_group
 from gymrat.supervisor.driver import (
     Driver,
@@ -148,20 +150,20 @@ class _StdioSession:
             pass
 
     async def _spawn(self) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
+        return await spawn_contained(
+            asyncio.create_subprocess_exec,
             *self._argv,
             cwd=self._prompt.cwd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=sys.platform != "win32",
             limit=_STREAM_LIMIT,
         )
 
     async def _run(self) -> SessionOutcome:
         try:
             proc = await self._spawn()
-        except OSError as err:
+        except SpawnError as err:
             return SessionOutcome(reason="error", cost_usd=0.0, message=str(err))
         self._proc = proc
         if self._abort is not None:
@@ -247,29 +249,32 @@ class _StdioSession:
                 pass
 
     async def _teardown(self, proc: asyncio.subprocess.Process) -> None:
-        for task in (self._abort_task, self._stderr_task):
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-        if proc.stdin is not None:
-            proc.stdin.close()
-        # The kill runs even when the leader is already reaped, because a
-        # grandchild left in the group is still reachable and must die. A group
-        # refusing it because every member is still exiting is signaled again
-        # after the reap, so only a genuine failure warns.
-        refused = kill_process_group(proc.pid, defer_refusal=True)
         try:
-            await asyncio.wait_for(proc.wait(), _TEARDOWN_GRACE_SECONDS)
-        except TimeoutError:
-            warnings.warn(
-                f"child process {proc.pid} did not exit within "
-                f"{_TEARDOWN_GRACE_SECONDS:g}s of the group kill; abandoning the wait",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        if refused:
-            kill_process_group(proc.pid)
+            for task in (self._abort_task, self._stderr_task):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            if proc.stdin is not None:
+                proc.stdin.close()
+            # The kill runs even when the leader is already reaped, because a
+            # grandchild left in the group is still reachable and must die. A group
+            # refusing it because every member is still exiting is signaled again
+            # after the reap, so only a genuine failure warns.
+            refused = kill_process_group(proc.pid, defer_refusal=True)
+            try:
+                await asyncio.wait_for(proc.wait(), _TEARDOWN_GRACE_SECONDS)
+            except TimeoutError:
+                warnings.warn(
+                    f"child process {proc.pid} did not exit within "
+                    f"{_TEARDOWN_GRACE_SECONDS:g}s of the group kill; abandoning the wait",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            if refused:
+                kill_process_group(proc.pid)
+        finally:
+            release_contained(proc.pid)
 
 
 class _StdioDriver:

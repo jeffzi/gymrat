@@ -5,7 +5,8 @@ Every test drives the production chain out of process. A tool child runs
 a gymrat run does, so the bench lands in its own POSIX session — or its own
 Windows job — instead of in the tool child's process group. Tearing the outer
 run down has to reach it anyway, whether the teardown comes from an abort, a
-timeout, a cancellation, or a signal to the supervisor.
+timeout, a cancellation, or a signal to the supervisor. The supervisor's stdio
+session child is contained the same way, so its descendants die with the session.
 
 Liveness is read from heartbeat files rather than process IDs: ``os.kill(pid, 0)``
 terminates the target on Windows, so a pid probe cannot be shared across
@@ -36,7 +37,16 @@ import pytest
 from gymrat import exec as gymrat_exec
 from gymrat import process_group
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
-from tests._process_helpers import is_alive
+from gymrat.supervisor import create_stdio_driver
+from gymrat.supervisor.driver import SessionOutcome
+from tests._process_helpers import (
+    SLEEPER_ARGV,
+    capture_spawns,
+    refuse_resume,
+    wait_for_pid_file_blocking,
+    wait_until_dead_blocking,
+)
+from tests.supervisor._fixtures import collecting_observer, make_prompt
 
 # How often a heartbeat script rewrites its file.
 _BEAT_PERIOD_S = 0.05
@@ -266,34 +276,6 @@ def heartbeat_stopped(path: Path) -> bool:
     return read_beat(path) == first
 
 
-def wait_for_tool_pid(path: Path, timeout_s: float = _BEAT_TIMEOUT_S) -> int:
-    """Poll ``path`` until a tool child has finished recording its pid there, then return it."""
-    deadline = time.monotonic() + timeout_s
-    while True:
-        raw = read_beat(path)
-        if raw and raw.endswith("\n"):
-            return int(raw.strip())
-        if time.monotonic() > deadline:
-            message = f"no tool pid appeared at {path} within {timeout_s}s"
-            raise AssertionError(message)
-        time.sleep(_BEAT_PERIOD_S)
-
-
-def pid_gone(pid: int, timeout_s: float) -> bool:
-    """Poll until ``pid`` has exited, reporting whether it did so within ``timeout_s``.
-
-    A tool child runs no heartbeat of its own — it is blocked awaiting its bench
-    — so its death is read from the pid. That probe is destructive on Windows,
-    which is why only POSIX-gated tests may call this.
-    """
-    deadline = time.monotonic() + timeout_s
-    while is_alive(pid):
-        if time.monotonic() > deadline:
-            return False
-        time.sleep(_BEAT_PERIOD_S)
-    return True
-
-
 def tool_argv(scripts: dict[str, Path], pid_file: Path, *bench_argv: str) -> list[str]:
     """The argv of a tool child that records its pid in ``pid_file``, then runs ``bench_argv``."""
     return [sys.executable, str(scripts["tool"]), str(pid_file), *bench_argv]
@@ -349,7 +331,7 @@ def run_signalled_supervisor(
     )
     try:
         wait_for_beat(bench_beat)
-        tool_pid = wait_for_tool_pid(inner_pid_file)
+        tool_pid = wait_for_pid_file_blocking(inner_pid_file, timeout_s=_BEAT_TIMEOUT_S)
 
         stop(proc)
 
@@ -578,7 +560,7 @@ def test_supervisor_when_signalled_mid_bench_does_leave_no_bench_alive(
         tmp_path, scripts, bench_beat, grandchild_beat, lambda p: p.send_signal(signal.SIGTERM)
     )
 
-    assert pid_gone(tool_pid, _SETTLE_TIMEOUT_S), "the tool child outlived the signalled supervisor"
+    wait_until_dead_blocking(tool_pid, timeout_s=_SETTLE_TIMEOUT_S)
     assert heartbeat_stopped(bench_beat), "the bench outlived the signalled supervisor"
 
 
@@ -598,6 +580,17 @@ def test_supervisor_when_killed_without_cleanup_does_leave_no_bench_alive(
 # ---------------------------------------------------------------------------
 # win32 Job Objects: orphaned descendants and the taskkill fallback
 # ---------------------------------------------------------------------------
+
+
+def delay_attach(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Delay ``attach_process_group`` so descendants can start before containment lands."""
+    attach = gymrat_exec.attach_process_group
+
+    def attach_late(pid: int) -> None:
+        time.sleep(_LATE_ATTACH_DELAY_S)
+        attach(pid)
+
+    monkeypatch.setattr(gymrat_exec, "attach_process_group", attach_late)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32-only")
@@ -633,13 +626,7 @@ async def test_exec_argv_when_containment_lands_late_does_kill_descendants_start
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bench_beat, grandchild_beat = bench_beat_paths(tmp_path, reap_beats)
-    attach = gymrat_exec.attach_process_group
-
-    def attach_late(pid: int) -> None:
-        time.sleep(_LATE_ATTACH_DELAY_S)
-        attach(pid)
-
-    monkeypatch.setattr(gymrat_exec, "attach_process_group", attach_late)
+    delay_attach(monkeypatch)
     abort = asyncio.Event()
     task = asyncio.create_task(
         exec_argv(
@@ -661,6 +648,56 @@ async def test_exec_argv_when_containment_lands_late_does_kill_descendants_start
     )
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are win32-only")
+@pytest.mark.parametrize(
+    "tree",
+    [
+        pytest.param(("bench", "bench.beat", "grandchild.beat"), id="live-descendants"),
+        pytest.param(("orphan", "grandchild.beat"), id="descendant-whose-parent-exited"),
+    ],
+)
+async def test_stdio_driver_when_containment_lands_late_does_leave_no_descendant_alive(
+    tmp_path: Path,
+    scripts: dict[str, Path],
+    reap_beats: list[Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tree: tuple[str, ...],
+) -> None:
+    script, *beat_names = tree
+    beats = [tmp_path / name for name in beat_names]
+    reap_beats.extend(beats)
+    delay_attach(monkeypatch)
+    abort = asyncio.Event()
+    session = create_stdio_driver([sys.executable, str(scripts[script]), *map(str, beats)]).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer, abort
+    )
+    await asyncio.gather(*(asyncio.to_thread(wait_for_beat, beat) for beat in beats))
+
+    abort.set()
+
+    await asyncio.wait_for(session.outcome, _SETTLE_TIMEOUT_S)
+    survivors = [b.name for b in beats if not await asyncio.to_thread(heartbeat_stopped, b)]
+    assert survivors == [], "a descendant of the session child outlived the session"
+
+
+async def test_stdio_driver_when_child_cannot_be_resumed_does_settle_error_with_child_torn_down(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawned = capture_spawns(monkeypatch, "create_subprocess_exec")
+    # On win32 the child really is left suspended; elsewhere it runs, but only teardown ends it.
+    monkeypatch.setattr(gymrat_exec, "resume_process_group", refuse_resume)
+    session = create_stdio_driver(list(SLEEPER_ARGV)).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+
+    outcome = await asyncio.wait_for(session.outcome, _SETTLE_TIMEOUT_S)
+
+    assert (outcome.reason, outcome.cost_usd) == ("error", 0.0)
+    assert "could not be resumed" in (outcome.message or "")
+    assert spawned[0].returncode is not None, "the child that could not resume was never killed"
+
+
 # ---------------------------------------------------------------------------
 # win32 Job Objects: teardown observed from a POSIX run
 # ---------------------------------------------------------------------------
@@ -677,6 +714,9 @@ class FakeJobs:
 
     active_counts: list[int] = dataclasses.field(default_factory=list)
     final_active: int = 0
+    creation_granted: bool = True
+    """Whether ``CreateJobObjectW`` hands out a job, as a locked-down host would not."""
+
     assignment_granted: bool = True
     """Whether ``AssignProcessToJobObject`` accepts the child, as a locked-down host would not."""
 
@@ -727,7 +767,8 @@ def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
         return 1
 
     def create_job_object(*_args: object) -> int:
-        return _JOB_HANDLE
+        # A NULL handle is how ``CreateJobObjectW`` reports a refusal.
+        return _JOB_HANDLE if jobs.creation_granted else 0
 
     def open_process(_access: int, _inherit: bool, pid: int) -> int:
         jobs.opened[_PROCESS_HANDLE] = pid
@@ -793,6 +834,18 @@ def win32_process_group(monkeypatch: pytest.MonkeyPatch, jobs: FakeJobs) -> type
     return module
 
 
+def record_subprocess_runs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Stub ``subprocess.run`` to record every call's argv instead of running it."""
+    argv_calls: list[list[str]] = []
+
+    def record_run(args: list[str], *_args: object, **_kwargs: object) -> object:
+        argv_calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+    return argv_calls
+
+
 def test_attach_process_group_when_child_gets_a_job_does_limit_it_to_kill_on_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -815,13 +868,7 @@ def test_terminate_process_group_when_job_assignment_refused_does_warn_and_fall_
 ) -> None:
     jobs = FakeJobs(assignment_granted=False)
     module = win32_process_group(monkeypatch, jobs)
-    argv_calls: list[list[str]] = []
-
-    def record_run(args: list[str], *_args: object, **_kwargs: object) -> object:
-        argv_calls.append(args)
-        return subprocess.CompletedProcess(args, 0)
-
-    monkeypatch.setattr(subprocess, "run", record_run)
+    argv_calls = record_subprocess_runs(monkeypatch)
     module.attach_process_group(_CHILD_PID)
 
     module.terminate_process_group(_CHILD_PID)
@@ -954,6 +1001,16 @@ def test_release_process_group_when_job_still_emptying_does_drain_it_before_clos
 # ---------------------------------------------------------------------------
 
 
+def bind_group_seams(
+    monkeypatch: pytest.MonkeyPatch,
+    module: types.ModuleType,
+    group: types.ModuleType,
+) -> None:
+    """Rebind ``module``'s process-group seams to the faked-win32 ``group`` copy."""
+    for seam in ("attach_process_group", "release_process_group", "resume_process_group"):
+        monkeypatch.setattr(module, seam, getattr(group, seam))
+
+
 def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> types.ModuleType:
     """Load a private copy of ``gymrat.exec`` with its win32 creation flags bound.
 
@@ -982,9 +1039,13 @@ def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> type
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "attach_process_group", group.attach_process_group)
-    monkeypatch.setattr(module, "release_process_group", group.release_process_group)
-    monkeypatch.setattr(module, "resume_process_group", group.resume_process_group)
+    bind_group_seams(monkeypatch, module, group)
+    spawn_children_running(monkeypatch)
+    return module
+
+
+def spawn_children_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the creation flags from every asyncio spawn, so no child starts suspended."""
     spawn_exec = asyncio.create_subprocess_exec
     spawn_shell = asyncio.create_subprocess_shell
 
@@ -998,7 +1059,6 @@ def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> type
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_running)
     monkeypatch.setattr(asyncio, "create_subprocess_shell", shell_running)
-    return module
 
 
 def trace_containment(
@@ -1096,3 +1156,73 @@ async def test_exec_argv_when_spawning_on_win32_does_suspend_the_child_until_it_
         "the child was created running, so it acts before containment lands"
     )
     assert jobs.resumed == [steps[2][1]], "the contained child was left suspended"
+
+
+# ---------------------------------------------------------------------------
+# win32 Job Objects: the stdio session child is contained like an exec child
+# ---------------------------------------------------------------------------
+
+# A session child that answers the start command with a completed outcome.
+_COMPLETES = """input(); print('{"type":"outcome","reason":"completed","cost_usd":0.25}')"""
+
+
+def win32_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+    jobs: FakeJobs,
+) -> tuple[list[asyncio.subprocess.Process], list[list[str]]]:
+    """Bind the stdio session's containment to a faked-win32 job layer answering from ``jobs``.
+
+    The spawn, resume, and release seams of ``gymrat.exec`` and the session's own
+    group kill all reach the faked ``process_group`` copy, while the child itself
+    is a real process started running. ``subprocess.run`` — the ``taskkill``
+    fallback — is recorded instead of run.
+
+    Args:
+        monkeypatch: Used to rebind the seams, the spawn, and ``subprocess.run``.
+        jobs: The faked job layer's answers and records.
+
+    Returns:
+        Every child the session spawned, and the argv of every ``subprocess.run`` call.
+    """
+    group = win32_process_group(monkeypatch, jobs)
+    bind_group_seams(monkeypatch, gymrat_exec, group)
+    monkeypatch.setattr("gymrat.supervisor.stdio.kill_process_group", group.kill_process_group)
+    argv_calls = record_subprocess_runs(monkeypatch)
+    spawn_children_running(monkeypatch)
+    return capture_spawns(monkeypatch, "create_subprocess_exec"), argv_calls
+
+
+@pytest.mark.parametrize(
+    ("refusal", "warning"),
+    [
+        pytest.param(
+            lambda: FakeJobs(creation_granted=False),
+            "job creation refused",
+            id="job-creation-refused",
+        ),
+        pytest.param(
+            lambda: FakeJobs(assignment_granted=False),
+            "job assignment refused",
+            id="job-assignment-refused",
+        ),
+    ],
+)
+async def test_stdio_driver_when_host_refuses_the_job_does_fall_back_to_taskkill_with_one_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    refusal: Callable[[], FakeJobs],
+    warning: str,
+) -> None:
+    spawned, argv_calls = win32_stdio(monkeypatch, refusal())
+    session = create_stdio_driver([sys.executable, "-c", _COMPLETES]).start(
+        make_prompt(cwd=str(tmp_path)), collecting_observer().observer
+    )
+
+    outcome = await asyncio.wait_for(session.outcome, _SETTLE_TIMEOUT_S)
+
+    assert outcome == SessionOutcome(reason="completed", cost_usd=0.25)
+    runtime_warnings = [str(w.message) for w in recwarn if w.category is RuntimeWarning]
+    assert len(runtime_warnings) == 1, "a refused job warns once"
+    assert warning in runtime_warnings[0], "the one warning is not the job refusal"
+    assert ["taskkill", "/F", "/T", "/PID", str(spawned[0].pid)] in argv_calls, "no taskkill ran"

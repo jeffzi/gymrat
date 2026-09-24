@@ -26,7 +26,7 @@ import signal as _signal_module
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from gymrat.process_group import (
     TERMINATE_GRACE_S,
@@ -63,13 +63,23 @@ fixed by the interpreter's own host and cannot change under a running process.
 """
 
 _live_process_groups: set[int] = set()
-"""Process-group leader PIDs of bench children currently alive under :func:`exec`.
+"""Process-group leader PIDs of the children :func:`spawn_contained` started and still holds.
 
 A PID is present only for the child's lifetime: it is added once the spawn
-succeeds and removed on every settle path (normal, abort, timeout, reader
-error, cancellation). :func:`kill_live_process_groups` reads it to tear down
-surviving groups on the signal path before a worktree sweep runs.
+succeeds and removed by :func:`release_contained` on every settle path of its
+owner (normal, abort, timeout, reader error, cancellation).
+:func:`kill_live_process_groups` reads it to tear down surviving groups on the
+signal path before a worktree sweep runs.
 """
+
+
+class SpawnError(Exception):
+    """A child that could not be started, or was killed because it could not run.
+
+    The message is the reason, ready to show a user: the interpreter's or the
+    host's rejection of the spawn, the resume failure of a win32 child, or the
+    error that interrupted registering, containing, or resuming a spawned child.
+    """
 
 
 def _child_reset_signal_mask() -> None:
@@ -79,7 +89,7 @@ def _child_reset_signal_mask() -> None:
 
 
 def kill_live_process_groups() -> None:
-    """Stop every process tree with a live bench child, never raising.
+    """Stop every process tree :func:`spawn_contained` started and still holds, never raising.
 
     Every tree is asked to stop first, then the sweep waits out a single shared
     grace, then the stragglers are killed: a child that is itself a gymrat run
@@ -87,6 +97,9 @@ def kill_live_process_groups() -> None:
     request keeps the wait one grace long however many children are live. The
     caller is a signal handler with no event loop left to await on, so the wait
     blocks.
+
+    Groups are signaled without deferring a refusal: the signal path has no
+    event loop to reap a leader on, so there is no later signal to defer to.
 
     Iterates a snapshot so a run settling on another task can deregister its PID
     mid-sweep without disturbing the loop. The process-group calls already
@@ -384,96 +397,188 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
     )
 
 
-def _subprocess_kwargs(options: ExecOptions) -> dict[str, Any]:
-    """Common keyword arguments for both subprocess creation functions.
+class _PipedSpawnKwargs(TypedDict, total=False):
+    """The keyword arguments both exec spawns hand their asyncio creation function."""
 
-    The win32 child is created suspended so :func:`_spawn` can contain it before
-    it runs; any further creation flag has to be combined with that one rather
-    than replace it.
+    cwd: str
+    stdin: int
+    stdout: int
+    stderr: int
+    env: dict[str, str]
+
+
+def _subprocess_kwargs(options: ExecOptions) -> _PipedSpawnKwargs:
+    """The pipe, directory, and environment arguments both exec spawns share.
 
     Args:
         options: Spawn settings for the run.
 
     Returns:
-        The keyword arguments to hand the subprocess creation function.
+        The keyword arguments to hand :func:`spawn_contained`.
+    """
+    kwargs = _PipedSpawnKwargs(
+        cwd=options.cwd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    if options.env is not None:
+        kwargs["env"] = dict(options.env)
+    return kwargs
+
+
+def _containment_kwargs() -> dict[str, Any]:
+    """The creation arguments that put a child in a tree this process can tear down.
+
+    A POSIX child leads its own session and starts with the termination signals
+    the parent deferred around the spawn unblocked again. A win32 child is
+    created suspended so it runs nothing before it has joined its job.
+
+    Returns:
+        The keyword arguments :func:`spawn_contained` adds to every spawn.
     """
     posix = sys.platform != "win32"
     kwargs: dict[str, Any] = {
-        "cwd": options.cwd,
-        "stdin": asyncio.subprocess.PIPE,
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.PIPE,
         "start_new_session": posix,
         "preexec_fn": _child_reset_signal_mask if posix else None,
     }
     if _CREATE_SUSPENDED:
         kwargs["creationflags"] = _CREATE_SUSPENDED
-    if options.env is not None:
-        kwargs["env"] = dict(options.env)
     return kwargs
+
+
+def release_contained(pid: int) -> None:
+    """Forget a child :func:`spawn_contained` started, and drop its container.
+
+    Called once the child's owner has stopped and reaped it. On win32 dropping
+    the job is the last sweep of the tree, so a descendant that outlived the
+    child does not outlive its owner either.
+
+    Args:
+        pid: The process ID :func:`spawn_contained` returned the child with.
+    """
+    _live_process_groups.discard(pid)
+    release_process_group(pid)
+
+
+async def _kill_and_reap_leader(proc: asyncio.subprocess.Process) -> None:
+    """Kill and reap the child alone, for when signaling its whole group failed."""
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    _close_pipes(proc)
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(proc.wait(), _CANCEL_REAP_TIMEOUT_S)
+
+
+async def _discard_failed_spawn(proc: asyncio.subprocess.Process) -> None:
+    """Tear down a child that was spawned but never made it into its container, then release it.
+
+    The spawn cannot hand such a child to a caller, so nothing else would ever
+    stop it: a POSIX child would run on unsupervised, and a win32 child, created
+    suspended, would hold its owner open with a process that can neither run nor
+    exit on its own. So when stopping the tree fails part-way, the child itself
+    is still killed and reaped, and it is released whatever happens.
+
+    Args:
+        proc: The child to stop, reap, and release.
+
+    Raises:
+        Exception: Whatever interrupted signaling the tree or releasing the
+            container, such as a warning a warnings filter escalated to an
+            error. It is raised only once the child is down and released.
+    """
+    try:
+        await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
+    except Exception:
+        await _kill_and_reap_leader(proc)
+        raise
+    finally:
+        release_contained(proc.pid)
+
+
+async def spawn_contained[**P](
+    create_child: Callable[P, Awaitable[asyncio.subprocess.Process]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> asyncio.subprocess.Process:
+    """Start a child that cannot outlive this process's teardown of it.
+
+    The child is created through ``create_child(*args, **kwargs)`` plus the
+    containment arguments: its own POSIX session, or suspended on win32. It is
+    then registered for :func:`kill_live_process_groups`, joined to its
+    kill-on-close job, and resumed, all while termination signals are deferred,
+    so a signal landing mid-spawn still finds the child registered and the child
+    runs its first instruction already inside its container. The caller owns the
+    child from then on and must hand it to :func:`release_contained` once it has
+    stopped and reaped it.
+
+    Args:
+        create_child: The asyncio creation function,
+            ``asyncio.create_subprocess_exec`` or
+            ``asyncio.create_subprocess_shell``.
+        *args: Positional arguments for ``create_child``: the program and its
+            arguments, or the shell command line.
+        **kwargs: Keyword arguments for ``create_child`` — pipes, ``cwd``,
+            ``env``, a stream ``limit``. The containment arguments are added
+            here and must not be passed.
+
+    Returns:
+        The running, registered, contained child.
+
+    Raises:
+        SpawnError: The interpreter or the host rejected the spawn before any
+            process existed; or registering, containing, or resuming the child
+            failed — the host would not resume it, or any exception was raised
+            on the way, such as a containment warning a warnings filter
+            escalated to an error. A child that exists is killed, reaped, and
+            released before this raises. When that teardown fails too, the
+            message reports both failures and the containment error stays the
+            cause: the teardown's exception is never raised in its place.
+    """
+    with deferring_termination_signals():
+        try:
+            # Every asyncio creation function forwards unknown keywords to Popen,
+            # which accepts the containment arguments; no ParamSpec can say so.
+            create_contained = cast(
+                "Callable[..., Awaitable[asyncio.subprocess.Process]]", create_child
+            )
+            proc = await create_contained(*args, **kwargs, **_containment_kwargs())
+        except (OSError, ValueError) as error:
+            # ValueError covers what CPython rejects while marshalling the spawn
+            # arguments, before any fork: a NUL byte in an argument, in cwd, or
+            # in an env value, and an env name containing "=".
+            raise SpawnError(str(error)) from error
+        # Once the child exists, any failure must end in its teardown: a child
+        # the caller never receives is one nothing else would ever stop.
+        containment_error: Exception | None = None
+        try:
+            _live_process_groups.add(proc.pid)
+            attach_process_group(proc.pid)
+            resumed = resume_process_group(proc.pid)
+        except Exception as error:  # noqa: BLE001 -- re-raised as SpawnError once the child is torn down
+            containment_error = error
+            resumed = False
+    if not resumed:
+        teardown_error: Exception | None = None
+        try:
+            await _discard_failed_spawn(proc)
+        except Exception as error:  # noqa: BLE001 -- reported in the SpawnError below, which callers expect instead
+            teardown_error = error
+        reason = (
+            f"child process {proc.pid} could not be resumed"
+            if containment_error is None
+            else str(containment_error)
+        )
+        if teardown_error is not None:
+            reason = f"{reason} (tearing the child down also failed: {teardown_error})"
+        raise SpawnError(reason) from containment_error or teardown_error
+    return proc
 
 
 def _spawn_failure(message: str) -> ExecResult:
     """Build the failed :class:`ExecResult` a spawn error resolves to."""
     stderr = f"{message}\n"
     return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
-
-
-async def _discard_suspended_child(proc: asyncio.subprocess.Process) -> ExecResult:
-    """Kill a child the host refused to resume and resolve the run as a spawn failure.
-
-    On win32 the child is created suspended, so one that never starts would hold
-    the run open with a process that can neither run nor exit on its own.
-
-    Args:
-        proc: The suspended child to kill and reap.
-
-    Returns:
-        The failed :class:`ExecResult` the run resolves to.
-    """
-    try:
-        await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
-    finally:
-        _live_process_groups.discard(proc.pid)
-        release_process_group(proc.pid)
-    return _spawn_failure(f"child process {proc.pid} could not be resumed")
-
-
-async def _spawn(
-    create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
-) -> asyncio.subprocess.Process | ExecResult:
-    """Spawn a child via ``create_child``, registering and containing its process group.
-
-    Masks termination signals across the spawn-and-register pair so a signal
-    delivered between them still finds the child in the live registry when the
-    deferred handler fires :func:`kill_live_process_groups`. Containment
-    (:func:`attach_process_group`) and the resume that lets a win32 child start
-    running happen in the same masked block, in that order: the child reaches
-    its first instruction already inside the container that tears it down.
-
-    Args:
-        create_child: No-arg callable returning the subprocess creation
-            awaitable (``create_subprocess_shell`` or
-            ``create_subprocess_exec``).
-
-    Returns:
-        The spawned process, or an :class:`ExecResult` with exit code 1 when
-        the spawn itself fails or the child cannot be resumed.
-    """
-    try:
-        with deferring_termination_signals():
-            proc = await create_child()
-            _live_process_groups.add(proc.pid)
-            attach_process_group(proc.pid)
-            resumed = resume_process_group(proc.pid)
-    except (OSError, ValueError) as error:
-        # ValueError covers what CPython rejects while marshalling the spawn
-        # arguments, before any fork: a NUL byte in an argument, in cwd, or in
-        # an env value, and an env name containing "=".
-        return _spawn_failure(str(error))
-    if not resumed:
-        return await _discard_suspended_child(proc)
-    return proc
 
 
 async def _settle(
@@ -532,18 +637,18 @@ async def _settle(
 
 
 async def _run(
-    create_child: Callable[[], Awaitable[asyncio.subprocess.Process]],
+    spawn: Callable[[], Awaitable[asyncio.subprocess.Process]],
     options: ExecOptions,
 ) -> ExecResult | ExecTimeoutError:
-    """Shared entry point: spawn via ``create_child``, then settle.
+    """Shared entry point: spawn through ``spawn``, then settle.
 
     Both :func:`exec` (shell) and :func:`exec_argv` (direct) delegate here
-    after building their creation callable, so the abort short-circuit, settle
-    loop, and teardown are written once.
+    with their own :func:`spawn_contained` call, so the abort short-circuit,
+    settle loop, and teardown are written once.
 
     Args:
-        create_child: No-arg callable returning the subprocess creation
-            awaitable.
+        spawn: Starts the contained child; called only when the run is not
+            already aborted.
         options: Spawn, timeout, and abort settings for the run.
 
     Returns:
@@ -553,10 +658,10 @@ async def _run(
     if options.abort is not None and options.abort.is_set():
         return ExecResult("", "", FAILURE_EXIT_CODE, 0, 0)
 
-    spawn_result = await _spawn(create_child)
-    if isinstance(spawn_result, ExecResult):
-        return spawn_result
-    proc = spawn_result
+    try:
+        proc = await spawn()
+    except SpawnError as error:
+        return _spawn_failure(str(error))
 
     try:
         return await _settle(proc, options, OutputBuffer(), OutputBuffer())
@@ -565,8 +670,7 @@ async def _run(
             if proc.returncode is None:
                 await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
         finally:
-            _live_process_groups.discard(proc.pid)
-            release_process_group(proc.pid)
+            release_contained(proc.pid)
 
 
 async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:  # noqa: A001 -- names the subprocess executor `exec`
@@ -585,9 +689,10 @@ async def exec(command: str, options: ExecOptions) -> ExecResult | ExecTimeoutEr
         An :class:`ExecResult` on completion (including failures), or an
         :class:`ExecTimeoutError` when the timeout is exceeded.
     """
-    kwargs = _subprocess_kwargs(options)
     return await _run(
-        lambda: asyncio.create_subprocess_shell(command, **kwargs),
+        lambda: spawn_contained(
+            asyncio.create_subprocess_shell, command, **_subprocess_kwargs(options)
+        ),
         options,
     )
 
@@ -609,8 +714,9 @@ async def exec_argv(argv: Sequence[str], options: ExecOptions) -> ExecResult | E
     """
     if not argv:
         return _spawn_failure("argv is empty: no program to run")
-    kwargs = _subprocess_kwargs(options)
     return await _run(
-        lambda: asyncio.create_subprocess_exec(*argv, **kwargs),
+        lambda: spawn_contained(
+            asyncio.create_subprocess_exec, *argv, **_subprocess_kwargs(options)
+        ),
         options,
     )
