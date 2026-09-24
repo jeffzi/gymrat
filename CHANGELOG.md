@@ -7,20 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-24
+
 ### Added
 
-- Refuse the supervised agent's file edits outside the experiment worktree and its gymrat commands
-  run in the background.
+- Refuse the supervised agent's file edits outside the experiment worktree, and its gymrat commands
+  when run in the background.
 
 ### Changed
 
-- Refuse `iterate` and `probe` run from the command line, and refuse `init` entirely, while a
-  supervised run is live; use the `probe` and `iterate` agent tools instead.
+- **Breaking:** Refuse `iterate` and `probe` typed in a shell, and `init` from any source, while a
+  supervised run is live; the agent uses the `probe` and `iterate` tools instead.
 
 ### Fixed
 
-- Stop a bench's descendants outliving the run on Windows when the bench spawned them before it
-  joined the run's process container.
+- Stop the supervised agent, and a bench's descendants on Windows, from outliving the run when
+  gymrat is stopped or signaled.
 
 ## [0.20.0] - 2026-09-19
 
@@ -36,10 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Refresh the dashboard's session rows after every tool end, so a gymrat command run inside a
   subagent shows at once.
-- Tear a process tree down on Windows, where the absent `SIGKILL` previously aborted every teardown
-  that reached the kill step.
-- Kill Windows job members explicitly before closing the handle, so the process tree is fully gone
-  when the teardown returns instead of dying asynchronously.
+- Tear down a bench's whole process tree on Windows when gymrat stops or is cancelled.
 
 ## [0.19.0] - 2026-09-14
 
@@ -77,20 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Find the session when a command runs from inside a session worktree.
 - Keep the supervise dashboard's session result visible after a tool finishes.
-- Report the supervised run's span duration from the run result instead of re-measuring
-  wall-clock time.
+- Report the supervised run span's duration to match the run summary.
 
 ## [0.17.0] - 2026-09-11
 
 ### Added
 
 - Append a `command` record to the session log for every command run inside a session.
-- Add a `compaction` event to the supervisor event log marking when the agent's context is compacted.
-- Add the `otel` optional extra (`pip install gymrat[otel]`) to export OpenTelemetry spans for every
+- Add a `compaction` event and a `session_id` on the launch event to the supervisor event log.
+- Add the `otel` optional extra (`pip install 'gymrat[otel]'`) to export OpenTelemetry spans for every
   command and supervised run when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 - Add `gymrat export` to replay a finished session's logs into the same span structure for post-hoc
   analysis.
-- Add `session_id` to the supervisor launch event.
 - Publish the session and supervisor log formats as JSON Schema, AsyncAPI 3.0, and a Markdown event
   reference under `schemas/` and `docs/`.
 
@@ -104,8 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Keep the supervise dashboard's timers running for the whole run.
-- Report the action the supervisor took on a cap — in the dashboard, plain output, and supervisor
-  event log — instead of always saying "interrupting".
+- Report the action the supervisor took on a cap instead of always saying "interrupting".
 - Stop sending a follow-up to a session a cap is ending.
 - Reject a second span processor once tracing is configured.
 
@@ -114,8 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add `follow_up` and `turn_end` lines to the supervisor event log.
-- Add a `guard` end reason to the closing summary (exit 1) when the follow-up ceiling, no-progress,
-  or consecutive-discard guard trips.
+- Add a `guard` end reason to the closing summary when a runaway-loop guard trips.
 
 ### Changed
 
@@ -134,19 +129,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Run a doctor pre-flight before `supervise` launches: any failed check renders the report to stderr
-  and exits before any lock is taken.
+- Run the `doctor` checks before `supervise` launches and refuse to launch on a failure.
 - Add `supervise --baseline <ref>` to pin a freshly opened session to the given git ref (defaults to
   HEAD; ignored when resuming an existing session).
-- Add `gymrat stop -m "<report>"` to record a closing report in the session log without closing the
-  session.
-- Accept `--format json` on `stop`.
+- Add `gymrat stop -m "<report>"`, with `--format json`, to record a closing report in the session
+  log without closing the session.
 - Report whether the session is stopped in `gymrat status`, in both the text report and a new
   `stopped` key in JSON output.
 
 ### Changed
 
-- Refuse to launch `supervise` when a stop condition is already met (exit 2).
+- Refuse to launch `supervise` when a stop condition is already met.
 - Downgrade launch refusals to a warning when `--force` is passed.
 - Open the session and record the baseline in `supervise` before the agent starts.
 
@@ -166,8 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sync` when a supervised session has a wall-clock cap active.
 - Add a top-level `budget` object to the JSON output of `iterate`, `keep`, `discard`, `measure`,
   `compare`, and `status`.
-- Add elapsed duration to baseline records (measurement duration) and iteration records (whole
-  iteration duration).
+- Add elapsed duration to baseline records and iteration records.
 - Add a fingerprint of the experiment worktree at measurement time to iteration records.
 
 ### Changed
@@ -372,7 +364,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add structured error reporting for every gymrat failure: a clear message and, where applicable, an
   actionable hint.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/jeffzi/gymrat/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jeffzi/gymrat/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jeffzi/gymrat/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/jeffzi/gymrat/compare/v0.17.0...v0.18.0
