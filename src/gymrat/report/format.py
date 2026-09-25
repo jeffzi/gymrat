@@ -41,7 +41,7 @@ _RELATIVE_SPREAD_CAP_PCT = 100
 
 
 def _non_finite_token(value: float) -> str:
-    """The token a non-finite reading prints, matching the differ/JSON contract."""
+    """The token the text report prints for a non-finite reading (JSON writes ``null``)."""
     if math.isnan(value):
         return "NaN"
     return "Infinity" if value > 0 else "-Infinity"
