@@ -6,23 +6,9 @@ nothing to sweep afterwards, and the raw samples have to survive the run to reac
 the log. Holding the repository lock across the call is the caller's job — two
 concurrent sessions' bench runs would perturb each other's measurements.
 
-Three asymmetries drive the shape of this module:
-
-- **The confirmation rerun is one-sided.** Only a rerun that *also* gates a
-  metric makes its regression stand; a rerun that stays silent about a metric
-  disproves nothing, so that metric is left regressed. A false alarm costs the
-  agent an edit it did not need; a missed regression is caught by the next
-  iteration's baseline.
-- **Only the verdict word moves.** When a rerun disagrees, the metric is demoted
-  to no-signal but its delta, noise, and p-value stay the first run's — they
-  describe the first run's samples, the ones the record stores and the table
-  draws its medians from. The rerun's own rounds are kept separately under
-  ``confirm``.
-- **A ratio with no value is recorded as ``None``.** A degenerate ratio — a
-  baseline median of zero — yields ``NaN``, which JSON writes as ``null``. Making
-  that substitution here keeps the record a caller holds identical to the one
-  read back off the log, and never lets a zero stand where there was no
-  measurement.
+How a confirmation rerun rewrites the verdicts is
+:func:`gymrat.loop.iterate.confirm.apply_confirmation`'s contract, and how a
+degenerate delta is recorded is :func:`gymrat.loop.iterate.bench.recorded_delta`'s.
 
 The loop header lands last, replacing the comparison table's own header, so the
 table opens on the loop's terms rather than on ``gymrat compare``'s.
@@ -208,7 +194,8 @@ async def iterate_session(
         GymratError: When no session has been started, when the last iteration is
             still unsettled, or when the bench command fails.
         LoopStopError: When a configured stop condition has already been met,
-            before anything is measured or recorded.
+            or (as :class:`BudgetExceededError`) the session's time budget is
+            spent, before anything is measured or recorded.
     """
     opts = options if options is not None else IterateOptions()
     required = require_open_session(root, "measuring an edit")

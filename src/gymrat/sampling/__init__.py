@@ -214,6 +214,10 @@ def resolve_dir(target: Target, repo_dir: str, worktrees: list[WorktreeInfo]) ->
 
     Returns:
         The directory the benchmark runs in.
+
+    Raises:
+        GymratError: When the system temp directory cannot be resolved, or
+            ``git worktree add`` fails for the ref.
     """
     if isinstance(target, RefTarget):
         worktree = plan_worktree(target)

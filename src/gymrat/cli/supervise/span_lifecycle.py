@@ -53,9 +53,6 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
 ) -> tuple[SessionPrompt, SessionObserver, TracingState]:
     """Configure tracing and open session/run spans when the endpoint is set.
 
-    When no tracing endpoint is configured, the inputs pass through unchanged
-    and no spans are opened.
-
     Args:
         session_id: Unique session identifier set as a span attribute.
         branch: Git branch name recorded on the session span.
@@ -72,8 +69,9 @@ def setup_tracing(  # noqa: PLR0913 — keyword-only tracing context from the se
             tracing observer when tracing activates.
 
     Returns:
-        A three-tuple of ``(prompt, observer, state)``.  When tracing is
-        inactive the prompt and observer are returned unchanged; when active
+        A three-tuple of ``(prompt, observer, state)``.  When no tracing
+        endpoint is configured the prompt and observer are returned unchanged
+        and no spans are opened; when tracing is active
         the prompt carries a ``traceparent`` and the observer fans out to
         both the reporter and the tracing observer.
     """
@@ -131,7 +129,15 @@ def finalize_tracing(
     state: TracingState,
     result: SupervisionResult | None,
 ) -> None:
-    """End the run and session spans, set final attributes, and flush."""
+    """End the run and session spans, set the run's outcome attributes, and flush.
+
+    Args:
+        state: The spans :func:`setup_tracing` opened; either may be ``None``
+            when tracing never activated.
+        result: The supervision outcome, or ``None`` when the run produced
+            none, in which case the spans close without outcome attributes or
+            an error status.
+    """
     from gymrat.telemetry.provider import flush_tracing  # noqa: PLC0415
 
     run_span = state.run_span

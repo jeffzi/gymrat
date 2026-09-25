@@ -116,6 +116,9 @@ def apply_debug(debug: bool) -> None:  # noqa: FBT001 -- 1:1 pass-through of a c
     Never disables debug mode: a command's local ``--debug`` defaulting to
     ``False`` must not undo the root ``--debug`` flag already applied by
     :func:`set_debug_mode`.
+
+    Args:
+        debug: The command's own ``--debug`` flag.
     """
     if debug:
         set_debug_mode(True)
@@ -181,6 +184,9 @@ def apply_color_override(color: bool | None) -> bool | None:  # noqa: FBT001 -- 
     Only writes when ``color`` is not ``None`` so a subcommand that declares no
     local ``--color`` flag does not erase a root flag already applied by
     :func:`set_color_override`.
+
+    Args:
+        color: The subcommand's ``--color``/``--no-color`` flag, or ``None`` when neither was given.
 
     Returns:
         The color override as passed in.
@@ -704,14 +710,15 @@ def budget_for_report() -> tuple[str, BudgetSummary | None]:
 def warn_duration_over_budget(*, halve: bool) -> None:
     """Warn on stderr when the estimated duration would outlast the budget.
 
+    Nothing is written when the budget or the estimate is unknown.
+
     Args:
         halve: When ``True``, check half the last iterate estimate — one side,
             the shape ``measure`` runs — and name that per-side figure on its
             own. When ``False``, check the full estimate — both sides, the
             shape ``compare`` runs — and lead with the full cost, keeping the
             per-side figure in parentheses so a per-side number that still
-            fits does not read as if nothing were wrong. Silently returns when
-            the budget or estimate is unknown.
+            fits does not read as if nothing were wrong.
     """
     root = _repo_root_or_none()
     if root is None:

@@ -74,7 +74,20 @@ def render_row(
 def render_running_row(
     node: NodeState, spinner: Spinner, running_ms: float | None
 ) -> RenderableType:
-    """Alert state shows a static glyph; normal state spins ``spinner``."""
+    """Render a running checklist row: verb, note, target, and live timer.
+
+    ``spinner`` is updated in place so its animation carries across frames.
+
+    Args:
+        node: The row's state.
+        spinner: The row's spinner, reused from frame to frame.
+        running_ms: How long the row has been running, or ``None`` to show no
+            timer.
+
+    Returns:
+        A static alert-glyph line when the row is in alert state, otherwise the
+        updated ``spinner``.
+    """
     style = STYLE_ALERT if node.alert else STYLE_RUNNING
     text = Text()
     text.append(node.gerund, style=STYLE_VERB)
@@ -92,7 +105,17 @@ def render_running_row(
 
 
 def render_done_row(node: NodeState) -> Text:
-    """A :class:`JudgeDetail` detail is styled by the view; a string gets ``STYLE_META``."""
+    """Render a completed phase: its glyph, past-tense label, detail, and elapsed time.
+
+    A :class:`JudgeDetail` is styled by :func:`build_judge_detail`; a plain
+    string detail gets ``STYLE_META``.
+
+    Args:
+        node: The row's state.
+
+    Returns:
+        The styled row.
+    """
     text = Text()
     text.append(f"{_glyph(node)} ", style=STYLE_ALERT if node.alert else STYLE_DONE)
     text.append(node.past)

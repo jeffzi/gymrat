@@ -19,8 +19,8 @@ STRICT_FORBID = ConfigDict(strict=True, extra="forbid")
 def coerce_integer(value: object) -> object:
     """Fold an integral float into ``int`` so it satisfies strict integer validation.
 
-    Folding ``5.0`` to ``5`` lets it pass; every other value is passed through for
-    the model to accept or reject.
+    Only the fold happens here; accepting or rejecting the value stays the
+    model's job.
 
     Args:
         value: The value to coerce.
@@ -40,6 +40,9 @@ def _needs_quoting(part: str) -> bool:
     An empty part would vanish into a bare dot; a part carrying a dot, a quote,
     or whitespace would read as a deeper path (or a truncated one) than the
     writer actually named.
+
+    Args:
+        part: One segment of an error location.
 
     Returns:
         Whether the part needs quoting to survive a round-trip.

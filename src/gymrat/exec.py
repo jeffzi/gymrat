@@ -221,6 +221,9 @@ def _exit_code(returncode: int | None) -> int:
     has not been collected yet as ``None``; both collapse to
     :data:`FAILURE_EXIT_CODE` rather than leaking a negative or missing value.
 
+    Args:
+        returncode: The child's raw return code.
+
     Returns:
         The non-negative exit code, or :data:`FAILURE_EXIT_CODE` for abnormal
         terminations.
@@ -294,6 +297,11 @@ async def _terminate_reap_and_drain(
     Both settle paths that abandon the normal wait -- a reader error and a
     timeout/abort -- need the same sequence: stop and reap first, then let the
     readers, unblocked by the pipe close, finish before the outcome is built.
+
+    Args:
+        proc: The child to terminate and reap.
+        stdout_task: The reader draining the child's stdout.
+        stderr_task: The reader draining the child's stderr.
     """
     await _terminate_and_reap(proc, readers=(stdout_task, stderr_task))
     await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
@@ -333,6 +341,10 @@ async def _read_stream(reader: asyncio.StreamReader, buffer: OutputBuffer) -> No
 
     One incremental decoder per stream reassembles a multi-byte character split
     across pipe reads; the raw byte length of each read drives the byte counts.
+
+    Args:
+        reader: The child pipe to read.
+        buffer: The buffer that receives the decoded text and byte counts.
     """
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while True:
@@ -350,6 +362,10 @@ async def _feed_stdin(proc: asyncio.subprocess.Process, data: str | None) -> Non
 
     A child that exits without reading a large payload breaks the write; that is
     an expected end-of-run condition, not an error to surface.
+
+    Args:
+        proc: The child whose stdin receives ``data``.
+        data: The text to write; ``None`` or empty closes stdin without writing.
     """
     stdin = proc.stdin
     if stdin is None:
@@ -374,6 +390,11 @@ async def _await_normal(
 
     Settling on stdio close rather than process exit is what captures output a
     background descendant flushes after the shell itself has returned.
+
+    Args:
+        proc: The child to reap.
+        stdout_task: The reader draining the child's stdout.
+        stderr_task: The reader draining the child's stderr.
     """
     await asyncio.gather(stdout_task, stderr_task)
     await proc.wait()

@@ -107,7 +107,7 @@ def start_span(name: str, *, span_key: str | None = None, **kwargs: object) -> S
         name: The span name.
         span_key: When given, derives a deterministic span ID from the
             session ID and this key.
-        kwargs: Additional keyword arguments forwarded to the tracer's
+        **kwargs: Additional keyword arguments forwarded to the tracer's
             ``start_span``.
 
     Returns:

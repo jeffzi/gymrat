@@ -46,14 +46,14 @@ def geomean_label(n: int) -> str:
     """The geomean row's label, carrying the count of metrics behind the figure.
 
     A table with one candidate names the count here, which frees its cells of
-    everything but the aggregate itself. An empty geomean has no count to name
-    and takes :data:`GEOMEAN_LABEL` alone.
+    everything but the aggregate itself.
 
     Args:
         n: The count of metrics behind the aggregate figure.
 
     Returns:
-        The label with the metric count, or the bare label when ``n`` is zero.
+        The label with the metric count, or the bare :data:`GEOMEAN_LABEL` when
+        ``n`` is zero.
     """
     return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({pluralize(n, 'stable metric')})"
 
@@ -144,14 +144,14 @@ def geomean_value_style(
     """How a geomean's figure is styled: bold always, colored once it clears the noise band.
 
     The figure is an average of ratios, so it moves whether or not anything did.
-    A value inside the band is emboldened and left uncolored. ``outcomes`` — the
-    display class of each metric behind the figure — vetoes the color when every
-    one is quiet, since coloring that would announce a win the rows all decline
-    to claim. An empty ``outcomes`` leaves the band deciding alone.
+    A value inside the band is emboldened and left uncolored. When every metric
+    behind the figure is quiet the color is vetoed, since coloring it would
+    announce a win the rows all decline to claim.
 
     Args:
         geomean: The aggregate whose figure is being styled.
-        outcomes: The display class of each metric behind the figure.
+        outcomes: The display class of each metric behind the figure; empty
+            leaves the band deciding alone.
 
     Returns:
         A rich style string: ``"bold"``, ``"bold green"``, or ``"bold red"``.

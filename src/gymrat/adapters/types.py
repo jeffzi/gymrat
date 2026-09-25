@@ -77,7 +77,9 @@ class Adapter(Protocol):
             One value per metric name.
 
         Raises:
-            AdapterError: When ``stdout`` yields no usable metric.
+            AdapterError: When ``stdout`` yields no usable metric, or yields a
+                metric name the adapter cannot accept (such as one carrying
+                more than one ``#``); either aborts the whole parse.
         """
         ...
 

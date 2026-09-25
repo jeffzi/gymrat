@@ -213,14 +213,16 @@ def style_verdict_cell(
     Reproduces :func:`join_verdict_cell`'s layout —
     same visible text, so a column sized on the plain join renders it flush —
     wrapping the glyph, the delta (or the word standing in for it) and the band
-    in the styles the caller passes. A ``None`` style leaves that field plain.
+    in the styles the caller passes.
 
     Args:
         parts: The verdict's fields.
         widths: The column widths the fields pad to.
-        glyph_style: The style the glyph wears.
-        delta_style: The style the delta or word wears.
-        band_style: The style the noise band wears.
+        glyph_style: The style the glyph wears, or ``None`` to leave it plain.
+        delta_style: The style the delta or word wears, or ``None`` to leave it
+            plain.
+        band_style: The style the noise band wears, or ``None`` to leave it
+            plain.
 
     Returns:
         The cell as rich markup.
@@ -279,8 +281,7 @@ def geomean_column_cell(
 
     The multi-candidate table names the scope once in its label column and states
     each candidate's own figure and count in the candidate columns, so this builds
-    one column's cell — the empty case falling back to the ``no stable metrics``
-    stand-in rather than the ``0.0%`` an empty geomean computes to.
+    one column's cell.
 
     Args:
         geomean: The candidate's aggregate over the scope's metrics.
@@ -290,7 +291,8 @@ def geomean_column_cell(
     Returns:
         The cell's text, and the spans styling it: the delta by
         :func:`~gymrat.report.geomean_label.geomean_value_style`, the provenance
-        dimmed.
+        dimmed. An empty geomean shows the ``no stable metrics`` stand-in rather
+        than the ``0.0%`` it computes to.
     """
     parts = geomean_parts(geomean)
     if parts is None:

@@ -44,9 +44,8 @@ carries no sign and the parser routes only sign-free tokens here.
 def _js_number(raw: str) -> float | None:
     """Parse ``raw`` with JavaScript ``Number()`` semantics.
 
-    Returns the finite float ``Number(raw)`` would yield, or ``None`` when JS
-    would produce ``NaN`` or a non-finite value. The distinction from Python's
-    ``float`` matters:
+    The result matches what ``Number(raw)`` would yield in JS. Where that differs
+    from Python's ``float`` matters:
 
     - An empty or whitespace-only token is ``None`` here (JS ``Number("")`` is
       ``0``), so an unset shell variable is not read as a genuine zero.
@@ -54,6 +53,9 @@ def _js_number(raw: str) -> float | None:
     - Underscore separators, and the words ``inf``/``infinity``/``nan`` that
       Python's ``float`` accepts, are rejected because JS ``Number`` rejects them
       (or yields a non-finite value that fails the ``isfinite`` guard).
+
+    Args:
+        raw: The value token after a METRIC line's last ``=``.
 
     Returns:
         The finite float, or ``None`` when the token is empty, non-numeric, or
@@ -102,7 +104,8 @@ class _MetricLinesAdapter:
             One median value per metric name.
 
         Raises:
-            AdapterError: When no line yields a usable metric.
+            AdapterError: When no line yields a usable metric, or a metric name
+                carries more than one ``#``.
         """
         samples: dict[str, list[float]] = {}
 

@@ -43,6 +43,13 @@ repos:
         language: system
         types_or: [python, pyi]
 
+  # Docstring Args: sections must match the signature
+  - repo: https://github.com/jsh9/pydoclint
+    rev: 0.9.1
+    hooks:
+      - id: pydoclint
+        args: [--config=pyproject.toml]
+
   # Python code line limits
   - repo: https://github.com/jeffzi/pymaxlines
     rev: v0.7.0

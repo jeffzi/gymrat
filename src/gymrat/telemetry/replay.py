@@ -156,6 +156,12 @@ def _create_command_spans(
     as events on the session span.  Records between two commands are attached
     to the later command's span.
 
+    Args:
+        numbered_records: The session's records with their log line numbers.
+        session_id: The session the spans belong to.
+        session_span: The span that records outside every command attach to.
+        run_infos: The supervisor runs' time ranges and spans.
+
     Returns:
         The number of command spans created.
     """

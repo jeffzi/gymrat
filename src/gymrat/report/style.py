@@ -290,12 +290,10 @@ def make_capture_console(*, color: bool | None, width: int) -> Console:
     - ``color=True`` forces ANSI even when ``NO_COLOR`` is set, by declaring the
       capture a terminal with color enabled.
     - ``color=False`` suppresses ANSI even when ``FORCE_COLOR`` is set.
-    - ``color=None`` reads the environment then TTY-ness, with this
-      precedence: ``FORCE_COLOR`` (any value but ``0``/``false``/empty) forces
-      color on even when ``NO_COLOR`` is also set, ``NO_COLOR`` alone forces it
-      off, and with neither a captured buffer is not a TTY, so the output is
-      plain. ``FORCE_COLOR`` winning over ``NO_COLOR`` is the one place rich's own
-      detection differs, so that case is resolved here rather than deferred.
+    - ``color=None`` defers to :func:`color_from_env`, which owns the
+      ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs from rich's
+      own detection. With neither variable set, a captured buffer is not a TTY,
+      so the output is plain.
 
     Wide content is never wrapped or cropped (``soft_wrap``), so the width only
     bounds justification, never the text.
@@ -396,7 +394,7 @@ def render_lines(
     dropped, so the result is exactly the visible text with no soft wrapping.
 
     Args:
-        renderables: One or more rich renderables or markup strings to print.
+        *renderables: One or more rich renderables or markup strings to print.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
         width: The terminal width the console renders against.

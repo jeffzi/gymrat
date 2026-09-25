@@ -144,15 +144,14 @@ def validate_config_dict(config: dict[str, object]) -> None:
     """Validate an in-memory config dict the same way a loaded ``gymrat.toml`` is.
 
     Runs the strict schema (``extra="forbid"``) and the cross-field loop-key
-    checks over ``config``, raising a :class:`GymratError` on the first problem.
-    Lets a writer (the init scaffold) reject a config before touching disk without
-    a temp-file round-trip.
+    checks over ``config``. Lets a writer (the init scaffold) reject a config
+    before touching disk without a temp-file round-trip.
 
     Args:
         config: In-memory config data, shaped like a parsed ``gymrat.toml``.
 
     Raises:
-        GymratError: When a schema or cross-field validation problem is found.
+        GymratError: On the first schema or cross-field validation problem.
     """
     config_file, problems = validate_and_convert(config)
     if problems:
@@ -220,6 +219,10 @@ def resolve_benchless_config(
 
     Returns:
         The fully settled :class:`BenchlessConfig`.
+
+    Raises:
+        GymratError: When a flag, env var, config file, cross-field check, or
+            runbook fails to validate.
     """
     config, _ = _settle_config(flags, base_dir)
     return config
@@ -228,8 +231,7 @@ def resolve_benchless_config(
 def resolve_config(flags: CliFlags, base_dir: str | Path | None = None) -> ResolvedConfig:
     """Settle a run configuration from flags, env vars, config file, and defaults.
 
-    ``bench`` has no default and must come from a flag or the config file — a run
-    without it raises.
+    ``bench`` has no default and must come from a flag or the config file.
 
     Args:
         flags: CLI flags, taking precedence over env vars and the config file.

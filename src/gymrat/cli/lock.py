@@ -159,6 +159,11 @@ async def with_repo_lock[T](
 
     Returns:
         The value returned by ``body``.
+
+    Raises:
+        LockContentionError: When another process already holds the lock.
+        GymratError: When the lock file cannot be opened. Any exception
+            ``body`` raises also propagates unchanged.
     """
     trace = CommandTrace(args=args if args is not None else {})
     start = _clock.monotonic_ms()

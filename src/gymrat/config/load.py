@@ -13,18 +13,13 @@ from gymrat.errors import GymratError
 
 
 def _read_source(path: Path) -> tuple[str | None, str | None]:
-    """Read the config file, returning ``(text, problem)`` rather than raising.
-
-    On success the first element is the file content (BOM-stripped) and the
-    second is ``None``.  When the file does not exist both elements are
-    ``None``.  On any other read failure the first element is ``None`` and
-    the second describes the error.
+    """Read the config file, reporting a read failure as a problem rather than raising.
 
     Args:
         path: Path to the config file to read.
 
     Returns:
-        A ``(text, problem)`` pair: the file content and ``None`` on success,
+        A ``(text, problem)`` pair: the BOM-stripped file content and ``None`` on success,
         ``(None, None)`` when the file is absent, or ``(None, message)`` on
         read failure.
     """

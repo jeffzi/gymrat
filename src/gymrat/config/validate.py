@@ -69,9 +69,9 @@ def loop_key_problems(config: BenchlessConfig) -> list[str]:
 def runbook_problem(runbook: str, base_dir: str | Path | None) -> str | None:
     """Return a problem string when ``runbook`` does not name an existing file.
 
-    Resolved against ``base_dir`` (or the cwd when ``None``), matching how the
-    implicit ``gymrat.toml`` lookup is anchored — a runbook path is authored
-    relative to the repository the config lives in.
+    The runbook is anchored the same way as the implicit ``gymrat.toml`` lookup,
+    because a runbook path is authored relative to the repository the config
+    lives in.
 
     Args:
         runbook: Path to the runbook, relative to ``base_dir``.

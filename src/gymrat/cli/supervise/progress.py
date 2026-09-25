@@ -297,8 +297,10 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
 
-    The returned reporter's ``start`` must be called from within a running
-    event loop; it is a no-op in plain mode.
+    In live mode the Live display starts here, taking over stderr before the
+    reporter's ``start`` is called; ``start`` only arms the refresh tick, must be
+    called from within a running event loop, and is a no-op in plain mode. The
+    reporter's ``stop`` must always run once the reporter exists.
 
     Args:
         root: Project root whose session directory is monitored.
@@ -307,16 +309,18 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         max_iterations: Iteration cap, or ``None`` for uncapped.
         mode: ``"live"`` for a Rich Live dashboard, ``"plain"`` for line-by-line
             stderr output.
-        log_path: Path to the supervisor event log, shown in the closing summary.
-        now: Monotonic-clock source returning milliseconds.  Defaults to
+        log_path: Path to the supervisor event log, shown on the frame's
+            ``log:`` line.
+        now: Wall-clock source returning epoch milliseconds.  Defaults to
             :func:`~gymrat.session.clock.now_ms`; override in tests.
         read_session: Callable that reads the current session state.  Defaults to
             :func:`make_default_read`; override in tests.
         label: Human label for the run, shown in the frame header.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
-        plain_write: Stderr writer for plain mode.  Defaults to
-            ``sys.stderr.write``; override in tests.
+        plain_write: Line writer for plain mode, called once per line without a
+            trailing newline.  Defaults to writing the line plus a newline to
+            stderr; override in tests.
         read_progress: Callable that reads the iterate progress sidecar.
             Defaults to the standard reader; override in tests.
         color: Tri-state color override: ``True`` forces color, ``False``

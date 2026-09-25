@@ -137,7 +137,7 @@ def _clocked_progress(
         console: The console the progress bar renders to.
         clock: Optional time source injected for testing; ``None`` defaults to
             ``time.monotonic``.
-        columns: The columns to show before the clock column.
+        *columns: The columns to show before the clock column.
 
     Returns:
         The ``Progress`` and its ``_ClockColumn``.

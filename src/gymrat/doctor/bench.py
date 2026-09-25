@@ -21,9 +21,9 @@ _SHELL_OPERATOR_RE = re.compile(r"[;&|(){}<>]")
 def _first_command_word(bench: str) -> str | None:
     """Extract the first real executable from a shell command string.
 
-    Skips env-var assignments (``VAR=val``) and returns ``None`` when the command
-    contains shell metacharacters — the PATH check is meaningless for compound
-    shell expressions.
+    Skips env-var assignments (``VAR=val``). A command with shell
+    metacharacters yields no word, since the PATH check is meaningless for
+    compound shell expressions.
 
     Args:
         bench: The shell command string to extract the first token from.

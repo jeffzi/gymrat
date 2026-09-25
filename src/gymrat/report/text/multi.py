@@ -344,6 +344,11 @@ def _candidate_markup(
     an unstable cell paints them amber, a quiet cell recedes them to dim, and the
     figure itself stays plain whatever the verdict.
 
+    Args:
+        cell: The candidate's figure and optional verdict.
+        values: The column's value field widths.
+        verdicts: The column's verdict field widths.
+
     Returns:
         The cell as a rich-markup string.
     """
