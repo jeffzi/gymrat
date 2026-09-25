@@ -46,6 +46,25 @@ directive with a reason — not in the shared config. When the same inline direc
 for the same rule, that is a signal the rule may deserve a config-level ignore — propose it to the
 user and wait for explicit approval; never promote a suppression into config on your own.
 
+## Module size
+
+`check-max-lines` caps a file at 400 code lines and a function at 60. The cap signals a file with
+more than one concern; it is not a budget.
+
+- **New code lives in its caller's module**, unless two or more modules import it today, or it is a
+  distinct concern of 50+ code lines — then it gets one flat module named after the concern.
+  "Reusable later", "keeps the caller small" and "matches the existing small modules" are not
+  reasons: the tiny modules and packages already in `src/` are debt, not precedent.
+- **No packages of small modules** behind a re-exporting `__init__.py`. A package is justified only
+  when the flat module would exceed the cap; planned features don't count.
+- **At the cap, move one whole concern** — the code least tied to the rest that changes together for
+  one reason — into a module named for what it does (never "helpers", "utils", "misc"): a new
+  module, or an existing one you have read that already owns that concern. A module carved off its
+  only importer, such as `supervisor/tasks.py`, owns nothing; never add to it. Never move just
+  enough to pass, and never compress code. One concern, one move: the file should land at 350 or
+  below, and if it doesn't, pick a different, larger concern — never top up the move with other
+  code.
+
 ## Docstrings
 
 Google style. Private functions need none. A one-line docstring has no sections; a longer one has
