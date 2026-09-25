@@ -148,6 +148,10 @@ async def bench_and_judge(
     Returns:
         The bench run with baseline/experiment samples, resolved metric metadata,
         and computed verdicts.
+
+    Raises:
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
     baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
     if announce_judging:
@@ -202,6 +206,10 @@ async def _measure(
 
     Returns:
         The baseline and experiment target samples, in that order.
+
+    Raises:
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
     contexts: list[TargetContext] = [
         _worktree_context(session.worktrees.baseline, "baseline", "old"),
@@ -241,10 +249,11 @@ def resolve_primary(
 
     Returns:
         The resolved primary — a :class:`GeomeanPrimary` or :class:`MetricPrimary`
-        carrying the recorded delta, or ``None`` when the named metric was never
-        measured.  A zero must never stand there: a zero is a measurement, and it
-        would have the report, the log, and the keep commit all claim the run held
-        its ground.
+        carrying the recorded delta. Its ``delta_pct`` is ``None`` when the named
+        metric has no verdict, when no gating metric feeds the geomean, or when
+        the ratio is NaN.  A zero must never stand there: a zero is a
+        measurement, and it would have the report, the log, and the keep commit
+        all claim the run held its ground.
     """
     if primary == GEOMEAN_PRIMARY:
         gating = {name: meta for name, meta in metric_meta.items() if meta.gating}
@@ -264,7 +273,8 @@ def recorded_delta(delta: float) -> float | None:
     The engine answers a degenerate ratio — a baseline median of zero — with
     ``NaN``, and JSON serialization writes that as ``null`` whatever the writer
     intended. Making the substitution here keeps the record a caller holds
-    identical to the one read back off the log.
+    identical to the one read back off the log, and never lets a zero stand where
+    there was no measurement.
 
     Args:
         delta: The raw delta ratio, possibly ``NaN``.

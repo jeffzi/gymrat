@@ -38,10 +38,18 @@ def _each_verdict(
     metrics: MetricComparisons,
     candidate_index: int,
 ) -> Iterator[MetricVerdict]:
-    """Yield one candidate's verdict for every metric that reported one.
+    """Walk one candidate's verdicts across the metrics.
 
     Verdicts belong to a candidate, never to the run, so callers read one
-    candidate at a time. Metrics that candidate never reported are skipped.
+    candidate at a time.
+
+    Args:
+        metrics: The per-metric comparisons to read.
+        candidate_index: The candidate's position in each metric's comparison.
+
+    Yields:
+        The candidate's verdict for each metric that reported one; metrics the
+        candidate never reported are skipped.
     """
     for metric in metrics.values():
         candidate = _candidate_at(metric, candidate_index)

@@ -105,6 +105,11 @@ def _baseline_paired_values(
     every round the baseline reported it in: a baseline-only metric has no verdict
     to stay consistent with, so its displayed median is the baseline's own.
 
+    Args:
+        baseline_samples: The baseline's per-round samples.
+        candidate_sample_sets: Each candidate's per-round samples.
+        metric_name: The metric whose values to collect.
+
     Returns:
         The baseline float values paired with at least one candidate, or all
         baseline values when no candidate reported the metric.
@@ -310,6 +315,12 @@ async def compare(options: CompareOptions) -> ComparisonResult:
     Returns:
         The :class:`ComparisonResult` containing every candidate's verdicts
         against the shared baseline.
+
+    Raises:
+        GymratError: When the adapter is unknown or a target is neither a
+            directory nor a resolvable ref.
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
     return await run_with_worktrees(
         lambda repo_dir, worktrees, abort: _compare_phase(options, repo_dir, worktrees, abort),

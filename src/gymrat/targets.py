@@ -116,6 +116,9 @@ def _is_absent_path_error(error: OSError) -> bool:
     named ``fix`` present). Both leave ref resolution as the input's only
     remaining reading; any other errno is reported instead of retried as a ref.
 
+    Args:
+        error: The error the directory probe raised.
+
     Returns:
         Whether the error indicates the path simply does not exist.
     """
@@ -123,14 +126,17 @@ def _is_absent_path_error(error: OSError) -> bool:
 
 
 def _try_resolve_directory(target_input: str) -> InPlaceTarget | None:
-    """Attempt directory resolution, returning ``None`` to fall through to a ref.
+    """Attempt directory resolution before the input is tried as a ref.
 
     A symlink loop or an unsearchable parent says nothing about whether the
     input is a ref, so it is reported rather than silently retried as one.
 
+    Args:
+        target_input: The target as the user typed it.
+
     Returns:
         An :class:`InPlaceTarget` when the input names an existing directory,
-        ``None`` otherwise.
+        ``None`` otherwise so the caller falls through to ref resolution.
 
     Raises:
         GymratError: When the probe fails for a reason other than an absent
@@ -267,6 +273,10 @@ def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:
     repository, because git clears the entry of a directory that vanished behind
     its back only when asked for that path — which leaves a worktree of the
     user's own that is merely temporarily absent registered.
+
+    Args:
+        worktree: The worktree to remove.
+        repo_dir: The repository the worktree belongs to.
 
     Returns:
         The removal status or a :class:`WorktreeRemovalFailure` when git

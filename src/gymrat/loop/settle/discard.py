@@ -159,10 +159,8 @@ def _revert_target(
 ) -> str:
     """The commit the unmeasured revert should land on.
 
-    Normally this is the last kept commit (or the baseline SHA if nothing was
-    kept). When the kept commit is no longer reachable — a corruption edge case
-    that should not happen in practice — the current HEAD is already the best
-    the worktree can offer.
+    An unreachable kept commit is a corruption edge case that should not happen
+    in practice; the current HEAD is then the best the worktree can offer.
 
     Args:
         state: The session's current iteration state.
@@ -170,7 +168,12 @@ def _revert_target(
         experiment_dir: The experiment worktree's directory.
 
     Returns:
-        The SHA of the commit to revert the experiment worktree to.
+        The SHA of the commit to revert the experiment worktree to: the last
+        kept commit, the baseline SHA when nothing was kept, or the current
+        HEAD when the kept commit is no longer reachable.
+
+    Raises:
+        GymratError: When git cannot read the worktree HEAD.
     """
     target = last_kept_position(state, baseline_sha)
     unreachable = try_git(["cat-file", "-t", target], experiment_dir) is not None

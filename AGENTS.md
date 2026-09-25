@@ -48,15 +48,15 @@ user and wait for explicit approval; never promote a suppression into config on 
 
 ## Docstrings
 
-Google style. None is required on private functions. A one-line docstring is complete on its own —
-no `Args:`, `Returns:`, or `Raises:` sections — when the signature says the rest. When a function
-needs more than one line (a side effect, an invariant, a precondition, what None means, or behavior
-the name does not convey), use a multi-line docstring with sections: `Args:` listing every
-parameter, however obvious its name, `Returns:`, and `Raises:` for every exception raised or
-propagated. Parameters, return values, and exceptions are described only in their sections, never in
-prose. A function you edit gets its docstring brought to this shape even if you did not write it;
-deadlines and reviewer preference do not change that. Tests: no docstrings on test functions, the
-name carries the intent; every fixture gets a one-line docstring.
+Google style. Private functions need none. A one-line docstring has no sections; a longer one has
+every section that applies — `Args:` whenever the function takes parameters. Beyond what it raises
+directly, `Raises:` lists every error that propagates from a callee and that its callers are
+expected to handle. An error a callee may raise that no caller handles stays out (an `OSError` from
+a file call).
+
+- Prose never restates what a section says.
+- A function you edit gets its docstring brought to this shape, even if you did not write it.
+- Tests: no docstrings on test functions; every fixture gets a one-line docstring.
 
 ## Spelling (cspell)
 

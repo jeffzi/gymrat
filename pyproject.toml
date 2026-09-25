@@ -154,6 +154,18 @@ ignore-one-line-docstrings = true
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.pydoclint]
+style = "google"
+skip-checking-short-docstrings = true
+# Ruff's DOC501 covers direct raises; propagated errors are documented by review, which pydoclint's
+# body-only raise analysis would flag as extraneous.
+skip-checking-raises = true
+arg-type-hints-in-docstring = false
+check-class-attributes = false
+check-return-types = false
+check-style-mismatch = true
+check-yield-types = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

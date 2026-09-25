@@ -79,6 +79,10 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
 
     Callers match on this exact wording and the ``_KNOWN_TYPES`` hint.
 
+    Args:
+        errors: The validation errors pydantic reported.
+        value: The raw record that failed validation.
+
     Raises:
         GymratError: When ``errors`` contains a discriminator-mismatch error.
     """
@@ -249,6 +253,9 @@ def _normalize_loc(loc: tuple[int | str, ...]) -> tuple[str, ...]:
     dict keys (e.g. a metric named ``"123"``) from being conflated with array
     indices.
 
+    Args:
+        loc: A pydantic error location.
+
     Returns:
         The location tuple with indices and dynamic keys replaced by ``"*"``.
     """
@@ -274,6 +281,10 @@ def _strip_type_prefix(loc: tuple[int | str, ...], record_type: str) -> tuple[in
     The ``TypeAdapter`` on the tagged union prepends the record type (e.g.
     ``"iteration"``) to every field-level error location.  The ``_PHRASES``
     table and the display path both expect the location without that prefix.
+
+    Args:
+        loc: A pydantic error location.
+        record_type: The record's ``type`` value.
 
     Returns:
         The location tuple without the leading type segment.

@@ -3,8 +3,8 @@
 A :class:`DoctorReport` is a titled list of :class:`CheckSection`s over a shared
 :class:`EnvironmentInfo`, with ok/warn/fail counts derived from every check. The
 section builders here are pure functions of their inputs — the environment probe,
-the config inspection, and the resolved workflow config — so the bench smoke run
-(which touches the filesystem) lives in its own module.
+the config inspection, and the resolved workflow config — so the bench section,
+which looks the executable up on ``PATH``, lives in :mod:`gymrat.doctor.bench`.
 """
 
 from collections import Counter

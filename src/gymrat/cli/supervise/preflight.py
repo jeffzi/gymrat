@@ -79,8 +79,8 @@ def run_preflight(
         config: The resolved configuration for the session.
         baseline_ref: The git ref to measure as baseline, or ``None`` to
             reuse the existing baseline.
-        max_minutes: The cap on one iterate's duration used by the
-            feasibility check.
+        max_minutes: The session's wall-clock cap; the feasibility check
+            refuses to launch when one estimated iterate cannot fit inside it.
         force: Whether to launch despite a met stop condition or a failed
             feasibility check.
 
@@ -105,7 +105,16 @@ def run_preflight(
 
 
 def doctor_gate(root: str, *, color: bool | None = None) -> None:
-    """Run the four doctor sections and refuse if any check fails."""
+    """Run the four doctor sections and refuse to launch if any check fails.
+
+    On a failure the rendered doctor report goes to stderr and the process exits
+    with code 2 before anything else runs.
+
+    Args:
+        root: The repository root path.
+        color: The explicit color choice for the report, or ``None`` to defer to
+            the environment and TTY detection.
+    """
     report = build_doctor_report(CliFlags(), root)
     if not report.has_failures:
         return
@@ -131,6 +140,12 @@ def _session_step(
     """Open, resume, or archive-and-reopen the session.
 
     The caller holds the repository lock for the full session-through-feasibility span.
+
+    Args:
+        root: The repository root path.
+        config: The resolved configuration for the session.
+        baseline_ref: The git ref to measure as baseline, or ``None`` to reuse the existing
+            baseline.
 
     Returns:
         The session start result.
@@ -174,6 +189,10 @@ def _baseline_step(
     """Measure the baseline when the log holds no baseline record.
 
     The caller holds the repository lock for the full session-through-feasibility span.
+
+    Args:
+        root: The repository root.
+        config: The resolved configuration the baseline is measured with.
     """
     if latest_baseline(_read_records(root)) is not None:
         return

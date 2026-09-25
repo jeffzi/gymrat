@@ -13,7 +13,11 @@ from gymrat.session.paths import repo_root
 
 
 def main() -> None:
-    """Write artifacts to the repo root and print each path."""
+    """Write artifacts to the repo root and print each path.
+
+    Outside a git repository the error and its hint go to stderr and the
+    process exits with ``TOOL_FAILURE_EXIT_CODE`` before anything is written.
+    """
     try:
         root = repo_root()
     except GymratError as exc:

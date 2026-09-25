@@ -1,10 +1,10 @@
 """The shared machinery both text tables draw through.
 
-The data half builds the string content of each cell: the builders that pad a
-value cell's magnitude and spread, and a verdict cell's glyph, delta and band,
-into fields of their own, plus the body planner that lays a
+The data half is the body planner that lays a
 :class:`~gymrat.report.sections.SectionLayout` out as titles, borders, rules
-and rows.
+and rows. The cell builders that pad a value cell's magnitude and spread, and a
+verdict cell's glyph, delta and band, into fields of their own live in
+:mod:`gymrat.report.table.markup`.
 
 The rendering half draws the grid. The box chrome — column padding, the ``│``
 separators, the ``─`` rules and their ``┼``/``┬`` junctions — is delegated to a
@@ -279,7 +279,16 @@ def section_annotation[Metric](
     section: SectionPlan[Metric],
     config_kinds: Mapping[str, KindEntry] | None,
 ) -> str | None:
-    """A section's informational tag as dimmed markup, or ``None`` when the kind gates."""
+    """A section's informational tag as dimmed markup.
+
+    Args:
+        section: The planned section to tag.
+        config_kinds: The config's ``kinds`` entries, or ``None`` when the run
+            carries no kind metadata.
+
+    Returns:
+        The dimmed tag, or ``None`` when the section has a gating metric.
+    """
     if section.has_gating:
         return None
     return markup(informational_tag(section.kind, config_kinds), "dim")
@@ -309,8 +318,8 @@ class TableSkeleton[Row]:
     Attributes:
         body: The planned body lines, ready for :func:`render_body`.
         grouped: Whether a row's name cell shows its indented label rather than
-            its bare name — true once a section holds more than one group, or the
-            run spans more than one kind.
+            its bare name — true once the run spans more than one kind, or its
+            one section has a group holding more than one metric.
         name_cell: The metric-column cell for one row.
         value_cell: The value-column cell for one row.
         metric_width: The metric column's settled width.
@@ -392,9 +401,8 @@ def build_cell_dispatcher[Row, Cell](
     """A ``to_cells`` callable dispatching a header, group, or metric line to its cells.
 
     Both tables' ``to_cells`` differ only in how many columns each line states;
-    the header/group/metric dispatch itself is identical, including the
-    ``AssertionError`` any other line would otherwise reach — neither a
-    measurement nor a probe table's body ever plans one.
+    the header/group/metric dispatch itself is identical — neither a
+    measurement nor a probe table's body ever plans any other line.
 
     Args:
         header: Builds a header row's cells from its section title.
@@ -402,11 +410,9 @@ def build_cell_dispatcher[Row, Cell](
         metric: Builds a metric row's cells from its row.
 
     Returns:
-        The dispatching ``to_cells`` callable.
-
-    Raises:
-        AssertionError: The line is a ``BlankLine``, ``RuleLine``, ``BorderLine``,
-            ``TitleLine``, or ``AggregateLine``.
+        The dispatching ``to_cells`` callable. Calling it raises
+        ``AssertionError`` for a ``BlankLine``, ``RuleLine``, ``BorderLine``,
+        ``TitleLine``, or ``AggregateLine``.
     """
 
     def to_cells(line: BodyLine[Row, Cell]) -> tuple[str, ...]:

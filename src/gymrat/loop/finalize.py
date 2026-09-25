@@ -77,7 +77,9 @@ def _validate_finalize(
 
     Raises:
         GymratError: When the session kept nothing, has an unsettled iteration,
-            or carries uncommitted work in the experiment worktree.
+            carries uncommitted work or unkept commits in the experiment
+            worktree, when the branch name starts with a dash, when the target
+            branch already exists, or when git cannot read the worktree HEAD.
     """
     if state.keep_count == 0:
         message = f"Finalize refused: session {session.session_id} has kept nothing to squash."
@@ -143,8 +145,8 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
             are used when omitted.
 
     Returns:
-        The finalize result containing the squash commit, the branch it landed on,
-        and the session's final state.
+        The appended finalize record (carrying the squash commit and the branch
+        it landed on) and the report to print.
 
     Raises:
         GymratError: When no open session exists, when the session kept nothing,
@@ -212,6 +214,9 @@ def _squash_onto_baseline(
 
     Returns:
         The SHA of the new squash commit.
+
+    Raises:
+        GymratError: When git cannot read the tree or build the commit.
     """
     tree = run_git_step(
         ["rev-parse", f"{tree_source}^{{tree}}"],

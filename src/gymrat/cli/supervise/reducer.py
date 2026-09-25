@@ -491,9 +491,9 @@ def advance(  # noqa: C901 -- flat match over the event union
 def exit_phase(state: ReporterState, phase: ExitPhase, at_ms: int) -> ReporterState:
     """Show the run-end exit sequence's current phase as the dashboard liveness.
 
-    Pure like :func:`advance`: the caller supplies the clock reading.  Reporting
-    the phase already shown returns *state* itself, so its elapsed time keeps
-    counting from when the phase began and the shell can tell nothing changed.
+    Pure like :func:`advance`, so the clock reading comes in as ``at_ms``.  A
+    repeated phase keeps its original start, so its elapsed time keeps counting
+    from when the phase began and the shell can tell nothing changed.
 
     Args:
         state: The state as of just before the phase report.

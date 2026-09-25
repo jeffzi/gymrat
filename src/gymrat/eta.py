@@ -114,12 +114,13 @@ def format_duration(ms: float) -> str:
 def format_timestamp(at_ms: float, run_start_ms: float | None) -> str:
     """Format an elapsed timestamp as ``[HH:MM:SS]`` since ``run_start_ms``.
 
-    Falls back to zero elapsed when ``run_start_ms`` is ``None`` (the run has not
-    yet been anchored), matching how each caller anchors its own run start.
+    Each caller anchors its own run start, so an unanchored run reads as zero
+    elapsed rather than as an error.
 
     Args:
         at_ms: The timestamp in milliseconds to format.
-        run_start_ms: The run's start timestamp in milliseconds, or ``None``.
+        run_start_ms: The run's start timestamp in milliseconds, or ``None``
+            when the run is not yet anchored, which renders zero elapsed.
 
     Returns:
         A bracketed timestamp string, e.g. ``"[00:07:45]"``.

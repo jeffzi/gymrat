@@ -135,6 +135,10 @@ async def _settle_keep(root: str, config: BenchlessConfig, options: KeepOptions)
 
     Returns:
         The keep result with the report still in markup form.
+
+    Raises:
+        GymratError: When no session is open, or git or the session log refuses
+            the commit, the record append, or the baseline advance.
     """
     required = require_open_session(root, "settling an edit")
     session, state, jsonl_path = required.session, required.state, required.jsonl_path
@@ -214,6 +218,10 @@ async def _keep_clean_worktree(context: _KeepContext, *, baseline_position: str)
     Returns:
         The keep result — blocked if the worktree has nothing new, or gated
         against the standing commit.
+
+    Raises:
+        GymratError: When git cannot read the worktree HEAD, or the record append
+            or baseline advance fails.
     """
     head = worktree_head(context.experiment_dir)
 
@@ -240,16 +248,21 @@ async def _gated_keep(context: _KeepContext, *, commit: Callable[[str], str]) ->
     """Gate the experiment worktree on the checks, then keep what ``commit`` returns.
 
     Both keep paths settle through here, so the gate cannot be skipped by whichever
-    of them produced the commit: ``commit`` is called only once the checks have
-    passed, and it either makes the commit from the worktree's uncommitted work or
-    hands back the one already standing at HEAD.
+    of them produced the commit.
 
     Args:
         context: The keep context carrying the worktree, config, and iteration.
-        commit: Produces the commit SHA to keep, given the commit message.
+        commit: Produces the commit SHA to keep, given the commit message. Called
+            only once the checks have passed; it either makes the commit from the
+            worktree's uncommitted work or hands back the one already standing at
+            HEAD.
 
     Returns:
         The keep result — committed if the checks passed, blocked otherwise.
+
+    Raises:
+        GymratError: When ``commit``, the baseline advance, or the record append
+            fails.
     """
     checks = await run_checks(context.config, context.experiment_dir, context.warn)
     if checks is not None and not checks.passed:

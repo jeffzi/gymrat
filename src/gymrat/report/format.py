@@ -57,6 +57,10 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
     since a sign is not a size: a negative reading picks the tier its magnitude
     names.
 
+    Args:
+        value: The value to scale.
+        tiers: The scale tiers, smallest first.
+
     Returns:
         The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
     """

@@ -228,6 +228,9 @@ def flat_geomean_of(candidate: CandidateComparison) -> GeomeanResult:
     A run reporting one kind has no section to name, so its geomean row states
     what the run is judged on without saying which kind that was.
 
+    Args:
+        candidate: The candidate whose geomean to read.
+
     Returns:
         The gated geomean of the single kind, or :data:`NO_AGGREGATE` when
         none is available.

@@ -163,24 +163,21 @@ def build_summary(  # noqa: PLR0913 -- keyword-only run-end parts extend a 1-pos
     log ends on one, otherwise the agent's last text block, with paragraph
     breaks preserved.
 
-    ``labels.model`` and ``labels.effort`` appear as labelled rows when in force.
-
-    With an exit report, each exit step appears verbatim as an ``exit`` row
-    between the loop and log rows, in step order; a sequence error follows the
-    steps as an alert-styled ``exit`` row.
-
     Args:
         result: The supervision outcome whose ``ended_by`` drives the headline.
         log_path: Absolute path to the event log, printed as the final row.
         session_result: The latest session read, supplying best-iteration and
             loop-progress content.  ``None`` when the session file was never
             created.
-        final_text: Override text for the agent row.  When ``None``, the
-            function falls back to the session's stop message or last text
-            block.
-        labels: Model and effort labels to surface as extra rows.
-        exit_report: What the exit sequence did after the session ended.
-            ``None`` renders no exit rows.
+        final_text: The agent's last text block, used for the agent row when
+            the session log does not end on a stop message.  ``None`` when the
+            agent produced no text.
+        labels: Model and effort labels, each shown as a labelled row when not
+            ``None``.
+        exit_report: What the exit sequence did after the session ended: each
+            step is shown verbatim as an ``exit`` row between the loop and log
+            rows, in step order, and a sequence error follows as an
+            alert-styled ``exit`` row.  ``None`` renders no exit rows.
 
     Returns:
         The assembled ``Text`` block for the closing summary.

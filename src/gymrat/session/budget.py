@@ -138,7 +138,7 @@ def clear_budget(root: str) -> None:
 class DurationEstimate:
     """Estimated wall-clock duration for one ``iterate`` cycle.
 
-    Fields:
+    Attributes:
         duration_ms: Estimated iterate duration in milliseconds.
         source: Which record kind supplied the raw duration
             (``"iteration"`` or ``"baseline"``).

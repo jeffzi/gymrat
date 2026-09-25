@@ -34,11 +34,10 @@ Consumed by config resolution: the gating value applied when neither a
 def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
     """Derive :class:`MetricDefaults` from a metric name by matching suffixes.
 
-    Walks :data:`_METRIC_SUFFIXES` in order and returns the defaults for the
-    first suffix ``metric_name`` ends with. When the prefix before the suffix is
-    empty (the name equals the suffix, e.g. ``#time``), ``short_name`` is the
-    full metric name so the report renders a visible label. A name matching no
-    suffix yields defaults carrying only ``direction``.
+    Walks :data:`_METRIC_SUFFIXES` in order, so the first matching suffix wins.
+    When the prefix before the suffix is empty (the name equals the suffix, e.g.
+    ``#time``), ``short_name`` is the full metric name so the report renders a
+    visible label.
 
     Args:
         metric_name: The metric name to match against the suffix table.

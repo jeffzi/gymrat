@@ -14,17 +14,18 @@ def confirm_action(message: str, stream: TextIO) -> bool:
     """Prompt on stderr and return whether the user consented.
 
     Writes ``f"{message} [y/N] "`` to stderr, then reads one line from
-    ``stream``. Returns ``True`` only when that line is exactly ``y`` or ``Y``
-    (ignoring the trailing line terminator). End-of-input reads as an empty line
-    and declines. A stderr that cannot be written to — a closed or broken pipe —
-    also declines.
+    ``stream``. Anything short of an explicit yes declines, so a destructive
+    action never proceeds on an unseen or unanswered question.
 
     Args:
         message: The question to display before the ``[y/N]`` suffix.
         stream: The stream to read the answer line from.
 
     Returns:
-        Whether the user answered ``y`` or ``Y``.
+        ``True`` only when the line is exactly ``y`` or ``Y`` (ignoring the
+        trailing line terminator). ``False`` otherwise, including at
+        end-of-input and when stderr cannot be written to (a closed or broken
+        pipe).
     """
     try:
         sys.stderr.write(f"{message} [y/N] ")

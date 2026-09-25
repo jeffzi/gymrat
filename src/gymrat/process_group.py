@@ -229,6 +229,9 @@ if sys.platform == "win32":
         Closing the last handle kills the members asynchronously, so the kill is
         driven explicitly and waited on instead: a caller that returns from here
         must be able to treat the whole tree as gone.
+
+        Args:
+            pid: The process whose job to tear down.
         """
         job = _job_handles.pop(pid, None)
         if job is not None:
@@ -615,6 +618,9 @@ def _stop_win32_tree(pid: int) -> None:
 
     The fallback is the whole win32 path for a child that was never assigned —
     an assignment the host refused, or a platform faked after a POSIX spawn.
+
+    Args:
+        pid: The root process of the tree to stop.
     """
     job = _job_handles.get(pid)
     if job is None or _terminate_job_impl is None:
