@@ -40,9 +40,9 @@ class ReadSessionResult:
         primary_label: The kind or name of the primary metric for the best
             committed-keep iteration. ``None`` under the same condition as
             ``best_delta_pct``, and set alongside it.
-        baseline_sha: The commit sha of the session's baseline. ``None`` when
-            no baseline record has been recorded; set from the session log by
-            ``make_default_read``.
+        baseline_sha: The commit the session started from, taken from the
+            session record by ``make_default_read``. ``None`` before the session
+            record has been written.
         stop_message: The newest stop record's message. Holds a value only
             while the folded log ends on a stop; ``None`` once any iteration,
             keep, discard, or finalize record supersedes it.

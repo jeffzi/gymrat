@@ -32,10 +32,17 @@ _SDK_MISSING = "OpenTelemetry SDK not available. Install with: pip install 'gymr
 
 
 def _matching_supervisor_logs(session_dir: Path, session_id: str) -> list[str]:
-    """Return supervisor logs in ``session_dir`` whose launch line names ``session_id``.
+    """Find the supervisor logs whose launch line names one session.
 
     Reads only the first line of each file and checks the ``session_id`` field
     from the raw JSON dict.
+
+    Args:
+        session_dir: The directory holding the supervisor logs.
+        session_id: The session the launch line must name.
+
+    Returns:
+        The matching log paths, in sorted order.
     """
     matched: list[str] = []
     for path in sorted(session_dir.glob(supervisor_log_name("*"))):
@@ -69,10 +76,14 @@ def _first_line_json(path: Path) -> dict[str, object] | None:
 
 
 def _session_header(session_path: Path) -> SessionRecord | None:
-    """Return the session header from *session_path*, or ``None`` when absent.
+    """Read the session header from the first line of a session log.
+
+    Args:
+        session_path: The session log to read the header from.
 
     Returns:
-        The session record, or ``None`` when the log does not exist.
+        The session record, or ``None`` when the log does not exist or its first
+        line is blank.
 
     Raises:
         GymratError: When the first line is present but malformed JSON, an

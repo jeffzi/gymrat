@@ -153,6 +153,10 @@ def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     A crash or permission error mid-write never leaves a truncated
     ``gymrat.toml`` — the temp file is cleaned up on failure.
 
+    Args:
+        base_dir: The project root the config is written into.
+        content: The serialized TOML text.
+
     Returns:
         The scaffold artifact describing the written config file.
 

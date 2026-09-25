@@ -98,6 +98,13 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
 
     Returns:
         The assembled measurement, ready for a renderer.
+
+    Raises:
+        GymratError: When the adapter is unknown or the target is neither a
+            directory nor a resolvable ref. When the worktree cleanup also
+            failed, the message carries its diagnostics.
+        CommandError: When a prepare or bench command times out or exits
+            non-zero.
     """
 
     async def phase(

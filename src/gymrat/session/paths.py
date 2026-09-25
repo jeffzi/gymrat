@@ -166,6 +166,9 @@ def _repo_digest(root: str) -> str:
     a cross-implementation contract, so two runs over the same checkout must
     land on the same lockfile name.
 
+    Args:
+        root: The repository root path.
+
     Returns:
         The first ``_DIGEST_HEX_LENGTH`` hex characters of the SHA-256 digest.
     """

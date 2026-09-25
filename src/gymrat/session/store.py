@@ -202,6 +202,9 @@ def _serialize_record(record: SessionLogRecord) -> str:
     trip succeeds, which stops a single bad measurement from leaving the whole
     session log unreadable.
 
+    Args:
+        record: The record to serialize.
+
     Returns:
         The JSON-encoded line ready for appending.
 

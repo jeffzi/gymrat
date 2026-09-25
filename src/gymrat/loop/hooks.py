@@ -53,7 +53,7 @@ HOOK_TIMEOUT_MS = 30_000
 class HookInvocation:
     """Which command to run, and everything the payload tells it about the loop so far.
 
-    Args:
+    Attributes:
         command: The command line the consumer configured for this stage.
         stage: Which side of a measurement the hook runs on.
         seq: The iteration the hook brackets -- about to be measured, or just recorded.
@@ -81,7 +81,7 @@ class HookInvocation:
 class HookRun:
     """What one fired hook leaves behind: a record for the log, a report for the agent.
 
-    Args:
+    Attributes:
         record: The record to append to the session log.
         report: The hook's stdout, truncated and labeled with its stage, then a
             note naming the exit code or timeout when the command did not
@@ -111,15 +111,16 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
     """Run the stage's command, handing it the loop as JSON on stdin.
 
     The command runs in the experiment worktree with the payload on its stdin.
-    Whatever it does -- succeed, fail, time out, or fail to start -- comes back
-    as a :class:`HookRun`; nothing here raises. The record is not appended to
-    any log: the caller owns that.
+    Nothing here raises, so a hook that fails, times out, or cannot start never
+    aborts the loop. The record is not appended to any log: the caller owns
+    that.
 
     Args:
         invocation: The stage, command, session, and payload data for the run.
 
     Returns:
-        The hook run result containing the log record and the formatted report.
+        The hook run result containing the log record and the formatted report,
+        whether the command succeeded, failed, timed out, or failed to start.
     """
     timeout_ms = HOOK_TIMEOUT_MS if invocation.timeout_ms is None else invocation.timeout_ms
     payload = json.dumps(_build_payload(invocation))
@@ -224,15 +225,13 @@ async def run_hook_stage(
 ) -> str:
     """Run one lifecycle hook stage, bracketed by progress events when a command is configured.
 
-    A stage the config leaves out passes ``None`` and runs nothing at all: no
-    process, no record, no line in the report.
-
     Args:
         jsonl_path: Path to the session's JSONL log to append the hook record to.
         on_progress: Callback for stage-started and stage-finished progress
             events, or ``None`` to skip progress reporting.
         invocation: The stage, command, session, and payload data for the run,
-            or ``None`` when the stage has no configured hook.
+            or ``None`` when the stage has no configured hook, which runs no
+            process, appends no record, and adds no line to the report.
 
     Returns:
         The text to print for the hook — empty when there was no hook or it

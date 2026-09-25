@@ -188,6 +188,9 @@ def _prune_stale_worktrees(root: str) -> None:
 
     Only the session's experiment and baseline paths are touched; a user's
     temporarily-absent worktree stays registered.
+
+    Args:
+        root: The repository root.
     """
     for directory in (experiment_worktree_dir(root), baseline_worktree_dir(root)):
         if not _is_directory(directory):
@@ -217,15 +220,19 @@ def _add_baseline_worktree(root: str, sha: str) -> None:
 def _unwind_workspace(root: str, branch: str, standing: list[str]) -> None:
     """Take back the branch and worktrees a failed create attempt had made.
 
-    A directory listed in ``standing`` was there before the attempt began — what
-    a session whose log was lost leaves behind — so it stays, uncommitted work
-    and all. The error the caller is about to raise names the path, which is the
-    only notice the user gets that something is in the way.
+    A standing directory is what a session whose log was lost leaves behind, so it
+    stays, uncommitted work and all. The error the caller is about to raise names
+    the path, which is the only notice the user gets that something is in the way.
 
     The worktrees go before the branch: git refuses to delete a branch one of
     them still has checked out. Every step is best-effort — the caller is about
     to surface the git step that broke the session, and a cleanup that cannot
     finish must not speak in its place.
+
+    Args:
+        root: The repository root.
+        branch: The experiment branch to delete.
+        standing: The worktree directories that existed before the attempt began.
     """
     for directory in (experiment_worktree_dir(root), baseline_worktree_dir(root)):
         if _is_directory(directory) and directory not in standing:

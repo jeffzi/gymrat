@@ -108,6 +108,10 @@ def _restore_archived_log(archived_path: str, jsonl_path: str) -> None:
     Best-effort: the caller is re-raising the failure that broke the start, and a
     rename that cannot run must not speak in its place — the closed session's
     records are still on disk under its own id either way.
+
+    Args:
+        archived_path: Where the archive moved the closed session's log.
+        jsonl_path: Where the log lives while its session is open.
     """
     # Swallowed by contract — see above.
     with contextlib.suppress(OSError):

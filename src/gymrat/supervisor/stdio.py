@@ -139,6 +139,9 @@ class _StdioSession:
 
         A closed pipe means the child is already gone, which is an expected
         end-of-run condition rather than an error to surface.
+
+        Args:
+            obj: The command to serialize as one JSON line.
         """
         proc = self._proc
         if proc is None or proc.stdin is None:
@@ -184,6 +187,9 @@ class _StdioSession:
         than yield a line; catch that so an oversized, unterminated line settles a
         clean error outcome instead of escaping as an unhandled read error. The
         child is left as-is here; ``_teardown`` kills and reaps it.
+
+        Args:
+            proc: The child whose stdout carries the events.
         """
         if proc.stdout is None:
             return
@@ -243,6 +249,9 @@ class _StdioSession:
         """Consume the child's stderr to EOF and discard it; it is never relayed.
 
         Draining keeps a chatty child from blocking on a full stderr pipe.
+
+        Args:
+            reader: The child's stderr stream.
         """
         with contextlib.suppress(OSError):
             while await reader.read(READ_CHUNK):

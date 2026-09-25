@@ -133,6 +133,10 @@ def _resolve_log_path(root: str, explicit: str | None) -> str:
     ensures the directory is git-excluded; a caller-supplied path is left to the
     caller to place and ignore.
 
+    Args:
+        root: The repository root path.
+        explicit: The caller's ``--log`` value, or ``None`` to use the default path.
+
     Returns:
         The resolved absolute path for the event log.
     """
@@ -372,6 +376,9 @@ def _run_session(ctx: _SessionContext) -> None:
     its cleanup, the process-group kill cleanup — is released before this
     returns, including when the setup between arming them and starting the
     supervisor fails, so a failed run leaves nothing registered behind.
+
+    Args:
+        ctx: Everything the run needs, assembled once the lock is held.
     """
     from gymrat.cli.supervise.span_lifecycle import finalize_tracing, setup_tracing  # noqa: PLC0415
 
@@ -450,6 +457,9 @@ def _execute(options: Options) -> None:
     supervise lock, pre-flight (session under the repository lock, stop
     condition, baseline, feasibility), then log-path resolution, kickoff,
     launch event, and the session run.
+
+    Args:
+        options: The parsed ``supervise`` flags.
     """
     root = repo_root()
     doctor_gate(root, color=options.color)

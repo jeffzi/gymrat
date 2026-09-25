@@ -362,10 +362,13 @@ def render_keep_json(result: KeepResult, *, budget: BudgetSummary | None = None)
 def render_discard_json(result: DiscardResult, *, budget: BudgetSummary | None = None) -> str:
     """Render the discard's ``seq``, timestamp, and ``measured`` flag.
 
-    ``seq`` is ``null`` when no iteration was measured.
+    Args:
+        result: The discard outcome.
+        budget: Pre-computed budget snapshot to include, or ``None`` to omit.
 
     Returns:
-        The JSON string of the discard document.
+        The JSON string of the discard document; its ``seq`` is ``null`` when
+        no iteration was measured.
     """
     record = result.record
     measured = record is not None

@@ -57,6 +57,9 @@ def _dirty_entries(directory: str) -> list[_DirtyEntry]:
     non-ASCII and whitespace-containing paths, so every path is the literal
     filesystem name.
 
+    Args:
+        directory: The worktree to run ``git status`` in.
+
     Returns:
         The list of dirty entries parsed from git status output.
     """
@@ -111,7 +114,8 @@ def sync_to_experiment(root: str) -> SyncResult:
         root: The repository root containing the session.
 
     Returns:
-        The sync result listing the files that were copied or deleted.
+        The sync result listing each dirty main-tree path that was copied or
+        deleted; the source path of a rename is removed but not listed.
 
     Raises:
         GymratError: When no session is open, when the experiment worktree has

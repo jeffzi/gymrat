@@ -104,6 +104,11 @@ def _partition_pairs(
 ) -> tuple[list[float], list[float], list[float], list[float]]:
     """Separate tied (zero-diff) and differing pairs over the first ``m`` indices.
 
+    Args:
+        x: The first value of each pair.
+        y: The second value of each pair.
+        m: How many leading pairs to partition.
+
     Returns:
         A tuple ``(tied_x, tied_y, diff_x, diff_y)`` partitioning the pairs.
     """

@@ -10,23 +10,19 @@ _OUTPUT_LIMIT_BYTES = 8192
 def limit_output(text: str) -> str:
     """Return at most ``_OUTPUT_LIMIT_BYTES`` bytes of ``text`` (UTF-8).
 
-    When ``text`` fits the budget it is returned unchanged. When it overruns,
-    the cut prefers a whole-line boundary: the last newline inside the first
-    ``_OUTPUT_LIMIT_BYTES`` bytes, with its trailing newline dropped.
-
-    When no usable newline exists (a single long line, or the only newline at
-    byte 0), the cut falls back to the last whole character. Decoding with
-    ``errors="ignore"`` silently drops the trailing bytes of a character the
-    cut split, so a multi-byte character is never severed and no U+FFFD
-    replacement character is emitted.
+    Decoding the cut with ``errors="ignore"`` drops the trailing bytes of a
+    character the cut split, so a multi-byte character is never severed and no
+    U+FFFD replacement character is emitted.
 
     Args:
         text: The text to cap.
 
     Returns:
-        The original text when it fits the budget, or the longest prefix
-        cut at a whole-line boundary (falling back to the last whole
-        character when no usable newline exists).
+        The original text when it fits the budget. Otherwise the prefix up to
+        the last newline inside the first ``_OUTPUT_LIMIT_BYTES`` bytes, with
+        that newline dropped; when no usable newline exists (a single long
+        line, or the only newline at byte 0), the prefix up to the last whole
+        character.
     """
     encoded = text.encode("utf-8")
     if len(encoded) <= _OUTPUT_LIMIT_BYTES:

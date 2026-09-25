@@ -80,10 +80,9 @@ async def confirm_regressions(
 ) -> Confirmation | None:
     """Re-measure the gating metrics the first run called regressed, once.
 
-    ``exact`` metrics never take part: one differing sample is already their whole
-    signal, so a rerun could only add noise to a decision that has none. A
-    ``filter`` template benches just the named metrics; without one the whole
-    bench re-runs and the same metrics are read out of it.
+    ``exact`` metrics never take part (see the module docstring). A ``filter``
+    template benches just the named metrics; without one the whole bench re-runs
+    and the same metrics are read out of it.
 
     Args:
         ctx: The iteration context, carrying the session, config, and options.
@@ -142,8 +141,14 @@ def apply_confirmation(
     """The verdicts as finally read, with every regression the rerun disowned demoted.
 
     A metric the rerun never reported is left regressed — the rerun's job is to
-    disprove a regression, and silence disproves nothing. Only the verdict word
-    moves; the delta, noise, and p-value stay the first run's.
+    disprove a regression, and silence disproves nothing. The asymmetry is
+    deliberate: a false alarm costs the agent an edit it did not need, while a
+    missed regression is caught by the next iteration's baseline.
+
+    Only the verdict word moves; the delta, noise, and p-value stay the first
+    run's, because they describe the first run's samples — the ones the record
+    stores and the table draws its medians from. The rerun's own rounds are kept
+    separately under ``confirm``.
 
     Args:
         verdicts: The first run's per-metric verdicts, by name.

@@ -138,6 +138,9 @@ async def _disconnect_quietly(client: ClaudeClient) -> None:
 
     The caller's outcome is already settled by the time this runs; a
     disconnect failure must not replace it.
+
+    Args:
+        client: The client to disconnect.
     """
     try:
         await client.disconnect()
@@ -379,8 +382,11 @@ class _ClaudeSession:
 
         Commits before notifying: a spend-cap callback reads ``self._cost_usd``
         synchronously and must see the value that just crossed the threshold.
-        ``settled`` marks a result message settling the session on its own, so
-        a spend-cap observer does not mistake it for a live cap crossing.
+
+        Args:
+            cost: The running cost in USD.
+            settled: Whether a result message settled the session on its own, so a
+                spend-cap observer does not mistake it for a live cap crossing.
         """
         self._cost_usd = cost
         self._observer(UsageUpdateEvent(at=now_ns(), cost_usd=self._cost_usd, settled=settled))

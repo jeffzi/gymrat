@@ -1,9 +1,9 @@
 """The assembled ``gymrat`` command-line program and its console-script entry.
 
-Building the app wires the ``compare`` and ``measure`` subcommands, the root
-``--version`` and ``--debug`` options, and the example epilogues, all without
-importing the comparison or measurement engines — those load lazily inside each
-command so ``gymrat --help`` stays as cheap as importing the package.
+Building the app wires every subcommand, the root ``--version`` and ``--debug``
+options, and the example epilogues, all without importing the comparison or
+measurement engines — those load lazily inside each command so ``gymrat --help``
+stays as cheap as importing the package.
 """
 
 from __future__ import annotations

@@ -82,6 +82,9 @@ def _exit_process(code: int) -> NoReturn:
     and raising ``SystemExit`` from a signal handler could be swallowed by an
     application ``except`` block, leaving the process alive after a termination
     signal. Tests monkeypatch this seam to observe the code instead of exiting.
+
+    Args:
+        code: The process exit status.
     """
     os._exit(code)
 

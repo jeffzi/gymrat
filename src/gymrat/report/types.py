@@ -6,8 +6,8 @@ produces a :class:`ComparisonResult`; a single-target run a
 managed and the ``kinds`` section of the config it resolved, so a renderer can
 name where a gating decision was made rather than guess.
 
-Field names are snake_case here; the camelCase JSON keys the report serializes
-to are a serializer's concern, not this contract's.
+Field names are snake_case here; the JSON keys the report serializes to are a
+serializer's concern, not this contract's.
 """
 
 from __future__ import annotations

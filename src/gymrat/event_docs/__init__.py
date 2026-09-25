@@ -38,7 +38,14 @@ def render_all() -> dict[str, str]:
 
 
 def write_all(root: str | Path) -> list[Path]:
-    """Write every artifact under *root*, creating directories as needed."""
+    """Write every artifact under ``root``, creating directories as needed.
+
+    Args:
+        root: The repository root the artifact paths are relative to.
+
+    Returns:
+        The written paths, in artifact order.
+    """
     root = Path(root)
     artifacts = render_all()
     paths: list[Path] = []

@@ -35,11 +35,14 @@ _JSON_DECODER = json.JSONDecoder()
 
 
 def _scan_json_objects(text: str) -> tuple[list[str], str | None]:
-    """Scan ``text`` for JSON objects, returning candidates and the longest failure.
+    """Scan ``text`` for JSON objects in a single pass.
 
     Each ``{`` in ``text`` is tried via ``raw_decode``.  Successes become
     candidates; the failure spanning the most remaining text is captured so
     ``_extract_json`` can surface an actionable diagnostic without a second scan.
+
+    Args:
+        text: The bench output to scan.
 
     Returns:
         A ``(candidates, longest_failure)`` pair: valid JSON text slices, and the
@@ -72,17 +75,16 @@ def find_json_candidates(text: str) -> list[str]:
     """Scan ``text`` for valid JSON objects using :meth:`json.JSONDecoder.raw_decode`.
 
     For each ``{`` in ``text``, attempts a full JSON parse starting at that
-    position. Successfully parsed objects are returned as their original text
-    slices; positions that fail are silently skipped. This naturally handles
-    unbalanced braces and banner text like ``cpu: {model}`` because the JSON
-    decoder rejects them rather than requiring a hand-rolled brace-balancing
-    scanner.
+    position. Unbalanced braces and banner text like ``cpu: {model}`` are
+    rejected by the JSON decoder itself, so no hand-rolled brace-balancing
+    scanner is needed.
 
     Args:
         text: The raw text to scan for JSON objects.
 
     Returns:
-        Original text slices of the successfully parsed JSON objects.
+        Original text slices of the objects that parsed; positions that fail
+        are skipped.
     """
     candidates, _ = _scan_json_objects(text)
     return candidates
@@ -100,17 +102,19 @@ def _extract_json(stdout: str) -> dict[str, object]:
     alongside a non-benchmarks record, the failure diagnostic takes priority
     over returning the record — the real payload was likely truncated or
     malformed, and the parse error is more actionable than a generic "missing
-    benchmarks array" from the caller. Only when no decode failure exists is
-    the first dict-shaped record returned as a fallback.
+    benchmarks array" from the caller.
 
     When :func:`_scan_json_objects` returns no candidates, every ``{`` in
     ``stdout`` failed to start a valid JSON object. The diagnostic names the
     failure of the longest attempt — the ``{`` spanning the most remaining text
     is most likely to be the real payload.
 
+    Args:
+        stdout: The bench command's captured stdout.
+
     Returns:
-        The parsed JSON object carrying a ``benchmarks`` list, or the first
-        dict-shaped fallback.
+        The parsed JSON object carrying a ``benchmarks`` list, or, when no
+        decode failed, the first dict-shaped record as a fallback.
 
     Raises:
         AdapterError: When no usable JSON object is found, or the most
@@ -157,6 +161,12 @@ def _record_metric(metrics: dict[str, float], name: str, value: float, warn: War
     A collision means two runs resolved to one metric name — an alias missing the
     ``$placeholder`` for the argument that varies, or two benchmarks sharing an
     alias — so the report would otherwise silently show only the last run's value.
+
+    Args:
+        metrics: The readings collected so far, updated in place.
+        name: The resolved metric name.
+        value: The reading to store.
+        warn: The sink that receives the collision warning.
     """
     if name in metrics:
         warn(
@@ -173,6 +183,9 @@ def _describe_run_error(error: object) -> str:
     string — ``str()`` on a plain dict would print an unhelpful Python repr.
     ``json.dumps`` renders that case usefully instead, with a ``str()`` fallback
     for values it cannot serialize.
+
+    Args:
+        error: The ``run.error`` value as parsed from JSON.
 
     Returns:
         A human-readable rendering of the error value.
@@ -192,6 +205,9 @@ def _serialize_arg_value(value: object) -> str:
     ``false`` and ``None`` reads ``null``; objects and arrays serialize via JSON
     with recursively sorted keys so two structurally equal objects always produce
     the same metric name.
+
+    Args:
+        value: The argument value as parsed from JSON.
 
     Returns:
         The serialized string representation suitable for metric names.
@@ -216,9 +232,13 @@ def _build_metric_name_prefix(alias: str, args: dict[str, object]) -> str:
     Keys are matched longest-first to prevent a shorter key from consuming a
     prefix of a longer one (``$ab`` matches key ``ab`` before ``a``).  The
     callable replacement returns a literal string, so ``re.sub`` never interprets
-    regex replacement syntax (``$&``, ``$\\```, ``$'``) in argument values.
+    backslash escapes (``\1``, ``\g<0>``, ``\n``) in argument values.
     Unmatched ``$`` tokens stay as-is because the alternation only covers keys
     present in ``args``.
+
+    Args:
+        alias: The benchmark alias, possibly carrying ``$key`` placeholders.
+        args: The run's arguments, keyed by name.
 
     Returns:
         The alias with ``$key`` placeholders replaced by ``key=value`` pairs.
@@ -236,10 +256,16 @@ def _build_metric_name_prefix(alias: str, args: dict[str, object]) -> str:
 
 
 def _is_number(value: object) -> TypeGuard[float]:
-    """Return whether ``value`` is a JS-style number: ``bool`` does not count.
+    """Tell whether a parsed value is a JS-style number.
 
     Python's ``bool`` is an ``int`` subclass, so it is excluded to mirror
     JavaScript's ``typeof value === "number"``.
+
+    Args:
+        value: The parsed JSON value to test.
+
+    Returns:
+        True for an ``int`` or ``float`` that is not a ``bool``.
     """
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -374,7 +400,9 @@ class _MitataAdapter:
         not discard the rest of the run — and likewise for a benchmark whose
         ``alias``/``runs`` shape is malformed. Every skip warns through ``warn``
         rather than vanishing silently, as does a collision between two runs
-        landing on one metric name; on a collision the last run still wins.
+        landing on one metric name; on a collision the last run still wins. A
+        metric prefix carrying ``#`` is the exception: ``#`` is reserved as the
+        metric-type separator, so it aborts the parse instead.
 
         Args:
             stdout: The bench script's full standard output.
@@ -386,8 +414,8 @@ class _MitataAdapter:
 
         Raises:
             AdapterError: When no JSON object is found, the JSON is malformed, the
-                ``benchmarks`` array is missing or empty, or no run yields a usable
-                metric.
+                ``benchmarks`` array is missing or empty, a substituted metric
+                prefix contains ``#``, or no run yields a usable metric.
         """
         json_obj = _extract_json(stdout)
         benchmarks = _parse_benchmarks(json_obj)

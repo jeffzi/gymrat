@@ -64,6 +64,10 @@ def _classify_verdict(verdict: MetricVerdict, data: _FooterData) -> None:
     The method union is discriminated exhaustively: exact verdicts contribute
     nothing to the footer by decision, an explicit arm rather than a fall-through
     a new method could slip past unnoticed.
+
+    Args:
+        verdict: The verdict to classify.
+        data: The footer tallies, updated in place.
     """
     match verdict.method:
         case "permutation":
@@ -158,9 +162,6 @@ def footer_lines(
     samples: int | None = None,
 ) -> list[str]:
     """The footer: how each verdict was decided when verbose, and the samples hint.
-
-    When ``samples`` is provided the hint distinguishes insufficient samples from
-    dropped rounds.
 
     Args:
         metrics: Every metric of the run, keyed by name.

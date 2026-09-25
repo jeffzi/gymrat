@@ -14,6 +14,9 @@ def _regular_plural(noun: str) -> str:
     ``-ies``; everything else takes ``-s``. Multi-word nouns inflect on their
     last word, which the suffix tests already look at.
 
+    Args:
+        noun: The singular noun.
+
     Returns:
         The pluralized noun.
     """

@@ -44,7 +44,7 @@ class Observations:
 
     @classmethod
     def from_rounds(cls, samples: Sequence[Repeat]) -> Self:
-        """Build a container keyed by 0-based round index, one repeat per round, order preserved.
+        """Build a container from per-round samples, preserving round order.
 
         Args:
             samples: One repeat per round, in round order.
@@ -56,10 +56,13 @@ class Observations:
 
 
 def _require_single_repeat(observations: Observations) -> None:
-    """Raise ``ValueError`` if any key carries more than one repeat.
+    """Reject a container that carries more than one repeat for any key.
 
     A multi-repeat container is constructible, but pairing over one is not defined — surface it
     rather than silently taking the first repeat.
+
+    Args:
+        observations: The container to check.
 
     Raises:
         ValueError: When any key carries more than one repeat.
@@ -80,16 +83,8 @@ def pair_metric(
 ) -> PairResult:
     """Align two containers on their shared keys, in order, for a single metric.
 
-    Iterates the keys ``left`` and ``right`` share, in ``left``'s order. A shared key where either
-    side's repeat lacks ``metric`` is dropped from both output sequences. The two returned sequences
-    are always equal length. A metric absent from every shared key yields two empty sequences — the
-    caller's skip-metric signal.
-
-    The returned :class:`PairResult` also reports ``dropped``: the count of shared keys where
-    exactly one side carried the metric. A shared key where neither side has the metric is not a
-    drop.
-
-    Both containers must be single-repeat; a multi-repeat container raises ``ValueError``.
+    Iterates the keys ``left`` and ``right`` share, in ``left``'s order. Pairing over a multi-repeat
+    container is not defined, so both must be single-repeat.
 
     Args:
         left: The baseline observation container.
@@ -97,10 +92,14 @@ def pair_metric(
         metric: The metric name to pair across both containers.
 
     Returns:
-        The paired samples and drop count for the requested metric.
+        The paired samples and drop count for the requested metric. A shared key where either
+        side's repeat lacks ``metric`` is left out of both sequences, so they are always equal
+        length; two empty sequences — the metric absent from every shared key — are the caller's
+        skip-metric signal. ``dropped`` counts the shared keys where exactly one side carried the
+        metric; a key where neither side has it is not a drop.
 
     Raises:
-        ValueError: If either container carries more than one repeat for a shared key.
+        ValueError: If any key in either container carries more than one repeat.
     """
     _require_single_repeat(left)
     _require_single_repeat(right)

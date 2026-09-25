@@ -116,8 +116,8 @@ def _resolve_config_source(
     """Resolve which config file to load, load it, and report any problems.
 
     When the config source itself is broken (blank ``--config``, blank
-    ``GYMRAT_CONFIG``), file loading is skipped and an empty ``ConfigFile`` is
-    returned so the merge still yields defaults without probing the filesystem.
+    ``GYMRAT_CONFIG``), file loading is skipped so the merge still yields
+    defaults without probing the filesystem.
 
     Args:
         flags: Command-line overrides, consulted for an explicit ``--config``.
@@ -127,7 +127,8 @@ def _resolve_config_source(
     Returns:
         A ``(config_path, config_file, problems)`` triple: the resolved path
         (``None`` when no file applies), the parsed config (``None`` on fatal
-        read/parse failure), and any problems found.
+        read/parse failure, an empty ``ConfigFile`` when the config source is
+        blank), and any problems found.
     """
     problems: list[str] = []
 
@@ -164,7 +165,7 @@ def _resolve_config_source(
 def _resolve_runbook(
     config: BenchlessConfig, config_path: str | None, problems: list[str]
 ) -> BenchlessConfig:
-    """Settle ``config.runbook`` to an absolute path, or record why it cannot be.
+    """Settle ``config.runbook`` against the config's directory, or record why it cannot be.
 
     A runbook is checked only when a config path exists, since it is authored
     relative to the directory the config lives in.
@@ -176,8 +177,9 @@ def _resolve_runbook(
             runbook cannot be resolved.
 
     Returns:
-        The config with ``runbook`` resolved to an absolute path, or unchanged
-        when no resolution is needed or a problem was recorded.
+        The config with ``runbook`` joined onto the config file's directory and
+        normalized (absolute only when ``config_path`` is), or unchanged when no
+        resolution is needed or a problem was recorded.
     """
     if config.runbook is None or config_path is None:
         return config

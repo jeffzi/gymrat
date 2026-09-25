@@ -64,9 +64,11 @@ def detect_git_environment(cwd: str) -> GitEnvironment:
 def _defaults_as_benchless() -> BenchlessConfig:
     """A benchless config carrying only the settled defaults.
 
-    Used for the workflow section when the config failed to settle: that path
-    collapses to a skip check before any config field is read, so the missing
-    loop keys never matter.
+    Stands in whenever config inspection yields no config: either the config
+    has problems, in which case the workflow section collapses to a skip check,
+    or no config file exists, in which case the unset ``checks``, ``stop``, and
+    ``runbook`` surface as workflow warnings and ``adapter`` feeds the bench
+    section.
 
     Returns:
         A :class:`BenchlessConfig` populated from :data:`CONFIG_DEFAULTS`.
@@ -91,7 +93,9 @@ def _environment_info() -> EnvironmentInfo:
 def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
     """Coordinate the git probe, config inspection, and section builders into a single report.
 
-    Falls back to config defaults for the workflow section when config inspection fails.
+    Falls back to config defaults for the workflow and bench sections whenever
+    config inspection yields no config — on config problems or when no config
+    file exists.
 
     Args:
         flags: The command-line overrides to apply during config inspection.

@@ -41,7 +41,7 @@ _RELATIVE_SPREAD_CAP_PCT = 100
 
 
 def _non_finite_token(value: float) -> str:
-    """The token a non-finite reading prints, matching the differ/JSON contract."""
+    """The token the text report prints for a non-finite reading (JSON writes ``null``)."""
     if math.isnan(value):
         return "NaN"
     return "Infinity" if value > 0 else "-Infinity"
@@ -56,6 +56,10 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
     promoted to the tier above. The threshold is compared against the magnitude,
     since a sign is not a size: a negative reading picks the tier its magnitude
     names.
+
+    Args:
+        value: The value to scale.
+        tiers: The scale tiers, smallest first.
 
     Returns:
         The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.

@@ -45,7 +45,8 @@ def stop_session(root: str, message: str) -> StopResult:
         message: The reason to record for stopping the session.
 
     Returns:
-        The stop result with the rendered report and timestamp.
+        The appended stop record (carrying its timestamp) and its one-line
+        report.
 
     Raises:
         GymratError: When no session is open, when the session is finalized,

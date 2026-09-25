@@ -226,6 +226,10 @@ def _gate_trip_lines(
     line. A kind with no gated geomean, or one aggregating nothing, never trips —
     an informational kind cannot fail a gate it does not stand behind.
 
+    Args:
+        candidate: The candidate to check.
+        conditions: The run's ``--fail-on`` conditions.
+
     Returns:
         One markup line per kind whose gated geomean exceeded a threshold.
     """
@@ -252,8 +256,10 @@ def _highlight_section(blocks: Sequence[HighlightBlock]) -> list[str]:
     """The highlights block: a heading, each candidate's entries, and the futility note.
 
     A block with a label heads its entries with the bold label and indents them
-    under it; a block with no label lists its entries directly. The whole block is
-    dropped when no candidate had anything to highlight.
+    under it; a block with no label lists its entries directly.
+
+    Args:
+        blocks: One highlight block per candidate.
 
     Returns:
         The heading, highlight entries, and futility note, or an empty list
