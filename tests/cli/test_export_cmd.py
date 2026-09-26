@@ -8,6 +8,7 @@ success path with its printed summary.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -263,35 +264,65 @@ def test_export_when_session_log_missing_does_exit_two_with_path_in_message(
     result = runner.invoke(app, ["export", missing])
 
     assert result.exit_code == 2
-    assert "session" in _output(result).lower()
+    assert f"No session found in {missing}" in _output(result)
+
+
+def test_export_when_session_log_blank_does_exit_two_reporting_no_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
+    session_log = session_jsonl_path(str(tmp_path))
+    Path(session_log).parent.mkdir(parents=True, exist_ok=True)
+    Path(session_log).write_text("\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["export", session_log])
+
+    assert result.exit_code == 2
+    assert f"No session found in {session_log}" in _output(result)
 
 
 @pytest.mark.parametrize(
-    ("first_line", "expected_fragment"),
+    ("first_line", "expected_fragments"),
     [
-        pytest.param("not json at all\n", "Invalid JSON", id="malformed-json"),
         pytest.param(
-            json.dumps(record_to_wire(command_record(name="measure", at=_T0))) + "\n",
-            "Expected session header",
+            b"not json at all\n",
+            ("Invalid JSON at {path}:1", "Line 1 is not a JSON object."),
+            id="malformed-json",
+        ),
+        pytest.param(
+            json.dumps(record_to_wire(command_record(name="measure", at=_T0))).encode("utf-8")
+            + b"\n",
+            (
+                "Expected session header at {path}:1, got a command record",
+                "Line 1 is not a session header. The session log is corrupt; start a new session.",
+            ),
             id="non-session-record",
+        ),
+        pytest.param(
+            b"\xff\xff\n",
+            ("Corrupt session log at {path}:1", "Line 1 contains invalid UTF-8 bytes."),
+            id="undecodable-bytes",
         ),
     ],
 )
 def test_export_when_first_line_corrupt_does_exit_two_naming_line(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    first_line: str,
-    expected_fragment: str,
+    first_line: bytes,
+    expected_fragments: tuple[str, ...],
 ):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
     session_log = session_jsonl_path(str(tmp_path))
     Path(session_log).parent.mkdir(parents=True, exist_ok=True)
-    Path(session_log).write_text(first_line, encoding="utf-8")
+    Path(session_log).write_bytes(first_line)
 
     result = runner.invoke(app, ["export", session_log])
 
+    output = _output(result)
     assert result.exit_code == 2
-    assert expected_fragment in _output(result)
+    expected = [fragment.format(path=session_log) for fragment in expected_fragments]
+    assert [fragment for fragment in expected if fragment not in output] == []
 
 
 @pytest.mark.skipif(
@@ -313,27 +344,6 @@ def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_rea
     assert session_log in output
     assert "Permission denied" in output
     assert "No session found" not in output
-
-
-@pytest.mark.skipif(
-    not hasattr(os, "geteuid") or os.geteuid() == 0,
-    reason="requires Unix file permissions and non-root user",
-)
-def test_export_when_supervisor_log_unreadable_does_exit_two_naming_path_and_os_reason(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
-    sup_log = next(Path(session_log).parent.glob("supervisor-*.jsonl"))
-    sup_log.chmod(0o000)
-
-    result = runner.invoke(app, ["export", session_log])
-
-    output = _output(result)
-    assert result.exit_code == 2
-    assert str(sup_log) in output
-    assert "Permission denied" in output
 
 
 def _always_true(*_args: object, **_kwargs: object) -> bool:
@@ -454,6 +464,122 @@ def test_export_when_supervisor_log_session_differs_does_skip_it(
     _, sup_logs = replay_calls[0]
     assert len(sup_logs) == 1  # pyrefly: ignore[bad-argument-type]
     assert "supervisor-001" in sup_logs[0]  # pyrefly: ignore[bad-index]
+
+
+def _first_line_writer(first_line: bytes) -> Callable[[Path], None]:
+    """Build a writer that creates a supervisor log holding only ``first_line``."""
+
+    def write(path: Path) -> None:
+        path.write_bytes(first_line)
+
+    return write
+
+
+def _dangling_symlink(path: Path) -> None:
+    """Create an entry the listing sees but whose target is gone by the time it is read."""
+    path.symlink_to(path.with_name("vanished.jsonl"))
+
+
+@pytest.mark.parametrize(
+    "make_entry",
+    [
+        pytest.param(_first_line_writer(b"{not json\n"), id="a-first-line-that-is-not-json"),
+        pytest.param(_first_line_writer(b"\xff\xff\n"), id="a-first-line-that-is-not-utf8"),
+        pytest.param(_first_line_writer(b"[1, 2]\n"), id="a-first-line-that-is-not-an-object"),
+        pytest.param(
+            _dangling_symlink,
+            id="a-log-that-vanished-after-listing",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="creating a symlink needs extra rights on Windows"
+            ),
+        ),
+    ],
+)
+def test_export_when_supervisor_log_first_line_not_a_json_object_does_skip_it_silently(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    make_entry: Callable[[Path], None],
+):
+    session_log = _populate_session_dir(str(tmp_path))
+    make_entry(Path(session_log).parent / "supervisor-002.jsonl")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
+    replay_calls: list[tuple[str, list[str]]] = []
+
+    def fake_replay(session_path: str, sup_logs: list[str]) -> int:
+        replay_calls.append((session_path, sup_logs))
+        return 1
+
+    _stub_tracing(monkeypatch, replay_session=fake_replay)
+
+    result = runner.invoke(app, ["export", session_log])
+
+    assert result.exit_code == 0, _output(result)
+    assert [[Path(log).name for log in logs] for _, logs in replay_calls] == [
+        ["supervisor-001.jsonl"]
+    ]
+    assert "warning: " not in result.stderr
+
+
+def _deny_read(path: Path) -> None:
+    """Write a supervisor log for the session, then remove every permission on it."""
+    _write_supervisor_log(str(path), [_launch_event(), _turn_end()])
+    path.chmod(0o000)
+
+
+def _make_directory(path: Path) -> None:
+    """Create a directory whose name matches the supervisor log pattern."""
+    path.mkdir()
+
+
+@pytest.mark.parametrize(
+    ("make_unreadable", "reason"),
+    [
+        pytest.param(
+            _deny_read,
+            os.strerror(errno.EACCES),
+            id="read-denied",
+            marks=pytest.mark.skipif(
+                not hasattr(os, "geteuid") or os.geteuid() == 0,
+                reason="requires Unix file permissions and non-root user",
+            ),
+        ),
+        pytest.param(
+            _make_directory,
+            os.strerror(errno.EISDIR),
+            id="a-directory",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows reports a directory as access denied"
+            ),
+        ),
+    ],
+)
+def test_export_when_supervisor_log_unreadable_does_warn_and_export_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    make_unreadable: Callable[[Path], None],
+    reason: str,
+):
+    session_log = _populate_session_dir(str(tmp_path))
+    unreadable = Path(session_log).parent / "supervisor-002.jsonl"
+    make_unreadable(unreadable)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
+    replay_calls: list[list[str]] = []
+
+    def fake_replay(_session_path: str, sup_logs: list[str]) -> int:
+        replay_calls.append(sup_logs)
+        return 1
+
+    _stub_tracing(monkeypatch, replay_session=fake_replay)
+
+    result = runner.invoke(app, ["export", session_log])
+
+    warning_lines = [line for line in result.stderr.splitlines() if line.startswith("warning: ")]
+    assert result.exit_code == 0, _output(result)
+    assert [[Path(log).name for log in logs] for logs in replay_calls] == [["supervisor-001.jsonl"]]
+    assert len(warning_lines) == 1
+    assert str(unreadable) in warning_lines[0]
+    assert reason in warning_lines[0]
+    assert f"exported 1 spans for session {SESSION_ID}" in result.stderr
 
 
 # ---------------------------------------------------------------------------

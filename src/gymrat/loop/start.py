@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from gymrat.clock import now_ns
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
-from gymrat.session.clock import now_ns
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SCHEMA_VERSION, SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.store import SessionState, append_record, fold_session, read_records

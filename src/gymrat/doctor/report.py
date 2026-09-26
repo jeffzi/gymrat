@@ -14,8 +14,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from gymrat.config import CONFIG_DEFAULTS, BenchlessConfig, CliFlags
-from gymrat.config.inspect import inspect_config
+from gymrat.config import CONFIG_DEFAULTS, BenchlessConfig, CliFlags, inspect_config
 from gymrat.doctor.bench import build_bench_section
 from gymrat.doctor.checks import (
     DoctorReport,

@@ -1,11 +1,8 @@
-"""Tests for the config subsystem simplification.
+"""Tests for config package import safety and benchless config resolution.
 
 Verifies that:
-- load.py exposes no ``_ReadOk`` / ``_ReadAbsent`` / ``_ReadError`` names
-- validate.py exposes no ``assert_flag_not_empty`` / ``validate_loop_keys`` /
-  ``assert_runbook_exists``
 - The config package loads without circular imports
-- resolve_benchless_config delegates to inspect_config
+- resolve_benchless_config settles through the same pipeline as inspect_config
 """
 
 import subprocess
@@ -32,44 +29,6 @@ def write_config(directory: Path, content: dict[str, object]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# load.py exposes no _ReadOk / _ReadAbsent / _ReadError
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param("_ReadOk", id="read-ok"),
-        pytest.param("_ReadAbsent", id="read-absent"),
-        pytest.param("_ReadError", id="read-error"),
-    ],
-)
-def test_load_module_when_read_outcome_class_accessed_does_raise_attribute_error(name: str):
-    from gymrat.config import load
-
-    assert not hasattr(load, name)
-
-
-# ---------------------------------------------------------------------------
-# validate.py exposes no assert_flag_not_empty / validate_loop_keys / assert_runbook_exists
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param("assert_flag_not_empty", id="assert-flag-not-empty"),
-        pytest.param("validate_loop_keys", id="validate-loop-keys"),
-        pytest.param("assert_runbook_exists", id="assert-runbook-exists"),
-    ],
-)
-def test_validate_module_when_removed_function_accessed_does_raise_attribute_error(name: str):
-    from gymrat.config import validate
-
-    assert not hasattr(validate, name)
-
-
-# ---------------------------------------------------------------------------
 # No circular import at package load time
 # ---------------------------------------------------------------------------
 
@@ -88,9 +47,9 @@ def test_config_package_when_imported_fresh_does_not_raise_import_error():
     )
 
 
-def test_config_inspect_module_when_imported_fresh_does_not_raise_import_error():
+def test_config_package_when_inspect_config_imported_fresh_does_not_raise_import_error():
     result = subprocess.run(
-        [sys.executable, "-c", "import gymrat.config.inspect"],
+        [sys.executable, "-c", "from gymrat.config import ConfigInspection, inspect_config"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -98,7 +57,7 @@ def test_config_inspect_module_when_imported_fresh_does_not_raise_import_error()
     )
 
     assert result.returncode == 0, (
-        f"Importing gymrat.config.inspect failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        f"Importing inspect_config failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
 
 

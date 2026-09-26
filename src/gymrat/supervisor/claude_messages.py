@@ -11,7 +11,8 @@ from collections.abc import Mapping
 from math import ceil
 from typing import Literal
 
-from gymrat.session.clock import now_ms, now_ns
+from gymrat import clock
+from gymrat.clock import now_ns
 from gymrat.supervisor.driver import SessionOutcome
 from gymrat.supervisor.events import (
     ModelPhaseEvent,
@@ -125,7 +126,7 @@ class MessageMapper:
         self._observer = observer
         self._supervised_root = supervised_root
         self._thinking_streams: dict[str | None, _ThinkingStream] = {}
-        self._tool_starts: dict[str, int] = {}
+        self._tool_starts: dict[str, float] = {}
         self._tool_names: dict[str, str] = {}
         self._last_top_level_text: str = ""
 
@@ -243,7 +244,7 @@ class MessageMapper:
         block_id = getattr(block, "id", None)
         name = getattr(block, "name", None)
         if isinstance(block_id, str) and isinstance(name, str):
-            self._tool_starts[block_id] = now_ms()
+            self._tool_starts[block_id] = clock.monotonic_ms()
             self._tool_names[block_id] = name
             tool_input = getattr(block, "input", None)
             self._observer(
@@ -265,7 +266,7 @@ class MessageMapper:
         tool_use_id = getattr(block, "tool_use_id", None)
         if isinstance(tool_use_id, str):
             start = self._tool_starts.get(tool_use_id)
-            duration_ms = now_ms() - start if start is not None else 0
+            duration_ms = int(clock.monotonic_ms() - start) if start is not None else 0
             result = _stringify_result(getattr(block, "content", None))
             self._observer(
                 ToolEndEvent(

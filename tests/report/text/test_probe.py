@@ -17,6 +17,7 @@ from gymrat.report.text.probe import render_probe_report
 from gymrat.report.types import ReportOptions
 from tests.report._inputs import (
     cells_of,
+    delta_cell,
     line_containing,
     line_starting_with,
     probe_metric,
@@ -184,6 +185,30 @@ def test_render_probe_report_when_colored_does_paint_the_delta_by_its_direction(
     row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
 
     assert code in styles_at(row, rendered)
+
+
+@pytest.mark.parametrize(
+    ("median", "delta_pct", "rendered"),
+    [
+        pytest.param(90.0, None, "", id="zero-reference-leaves-the-delta-blank"),
+        pytest.param(0.0, 0.0, "0.0%", id="both-zero-is-no-change"),
+    ],
+)
+def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled(
+    median: float, delta_pct: float | None, rendered: str
+):
+    result = probe_result(
+        metrics=[
+            probe_metric(
+                "decode/time", median=median, reference_median=0.0, delta_pct=delta_pct, unit="ns"
+            )
+        ]
+    )
+
+    row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
+
+    assert strip_ansi(delta_cell(row)).strip() == rendered
+    assert "\x1b[" not in delta_cell(row)
 
 
 def test_render_probe_report_when_color_off_does_carry_the_same_text_unstyled():

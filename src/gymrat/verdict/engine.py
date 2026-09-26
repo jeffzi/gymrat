@@ -37,7 +37,12 @@ from gymrat.model import (
     Verdict,
     pair_metric,
 )
-from gymrat.stats import compute_half_range, compute_median, sign_flip_permutation_test
+from gymrat.stats import (
+    compute_half_range,
+    compute_median,
+    percent_delta,
+    sign_flip_permutation_test,
+)
 from gymrat.stats.permutation import count_nonzero_pairs
 from gymrat.warn import WarnSink, warn_to_stderr
 
@@ -99,29 +104,6 @@ def _determine_verdict(delta: float, direction: Direction) -> Verdict:
 
     improved = delta < 0 if direction == "lower" else delta > 0
     return "improved" if improved else "regressed"
-
-
-def _compute_delta(median_a: float, median_b: float) -> float:
-    """Percentage delta between two medians, normalized by the baseline's magnitude.
-
-    Normalizing by the magnitude keeps the delta's sign tied to the direction the
-    value moved: a negative-median metric dropping further below zero is a
-    decrease, not an increase. When the baseline is 0 the ratio is undefined — 0
-    if both medians are 0, ``NaN`` otherwise.
-
-    Args:
-        median_a: The baseline median.
-        median_b: The candidate median.
-
-    Returns:
-        The percentage delta, or ``NaN`` when *median_a* is zero and *median_b*
-        is not.
-    """
-    if median_a == 0 and median_b == 0:
-        return 0.0
-    if median_a == 0:
-        return math.nan
-    return (median_b - median_a) / abs(median_a) * 100
 
 
 def _fraction_of_median(numerator: float, median: float) -> float:
@@ -317,7 +299,7 @@ def compute_verdicts(
             median_left=compute_median(paired.left),
             median_right=compute_median(paired.right),
         )
-        delta = _compute_delta(samples.median_left, samples.median_right)
+        delta = percent_delta(samples.median_left, samples.median_right)
 
         if meta.exact:
             result[metric] = ExactVerdict(

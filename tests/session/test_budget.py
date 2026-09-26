@@ -109,6 +109,14 @@ def test_write_budget_when_called_does_create_readable_json_file(root: str):
     assert raw["deadline_ms"] == 1_800_000.0
 
 
+def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
+    write_budget(root, _make_budget())
+
+    assert _budget_file(root).read_bytes() == (
+        b'{"started_at_ms":1000.0,"max_minutes":30.0,"deadline_ms":1800000.0,"version":1}'
+    )
+
+
 def test_write_budget_when_called_twice_does_overwrite_previous(root: str):
     write_budget(root, _make_budget(max_minutes=10))
     write_budget(root, _make_budget(max_minutes=20))

@@ -17,6 +17,7 @@ from typing import Annotated
 
 import typer
 
+from gymrat.cli.lock import with_repo_lock
 from gymrat.cli.shared import (
     ColorOption,
     ConfigOption,
@@ -34,7 +35,6 @@ from gymrat.cli.shared import (
     run_cli,
     run_with_signal_abort,
     warn_duration_over_budget,
-    with_repo_lock,
 )
 from gymrat.cli.supervised import guard_supervised_origin
 from gymrat.config import resolve_config

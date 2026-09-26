@@ -55,7 +55,7 @@ def _install_over_budget_session(monkeypatch: pytest.MonkeyPatch, *, remaining_m
     def read_records(_jsonl_path: str) -> list[IterationRecord]:
         return records
 
-    monkeypatch.setattr("gymrat.session.clock.now_ms", lambda: 0.0)
+    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
     monkeypatch.setattr("gymrat.cli.shared.repo_root", repo_root)
     monkeypatch.setattr("gymrat.cli.shared.read_budget", read_budget)
     monkeypatch.setattr("gymrat.cli.shared.read_records", read_records)

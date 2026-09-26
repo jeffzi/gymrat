@@ -13,6 +13,7 @@ from typing import Annotated
 
 import typer
 
+from gymrat.cli.lock import config_trace_args, with_repo_lock
 from gymrat.cli.shared import (
     AdapterOption,
     BenchOption,
@@ -32,13 +33,11 @@ from gymrat.cli.shared import (
     apply_debug,
     begin_run,
     budget_for_report,
-    config_trace_args,
     emit_report,
     run_cli,
     run_options_of,
     wants_json,
     warn_duration_over_budget,
-    with_repo_lock,
     write_and_flush,
 )
 from gymrat.config import resolve_config

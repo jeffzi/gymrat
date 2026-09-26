@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from gymrat.clock import now_ms, now_ns
 from gymrat.errors import GymratError
 from gymrat.loop.start import StartResult
 from gymrat.session import append_record
 from gymrat.session.budget import Budget, read_budget, write_budget
-from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.paths import budget_path, session_jsonl_path
 from gymrat.supervisor import SupervisionResult
 from tests.cli.supervise._fixtures import baseline_record, make_supervision_result

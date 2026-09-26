@@ -33,9 +33,9 @@ from typing import NoReturn
 
 from filelock import FileLock, Timeout
 
+from gymrat.clock import now_iso
 from gymrat.errors import GymratError
 from gymrat.eta import MS_PER_SECOND
-from gymrat.session.clock import now_iso
 
 __all__ = ["LockContentionError", "LockHolder", "acquire_lock", "is_held", "read_holder"]
 

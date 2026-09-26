@@ -14,12 +14,11 @@ from typing import Annotated, assert_never
 import typer
 
 from gymrat.cli.gating import should_fail_gate, warn_empty_geomean_gates
-from gymrat.cli.lock import GATE_EXIT_CODE
+from gymrat.cli.lock import GATE_EXIT_CODE, CommandTrace, config_trace_args, with_repo_lock
 from gymrat.cli.shared import (
     AdapterOption,
     BenchOption,
     ColorOption,
-    CommandTrace,
     CompareFlags,
     ConfigOption,
     DebugOption,
@@ -34,13 +33,11 @@ from gymrat.cli.shared import (
     apply_debug,
     begin_run,
     budget_for_report,
-    config_trace_args,
     emit_report,
     parse_fail_on,
     run_cli,
     run_options_of,
     warn_duration_over_budget,
-    with_repo_lock,
 )
 from gymrat.config import resolve_config
 from gymrat.report import render_json, render_report

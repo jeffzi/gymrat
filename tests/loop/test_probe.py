@@ -24,6 +24,8 @@ from gymrat.config import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.confirm import scoped_bench
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
+from gymrat.report.text.probe import render_probe_report
+from gymrat.report.types import MetricMeasurement, ReportOptions
 from gymrat.sampling import TargetSpec
 from gymrat.session import experiment_worktree_dir, read_records, session_jsonl_path
 from gymrat.session.paths import progress_path
@@ -35,12 +37,13 @@ from tests.loop._probe import (
     only_call,
 )
 from tests.loop.settle._fixtures import checks_config, start_with
-from tests.report._inputs import measured_metric
+from tests.report._inputs import line_containing, measured_metric, metric_meta, styles_at
 from tests.session.records._fixtures import finalize_record
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from gymrat.model import Direction
     from gymrat.session import SessionLogRecord
 
 #: The rerun template a consumer configures when their bench can be narrowed.
@@ -294,6 +297,56 @@ async def test_probe_session_when_no_usable_reference_does_report_no_delta(
 
     assert result.metrics[0].reference_median == expected_reference
     assert result.metrics[0].delta_pct is None
+
+
+@pytest.mark.parametrize(
+    ("reference", "median", "expected"),
+    [
+        pytest.param(-10.0, -5.0, 50.0, id="negative-reference-scales-by-its-magnitude"),
+        pytest.param(0.0, 0.0, 0.0, id="both-zero-is-no-change"),
+    ],
+)
+async def test_probe_session_when_reference_signed_or_zero_does_match_the_iterate_delta(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    reference: float,
+    median: float,
+    expected: float,
+):
+    start_with(repo, (baseline_of(({"total_ms": reference},)),))
+    install_measure(
+        monkeypatch,
+        measurement({
+            "total_ms": measured_metric(median=median, spread=1.0, short_name="total_ms")
+        }),
+    )
+
+    result = await probe_session(repo, checks_config(), ProbeOptions())
+
+    assert result.metrics[0].delta_pct == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("direction", "code"),
+    [
+        pytest.param("lower", "31", id="lower-is-regressed"),
+        pytest.param("higher", "32", id="higher-is-improved"),
+    ],
+)
+async def test_probe_session_when_negative_median_rises_does_render_a_positive_delta_by_direction(
+    repo: str, monkeypatch: pytest.MonkeyPatch, direction: Direction, code: str
+):
+    start_with(repo, (baseline_of(({"total_ms": -10.0},)),))
+    meta = metric_meta("total_ms", direction=direction)
+    install_measure(
+        monkeypatch,
+        measurement({"total_ms": MetricMeasurement(median=-5.0, spread=1.0, meta=meta)}),
+    )
+    result = await probe_session(repo, checks_config(), ProbeOptions())
+
+    row = line_containing(render_probe_report(result, ReportOptions(color=True)), "total_ms")
+
+    assert code in styles_at(row, "+50.0%")
 
 
 async def test_probe_session_when_several_baselines_recorded_does_reference_the_newest(

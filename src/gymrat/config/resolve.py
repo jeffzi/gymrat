@@ -1,12 +1,20 @@
-"""Precedence pipeline: merge flags, env vars, config file, and defaults."""
+"""Precedence pipeline: merge flags, env vars, config file, and defaults.
+
+One settlement pipeline serves every caller. :func:`inspect_config` runs it and
+never raises: every flag, env var, file, schema, and cross-field problem is
+gathered into one list so a caller (a doctor/status command) can report them all
+at once, and a settled config is returned only when that list is empty.
+:func:`resolve_config` and :func:`resolve_benchless_config` run the same
+pipeline and raise the first collected problem.
+"""
 
 import dataclasses
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gymrat.config.env import NUMBER_ENV_FIELDS, STRING_ENV_FIELDS, env_string_result
-from gymrat.config.load import load_config_file
+from gymrat.config.load import load_config_file_collecting
 from gymrat.config.schema import validate_and_convert
 from gymrat.config.types import (
     CONFIG_DEFAULTS,
@@ -25,52 +33,19 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root
 
 
-def _read_env_string(env_var: str) -> str | None:
-    """Throwing wrapper around :func:`env_string_result`."""
-    result = env_string_result(env_var)
-    if result.problem is not None:
-        raise GymratError(result.problem)
-    return str(result.value) if result.value is not None else None
+@dataclass(frozen=True, slots=True)
+class ConfigInspection:
+    """Outcome of a collecting inspection.
 
-
-def _read_env_flags(flags: CliFlags) -> CliFlags:
-    """Overlay ``GYMRAT_*`` values onto every flag left unset: flag > env > (later) file.
-
-    An env var is consulted only when its flag is ``None``, so a flag always wins
-    without the env var's validation ever firing. ``GYMRAT_CONFIG`` is handled in
-    :func:`_settle_config` because it selects the file to load, not a field.
-
-    Args:
-        flags: The CLI flags to overlay env-var values onto.
-
-    Returns:
-        A :class:`CliFlags` with env-var values filled in for every unset flag.
-
-    Raises:
-        GymratError: When an env var carries an invalid value.
+    ``config`` and ``bench`` are populated only when ``problems`` is empty;
+    ``bench`` lives here rather than on ``config`` because it has no default and a
+    benchless settlement may legitimately lack one.
     """
-    strings: dict[str, str] = {}
-    for field_name, env_var in STRING_ENV_FIELDS:
-        if getattr(flags, field_name) is None:
-            value = _read_env_string(env_var)
-            if value is not None:
-                strings[field_name] = value
-    numbers: dict[str, int] = {}
-    for field_name, env_var, reader in NUMBER_ENV_FIELDS:
-        if getattr(flags, field_name) is None:
-            result = reader(env_var)
-            if result.problem is not None:
-                raise GymratError(result.problem)
-            if isinstance(result.value, int):
-                numbers[field_name] = result.value
-    return CliFlags(
-        bench=strings.get("bench", flags.bench),
-        prepare=strings.get("prepare", flags.prepare),
-        adapter=strings.get("adapter", flags.adapter),
-        samples=numbers.get("samples", flags.samples),
-        timeout=numbers.get("timeout", flags.timeout),
-        config=flags.config,
-    )
+
+    config_path: str | None
+    problems: list[str]
+    config: BenchlessConfig | None = None
+    bench: str | None = None
 
 
 def find_implicit_base() -> str:
@@ -163,45 +138,200 @@ def validate_config_dict(config: dict[str, object]) -> None:
         raise GymratError(problems[0])
 
 
-def _settle_config(
-    flags: CliFlags, base_dir: str | Path | None
-) -> tuple[BenchlessConfig, str | None]:
-    for name, value in [
-        ("bench", flags.bench),
-        ("prepare", flags.prepare),
-        ("adapter", flags.adapter),
-        ("config", flags.config),
-    ]:
-        problem = flag_problem(name, value)
+def _collect_flag_problems(flags: CliFlags) -> list[str]:
+    problems: list[str] = []
+    for field_name in ("bench", "prepare", "adapter", "config"):
+        problem = flag_problem(field_name, getattr(flags, field_name))
         if problem is not None:
-            raise GymratError(problem)
+            problems.append(problem)
+    return problems
 
-    effective = _read_env_flags(flags)
 
-    env_config_path = _read_env_string("GYMRAT_CONFIG") if flags.config is None else None
+def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
+    """Read every ``GYMRAT_*`` field flag whose flag is unset, collecting problems.
+
+    An env var is consulted only when its flag is ``None`` (a flag always wins
+    without the env var's validation firing). ``GYMRAT_CONFIG`` is handled in
+    :func:`_resolve_config_source` because it selects the file, not a field.
+
+    Args:
+        flags: The CLI flags to check for unset fields before reading env vars.
+
+    Returns:
+        A ``(env_flags, problems)`` pair: the flags populated from env vars and
+        any validation problems encountered.
+    """
+    problems: list[str] = []
+    strings: dict[str, str] = {}
+    for field_name, env_var in STRING_ENV_FIELDS:
+        if getattr(flags, field_name) is None:
+            result = env_string_result(env_var)
+            if result.problem is not None:
+                problems.append(result.problem)
+            if result.value is not None:
+                strings[field_name] = str(result.value)
+    numbers: dict[str, int] = {}
+    for field_name, env_var, reader in NUMBER_ENV_FIELDS:
+        if getattr(flags, field_name) is None:
+            result = reader(env_var)
+            if result.problem is not None:
+                problems.append(result.problem)
+            if isinstance(result.value, int):
+                numbers[field_name] = result.value
+    env_flags = CliFlags(
+        bench=strings.get("bench"),
+        prepare=strings.get("prepare"),
+        adapter=strings.get("adapter"),
+        samples=numbers.get("samples"),
+        timeout=numbers.get("timeout"),
+    )
+    return env_flags, problems
+
+
+def _build_effective_flags(flags: CliFlags, env_flags: CliFlags) -> CliFlags:
+    """Layer flags over env values: flag > env, with empty strings ignored."""
+
+    def pick_string(flag_value: str | None, env_value: str | None) -> str | None:
+        return flag_value if flag_value is not None and flag_value != "" else env_value
+
+    return CliFlags(
+        bench=pick_string(flags.bench, env_flags.bench),
+        prepare=pick_string(flags.prepare, env_flags.prepare),
+        adapter=pick_string(flags.adapter, env_flags.adapter),
+        samples=flags.samples if flags.samples is not None else env_flags.samples,
+        timeout=flags.timeout if flags.timeout is not None else env_flags.timeout,
+    )
+
+
+def _resolve_config_source(
+    flags: CliFlags, base_dir: str | Path | None
+) -> tuple[str | None, ConfigFile | None, list[str]]:
+    """Resolve which config file to load, load it, and report any problems.
+
+    When the config source itself is broken (blank ``--config``, blank
+    ``GYMRAT_CONFIG``), file loading is skipped so the merge still yields
+    defaults without probing the filesystem.
+
+    Args:
+        flags: Command-line overrides, consulted for an explicit ``--config``.
+        base_dir: Anchor for the implicit ``gymrat.toml`` lookup; falls back to
+            :func:`find_implicit_base` when ``None``.
+
+    Returns:
+        A ``(config_path, config_file, problems)`` triple: the resolved path
+        (``None`` when no file applies), the parsed config (``None`` on fatal
+        read/parse failure, an empty ``ConfigFile`` when the config source is
+        blank), and any problems found.
+    """
+    problems: list[str] = []
+
+    env_config_path: str | None = None
+    env_config_failed = False
+    if flags.config is None:
+        result = env_string_result("GYMRAT_CONFIG")
+        if result.problem is not None:
+            problems.append(result.problem)
+            env_config_failed = True
+        env_config_path = str(result.value) if result.value is not None else None
+
+    # A whitespace-only --config is as blank as an empty one, and
+    # `_collect_flag_problems` has already reported it; probing it on disk would
+    # add a second problem for a path the user never named.
+    config_flag_blank = flags.config is not None and not flags.config.strip()
+    if config_flag_blank or env_config_failed:
+        return None, ConfigFile(), problems
+
     explicit_config = flags.config if flags.config is not None else env_config_path
     if explicit_config is not None:
-        config_path = Path(explicit_config)
+        resolved_path = explicit_config
     else:
-        anchor = Path(base_dir) if base_dir is not None else Path(find_implicit_base())
-        config_path = anchor / CONFIG_FILENAME
-    config_file = load_config_file(config_path, required=explicit_config is not None)
+        anchor = base_dir if base_dir is not None else find_implicit_base()
+        resolved_path = str(Path(anchor) / CONFIG_FILENAME)
+    required = explicit_config is not None
+    file_result = load_config_file_collecting(resolved_path, required=required)
+    problems.extend(file_result.problems)
+
+    config_path = resolved_path if (required or file_result.exists) else None
+    return config_path, file_result.config_file, problems
+
+
+def _resolve_runbook(
+    config: BenchlessConfig, config_path: str | None, problems: list[str]
+) -> BenchlessConfig:
+    """Settle ``config.runbook`` against the config's directory, or record why it cannot be.
+
+    A runbook is checked only when a config path exists, since it is authored
+    relative to the directory the config lives in.
+
+    Args:
+        config: The settled config whose ``runbook`` field to resolve.
+        config_path: Path to the loaded config file, or ``None`` when none applies.
+        problems: The running problem list; appended to in place when the
+            runbook cannot be resolved.
+
+    Returns:
+        The config with ``runbook`` joined onto the config file's directory and
+        normalized (absolute only when ``config_path`` is), or unchanged when no
+        resolution is needed or a problem was recorded.
+    """
+    if config.runbook is None or config_path is None:
+        return config
+    config_dir = Path(config_path).parent
+    problem = runbook_problem(config.runbook, config_dir)
+    if problem is not None:
+        problems.append(problem)
+        return config
+    return replace(config, runbook=os.path.normpath(config_dir / config.runbook))
+
+
+def inspect_config(flags: CliFlags, base_dir: str | Path | None = None) -> ConfigInspection:
+    """Settle a benchless configuration, collecting every problem instead of raising.
+
+    Args:
+        flags: Command-line overrides.
+        base_dir: Anchor for the implicit ``gymrat.toml`` lookup; falls back to the
+            git repository root or the cwd when ``None``.
+
+    Returns:
+        A :class:`ConfigInspection` whose ``config`` and ``bench`` are populated
+        only when no problems were found.
+    """
+    problems = _collect_flag_problems(flags)
+
+    env_flags, env_problems = _collect_env_flags(flags)
+    problems.extend(env_problems)
+
+    effective = _build_effective_flags(flags, env_flags)
+
+    config_path, config_file, source_problems = _resolve_config_source(flags, base_dir)
+    problems.extend(source_problems)
+
+    if config_file is None:
+        return ConfigInspection(config_path=config_path, problems=problems)
 
     config = merge_config(effective, config_file)
-    problems = loop_key_problems(config)
-    if problems:
-        raise GymratError(problems[0])
+    problems.extend(loop_key_problems(config))
+    config = _resolve_runbook(config, config_path, problems)
 
-    if config.runbook is not None:
-        config_dir = config_path.parent
-        problem = runbook_problem(config.runbook, config_dir)
-        if problem is not None:
-            raise GymratError(problem)
-        resolved_runbook = os.path.normpath(config_dir / config.runbook)
-        config = replace(config, runbook=resolved_runbook)
+    if problems:
+        return ConfigInspection(config_path=config_path, problems=problems)
 
     bench = effective.bench if effective.bench is not None else config_file.bench
-    return config, bench
+    return ConfigInspection(
+        config_path=config_path,
+        problems=[],
+        config=config,
+        bench=bench,
+    )
+
+
+def _settle_or_raise(
+    flags: CliFlags, base_dir: str | Path | None
+) -> tuple[BenchlessConfig, str | None]:
+    inspection = inspect_config(flags, base_dir)
+    if inspection.config is None:
+        raise GymratError(inspection.problems[0])
+    return inspection.config, inspection.bench
 
 
 def resolve_benchless_config(
@@ -221,10 +351,11 @@ def resolve_benchless_config(
         The fully settled :class:`BenchlessConfig`.
 
     Raises:
-        GymratError: When a flag, env var, config file, cross-field check, or
-            runbook fails to validate.
+        GymratError: With the first problem :func:`inspect_config` collects, when
+            a flag, env var, config file, cross-field check, or runbook fails to
+            validate.
     """
-    config, _ = _settle_config(flags, base_dir)
+    config, _ = _settle_or_raise(flags, base_dir)
     return config
 
 
@@ -242,10 +373,10 @@ def resolve_config(flags: CliFlags, base_dir: str | Path | None = None) -> Resol
         The fully settled :class:`ResolvedConfig` including ``bench``.
 
     Raises:
-        GymratError: When ``bench`` is missing from both flags and the config
-            file, or when any other resolution step fails.
+        GymratError: With the first problem :func:`inspect_config` collects, or
+            when ``bench`` is missing from both flags and the config file.
     """
-    config, bench = _settle_config(flags, base_dir)
+    config, bench = _settle_or_raise(flags, base_dir)
     if bench is None:
         message = "bench is required. Provide it via --bench flag or in config file."
         raise GymratError(message)

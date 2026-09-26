@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-from gymrat.session.clock import now_ns
+from gymrat.clock import now_ns
 from gymrat.supervisor.driver import (
     DriverSession,
     SessionOutcome,

@@ -2,12 +2,14 @@
 
 Both the config-file schema (``config.py``) and the session-log schema
 (``session/records.py``) validate against pydantic models and need to render the
-same two things from a pydantic ``ValidationError``: a dotted location string,
-and a list pruned of parent errors whose only fault is that a child under them
-also failed.
+same things from a pydantic ``ValidationError``: a dotted location string, a
+list pruned of parent errors whose only fault is that a child under them also
+failed, and the ``"a", "b" or "c"`` phrase naming a ``Literal``'s accepted
+values.
 """
 
 import json
+from typing import get_args
 
 from pydantic import ConfigDict
 from pydantic_core import ErrorDetails
@@ -64,6 +66,22 @@ def describe_key(loc: tuple[str, ...]) -> str:
         The dot-joined key path.
     """
     return ".".join(json.dumps(part) if _needs_quoting(part) else part for part in loc)
+
+
+def alternatives(literal: object) -> str:
+    """Render a ``Literal``'s values as ``"a", "b" or "c"`` for a problem message.
+
+    Each value is JSON-encoded, so strings are quoted and integers stay bare. A
+    single-value ``Literal`` renders as that value alone.
+
+    Args:
+        literal: The ``Literal`` type whose values to list.
+
+    Returns:
+        The values joined by commas, with ``or`` before the last.
+    """
+    *head, last = (json.dumps(value) for value in get_args(literal))
+    return f"{', '.join(head)} or {last}" if head else last
 
 
 def drop_prefix_errors(errors: list[ErrorDetails]) -> list[ErrorDetails]:

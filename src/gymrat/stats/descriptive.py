@@ -103,6 +103,27 @@ def compute_half_range(values: Sequence[float]) -> float:
     return (max(values) - min(values)) / 2.0
 
 
+def percent_delta(reference: float, value: float) -> float:
+    """Return the percent change of ``value`` against ``reference``'s magnitude.
+
+    Dividing by the magnitude keeps the sign tied to the direction the value
+    moved: a negative reference rising toward zero is an increase, and one
+    dropping further below zero is a decrease. When the reference is zero the
+    ratio is undefined, so the caller decides how to treat the ``NaN``.
+
+    Args:
+        reference: The value the change is measured from.
+        value: The value compared against ``reference``.
+
+    Returns:
+        ``(value - reference) / abs(reference) * 100``, ``0.0`` when both are
+        zero, or ``NaN`` when only ``reference`` is zero.
+    """
+    if reference == 0:
+        return 0.0 if value == 0 else math.nan
+    return (value - reference) / abs(reference) * 100
+
+
 def normalize_ratio(delta: float, direction: Direction) -> RatioOutcome:
     """Normalize a percent ``delta`` into a ratio rho for the given direction.
 

@@ -35,11 +35,14 @@ from gymrat.session.store import (
     RequiredSession,
     SessionState,
     append_record,
+    first_line_json,
     fold_session,
     latest_baseline,
     read_records,
+    read_session_header,
     require_open_session,
     require_session,
+    session_header,
 )
 from tests.session.records._fixtures import (
     AT,
@@ -421,6 +424,137 @@ def test_read_records_when_complete_line_fails_to_decode_does_raise_naming_path_
         read_records(jsonl_path)
 
     assert f"{jsonl_path}:2" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# read_session_header
+# ---------------------------------------------------------------------------
+
+# A newline-terminated line whose bytes are not valid UTF-8: any read past the
+# first line fails on it.
+UNDECODABLE_LINE: bytes = b"\xff\xff\n"
+
+
+def test_read_session_header_when_first_line_is_session_does_return_it_without_reading_on(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, SESSION_LINE + UNDECODABLE_LINE)
+
+    assert read_session_header(jsonl_path) == SESSION
+
+
+def test_read_session_header_when_log_absent_does_return_none(fresh_root: str):
+    jsonl_path = session_jsonl_path(fresh_root)
+
+    assert read_session_header(jsonl_path) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"", id="an-empty-log"),
+        pytest.param(b"\n" + SESSION_LINE, id="an-empty-first-line"),
+        pytest.param(b"   \n", id="a-whitespace-only-first-line"),
+    ],
+)
+def test_read_session_header_when_first_line_blank_does_return_none(fresh_root: str, raw: bytes):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, raw)
+
+    assert read_session_header(jsonl_path) is None
+
+
+def test_read_session_header_when_first_line_not_json_does_raise_naming_the_first_line(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding(fresh_root, ["{not json", _line(ITERATION_1)])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert str(excinfo.value) == f"Invalid JSON at {jsonl_path}:1"
+    assert hint_of(excinfo.value) == "Line 1 is not a JSON object."
+
+
+def test_read_session_header_when_first_record_not_session_does_raise_naming_its_type(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding(fresh_root, [_line(ITERATION_1), _line(SESSION)])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert str(excinfo.value) == (
+        f"Expected session header at {jsonl_path}:1, got a iteration record"
+    )
+    assert hint_of(excinfo.value) == (
+        "Line 1 is not a session header. The session log is corrupt; start a new session."
+    )
+
+
+def test_read_session_header_when_first_line_undecodable_does_raise_as_read_records_does(
+    fresh_root: str,
+):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, UNDECODABLE_LINE + SESSION_LINE)
+    with pytest.raises(GymratError) as read_records_error:
+        read_records(jsonl_path)
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert str(excinfo.value) == f"Corrupt session log at {jsonl_path}:1"
+    assert hint_of(excinfo.value) == hint_of(read_records_error.value)
+
+
+# ---------------------------------------------------------------------------
+# session_header
+# ---------------------------------------------------------------------------
+
+
+def test_session_header_when_first_line_is_session_does_return_it_without_reading_on(
+    fresh_root: str,
+):
+    _jsonl_holding_bytes(fresh_root, SESSION_LINE + UNDECODABLE_LINE)
+
+    assert session_header(fresh_root) == SESSION
+
+
+def test_session_header_when_log_absent_does_return_none(fresh_root: str):
+    assert session_header(fresh_root) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"\n" + SESSION_LINE, id="a-blank-first-line"),
+        pytest.param(b"{not json\n", id="a-first-line-that-is-not-json"),
+        pytest.param(_line(ITERATION_1).encode("utf-8") + b"\n", id="a-first-record-not-session"),
+        pytest.param(UNDECODABLE_LINE + SESSION_LINE, id="a-first-line-that-is-not-utf8"),
+    ],
+)
+def test_session_header_when_first_line_unusable_does_return_none(fresh_root: str, raw: bytes):
+    _jsonl_holding_bytes(fresh_root, raw)
+
+    assert session_header(fresh_root) is None
+
+
+# ---------------------------------------------------------------------------
+# first_line_json
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"{not json\n" + SESSION_LINE, id="a-first-line-that-is-not-json"),
+        pytest.param(UNDECODABLE_LINE + SESSION_LINE, id="a-first-line-that-is-not-utf8"),
+    ],
+)
+def test_first_line_json_when_first_line_not_a_json_object_does_return_none(
+    fresh_root: str, raw: bytes
+):
+    jsonl_path = _jsonl_holding_bytes(fresh_root, raw)
+
+    assert first_line_json(Path(jsonl_path)) is None
 
 
 # ---------------------------------------------------------------------------

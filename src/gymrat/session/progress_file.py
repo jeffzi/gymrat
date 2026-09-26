@@ -6,14 +6,13 @@ write.  Staleness detection lets readers discard orphaned files left by a
 crashed iteration.
 """
 
-import contextlib
-import json
-import os
-import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import ConfigDict, TypeAdapter, ValidationError, with_config
+
+from gymrat.atomic_write import write_text_atomic
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -27,12 +26,15 @@ from gymrat.session.paths import progress_path
 STALENESS_BOUND_SECONDS: int = 600
 
 
+@with_config(ConfigDict(strict=True, extra="forbid"))
 @dataclass(frozen=True, slots=True)
 class ProgressSnapshot:
     """Point-in-time progress state serialized to the sidecar.
 
     The dashboard computes ETAs from ``passes_completed`` / ``passes_total``
     and ``last_pass_duration_ms``; this snapshot carries no ETA itself.
+    Reading is strict: a count must be a JSON integer, never a boolean or a
+    float, and an unknown key rejects the whole file.
 
     Attributes:
         passes_completed: How many passes have finished in the current phase.
@@ -46,48 +48,34 @@ class ProgressSnapshot:
     last_pass_duration_ms: float
 
 
+_SNAPSHOT_ADAPTER: TypeAdapter[ProgressSnapshot] = TypeAdapter(ProgressSnapshot)
+
+
 def write_progress(root: str, snapshot: ProgressSnapshot) -> None:
     """Atomically write *snapshot* to the progress sidecar under *root*.
 
-    Writes to a temporary file in the same directory, then renames so a
-    concurrent reader never sees a half-written file.
+    A concurrent reader sees either the previous snapshot or the new one,
+    never a half-written file.
 
     Args:
         root: Repository root under which the progress sidecar lives.
         snapshot: The progress state to write.
     """
-    target = Path(progress_path(root))
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        dir=target.parent,
-        suffix=".tmp",
-        delete=False,
-        encoding="utf-8",
-    ) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        try:
-            json.dump(asdict(snapshot), tmp_file)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-        except BaseException:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink()
-            raise
-    tmp_path.replace(target)
+    text = _SNAPSHOT_ADAPTER.dump_json(snapshot).decode("utf-8")
+    write_text_atomic(Path(progress_path(root)), text)
 
 
 def read_progress(root: str) -> ProgressSnapshot | None:
     """Read and parse the progress sidecar, or return ``None``.
 
-    Returns ``None`` when the file is absent, contains invalid JSON, does not
-    match the snapshot schema, or is stale (mtime older than
-    ``STALENESS_BOUND_SECONDS``).
-
     Args:
         root: Repository root under which the progress sidecar lives.
 
     Returns:
-        The snapshot, or ``None`` when any validity condition fails.
+        The snapshot, or ``None`` when the file is absent or unreadable,
+        contains invalid JSON, is not an object with exactly the snapshot's
+        keys and field types, or is stale (mtime older than
+        ``STALENESS_BOUND_SECONDS``).
     """
     path = Path(progress_path(root))
     try:
@@ -99,9 +87,8 @@ def read_progress(root: str) -> ProgressSnapshot | None:
         return None
 
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return ProgressSnapshot(**data)
-    except (json.JSONDecodeError, TypeError, KeyError, OSError, UnicodeDecodeError):
+        return _SNAPSHOT_ADAPTER.validate_json(path.read_text(encoding="utf-8"))
+    except (ValidationError, OSError, UnicodeDecodeError):
         return None
 
 

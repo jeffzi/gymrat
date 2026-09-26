@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -18,10 +17,9 @@ from gymrat.cli.shared import (
     exit_with_error,
     write_and_flush,
 )
-from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
-from gymrat.session.records.models import SessionRecord
-from gymrat.session.records.parse import parse_record
+from gymrat.session.store import first_line_json, read_session_header
+from gymrat.warn import warn_to_stderr
 
 SessionLogArg = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
@@ -35,7 +33,9 @@ def _matching_supervisor_logs(session_dir: Path, session_id: str) -> list[str]:
     """Find the supervisor logs whose launch line names one session.
 
     Reads only the first line of each file and checks the ``session_id`` field
-    from the raw JSON dict.
+    from the raw JSON dict. An entry the OS refuses to read, such as a directory
+    or a file without read permission, is skipped with a warning on stderr so
+    one bad entry never blocks the export of the others.
 
     Args:
         session_dir: The directory holding the supervisor logs.
@@ -46,71 +46,16 @@ def _matching_supervisor_logs(session_dir: Path, session_id: str) -> list[str]:
     """
     matched: list[str] = []
     for path in sorted(session_dir.glob(supervisor_log_name("*"))):
-        entry = _first_line_json(path)
+        try:
+            entry = first_line_json(path)
+        except OSError as error:
+            warn_to_stderr(f"warning: skipped {path}: {error.strerror or error}")
+            continue
         if entry is None:
             continue
         if entry.get("type") == "launch" and entry.get("session_id") == session_id:
             matched.append(str(path))
     return matched
-
-
-def _read_first_line(path: Path) -> str | None:
-    """Return the first line of *path*, or ``None`` when the file is absent."""
-    try:
-        with path.open(encoding="utf-8") as fh:
-            return fh.readline()
-    except FileNotFoundError:
-        return None
-
-
-def _first_line_json(path: Path) -> dict[str, object] | None:
-    """Return the first line of *path* parsed as a JSON object, or ``None``."""
-    first_line = _read_first_line(path)
-    if first_line is None:
-        return None
-    try:
-        parsed = json.loads(first_line)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _session_header(session_path: Path) -> SessionRecord | None:
-    """Read the session header from the first line of a session log.
-
-    Args:
-        session_path: The session log to read the header from.
-
-    Returns:
-        The session record, or ``None`` when the log does not exist or its first
-        line is blank.
-
-    Raises:
-        GymratError: When the first line is present but malformed JSON, an
-            unrecognized record, or not a session header.
-    """
-    first_line = _read_first_line(session_path)
-    if first_line is None or not first_line.strip():
-        return None
-
-    location = f"{session_path}:1"
-
-    try:
-        parsed = json.loads(first_line)
-    except json.JSONDecodeError as error:
-        message = f"Invalid JSON at {location}"
-        raise GymratError(message, hint="Line 1 is not a JSON object.") from error
-
-    record = parse_record(parsed)
-
-    if not isinstance(record, SessionRecord):
-        message = f"Expected session header at {location}, got a {record.type} record"
-        raise GymratError(
-            message,
-            hint="Line 1 is not a session header. The session log is corrupt; start a new session.",
-        )
-
-    return record
 
 
 def export_command(
@@ -137,7 +82,7 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
 
     session_path = Path(session_log)
     session_dir = session_path.parent
-    header = _session_header(session_path)
+    header = read_session_header(str(session_path))
     if header is None:
         exit_with_error(f"No session found in {session_log}")
 

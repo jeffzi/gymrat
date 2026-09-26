@@ -10,7 +10,6 @@ partial file.  ``clear_progress`` removes the sidecar when the iteration exits.
 import json
 import os
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -84,7 +83,11 @@ def test_write_progress_when_called_does_create_readable_json_file(root: str):
 
     write_progress(root, snapshot)
 
-    assert _read_json(root) == asdict(snapshot)
+    assert _read_json(root) == {
+        "passes_completed": 3,
+        "passes_total": 10,
+        "last_pass_duration_ms": 1234.5,
+    }
 
 
 def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
@@ -96,13 +99,31 @@ def test_write_progress_when_called_twice_does_overwrite_previous_snapshot(
     assert _read_json(root)["passes_completed"] == 2
 
 
+def test_write_progress_when_called_does_leave_no_temp_file_behind(root: str):
+    write_progress(root, _make_snapshot())
+
+    assert sorted(p.name for p in Path(session_dir(root)).iterdir()) == ["progress.json"]
+
+
 # ---------------------------------------------------------------------------
 # read_progress
 # ---------------------------------------------------------------------------
 
 
-def test_read_progress_when_file_exists_does_return_snapshot(root: str):
-    original = _make_snapshot()
+@pytest.mark.parametrize(
+    "original",
+    [
+        pytest.param(_make_snapshot(), id="typical"),
+        pytest.param(
+            _make_snapshot(passes_completed=0, passes_total=0, last_pass_duration_ms=0.0),
+            id="all-zero",
+        ),
+        pytest.param(_make_snapshot(last_pass_duration_ms=250.0), id="whole-number-duration"),
+    ],
+)
+def test_read_progress_when_file_written_does_round_trip_every_field(
+    root: str, original: ProgressSnapshot
+):
     write_progress(root, original)
 
     result = read_progress(root)
@@ -126,10 +147,32 @@ def test_read_progress_when_file_contains_invalid_json_does_return_none(
     assert result is None
 
 
-def test_read_progress_when_file_contains_wrong_schema_does_return_none(
-    root: str,
-):
-    _progress_file(root).write_text(json.dumps({"unexpected_field": 42}), encoding="utf-8")
+_VALID_FIELDS: dict[str, object] = {
+    "passes_completed": 3,
+    "passes_total": 10,
+    "last_pass_duration_ms": 1234.5,
+}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"unexpected_field": 42}, id="only-unknown-key"),
+        pytest.param({**_VALID_FIELDS, "unexpected_field": 42}, id="extra-unknown-key"),
+        pytest.param(
+            {"passes_completed": 3, "passes_total": 10},
+            id="missing-key",
+        ),
+        pytest.param({**_VALID_FIELDS, "passes_completed": "x"}, id="string-for-int"),
+        pytest.param({**_VALID_FIELDS, "passes_total": True}, id="bool-for-int"),
+        pytest.param({**_VALID_FIELDS, "passes_completed": 3.0}, id="float-for-int"),
+        pytest.param({**_VALID_FIELDS, "last_pass_duration_ms": "fast"}, id="string-for-float"),
+        pytest.param({**_VALID_FIELDS, "last_pass_duration_ms": False}, id="bool-for-float"),
+        pytest.param([3, 10, 1234.5], id="array-not-object"),
+    ],
+)
+def test_read_progress_when_file_contains_wrong_schema_does_return_none(root: str, payload: object):
+    _progress_file(root).write_text(json.dumps(payload), encoding="utf-8")
 
     result = read_progress(root)
 

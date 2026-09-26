@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from gymrat.session.clock import now_ns
+from gymrat.clock import now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (
