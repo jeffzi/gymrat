@@ -17,7 +17,6 @@ from tests.session.records._fixtures import session_record, write_session_log
 __all__ = [
     "isolate_tracing_provider",
     "seeded_session",
-    "seeded_session_no_trace_context",
 ]
 
 
@@ -32,16 +31,8 @@ def isolate_tracing_provider() -> Iterator[None]:
         _reset_for_tests()
 
 
-def seeded_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> SessionRecord:
-    """Write a session header and clear TRACEPARENT so tests start without ambient trace context."""
+def seeded_session(repo: str) -> SessionRecord:
+    """Write a session header to ``repo``'s session log."""
     header = session_record()
     write_session_log(repo, header)
-    monkeypatch.delenv("TRACEPARENT", raising=False)
-    return header
-
-
-def seeded_session_no_trace_context(repo: str, monkeypatch: pytest.MonkeyPatch) -> SessionRecord:
-    """Like :func:`seeded_session`, also clearing GYMRAT_TRACEPARENT."""
-    header = seeded_session(repo, monkeypatch)
-    monkeypatch.delenv("GYMRAT_TRACEPARENT", raising=False)
     return header

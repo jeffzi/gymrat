@@ -38,13 +38,6 @@ def _report(sections: list[CheckSection], **env_overrides: object) -> DoctorRepo
     return create_doctor_report(_env(**env_overrides), sections)
 
 
-@pytest.fixture(autouse=True)
-def _neutral_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip inherited color env so each test controls it explicitly."""
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-
-
 # ---------------------------------------------------------------------------
 # environment header
 # ---------------------------------------------------------------------------

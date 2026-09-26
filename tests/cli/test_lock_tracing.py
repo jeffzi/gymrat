@@ -22,9 +22,6 @@ from tests.cli._lock_fixtures import (
 from tests.cli._lock_fixtures import (
     seeded_session as _seeded_session,
 )
-from tests.cli._lock_fixtures import (
-    seeded_session_no_trace_context as _seeded_session_no_trace_context,
-)
 from tests.session.records._fixtures import iteration_record
 
 # ---------------------------------------------------------------------------
@@ -46,12 +43,11 @@ async def _ok_body(trace: CommandTrace) -> str:
 
 async def test_with_repo_lock_when_tracing_enabled_does_export_command_span(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from gymrat.telemetry.ids import trace_id_of
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body)
@@ -64,12 +60,11 @@ async def test_with_repo_lock_when_tracing_enabled_does_export_command_span(
 
 async def test_with_repo_lock_when_tracing_enabled_does_use_deterministic_span_id(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from gymrat.telemetry.ids import span_id_of
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body)
@@ -82,11 +77,10 @@ async def test_with_repo_lock_when_tracing_enabled_does_use_deterministic_span_i
 
 async def test_with_repo_lock_when_tracing_enabled_does_set_command_attributes(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body, args={"samples": 5})
@@ -101,13 +95,12 @@ async def test_with_repo_lock_when_tracing_enabled_does_set_command_attributes(
 
 async def test_with_repo_lock_when_exit_zero_does_set_span_status_ok(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from opentelemetry.trace import StatusCode
 
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body)
@@ -118,13 +111,12 @@ async def test_with_repo_lock_when_exit_zero_does_set_span_status_ok(
 
 async def test_with_repo_lock_when_exit_two_does_set_span_status_error_with_reason(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from opentelemetry.trace import StatusCode
 
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
 
@@ -142,13 +134,12 @@ async def test_with_repo_lock_when_exit_two_does_set_span_status_error_with_reas
 
 async def test_with_repo_lock_when_exit_one_does_set_span_status_unset(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from opentelemetry.trace import StatusCode
 
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
 
@@ -165,11 +156,10 @@ async def test_with_repo_lock_when_exit_one_does_set_span_status_unset(
 
 async def test_with_repo_lock_when_body_appends_records_does_add_span_events(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
 
@@ -192,7 +182,7 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_use_as_parent(
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session(repo, monkeypatch)
+    header = _seeded_session(repo)
     valid_traceparent = "00-0102030405060708090a0b0c0d0e0f10-1112131415161718-01"
     monkeypatch.setenv("GYMRAT_TRACEPARENT", valid_traceparent)
 
@@ -206,12 +196,11 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_use_as_parent(
 
 async def test_with_repo_lock_when_gymrat_traceparent_absent_does_parent_under_session(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from gymrat.telemetry.ids import span_id_of, trace_id_of
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body)
@@ -229,7 +218,7 @@ async def test_with_repo_lock_when_gymrat_traceparent_malformed_does_parent_unde
     from gymrat.telemetry.ids import span_id_of, trace_id_of
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session(repo, monkeypatch)
+    header = _seeded_session(repo)
     monkeypatch.setenv("GYMRAT_TRACEPARENT", "not-a-valid-traceparent")
 
     with memory_tracing(header.session_id) as exporter:
@@ -247,7 +236,7 @@ async def test_with_repo_lock_when_traceparent_valid_does_add_link(
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
     valid_traceparent = "00-0102030405060708090a0b0c0d0e0f10-1112131415161718-01"
     monkeypatch.setenv("TRACEPARENT", valid_traceparent)
 
@@ -265,7 +254,7 @@ async def test_with_repo_lock_when_traceparent_malformed_does_not_add_link(
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
     monkeypatch.setenv("TRACEPARENT", "not-valid")
 
     with memory_tracing(header.session_id) as exporter:
@@ -277,11 +266,10 @@ async def test_with_repo_lock_when_traceparent_malformed_does_not_add_link(
 
 async def test_with_repo_lock_when_tracing_enabled_does_flush_before_return(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
         await with_repo_lock("measure", _ok_body)
@@ -303,7 +291,7 @@ async def test_with_repo_lock_when_tracing_enabled_does_delegate_to_command_span
     from gymrat.telemetry.attributes import command_span_inputs as real_command_span_inputs
     from tests.telemetry._fixtures import memory_tracing
 
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
 
     calls: list[dict[str, object]] = []
 

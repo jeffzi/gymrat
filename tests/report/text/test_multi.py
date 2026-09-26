@@ -173,7 +173,6 @@ def test_render_report_when_colored_does_leave_a_mixed_row_without_end_to_end_di
     monkeypatch: pytest.MonkeyPatch, row: str
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     line = line_containing(render_report(_dimming_result()), row)
 
@@ -184,7 +183,6 @@ def test_render_report_when_colored_does_style_each_cell_verdict_on_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     row = line_containing(render_report(_dimming_result()), "flat/time")
 
@@ -196,7 +194,6 @@ def test_render_report_when_colored_does_leave_name_and_values_plain_on_a_quiet_
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     cells = cells_of(line_containing(render_report(_dimming_result()), "flat/time"))
 
@@ -217,7 +214,6 @@ def test_render_report_when_colored_does_leave_a_cell_value_plain(
     monkeypatch: pytest.MonkeyPatch, column: int, glyph: str
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     row = line_containing(render_report(multi_candidate_result()), "decode/time")
 
@@ -228,7 +224,6 @@ def test_render_report_when_colored_does_paint_an_unstable_cell_verdict_amber(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     row = line_containing(render_report(multi_candidate_result()), "decode/time")
 
@@ -240,7 +235,6 @@ def test_render_report_when_colored_does_pad_on_plain_text_so_columns_line_up(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     bare = strip_ansi(render_report(multi_candidate_result()))
     header_offsets = separator_offsets(line_starting_with(bare, "metric"))
@@ -253,7 +247,6 @@ def test_render_report_when_colored_does_color_glyph_and_delta_together(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     row = line_containing(render_report(multi_candidate_result()), "decode/time")
 
@@ -267,7 +260,6 @@ def test_render_report_when_colored_does_dim_the_quiet_segment_on_a_bright_row(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     row = line_containing(render_report(_dimming_result()), "mixed/time")
 
@@ -279,7 +271,6 @@ def test_render_report_when_colored_does_dim_the_provenance_in_geomean_cells(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     geomean = line_containing(render_report(multi_candidate_result()), "geomean")
 
@@ -490,7 +481,6 @@ def test_render_report_when_colored_does_paint_an_improving_aggregate_green(
     monkeypatch: pytest.MonkeyPatch, label: str, value: str
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     line = line_containing(render_report(two_kind_result()), label)
 
@@ -501,7 +491,6 @@ def test_render_report_when_colored_does_embolden_the_kind_and_dim_the_tag(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     report = render_report(two_kind_result())
     header = next(
@@ -518,7 +507,6 @@ def test_render_report_when_colored_does_leave_separators_in_the_default_color(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     rows = [line for line in render_report(two_kind_result()).split("\n") if "│" in line]
     inherited = [row for row in rows if any(styles for styles in separator_styles(row))]
@@ -646,7 +634,6 @@ def test_render_report_when_colored_does_embolden_the_candidate_summary_label(
     monkeypatch: pytest.MonkeyPatch, label: str
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     summary = next(
         line
@@ -661,7 +648,6 @@ def test_render_report_when_colored_does_embolden_the_candidate_highlight_sub_la
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
     highlights = highlight_lines(render_report(multi_candidate_result()))
     sub_labels = [

@@ -79,22 +79,14 @@ def _capturing_progress_reporter(
     return fake_init
 
 
-def _clear_color_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Delete FORCE_COLOR/NO_COLOR so a stray value doesn't leak into color resolution."""
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-
-
 def _force_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set FORCE_COLOR and clear NO_COLOR so color resolution is forced on."""
+    """Set FORCE_COLOR so color resolution is forced on."""
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 def _force_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Set NO_COLOR and clear FORCE_COLOR so color resolution is forced off."""
+    """Set NO_COLOR so color resolution is forced off."""
     monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -197,7 +189,6 @@ def test_format_cli_error_when_stderr_color_override_false_does_strip_all_sgr(
 ):
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
     monkeypatch.setenv("TERM", "xterm-256color")
-    _clear_color_env(monkeypatch)
 
     set_color_override(False)
     result = format_cli_error(ValueError("boom"))
@@ -364,7 +355,6 @@ def test_resolve_render_mode_when_no_color_set_does_still_use_live(
 def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_color_env(monkeypatch)
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=True))
 
     captured: dict[str, object] = {}
@@ -385,7 +375,6 @@ def test_begin_run_when_tty_does_create_progress_reporter_with_live_mode(
 def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_color_env(monkeypatch)
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
 
     captured: dict[str, object] = {}
@@ -404,7 +393,6 @@ def test_begin_run_when_non_tty_does_create_progress_reporter_with_plain_mode(
 def test_begin_run_does_return_progress_reporter(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _clear_color_env(monkeypatch)
     monkeypatch.setattr("sys.stderr", _FakeStream(tty=False))
 
     result = begin_run(SharedFlags(bench="b", samples=1), target_count=1)

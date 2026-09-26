@@ -33,9 +33,8 @@ def _reset_provider_quietly() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Ensure every test starts and ends with no provider and a clean environment."""
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+def _isolate_provider() -> Iterator[None]:
+    """Ensure every test starts and ends with no provider."""
     _reset_provider_quietly()
     yield
     _reset_provider_quietly()
@@ -46,11 +45,7 @@ def _isolate_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def test_configure_tracing_when_endpoint_unset_does_return_false(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-
+def test_configure_tracing_when_endpoint_unset_does_return_false():
     result = configure_tracing(SESSION)
 
     assert result is False

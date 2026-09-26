@@ -121,8 +121,6 @@ def test_app_when_help_does_show_manual_loop_examples_after_supervise():
 def test_app_when_help_colored_does_render_the_docs_link_as_a_dim_hint(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("TERM", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", True)
 
@@ -196,7 +194,6 @@ def test_app_when_help_does_list_color_and_no_color_root_options():
 def test_app_when_root_no_color_does_strip_ansi_from_status_stdout(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)
@@ -207,11 +204,7 @@ def test_app_when_root_no_color_does_strip_ansi_from_status_stdout(
     assert not SGR_RE.search(result.stdout)
 
 
-def test_app_when_root_color_does_force_ansi_on_status_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
+def test_app_when_root_color_does_force_ansi_on_status_stdout(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)
 
@@ -221,11 +214,7 @@ def test_app_when_root_color_does_force_ansi_on_status_stdout(
     assert SGR_RE.search(result.stdout)
 
 
-def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
+def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(repo: str):
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)
 
@@ -238,8 +227,6 @@ def test_app_when_local_no_color_beats_root_color_does_produce_plain_output(
 def test_app_when_subcommand_passes_none_does_not_erase_root_no_color(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)

@@ -902,7 +902,6 @@ async def test_keep_session_when_no_checks_configured_does_warn_on_stderr_withou
 async def test_keep_session_when_no_checks_configured_and_color_forced_does_dim_the_hint(
     repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     _edited_after_iteration(repo)
     install_exec(monkeypatch, UNUSED_EXEC)
@@ -916,7 +915,6 @@ async def test_keep_session_when_no_checks_configured_and_color_forced_does_dim_
 async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to_the_sink(
     repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     _edited_after_iteration(repo)
     install_exec(monkeypatch, UNUSED_EXEC)

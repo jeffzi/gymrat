@@ -1,21 +1,29 @@
-"""Shared scratch-repository fixtures for target and worktree tests.
+"""Shared test environment baseline and scratch-repository fixtures.
 
-These fixtures build throwaway git repositories in the system temp directory,
-each in its own ``tempfile.mkdtemp`` slot resolved through ``os.path.realpath``
-(so macOS ``/var`` → ``/private/var`` matches what git reports in
-``worktree list``). Every repository is order-independent and safe under
-``pytest-xdist`` / ``pytest-randomly``.
+Every test runs against one explicit environment. ``pytest_configure``
+rebuilds ``os.environ`` from an allowlist before any test module is imported,
+in the controller and in every ``pytest-xdist`` worker, so nothing the
+developer's shell exports reaches code under test or the children it spawns;
+an autouse fixture puts that baseline back after every test.
+
+The scratch-repository fixtures build throwaway git repositories in the system
+temp directory, each in its own ``tempfile.mkdtemp`` slot resolved through
+``os.path.realpath`` (so macOS ``/var`` → ``/private/var`` matches what git
+reports in ``worktree list``). Every repository is order-independent and safe
+under ``pytest-xdist`` / ``pytest-randomly``.
 
 The helpers expose a common fixture surface so later worktree and driver
 tests can reuse the same building blocks.
 """
 
 import contextlib
+import importlib
 import json
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterator
@@ -32,41 +40,86 @@ from gymrat.signals import TERMINATION_SIGNALS
 from gymrat.signals import reset as signals_reset
 from tests._git import run_git as _run_git
 
-#: Every environment variable a test must not inherit from the developer's
-#: shell:
-#:
-#: - the GYMRAT_* set the config resolver reads;
-#: - the command origin and trace context the session log records;
-#: - the OTLP endpoint configure_tracing reads;
-#: - the color and terminal variables gymrat and rich's Console read. A
-#:   non-empty FORCE_COLOR or TTY_COMPATIBLE=1 makes a StringIO count as a
-#:   terminal, and the size variables override the width a test renders at;
-#: - PY_COLORS and GITHUB_ACTIONS, which force typer's help console onto a
-#:   terminal when ``typer.rich_utils`` is first imported.
-SCRUBBED_ENV_VARS = (
-    "GYMRAT_BENCH",
-    "GYMRAT_PREPARE",
-    "GYMRAT_ADAPTER",
-    "GYMRAT_SAMPLES",
-    "GYMRAT_TIMEOUT",
-    "GYMRAT_CONFIG",
-    "GYMRAT_COMMAND_ORIGIN",
-    "GYMRAT_TRACEPARENT",
-    "TRACEPARENT",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "FORCE_COLOR",
-    "NO_COLOR",
-    "COLORTERM",
-    "TERM",
-    "COLUMNS",
-    "LINES",
-    "TTY_COMPATIBLE",
-    "TTY_INTERACTIVE",
-    "JUPYTER_COLUMNS",
-    "JUPYTER_LINES",
-    "PY_COLORS",
-    "GITHUB_ACTIONS",
-)
+#: Names a test may inherit from the launching shell, value unchanged. An
+#: allowlisted name the shell does not export stays absent. ``PATH`` and
+#: ``VIRTUAL_ENV`` come from ``uv run`` and make ``sys.executable`` children
+#: and ``git`` resolvable; ``CI`` selects Hypothesis's ``ci`` profile and
+#: pytest's untruncated assertion output; the last four are the Windows
+#: process set a child Python, ``expanduser``, ``shell=True`` and
+#: ``shutil.which`` need.
+BASELINE_ENV_NAMES = frozenset({
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "VIRTUAL_ENV",
+    "PYTHONPATH",
+    "CI",
+    "SYSTEMROOT",
+    "USERPROFILE",
+    "PATHEXT",
+    "COMSPEC",
+})
+
+#: Prefixes of inherited names kept alongside ``BASELINE_ENV_NAMES``: uv's
+#: own settings, pytest's and its plugins' (xdist marks its workers with
+#: ``PYTEST_XDIST_*``), and coverage's.
+BASELINE_ENV_PREFIXES = ("UV_", "PYTEST_", "COVERAGE_")
+
+#: Names every test sees with a fixed value, whatever the shell exports. The
+#: git pair hides the developer's global and system config, so a setting such
+#: as ``tag.gpgSign`` cannot change what a plain ``git tag`` does in a scratch
+#: repo.
+PINNED_ENV = {
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+def _live_environ() -> dict[str, str]:
+    """Return the process's real environment block.
+
+    ``os.environ`` is a snapshot taken at interpreter start, and native code can
+    write the real environment behind it: pytest imports ``readline`` before any
+    ``pytest_configure``, and GNU readline then exports ``LINES`` and
+    ``COLUMNS``. A child inherits the real block, so it reports those names too.
+    """
+    probe = "import json, os; print(json.dumps(dict(os.environ)))"
+    output = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-S", "-c", probe], check=True, capture_output=True, text=True
+    ).stdout
+    return json.loads(output)
+
+
+def pytest_configure() -> None:
+    """Rebuild the environment as the allowlisted baseline before collection.
+
+    Runs in the controller and again in every xdist worker, which inherits the
+    rebuilt environment; a second rebuild keeps it unchanged. ``os.environ`` is
+    first brought in line with the real environment, so names written behind it
+    are cleared with the rest and no child process inherits them. Also imports
+    ``typer.rich_utils`` under that baseline, so typer's once-per-process
+    terminal detection never sees the shell or an earlier test's variables.
+    """
+    os.environ.update({**_live_environ(), **os.environ})
+    kept = {
+        name: value
+        for name, value in os.environ.items()
+        if name in BASELINE_ENV_NAMES or name.startswith(BASELINE_ENV_PREFIXES)
+    }
+    os.environ.clear()
+    os.environ.update(kept | PINNED_ENV)
+    # typer.rich_utils decides once, at first import, whether to force a
+    # terminal from FORCE_COLOR, PY_COLORS and GITHUB_ACTIONS. Importing it
+    # under the baseline keeps a test that sets FORCE_COLOR before that first
+    # import from forcing a terminal for every later test in its worker.
+    importlib.import_module("typer.rich_utils")
 
 
 def hold_lock(
@@ -109,15 +162,16 @@ def _restore_signal_dispositions() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _clear_gymrat_env() -> Iterator[None]:
-    """Remove every variable in ``SCRUBBED_ENV_VARS`` for the duration of the test."""
-    # A private MonkeyPatch context rather than the `monkeypatch` fixture: an
-    # autouse dependency on `monkeypatch` would reorder its teardown after
+def _restore_env_baseline() -> Iterator[None]:
+    """Put ``os.environ`` back to its pre-test contents after every test."""
+    # A plain snapshot rather than a MonkeyPatch context, which would only undo
+    # its own calls and miss a direct `os.environ` write. No dependency on the
+    # `monkeypatch` fixture either: that would reorder its teardown after
     # module-level autouse cleanups, running them under still-active patches.
-    with pytest.MonkeyPatch.context() as patcher:
-        for var in SCRUBBED_ENV_VARS:
-            patcher.delenv(var, raising=False)
-        yield
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)

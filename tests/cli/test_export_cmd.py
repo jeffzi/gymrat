@@ -237,11 +237,9 @@ def test_export_when_sdk_not_importable_does_quote_extras_specifier_in_install_h
 
 
 def test_export_when_no_endpoint_flag_and_no_env_does_exit_two_naming_env_var(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
     result = runner.invoke(app, ["export", session_log])
 
@@ -591,9 +589,7 @@ def test_export_command_when_no_color_does_strip_ansi_from_stderr_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     missing = str(tmp_path / ".gymrat" / "session.jsonl")
 
     result = runner.invoke(app, ["export", "--no-color", missing])
