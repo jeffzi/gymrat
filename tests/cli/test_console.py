@@ -21,14 +21,6 @@ class _FakeStderr(io.StringIO):
         return self._tty
 
 
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neutralize env vars that influence color and width decisions."""
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("COLUMNS", raising=False)
-
-
 # ---------------------------------------------------------------------------
 # stderr target
 # ---------------------------------------------------------------------------

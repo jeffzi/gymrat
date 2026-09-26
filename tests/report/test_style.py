@@ -303,7 +303,6 @@ def test_render_lines_when_color_false_does_suppress_ansi_despite_force_color_en
 def test_render_lines_when_color_none_and_no_color_env_does_render_plain(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
 
     result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
@@ -314,7 +313,6 @@ def test_render_lines_when_color_none_and_no_color_env_does_render_plain(
 def test_render_lines_when_color_none_and_force_color_env_does_emit_ansi(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
@@ -334,12 +332,7 @@ def test_render_lines_when_color_none_and_both_env_set_does_let_force_color_win(
     assert "\x1b[" in result
 
 
-def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-
+def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain():
     result = render_lines("[red]hi[/red]", color=None, width=_WIDTH)
 
     assert "\x1b[" not in result
@@ -347,7 +340,6 @@ def test_render_lines_when_color_none_and_no_env_and_capture_does_render_plain(
 
 def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
     render_lines("[red]hi[/red]", color=True, width=_WIDTH)
 
@@ -414,7 +406,6 @@ def test_make_capture_console_when_color_set_does_honor_color_and_capture_output
 def test_make_capture_console_when_color_none_and_force_color_zero_does_render_plain(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "0")
 
     console = make_capture_console(color=None, width=_WIDTH)
@@ -429,7 +420,6 @@ def test_make_capture_console_when_color_none_and_force_color_zero_does_render_p
 def test_make_capture_console_when_color_none_and_no_color_set_does_suppress_all_styling(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "")
 
     console = make_capture_console(color=None, width=_WIDTH)
@@ -445,8 +435,6 @@ def test_make_capture_console_when_color_true_and_term_dumb_does_still_emit_ansi
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("TERM", "dumb")
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
     console = make_capture_console(color=True, width=_WIDTH)
     console.print("[red]hi[/red]")
@@ -461,7 +449,6 @@ def test_make_capture_console_when_color_none_and_force_color_env_and_term_dumb_
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("TERM", "dumb")
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     console = make_capture_console(color=None, width=_WIDTH)
@@ -477,8 +464,6 @@ def test_make_capture_console_when_term_dumb_and_explicit_width_does_honor_width
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("TERM", "dumb")
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
     console = make_capture_console(color=True, width=200)
 
@@ -489,8 +474,6 @@ def test_render_lines_when_color_true_and_term_dumb_does_emit_ansi(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("TERM", "dumb")
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
     result = render_lines("[red]hi[/red]", color=True, width=_WIDTH)
 

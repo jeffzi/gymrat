@@ -727,7 +727,6 @@ def test_render_report_when_mixing_banded_exact_and_nan_delta_does_match_styled_
     plain_report = render_report(_mixed_band_result())
 
     monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.delenv("NO_COLOR", raising=False)
     styled_report = render_report(_mixed_band_result())
 
     for prefix in ("banded/time", "exact/heap", "nan-delta/count"):

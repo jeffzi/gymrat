@@ -33,7 +33,6 @@ from tests.cli._budget import (
     install_budget,
     install_tight_budget,
     mark_tool_origin,
-    set_origin,
 )
 from tests.cli._session import (
     last_command_record,
@@ -831,7 +830,6 @@ def supervised_repo(
     marker = Path(repo, "hook-ran")
     write_config(repo, hooks={"before": f"touch '{marker}'"})
     install_budget(repo, monkeypatch)
-    set_origin(monkeypatch, None)
     return repo
 
 
@@ -946,7 +944,6 @@ def test_iterate_command_when_supervised_run_live_does_refuse_before_every_readi
     samples_mock: CollectSamplesRecorder,
 ):
     setup(repo, monkeypatch)
-    set_origin(monkeypatch, None)
 
     result = runner.invoke(app, ["iterate"])
 

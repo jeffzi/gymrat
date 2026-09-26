@@ -630,7 +630,6 @@ def test_stop_command_when_no_budget_does_omit_time_left_line(
 def test_start_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     result = runner.invoke(app, ["start", "--no-color", "--baseline", "banana"])
@@ -643,7 +642,6 @@ def test_start_command_when_no_color_does_strip_ansi_from_stderr_error(
 def test_stop_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_config(repo)
 
@@ -657,7 +655,6 @@ def test_stop_command_when_no_color_does_strip_ansi_from_stderr_error(
 def test_finalize_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     result = runner.invoke(app, ["finalize", "--no-color"])
@@ -670,7 +667,6 @@ def test_finalize_command_when_no_color_does_strip_ansi_from_stderr_error(
 def test_sync_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     result = runner.invoke(app, ["sync", "--no-color"])

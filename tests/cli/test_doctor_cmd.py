@@ -58,17 +58,6 @@ def _patch_doctor(
     return handles
 
 
-@pytest.fixture(autouse=True)
-def _preserve_color_env(monkeypatch: pytest.MonkeyPatch):
-    """Restore NO_COLOR and FORCE_COLOR to their pre-test values after each test."""
-    for name in ("NO_COLOR", "FORCE_COLOR"):
-        value = os.environ.get(name)
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
-
-
 # ---------------------------------------------------------------------------
 # registration and help
 # ---------------------------------------------------------------------------
@@ -133,8 +122,6 @@ def test_doctor_when_format_json_does_write_only_the_json_line(monkeypatch: pyte
 
 
 def test_doctor_when_no_color_flag_does_not_mutate_color_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
     _patch_doctor(monkeypatch)
 
     result = runner.invoke(app, ["doctor", "--no-color"])

@@ -328,7 +328,6 @@ def test_render_measure_report_when_colored_does_leave_separators_in_the_default
 def test_render_measure_report_when_no_color_is_set_does_leave_the_report_unstyled(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
 
     assert "\x1b[" not in render_measure_report(two_kind_measurement())
@@ -344,7 +343,6 @@ def test_render_measure_report_when_no_color_is_set_does_leave_the_report_unstyl
 def test_render_measure_report_when_color_option_set_does_override_the_environment(
     monkeypatch: pytest.MonkeyPatch, color: bool, styled: bool
 ):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
 
     output = render_measure_report(two_kind_measurement(), ReportOptions(color=color))

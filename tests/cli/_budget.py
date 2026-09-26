@@ -59,8 +59,6 @@ def mark_tool_origin(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def set_origin(monkeypatch: pytest.MonkeyPatch, origin: str | None) -> None:
-    """Set ``GYMRAT_COMMAND_ORIGIN`` to ``origin``, or clear it when ``origin`` is None."""
-    if origin is None:
-        monkeypatch.delenv("GYMRAT_COMMAND_ORIGIN", raising=False)
-    else:
+    """Set ``GYMRAT_COMMAND_ORIGIN`` to ``origin``; None leaves it unset."""
+    if origin is not None:
         monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", origin)

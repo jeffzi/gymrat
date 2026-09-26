@@ -43,7 +43,6 @@ from tests.cli._budget import (
     install_budget,
     install_tight_budget,
     mark_tool_origin,
-    set_origin,
 )
 from tests.cli._session import last_command_record, plain_lines, records_of, write_config
 from tests.conftest import hold_lock
@@ -301,7 +300,6 @@ def supervised_probe_repo(probe_repo: str, monkeypatch: pytest.MonkeyPatch) -> s
     """A probe-ready repo under a tight live budget its last iteration outlasts, run from the shell."""
     install_tight_budget(probe_repo, monkeypatch)
     append_record(session_jsonl_path(probe_repo), iteration_record(duration_ms=720_000))
-    set_origin(monkeypatch, None)
     return probe_repo
 
 
