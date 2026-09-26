@@ -316,7 +316,6 @@ def test_supervise_when_tracing_enabled_and_model_set_does_set_provider_attribut
 def test_supervise_when_tracing_disabled_does_pass_reporter_observer_directly(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     seams = _tracing_seams(monkeypatch)
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))
@@ -328,7 +327,6 @@ def test_supervise_when_tracing_disabled_does_pass_reporter_observer_directly(
 def test_supervise_when_tracing_disabled_does_not_set_traceparent_on_prompt(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     seams = _tracing_seams(monkeypatch)
 
     result = _run("optimize it", "--max-minutes", str(_CAP_MINUTES))

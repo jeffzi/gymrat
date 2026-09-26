@@ -273,7 +273,6 @@ def test_init_when_skill_declined_does_report_it():
 
 @pytest.mark.usefixtures("non_repo_cwd")
 def test_init_when_colored_does_dim_the_doctor_pointer(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
 
     result = runner.invoke(app, ["init", "--bench", "npm run bench"])

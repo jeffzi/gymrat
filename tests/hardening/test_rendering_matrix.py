@@ -269,9 +269,7 @@ def _apply_color_env(
     monkeypatch: pytest.MonkeyPatch, force_color: str | None, no_color: str | None
 ) -> None:
     for name, value in (("FORCE_COLOR", force_color), ("NO_COLOR", no_color)):
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
+        if value is not None:
             monkeypatch.setenv(name, value)
 
 

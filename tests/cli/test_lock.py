@@ -35,9 +35,6 @@ from tests.cli._lock_fixtures import (
 from tests.cli._lock_fixtures import (
     seeded_session as _seeded_session,
 )
-from tests.cli._lock_fixtures import (
-    seeded_session_no_trace_context as _seeded_session_no_trace_context,
-)
 from tests.session.records._fixtures import (
     iteration_record,
     session_record,
@@ -276,7 +273,7 @@ async def test_with_repo_lock_when_body_succeeds_does_append_command_record_with
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     frozen_ns = 1_000_000_000
     monkeypatch.setattr("gymrat.cli.lock._clock.now_ns", lambda: frozen_ns)
 
@@ -294,9 +291,8 @@ async def test_with_repo_lock_when_body_succeeds_does_append_command_record_with
 
 async def test_with_repo_lock_when_body_sets_gate_does_record_exit_one_with_trace_reason(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         trace.gate = True
@@ -312,9 +308,8 @@ async def test_with_repo_lock_when_body_sets_gate_does_record_exit_one_with_trac
 
 async def test_with_repo_lock_when_body_raises_loop_stop_error_does_record_exit_one_with_error_reason(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         msg = "stopping"
@@ -330,9 +325,8 @@ async def test_with_repo_lock_when_body_raises_loop_stop_error_does_record_exit_
 
 async def test_with_repo_lock_when_body_raises_typer_exit_does_record_its_exit_code(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         trace.reason = "fail-on"
@@ -348,9 +342,8 @@ async def test_with_repo_lock_when_body_raises_typer_exit_does_record_its_exit_c
 
 async def test_with_repo_lock_when_typer_exit_code_two_and_no_reason_does_default_to_error(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         raise typer.Exit(code=2)
@@ -365,9 +358,8 @@ async def test_with_repo_lock_when_typer_exit_code_two_and_no_reason_does_defaul
 
 async def test_with_repo_lock_when_body_raises_gymrat_error_does_record_exit_two(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         msg = "boom"
@@ -383,9 +375,8 @@ async def test_with_repo_lock_when_body_raises_gymrat_error_does_record_exit_two
 
 async def test_with_repo_lock_when_gymrat_error_has_no_reason_does_default_to_error(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         msg = "boom"
@@ -401,9 +392,8 @@ async def test_with_repo_lock_when_gymrat_error_has_no_reason_does_default_to_er
 
 async def test_with_repo_lock_when_body_raises_unexpected_error_does_record_exit_two_error(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         msg = "unexpected"
@@ -419,9 +409,8 @@ async def test_with_repo_lock_when_body_raises_unexpected_error_does_record_exit
 
 async def test_with_repo_lock_when_body_sets_seq_does_record_it(
     repo: str,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
 
     async def body(trace: CommandTrace) -> str:
         trace.seq = 7
@@ -437,7 +426,7 @@ async def test_with_repo_lock_when_traceparent_env_set_does_record_it(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     monkeypatch.setenv("TRACEPARENT", "00-abc-def-01")
 
     await with_repo_lock("measure", _ok_body)
@@ -460,10 +449,8 @@ async def test_with_repo_lock_when_command_origin_env_varies_does_record_matchin
     env_value: str | None,
     expected: str,
 ):
-    _seeded_session(repo, monkeypatch)
-    if env_value is None:
-        monkeypatch.delenv("GYMRAT_COMMAND_ORIGIN", raising=False)
-    else:
+    _seeded_session(repo)
+    if env_value is not None:
         monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", env_value)
 
     await with_repo_lock("measure", _ok_body)
@@ -476,7 +463,7 @@ async def test_with_repo_lock_when_duration_recorded_does_reflect_wall_time(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     call_count = 0
 
     def fake_monotonic_ms() -> float:
@@ -547,7 +534,7 @@ async def test_with_repo_lock_when_append_fails_does_warn_and_still_return_body_
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     monkeypatch.setattr("gymrat.cli.lock.append_record", _broken_append)
 
     async def body(trace: CommandTrace) -> str:
@@ -565,7 +552,7 @@ async def test_with_repo_lock_when_append_fails_on_exception_does_warn_and_rerai
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     monkeypatch.setattr("gymrat.cli.lock.append_record", _broken_append)
 
     async def body(trace: CommandTrace) -> str:
@@ -584,7 +571,7 @@ async def test_with_repo_lock_when_record_construction_raises_does_warn_and_retu
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     monkeypatch.setattr("gymrat.cli.lock.CommandRecord", _broken_record)
 
     async def body(trace: CommandTrace) -> str:
@@ -602,7 +589,7 @@ async def test_with_repo_lock_when_record_construction_raises_on_body_exception_
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     monkeypatch.setattr("gymrat.cli.lock.CommandRecord", _broken_record)
 
     async def body(trace: CommandTrace) -> str:
@@ -692,7 +679,7 @@ async def test_with_repo_lock_when_record_construction_raises_does_release_lock(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _seeded_session(repo, monkeypatch)
+    _seeded_session(repo)
     released: list[bool] = []
     monkeypatch.setattr("gymrat.cli.lock.acquire_lock", _tracking_acquire(released))
     monkeypatch.setattr("gymrat.cli.lock.CommandRecord", _broken_record)
@@ -707,7 +694,7 @@ async def test_with_repo_lock_when_span_emission_raises_does_release_lock(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    header = _seeded_session_no_trace_context(repo, monkeypatch)
+    header = _seeded_session(repo)
     released: list[bool] = []
     monkeypatch.setattr("gymrat.cli.lock.acquire_lock", _tracking_acquire(released))
 
@@ -805,7 +792,6 @@ async def test_with_repo_lock_when_root_given_does_append_command_record_to_that
     cwd_repo = create_scratch_repo()
     target_repo = create_scratch_repo()
     monkeypatch.chdir(cwd_repo)
-    monkeypatch.delenv("TRACEPARENT", raising=False)
     cwd_header = session_record()
     write_session_log(cwd_repo, cwd_header)
     write_session_log(target_repo, session_record())

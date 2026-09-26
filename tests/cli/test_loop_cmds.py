@@ -221,7 +221,6 @@ def test_status_command_when_no_session_does_exit_two_with_a_start_hint(
 def test_status_command_color(
     repo: str, monkeypatch: pytest.MonkeyPatch, args: list[str], expect_ansi: bool
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_config(repo)
@@ -533,8 +532,6 @@ def test_keep_command_when_refusing_does_print_a_report_carrying_no_hint_label(r
 def test_keep_command_when_refusing_does_take_report_color_from_the_environment(
     repo: str, monkeypatch: pytest.MonkeyPatch, variable: str, expect_ansi: bool
 ):
-    for name in ("FORCE_COLOR", "NO_COLOR"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(variable, "1")
     start_with(repo, (iteration(1),))
     write_config(repo, checks=CHECKS)
@@ -773,7 +770,6 @@ def test_discard_command_when_budget_active_does_end_text_with_time_left_line(
 def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     start_with(repo, (iteration(1),))
     write_config(repo, checks=CHECKS)
@@ -784,11 +780,7 @@ def test_keep_command_when_no_color_does_strip_ansi_from_stdout_report(
     assert not SGR_RE.search(result.stdout)
 
 
-def test_keep_command_when_color_does_force_ansi_on_stdout_report(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
+def test_keep_command_when_color_does_force_ansi_on_stdout_report(repo: str):
     start_with(repo, (iteration(1),))
     write_config(repo, checks=CHECKS)
 
@@ -801,7 +793,6 @@ def test_keep_command_when_color_does_force_ansi_on_stdout_report(
 def test_discard_command_when_no_color_does_strip_ansi_from_stderr_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
     start_with(repo, (iteration(1),))
     edit_experiment(repo)

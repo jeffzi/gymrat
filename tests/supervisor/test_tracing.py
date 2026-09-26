@@ -23,9 +23,8 @@ SESSION = "test-tracing-observer"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_provider(monkeypatch: pytest.MonkeyPatch):
+def _isolate_provider():
     """Start each test with a clean tracing provider."""
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _reset_for_tests()
