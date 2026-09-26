@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gymrat.session import clock as _clock
-from gymrat.session.clock import now_ns
+from gymrat import clock as _clock
+from gymrat.clock import now_ns
 from gymrat.session.records import BaselineRecord
 
 if TYPE_CHECKING:

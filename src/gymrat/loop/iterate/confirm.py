@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from gymrat.clock import monotonic_ms
 from gymrat.config import FILTER_PLACEHOLDER
 from gymrat.loop.iterate.bench import IterationContext, bench_and_judge
 from gymrat.progress_events import (
@@ -21,7 +22,6 @@ from gymrat.progress_events import (
     PassFinished,
     PassStarted,
     ProgressEvent,
-    default_clock,
     emit_progress,
 )
 
@@ -108,7 +108,7 @@ async def confirm_regressions(
         ctx.options.on_progress,
         ConfirmStarted(
             filtered_metrics=None if ctx.config.filter is None else filtered_tuple,
-            at_ms=default_clock(),
+            at_ms=monotonic_ms(),
         ),
     )
 
@@ -123,7 +123,7 @@ async def confirm_regressions(
 
     reproduced = len(confirmed) > 0
     emit_progress(
-        ctx.options.on_progress, ConfirmFinished(reproduced=reproduced, at_ms=default_clock())
+        ctx.options.on_progress, ConfirmFinished(reproduced=reproduced, at_ms=monotonic_ms())
     )
 
     return Confirmation(

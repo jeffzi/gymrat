@@ -11,18 +11,18 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import Annotated
+import traceback
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.cli.lock import GATE_EXIT_CODE
+from gymrat.cli.lock import GATE_EXIT_CODE, CommandTrace, config_trace_args, with_repo_lock
 from gymrat.cli.shared import (
     AdapterOption,
     AllowUnimprovedOption,
     BenchOption,
     ColorOption,
-    CommandTrace,
     ConfigOption,
     DebugOption,
     ForceOption,
@@ -36,14 +36,13 @@ from gymrat.cli.shared import (
     apply_debug,
     broken_pipe_guard,
     budget_snapshot,
-    config_trace_args,
     exit_with_error,
+    is_debug_mode,
     is_tty,
     resolve_render_mode,
     resolve_stream_color,
     run_cli,
     run_with_signal_abort,
-    with_repo_lock,
     write_and_flush,
     write_budget_report,
 )
@@ -53,7 +52,7 @@ from gymrat.confirm import confirm_action
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError, iterate_session
 from gymrat.loop.settle import DiscardResult, KeepOptions, KeepResult, discard_session, keep_session
 from gymrat.loop.status import status_data, status_session
-from gymrat.progress_events import create_fan_out
+from gymrat.observers import fan_out
 from gymrat.report.json_doc import (
     render_discard_json,
     render_iterate_json,
@@ -66,9 +65,32 @@ from gymrat.session.progress_file import clear_progress, create_sidecar_writer
 from gymrat.session.store import require_open_session
 from gymrat.signals import install_termination_cleanup
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from gymrat.warn import WarnSink
+
 # ---------------------------------------------------------------------------
 # Iterate
 # ---------------------------------------------------------------------------
+
+
+def _subscriber_failure_sink(warn: WarnSink) -> Callable[[Exception], None]:
+    # fan_out hands over only the exception, never the subscriber that raised
+    # it, so a failure recurring on every event is recognized by its text.
+    reported: set[str] = set()
+
+    def report(error: Exception) -> None:
+        text = str(error)
+        if text in reported:
+            return
+        reported.add(text)
+        message = f"warning: {text}"
+        if is_debug_mode():
+            message += "\n" + "".join(traceback.format_exception(error)).rstrip()
+        warn(message)
+
+    return report
 
 
 async def _iterate_body(
@@ -107,14 +129,16 @@ async def _iterate_body(
         has_after_hook=resolved.hooks is not None and resolved.hooks.after is not None,
     )
     sidecar_writer = create_sidecar_writer(root)
-    fan_out = create_fan_out([renderer.report, sidecar_writer])
+    on_progress = fan_out(
+        [renderer.report, sidecar_writer], _subscriber_failure_sink(renderer.warn)
+    )
     uninstall_progress_cleanup = install_termination_cleanup(lambda: clear_progress(root))
     try:
         result = await run_with_signal_abort(
             lambda abort: iterate_session(
                 root,
                 resolved,
-                IterateOptions(abort=abort, on_progress=fan_out),
+                IterateOptions(abort=abort, on_progress=on_progress),
                 color=resolved_color,
             )
         )

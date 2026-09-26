@@ -15,9 +15,9 @@ from gymrat.config import (
     KindEntry,
     MetricEntry,
     StopConfig,
+    inspect_config,
     resolve_metric_meta,
 )
-from gymrat.config.inspect import inspect_config
 from gymrat.model import Direction, MetricUnit, ResolvedMetricMeta
 from gymrat.warn import WarnSink, warn_to_stderr
 
@@ -535,6 +535,52 @@ def test_inspect_config_when_multiple_flags_empty_does_collect_all(
     assert len(result.problems) >= 2
     assert has_problem(result.problems, r"--bench.*non-empty")
     assert has_problem(result.problems, r"--adapter.*non-empty")
+
+
+_FLAG_AND_ENV_PROBLEMS = [
+    'Invalid config value for --adapter: expected a non-empty string, got ""',
+    'Invalid value for GYMRAT_SAMPLES: expected a positive integer, got "abc"',
+]
+
+
+@pytest.mark.parametrize(
+    ("config", "file_problems"),
+    [
+        pytest.param(
+            {"filter": "npm run bench", "runbook": "missing.md"},
+            [
+                (
+                    "Invalid config value for filter: expected a string containing the {names} "
+                    'placeholder, got "npm run bench"'
+                ),
+                (
+                    "Invalid config value for runbook: expected a path to an existing file, "
+                    'got "missing.md"'
+                ),
+            ],
+            id="loop-keys-then-runbook",
+        ),
+        pytest.param(
+            {"samples": "bad", "filter": "npm run bench", "runbook": "missing.md"},
+            ['Invalid config value for samples: expected a positive integer, got "bad"'],
+            id="schema-stops-before-loop-keys",
+        ),
+    ],
+)
+def test_inspect_config_when_every_step_fails_does_report_flags_then_env_then_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, object],
+    file_problems: list[str],
+):
+    write_config(tmp_path, config)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GYMRAT_SAMPLES", "abc")
+
+    result = inspect_config(CliFlags(bench="my-bench", adapter=""))
+
+    assert result.problems == [*_FLAG_AND_ENV_PROBLEMS, *file_problems]
+    assert result.config is None
 
 
 @pytest.mark.parametrize(

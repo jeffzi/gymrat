@@ -6,15 +6,19 @@ and inserts a ``budget`` key in JSON output, including on stop-condition exits.
 
 import json
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import override
 
 import pytest
 
 from gymrat import signals
 from gymrat.cli.app import app
+from gymrat.cli.iterate.progress import IterateRenderer
+from gymrat.cli.shared import set_debug_mode
 from gymrat.loop.iterate import IterateOptions, IterateResult, LoopStopError
+from gymrat.progress_events import JudgeStarted, PrepareFinished, PrepareStarted, ProgressEvent
 from gymrat.session import (
     CommandRecord,
     Confirm,
@@ -31,7 +35,14 @@ from tests.cli._budget import (
     mark_tool_origin,
     set_origin,
 )
-from tests.cli._session import last_command_record, plain_lines, records_of, runner, write_config
+from tests.cli._session import (
+    last_command_record,
+    plain_lines,
+    records_of,
+    runner,
+    strip_ansi,
+    write_config,
+)
 from tests.loop.iterate._fixtures import (
     CollectSamplesRecorder,
     baseline_rounds,
@@ -178,14 +189,18 @@ class _RendererRecord:
 
 
 class _FakeRenderer:
-    """A stand-in for ``IterateRenderer`` recording ``report`` and ``stop`` calls."""
+    """A stand-in for ``IterateRenderer`` recording ``report``, ``warn`` and ``stop`` calls."""
 
     def __init__(self) -> None:
         self.report_calls: list[object] = []
+        self.warnings: list[str] = []
         self.stop_called = False
 
     def report(self, event: object) -> None:
         self.report_calls.append(event)
+
+    def warn(self, message: str) -> None:
+        self.warnings.append(message)
 
     def stop(self) -> None:
         self.stop_called = True
@@ -411,6 +426,185 @@ def test_iterate_command_when_run_does_register_progress_cleanup_for_termination
 
     assert result.exit_code == 0
     assert progress_cleared_mid_run
+
+
+# ---------------------------------------------------------------------------
+# the iterate command — a failing progress subscriber
+# ---------------------------------------------------------------------------
+
+_SUBSCRIBER_EVENTS: tuple[ProgressEvent, ...] = (
+    PrepareStarted(label="baseline", at_ms=0),
+    PrepareFinished(label="baseline", at_ms=1000),
+    JudgeStarted(at_ms=2000),
+)
+
+
+class _EmittingIterateSession:
+    """A stand-in for ``iterate_session`` that reports ``_SUBSCRIBER_EVENTS`` and succeeds."""
+
+    async def __call__(
+        self,
+        root: str,
+        config: object,
+        options: IterateOptions | None = None,
+        *,
+        color: bool | None = None,
+    ) -> IterateResult:
+        assert options is not None
+        assert options.on_progress is not None
+        for event in _SUBSCRIBER_EVENTS:
+            options.on_progress(event)
+        return _make_iterate_result()
+
+
+class _FailingSidecar:
+    """A stand-in progress sidecar writer raising the next queued ``OSError`` per event."""
+
+    def __init__(self, messages: Sequence[str]) -> None:
+        self._errors = (OSError(message) for message in messages)
+
+    def __call__(self, _event: ProgressEvent) -> None:
+        raise next(self._errors)
+
+
+@dataclass
+class _RendererSpy:
+    """What the real ``IterateRenderer`` received during one command."""
+
+    events: list[ProgressEvent] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _wire_failing_subscriber(
+    repo: str, monkeypatch: pytest.MonkeyPatch, messages: Sequence[str]
+) -> _RendererSpy:
+    """Wire ``iterate`` with a sidecar raising ``messages`` and a spied real renderer."""
+    write_session_log(repo, iterate_session_header(repo))
+    spy = _RendererSpy()
+
+    class _SpiedRenderer(IterateRenderer):
+        @override
+        def report(self, event: ProgressEvent) -> None:
+            spy.events.append(event)
+            super().report(event)
+
+        @override
+        def warn(self, message: str) -> None:
+            spy.warnings.append(message)
+            super().warn(message)
+
+    monkeypatch.setattr("gymrat.cli.loop_cmds.IterateRenderer", _SpiedRenderer)
+    monkeypatch.setattr("gymrat.cli.loop_cmds.iterate_session", _EmittingIterateSession())
+    sidecar = _FailingSidecar(messages)
+
+    def create_sidecar_writer(_root: str) -> _FailingSidecar:
+        return sidecar
+
+    monkeypatch.setattr("gymrat.cli.loop_cmds.create_sidecar_writer", create_sidecar_writer)
+    return spy
+
+
+def _warning_lines(stderr: str) -> list[str]:
+    """The stderr lines that open with ``warning: ``, stripped of color."""
+    return [line for line in strip_ansi(stderr).splitlines() if line.startswith("warning: ")]
+
+
+@pytest.fixture
+def _debug_reset() -> Iterator[None]:
+    """Turn debug mode back off after a test that enabled it through ``--debug``."""
+    yield
+    set_debug_mode(False)
+
+
+_THREE_DISK_FULL = ("disk full", "disk full", "disk full")
+
+
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        pytest.param(_THREE_DISK_FULL, ["warning: disk full"], id="same-failure-recurs"),
+        pytest.param(
+            ("disk full", "permission denied", "disk full"),
+            ["warning: disk full", "warning: permission denied"],
+            id="different-failure",
+        ),
+    ],
+)
+def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_failure(
+    repo: str, monkeypatch: pytest.MonkeyPatch, messages: tuple[str, ...], expected: list[str]
+):
+    _wire_failing_subscriber(repo, monkeypatch, messages)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert _warning_lines(result.stderr) == expected
+
+
+def test_iterate_command_when_subscriber_raises_without_debug_does_omit_the_traceback(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert _warning_lines(result.stderr) == ["warning: disk full"]
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.usefixtures("_debug_reset")
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["--debug", "iterate", "--bench", "npm run bench"], id="root-flag"),
+        pytest.param(["iterate", "--bench", "npm run bench", "--debug"], id="command-flag"),
+    ],
+)
+def test_iterate_command_when_debug_and_subscriber_raises_does_follow_the_warning_with_traceback(
+    repo: str, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+):
+    _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+
+    result = runner.invoke(app, argv)
+
+    lines = strip_ansi(result.stderr).splitlines()
+    warning_at = lines.index("warning: disk full")
+    assert lines[warning_at + 1] == "Traceback (most recent call last):"
+    assert _warning_lines(result.stderr) == ["warning: disk full"]
+
+
+def test_iterate_command_when_subscriber_raises_does_route_the_warning_through_the_renderer(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    spy = _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+
+    runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert spy.warnings == ["warning: disk full"]
+
+
+def test_iterate_command_when_subscriber_raises_does_still_deliver_every_event_to_the_renderer(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    spy = _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+
+    runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert spy.events == list(_SUBSCRIBER_EVENTS)
+
+
+def test_iterate_command_when_subscriber_raises_does_keep_the_report_and_exit_code(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert plain_lines(result.stdout) == [
+        "iteration 1 · experiment vs baseline · 10 paired samples",
+        "gymrat keep",
+    ]
+    assert last_command_record(repo).exit_code == 0
 
 
 # ---------------------------------------------------------------------------

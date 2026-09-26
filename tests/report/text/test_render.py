@@ -11,13 +11,16 @@ is rich's rather than a hand-spliced grid.
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
+from rich.cells import cell_len
 
 from gymrat.model import ApproximateVerdict, Exclusion
 from gymrat.report.text import render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
 from tests.report._inputs import (
+    NWayCandidate,
     band_metric,
     cells_of,
     create_candidate,
@@ -29,6 +32,7 @@ from tests.report._inputs import (
     line_containing,
     line_starting_with,
     metric_meta,
+    n_way_metric,
     other_kind,
     permutation_metric,
     strip_ansi,
@@ -583,6 +587,30 @@ def test_render_report_when_an_aggregate_carries_a_band_does_line_it_up_with_met
     ).index("±")
 
 
+def test_render_report_when_ascii_labels_differ_in_length_does_pad_inside_the_bold_label(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    result = create_comparison_result(
+        candidates=[
+            create_candidate(label="fast", kinds=[other_kind(-10, 1)]),
+            create_candidate(label="slower", kinds=[other_kind(4, 1)]),
+        ],
+        metrics={
+            "decode/time": n_way_metric([
+                NWayCandidate(verdict="improved", delta=-10, median=90),
+                NWayCandidate(verdict="regressed", delta=4, median=104),
+            ])
+        },
+    )
+
+    report = render_report(result)
+
+    bold, dim, reset = "\x1b[1m", "\x1b[2m", "\x1b[0m"
+    assert f"{bold}fast  {reset}  ✓ " in report
+    assert f"{bold}slower{reset}  {dim}✓ " in report
+
+
 def test_render_report_when_rendering_with_color_does_dim_the_aggregate_band(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -631,8 +659,38 @@ def test_render_report_when_metric_name_has_cjk_does_align_separator_columns():
 
     # Column separators must sit at the same terminal cell position in both rows,
     # meaning the label column accounted for double-width CJK cells.
-    from rich.cells import cell_len
-
     ascii_sep = cell_len(ascii_row[: ascii_row.index("│")])
     cjk_sep = cell_len(cjk_row[: cjk_row.index("│")])
     assert ascii_sep == cjk_sep
+
+
+@pytest.mark.parametrize(
+    ("labels", "summary_column"),
+    [
+        pytest.param(("fast", "测试指标"), 10, id="cjk-label-widest"),
+        pytest.param(("a-longer-name", "测试"), 15, id="ascii-label-widest"),
+        pytest.param(("fast", "slower"), 8, id="ascii-only"),
+    ],
+)
+def test_render_report_when_candidate_labels_differ_in_width_does_start_every_summary_at_one_column(
+    labels: tuple[str, str],
+    summary_column: int,
+):
+    result = create_comparison_result(
+        candidates=[
+            create_candidate(label=labels[0], kinds=[other_kind(-10, 1)]),
+            create_candidate(label=labels[1], kinds=[other_kind(4, 1)]),
+        ],
+        metrics={
+            "decode/time": n_way_metric([
+                NWayCandidate(verdict="improved", delta=-10, median=90),
+                NWayCandidate(verdict="regressed", delta=4, median=104),
+            ])
+        },
+    )
+
+    report = strip_ansi(render_report(result))
+    summaries = [line for line in report.split("\n") if re.search(r"✓ \d+ improved", line)]
+
+    assert [line.split("  ✓")[0].rstrip() for line in summaries] == list(labels)
+    assert [cell_len(line[: line.index("✓")]) for line in summaries] == [summary_column] * 2

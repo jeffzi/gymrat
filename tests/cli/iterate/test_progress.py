@@ -30,6 +30,7 @@ from tests._rich import (
     Clock,
     console_output,
     frame_text,
+    screen_lines,
     sealed_console,
 )
 from tests.cli._progress_helpers import (
@@ -591,6 +592,32 @@ def test_live_wiring_when_created_does_set_auto_refresh_true():
 
     assert renderer.live is not None
     assert renderer.live.auto_refresh is True
+    renderer.stop()
+
+
+# ---------------------------------------------------------------------------
+# warn -- above the live frame, on its own line in plain mode
+# ---------------------------------------------------------------------------
+
+
+def test_warn_when_live_mode_does_print_the_message_above_the_intact_frame():
+    console, clock, renderer = _live()
+    renderer.report(PrepareStarted(label="baseline", at_ms=0))
+
+    renderer.warn("warning: disk full")
+
+    frame = frame_text(renderer.frame(), get_time=clock)
+    assert screen_lines(console_output(console)) == ["warning: disk full", *frame.splitlines()]
+    renderer.stop()
+
+
+def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
+    console, _clock, renderer = _plain()
+    before = console_output(console)
+
+    renderer.warn("warning: cannot write [/tmp/progress.json]")
+
+    assert console_output(console) == before + "warning: cannot write [/tmp/progress.json]\n"
     renderer.stop()
 
 

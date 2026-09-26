@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.adapters import get_adapter
+from gymrat.clock import monotonic_ms
 from gymrat.config import GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.model import MetricVerdict, Observations, ResolvedMetricMeta
-from gymrat.progress_events import JudgeStarted, default_clock, emit_progress
+from gymrat.progress_events import JudgeStarted, emit_progress
 from gymrat.report.loop import (
     EXPERIMENT_INDEX,
     GeomeanPrimary,
@@ -155,7 +156,7 @@ async def bench_and_judge(
     """
     baseline, experiment = await _measure(ctx.session, ctx.config, ctx.options, bench)
     if announce_judging:
-        emit_progress(ctx.options.on_progress, JudgeStarted(at_ms=default_clock()))
+        emit_progress(ctx.options.on_progress, JudgeStarted(at_ms=monotonic_ms()))
     adapter = get_adapter(ctx.config.adapter)
     resolved_meta = (
         metric_meta

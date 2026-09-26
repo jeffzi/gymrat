@@ -3,10 +3,11 @@
 ``create_claude_driver`` returns a :class:`~gymrat.supervisor.driver.Driver`
 that drives one agent session per :meth:`~gymrat.supervisor.driver.Driver.start`
 through the SDK's streaming client. The client is obtained from an injectable
-``client_factory`` so the whole unit suite runs against a fake; the real SDK is
-imported lazily inside the run task (never at import or construction) so that
-merely importing this module — the import-latency guard depends on it — does not
-require ``claude-agent-sdk`` to be installed.
+``client_factory`` so the whole unit suite runs against a fake. The real SDK,
+``claude-agent-sdk``, is a required dependency; it is imported lazily inside
+the run task (never at import or construction) only so that merely importing
+this module does not pay the SDK's import cost — the import-latency guard
+depends on it.
 
 Message-to-event mapping lives in :mod:`gymrat.supervisor.claude_messages`;
 this module owns the session lifecycle: connect, stream, interrupt, send, end.
@@ -19,7 +20,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from gymrat.session.clock import now_ns
+from gymrat.clock import now_ns
 from gymrat.supervisor.claude_messages import (
     MessageMapper,
     detect_origin,
@@ -79,8 +80,9 @@ ClientFactory = Callable[[Mapping[str, object]], ClaudeClient]
 
 
 def _load_default_factory() -> ClientFactory:  # pragma: no cover - needs the package + live CLI
-    # Imported lazily, not at module top: keeps claude-agent-sdk an optional
-    # dependency and off the import-latency path the guard test protects.
+    # claude-agent-sdk is a required dependency. It is imported lazily, not at
+    # module top, only to keep it off the import-latency path the guard test
+    # protects.
     import claude_agent_sdk  # noqa: PLC0415
 
     def factory(options: Mapping[str, object]) -> ClaudeClient:

@@ -332,6 +332,63 @@ async def test_mapping_when_tool_result_has_no_matching_start_does_use_fallback_
     assert ends[0].duration_ms == 0
 
 
+class _FakeClocks:
+    """Mutable readings for the duration clock and the wall clock."""
+
+    def __init__(self) -> None:
+        self.monotonic_ms = 0.0
+        self.wall_ns = 0
+
+
+class _ClockedClient(FiniteClient):
+    """A finite client that sets both fake clocks before yielding each message."""
+
+    def __init__(self, steps: Sequence[tuple[float, int, object]], clocks: _FakeClocks) -> None:
+        super().__init__([message for _, _, message in steps])
+        self._steps = steps
+        self._clocks = clocks
+
+    @override
+    async def receive_messages(self):
+        for monotonic_ms, wall_ns, message in self._steps:
+            self._clocks.monotonic_ms = monotonic_ms
+            self._clocks.wall_ns = wall_ns
+            await asyncio.sleep(0)
+            yield message
+
+
+async def test_mapping_when_wall_clock_jumps_back_does_report_monotonic_tool_duration(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    clocks = _FakeClocks()
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: clocks.monotonic_ms)
+    monkeypatch.setattr("time.time_ns", lambda: clocks.wall_ns)
+    monkeypatch.setattr("time.time", lambda: clocks.wall_ns / 1_000_000_000)
+    one_hour_ns = 3_600 * 1_000_000_000
+    start_wall_ns = 1_700_000_000 * 1_000_000_000
+    client = _ClockedClient(
+        [
+            (
+                1_000.0,
+                start_wall_ns,
+                assistant(SimpleNamespace(id="tu_1", name="Read", input={"file_path": "/a"})),
+            ),
+            (
+                1_250.0,
+                start_wall_ns - one_hour_ns,
+                assistant(SimpleNamespace(tool_use_id="tu_1", content="done")),
+            ),
+        ],
+        clocks,
+    )
+    probe = collecting_observer()
+
+    await run_session(create_claude_driver(client_factory=FactoryProbe(client)), probe.observer)
+
+    ends = events_of(probe.events, ToolEndEvent)
+    assert [end.duration_ms for end in ends] == [250]
+
+
 async def test_mapping_when_tool_result_content_not_string_does_json_encode():
     payload = {"stdout": "hi", "exit_code": 0}
     messages = [

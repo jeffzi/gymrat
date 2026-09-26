@@ -8,8 +8,8 @@ refused with a hint pointing at the matching tool.
 
 import os
 
+from gymrat import clock
 from gymrat.errors import GymratError
-from gymrat.session import clock
 from gymrat.session.budget import read_budget
 from gymrat.session.schema import CommandOrigin
 

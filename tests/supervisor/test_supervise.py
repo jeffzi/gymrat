@@ -9,6 +9,7 @@ stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 """
 
 import asyncio
+import itertools
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -43,17 +44,6 @@ from tests.supervisor._mock_driver import (
     TurnEndStep,
     create_mock_driver,
 )
-
-
-async def _noop_action() -> None:
-    return None
-
-
-_GUARD_MESSAGE = "this step must not run after a cap fires"
-
-
-async def _guard_action() -> None:
-    raise AssertionError(_GUARD_MESSAGE)
 
 
 async def _supervise_fast(
@@ -211,7 +201,23 @@ async def test_supervise_when_session_completes_does_report_outcome(
     assert result.ended_by == "session"
     assert result.outcome == SessionOutcome(reason="completed", cost_usd=0.12)
     assert result.cost_usd == 0.12
-    assert result.duration_ms >= 0
+
+
+async def test_supervise_when_clock_faked_does_report_duration_from_monotonic_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ticks = itertools.count(start=1000.0, step=250.0)
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+    driver = create_mock_driver([CostStep(cost_usd=0.05)])
+
+    result = await supervise(
+        driver,
+        make_prompt(),
+        context=make_context(max_minutes=10, log_path=str(tmp_path / "events.jsonl")),
+        launch=make_launch(),
+    )
+
+    assert result.duration_ms == 250
 
 
 async def test_supervise_when_session_runs_does_log_launch_first_then_events_in_order(

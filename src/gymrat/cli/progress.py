@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from gymrat.progress_events import ProgressEvent
 
 from rich.console import Console, Group, RenderableType
-from rich.live import Live
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -49,6 +48,7 @@ from gymrat.cli.style import (
     STYLE_TIMER_DONE,
     STYLE_TIMER_RUNNING,
     STYLE_VERB,
+    ErasableLive,
     LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
@@ -246,7 +246,7 @@ class ProgressReporter(LiveDisplayMixin):
         # live/plain split stays in exactly one place.
         is_live = mode == "live" and console.width > 0
         self._is_live = is_live
-        self._live: Live | None = None
+        self._live: ErasableLive | None = None
         self._clock_column: _ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
@@ -275,7 +275,7 @@ class ProgressReporter(LiveDisplayMixin):
             )
             self._pass_progress, self._clock_column = passes_progress(console, clock=clock)
 
-        self._live = Live(
+        self._live = ErasableLive(
             console=console,
             auto_refresh=True,
             refresh_per_second=LIVE_REFRESH_PER_SECOND,
@@ -377,10 +377,6 @@ class ProgressReporter(LiveDisplayMixin):
             target=target,
             completed=state.eta.completed,
         )
-
-    def warn(self, message: str) -> None:
-        """Surface a warning without disturbing any active live display."""
-        self._console.print(message, highlight=False, markup=False)
 
     def stop(self) -> None:
         """Stop the reporter and clean up any live display."""

@@ -4,8 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from gymrat.clock import monotonic_ms
 from gymrat.config.types import KindEntry, MetricEntry
-from gymrat.progress_events import ProgressCallback, default_clock
+from gymrat.progress_events import ProgressCallback
 from gymrat.targets import Target
 from gymrat.warn import WarnSink
 
@@ -69,7 +70,7 @@ class SamplingOptions:
         warn: Where an adapter sends complaints about output it could not read,
             or ``None`` to use the adapter's own default.
         clock: A source of monotonic millisecond timestamps for event stamping.
-            Defaults to :func:`~gymrat.progress_events.default_clock`.
+            Defaults to :func:`~gymrat.clock.monotonic_ms`.
     """
 
     bench: str
@@ -78,7 +79,7 @@ class SamplingOptions:
     timeout_seconds: float
     on_progress: ProgressCallback | None = None
     warn: WarnSink | None = None
-    clock: Callable[[], float] = default_clock
+    clock: Callable[[], float] = monotonic_ms
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

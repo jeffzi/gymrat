@@ -393,6 +393,50 @@ def test_preflight_when_stop_condition_met_and_force_does_warn_and_proceed(
 
 
 # ---------------------------------------------------------------------------
+# warning sink
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("config_overrides", "preflight_kwargs", "expected"),
+    [
+        pytest.param(
+            {"checks": None},
+            {},
+            "warning: checks is not configured — keep will commit with the gate off",
+            id="checks-not-configured",
+        ),
+        pytest.param(
+            {"checks": "npm test"},
+            {"baseline_ref": "some-branch"},
+            "warning: --baseline some-branch ignored because the session was resumed",
+            id="baseline-ref-ignored",
+        ),
+        pytest.param(
+            {"checks": "npm test", "stop": StopConfig(max_iterations=0)},
+            {"force": True},
+            "warning: Stop condition met: max iterations (0 of 0)",
+            id="stop-condition-forced",
+        ),
+    ],
+)
+def test_preflight_when_warning_raised_does_route_it_to_the_warn_sink(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    config_overrides: dict[str, Any],
+    preflight_kwargs: dict[str, Any],
+    expected: str,
+):
+    warnings: list[str] = []
+    monkeypatch.setattr(f"{_MODULE}.warn_to_stderr", warnings.append)
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+
+    _run_preflight(repo, config=resolved_config(**config_overrides), **preflight_kwargs)
+
+    assert warnings == [expected]
+
+
+# ---------------------------------------------------------------------------
 # baseline measurement
 # ---------------------------------------------------------------------------
 

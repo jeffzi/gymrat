@@ -25,7 +25,7 @@ def now_ns() -> int:
 
 
 def now_ms() -> int:
-    """Milliseconds since the epoch, the unit every session event stamps with."""
+    """Milliseconds since the epoch, for budgets, deadlines, and log-file names."""
     return int(time.time() * 1000)
 
 

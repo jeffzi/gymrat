@@ -13,7 +13,34 @@ from gymrat.stats import (
     compute_half_range,
     compute_median,
     normalize_ratio,
+    percent_delta,
 )
+
+# ---------------------------------------------------------------------------
+# percent_delta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reference", "value", "expected"),
+    [
+        pytest.param(100.0, 90.0, -10.0, id="positive-reference-decrease"),
+        pytest.param(100.0, 125.0, 25.0, id="positive-reference-increase"),
+        pytest.param(-10.0, -5.0, 50.0, id="negative-reference-toward-zero-is-positive"),
+        pytest.param(-10.0, -15.0, -50.0, id="negative-reference-away-from-zero-is-negative"),
+        pytest.param(0.0, 0.0, 0.0, id="both-zero"),
+    ],
+)
+def test_percent_delta_when_reference_defined_does_scale_by_reference_magnitude(
+    reference: float, value: float, expected: float
+):
+    assert percent_delta(reference, value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", [5.0, -5.0])
+def test_percent_delta_when_only_reference_zero_does_return_nan(value: float):
+    assert math.isnan(percent_delta(0.0, value))
+
 
 # ---------------------------------------------------------------------------
 # compute_median

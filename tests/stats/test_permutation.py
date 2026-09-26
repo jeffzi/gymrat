@@ -204,6 +204,15 @@ def test_sign_flip_permutation_test_when_zero_median_rearrangements_does_count_a
     assert math.isfinite(result.p)
 
 
+def test_sign_flip_permutation_test_when_rearrangement_zeroes_both_medians_does_count_no_change():
+    # A single flip leaves both medians at zero: that rearrangement is a 0% delta,
+    # not an undefined one, so the null is {-200, 0, 0, 200} and the exact p is 0.5.
+    result = sign_flip_permutation_test([0, 5, 5], [0, -5, -5])
+
+    assert result.n == 2
+    assert result.p == pytest.approx(0.5)
+
+
 def test_sign_flip_permutation_test_when_tied_pairs_reduce_exact_budget_does_report_exact_p():
     # Tied pairs reduce the effective budget, keeping the path exact.
     #

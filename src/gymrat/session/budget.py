@@ -7,9 +7,6 @@ before returning the budget: the file must parse, its deadline must be ahead of
 any condition fails the budget is treated as absent.
 """
 
-import contextlib
-import os
-import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from gymrat.atomic_write import write_text_atomic
 from gymrat.eta import MS_PER_SECOND, SECONDS_PER_MINUTE, format_duration
 from gymrat.session.lock import is_held
 from gymrat.session.paths import budget_path, supervise_lockfile_path
@@ -70,31 +68,14 @@ class Budget(BaseModel):
 def write_budget(root: str, budget: Budget) -> None:
     """Atomically write *budget* to the budget file under *root*.
 
-    Writes to a temporary file in the same directory, then renames so a
-    concurrent reader never sees a half-written file.
+    A concurrent reader sees either the previous budget or the new one, never
+    a half-written file.
 
     Args:
         root: Repository root under which the budget file lives.
         budget: The budget snapshot to write.
     """
-    target = Path(budget_path(root))
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        dir=target.parent,
-        suffix=".tmp",
-        delete=False,
-        encoding="utf-8",
-    ) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        try:
-            tmp_file.write(budget.model_dump_json())
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-        except BaseException:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink()
-            raise
-    tmp_path.replace(target)
+    write_text_atomic(Path(budget_path(root)), budget.model_dump_json())
 
 
 def read_budget(root: str, *, now_ms: float) -> Budget | None:

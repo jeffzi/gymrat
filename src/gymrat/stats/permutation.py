@@ -13,7 +13,7 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from gymrat.stats.descriptive import compute_median
+from gymrat.stats.descriptive import compute_median, percent_delta
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,35 +70,6 @@ PERMUTATION_SEED = 12345
 """Fixed RNG seed for the Monte Carlo path, making sampled p-values reproducible."""
 
 
-def _percent_delta(baseline: Sequence[float], candidate: Sequence[float]) -> float:
-    """Return the median percent delta of ``candidate`` against ``baseline``.
-
-    The functional is ``100 * (median(candidate) - median(baseline)) /
-    abs(median(baseline))``.
-
-    When the baseline median is zero the ratio is undefined.  Returns ``0.0``
-    when both medians are zero (no separation) and ``NaN`` otherwise — the
-    caller decides how to treat the undefined case (the permutation test's
-    statistic closure converts it to signed infinity so scipy's null tally
-    counts it on the correct tail).
-
-    Args:
-        baseline: The reference samples (non-empty).
-        candidate: The samples compared against the baseline (non-empty).
-
-    Returns:
-        The percent delta, ``0.0`` when both medians are zero, or ``NaN``
-        when only the baseline median is zero.
-    """
-    base = compute_median(baseline)
-    denom = abs(base)
-    if denom == 0.0:
-        if compute_median(candidate) == base:
-            return 0.0
-        return math.nan
-    return 100.0 * (compute_median(candidate) - base) / denom
-
-
 def _partition_pairs(
     x: Sequence[float], y: Sequence[float], m: int
 ) -> tuple[list[float], list[float], list[float], list[float]]:
@@ -131,10 +102,24 @@ def _make_statistic(
     tied_y: list[float],
     observed: float,
 ) -> Callable[[Sequence[float], Sequence[float]], float]:
-    """Build the test statistic closure for scipy's permutation_test."""
+    """Build the test statistic closure for scipy's permutation_test.
+
+    An undefined delta (a zero baseline median) becomes infinity signed like
+    ``observed``, so scipy's null tally counts it on the correct tail.
+
+    Args:
+        tied_x: Baseline values of the zero-difference pairs, held fixed.
+        tied_y: Candidate values of the zero-difference pairs, held fixed.
+        observed: The delta the samples produced in their original order.
+
+    Returns:
+        The statistic scipy evaluates on each rearrangement of the differing pairs.
+    """
 
     def statistic(baseline: Sequence[float], candidate: Sequence[float]) -> float:
-        delta = _percent_delta(tied_x + list(baseline), tied_y + list(candidate))
+        delta = percent_delta(
+            compute_median(tied_x + list(baseline)), compute_median(tied_y + list(candidate))
+        )
         if math.isnan(delta):
             return math.copysign(math.inf, observed)
         return delta
@@ -175,7 +160,7 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> Signif
 
     tied_x, tied_y, diff_x, diff_y = _partition_pairs(x, y, m)
 
-    observed = _percent_delta(tied_x + diff_x, tied_y + diff_y)
+    observed = percent_delta(compute_median(tied_x + diff_x), compute_median(tied_y + diff_y))
     if not math.isfinite(observed):
         return SignificanceResult(p=1.0, n=n)
 

@@ -25,6 +25,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from gymrat.config.types import Effort
 from gymrat.finite_json import null_non_finite
+from gymrat.observers import fan_out
 from gymrat.paths import abbreviate_home
 
 # ---------------------------------------------------------------------------
@@ -325,15 +326,13 @@ def combine_observers(*observers: SessionObserver) -> SessionObserver:
     Returns:
         A combined observer that dispatches to all given observers.
     """
+    return fan_out(observers, _warn_observer_failure)
 
-    def combined(event: SessionEvent) -> None:
-        for observer in observers:
-            try:
-                observer(event)
-            except Exception as error:  # noqa: BLE001 - observer failure must not break the chain
-                warnings.warn(str(error), RuntimeWarning, stacklevel=2)
 
-    return combined
+def _warn_observer_failure(error: Exception) -> None:
+    # stacklevel=3 skips this sink and fan_out's dispatch loop, attributing the
+    # warning to whoever called the combined observer.
+    warnings.warn(str(error), RuntimeWarning, stacklevel=3)
 
 
 # ---------------------------------------------------------------------------

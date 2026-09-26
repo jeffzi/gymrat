@@ -297,7 +297,7 @@ def test_measure_when_record_does_write_duration_ms_to_baseline(
     _open_session(record_repo)
     _capture_measure(monkeypatch, create_measurement_result(rounds=[{"latency": 42}]))
     ticks = iter([1_000.0, 1_500.0, 2_000.0, 2_500.0])
-    monkeypatch.setattr("gymrat.session.clock.monotonic_ms", lambda: next(ticks))
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
 
     result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
 

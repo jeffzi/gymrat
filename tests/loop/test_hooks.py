@@ -10,6 +10,7 @@ real subprocess can be made to overflow exec's own accumulation cap quickly.
 """
 
 import asyncio
+import itertools
 import json
 import sys
 from pathlib import Path
@@ -163,6 +164,18 @@ async def test_run_hook_when_hook_writes_stderr_does_record_stderr_bytes(
 
     assert run.record.stdout_bytes == 6
     assert run.record.stderr_bytes == 8
+
+
+async def test_run_hook_when_clock_faked_does_record_duration_from_monotonic_clock(
+    hooks: HookScripts,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = itertools.count(start=1000.0, step=250.0)
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
+
+    run = await run_hook(hooks.invocation_of(hooks.hook_command("")))
+
+    assert run.record.duration_ms == 250.0
 
 
 # ---------------------------------------------------------------------------

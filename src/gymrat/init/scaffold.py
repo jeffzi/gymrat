@@ -16,12 +16,11 @@ scaffold is left — one that was already there is never touched.
 
 import contextlib
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from gymrat.atomic_write import write_text_atomic
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.config import CONFIG_FILENAME, validate_config_dict
 from gymrat.errors import GymratError
@@ -148,10 +147,7 @@ def _prepare_config(request: ScaffoldRequest) -> str:
 
 
 def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
-    """Write the config via a temp file + ``os.replace`` for atomicity.
-
-    A crash or permission error mid-write never leaves a truncated
-    ``gymrat.toml`` — the temp file is cleaned up on failure.
+    """Write the config atomically, so a failed write never leaves a truncated ``gymrat.toml``.
 
     Args:
         base_dir: The project root the config is written into.
@@ -163,20 +159,11 @@ def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     Raises:
         GymratError: When the file cannot be written.
     """
-    full_path = base_dir / CONFIG_FILENAME
-    tmp_path: str | None = None
     try:
-        fd, tmp_path = tempfile.mkstemp(prefix="gymrat.toml.", dir=base_dir, suffix=".tmp")
-        with os.fdopen(fd, "wb") as f:
-            f.write(content.encode("utf-8"))
-        Path(tmp_path).replace(full_path)
-        tmp_path = None
+        write_text_atomic(base_dir / CONFIG_FILENAME, content)
     except OSError as exc:
         msg = f"Cannot write {CONFIG_FILENAME} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
-    finally:
-        if tmp_path is not None:
-            Path(tmp_path).unlink(missing_ok=True)
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 

@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -74,7 +75,12 @@ def patch_exec(
 ) -> list[tuple[str, str, int | None]]:
     """Patch the sampling exec seam to return ``result`` and record each call.
 
-    Returns the list of ``(command, cwd, timeout_ms)`` tuples in call order.
+    Args:
+        monkeypatch: Pytest fixture used to patch the exec seam.
+        result: The result or timeout error to return from every patched call.
+
+    Returns:
+        The list of ``(command, cwd, timeout_ms)`` tuples in call order.
     """
     calls: list[tuple[str, str, int | None]] = []
 
@@ -247,6 +253,25 @@ async def test_collect_samples_when_progress_given_does_stamp_at_ms_from_clock(
         "timestamps should come from the injected clock"
     )
     assert events[0].at_ms == 10.0
+
+
+async def test_collect_samples_when_clock_omitted_does_stamp_monotonic_milliseconds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    patch_exec(monkeypatch, make_success())
+    monkeypatch.setattr(time, "perf_counter", lambda: 2.5)
+    events: list[ProgressEvent] = []
+    options = SamplingOptions(
+        bench="run",
+        prepare=None,
+        samples=1,
+        timeout_seconds=1.0,
+        on_progress=events.append,
+    )
+
+    await collect_samples(metric_lines_adapter, one_in_place_target(), options, asyncio.Event())
+
+    assert [e.at_ms for e in events] == [2500.0, 2500.0]
 
 
 async def test_collect_samples_when_progress_given_does_emit_pass_started_with_correct_fields(
@@ -615,11 +640,9 @@ class _InstallRecorder:
 
     def __init__(self) -> None:
         self.events: list[str] = []
-        self.cleanup: Callable[[], None] | None = None
 
     def install(self, cleanup: Callable[[], None]) -> Callable[[], None]:
         self.events.append("install")
-        self.cleanup = cleanup
 
         def uninstall() -> None:
             self.events.append("uninstall")
@@ -632,8 +655,13 @@ def _capturing_install(
 ) -> Callable[[Callable[[], None]], Callable[[], None]]:
     """Build an install seam that records the registered cleanup into ``captured``.
 
-    Returns a no-op uninstall, so a test can invoke ``captured["cleanup"]``
-    directly to drive the termination path without a real signal.
+    Args:
+        captured: Dict that receives the registered cleanup under the
+            ``"cleanup"`` key.
+
+    Returns:
+        A no-op uninstall, so a test can invoke ``captured["cleanup"]``
+        directly to drive the termination path without a real signal.
     """
 
     def install(cleanup: Callable[[], None]) -> Callable[[], None]:

@@ -50,7 +50,7 @@ def install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
         deadline_ms=300_000.0,
     )
     _install(repo, monkeypatch, tight_budget)
-    monkeypatch.setattr("gymrat.session.clock.now_ms", lambda: 0.0)
+    monkeypatch.setattr("gymrat.clock.now_ms", lambda: 0.0)
 
 
 def mark_tool_origin(monkeypatch: pytest.MonkeyPatch) -> None:

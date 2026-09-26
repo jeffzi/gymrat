@@ -748,6 +748,64 @@ async def test_gymrat_tool_definitions_when_called_does_set_iterate_description_
     assert schema["additionalProperties"] is False
 
 
+# ---------------------------------------------------------------------------
+# SDK schema validation (through _build_input_schema + jsonschema)
+# ---------------------------------------------------------------------------
+
+
+def _wire_schema_for(host: ToolHost, tool_name: str) -> dict[str, Any]:
+    """Build *tool_name*'s wire-format JSON schema via the SDK's own builder."""
+    from claude_agent_sdk import _build_input_schema
+
+    defs = gymrat_tool_definitions(host)
+    tool_def = next(d for d in defs if d.name == tool_name)
+    return _build_input_schema(tool_def)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        pytest.param("iterate", {}, id="iterate-empty"),
+        pytest.param("probe", {"names": ["a"], "samples": 3}, id="probe-valid"),
+        pytest.param("probe", {}, id="probe-no-args"),
+    ],
+)
+def test_tool_schema_when_valid_arguments_given_does_pass_sdk_validation(
+    host: ToolHost,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    import jsonschema
+
+    wire_schema = _wire_schema_for(host, tool_name)
+
+    jsonschema.validate(arguments, wire_schema)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "failed_rule"),
+    [
+        pytest.param(
+            "iterate", {"anything": 1}, "additionalProperties", id="iterate-rejects-extra-key"
+        ),
+        pytest.param("probe", {"samples": True}, "type", id="probe-rejects-bool-samples"),
+    ],
+)
+def test_tool_schema_when_invalid_arguments_given_does_fail_sdk_validation(
+    host: ToolHost,
+    tool_name: str,
+    arguments: dict[str, Any],
+    failed_rule: str,
+) -> None:
+    import jsonschema
+
+    wire_schema = _wire_schema_for(host, tool_name)
+
+    with pytest.raises(jsonschema.ValidationError) as exc_info:
+        jsonschema.validate(arguments, wire_schema)
+    assert exc_info.value.validator == failed_rule
+
+
 async def test_gymrat_tool_definitions_when_probe_handler_called_does_invoke_host_probe(
     host: ToolHost,
     fake_exec: AsyncMock,

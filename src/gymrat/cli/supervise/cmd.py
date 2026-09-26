@@ -54,6 +54,7 @@ from gymrat.cli.supervise.progress import (
     create_supervise_reporter,
 )
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
+from gymrat.clock import now_ms, now_ns
 from gymrat.config import (
     CliFlags,
     Effort,
@@ -73,7 +74,6 @@ from gymrat.session.budget import (
     minutes_to_ms,
     write_budget,
 )
-from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import (
     lockfile_path,
@@ -101,6 +101,7 @@ from gymrat.supervisor import (
 from gymrat.supervisor.event_log import probe_event_log_path
 from gymrat.supervisor.events import DirtyInfo, LaunchEvent, summarize
 from gymrat.supervisor.exit_sequence import ExitReport, run_exit_sequence
+from gymrat.warn import warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Pre-flight guards
@@ -118,10 +119,9 @@ def _validate_working_tree(root: str, *, allow_dirty: bool) -> int:
         hint = "Commit or stash your changes, or pass --allow-dirty to proceed anyway."
         exit_with_error(GymratError(message, hint=hint))
 
-    write_and_flush(
-        sys.stderr,
+    warn_to_stderr(
         f"warning: working tree has {pluralize(count, 'dirty file')} — "
-        "proceeding because --allow-dirty was set\n",
+        "proceeding because --allow-dirty was set"
     )
     return count
 

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console, Group, RenderableType
-from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
 
@@ -28,6 +27,7 @@ from gymrat.cli.style import (
     STYLE_LABEL,
     STYLE_META,
     STYLE_TIMER_RUNNING,
+    ErasableLive,
     LiveDisplayMixin,
 )
 from gymrat.eta import MS_PER_SECOND, format_clock, format_duration, format_timestamp
@@ -121,7 +121,7 @@ class IterateRenderer(LiveDisplayMixin):
         self._is_live = mode == "live" and console.width > 0
         self._compact = False
         self._stopped = False
-        self._live: Live | None = None
+        self._live: ErasableLive | None = None
         self._uninstall_cleanup: Callable[[], None] = lambda: None
 
         self._spinners: dict[str, Spinner] = {}
@@ -150,7 +150,7 @@ class IterateRenderer(LiveDisplayMixin):
                 self._console, clock=self._clock
             )
 
-        self._live = Live(
+        self._live = ErasableLive(
             console=self._console,
             auto_refresh=True,
             refresh_per_second=LIVE_REFRESH_PER_SECOND,

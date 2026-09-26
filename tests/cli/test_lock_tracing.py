@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from gymrat.cli.shared import CommandTrace, with_repo_lock
+from gymrat.cli.lock import CommandTrace, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.session import append_record, read_records, session_jsonl_path
 from gymrat.session.paths import repo_root

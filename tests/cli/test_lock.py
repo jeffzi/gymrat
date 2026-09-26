@@ -13,7 +13,7 @@ import pytest
 import typer
 from filelock import FileLock, Timeout
 
-from gymrat.cli.shared import (
+from gymrat.cli.lock import (
     TOOL_FAILURE_EXIT_CODE,
     CommandTrace,
     with_repo_lock,

@@ -17,6 +17,7 @@ from gymrat.config import (
     ResolvedConfig,
     StopConfig,
     SuperviseConfig,
+    inspect_config,
     resolve_benchless_config,
     resolve_config,
 )
@@ -474,6 +475,155 @@ def test_resolve_when_runbook_embeds_nul_does_raise_naming_field(
         resolve(CliFlags())
 
     assert "runbook" in str(exc.value)
+
+
+@pytest.mark.parametrize("resolve", RESOLVERS)
+def test_resolve_when_config_flag_names_file_in_other_dir_does_resolve_runbook_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolve: Resolver
+):
+    config_dir = tmp_path / "settings"
+    config_dir.mkdir()
+    write_config(config_dir, {"bench": "a-bench", "runbook": "RUNBOOK.md"})
+    (config_dir / "RUNBOOK.md").write_text("# Steps\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve(CliFlags(config="settings/gymrat.toml"))
+
+    assert result.runbook == str(Path("settings") / "RUNBOOK.md")
+
+
+@pytest.mark.parametrize("resolve", RESOLVERS)
+def test_resolve_when_runbook_climbs_out_of_config_dir_does_normalize_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolve: Resolver
+):
+    config_dir = tmp_path / "settings"
+    config_dir.mkdir()
+    write_config(config_dir, {"bench": "a-bench", "runbook": "../docs/RUNBOOK.md"})
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "RUNBOOK.md").write_text("# Steps\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = resolve(CliFlags(config="settings/gymrat.toml"))
+
+    assert result.runbook == str(Path("docs") / "RUNBOOK.md")
+
+
+# ---------------------------------------------------------------------------
+# settlement failures match inspect_config (both resolvers)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FailureCase:
+    """One settlement failure: the flags, GYMRAT_* env and working-directory files behind it.
+
+    ``config`` is written as ``gymrat.toml`` in the working directory — a dict
+    encoded as TOML, a string verbatim. ``directory`` names a
+    subdirectory to create there, standing in for a config path that cannot be
+    read as a file.
+    """
+
+    flags: CliFlags
+    env: dict[str, str] = field(default_factory=dict)
+    config: dict[str, object] | str | None = None
+    directory: str | None = None
+
+
+def _arrange_failure_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: FailureCase
+) -> None:
+    if isinstance(case.config, str):
+        (tmp_path / "gymrat.toml").write_text(case.config, encoding="utf-8")
+    elif case.config is not None:
+        write_config(tmp_path, case.config)
+    if case.directory is not None:
+        (tmp_path / case.directory).mkdir()
+    monkeypatch.chdir(tmp_path)
+    for name, value in case.env.items():
+        monkeypatch.setenv(name, value)
+
+
+FAILURE_CASES = [
+    pytest.param(FailureCase(CliFlags(bench="my-bench", prepare="", adapter="")), id="blank-flags"),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench", config=" "), config={"bench": "cfg"}),
+        id="blank-config-flag",
+    ),
+    pytest.param(
+        FailureCase(
+            CliFlags(bench="my-bench"),
+            env={"GYMRAT_ADAPTER": " ", "GYMRAT_SAMPLES": "abc", "GYMRAT_TIMEOUT": "0"},
+        ),
+        id="invalid-env-values",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench"), env={"GYMRAT_CONFIG": " "}),
+        id="blank-config-env",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench"), env={"GYMRAT_CONFIG": "typo.toml"}),
+        id="missing-config-env-file",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench", config="typo.toml")),
+        id="missing-config-flag-file",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench", config="settings"), directory="settings"),
+        id="unreadable-config-file",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench"), config="= invalid toml ="),
+        id="invalid-toml",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench"), config={"samples": "bad", "adapter": 123}),
+        id="schema",
+    ),
+    pytest.param(
+        FailureCase(
+            CliFlags(bench="my-bench"),
+            config={"filter": "npm run bench", "stop": {"target_value": 1.5}},
+        ),
+        id="loop-keys",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench"), config={"runbook": "missing.md"}),
+        id="runbook",
+    ),
+    pytest.param(
+        FailureCase(
+            CliFlags(bench="my-bench"), env={"GYMRAT_TIMEOUT": "abc"}, config={"samples": "bad"}
+        ),
+        id="env-and-schema",
+    ),
+    pytest.param(
+        FailureCase(CliFlags(bench="my-bench", adapter=""), env={"GYMRAT_SAMPLES": "abc"}),
+        id="blank-flag-and-env",
+    ),
+    pytest.param(
+        FailureCase(
+            CliFlags(bench="my-bench"),
+            env={"GYMRAT_SAMPLES": "abc"},
+            config={"filter": "npm run bench", "runbook": "missing.md"},
+        ),
+        id="env-loop-keys-and-runbook",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", FAILURE_CASES)
+@pytest.mark.parametrize("resolve", RESOLVERS)
+def test_resolve_when_settlement_fails_does_raise_first_inspect_config_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolve: Resolver, case: FailureCase
+):
+    _arrange_failure_case(tmp_path, monkeypatch, case)
+    first_problem = inspect_config(case.flags).problems[0]
+
+    with pytest.raises(GymratError) as exc:
+        resolve(case.flags)
+
+    assert str(exc.value) == first_problem
 
 
 # ---------------------------------------------------------------------------

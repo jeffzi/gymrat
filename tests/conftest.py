@@ -25,7 +25,7 @@ import pytest
 from filelock import FileLock
 
 from gymrat.cli.shared import set_color_override
-from gymrat.session.clock import now_iso
+from gymrat.clock import now_iso
 from gymrat.session.lock import _os_lock_file
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 from gymrat.signals import TERMINATION_SIGNALS
@@ -33,8 +33,16 @@ from gymrat.signals import reset as signals_reset
 from tests._git import run_git as _run_git
 
 #: Every environment variable a test must not inherit from the developer's
-#: shell — the GYMRAT_* set the config resolver reads, plus the OTLP endpoint
-#: configure_tracing reads.
+#: shell:
+#:
+#: - the GYMRAT_* set the config resolver reads;
+#: - the command origin and trace context the session log records;
+#: - the OTLP endpoint configure_tracing reads;
+#: - the color and terminal variables gymrat and rich's Console read. A
+#:   non-empty FORCE_COLOR or TTY_COMPATIBLE=1 makes a StringIO count as a
+#:   terminal, and the size variables override the width a test renders at;
+#: - PY_COLORS and GITHUB_ACTIONS, which force typer's help console onto a
+#:   terminal when ``typer.rich_utils`` is first imported.
 SCRUBBED_ENV_VARS = (
     "GYMRAT_BENCH",
     "GYMRAT_PREPARE",
@@ -42,7 +50,22 @@ SCRUBBED_ENV_VARS = (
     "GYMRAT_SAMPLES",
     "GYMRAT_TIMEOUT",
     "GYMRAT_CONFIG",
+    "GYMRAT_COMMAND_ORIGIN",
+    "GYMRAT_TRACEPARENT",
+    "TRACEPARENT",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "COLORTERM",
+    "TERM",
+    "COLUMNS",
+    "LINES",
+    "TTY_COMPATIBLE",
+    "TTY_INTERACTIVE",
+    "JUPYTER_COLUMNS",
+    "JUPYTER_LINES",
+    "PY_COLORS",
+    "GITHUB_ACTIONS",
 )
 
 
@@ -87,7 +110,7 @@ def _restore_signal_dispositions() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _clear_gymrat_env() -> Iterator[None]:
-    """Remove every GYMRAT_* and OTLP env var for the duration of the test."""
+    """Remove every variable in ``SCRUBBED_ENV_VARS`` for the duration of the test."""
     # A private MonkeyPatch context rather than the `monkeypatch` fixture: an
     # autouse dependency on `monkeypatch` would reorder its teardown after
     # module-level autouse cleanups, running them under still-active patches.

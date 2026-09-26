@@ -59,8 +59,9 @@ _REFERENCE_COLUMN_HEADER = "baseline"
 # The header the column of signed percentages carries.
 _DELTA_COLUMN_HEADER = "delta"
 
-# What the delta column states for a metric the baseline never reported. There is
-# no gap to state, and a blank cell would read as a gap of zero.
+# What the delta column states for a metric the baseline never reported. A zero
+# reference leaves the cell blank instead: the baseline exists, but no percentage
+# of zero is defined.
 NO_REFERENCE = "no reference"
 
 # Deltas the report refuses to paint: nothing measured, or a figure that rounds to
@@ -87,7 +88,7 @@ def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> s
         delta: The delta as :func:`~gymrat.report.format.format_delta` rendered
             it, so the paint agrees with the digits on screen.
         delta_pct: The signed percentage behind that text, or ``None`` when the
-            baseline had nothing to pair the metric with.
+            probe has no delta to state.
         direction: Whether the metric is better lower or better higher.
 
     Returns:
@@ -105,11 +106,12 @@ def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> s
 
 def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
     """The row one probed metric draws as."""
-    delta = (
-        NO_REFERENCE
-        if metric.delta_pct is None
-        else format_delta(Effect(value=metric.delta_pct, unit="percent"))
-    )
+    if metric.reference_median is None:
+        delta = NO_REFERENCE
+    elif metric.delta_pct is None:
+        delta = ""
+    else:
+        delta = format_delta(Effect(value=metric.delta_pct, unit="percent"))
     return _ProbeRow(
         name=name,
         label=indented_section_label(metric.meta.short_name, group),
