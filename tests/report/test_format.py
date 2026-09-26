@@ -848,6 +848,26 @@ def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint(
 
 
 @pytest.mark.parametrize(
+    "noun",
+    [
+        "file",
+        "metric",
+        "iteration",
+        "keep",
+        "sample",
+        "worktree",
+        "edit",
+        "warning",
+        "failure",
+        "kept iteration",
+        "uncommitted file",
+    ],
+)
+def test_pluralize_when_count_is_plural_does_append_s(noun: str):
+    assert pluralize(2, noun) == f"2 {noun}s"
+
+
+@pytest.mark.parametrize(
     ("noun", "expected"),
     [
         pytest.param("pass", "2 passes", id="ends-in-s"),
@@ -857,9 +877,6 @@ def test_footer_lines_when_samples_enough_and_every_metric_tested_does_not_hint(
         pytest.param("dish", "2 dishes", id="ends-in-sh"),
         pytest.param("query", "2 queries", id="consonant-then-y"),
         pytest.param("key", "2 keys", id="vowel-then-y"),
-        pytest.param("metric", "2 metrics", id="regular"),
-        pytest.param("kept iteration", "2 kept iterations", id="multi-word-regular"),
-        pytest.param("uncommitted file", "2 uncommitted files", id="multi-word-adjective"),
     ],
 )
 def test_pluralize_when_count_is_plural_does_apply_english_suffix_rules(noun: str, expected: str):

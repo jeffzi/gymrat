@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 
 from rich.markup import escape
 
+from gymrat.clock import now_ns
 from gymrat.config import BenchlessConfig
 from gymrat.git import SHORT_SHA_LENGTH
 from gymrat.loop.settle.checks import (
@@ -27,7 +28,6 @@ from gymrat.loop.settle.checks import (
 from gymrat.model import Effect
 from gymrat.report.format import format_delta
 from gymrat.report.style import RENDER_WIDTH, format_hint, render_lines
-from gymrat.session.clock import now_ns
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,

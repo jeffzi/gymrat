@@ -54,9 +54,9 @@ from tests.hardening._bench_helpers import write_committed_bench as _write_commi
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
 
-# The overwrite status line clears its row with a carriage return followed by the
-# ANSI "erase to end of line" sequence.
-_CLEAR_LINE = "\r\x1b[K"
+# The ANSI sequence that makes the cursor visible again; the live status line
+# hides it while it draws.
+_SHOW_CURSOR = "\x1b[?25h"
 
 # Fixed pty dimensions for the pyte screen replay. The slave pty is sized to
 # these values via TIOCSWINSZ so Rich in the child renders at a known geometry.
@@ -237,7 +237,8 @@ def test_measure_when_signalled_on_a_tty_does_clear_the_status_line(
     output = b"".join(chunks).decode("utf-8", "replace")
 
     assert proc.returncode == 130
-    assert _CLEAR_LINE in output, f"status line never drew progress: {output!r}"
+    assert "sampling" in output, f"status line never drew progress: {output!r}"
+    assert _SHOW_CURSOR in output, f"signal left the cursor hidden: {output!r}"
 
     # Replay the pty stream through a pyte emulated screen at the same
     # dimensions. screen_lines strips trailing blank rows, so a properly

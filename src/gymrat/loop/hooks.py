@@ -20,8 +20,10 @@ Two shaping choices are worth spelling out:
 
 import asyncio
 import json
-import time
 from dataclasses import dataclass
+
+from gymrat import clock
+from gymrat.clock import monotonic_ms, now_ns
 
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
@@ -37,11 +39,9 @@ from gymrat.progress_events import (
     HookFinished,
     HookStarted,
     ProgressCallback,
-    default_clock,
     emit_progress,
 )
 from gymrat.session import HookRecord, IterationRecord, SessionRecord, append_record, record_to_wire
-from gymrat.session.clock import now_ns
 from gymrat.session.schema import HookStage
 
 #: How long a hook may run before it is killed. Long enough to build, short
@@ -125,7 +125,7 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
     timeout_ms = HOOK_TIMEOUT_MS if invocation.timeout_ms is None else invocation.timeout_ms
     payload = json.dumps(_build_payload(invocation))
 
-    started_at = time.perf_counter()
+    started_at = clock.monotonic_ms()
     result = await exec(
         invocation.command,
         ExecOptions(
@@ -135,7 +135,7 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
             stdin=f"{payload}\n",
         ),
     )
-    duration_ms = (time.perf_counter() - started_at) * 1000
+    duration_ms = clock.monotonic_ms() - started_at
     outcome = _describe_outcome(result)
 
     record = HookRecord(
@@ -239,8 +239,8 @@ async def run_hook_stage(
     """
     if invocation is None:
         return ""
-    emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=default_clock()))
+    emit_progress(on_progress, HookStarted(stage=invocation.stage, at_ms=monotonic_ms()))
     run = await run_hook(invocation)
     append_record(jsonl_path, run.record)
-    emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=default_clock()))
+    emit_progress(on_progress, HookFinished(stage=invocation.stage, at_ms=monotonic_ms()))
     return run.report

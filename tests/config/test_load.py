@@ -832,9 +832,10 @@ def test_load_config_file_when_supervise_effort_invalid_does_name_effort_and_all
     with pytest.raises(GymratError) as exc:
         load_config_file(config_path)
 
-    text = str(exc.value)
-    assert "supervise.effort" in text
-    assert '"low", "medium", "high", "xhigh" or "max"' in text
+    assert str(exc.value) == (
+        "Invalid config value for supervise.effort: "
+        f'expected "low", "medium", "high", "xhigh" or "max", got "{effort}"'
+    )
 
 
 # ---------------------------------------------------------------------------

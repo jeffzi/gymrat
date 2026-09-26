@@ -18,7 +18,7 @@ import re
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from rich.cells import cell_len
+from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 from rich.text import Text
 
@@ -161,7 +161,7 @@ def _render_summaries(result: ComparisonResult) -> list[str]:
     """One markup summary line per candidate, each behind that candidate's bold label."""
     label_width = max(cell_len(candidate.label) for candidate in result.candidates)
     return [
-        f"{markup(candidate.label.ljust(label_width), 'bold')}  "
+        f"{markup(set_cell_size(candidate.label, label_width), 'bold')}  "
         f"{_render_summary(result.metrics, index)}"
         for index, candidate in enumerate(result.candidates)
     ]

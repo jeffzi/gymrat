@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.cli.supervise.summary import SessionLabels, build_summary
+from gymrat.cli.supervise.text import loop_plain_text
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
 from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
@@ -155,6 +156,27 @@ def test_summary_loop_row_when_iteration_count_varies_does_name_the_count_as_a_n
     )
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines()[1] == expected_loop
+
+
+@pytest.mark.parametrize(
+    ("iteration_count", "max_iterations", "expected_label"),
+    [
+        pytest.param(1, None, "1 iteration", id="one-uncapped"),
+        pytest.param(2, None, "2 iterations", id="two-uncapped"),
+        pytest.param(1, 20, "1/20 iterations", id="one-capped"),
+        pytest.param(2, 20, "2/20 iterations", id="two-capped"),
+    ],
+)
+def test_loop_plain_text_when_iteration_count_varies_does_lead_with_the_iteration_label(
+    iteration_count: int, max_iterations: int | None, expected_label: str
+) -> None:
+    session_result = make_read_session(
+        session_state(iteration_count=iteration_count), has_baseline=True
+    )()
+
+    text = loop_plain_text(session_result, max_iterations)
+
+    assert text.split(" · ")[0] == expected_label
 
 
 def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():

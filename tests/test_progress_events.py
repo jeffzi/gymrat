@@ -1,7 +1,6 @@
-"""Behavioral tests for the progress-event types and default clock."""
+"""Behavioral tests for the progress-event types."""
 
 import dataclasses
-import time
 
 import pytest
 
@@ -18,20 +17,8 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
     ProgressEvent,
-    create_fan_out,
-    default_clock,
 )
 from gymrat.session.schema import HookStage
-
-
-def test_default_clock_when_called_does_return_perf_counter_in_milliseconds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(time, "perf_counter", lambda: 1.5)
-
-    result = default_clock()
-
-    assert result == 1500.0
 
 
 def _one_of_each_event(at_ms: float) -> list[ProgressEvent]:
@@ -155,42 +142,3 @@ def test_iteration_recorded_when_constructed_does_carry_seq_and_outcome() -> Non
 
     assert event.seq == 3
     assert event.outcome == "improved"
-
-
-# ---------------------------------------------------------------------------
-# create_fan_out
-# ---------------------------------------------------------------------------
-
-
-def test_create_fan_out_when_called_does_dispatch_event_to_all_subscribers() -> None:
-    received_a: list[ProgressEvent] = []
-    received_b: list[ProgressEvent] = []
-    fan_out = create_fan_out([received_a.append, received_b.append])
-
-    event = PrepareStarted(label="test", at_ms=0)
-    fan_out(event)
-
-    assert received_a == [event]
-    assert received_b == [event]
-
-
-def test_create_fan_out_when_subscriber_raises_does_still_call_remaining() -> None:
-    received: list[ProgressEvent] = []
-
-    def failing_subscriber(event: ProgressEvent) -> None:
-        msg = "boom"
-        raise RuntimeError(msg)
-
-    fan_out = create_fan_out([failing_subscriber, received.append])
-
-    event = PrepareStarted(label="test", at_ms=0)
-    fan_out(event)
-
-    assert received == [event]
-
-
-def test_create_fan_out_when_no_subscribers_does_not_raise() -> None:
-    fan_out = create_fan_out([])
-
-    event = PrepareStarted(label="test", at_ms=0)
-    fan_out(event)

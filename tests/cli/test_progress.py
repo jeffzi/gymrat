@@ -324,14 +324,24 @@ def test_live_wiring_when_created_does_set_auto_refresh_and_render_current_frame
     reporter.stop()
 
 
-def test_warn_when_live_mode_does_route_through_console_print():
-    console, _clock, reporter = _reporter("live")
+def test_warn_when_live_mode_does_print_the_message_above_the_intact_frame():
+    console, clock, reporter = _reporter("live")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
 
-    reporter.warn("heads up: slow disk")
+    reporter.warn("warning: disk full")
 
-    output = console_output(console)
-    assert "heads up: slow disk" in output
+    frame = frame_text(reporter.frame(), get_time=clock)
+    assert screen_lines(console_output(console)) == ["warning: disk full", *frame.splitlines()]
+    reporter.stop()
+
+
+def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
+    console, _clock, reporter = _reporter("plain")
+    before = console_output(console)
+
+    reporter.warn("warning: cannot write [/tmp/progress.json]")
+
+    assert console_output(console) == before + "warning: cannot write [/tmp/progress.json]\n"
     reporter.stop()
 
 
@@ -460,17 +470,17 @@ def test_reporter_when_non_relevant_event_does_silently_ignore():
     reporter.stop()
 
 
-def test_clear_on_signal_when_live_up_does_leave_screen_blank(
+def test_clear_on_signal_when_live_up_does_erase_only_the_frame(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _console, _clock, reporter = _reporter("live")
+    console, _clock, reporter = _reporter("live", command="measure")
+    console.print("kept above")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
-    buf = StringIO()
-    monkeypatch.setattr(sys, "stderr", buf)
+    monkeypatch.setattr(sys, "stderr", console.file)
 
     reporter.clear_on_signal()
 
-    assert screen_lines(buf.getvalue()) == []
+    assert screen_lines(console_output(console)) == ["kept above"]
     # clear_on_signal marks the reporter as stopped (as os._exit would follow
     # in production), so stop() is a no-op; shut down the Live refresh thread
     # directly so the test leaks neither the thread nor the console registry.

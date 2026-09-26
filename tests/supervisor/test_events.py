@@ -994,10 +994,11 @@ def test_combine_observers_when_an_observer_raises_does_warn_and_call_remaining(
     combined = combine_observers(boom, later.observer)
     event = UsageUpdateEvent(at=1_000_000_000, cost_usd=0.01)
 
-    with pytest.warns(RuntimeWarning, match=boom_message):
+    with pytest.warns(RuntimeWarning, match=boom_message) as caught:
         combined(event)
 
     assert later.events == [event]
+    assert [warning.filename for warning in caught] == [__file__]
 
 
 # ---------------------------------------------------------------------------

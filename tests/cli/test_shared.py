@@ -703,6 +703,17 @@ def test_shared_when_stop_target_removed_does_not_export_helpers():
 
 
 # ---------------------------------------------------------------------------
+# lock helpers — owned by gymrat.cli.lock, not re-exported here
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["with_repo_lock", "CommandTrace", "config_trace_args"])
+def test_shared_when_lock_helper_requested_does_not_re_export_it(name: str):
+    assert not hasattr(shared, name)
+    assert name not in getattr(shared, "__all__", ())
+
+
+# ---------------------------------------------------------------------------
 # write_budget_report
 # ---------------------------------------------------------------------------
 

@@ -48,6 +48,7 @@ from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import experiment_worktree_dir, lockfile_path
 from gymrat.session.store import fold_session, last_kept_position, latest_baseline
 from gymrat.session.workspace import changed_file_count
+from gymrat.warn import warn_to_stderr
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
@@ -126,10 +127,7 @@ def doctor_gate(root: str, *, color: bool | None = None) -> None:
 
 def _checks_warning(config: ResolvedConfig) -> None:
     if config.checks is None:
-        write_and_flush(
-            sys.stderr,
-            "warning: checks is not configured — keep will commit with the gate off\n",
-        )
+        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
 
 
 def _session_step(
@@ -156,9 +154,8 @@ def _session_step(
     write_and_flush(sys.stdout, summary + "\n")
 
     if result.resumed and baseline_ref is not None:
-        write_and_flush(
-            sys.stderr,
-            f"warning: --baseline {baseline_ref} ignored because the session was resumed\n",
+        warn_to_stderr(
+            f"warning: --baseline {baseline_ref} ignored because the session was resumed"
         )
     return result
 
@@ -177,7 +174,7 @@ def _stop_condition_gate(
     message = str(error)
     hint = "Start a new session, or raise the limit in gymrat.toml."
     if force:
-        write_and_flush(sys.stderr, f"warning: {message}\n")
+        warn_to_stderr(f"warning: {message}")
         return
     raise GymratError(message, hint=hint)
 

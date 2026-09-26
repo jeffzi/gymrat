@@ -228,6 +228,7 @@ def gymrat_tool_definitions(host: ToolHost) -> list[SdkMcpTool[dict[str, Any]]]:
         ),
         input_schema={
             "type": "object",
+            "properties": {},
             "additionalProperties": False,
         },
         handler=host.iterate,

@@ -11,8 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
-from gymrat.config import BenchlessConfig, StopConfig
-from gymrat.config.inspect import ConfigInspection
+from gymrat.config import BenchlessConfig, ConfigInspection, StopConfig
 
 CheckStatus = Literal["ok", "warn", "fail"]
 """The outcome severity of a single diagnostic check."""

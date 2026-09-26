@@ -5,7 +5,7 @@ Verifies that:
 - validate.py exposes no ``assert_flag_not_empty`` / ``validate_loop_keys`` /
   ``assert_runbook_exists``
 - The config package loads without circular imports
-- resolve_benchless_config delegates to inspect_config
+- resolve_benchless_config settles through the same pipeline as inspect_config
 """
 
 import subprocess
@@ -88,9 +88,9 @@ def test_config_package_when_imported_fresh_does_not_raise_import_error():
     )
 
 
-def test_config_inspect_module_when_imported_fresh_does_not_raise_import_error():
+def test_config_package_when_inspect_config_imported_fresh_does_not_raise_import_error():
     result = subprocess.run(
-        [sys.executable, "-c", "import gymrat.config.inspect"],
+        [sys.executable, "-c", "from gymrat.config import ConfigInspection, inspect_config"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -98,7 +98,7 @@ def test_config_inspect_module_when_imported_fresh_does_not_raise_import_error()
     )
 
     assert result.returncode == 0, (
-        f"Importing gymrat.config.inspect failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        f"Importing inspect_config failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
 
 

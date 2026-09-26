@@ -12,14 +12,14 @@ ended.
 """
 
 import asyncio
-import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from gymrat import clock
+from gymrat.clock import now_ms, now_ns
 from gymrat.errors import GymratError
-from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.lock import is_held
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import fold_session, read_records
@@ -81,14 +81,16 @@ _IN_FLIGHT_EXCLUSION = frozenset({
 class SupervisionResult:
     """How a supervised session ended.
 
-    - ``outcome``: how the session settled (completed, interrupted, or error).
-    - ``ended_by``: whether the session ended on its own, was stopped by a cap,
-      or was ended by a condition read off the session log.
-    - ``end_reason``: for ``guard``, the guard reason; for a cap, the cap name;
-      for ``stop-condition`` and ``hook-failure``, the condition's summary; for
-      ``session``, ``None`` unless a log-read error set it.
-    - ``duration_ms``: wall-clock duration from start to settlement.
-    - ``cost_usd``: the final cost reported by the session.
+    Attributes:
+        outcome: How the session settled (completed, interrupted, or error).
+        ended_by: Whether the session ended on its own, was stopped by a cap,
+            or was ended by a condition read off the session log.
+        end_reason: For ``guard``, the guard reason; for a cap, the cap name;
+            for ``stop-condition`` and ``hook-failure``, the condition's
+            summary; for ``session``, ``None`` unless a log-read error set it.
+        duration_ms: Elapsed milliseconds from start to settlement, measured
+            on the monotonic clock.
+        cost_usd: The final cost reported by the session.
     """
 
     outcome: SessionOutcome
@@ -401,7 +403,7 @@ class _Supervision:
     async def run(self) -> SupervisionResult:
         self._combined(self._config.launch)
 
-        start_time = time.perf_counter()
+        start_time = clock.monotonic_ms()
         self._session = self._config.driver.start(
             self._config.prompt,
             self._combined,
@@ -415,7 +417,7 @@ class _Supervision:
 
         try:
             outcome = await self._session.outcome
-            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            duration_ms = int(clock.monotonic_ms() - start_time)
 
             if self._end_reason is not None and self._ended_by == "session":
                 return SupervisionResult(

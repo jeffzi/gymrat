@@ -9,6 +9,7 @@ from gymrat.stats.descriptive import (
     compute_half_range,
     compute_median,
     normalize_ratio,
+    percent_delta,
 )
 from gymrat.stats.permutation import (
     PERMUTATION_SEED,
@@ -29,5 +30,6 @@ __all__ = [
     "compute_half_range",
     "compute_median",
     "normalize_ratio",
+    "percent_delta",
     "sign_flip_permutation_test",
 ]

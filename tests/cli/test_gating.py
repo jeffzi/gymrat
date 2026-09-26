@@ -126,3 +126,16 @@ def test_warn_empty_geomean_gates_when_no_geomean_condition_does_stay_silent(
     warn_empty_geomean_gates((RegressedFailOn(),), result)
 
     assert captured.getvalue() == ""
+
+
+def test_warn_empty_geomean_gates_when_sink_given_does_route_warning_to_it():
+    warnings: list[str] = []
+    result = create_comparison_result(
+        candidates=[create_candidate(label="cand-empty", kinds=[other_kind(5.0, 0)])],
+    )
+
+    warn_empty_geomean_gates((GeomeanFailOn(pct=2.0),), result, warn=warnings.append)
+
+    assert warnings == [
+        'warning: geomean gate for "cand-empty" had no stable gating metrics to measure'
+    ]

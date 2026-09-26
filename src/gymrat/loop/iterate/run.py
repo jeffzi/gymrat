@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from gymrat import clock as _clock
+from gymrat.clock import monotonic_ms
 from gymrat.errors import GymratError
 from gymrat.loop.hooks import HookInvocation, run_hook_stage
 from gymrat.loop.iterate.bench import (
@@ -36,7 +38,6 @@ from gymrat.loop.iterate.record import IterationJudgment, build_iteration_record
 from gymrat.progress_events import (
     IterationRecorded,
     JudgeFinished,
-    default_clock,
     emit_progress,
 )
 from gymrat.report.loop import (
@@ -57,7 +58,6 @@ from gymrat.session import (
     require_open_session,
 )
 from gymrat.session import budget as _budget
-from gymrat.session import clock as _clock
 from gymrat.session import workspace as _workspace
 from gymrat.warn import warn_to_stderr
 
@@ -126,7 +126,7 @@ def _append_iteration(ctx: IterationContext, record: IterationRecord, *, seq: in
     append_record(ctx.jsonl_path, record)
     emit_progress(
         ctx.options.on_progress,
-        IterationRecorded(seq=seq, outcome=record.outcome, at_ms=default_clock()),
+        IterationRecorded(seq=seq, outcome=record.outcome, at_ms=monotonic_ms()),
     )
 
 
@@ -291,7 +291,7 @@ async def _measure_and_judge(ctx: IterationContext) -> Judged:
             primary_delta_pct=primary.delta_pct,
             regressed=regressed_names,
             metric_count=len(first.metric_meta),
-            at_ms=default_clock(),
+            at_ms=monotonic_ms(),
         ),
     )
 

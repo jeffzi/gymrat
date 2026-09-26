@@ -34,8 +34,8 @@ from gymrat.cli.supervise.state import (
     SuperviseReporter,
 )
 from gymrat.cli.supervise.text import exit_phase_text
+from gymrat.clock import now_ms
 from gymrat.eta import MS_PER_SECOND
-from gymrat.session.clock import now_ms
 from gymrat.session.progress_file import read_progress as _default_read_progress
 
 if TYPE_CHECKING:
@@ -312,7 +312,7 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         log_path: Path to the supervisor event log, shown on the frame's
             ``log:`` line.
         now: Wall-clock source returning epoch milliseconds.  Defaults to
-            :func:`~gymrat.session.clock.now_ms`; override in tests.
+            :func:`~gymrat.clock.now_ms`; override in tests.
         read_session: Callable that reads the current session state.  Defaults to
             :func:`make_default_read`; override in tests.
         label: Human label for the run, shown in the frame header.

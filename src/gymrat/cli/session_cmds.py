@@ -11,13 +11,13 @@ from typing import Annotated
 
 import typer
 
+from gymrat.cli.lock import CommandTrace, config_trace_args, with_repo_lock
 from gymrat.cli.shared import (
     AdapterOption,
     BaselineOption,
     BenchOption,
     BranchOption,
     ColorOption,
-    CommandTrace,
     ConfigOption,
     DebugOption,
     FormatOption,
@@ -28,9 +28,7 @@ from gymrat.cli.shared import (
     apply_color_override,
     apply_debug,
     budget_snapshot,
-    config_trace_args,
     run_cli,
-    with_repo_lock,
     write_and_flush,
     write_budget_report,
 )

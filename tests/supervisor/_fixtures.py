@@ -16,8 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NamedTuple, override
 
+from gymrat.clock import now_ms, now_ns
 from gymrat.config import BenchlessConfig, Effort
-from gymrat.session.clock import now_ms, now_ns
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import append_record
 from gymrat.supervisor import (

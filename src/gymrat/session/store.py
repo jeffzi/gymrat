@@ -48,10 +48,12 @@ __all__ = [
     "RequiredSession",
     "SessionState",
     "append_record",
+    "first_line_json",
     "fold_session",
     "last_kept_position",
     "latest_baseline",
     "read_records",
+    "read_session_header",
     "recover_torn_tail",
     "require_open_session",
     "require_session",
@@ -135,32 +137,108 @@ def last_kept_position(state: SessionState, baseline_sha: str) -> str:
     return state.last_kept_commit or baseline_sha
 
 
-def session_header(root: str) -> SessionRecord | None:
-    """Read only the first line of the session log and return the session record.
+def _read_first_line(path: Path) -> str | None:
+    """The first line of ``path``, or ``None`` when the file does not exist."""
+    # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
+    # on later lines could fail the read of a first line that is itself valid.
+    try:
+        with path.open("rb") as handle:
+            raw = handle.readline()
+    except FileNotFoundError:
+        return None
+    return raw.decode("utf-8")
 
-    Returns ``None`` when the log is absent, empty, or its first line is not a
-    session record. Unlike :func:`read_records` this never reads past the first
-    line, making it safe for hot paths that only need the session ID.
+
+def first_line_json(path: Path) -> dict[str, object] | None:
+    """Parse only the first line of ``path`` as a JSON object.
+
+    Args:
+        path: The JSONL file to peek at.
+
+    Returns:
+        The decoded object, or ``None`` when the file does not exist or its
+        first line is not a JSON object, including a line that is not valid UTF-8.
+
+    Raises:
+        OSError: When the file exists but cannot be read, such as a directory
+            or a file without read permission.
+    """
+    try:
+        first_line = _read_first_line(path)
+    except UnicodeDecodeError:
+        return None
+    if first_line is None:
+        return None
+    try:
+        parsed = json.loads(first_line)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def read_session_header(jsonl_path: str) -> SessionRecord | None:
+    """Read the session header from the first line of the log at ``jsonl_path``.
+
+    Unlike :func:`read_records` this never reads past the first line, so a
+    caller that only needs the header pays for one line however long the log.
+
+    Args:
+        jsonl_path: Path to the session log file.
+
+    Returns:
+        The session record, or ``None`` when the log does not exist or its
+        first line is blank.
+
+    Raises:
+        GymratError: When the first line is not valid UTF-8, is not JSON,
+            matches no record schema, or holds a record other than a session
+            header.
+        OSError: When the log exists but cannot be read, such as a directory
+            or a file without read permission.
+    """
+    location = f"{jsonl_path}:1"
+    try:
+        first_line = _read_first_line(Path(jsonl_path))
+    except UnicodeDecodeError as error:
+        message = f"Corrupt session log at {location}"
+        raise GymratError(message, hint="Line 1 contains invalid UTF-8 bytes.") from error
+    if first_line is None or not first_line.strip():
+        return None
+
+    try:
+        value = json.loads(first_line)
+    except json.JSONDecodeError as error:
+        message = f"Invalid JSON at {location}"
+        raise GymratError(message, hint="Line 1 is not a JSON object.") from error
+
+    record = parse_record(value)
+    if not isinstance(record, SessionRecord):
+        message = f"Expected session header at {location}, got a {record.type} record"
+        raise GymratError(
+            message,
+            hint="Line 1 is not a session header. The session log is corrupt; start a new session.",
+        )
+    return record
+
+
+def session_header(root: str) -> SessionRecord | None:
+    """Read the session header of ``root``'s log, treating any failure as no session.
+
+    The lenient form of :func:`read_session_header` for hot paths that only need
+    the session ID: a log that is absent, unreadable, blank, undecodable,
+    malformed, or opened by another record type all read as ``None``. It never reads past the first
+    line.
 
     Args:
         root: Repository root whose session log is inspected.
 
     Returns:
-        The session record, or ``None`` when the log is absent or invalid.
+        The session record, or ``None`` when no valid header could be read.
     """
-    jsonl = session_jsonl_path(root)
     try:
-        with Path(jsonl).open(encoding="utf-8") as f:
-            first_line = f.readline()
-    except OSError:
+        return read_session_header(session_jsonl_path(root))
+    except (OSError, GymratError):
         return None
-    if not first_line.strip():
-        return None
-    try:
-        record = parse_record(json.loads(first_line))
-    except (json.JSONDecodeError, GymratError):
-        return None
-    return record if isinstance(record, SessionRecord) else None
 
 
 def append_record(jsonl_path: str, record: SessionLogRecord) -> None:

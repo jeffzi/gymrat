@@ -742,7 +742,7 @@ async def test_replay_session_when_two_commands_run_live_does_match_replayed_spa
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from gymrat.cli.shared import CommandTrace, with_repo_lock
+    from gymrat.cli.lock import CommandTrace, with_repo_lock
     from gymrat.session.paths import session_jsonl_path
 
     header = session_record()
@@ -787,7 +787,7 @@ async def test_replay_session_when_gymrat_traceparent_set_live_does_match_replay
     monkeypatch: pytest.MonkeyPatch,
     tmp_path_factory: pytest.TempPathFactory,
 ):
-    from gymrat.cli.shared import CommandTrace, with_repo_lock
+    from gymrat.cli.lock import CommandTrace, with_repo_lock
     from gymrat.session.paths import session_jsonl_path
 
     header = session_record()

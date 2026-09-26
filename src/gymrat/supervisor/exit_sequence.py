@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from gymrat.cli.lock import with_repo_lock
-from gymrat.session.clock import monotonic_ms, now_ns
+from gymrat.clock import monotonic_ms, now_ns
 from gymrat.session.lock import LockContentionError, is_held, read_holder
 from gymrat.session.paths import session_jsonl_path
 from gymrat.session.store import fold_session, read_records

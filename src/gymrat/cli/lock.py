@@ -20,11 +20,11 @@ if TYPE_CHECKING:
 
 import typer
 
+from gymrat import clock as _clock
 from gymrat.cli.supervised import command_origin
 from gymrat.errors import GymratError
 from gymrat.git import NotAGitRepositoryError
 from gymrat.loop.iterate import LoopStopError
-from gymrat.session import clock as _clock
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import lockfile_path, repo_root, session_jsonl_path
 from gymrat.session.records.models import CommandRecord

@@ -1,9 +1,10 @@
-"""Shared CLI infrastructure: parsing, exit routing, error rendering, locking.
+"""Shared CLI infrastructure: parsing, exit routing, error rendering.
 
 This module holds the pieces every benchmarking command reuses — the argument
-coercers, the error formatter and exit path, the repository single-flight lock,
-and the render-mode resolution — with no dependency on the heavy statistics
-stack or the command bodies, so importing it stays cheap.
+coercers, the error formatter and exit path, and the render-mode resolution —
+with no dependency on the heavy statistics stack or the command bodies, so
+importing it stays cheap. The repository lock and command trace live in
+:mod:`gymrat.cli.lock`.
 """
 
 import asyncio
@@ -21,13 +22,9 @@ import click
 import typer
 from rich.markup import escape
 
+from gymrat import clock as _clock
 from gymrat.adapters.types import AdapterError
-from gymrat.cli.lock import (
-    TOOL_FAILURE_EXIT_CODE,
-    CommandTrace,
-    config_trace_args,
-    with_repo_lock,
-)
+from gymrat.cli.lock import TOOL_FAILURE_EXIT_CODE
 from gymrat.cli.progress import ProgressReporter
 from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS, CliFlags, ResolvedConfig
 from gymrat.errors import GymratError, hint_of
@@ -44,7 +41,6 @@ from gymrat.report.style import (
 )
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn, ReportOptions
 from gymrat.sampling import RunOptions, TargetSpec
-from gymrat.session import clock as _clock
 from gymrat.session.budget import (
     SIDES_PER_ITERATE,
     Budget,
@@ -56,8 +52,6 @@ from gymrat.session.paths import repo_root, session_jsonl_path
 from gymrat.session.store import read_records
 from gymrat.signals import install_termination_cleanup
 from gymrat.warn import warn_to_stderr
-
-__all__ = ["CommandTrace", "config_trace_args", "with_repo_lock"]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -92,6 +86,11 @@ class _DebugState:
 def set_debug_mode(value: bool) -> None:  # noqa: FBT001 -- 1:1 setter for the --debug flag
     """Set the module debug flag that governs stack traces in error output."""
     _DebugState.enabled = value
+
+
+def is_debug_mode() -> bool:
+    """Whether ``--debug`` is on, so error and warning output should carry stack traces."""
+    return _DebugState.enabled
 
 
 class _ColorState:
@@ -623,7 +622,17 @@ class JsonRenderer[T](Protocol):
     is ``None``, rather than serializing it as ``null``.
     """
 
-    def __call__(self, result: T, /, *, budget: BudgetSummary | None = None) -> str: ...
+    def __call__(self, result: T, /, *, budget: BudgetSummary | None = None) -> str:
+        """Render *result* as a JSON document.
+
+        Args:
+            result: The report result to serialize.
+            budget: The session budget summary to embed, or ``None`` to omit the field.
+
+        Returns:
+            The JSON document text.
+        """
+        ...
 
 
 @dataclass(frozen=True, slots=True)

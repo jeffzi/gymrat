@@ -29,13 +29,17 @@ from gymrat.config.types import (
     SuperviseConfig,
 )
 from gymrat.model import NOISE_FLOOR_PCT, Direction
-from gymrat.pydantic_errors import STRICT_FORBID, coerce_integer, describe_key, drop_prefix_errors
+from gymrat.pydantic_errors import (
+    STRICT_FORBID,
+    alternatives,
+    coerce_integer,
+    describe_key,
+    drop_prefix_errors,
+)
 
 EFFORT_LEVELS: tuple[str, ...] = get_args(Effort)
 #: The comma/or-joined list of valid effort levels, quoted for validation error messages.
-EFFORT_PHRASE: str = (
-    ", ".join(f'"{level}"' for level in EFFORT_LEVELS[:-1]) + f' or "{EFFORT_LEVELS[-1]}"'
-)
+EFFORT_PHRASE: str = alternatives(Effort)
 
 _LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029")
 

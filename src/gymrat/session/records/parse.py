@@ -4,13 +4,13 @@ Includes validation-error translation from pydantic errors to problem strings.
 """
 
 import json
-from typing import Annotated, get_args
+from typing import Annotated
 
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
 from gymrat.errors import GymratError
-from gymrat.pydantic_errors import describe_key, drop_prefix_errors
+from gymrat.pydantic_errors import alternatives, describe_key, drop_prefix_errors
 from gymrat.session.records.models import (
     CommandRecord,
     SessionLogRecord,
@@ -18,6 +18,7 @@ from gymrat.session.records.models import (
 )
 from gymrat.session.schema import (
     SCHEMA_VERSION,
+    CommandOrigin,
     CommandReason,
     HookStage,
     KeepReason,
@@ -111,21 +112,16 @@ _STRING_ARRAY = "an array of strings"
 _DELTA = "a number or null"
 
 
-def _alternatives(literal: object) -> str:
-    """Render a ``Literal``'s values as ``"a", "b" or "c"`` for a problem message."""
-    *head, last = (json.dumps(value) for value in get_args(literal))
-    return f"{', '.join(head)} or {last}" if head else last
-
-
-_VERDICT = _alternatives(Verdict)
-_METHOD = _alternatives(Method)
-_KIND = _alternatives(PrimaryKind)
-_OUTCOME = _alternatives(Outcome)
-_STATUS = _alternatives(KeepStatus)
-_REASON = _alternatives(KeepReason)
-_STAGE = _alternatives(HookStage)
-_EXIT_CODE = _alternatives(CommandRecord.model_fields["exit_code"].annotation)
-_COMMAND_REASON = f"one of {_alternatives(CommandReason)}"
+_VERDICT = alternatives(Verdict)
+_METHOD = alternatives(Method)
+_KIND = alternatives(PrimaryKind)
+_OUTCOME = alternatives(Outcome)
+_STATUS = alternatives(KeepStatus)
+_REASON = alternatives(KeepReason)
+_STAGE = alternatives(HookStage)
+_EXIT_CODE = alternatives(CommandRecord.model_fields["exit_code"].annotation)
+_COMMAND_REASON = f"one of {alternatives(CommandReason)}"
+_ORIGIN = alternatives(CommandOrigin)
 
 _PHRASES: dict[tuple[str, ...], str] = {
     # session
@@ -235,6 +231,7 @@ _PHRASES: dict[tuple[str, ...], str] = {
     ("command", "args"): _OBJECT,
     ("command", "exit_code"): _EXIT_CODE,
     ("command", "reason"): _COMMAND_REASON,
+    ("command", "origin"): _ORIGIN,
     ("command", "seq"): _INT,
     ("command", "duration_ms"): _NON_NEGATIVE_INT,
     ("command", "traceparent"): _STRING,

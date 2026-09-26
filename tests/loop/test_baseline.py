@@ -65,7 +65,7 @@ def test_measure_baseline_when_called_does_return_result_and_record_with_matchin
     handed_back = create_measurement_result(label="build", rounds=rounds)
     monkeypatch.setattr("gymrat.measure.measure", _fake_engine(handed_back))
     ticks = iter([1_000.0, 1_500.0])
-    monkeypatch.setattr("gymrat.session.clock.monotonic_ms", lambda: next(ticks))
+    monkeypatch.setattr("gymrat.clock.monotonic_ms", lambda: next(ticks))
 
     result, record = asyncio.run(
         measure_baseline(TargetSpec(label=target_label, target="main"), _run_options())

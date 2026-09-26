@@ -4,10 +4,8 @@ Only gating metrics participate — informational verdicts never trip an
 exit-code gate. Conditions are OR-ed: any one that trips fails the run.
 """
 
-import sys
 from typing import assert_never
 
-from gymrat.cli.shared import write_and_flush
 from gymrat.model import GeomeanResult
 from gymrat.report.tally import count_verdicts
 from gymrat.report.types import (
@@ -18,6 +16,7 @@ from gymrat.report.types import (
     MetricComparisons,
     RegressedFailOn,
 )
+from gymrat.warn import WarnSink, warn_to_stderr
 
 
 def _gating_metrics(metrics: MetricComparisons) -> MetricComparisons:
@@ -67,7 +66,10 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
 
 
 def warn_empty_geomean_gates(
-    conditions: tuple[FailOnCondition, ...], result: ComparisonResult
+    conditions: tuple[FailOnCondition, ...],
+    result: ComparisonResult,
+    *,
+    warn: WarnSink = warn_to_stderr,
 ) -> None:
     """Warn once per candidate whose geomean gate had nothing stable to judge.
 
@@ -77,14 +79,14 @@ def warn_empty_geomean_gates(
     Args:
         conditions: The fail-on conditions in effect.
         result: The comparison result to inspect for inert gates.
+        warn: Where each warning goes.
     """
     if not any(isinstance(condition, GeomeanFailOn) for condition in conditions):
         return
 
     for candidate in result.candidates:
         if all(geomean.n == 0 for geomean in _gated_geomeans_of(candidate)):
-            write_and_flush(
-                sys.stderr,
+            warn(
                 f'warning: geomean gate for "{candidate.label}" '
-                "had no stable gating metrics to measure\n",
+                "had no stable gating metrics to measure"
             )

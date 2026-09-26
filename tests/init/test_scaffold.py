@@ -9,6 +9,7 @@ byte-identical, remaining artifacts still filled in).
 """
 
 import ast
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -69,8 +70,8 @@ def test_scaffold_when_defaults_does_produce_one_key_per_line_with_trailing_newl
 ):
     scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
-    raw = (tmp_path / "gymrat.toml").read_text(encoding="utf-8")
-    assert raw == 'bench = "npm run bench"\nrunbook = "gymrat-runbook.md"\n'
+    raw = (tmp_path / "gymrat.toml").read_bytes()
+    assert raw == b'bench = "npm run bench"\nrunbook = "gymrat-runbook.md"\n'
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +364,31 @@ def test_scaffold_when_config_write_fails_does_not_leave_partial_config(
     assert tmp_files == []
 
 
+def test_scaffold_when_config_renamed_into_place_does_fsync_it_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    real_fsync = os.fsync
+    real_replace = os.replace
+    synced_files: set[int] = set()
+    config_synced_at_rename: list[bool] = []
+
+    def recording_fsync(fd: int) -> None:
+        real_fsync(fd)
+        synced_files.add(os.fstat(fd).st_ino)
+
+    def observing_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        if Path(dst).name == "gymrat.toml":
+            config_synced_at_rename.append(Path(src).stat().st_ino in synced_files)
+        real_replace(src, dst)
+
+    monkeypatch.setattr("os.fsync", recording_fsync)
+    monkeypatch.setattr("os.replace", observing_replace)
+
+    scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert config_synced_at_rename == [True]
+
+
 # ---------------------------------------------------------------------------
 # filesystem failures surface as GymratError
 # ---------------------------------------------------------------------------
@@ -395,7 +421,8 @@ def test_scaffold_when_filesystem_error_does_include_hint(
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
     # The report-a-bug footer must never appear for a filesystem error.
-    assert hint_of(exc_info.value) is not None
+    assert str(exc_info.value) == f"Cannot write gymrat.toml in {tmp_path}"
+    assert hint_of(exc_info.value) == "Read-only file system"
 
 
 # ---------------------------------------------------------------------------
